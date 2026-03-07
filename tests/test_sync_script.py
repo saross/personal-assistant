@@ -186,6 +186,7 @@ class TestRecordToTuple:
         assert result == (
             "2026-02-07-abc123",     # id
             "test-session-1",         # session_id
+            "-home-shawn-test-project",  # project
             "extraction",             # source
             "decision",               # category
             "Use PostgreSQL for memory queries.",  # content
@@ -201,9 +202,10 @@ class TestRecordToTuple:
         """Commitment record with deadline should include deadline_at."""
         result = sync_mod.record_to_tuple(sample_memories[1])
         assert result[0] == "2026-02-07-def456"
-        assert result[2] == "manual"
-        assert result[3] == "commitment"
-        assert result[10] == "2026-02-13T15:00:00+11:00"
+        assert result[2] == "-home-shawn-test-project"  # project
+        assert result[3] == "manual"                     # source
+        assert result[4] == "commitment"                 # category
+        assert result[11] == "2026-02-13T15:00:00+11:00"  # deadline_at
 
     def test_missing_optional_fields_get_defaults(self):
         """Record with only required fields should get sensible defaults."""
@@ -215,30 +217,31 @@ class TestRecordToTuple:
         }
         result = sync_mod.record_to_tuple(minimal)
         assert result[1] == ""           # session_id default
-        assert result[2] == "extraction"  # source default
-        assert result[5] == "medium"      # confidence default
-        assert result[6] == []            # research_tags default
-        assert result[7] is None          # zotero_key default
-        assert result[8] == ""            # source_context default
-        assert result[10] is None         # deadline_at default
+        assert result[2] is None         # project default
+        assert result[3] == "extraction"  # source default
+        assert result[6] == "medium"      # confidence default
+        assert result[7] == []            # research_tags default
+        assert result[8] is None          # zotero_key default
+        assert result[9] == ""            # source_context default
+        assert result[11] is None         # deadline_at default
 
     def test_source_field_included(self, sample_memories):
-        """Source field (extraction/manual) should be at index 2."""
+        """Source field (extraction/manual) should be at index 3."""
         extraction_tuple = sync_mod.record_to_tuple(sample_memories[0])
         manual_tuple = sync_mod.record_to_tuple(sample_memories[1])
-        assert extraction_tuple[2] == "extraction"
-        assert manual_tuple[2] == "manual"
+        assert extraction_tuple[3] == "extraction"
+        assert manual_tuple[3] == "manual"
 
     def test_tuple_length_matches_fields(self, sample_memories):
-        """Tuple length should match JSONL_FIELDS count (11)."""
+        """Tuple length should match JSONL_FIELDS count (12)."""
         result = sync_mod.record_to_tuple(sample_memories[0])
         assert len(result) == len(sync_mod.JSONL_FIELDS)
 
     def test_tags_preserved_as_list(self, sample_memories):
         """research_tags should remain a list for PostgreSQL TEXT[] column."""
         result = sync_mod.record_to_tuple(sample_memories[0])
-        assert isinstance(result[6], list)
-        assert result[6] == ["database", "architecture"]
+        assert isinstance(result[7], list)
+        assert result[7] == ["database", "architecture"]
 
     def test_empty_tags_list(self):
         """Empty tags list should be preserved as empty list."""
@@ -250,7 +253,7 @@ class TestRecordToTuple:
             "research_tags": [],
         }
         result = sync_mod.record_to_tuple(record)
-        assert result[6] == []
+        assert result[7] == []
 
 
 # ============================================================================
@@ -264,7 +267,7 @@ class TestFieldConsistency:
     def test_field_list_contents(self):
         """JSONL_FIELDS should contain all expected fields."""
         expected = {
-            "id", "session_id", "source", "category", "content",
+            "id", "session_id", "project", "source", "category", "content",
             "confidence", "research_tags", "zotero_key", "source_context",
             "created_at", "deadline_at",
         }

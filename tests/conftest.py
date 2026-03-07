@@ -32,6 +32,7 @@ def sample_memories():
         {
             "id": "2026-02-07-abc123",
             "session_id": "test-session-1",
+            "project": "-home-shawn-test-project",
             "source": "extraction",
             "category": "decision",
             "content": "Use PostgreSQL for memory queries.",
@@ -43,6 +44,7 @@ def sample_memories():
         {
             "id": "2026-02-07-def456",
             "session_id": "test-session-1",
+            "project": "-home-shawn-test-project",
             "source": "manual",
             "category": "commitment",
             "content": "Finish results section by Friday.",
