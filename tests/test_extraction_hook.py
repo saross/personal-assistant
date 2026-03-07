@@ -196,7 +196,7 @@ class TestParseTranscript:
         assert "Captured to memory" not in contents
 
     def test_all_command_markers_filtered(self, tmp_path):
-        """Verify all six command markers are filtered."""
+        """Verify all command markers are filtered."""
         transcript = tmp_path / "transcript.jsonl"
         entries = []
         for i, marker in enumerate(eh.COMMAND_MARKERS):
@@ -216,6 +216,31 @@ class TestParseTranscript:
         messages, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["content"] == "Normal"
+
+    def test_skip_flag_resets_on_normal_user_message(self, tmp_path):
+        """Non-command user message after a command should reset skip flag."""
+        transcript = tmp_path / "transcript.jsonl"
+        entries = [
+            # Command exchange — both should be filtered
+            make_transcript_entry(
+                "user",
+                "# /remember \u2014 Manual Memory Capture\n\nSome content",
+                "uuid-1",
+            ),
+            # Normal user message immediately after (no assistant in between)
+            make_transcript_entry("user", "Normal question", "uuid-2"),
+            # This assistant response should NOT be skipped
+            make_transcript_entry("assistant", "Normal answer", "uuid-3"),
+        ]
+        with open(transcript, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        messages, _ = eh.parse_transcript(str(transcript), None)
+        assert len(messages) == 2
+        contents = [m["content"] for m in messages]
+        assert "Normal question" in contents
+        assert "Normal answer" in contents
 
     def test_structured_content_blocks(self, tmp_path):
         """Handles list-of-blocks content format."""

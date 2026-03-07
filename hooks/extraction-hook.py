@@ -57,6 +57,7 @@ COMMAND_MARKERS = (
     "# /focus \u2014 Manage Focus Slots",
     "# /done \u2014 Mark Task Complete",
     "# /standup \u2014 Daily Accountability Check",
+    "# /recap \u2014 End-of-Day Recap",
     "# /review \u2014 Weekly Review",
     "# /retro \u2014 Monthly System Retrospective",
     "# /sync-board \u2014 GitHub Issues Sync",
@@ -87,7 +88,8 @@ def load_env() -> None:
         if "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key.strip(), value)
 
 
 # ============================================================================
@@ -380,6 +382,8 @@ def parse_transcript(
                 if any(marker in content for marker in COMMAND_MARKERS):
                     skip_next_assistant = True
                     continue
+                else:
+                    skip_next_assistant = False
             elif entry.get("type") == "assistant" and skip_next_assistant:
                 skip_next_assistant = False
                 continue
@@ -546,7 +550,9 @@ def format_memories(
     set to 'extraction' to distinguish from manual captures, and a
     'project' field identifying the working directory.
     """
-    timestamp = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    timestamp = now.isoformat()
+    date_prefix = now.strftime("%Y-%m-%d")
     memories = []
     all_tags = []
 
@@ -577,7 +583,7 @@ def format_memories(
             confidence = "medium"
 
         record = {
-            "id": f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{mem_id}",
+            "id": f"{date_prefix}-{mem_id}",
             "session_id": session_id,
             "project": project,
             "source": "extraction",
