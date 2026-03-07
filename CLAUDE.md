@@ -83,7 +83,7 @@ context for Claude.
 | File | Content |
 |------|---------|
 | `notes/llm-craft.md` | LLM interaction patterns, prompting techniques |
-| `notes/grimoire.md` | Effective prompts with mechanism analysis |
+| `notes/grimoire/` | Effective prompts with mechanism analysis (one file per prompt) |
 | `notes/working-practices.md` | Time management, focus, productivity |
 | `notes/coding-practices.md` | Tooling, debugging, dev environment |
 
