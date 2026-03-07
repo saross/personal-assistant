@@ -2,8 +2,8 @@
 # setup.sh — Bootstrap personal-assistant on a new machine.
 #
 # Initialises the data submodule, creates command and skill
-# symlinks in ~/.claude/, and optionally sets up the Python
-# virtual environment.
+# symlinks in ~/.claude/, composes the global CLAUDE.md, and
+# optionally sets up the Python virtual environment.
 #
 # Usage:
 #   cd ~/personal-assistant && bash setup.sh
@@ -21,7 +21,7 @@ echo ""
 # ------------------------------------------------------------
 # Step 1: Initialise and update submodule
 # ------------------------------------------------------------
-echo "[1/4] Initialising data submodule..."
+echo "[1/5] Initialising data submodule..."
 cd "$PA_DIR"
 git submodule update --init --recursive
 echo "  Done."
@@ -29,7 +29,7 @@ echo "  Done."
 # ------------------------------------------------------------
 # Step 2: Create command symlinks in ~/.claude/commands/
 # ------------------------------------------------------------
-echo "[2/4] Creating command symlinks..."
+echo "[2/5] Creating command symlinks..."
 mkdir -p "$CLAUDE_DIR/commands"
 
 for cmd in "$PA_DIR"/commands/*.md; do
@@ -55,7 +55,7 @@ done
 # ------------------------------------------------------------
 # Step 3: Create skill symlinks in ~/.claude/skills/
 # ------------------------------------------------------------
-echo "[3/4] Creating skill symlinks..."
+echo "[3/5] Creating skill symlinks..."
 mkdir -p "$CLAUDE_DIR/skills"
 
 for skill_dir in "$PA_DIR"/skills/*/; do
@@ -80,7 +80,7 @@ done
 # ------------------------------------------------------------
 # Step 4: Python virtual environment (optional)
 # ------------------------------------------------------------
-echo "[4/4] Python virtual environment..."
+echo "[4/5] Python virtual environment..."
 if [ -d "$PA_DIR/venv" ]; then
     echo "  venv/ already exists."
 else
@@ -90,6 +90,12 @@ else
     "$PA_DIR/venv/bin/pip" install --quiet anthropic psycopg2-binary pytest
     echo "  Done."
 fi
+
+# ------------------------------------------------------------
+# Step 5: Compose global ~/.claude/CLAUDE.md
+# ------------------------------------------------------------
+echo "[5/5] Composing global CLAUDE.md..."
+bash "$PA_DIR/scripts/compose-global-claude-md.sh"
 
 echo ""
 echo "=== Setup Complete ==="
