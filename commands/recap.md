@@ -1,0 +1,146 @@
+# /recap — End-of-Day Recap
+
+Evening complement to morning `/standup`. Captures what actually happened vs what was
+committed, calibrates estimation accuracy, and updates FOCUS.md next actions.
+
+## Usage
+
+```text
+/recap
+/recap [summary of what happened today]
+```
+
+## Arguments
+
+- *(no arguments)* — Read today's standup and ask the user what happened
+- `[summary]` — Use the provided summary as the basis for the recap
+
+## Behaviour
+
+### 1. Load Today's State
+
+Read these files:
+
+- `~/personal-assistant/standups/YYYY-MM-DD.md` — Today's standup (for commitments)
+- `~/personal-assistant/tasks/FOCUS.md` — Current focus items
+- `~/personal-assistant/tasks/backlog.md` — For capturing new items
+
+If no standup exists for today, note it:
+
+```text
+No standup found for today. Running recap without commitment comparison.
+What did you work on today?
+```
+
+### 2. Gather Actuals
+
+**If no argument provided**, ask the user:
+
+```text
+What actually happened today? Walk me through it — main work, side tasks,
+anything that changed from the plan.
+```
+
+**If argument provided**, use it as the basis. Ask clarifying questions only if
+something is ambiguous.
+
+### 3. Generate Recap
+
+Use this template. **Tone: reflective, not confrontational.** This is calibration,
+not accountability — save that for `/standup`.
+
+```text
+---
+
+## End-of-Day Recap
+
+### Committed vs Actual
+
+| # | Committed | Result |
+|---|-----------|--------|
+| 1 | [from standup Today section] | [what actually happened] |
+| 2 | [from standup Today section] | [what actually happened] |
+
+### Parallel work
+
+[Things done outside main commitments — other sessions, conversations, admin.
+If nothing, write "None noted."]
+
+### Estimation accuracy
+
+[How accurate were today's estimates? Over-committed? Under-committed?
+What expanded beyond expectation? What was faster than expected?
+One or two sentences — this builds the calibration record.]
+
+### Key developments
+
+[New information, changed deadlines, decisions made, new items captured.
+Things that change the landscape for tomorrow. If nothing, write "No changes."]
+
+### Tomorrow
+
+[What's the plan for tomorrow? This feeds the next standup.
+If user doesn't specify, ask.]
+```
+
+### 4. Append to Standup File
+
+Append the recap to `~/personal-assistant/standups/YYYY-MM-DD.md` after a
+separator line (`---`). If the standup file doesn't exist, create it with
+just the recap section.
+
+### 5. Generate Work-Log Memory
+
+Write a `progress` memory (30-day decay) summarising the day. Format:
+
+```json
+{
+  "category": "progress",
+  "content": "Work log [YYYY-MM-DD]: [1-2 sentence summary of what was accomplished and any notable developments]",
+  "confidence": "high",
+  "source": "manual",
+  "source_context": "End-of-day recap via /recap",
+  "research_tags": ["work-log", "daily-recap"]
+}
+```
+
+Follow the same JSONL writing protocol as `/remember` — proper JSON escaping,
+unique ID, append to `memories/memories.jsonl`.
+
+### 6. Update FOCUS.md
+
+If the user specifies new next actions or if today's work changes what comes next:
+
+- **Update** the `Next action` field in relevant focus slots
+- **Update** the `Last updated` date
+
+If the user doesn't mention changes, ask:
+
+```text
+Any updates to next actions in FOCUS.md, or are they still current?
+```
+
+### 7. After Recap
+
+Ask:
+
+```text
+Anything to add to the backlog based on today?
+```
+
+If the user mentions tasks not in focus or backlog, offer to capture them
+to `tasks/backlog.md`.
+
+## Notes
+
+- **Tone is reflective**, not confrontational. `/standup` does accountability;
+  `/recap` does calibration and record-keeping.
+- The committed-vs-actual comparison is the core value — it builds estimation
+  accuracy over time (a self-identified weakness).
+- Don't judge expanded scope — just record it. "Fieldmark work expanded from
+  1 hour to full day" is data, not a failure.
+- The Tomorrow section is critical — it becomes the basis for the next standup's
+  "what did you commit to?"
+- If the user runs `/recap` and a recap already exists for today, append a
+  second recap with a note: "Second recap — [time]". Multiple recaps in a day
+  are fine (e.g., after a mid-day refocus).
