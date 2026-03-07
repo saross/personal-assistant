@@ -203,7 +203,10 @@ def insert_memories(records: list[tuple], logger: logging.Logger) -> int:
                 # execute_values with ON CONFLICT returns only the last
                 # batch's rowcount, so we count processed records instead
                 execute_values(cur, insert_sql, records, page_size=100)
-        logger.info("Synced %d memories to PostgreSQL", len(records))
+        logger.info(
+            "Sent %d memories to PostgreSQL (duplicates skipped via ON CONFLICT)",
+            len(records),
+        )
         return len(records)
     except Exception as exc:
         logger.error("Database error during insert: %s", exc)

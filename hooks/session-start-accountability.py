@@ -64,7 +64,11 @@ def count_waiting_items() -> int:
         # Skip non-table lines, header row, separator row, and placeholder rows
         if not line.startswith("|"):
             continue
-        if "Waiting On" in line or "---" in line:
+        if "Waiting On" in line:
+            continue
+        # Skip separator rows (all cells are dashes only, e.g. |------|------|)
+        cells = [c.strip() for c in line.split("|")[1:-1]]
+        if all(re.match(r'^-+$', c) for c in cells if c):
             continue
         # Skip placeholder rows with only dashes, em-dashes, or empty cells
         cells = [c.strip() for c in line.split("|")[1:-1]]
