@@ -22,7 +22,7 @@ This is the personal assistant system — a cross-project hub for memory, task m
 │   ├── memories/      #   Memory system (JSONL canonical)
 │   ├── tasks/         #   Task system (FOCUS.md, inbox, projects)
 │   ├── notes/         #   Craft notebook (user's practical learnings)
-│   ├── reports/       #   Weekly reviews, collaborator reports, retros
+│   ├── reports/       #   Weekly reviews, collaborator reports, retros, work log, time log
 │   ├── standups/      #   Daily standup outputs
 │   └── logs/          #   Runtime logs (gitignored)
 ├── memories → data/memories   # Symlinks for path compatibility
@@ -68,7 +68,8 @@ Memories are automatically extracted from sessions via hooks and stored in `memo
 - `/focus add|remove|swap` — Change focus (enforces limits)
 - `/done [task]` — Mark complete, celebrate, refocus
 - `/standup` — Morning accountability check (escalates over time)
-- `/recap` — Evening recap (estimation calibration, work log)
+- `/recap` — Evening recap (estimation calibration, work log, daily journal)
+- `/track [project] [hours] [description]` — Record time spent on a project
 - `/review` — Weekly review + collaborator reports
 - `/retro` — Monthly system retrospective
 - `/sync-board` — Push task state to GitHub Issues
@@ -86,6 +87,7 @@ context for Claude.
 | `notes/grimoire/` | Effective prompts with mechanism analysis (one file per prompt) |
 | `notes/working-practices.md` | Time management, focus, productivity |
 | `notes/coding-practices.md` | Tooling, debugging, dev environment |
+| `notes/general/` | General notes, reference material, observations (one file per note) |
 
 Use `/craft` for quick entries. Longer observations are discussed in
 conversation and added manually.
@@ -116,7 +118,8 @@ conversation and added manually.
 ### Commands
 
 - `/standup` — Morning accountability check (escalates over time)
-- `/recap` — Evening recap (estimation calibration, work log)
+- `/recap` — Evening recap (estimation calibration, work log, daily journal)
+- `/track [project] [hours] [description]` — Record time spent on a project
 - `/capture [text]` — Quick add to inbox
 - `/done [task]` — Mark complete, celebrate, refocus
 - `/focus add|remove|swap` — Change focus (enforces limits)

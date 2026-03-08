@@ -20,7 +20,8 @@ Read these files:
 - `~/personal-assistant/tasks/SYSTEM.md` — Escalation parameters
 - `~/personal-assistant/tasks/inbox.md` — Unprocessed captures
 - `~/personal-assistant/tasks/waiting-for.md` — Blocked items
-- `~/personal-assistant/memories/memories.jsonl` — Recent memories for pattern detection
+- `~/personal-assistant/memories/memories.jsonl` — Recent memories for pattern detection and prompt coaching
+- `~/personal-assistant/notes/llm-craft.md` — Prompt craft notebook (for coaching section fallback)
 
 ### 2. Calculate Metrics
 
@@ -72,7 +73,21 @@ Look for:
 
 If no relevant memories exist, omit the Patterns section entirely.
 
-### 5. Generate Standup
+### 5. Select Prompt Coaching Content
+
+Search for coaching material for the Prompt Craft section:
+
+1. **Check recent memories** (last 7 days) for `prompt_effectiveness`,
+   `error_mode`, or `self_reflection` categories. If found, use the most
+   recent one.
+2. **Fall back to craft notebook** — read `notes/llm-craft.md` and select
+   an entry. Avoid repeating entries from the last 3 standups (check recent
+   standup files).
+3. **If neither has material**, skip the Prompt Craft section.
+
+Distil whatever source material you find into a concrete, actionable lesson.
+
+### 6. Generate Standup
 
 Use this template. The tone must match the `standup_tone` parameter from SYSTEM.md (default: confrontational). Follow the tone guidelines from CLAUDE.md exactly.
 
@@ -149,13 +164,34 @@ If none, omit this section.]
 
 ---
 
+## Prompt Craft
+
+[One prompt coaching observation. Source material in priority order:
+
+1. Search memories from the last 7 days for categories: `prompt_effectiveness`,
+   `error_mode`, `self_reflection`. If any exist, surface the most recent one
+   as a reminder and draw a concrete lesson from it.
+2. If no recent memories, read `~/personal-assistant/notes/llm-craft.md` and
+   pick an entry the user hasn't seen recently (use the standup history to
+   avoid repeats).
+3. If neither source has material, omit this section.
+
+Format:
+  **Lesson:** [One sentence — the actionable takeaway]
+  **Source:** [Where this came from — memory ID, craft notebook entry, or observation]
+  **Try today:** [One specific thing to do differently in today's prompting]
+
+Keep it to 3-4 lines. This is a daily micro-lesson, not a lecture.]
+
+---
+
 ## Today
 
 Given the above, what are you *actually* going to do today?
 Not what you hope. What you're committing to.
 ```
 
-### 6. Escalation Commentary Examples
+### 7. Escalation Commentary Examples
 
 **Days 1-2 (Neutral):**
 ```text
@@ -199,7 +235,7 @@ This paper has a hard deadline in [N] days.
 What's the plan to close it out?
 ```
 
-### 7. Save and Display
+### 8. Save and Display
 
 1. **Save** the standup output to `~/personal-assistant/standups/YYYY-MM-DD.md`
    - If a standup already exists for today, append a separator and the new standup
