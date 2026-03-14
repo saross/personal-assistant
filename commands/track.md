@@ -39,14 +39,20 @@ not minute-level precision.
 If the file doesn't exist, create it with a header row:
 
 ```csv
-date,project,hours,description
+date,project,hours,description,notes
 ```
 
 Append one line per entry:
 
 ```csv
-2026-03-08,fieldmark,3.5,Control Centre screenshots and descriptions
+2026-03-08,fieldmark,3.5,Control Centre screenshots and descriptions,
 ```
+
+The `notes` column is optional — leave it empty for same-day entries. Use
+`catch-up` when logging hours retroactively (covering previous days). Other
+flags may be added as needed. When a catch-up entry is logged, note that
+the date reflects *when it was logged*, not when the work occurred — if the
+user specifies the actual work date, use that instead.
 
 5. **Confirm** the entry:
 
