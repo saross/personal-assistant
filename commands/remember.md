@@ -39,6 +39,7 @@ Manually capture a memory without waiting for automatic extraction.
   "source": "manual",
   "category": "[category]",
   "content": "[content]",
+  "summary": "[one-sentence summary, max 150 chars, self-contained]",
   "confidence": "high",
   "research_tags": ["tag1", "tag2"],
   "source_context": "Manual capture via /remember",

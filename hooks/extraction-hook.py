@@ -175,6 +175,8 @@ Return a JSON array. Each object must have:
 - `content`: The memory (1-3 sentences, specific and self-contained)
 - `confidence`: "high", "medium", or "low"
 - `research_tags`: Array of relevant tags (see guidelines below)
+- `summary`: One-sentence summary (max 150 characters) for quick scanning at session start. \
+Must be self-contained and capture the core insight or decision.
 - `zotero_key`: If a Zotero item key was mentioned, include it (optional)
 - `deadline_at`: For commitments, the deadline in ISO format (optional)
 - `source_context`: Brief note on conversation context (optional)
@@ -597,6 +599,8 @@ def format_memories(
         }
 
         # Optional fields — only include when present
+        if mem.get("summary"):
+            record["summary"] = mem["summary"]
         if mem.get("zotero_key"):
             record["zotero_key"] = mem["zotero_key"]
         if mem.get("deadline_at"):

@@ -190,6 +190,7 @@ class TestRecordToTuple:
             "extraction",             # source
             "decision",               # category
             "Use PostgreSQL for memory queries.",  # content
+            None,                     # summary
             "high",                   # confidence
             ["database", "architecture"],  # research_tags
             None,                     # zotero_key
@@ -205,7 +206,7 @@ class TestRecordToTuple:
         assert result[2] == "-home-shawn-test-project"  # project
         assert result[3] == "manual"                     # source
         assert result[4] == "commitment"                 # category
-        assert result[11] == "2026-02-13T15:00:00+11:00"  # deadline_at
+        assert result[12] == "2026-02-13T15:00:00+11:00"  # deadline_at
 
     def test_missing_optional_fields_get_defaults(self):
         """Record with only required fields should get sensible defaults."""
@@ -219,11 +220,12 @@ class TestRecordToTuple:
         assert result[1] == ""           # session_id default
         assert result[2] is None         # project default
         assert result[3] == "extraction"  # source default
-        assert result[6] == "medium"      # confidence default
-        assert result[7] == []            # research_tags default
-        assert result[8] is None          # zotero_key default
-        assert result[9] == ""            # source_context default
-        assert result[11] is None         # deadline_at default
+        assert result[6] is None         # summary default
+        assert result[7] == "medium"      # confidence default
+        assert result[8] == []            # research_tags default
+        assert result[9] is None          # zotero_key default
+        assert result[10] == ""           # source_context default
+        assert result[12] is None         # deadline_at default
 
     def test_source_field_included(self, sample_memories):
         """Source field (extraction/manual) should be at index 3."""
@@ -233,15 +235,15 @@ class TestRecordToTuple:
         assert manual_tuple[3] == "manual"
 
     def test_tuple_length_matches_fields(self, sample_memories):
-        """Tuple length should match JSONL_FIELDS count (12)."""
+        """Tuple length should match JSONL_FIELDS count (13)."""
         result = sync_mod.record_to_tuple(sample_memories[0])
         assert len(result) == len(sync_mod.JSONL_FIELDS)
 
     def test_tags_preserved_as_list(self, sample_memories):
         """research_tags should remain a list for PostgreSQL TEXT[] column."""
         result = sync_mod.record_to_tuple(sample_memories[0])
-        assert isinstance(result[7], list)
-        assert result[7] == ["database", "architecture"]
+        assert isinstance(result[8], list)
+        assert result[8] == ["database", "architecture"]
 
     def test_empty_tags_list(self):
         """Empty tags list should be preserved as empty list."""
@@ -253,7 +255,7 @@ class TestRecordToTuple:
             "research_tags": [],
         }
         result = sync_mod.record_to_tuple(record)
-        assert result[7] == []
+        assert result[8] == []
 
 
 # ============================================================================
@@ -268,8 +270,8 @@ class TestFieldConsistency:
         """JSONL_FIELDS should contain all expected fields."""
         expected = {
             "id", "session_id", "project", "source", "category", "content",
-            "confidence", "research_tags", "zotero_key", "source_context",
-            "created_at", "deadline_at",
+            "summary", "confidence", "research_tags", "zotero_key",
+            "source_context", "created_at", "deadline_at",
         }
         assert set(sync_mod.JSONL_FIELDS) == expected
 

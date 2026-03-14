@@ -32,8 +32,8 @@ DB_NAME = "claude_memories"
 # All fields we extract from JSONL and insert into PostgreSQL
 JSONL_FIELDS = [
     "id", "session_id", "project", "source", "category", "content",
-    "confidence", "research_tags", "zotero_key", "source_context",
-    "created_at", "deadline_at",
+    "summary", "confidence", "research_tags", "zotero_key",
+    "source_context", "created_at", "deadline_at",
 ]
 
 
@@ -138,8 +138,9 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
     Convert a parsed JSONL record to an INSERT-ready tuple.
 
     Field order matches JSONL_FIELDS:
-        id, session_id, project, source, category, content, confidence,
-        research_tags, zotero_key, source_context, created_at, deadline_at
+        id, session_id, project, source, category, content, summary,
+        confidence, research_tags, zotero_key, source_context,
+        created_at, deadline_at
     """
     return (
         record["id"],
@@ -148,6 +149,7 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("source", "extraction"),
         record["category"],
         record["content"],
+        record.get("summary"),
         record.get("confidence", "medium"),
         record.get("research_tags", []),
         record.get("zotero_key"),
@@ -181,8 +183,9 @@ def insert_memories(records: list[tuple], logger: logging.Logger) -> int:
 
     insert_sql = """
         INSERT INTO memories (
-            id, session_id, project, source, category, content, confidence,
-            research_tags, zotero_key, source_context, created_at, deadline_at
+            id, session_id, project, source, category, content, summary,
+            confidence, research_tags, zotero_key, source_context,
+            created_at, deadline_at
         ) VALUES %s
         ON CONFLICT (id) DO NOTHING
     """

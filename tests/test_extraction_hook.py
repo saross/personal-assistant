@@ -417,6 +417,36 @@ class TestFormatMemories:
             result = eh.format_memories(extracted, "test-session")
             assert result[0]["category"] == cat
 
+    def test_summary_included_when_present(self):
+        """Summary field is included in the record when Haiku provides it."""
+        extracted = [
+            {
+                "category": "decision",
+                "content": "We chose PostgreSQL for the query layer because "
+                           "it supports full-text search and tag analytics.",
+                "summary": "Chose PostgreSQL for full-text search and tag analytics.",
+                "confidence": "high",
+                "research_tags": ["architecture"],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert result[0]["summary"] == (
+            "Chose PostgreSQL for full-text search and tag analytics."
+        )
+
+    def test_summary_omitted_when_absent(self):
+        """Summary field is omitted from the record when not provided."""
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some content.",
+                "confidence": "high",
+                "research_tags": [],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert "summary" not in result[0]
+
 
 # ============================================================================
 # Cursor Tracking

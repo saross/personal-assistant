@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS memories (
     source TEXT DEFAULT 'extraction',
     category TEXT NOT NULL,
     content TEXT NOT NULL,
+    summary TEXT,  -- One-sentence summary for session-start display (≤150 chars)
     confidence TEXT DEFAULT 'medium',
     research_tags TEXT[] DEFAULT '{}',
     zotero_key TEXT,
