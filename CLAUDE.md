@@ -24,6 +24,7 @@ This is the personal assistant system — a cross-project hub for memory, task m
 │   ├── notes/         #   Craft notebook (user's practical learnings)
 │   ├── reports/       #   Weekly reviews, collaborator reports, retros, work log, time log
 │   ├── standups/      #   Daily standup outputs
+│   ├── scratchpad.md  #   Claude's learning log (corrections, patterns)
 │   └── logs/          #   Runtime logs (gitignored)
 ├── memories → data/memories   # Symlinks for path compatibility
 ├── tasks → data/tasks
@@ -91,6 +92,43 @@ context for Claude.
 
 Use `/craft` for quick entries. Longer observations are discussed in
 conversation and added manually.
+
+## Scratchpad
+
+`data/scratchpad.md` is Claude's running learning log — loaded every
+session via the startup hook. It captures corrections, preferences, and
+patterns that compound across sessions.
+
+### When to write
+
+- **Correction received**: Shawn corrects your output, approach, or
+  assumption. Record what was wrong and what was right.
+- **Preference discovered**: Something about how Shawn works that isn't
+  in CLAUDE.md yet.
+- **Approach succeeded or failed**: A technique that produced notably
+  good or poor results.
+- **Pattern noticed**: Recurring observation about session dynamics.
+
+### When NOT to write
+
+- Things that belong in CLAUDE.md (permanent system rules)
+- Things already captured by `/remember` or extraction (project decisions,
+  research methodology, commitments)
+- Routine exchanges or acknowledgements
+- Entries longer than 2–3 lines — the scratchpad is terse
+
+### Format
+
+Append under the relevant section heading. Each entry is a dated bullet:
+
+```text
+- 2026-03-14: Shawn corrected X to Y — reason Z
+```
+
+### Maintenance
+
+Distilled during monthly `/retro`. Patterns get promoted to memories or
+CLAUDE.md rules. Stale entries are pruned. Target: ≤150 lines.
 
 ## Task System
 

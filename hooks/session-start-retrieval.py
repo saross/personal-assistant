@@ -31,6 +31,10 @@ from typing import Optional
 
 PA_DIR = Path.home() / "personal-assistant"
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
+SCRATCHPAD_FILE = PA_DIR / "data" / "scratchpad.md"
+
+# Scratchpad size threshold — warn when distillation is needed
+SCRATCHPAD_WARN_LINES = 150
 
 # How many days of recent memories to include
 RECENT_DAYS = 7
@@ -267,6 +271,37 @@ def format_context(
 
 
 # ============================================================================
+# Scratchpad
+# ============================================================================
+
+
+def load_scratchpad() -> str:
+    """
+    Load the scratchpad file for context injection.
+
+    Returns the file contents as a string, or empty string if the file
+    does not exist or is empty. Warns to stderr if the file exceeds
+    SCRATCHPAD_WARN_LINES, recommending distillation via /retro.
+    """
+    if not SCRATCHPAD_FILE.exists():
+        return ""
+
+    content = SCRATCHPAD_FILE.read_text().strip()
+    if not content:
+        return ""
+
+    line_count = len(content.splitlines())
+    if line_count > SCRATCHPAD_WARN_LINES:
+        print(
+            f"[scratchpad] {line_count} lines — consider running /retro "
+            f"to distil (threshold: {SCRATCHPAD_WARN_LINES})",
+            file=sys.stderr,
+        )
+
+    return content
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -313,12 +348,28 @@ def main() -> None:
     # Format context
     context = format_context(recent, permanent)
 
-    if not context:
+    # Load scratchpad (Claude's self-correction learning log)
+    scratchpad = load_scratchpad()
+
+    # Combine outputs — memories and scratchpad are independent sections
+    parts = []
+    if context:
+        parts.append(context)
+    if scratchpad:
+        parts.append(
+            "# Scratchpad\n\n"
+            "Claude's learning log — update during sessions when "
+            "corrections, preferences, or patterns are noticed.\n"
+            "Path: ~/personal-assistant/data/scratchpad.md\n\n"
+            + scratchpad
+        )
+
+    if not parts:
         sys.exit(0)
 
     # Inject into session context — plain text stdout is added as
     # additionalContext for SessionStart hooks
-    print(context)
+    print("\n\n".join(parts))
 
 
 if __name__ == "__main__":

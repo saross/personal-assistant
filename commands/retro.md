@@ -35,6 +35,7 @@ Read these sources:
 | `~/personal-assistant/tasks/SYSTEM.md` | Current parameters + adjustment history |
 | `~/personal-assistant/memories/memories.jsonl` | Memories in period, especially: `system_evolution`, `system_friction`, `system_success`, `slip`, `completion`, `blocker_real`, `blocker_excuse` |
 | `~/personal-assistant/standups/` | All standups from the month |
+| `~/personal-assistant/data/scratchpad.md` | Scratchpad entries since last distillation |
 
 ### 3. Calculate System Metrics
 
@@ -156,6 +157,21 @@ Examples:
   right system?"
 - "The retro is generating proposals. Are you acting on them?"]
 ```
+
+### 5b. Scratchpad Distillation
+
+Read `~/personal-assistant/data/scratchpad.md`.
+
+1. **Count lines** and report current size vs 150-line threshold.
+2. **Review each entry** and classify:
+   - **Promote** → durable pattern; create memory via `/remember`
+   - **Graduate** → permanent rule; propose addition to CLAUDE.md
+   - **Consolidate** → merge related entries into one sharper entry
+   - **Prune** → stale, superseded, or captured elsewhere; remove
+   - **Keep** → recent and actively useful; leave it
+3. **Present plan** to user for approval before making changes.
+4. **Update** `Last distilled:` date in the scratchpad header.
+5. **Target**: ≤80 lines after distillation.
 
 ### 6. Apply Parameter Changes
 
