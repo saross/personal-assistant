@@ -154,6 +154,13 @@ Which of these can you process or delete right now?
 [If any item is older than 7 days, flag it:]
 ⚠ [item] has been sitting here for [N] days. Process it or delete it — the inbox is not a parking lot.
 
+[When the user promotes an inbox item to focus, apply the same **scoping
+check** as `/focus add` — see that command for the full protocol. In
+brief: push back if the item is too broad (entire project or multi-week
+endeavour), too narrow (single action, better as a next-action), or has
+ambiguous completion criteria. A well-scoped focus item completes in
+roughly 3–10 working days.]
+
 ---
 
 ## Waiting For ([N] items)
@@ -189,6 +196,11 @@ Keep it to 3-4 lines. This is a daily micro-lesson, not a lecture.]
 
 Given the above, what are you *actually* going to do today?
 Not what you hope. What you're committing to.
+
+[If today is Friday, append:]
+
+📋 **Weekly review:** Run /review before you finish today. No weekly
+reviews have been completed yet — building this habit matters.
 ```
 
 ### 7. Escalation Commentary Examples
@@ -243,6 +255,17 @@ What's the plan to close it out?
 2. **Display** the full standup to the user
 3. **After displaying**, ask: "What's the honest answer to the hard question?"
 4. Then: "Given that, what's your one concrete commitment for today?"
+5. **After receiving commitments**, append them to the standup file under a
+   `### Commitments` heading (inside the `## Today` section). This is critical
+   — the standup file must be a complete record of what was discussed and
+   committed to, because the conversation session may end before `/recap` runs.
+   Format:
+   ```text
+   ### Commitments
+
+   1. [First commitment]
+   2. [Second commitment]
+   ```
 
 ## Notes
 

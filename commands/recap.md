@@ -172,6 +172,25 @@ Anything to add to the backlog based on today?
 If the user mentions tasks not in focus or backlog, offer to capture them
 to `tasks/backlog.md`.
 
+### 8. Weekly Review Reminder (Thursday/Friday only)
+
+If today is **Thursday**, add after the recap:
+
+```text
+📋 Weekly review reminder: Tomorrow is Friday — plan to run /review
+before end of day. Have you been doing weekly reviews?
+```
+
+If today is **Friday**, add after the recap:
+
+```text
+📋 Weekly review: Have you run /review this week? If not, now is a
+good time — it takes 10 minutes and the data is freshest while the
+week is still in your head.
+```
+
+Skip this step on all other days.
+
 ## Notes
 
 - **Tone is reflective**, not confrontational. `/standup` does accountability;

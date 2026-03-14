@@ -48,12 +48,50 @@ To add [new item], you must remove or pause one of these first.
 Use: /focus remove [item] or /focus swap [item] -> [new item]
 ```
 
-4. **If a slot is available**, ask the user for the required fields:
+4. **If a slot is available**, apply the **scoping check** before accepting:
+
+   Ask the user for the required fields:
    - **Item name:** An actionable task, not a project name (e.g., "Flinders onboarding presentation" not "EFN")
    - **Project:** Grouping tag (e.g., `research/llm-history-paper`, `business/fieldmark`)
    - **Deadline:** (date or "none")
    - **Why this matters:** (one sentence connecting to real stakes)
    - **Next action:** (the specific next thing to do)
+
+   **Scoping check:** Before writing to FOCUS.md, evaluate whether the
+   item is right-sized. A well-scoped focus item should be completable
+   in roughly 3–10 working days. Apply these checks:
+
+   - **Too broad?** If the item is an entire project or multi-week
+     endeavour (e.g., "write the paper", "EFN documentation"), push back:
+
+     ```text
+     "[item]" sounds like a project, not an actionable task. What's the
+     specific deliverable you'd finish first? For example:
+       - "Revise Section 4 Results" rather than "LLM-History-Paper"
+       - "Capture Notebook Editor screenshots" rather than "EFN documentation"
+     What's the concrete output you'd complete and move to done?
+     ```
+
+   - **Too narrow?** If it's a single action that would take less than
+     a day (e.g., "email Brian"), suggest capturing it as a next action
+     within an existing slot or an inbox item, not a focus slot.
+
+   - **Ambiguous completion criteria?** If you can't tell when it would
+     be "done", ask: "How will you know this is finished? What's the
+     deliverable?"
+
+   **Decomposition:** When a broad item is broken down, offer to add
+   sibling or child tasks to `~/personal-assistant/tasks/backlog.md`.
+   This keeps the full scope visible while focus tracks the immediate
+   deliverable. For example, decomposing "LLM-History-Paper revision"
+   might produce:
+   - **Focus:** "Cut Section 5 to 1,500 words"
+   - **Backlog:** "Cut Section 6 to 750 words", "Choose target journal",
+     "Final polish pass"
+
+   Accept the item only after the scoping check passes. If the user
+   insists on a broad item after pushback, accept it but note the
+   concern in the slot's "Why this matters" field.
 
 5. **Write** the item into the first empty slot in FOCUS.md using the format contract:
 
