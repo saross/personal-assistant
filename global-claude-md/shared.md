@@ -129,6 +129,64 @@ In this session we:
 - Before the user explicitly ends the session
 - When context window pressure suggests a fresh start would help
 
+## Memory System
+
+Memories are automatically extracted from sessions via hooks and stored
+in `~/personal-assistant/memories/memories.jsonl`.
+
+### Categories
+
+**Research (permanent):** methodology, ethics, provenance, hypothesis,
+limitation, openness, source_insight
+
+**LLM Research (permanent):** error_mode, surprise, self_reflection,
+prompt_effectiveness
+
+**Project (mixed):** decision (permanent), architecture (permanent),
+pattern (180d), gotcha (180d)
+
+**GTD:** commitment (30d after deadline), waiting_for (14d), contact
+(permanent)
+
+**Transient:** progress (30d), context (30d)
+
+**Retrospective (assigned during review, not extraction):** slip
+(permanent), completion (90d), blocker_real (30d), blocker_excuse
+(permanent)
+
+**System Adaptation:** system_evolution (permanent), system_friction
+(60d), system_success (90d)
+
+### Tag Guidelines
+
+- Use lowercase with hyphens: `gps-accuracy`, `field-method`,
+  `fair-principle`
+- Singular forms preferred (consolidate plurals in monthly gardening)
+- See `~/personal-assistant/memories/tag-vocabulary.txt` for seed
+  vocabulary
+
+### Memory Commands
+
+- `/recall [query]` — Search memories
+- `/remember [content]` — Manually capture a memory
+
+## Craft Notebook
+
+The `~/personal-assistant/notes/` directory is the user's personal craft
+notebook — practical learnings for the *user* to revisit, distinct from
+`memories/` which stores context for Claude.
+
+| File | Content |
+|------|---------|
+| `notes/llm-craft.md` | LLM interaction patterns, prompting techniques |
+| `notes/grimoire/` | Effective prompts with mechanism analysis (one file per prompt) |
+| `notes/working-practices.md` | Time management, focus, productivity |
+| `notes/coding-practices.md` | Tooling, debugging, dev environment |
+| `notes/general/` | General notes, reference material, observations (one file per note) |
+
+Use `/craft` for quick entries. Longer observations are discussed in
+conversation and added manually.
+
 ## Scratchpad
 
 `~/personal-assistant/data/scratchpad.md` is Claude's running learning log —
@@ -263,3 +321,54 @@ When uncertain, check the file size first. Small data files (<10 MB) are general
 - [ ] Comments added
 - [ ] No secrets in code
 - [ ] Commit message follows format
+
+## PostgreSQL Query Layer
+
+JSONL is canonical. PostgreSQL is a derived query layer for structured
+queries, full-text search, and tag analytics. It can be fully rebuilt
+from JSONL at any time.
+
+### Connection
+
+- **Database:** `claude_memories`
+- **Auth:** Peer authentication via unix socket (no password)
+- **Connection string:** `postgresql:///claude_memories`
+- **Python:** `psycopg2.connect(dbname="claude_memories")`
+
+### Scripts
+
+| Script | Purpose | Schedule |
+|--------|---------|----------|
+| `scripts/sync-to-postgres.py` | JSONL → PostgreSQL sync | Cron every 5 min |
+| `scripts/apply-decay.py` | Mark expired memories inactive | Weekly manual |
+| `scripts/rebuild-postgres.py` | Full rebuild from JSONL | As needed |
+| `scripts/schema.sql` | Database schema (tables, indexes, views) | One-time |
+
+All scripts are in `~/personal-assistant/scripts/`.
+
+### Useful Queries
+
+```sql
+-- Full-text search
+SELECT id, LEFT(content, 80), category FROM memories
+WHERE to_tsvector('english', content) @@ plainto_tsquery('english', 'search terms');
+
+-- Category breakdown
+SELECT category, COUNT(*) FROM memories GROUP BY category ORDER BY count DESC;
+
+-- Tag analytics (top tags)
+SELECT tag, COUNT(*) FROM memories, UNNEST(research_tags) AS tag
+GROUP BY tag ORDER BY count DESC LIMIT 15;
+
+-- Active memories (respects decay rules)
+SELECT * FROM active_memories WHERE category = 'decision' ORDER BY created_at DESC;
+
+-- Source breakdown
+SELECT source, COUNT(*) FROM memories GROUP BY source;
+```
+
+### Multi-Machine Setup
+
+PostgreSQL is local per machine. Each machine rebuilds from JSONL
+(git-tracked). Setup on a new machine: install PostgreSQL, apply schema,
+run `rebuild-postgres.py`.
