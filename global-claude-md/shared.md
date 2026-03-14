@@ -129,6 +129,43 @@ In this session we:
 - Before the user explicitly ends the session
 - When context window pressure suggests a fresh start would help
 
+## Scratchpad
+
+`~/personal-assistant/data/scratchpad.md` is Claude's running learning log —
+loaded every session via the startup hook. It captures corrections, preferences,
+and patterns that compound across sessions.
+
+### When to write
+
+- **Correction received**: Shawn corrects your output, approach, or assumption.
+  Record what was wrong and what was right.
+- **Preference discovered**: Something about how Shawn works that isn't in
+  CLAUDE.md yet.
+- **Approach succeeded or failed**: A technique that produced notably good or
+  poor results.
+- **Pattern noticed**: Recurring observation about session dynamics.
+
+### When NOT to write
+
+- Things that belong in CLAUDE.md (permanent system rules)
+- Things already captured by `/remember` or extraction (project decisions,
+  research methodology, commitments)
+- Routine exchanges or acknowledgements
+- Entries longer than 2–3 lines — the scratchpad is terse
+
+### Format
+
+Append under the relevant section heading. Each entry is a dated bullet:
+
+```text
+- 2026-03-14: Shawn corrected X to Y — reason Z
+```
+
+### Maintenance
+
+Distilled during monthly `/retro`. Patterns get promoted to memories or
+CLAUDE.md rules. Stale entries are pruned. Target: ≤150 lines.
+
 ## File Reorganisation Safeguards
 
 - When reorganising files or housekeeping after a major task is done, **archive** outdated or superseded files or completed checklists—do not delete them
