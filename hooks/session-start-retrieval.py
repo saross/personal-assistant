@@ -17,9 +17,16 @@ Retrieval strategy (project-aware, tag-relevance-scored):
   enables cross-project reasoning (e.g., a fieldmark decision relevant
   to paper methodology surfaces when working on the paper).
 
-  Slot allocation (46 total):
+  Constraint spotlight (Phase 1b): error_mode and prompt_effectiveness
+  memories get a dedicated retrieval pass and output section, separate
+  from the general permanent slots. This prevents them being crowded
+  out by the much larger decision/architecture pool. Constraints are
+  scored by tag overlap across all projects (no project boundary).
+
+  Slot allocation (54 total):
     Same-project: 15 recent + 20 permanent = 35
     Other-project: 3 recent + 8 permanent = 11
+    Constraints: 8 (error_mode + prompt_effectiveness)
 
 Note: commitment and waiting_for items are excluded — they duplicate
 the Task Status banner from the accountability hook.
@@ -56,11 +63,10 @@ PERMANENT_CATEGORIES = {
     "limitation",
     "openness",
     "source_insight",
-    # LLM Interaction Research
-    "error_mode",
+    # LLM Interaction Research (error_mode and prompt_effectiveness
+    # excluded — they flow through retrieve_constraints() exclusively)
     "surprise",
     "self_reflection",
-    "prompt_effectiveness",
     # Project / Architecture
     "decision",
     "architecture",
@@ -78,6 +84,13 @@ MAX_RECENT_SAME = 15
 MAX_RECENT_OTHER = 3
 MAX_PERMANENT_SAME = 20
 MAX_PERMANENT_OTHER = 8
+
+# Constraint spotlight — dedicated slots for error_mode/prompt_effectiveness
+# These categories are high-value for preventing repeated mistakes and
+# applying proven techniques, but get outnumbered by decisions/architecture
+# in the permanent slots. Dedicated retrieval guarantees visibility.
+CONSTRAINT_CATEGORIES = {"error_mode", "prompt_effectiveness"}
+MAX_CONSTRAINTS = 8
 
 # ============================================================================
 # Memory Loading
@@ -280,6 +293,52 @@ def retrieve_permanent(
     return merged
 
 
+def retrieve_constraints(
+    memories: list[dict],
+    already_ids: set[str],
+    current_project: Optional[str],
+    project_tags: Optional[set[str]] = None,
+) -> list[dict]:
+    """
+    Retrieve constraint-type memories for the dedicated spotlight section.
+
+    Constraints (error_mode, prompt_effectiveness) are cross-cutting —
+    a fieldmark API validation error_mode is relevant when working on
+    the paper if both share the 'validation' tag. Unlike retrieve_permanent,
+    there is no same-project/other-project split; all constraint memories
+    are scored uniformly by tag relevance regardless of origin project.
+
+    Args:
+        memories: Full list of loaded memories.
+        already_ids: IDs already selected by recent retrieval
+            (excluded to avoid duplication).
+        current_project: Derived project identifier from cwd.
+        project_tags: Tag profile from same-project memories.
+
+    Returns:
+        Up to MAX_CONSTRAINTS constraint memories, ranked by tag overlap
+        then recency.
+    """
+    _tags = project_tags or set()
+    candidates = []
+
+    for mem in memories:
+        if mem.get("category") not in CONSTRAINT_CATEGORIES:
+            continue
+        if mem.get("id") in already_ids:
+            continue
+        candidates.append(mem)
+
+    # Score by tag overlap (cross-cutting, ignores project boundary),
+    # then recency as tiebreaker
+    candidates.sort(
+        key=lambda m: (tag_overlap_score(m, _tags), _sort_key(m)),
+        reverse=True,
+    )
+
+    return candidates[:MAX_CONSTRAINTS]
+
+
 # ============================================================================
 # Formatting
 # ============================================================================
@@ -289,7 +348,7 @@ def format_memory(mem: dict) -> str:
     """Format a single memory for context injection."""
     category = mem.get("category", "unknown")
     confidence = mem.get("confidence", "medium")
-    content = mem.get("content", "")
+    content = mem.get("summary") or mem.get("content", "")
     tags = mem.get("research_tags") or []
     if isinstance(tags, str):
         tags = [tags]
@@ -305,6 +364,7 @@ def format_memory(mem: dict) -> str:
 def format_context(
     recent: list[dict],
     permanent: list[dict],
+    constraints: list[dict] | None = None,
 ) -> str:
     """Format all retrieved memories into a context string."""
     sections = []
@@ -312,13 +372,22 @@ def format_context(
     if recent:
         lines = [format_memory(m) for m in recent]
         sections.append(
-            "## Recent Memories (last 7 days)\n" + "\n".join(f"- {l}" for l in lines)
+            f"## Recent Memories (last 7 days) \u2014 {len(recent)} items\n"
+            + "\n".join(f"- {l}" for l in lines)
+        )
+
+    if constraints:
+        lines = [format_memory(m) for m in constraints]
+        sections.append(
+            f"## Relevant Constraints \u2014 {len(constraints)} items\n"
+            + "\n".join(f"- {l}" for l in lines)
         )
 
     if permanent:
         lines = [format_memory(m) for m in permanent]
         sections.append(
-            "## Key Decisions & Knowledge\n" + "\n".join(f"- {l}" for l in lines)
+            f"## Key Decisions & Knowledge \u2014 {len(permanent)} items\n"
+            + "\n".join(f"- {l}" for l in lines)
         )
 
     if not sections:
@@ -411,8 +480,15 @@ def main() -> None:
         memories, recent_ids, current_project, project_tags
     )
 
+    # Constraint spotlight — dedicated slots for error_mode/prompt_effectiveness
+    # (excluded from PERMANENT_CATEGORIES so they only appear here).
+    # Only exclude recent_ids to avoid duplication with the recent section.
+    constraints = retrieve_constraints(
+        memories, recent_ids, current_project, project_tags
+    )
+
     # Format context
-    context = format_context(recent, permanent)
+    context = format_context(recent, permanent, constraints)
 
     # Load scratchpad (Claude's self-correction learning log)
     scratchpad = load_scratchpad()

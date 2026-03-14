@@ -559,3 +559,425 @@ class TestScratchpadInOutput:
 
         assert "# Memory Context" in output
         assert "# Scratchpad" not in output
+
+
+# ============================================================================
+# Constraint Spotlight
+# ============================================================================
+
+
+class TestConstraintSpotlight:
+    """Tests for retrieve_constraints() — dedicated constraint retrieval."""
+
+    def _make_memory(
+        self, mem_id, project, category, tags, created_at
+    ):
+        """Helper to create a memory dict."""
+        return {
+            "id": mem_id,
+            "project": project,
+            "category": category,
+            "content": f"Memory {mem_id}",
+            "confidence": "high",
+            "research_tags": tags,
+            "created_at": created_at,
+        }
+
+    def test_retrieves_constraint_categories_only(self):
+        """Only error_mode and prompt_effectiveness memories are returned."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        memories = [
+            self._make_memory(
+                "err-1", "-home-shawn-paper", "error_mode",
+                ["validation"], (now - timedelta(days=5)).isoformat(),
+            ),
+            self._make_memory(
+                "prompt-1", "-home-shawn-paper", "prompt_effectiveness",
+                ["chain-of-thought"], (now - timedelta(days=3)).isoformat(),
+            ),
+            self._make_memory(
+                "decision-1", "-home-shawn-paper", "decision",
+                ["validation"], (now - timedelta(days=1)).isoformat(),
+            ),
+            self._make_memory(
+                "arch-1", "-home-shawn-paper", "architecture",
+                ["validation"], (now - timedelta(days=2)).isoformat(),
+            ),
+        ]
+
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper"
+        )
+
+        result_ids = {m["id"] for m in result}
+        assert result_ids == {"err-1", "prompt-1"}
+
+    def test_excludes_already_retrieved_ids(self):
+        """Memories already in recent/permanent are not duplicated."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        memories = [
+            self._make_memory(
+                "err-1", "-home-shawn-paper", "error_mode",
+                ["validation"], (now - timedelta(days=5)).isoformat(),
+            ),
+            self._make_memory(
+                "err-2", "-home-shawn-paper", "error_mode",
+                ["api"], (now - timedelta(days=3)).isoformat(),
+            ),
+        ]
+
+        # err-1 already retrieved by permanent retrieval
+        result = retrieval.retrieve_constraints(
+            memories, {"err-1"}, "-home-shawn-paper"
+        )
+
+        result_ids = {m["id"] for m in result}
+        assert result_ids == {"err-2"}
+
+    def test_scored_by_tag_overlap_across_projects(self):
+        """Constraints from any project are scored by tag overlap uniformly."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+
+        # Constraint from different project but with relevant tags
+        relevant_other = self._make_memory(
+            "other-relevant", "-home-shawn-fieldmark", "error_mode",
+            ["validation", "methodology"],
+            (now - timedelta(days=30)).isoformat(),
+        )
+        # Constraint from same project but with no tag overlap
+        irrelevant_same = self._make_memory(
+            "same-irrelevant", "-home-shawn-paper", "error_mode",
+            ["screenshots", "canvas"],
+            (now - timedelta(days=1)).isoformat(),
+        )
+
+        memories = [relevant_other, irrelevant_same]
+        project_tags = {"validation", "methodology", "llm-evaluation"}
+
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper", project_tags
+        )
+
+        # Both returned, but relevant-other should be first (higher tag overlap)
+        assert len(result) == 2
+        assert result[0]["id"] == "other-relevant"
+        assert result[1]["id"] == "same-irrelevant"
+
+    def test_respects_max_constraints_limit(self):
+        """Returns at most MAX_CONSTRAINTS memories."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+
+        # Create more constraints than MAX_CONSTRAINTS (5)
+        memories = []
+        for i in range(10):
+            memories.append(self._make_memory(
+                f"err-{i}", "-home-shawn-paper", "error_mode",
+                ["tag"], (now - timedelta(days=i)).isoformat(),
+            ))
+
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper"
+        )
+
+        assert len(result) == retrieval.MAX_CONSTRAINTS
+
+    def test_empty_when_no_constraint_memories(self):
+        """Returns empty list when no error_mode/prompt_effectiveness exist."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        memories = [
+            self._make_memory(
+                "dec-1", "-home-shawn-paper", "decision",
+                ["validation"], (now - timedelta(days=1)).isoformat(),
+            ),
+            self._make_memory(
+                "arch-1", "-home-shawn-paper", "architecture",
+                ["api"], (now - timedelta(days=2)).isoformat(),
+            ),
+        ]
+
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper"
+        )
+
+        assert result == []
+
+    def test_falls_back_to_recency_when_no_tags(self):
+        """Without project tags, constraints are sorted by recency only."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        old = self._make_memory(
+            "old", "-home-shawn-paper", "error_mode",
+            ["methodology"], (now - timedelta(days=30)).isoformat(),
+        )
+        new = self._make_memory(
+            "new", "-home-shawn-fieldmark", "prompt_effectiveness",
+            ["screenshots"], (now - timedelta(days=1)).isoformat(),
+        )
+
+        memories = [old, new]
+
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper", project_tags=set()
+        )
+
+        # Both score 0 on tag overlap, so recency wins
+        assert result[0]["id"] == "new"
+        assert result[1]["id"] == "old"
+
+    def test_constraints_section_in_output(self):
+        """Constraint memories produce a 'Relevant Constraints' section."""
+        constraints = [
+            {
+                "category": "error_mode",
+                "confidence": "high",
+                "content": "Always validate API response codes",
+                "research_tags": ["validation"],
+                "created_at": "2026-03-10T10:00:00+00:00",
+            },
+        ]
+
+        output = retrieval.format_context([], [], constraints=constraints)
+
+        assert "## Relevant Constraints" in output
+        assert "Always validate API response codes" in output
+
+    def test_constraints_positioned_between_recent_and_permanent(self):
+        """Constraints section appears after recent, before permanent."""
+        recent = [
+            {
+                "category": "progress",
+                "confidence": "high",
+                "content": "Recent progress entry",
+                "research_tags": [],
+                "created_at": "2026-03-14T10:00:00+00:00",
+            },
+        ]
+        constraints = [
+            {
+                "category": "error_mode",
+                "confidence": "high",
+                "content": "Constraint entry",
+                "research_tags": ["validation"],
+                "created_at": "2026-03-10T10:00:00+00:00",
+            },
+        ]
+        permanent = [
+            {
+                "category": "decision",
+                "confidence": "high",
+                "content": "Permanent decision entry",
+                "research_tags": [],
+                "created_at": "2026-03-01T10:00:00+00:00",
+            },
+        ]
+
+        output = retrieval.format_context(recent, permanent, constraints)
+
+        recent_pos = output.index("## Recent Memories")
+        constraint_pos = output.index("## Relevant Constraints")
+        permanent_pos = output.index("## Key Decisions & Knowledge")
+
+        assert recent_pos < constraint_pos < permanent_pos
+
+
+# ============================================================================
+# Constraint Consolidation
+# ============================================================================
+
+
+class TestConstraintConsolidation:
+    """Tests for constraint category exclusion from permanent retrieval."""
+
+    def _make_memory(
+        self, mem_id, project, category, tags, created_at
+    ):
+        """Helper to create a memory dict."""
+        return {
+            "id": mem_id,
+            "project": project,
+            "category": category,
+            "content": f"Memory {mem_id}",
+            "confidence": "high",
+            "research_tags": tags,
+            "created_at": created_at,
+        }
+
+    def test_constraint_categories_not_in_permanent_categories(self):
+        """error_mode and prompt_effectiveness are not in PERMANENT_CATEGORIES."""
+        assert "error_mode" not in retrieval.PERMANENT_CATEGORIES
+        assert "prompt_effectiveness" not in retrieval.PERMANENT_CATEGORIES
+
+    def test_permanent_excludes_constraint_categories(self):
+        """retrieve_permanent() does not return constraint-category memories."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        memories = [
+            self._make_memory(
+                "err-1", "-home-shawn-paper", "error_mode",
+                ["validation"], (now - timedelta(days=10)).isoformat(),
+            ),
+            self._make_memory(
+                "prompt-1", "-home-shawn-paper", "prompt_effectiveness",
+                ["chain-of-thought"], (now - timedelta(days=10)).isoformat(),
+            ),
+            self._make_memory(
+                "dec-1", "-home-shawn-paper", "decision",
+                ["architecture"], (now - timedelta(days=10)).isoformat(),
+            ),
+        ]
+
+        result = retrieval.retrieve_permanent(
+            memories, set(), "-home-shawn-paper"
+        )
+
+        result_cats = {m["category"] for m in result}
+        assert "decision" in result_cats
+        assert "error_mode" not in result_cats
+        assert "prompt_effectiveness" not in result_cats
+
+    def test_constraints_include_same_project_memories(self):
+        """Same-project constraint memories surface via retrieve_constraints."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        memories = [
+            self._make_memory(
+                "err-same", "-home-shawn-paper", "error_mode",
+                ["validation"], (now - timedelta(days=10)).isoformat(),
+            ),
+            self._make_memory(
+                "err-other", "-home-shawn-fieldmark", "error_mode",
+                ["api"], (now - timedelta(days=5)).isoformat(),
+            ),
+        ]
+
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper"
+        )
+
+        result_ids = {m["id"] for m in result}
+        assert "err-same" in result_ids
+        assert "err-other" in result_ids
+
+
+# ============================================================================
+# Section Headers
+# ============================================================================
+
+
+class TestSectionHeaders:
+    """Tests for item counts in section headers."""
+
+    def test_recent_header_includes_item_count(self):
+        """Recent section header shows item count."""
+        recent = [
+            {
+                "category": "progress",
+                "confidence": "high",
+                "content": f"Entry {i}",
+                "research_tags": [],
+                "created_at": "2026-03-14T10:00:00+00:00",
+            }
+            for i in range(3)
+        ]
+
+        output = retrieval.format_context(recent, [])
+        assert "\u2014 3 items" in output
+        assert "## Recent Memories" in output
+
+    def test_constraint_header_includes_item_count(self):
+        """Constraint section header shows item count."""
+        constraints = [
+            {
+                "category": "error_mode",
+                "confidence": "high",
+                "content": "Constraint entry",
+                "research_tags": ["validation"],
+                "created_at": "2026-03-10T10:00:00+00:00",
+            },
+        ]
+
+        output = retrieval.format_context([], [], constraints=constraints)
+        assert "\u2014 1 items" in output
+        assert "## Relevant Constraints" in output
+
+    def test_permanent_header_includes_item_count(self):
+        """Permanent section header shows item count."""
+        permanent = [
+            {
+                "category": "decision",
+                "confidence": "high",
+                "content": f"Decision {i}",
+                "research_tags": [],
+                "created_at": "2026-03-01T10:00:00+00:00",
+            }
+            for i in range(5)
+        ]
+
+        output = retrieval.format_context([], permanent)
+        assert "\u2014 5 items" in output
+        assert "## Key Decisions & Knowledge" in output
+
+
+# ============================================================================
+# Summary Display
+# ============================================================================
+
+
+class TestSummaryDisplay:
+    """Tests for summary-based display in format_memory()."""
+
+    def test_displays_summary_when_present(self):
+        """format_memory() uses summary field instead of content."""
+        mem = {
+            "category": "decision",
+            "confidence": "high",
+            "content": "This is a very long content string that goes on "
+                       "and on with lots of detail about the decision.",
+            "summary": "Chose PostgreSQL for full-text search.",
+            "research_tags": ["architecture"],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+
+        result = retrieval.format_memory(mem)
+        assert "Chose PostgreSQL for full-text search." in result
+        assert "very long content string" not in result
+
+    def test_falls_back_to_content_when_no_summary(self):
+        """format_memory() uses content when summary is absent."""
+        mem = {
+            "category": "decision",
+            "confidence": "high",
+            "content": "Use JSONL for storage.",
+            "research_tags": [],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+
+        result = retrieval.format_memory(mem)
+        assert "Use JSONL for storage." in result
+
+    def test_falls_back_when_summary_is_empty_string(self):
+        """format_memory() falls back to content when summary is empty."""
+        mem = {
+            "category": "decision",
+            "confidence": "high",
+            "content": "Fallback content here.",
+            "summary": "",
+            "research_tags": [],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+
+        result = retrieval.format_memory(mem)
+        assert "Fallback content here." in result
