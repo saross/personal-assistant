@@ -6,14 +6,20 @@ Fires at the beginning of each session (startup, resume, clear, compact).
 Reads the canonical memories.jsonl and injects relevant memories into
 Claude's context via the additionalContext field.
 
-Retrieval strategy (project-aware):
+Retrieval strategy (project-aware, tag-relevance-scored):
   Memories are split into same-project and other-project buckets.
   Same-project memories (including legacy memories with no project field)
   get more slots than other-project memories.
 
-  Slot allocation (40 total):
+  Cross-project memories are ranked by tag overlap with the current
+  project's tag profile — memories sharing tags with same-project
+  memories are surfaced first, with recency as a tiebreaker. This
+  enables cross-project reasoning (e.g., a fieldmark decision relevant
+  to paper methodology surfaces when working on the paper).
+
+  Slot allocation (46 total):
     Same-project: 15 recent + 20 permanent = 35
-    Other-project: 2 recent + 3 permanent = 5
+    Other-project: 3 recent + 8 permanent = 11
 
 Note: commitment and waiting_for items are excluded — they duplicate
 the Task Status banner from the accountability hook.
@@ -67,11 +73,11 @@ PERMANENT_CATEGORIES = {
     "system_evolution",
 }
 
-# Project-aware slot allocation
+# Project-aware slot allocation (tag-relevance-scored for cross-project)
 MAX_RECENT_SAME = 15
-MAX_RECENT_OTHER = 2
+MAX_RECENT_OTHER = 3
 MAX_PERMANENT_SAME = 20
-MAX_PERMANENT_OTHER = 3
+MAX_PERMANENT_OTHER = 8
 
 # ============================================================================
 # Memory Loading
@@ -137,6 +143,45 @@ def is_same_project(mem: dict, current_project: Optional[str]) -> bool:
     return mem_project == current_project
 
 
+def collect_project_tags(
+    memories: list[dict],
+    current_project: Optional[str],
+) -> set[str]:
+    """
+    Collect all tags from same-project memories to build a relevance profile.
+
+    Used for scoring cross-project memories by tag overlap — memories
+    sharing tags with the current project's corpus are more likely to
+    be relevant even though they belong to a different project.
+    """
+    tags: set[str] = set()
+    for mem in memories:
+        if not is_same_project(mem, current_project):
+            continue
+        mem_tags = mem.get("research_tags") or []
+        if isinstance(mem_tags, str):
+            mem_tags = [mem_tags]
+        tags.update(str(t).lower() for t in mem_tags)
+    return tags
+
+
+def tag_overlap_score(mem: dict, project_tags: set[str]) -> int:
+    """
+    Score a memory by how many of its tags overlap with the project tag set.
+
+    Returns the count of overlapping tags. Zero means no tag relevance
+    to the current project. When project_tags is empty, always returns 0
+    (falls back to recency-only sorting).
+    """
+    if not project_tags:
+        return 0
+    mem_tags = mem.get("research_tags") or []
+    if isinstance(mem_tags, str):
+        mem_tags = [mem_tags]
+    mem_tag_set = {str(t).lower() for t in mem_tags}
+    return len(mem_tag_set & project_tags)
+
+
 # ============================================================================
 # Retrieval Logic
 # ============================================================================
@@ -151,12 +196,14 @@ def retrieve_recent(
     memories: list[dict],
     cutoff: datetime,
     current_project: Optional[str],
+    project_tags: Optional[set[str]] = None,
 ) -> list[dict]:
     """
     Get memories from the last N days, split by project affinity.
 
     Same-project memories (including legacy) get MAX_RECENT_SAME slots.
-    Other-project memories get MAX_RECENT_OTHER slots.
+    Other-project memories get MAX_RECENT_OTHER slots, ranked by tag
+    overlap with the current project's tag profile (recency as tiebreaker).
     Returns the merged list, sorted most-recent first.
     """
     same = []
@@ -172,7 +219,13 @@ def retrieve_recent(
             other.append(mem)
 
     same.sort(key=_sort_key, reverse=True)
-    other.sort(key=_sort_key, reverse=True)
+
+    # Cross-project: prefer tag-relevant memories, recency as tiebreaker
+    _tags = project_tags or set()
+    other.sort(
+        key=lambda m: (tag_overlap_score(m, _tags), _sort_key(m)),
+        reverse=True,
+    )
 
     # Let same-project absorb unused other-project slots (and vice versa)
     # so total capacity is preserved when one bucket is underutilised
@@ -187,13 +240,15 @@ def retrieve_permanent(
     memories: list[dict],
     recent_ids: set[str],
     current_project: Optional[str],
+    project_tags: Optional[set[str]] = None,
 ) -> list[dict]:
     """
     Get permanent high-value memories not already in the recent list,
     split by project affinity.
 
     Same-project memories get MAX_PERMANENT_SAME slots.
-    Other-project memories get MAX_PERMANENT_OTHER slots.
+    Other-project memories get MAX_PERMANENT_OTHER slots, ranked by
+    tag overlap with the current project (recency as tiebreaker).
     Unused other-project slots overflow to same-project.
     """
     same = []
@@ -210,7 +265,13 @@ def retrieve_permanent(
             other.append(mem)
 
     same.sort(key=_sort_key, reverse=True)
-    other.sort(key=_sort_key, reverse=True)
+
+    # Cross-project: prefer tag-relevant memories, recency as tiebreaker
+    _tags = project_tags or set()
+    other.sort(
+        key=lambda m: (tag_overlap_score(m, _tags), _sort_key(m)),
+        reverse=True,
+    )
 
     other_take = other[:MAX_PERMANENT_OTHER]
     same_limit = MAX_PERMANENT_SAME + (MAX_PERMANENT_OTHER - len(other_take))
@@ -229,7 +290,7 @@ def format_memory(mem: dict) -> str:
     category = mem.get("category", "unknown")
     confidence = mem.get("confidence", "medium")
     content = mem.get("content", "")
-    tags = mem.get("research_tags", [])
+    tags = mem.get("research_tags") or []
     if isinstance(tags, str):
         tags = [tags]
     created = mem.get("created_at", "")[:10]  # Just the date
@@ -336,14 +397,19 @@ def main() -> None:
         # No memories yet — output nothing
         sys.exit(0)
 
-    # Retrieve relevant memories with project-aware bucketing
+    # Build tag profile from same-project memories for cross-project relevance
+    project_tags = collect_project_tags(memories, current_project)
+
+    # Retrieve relevant memories with project-aware, tag-relevance bucketing
     cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_DAYS)
-    recent = retrieve_recent(memories, cutoff, current_project)
+    recent = retrieve_recent(memories, cutoff, current_project, project_tags)
 
     # Track IDs actually included in recent so permanent retrieval
     # fills gaps correctly
     recent_ids = {m.get("id") for m in recent if m.get("id")}
-    permanent = retrieve_permanent(memories, recent_ids, current_project)
+    permanent = retrieve_permanent(
+        memories, recent_ids, current_project, project_tags
+    )
 
     # Format context
     context = format_context(recent, permanent)
