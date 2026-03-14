@@ -195,8 +195,10 @@ and patterns that compound across sessions.
 
 ### When to write
 
-- **Correction received**: Shawn corrects your output, approach, or assumption.
-  Record what was wrong and what was right.
+- **Constraint articulated**: Shawn corrects your output, approach, or assumption.
+  Record the *rule or principle* he articulated, not just the error. These are
+  the highest-value entries — they compound across sessions. Frame as "the rule
+  is X" not "I got Y wrong."
 - **Preference discovered**: Something about how Shawn works that isn't in
   CLAUDE.md yet.
 - **Approach succeeded or failed**: A technique that produced notably good or
