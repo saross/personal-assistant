@@ -18,11 +18,93 @@ working directory** — the project you have been working in during this session
    project. State it explicitly at the start of the reflection (e.g., "Reflecting
    on session work in map-reader-llm").
 2. **Locate reflection docs**: Look for `docs/notes/reflections/` relative to
-   the project root. If this directory does not exist, inform the user and offer
-   to create the initial structure.
+   the project root. If this directory does not exist, create the initial
+   structure using the starter templates below.
 3. **Tag output**: When writing reflection entries, include the project name and
    session date in the entry header so entries are unambiguous even if read out
    of context.
+
+## Initial Structure (new projects)
+
+When `docs/notes/reflections/` does not exist, create it and populate it
+in two tiers.
+
+### Always create
+
+These documents are created automatically:
+
+**`session-reflection.md`** (priority 1, scope: always):
+
+```yaml
+---
+priority: 1
+scope: always
+title: "Session Reflection"
+audience: "researchers and future instances"
+---
+```
+
+Purpose: End-of-session reflection on the texture, dynamics, and
+significance of the session. Uses the prompt pool defined below.
+
+**`session-log.md`** (priority 5, scope: always):
+
+```yaml
+---
+priority: 5
+scope: always
+title: "Session Log"
+audience: "researchers and future instances"
+---
+```
+
+Purpose: Factual record of what was done, decided, and produced.
+Summarise, don't reflect — that's what session-reflection.md is for.
+
+### Always ask
+
+After creating the core documents, ask the user whether they want
+these additional documents. Briefly explain what each one does.
+
+**`abductive-reasoning.md`** (priority 3, scope: conditional):
+
+```yaml
+---
+priority: 3
+scope: conditional
+title: "Abductive Reasoning Investigation"
+audience: "researchers and future instances"
+conditions: "Update when the session produced a surprising finding,
+  a belief revision, or a hypothesis that was tested and either
+  confirmed or disconfirmed."
+---
+```
+
+Purpose: Captures surprising-fact → probe → belief-revision sequences.
+Part of an ongoing cross-project research investigation into AI
+reasoning patterns. Only updated when the session produced genuinely
+surprising findings — the conditional trigger keeps entries sharp.
+
+**`working-notes.md`** (priority 4, scope: always):
+
+```yaml
+---
+priority: 4
+scope: always
+title: "Working Notes"
+audience: "researchers and future instances"
+---
+```
+
+Purpose: Running observations, methodological notes, and analytical
+findings that emerge during the project. More structured than session
+reflections, less formal than papers or reports.
+
+### Never create automatically
+
+Domain-specific documents (e.g., `llm-observations.md` for LLM research
+projects) should not be created from templates. Let these emerge from
+the work when the user recognises a need.
 
 ## Important: Instance Boundary
 
