@@ -516,8 +516,8 @@ output needs.
 - [x] `untagged_sessions` and `session_costs` views created
 - [x] Tests: 24 new tests (176 total), all passing
 - [x] Settings.json tracked in public repo with symlink from `~/.claude/settings.json`
-- [ ] Add `cc-session search` CLI subcommand (deferred to follow-up session)
-- [ ] Add `cc-session untagged` CLI subcommand (deferred to follow-up session)
+- [x] Add `cc-session search` CLI subcommand (2026-03-15) — FTS with --project, --since, --before, --limit
+- [x] Add `cc-session untagged` CLI subcommand (2026-03-15) — queries untagged_sessions view, --count mode
 
 ### Phase 3: Enrichment Workflow
 
