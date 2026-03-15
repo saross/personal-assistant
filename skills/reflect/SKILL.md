@@ -37,15 +37,39 @@ plausible reconstructions from summaries.
 Process all `.md` files in the reflections directory (`docs/notes/reflections/`), sorted by
 the `priority` field in their YAML frontmatter (lowest number = highest priority).
 
-For each document: **read it first** to understand the current structure, entry
-numbering, and conventions, then append a new dated section continuing the established
-format.
+For each document: **read it first** to understand numbering and context. Then
+append a new dated section that responds to what was distinctive about *this*
+session. Do not replicate the structural template of previous entries — let
+the content determine the form.
 
 ### Conditional documents
 
 Some documents have `scope: conditional` in their frontmatter with a `conditions` field
 describing when they should be updated. For these documents, evaluate whether the current
 session meets the conditions. If not, explicitly state the assessment and skip.
+
+### Session reflection prompts
+
+When writing the session reflection (priority 1 document), select 2–3 prompts
+from this pool based on what is most relevant to the session. Do not use all
+prompts every time. Do not impose a fixed structure — let the prompts guide
+freeform reflection.
+
+**Core pool** (use at least one):
+
+- What surprised you about this session?
+- What would you do differently if you replayed this session?
+- What question emerged that wasn't pursued?
+
+**When relevant** (use if applicable):
+
+- What felt uncertain or unresolved at the end?
+- What was different about this session compared to recent ones?
+- Where did you and the human disagree, and who was right?
+- What's the single most important thing a future instance should know?
+
+**Avoid**: Enumerated lists of "what X brought." If both parties' contributions
+matter, weave them into the narrative rather than listing them separately.
 
 ## Standards
 
@@ -54,3 +78,7 @@ session meets the conditions. If not, explicitly state the assessment and skip.
 - Continue existing numbering sequences (do not restart)
 - Include dated section headers matching the established format
 - Update document footers/timestamps where they exist
+- Footer fields (texture, engagement level, relational note) are optional.
+  Only include a field when it discriminates — if engagement is always
+  "High," omit it. If nothing notable happened relationally, skip the
+  relational note.
