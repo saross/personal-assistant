@@ -1,6 +1,6 @@
 # Session Archiving Redesign
 
-**Status:** Planning
+**Status:** Phase 1 ready to implement (Phases 4-5 partially superseded by memory system Phase 1c)
 **Created:** 2026-02-15
 **Context:** Weekend infrastructure review of cc-session-toolkit archiving system
 
@@ -523,13 +523,18 @@ output needs.
 
 ### Phase 4: Progressive Disclosure Memory (Levels 1 & 2)
 
-- [ ] Add `summary` field to extraction prompt (one sentence, ≤80 chars)
-- [ ] Add `summary` and `source_messages` columns to PostgreSQL schema
+**Partially superseded by memory system Phase 1c (2026-03-15).**
+Summary field, extraction-time generation, and backfill are done.
+Remaining items below are incremental improvements.
+
+- [x] Add `summary` field to extraction prompt — done (Phase 1c, ≤150 chars)
+- [x] Add `summary` column to PostgreSQL schema — done (Phase 1c)
+- [x] Batch-generate summaries for existing memories — done (7,752 backfilled)
+- [ ] Add `source_messages` column to PostgreSQL schema
 - [ ] Modify session-start hook: compact Level 1 format, category-grouped
 - [ ] Add PostgreSQL availability check at session start (fallback to JSONL)
 - [ ] Implement Level 2 retrieval mechanism (psql query or JSONL grep)
 - [ ] Add explicit retrieval announcement ("retrieving memories about [topic]")
-- [ ] Batch-generate summaries for existing ~3,600 memories (Haiku or local)
 - [ ] Test: compare Level 1 awareness coverage vs current flat injection
 - [ ] Tune Level 2 retrieval count (start at 5-10, adjust based on usage)
 
