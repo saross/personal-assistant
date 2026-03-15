@@ -180,3 +180,112 @@ WHERE m.category = 'source_insight'
     FROM sync_state
     WHERE sync_type = 'postgres_to_zotero'
   );
+
+-- ============================================================================
+-- Sessions table (Phase 2)
+-- ============================================================================
+-- Stores metadata from archived Claude Code sessions. Canonical source
+-- is session.meta.json in ~/cc-archives/; this table is a derived query
+-- layer for full-text search and cross-project discovery.
+
+CREATE TABLE IF NOT EXISTS sessions (
+    -- Identity
+    id TEXT PRIMARY KEY,           -- UUID from session.meta.json → session.id
+    project TEXT NOT NULL,         -- e.g. "personal-assistant"
+    project_directory TEXT,        -- e.g. "/home/shawn/personal-assistant"
+
+    -- Auto-generated metadata (from Haiku API)
+    title TEXT,
+    purpose TEXT,
+    tags TEXT[] DEFAULT '{}',
+
+    -- Timestamps
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    duration_minutes INTEGER,
+
+    -- Model
+    model_provider TEXT,           -- e.g. "anthropic"
+    model_id TEXT,                 -- e.g. "claude-opus-4-6"
+
+    -- Statistics
+    turns INTEGER,
+    human_messages INTEGER,
+    assistant_messages INTEGER,
+    thinking_blocks INTEGER,
+    tool_calls INTEGER,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    tokens_cache_read INTEGER,
+    tokens_cache_creation INTEGER,
+    estimated_cost_usd NUMERIC(10, 4),
+
+    -- Three Ps (Prompt, Process, Provenance)
+    prompt_summary TEXT,
+    process_summary TEXT,
+    provenance_summary TEXT,
+
+    -- Archive info
+    archive_path TEXT,             -- Filesystem path to session directory
+    capture_type TEXT,             -- "session_end" or "pre_compact"
+
+    -- Full metadata for fields not broken out into columns
+    raw_metadata JSONB,
+
+    -- Review workflow
+    needs_review BOOLEAN DEFAULT TRUE,
+    is_active BOOLEAN DEFAULT TRUE,
+
+    -- Sync tracking
+    synced_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================================
+-- Session indexes
+-- ============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_tags ON sessions USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_sessions_model ON sessions(model_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_capture_type ON sessions(capture_type);
+CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(is_active)
+    WHERE is_active = TRUE;
+
+-- Full-text search across title, purpose, and prompt summary
+CREATE INDEX IF NOT EXISTS idx_sessions_fts ON sessions USING GIN(
+    to_tsvector('english',
+        COALESCE(title, '') || ' ' ||
+        COALESCE(purpose, '') || ' ' ||
+        COALESCE(prompt_summary, ''))
+);
+
+-- ============================================================================
+-- Session views
+-- ============================================================================
+
+-- Sessions needing manual review (Three Ps enrichment, tagging)
+CREATE OR REPLACE VIEW untagged_sessions AS
+SELECT id, project, title, started_at, duration_minutes, capture_type
+FROM sessions
+WHERE needs_review = TRUE AND is_active = TRUE
+ORDER BY started_at DESC;
+
+-- Session cost summary by project
+CREATE OR REPLACE VIEW session_costs AS
+SELECT
+    project,
+    COUNT(*) AS session_count,
+    SUM(duration_minutes) AS total_minutes,
+    SUM(estimated_cost_usd) AS total_cost_usd,
+    AVG(estimated_cost_usd) AS avg_cost_usd,
+    SUM(tokens_input + tokens_output) AS total_tokens
+FROM sessions
+WHERE is_active = TRUE
+GROUP BY project
+ORDER BY total_cost_usd DESC;
+
+-- Add sync state entry for session sync
+INSERT INTO sync_state (sync_type, last_position) VALUES
+    ('sessions_to_postgres', '2000-01-01T00:00:00Z')
+ON CONFLICT (sync_type) DO NOTHING;

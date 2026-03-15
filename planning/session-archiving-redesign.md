@@ -507,13 +507,17 @@ output needs.
 - [x] Configure dual hooks in `~/.claude/settings.json` — SessionEnd + PreCompact, both async with 120s timeout
 - [ ] Test: verify archives appear after session end and compaction (will validate on next session close)
 
-### Phase 2: PostgreSQL Integration
+### Phase 2: PostgreSQL Integration (2026-03-15)
 
-- [ ] Extend `scripts/schema.sql` with sessions table
-- [ ] Extend `scripts/sync-to-postgres.py` to sync session metadata
-- [ ] Add `cc-session search` command
-- [ ] Add `cc-session untagged` command
-- [ ] Test: verify cross-project full-text search works
+- [x] Extend `scripts/schema.sql` with sessions table (with `raw_metadata JSONB`, cache token columns, `capture_type`)
+- [x] New `scripts/sync-sessions-to-postgres.py` — walks `~/cc-archives/` for `session.meta.json`, upserts into sessions table
+- [x] Hook wiring — chained sync after archive via `&&` in SessionEnd + PreCompact hooks
+- [x] `/recall` extended with session search section (PostgreSQL full-text search, graceful fallback)
+- [x] `untagged_sessions` and `session_costs` views created
+- [x] Tests: 24 new tests (176 total), all passing
+- [x] Settings.json tracked in public repo with symlink from `~/.claude/settings.json`
+- [ ] Add `cc-session search` CLI subcommand (deferred to follow-up session)
+- [ ] Add `cc-session untagged` CLI subcommand (deferred to follow-up session)
 
 ### Phase 3: Enrichment Workflow
 

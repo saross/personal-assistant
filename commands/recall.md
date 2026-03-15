@@ -1,6 +1,7 @@
-# /recall — Search Memories
+# /recall — Search Memories and Sessions
 
-Search the memory system for specific topics, decisions, or insights.
+Search the memory system and archived sessions for specific topics, decisions,
+or insights.
 
 ## Usage
 
@@ -101,9 +102,74 @@ Do not return empty results silently.
 /recall recent
 ```
 
+## Session Search
+
+When a free-text query is provided, **also search the sessions table** in PostgreSQL
+for matching archived sessions. This surfaces relevant past sessions alongside
+memory results.
+
+### How to search sessions
+
+Run a `psql` command via Bash:
+
+```bash
+psql -d claude_memories -t -A -F '|' -c "
+SELECT id, project, title, started_at::date, duration_minutes
+FROM sessions
+WHERE to_tsvector('english',
+    COALESCE(title, '') || ' ' ||
+    COALESCE(purpose, '') || ' ' ||
+    COALESCE(prompt_summary, ''))
+  @@ plainto_tsquery('english', 'QUERY_HERE')
+AND is_active = TRUE
+ORDER BY started_at DESC
+LIMIT 5;
+"
+```
+
+### Display format
+
+If sessions match, show them **after** the memory results in a separate section:
+
+```text
+### Related Sessions
+
+project — title — date — duration
+project — title — date — duration
+```
+
+### When to include session search
+
+- **Include**: When the user provides a free-text query (`/recall PostgreSQL`, `/recall GPS accuracy`)
+- **Skip**: When using `category:` or `tag:` filters (these are memory-specific)
+- **Skip**: When using bare `/recall` (statistics mode) or `/recall recent`
+- **Graceful fallback**: If `psql` fails (PostgreSQL not running), silently skip
+  session results — do not show an error. Memories from JSONL are always available.
+
+### No arguments: include session statistics
+
+When `/recall` is invoked with no arguments, add a session statistics line after
+the memory statistics:
+
+```bash
+psql -d claude_memories -t -A -c "
+SELECT COUNT(*), COALESCE(SUM(duration_minutes), 0),
+       ROUND(COALESCE(SUM(estimated_cost_usd), 0)::numeric, 2)
+FROM sessions WHERE is_active = TRUE;
+"
+```
+
+Display as:
+
+```text
+### Sessions
+
+[N] archived sessions ([M] total minutes, $[X] estimated cost)
+```
+
 ## Notes
 
-- This reads the JSONL file directly — no database required
+- Memory search reads the JSONL file directly — no database required
+- Session search requires PostgreSQL (gracefully skipped if unavailable)
 - All memories are searched, including decayed categories (the file is canonical)
 - If memories.jsonl is empty, say so and suggest using `/remember` to capture something
-- For fuzzy/semantic search, PostgreSQL full-text search will be available in Phase 2
