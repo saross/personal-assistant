@@ -251,9 +251,10 @@ class TestCrossProjectRelevance:
         now = datetime.now(timezone.utc)
         current_project = "-home-shawn-paper"
 
-        # Create more cross-project memories than MAX_PERMANENT_OTHER (8)
+        # Create more cross-project memories than MAX_PERMANENT_OTHER
+        limit = retrieval.MAX_PERMANENT_OTHER
         memories = []
-        for i in range(12):
+        for i in range(limit + 5):
             tags = ["methodology"] if i < 5 else ["unrelated"]
             memories.append(self._make_memory(
                 f"mem-{i}", "-home-shawn-other", "decision",
@@ -267,8 +268,8 @@ class TestCrossProjectRelevance:
             memories, set(), current_project, project_tags
         )
 
-        # Should have 8 (MAX_PERMANENT_OTHER)
-        assert len(result) == 8
+        # Should have MAX_PERMANENT_OTHER
+        assert len(result) == limit
 
         # The 5 relevant ones (methodology tag) should all be included
         result_ids = {m["id"] for m in result}
@@ -313,9 +314,10 @@ class TestCrossProjectRelevance:
         cutoff = now - timedelta(days=7)
         current_project = "-home-shawn-paper"
 
-        # 5 recent cross-project memories, only 3 slots available
+        # Create more recent cross-project memories than available slots
+        limit = retrieval.MAX_RECENT_OTHER
         memories = []
-        for i in range(5):
+        for i in range(limit + 3):
             tags = ["methodology"] if i < 2 else ["unrelated"]
             memories.append(self._make_memory(
                 f"recent-{i}", "-home-shawn-other", "progress",
@@ -329,10 +331,10 @@ class TestCrossProjectRelevance:
             memories, cutoff, current_project, project_tags
         )
 
-        # Should take MAX_RECENT_OTHER (3)
-        assert len(result) == 3
+        # Should take MAX_RECENT_OTHER
+        assert len(result) == limit
 
-        # The 2 relevant ones should be included
+        # The 2 relevant ones (methodology tag) should be included
         result_ids = {m["id"] for m in result}
         assert "recent-0" in result_ids
         assert "recent-1" in result_ids
@@ -981,3 +983,81 @@ class TestSummaryDisplay:
 
         result = retrieval.format_memory(mem)
         assert "Fallback content here." in result
+
+
+# ============================================================================
+# Compact Level 1 Format
+# ============================================================================
+
+
+class TestCompactFormat:
+    """Tests for compact Level 1 memory format (Phase 4)."""
+
+    def _make_mem(self, **overrides):
+        """Helper to create a memory dict with defaults."""
+        mem = {
+            "category": "decision",
+            "confidence": "high",
+            "content": "Full content text here.",
+            "summary": "Chose PostgreSQL for search.",
+            "research_tags": ["architecture", "system-design"],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+        mem.update(overrides)
+        return mem
+
+    def test_excludes_confidence(self):
+        """Confidence level is not shown in compact format."""
+        result = retrieval.format_memory(self._make_mem())
+        assert "(high" not in result
+        assert "high," not in result
+
+    def test_date_at_end(self):
+        """Date appears at the end in brackets."""
+        result = retrieval.format_memory(self._make_mem())
+        assert result.endswith("[2026-03-10]")
+
+    def test_no_tags_prefix(self):
+        """Tags appear after pipe without 'tags:' label."""
+        result = retrieval.format_memory(self._make_mem())
+        assert "tags:" not in result.lower()
+        assert "| architecture, system-design" in result
+
+    def test_tagless_memory_no_trailing_pipe(self):
+        """Memory with no tags has no pipe or trailing space."""
+        mem = self._make_mem(research_tags=[])
+        result = retrieval.format_memory(mem)
+        assert "|" not in result
+        assert result.endswith("[2026-03-10]")
+
+    def test_category_prefix_retained(self):
+        """Category prefix is still present for scanning."""
+        result = retrieval.format_memory(self._make_mem())
+        assert result.startswith("[decision]")
+
+    def test_summary_is_primary_content(self):
+        """Summary is shown, not full content."""
+        result = retrieval.format_memory(self._make_mem())
+        assert "Chose PostgreSQL for search." in result
+        assert "Full content text here." not in result
+
+    def test_level2_instruction_in_header(self):
+        """format_context() header includes /recall instruction."""
+        recent = [{
+            "category": "progress",
+            "confidence": "high",
+            "content": "Test",
+            "research_tags": [],
+            "created_at": "2026-03-14T10:00:00+00:00",
+        }]
+        output = retrieval.format_context(recent, [])
+        assert "/recall" in output
+        assert "full memory content" in output
+
+    def test_increased_slot_allocation(self):
+        """Slot constants reflect Phase 4 increase."""
+        assert retrieval.MAX_RECENT_SAME == 25
+        assert retrieval.MAX_RECENT_OTHER == 5
+        assert retrieval.MAX_PERMANENT_SAME == 35
+        assert retrieval.MAX_PERMANENT_OTHER == 15
+        assert retrieval.MAX_CONSTRAINTS == 10

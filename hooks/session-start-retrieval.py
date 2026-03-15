@@ -23,10 +23,10 @@ Retrieval strategy (project-aware, tag-relevance-scored):
   out by the much larger decision/architecture pool. Constraints are
   scored by tag overlap across all projects (no project boundary).
 
-  Slot allocation (54 total):
-    Same-project: 15 recent + 20 permanent = 35
-    Other-project: 3 recent + 8 permanent = 11
-    Constraints: 8 (error_mode + prompt_effectiveness)
+  Slot allocation (90 total):
+    Same-project: 25 recent + 35 permanent = 60
+    Other-project: 5 recent + 15 permanent = 20
+    Constraints: 10 (error_mode + prompt_effectiveness)
 
 Note: commitment and waiting_for items are excluded — they duplicate
 the Task Status banner from the accountability hook.
@@ -79,18 +79,20 @@ PERMANENT_CATEGORIES = {
     "system_evolution",
 }
 
-# Project-aware slot allocation (tag-relevance-scored for cross-project)
-MAX_RECENT_SAME = 15
-MAX_RECENT_OTHER = 3
-MAX_PERMANENT_SAME = 20
-MAX_PERMANENT_OTHER = 8
+# Project-aware slot allocation (tag-relevance-scored for cross-project).
+# Compact Level 1 format allows higher slot counts within similar
+# attention budget (~1,300 tokens for 90 memories at ~0.13% of 1M context).
+MAX_RECENT_SAME = 25
+MAX_RECENT_OTHER = 5
+MAX_PERMANENT_SAME = 35
+MAX_PERMANENT_OTHER = 15
 
 # Constraint spotlight — dedicated slots for error_mode/prompt_effectiveness
 # These categories are high-value for preventing repeated mistakes and
 # applying proven techniques, but get outnumbered by decisions/architecture
 # in the permanent slots. Dedicated retrieval guarantees visibility.
 CONSTRAINT_CATEGORIES = {"error_mode", "prompt_effectiveness"}
-MAX_CONSTRAINTS = 8
+MAX_CONSTRAINTS = 10
 
 # ============================================================================
 # Memory Loading
@@ -345,18 +347,26 @@ def retrieve_constraints(
 
 
 def format_memory(mem: dict) -> str:
-    """Format a single memory for context injection."""
+    """
+    Format a single memory as a compact Level 1 index entry.
+
+    Compact format prioritises content-first reading flow:
+    ``[category] summary | tag1, tag2 [YYYY-MM-DD]``
+
+    Confidence is omitted (available via ``/recall``).
+    """
     category = mem.get("category", "unknown")
-    confidence = mem.get("confidence", "medium")
     content = mem.get("summary") or mem.get("content", "")
     tags = mem.get("research_tags") or []
     if isinstance(tags, str):
         tags = [tags]
     created = mem.get("created_at", "")[:10]  # Just the date
 
-    line = f"[{category}] ({confidence}, {created}) {content}"
+    line = f"[{category}] {content}"
     if tags:
-        line += f" | tags: {', '.join(str(t) for t in tags)}"
+        line += f" | {', '.join(str(t) for t in tags)}"
+    if created:
+        line += f" [{created}]"
 
     return line
 
@@ -395,7 +405,9 @@ def format_context(
 
     header = (
         "# Memory Context\n\n"
-        "The following memories were retrieved from previous sessions:\n"
+        "The following memories were retrieved from previous sessions.\n"
+        "Use `/recall [query]` to retrieve full memory content "
+        "when a topic needs deeper context.\n"
     )
     return header + "\n\n".join(sections)
 
