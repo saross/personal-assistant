@@ -1,0 +1,152 @@
+{
+  "cleanupPeriodDays": 99999,
+  "env": {
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "WebSearch",
+      "WebFetch",
+      "Read(/home/shawn/**)",
+      "Bash",
+      "mcp__ide__getDiagnostics",
+      "Skill(skill-creator)",
+      "Skill(example-skills:skill-creator)",
+      "Bash(sudo systemctl restart ollama)",
+      "Bash(sudo systemctl stop ollama)",
+      "Bash(sudo systemctl start ollama)"
+    ],
+    "deny": [
+      "Bash(rm:-rf:*)",
+      "Bash(rm:-r:*)",
+      "Bash(su:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git:reset:--hard:*)",
+      "Bash(git:clean:-fd:*)",
+      "Read(/etc/**)",
+      "Read(/root/**)",
+      "Read(/home/*/.ssh/**)",
+      "Read(**/.env)",
+      "Read(**/secrets/**)",
+      "Bash(reboot)",
+      "Bash(shutdown:*)",
+      "Bash(halt)",
+      "Bash(poweroff)",
+      "Bash(apt:*)",
+      "Bash(yum:*)",
+      "Bash(dnf:*)",
+      "Bash(dd:*)",
+      "Bash(mkfs:*)",
+      "Bash(fdisk:*)",
+      "Bash(iptables:*)",
+      "Bash(ifconfig:*)",
+      "Bash(killall:*)",
+      "Bash(pkill:*)",
+      "Bash(crontab:*)"
+    ],
+    "ask": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude-code-docs/claude-docs-helper.sh hook-check"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/personal-assistant/venv/bin/python3 ~/personal-assistant/hooks/extraction-hook.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/personal-assistant/venv/bin/python3 ~/personal-assistant/hooks/extraction-hook.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.local/bin/cc-session archive --from-hook --gzip --auto-metadata --pre-compact && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
+            "timeout": 120,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/personal-assistant/venv/bin/python3 ~/personal-assistant/hooks/extraction-hook.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.local/bin/cc-session archive --from-hook --gzip --auto-metadata && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
+            "timeout": 120,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/personal-assistant/venv/bin/python3 ~/personal-assistant/hooks/session-start-retrieval.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/personal-assistant/venv/bin/python3 ~/personal-assistant/hooks/session-start-accountability.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash -c '\"/usr/bin/node\" \"$(ls -td ~/.claude/plugins/cache/claude-hud/claude-hud/*/ 2>/dev/null | head -1)dist/index.js\"'"
+  },
+  "enabledPlugins": {
+    "example-skills@anthropic-agent-skills": true,
+    "document-skills@anthropic-agent-skills": true,
+    "code-simplifier@claude-plugins-official": true,
+    "claude-hud@claude-hud": true
+  },
+  "alwaysThinkingEnabled": true,
+  "skipDangerousModePermissionPrompt": true,
+  "effortLevel": "high"
+}
