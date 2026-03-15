@@ -1,6 +1,6 @@
 # Session Archiving Redesign
 
-**Status:** Phase 1 ready to implement (Phases 4-5 partially superseded by memory system Phase 1c)
+**Status:** Phase 1 implemented (2026-03-15). Phases 4-5 partially superseded by memory system Phase 1c. 1M context window now available — changes Level 3 calculus.
 **Created:** 2026-02-15
 **Context:** Weekend infrastructure review of cc-session-toolkit archiving system
 
@@ -494,15 +494,18 @@ output needs.
 
 ## Implementation Phases
 
-### Phase 1: Core Automation (Weekend/Evenings)
+### Phase 1: Core Automation (Weekend/Evenings) — COMPLETE (2026-03-15)
 
-- [ ] Add `--from-hook` mode to cc-session-toolkit CLI
-- [ ] Add `--auto-metadata` flag (Haiku API call for title/purpose)
-- [ ] Change default archive root to `~/cc-archives/` (configurable)
-- [ ] Add deduplication check (skip already-archived session_id)
-- [ ] Add trivial-session filter (<5 turns)
-- [ ] Configure dual hooks in `~/.claude/settings.json`
-- [ ] Test: verify archives appear after session end and compaction
+- [x] Add `--from-hook` mode to cc-session-toolkit CLI — reads `{session_id, transcript_path, cwd}` from stdin JSON
+- [x] Add `--auto-metadata` flag (Haiku API call for title/purpose) — graceful fallback if API unavailable
+- [x] Change default archive root to `~/cc-archives/` (configurable via `--archive-root`)
+- [x] Add deduplication check (skip already-archived session_id via CATALOG.json)
+- [x] Add trivial-session filter (<5 turns or <1 min, configurable via `--min-turns`)
+- [x] Add `--pre-compact` flag to tag pre-compaction snapshots
+- [x] Add `capture_type` field to archive metadata (`session_end` / `pre_compact`)
+- [x] Tests: 32 new tests (85 total), all passing
+- [x] Configure dual hooks in `~/.claude/settings.json` — SessionEnd + PreCompact, both async with 120s timeout
+- [ ] Test: verify archives appear after session end and compaction (will validate on next session close)
 
 ### Phase 2: PostgreSQL Integration
 
@@ -530,21 +533,35 @@ Remaining items below are incremental improvements.
 - [x] Add `summary` field to extraction prompt — done (Phase 1c, ≤150 chars)
 - [x] Add `summary` column to PostgreSQL schema — done (Phase 1c)
 - [x] Batch-generate summaries for existing memories — done (7,752 backfilled)
-- [ ] Add `source_messages` column to PostgreSQL schema
-- [ ] Modify session-start hook: compact Level 1 format, category-grouped
+- [x] Modify session-start hook: compact Level 1 format — done (2026-03-15). Dropped confidence, moved date to end, removed `tags:` prefix. Content-first reading flow.
+- [x] Increase slot allocation from 54 to 90 memories — done (2026-03-15). 62% more coverage at 50% more chars (0.44% of 1M context).
+- [x] Level 2 retrieval instruction — done (2026-03-15). `/recall [query]` instruction in session-start header. `/recall` command already implements Level 2 retrieval.
+- [ ] Add `source_messages` column to PostgreSQL schema (Phase 5 enabler)
 - [ ] Add PostgreSQL availability check at session start (fallback to JSONL)
-- [ ] Implement Level 2 retrieval mechanism (psql query or JSONL grep)
 - [ ] Add explicit retrieval announcement ("retrieving memories about [topic]")
 - [ ] Test: compare Level 1 awareness coverage vs current flat injection
 - [ ] Tune Level 2 retrieval count (start at 5-10, adjust based on usage)
 
 ### Phase 5: Eidetic Recall (Level 3) and Full Integration
 
+**1M context window now available (2026-03-15).** This fundamentally changes
+Level 3: an entire session transcript (~100K tokens) uses ~10% of available
+context. Level 3 retrieval is now routine, not expensive. The gating prompt
+("retrieve full conversation? Y/N") can be relaxed or removed — CC can load
+full transcripts without meaningful context pressure.
+
+Implications:
+- Level 3 gating is no longer necessary for cost reasons
+- Multiple session transcripts can be loaded simultaneously
+- The progressive disclosure model (L1→L2→L3) still has value for *focus*
+  (knowing which session to load) but the *cost* argument is weaker
+- Consider making Level 3 auto-triggered when CC detects high relevance
+
 - [ ] Re-archive all existing sessions into `~/cc-archives/` with new schema
 - [ ] Re-extract memories with source_messages tracking from archived transcripts
 - [ ] Wire up memory–session linkage (PostgreSQL JOIN on session_id)
 - [ ] Implement Level 3 retrieval: decompress archive → search → extract section
-- [ ] Add Level 3 gating prompt ("retrieve full conversation? Y/N")
+- [ ] ~~Add Level 3 gating prompt~~ — no longer needed with 1M context; auto-trigger on high relevance instead
 - [ ] Add `cc-session memories <session-id>` command (show linked memories)
 - [ ] Run all 6 query prompts through /improve-prompt skill
 - [ ] Test local model summary generation on sapphire (compare quality to Haiku)
@@ -747,9 +764,12 @@ The progressive approach gives wider awareness at lower base cost,
 with depth available on demand. The current approach uses more base
 context for narrower coverage.
 
-With 1M token context windows (expected), Level 3 becomes routine
-rather than expensive — an entire session transcript (~100K tokens)
-would use 10% of available context.
+With 1M token context windows (now available as of 2026-03-15),
+Level 3 is routine — an entire session transcript (~100K tokens)
+uses 10% of available context. Multiple transcripts can be loaded
+simultaneously. The progressive disclosure model retains value for
+*focus* (knowing which session is relevant) but the cost argument
+for gating Level 3 access is no longer compelling.
 
 ### Analogy to Human Memory
 
