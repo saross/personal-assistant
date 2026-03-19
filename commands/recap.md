@@ -1,7 +1,10 @@
 # /recap — End-of-Day Recap
 
 Evening complement to morning `/standup`. Captures what actually happened vs what was
-committed, calibrates estimation accuracy, and updates FOCUS.md next actions.
+committed, calibrates estimation accuracy, logs time, and plans tomorrow.
+
+Designed as a collaborative end-of-day ritual: review the day's evidence together,
+confirm hours, capture the narrative, and set up the next morning's standup.
 
 ## Usage
 
@@ -12,8 +15,8 @@ committed, calibrates estimation accuracy, and updates FOCUS.md next actions.
 
 ## Arguments
 
-- *(no arguments)* — Read today's standup and ask the user what happened
-- `[summary]` — Use the provided summary as the basis for the recap
+- *(no arguments)* — Review git activity, then ask the user what happened
+- `[summary]` — Use the provided summary as the basis (still run git review)
 
 ## Behaviour
 
@@ -29,22 +32,93 @@ If no standup exists for today, note it:
 
 ```text
 No standup found for today. Running recap without commitment comparison.
-What did you work on today?
 ```
 
-### 2. Gather Actuals
+### 2. Review Day's Git Activity
 
-**If no argument provided**, ask the user:
+Scan git repos for today's commits to build an evidence base for the recap.
+This helps the user reconstruct what they worked on and estimate hours accurately.
+
+**Repo discovery:**
+
+Scan these locations for git repositories on the current machine:
+
+- `~/personal-assistant/` (and its `data/` submodule)
+- `~/Code/*/` (all subdirectories that contain `.git/`)
+
+For each repo found, run:
+
+```bash
+git -C <repo-path> log --all --after="<yesterday>" --before="<tomorrow>" \
+  --format="%h %H %ai %s"
+```
+
+**Cross-machine check:** If the current machine is zbook-ubuntu or amd-tower-ubuntu,
+also attempt to check the other machine via SSH (timeout 5 seconds). If SSH fails,
+note it and continue — the local data is usually sufficient.
+
+```bash
+# From zbook, check amd-tower (or vice versa)
+ssh -o ConnectTimeout=5 <other-machine> \
+  'for d in ~/Code/*/; do [ -d "$d/.git" ] && echo "=== $(basename $d) ===" && \
+  git -C "$d" log --all --after="<yesterday>" --before="<tomorrow>" \
+  --format="%h %ai %s"; done' 2>/dev/null
+```
+
+Only report repos/machines that have commits — skip silent ones.
+
+**Map repo names to project names** using this table (extend as needed):
+
+| Repo directory | Project name |
+|---------------|-------------|
+| `personal-assistant` | personal-assistant |
+| `map-reader-llm` | map-reader-llm |
+| `fieldmark-docs-staging` | efn |
+| `llm-history-paper` | llm-history-paper |
+| `anu-digital-humanities` | anu |
+| `cc-session-toolkit` | personal-assistant |
+
+**Present the summary** grouped by project, with commit time ranges:
 
 ```text
-What actually happened today? Walk me through it — main work, side tasks,
-anything that changed from the plan.
+## Today's git activity
+
+**map-reader-llm** (7 commits, 10:15–17:42)
+- fix: verifier config alignment
+- feat: thinking-level override
+- docs: Flash-Lite evaluation results
+
+**personal-assistant** (4 commits, 08:30–14:20)
+- feat: retrieval improvements
+- fix: summary backfill
+
+**efn** (1 commit, 16:00)
+- fix: template metadata corrections
+
+No activity found on: llm-history-paper
 ```
 
-**If argument provided**, use it as the basis. Ask clarifying questions only if
-something is ambiguous.
+Keep commit descriptions brief — group related commits if there are many.
 
-### 3. Generate Recap
+**Important context for hours estimation:** Some projects (especially map-reader-llm)
+involve Batch API experiments that run autonomously. High commit volume does not
+necessarily mean high active time. When presenting the summary, note the commit
+pattern (e.g., "clusters suggest setup → wait → evaluation cycles") to help the
+user estimate accurately.
+
+### 3. Gather Actuals
+
+**If no argument provided**, use the git review as a conversation starter:
+
+```text
+That's what the git trail shows. How does that map to your day?
+Anything not captured in commits — reading, planning, meetings, comms?
+```
+
+**If argument provided**, use it as the basis. Cross-reference with the git review
+and ask clarifying questions only if something significant is missing or ambiguous.
+
+### 3b. Generate Recap
 
 Use this template. **Tone: reflective, not confrontational.** This is calibration,
 not accountability — save that for `/standup`.
@@ -76,20 +150,49 @@ One or two sentences — this builds the calibration record.]
 
 [New information, changed deadlines, decisions made, new items captured.
 Things that change the landscape for tomorrow. If nothing, write "No changes."]
-
-### Tomorrow
-
-[What's the plan for tomorrow? This feeds the next standup.
-If user doesn't specify, ask.]
 ```
 
-### 4. Append to Standup File
+### 4. Log Time
+
+After reviewing the day together, propose hours by project based on the git
+activity and the user's account of their day. Present as a table for confirmation:
+
+```text
+## Hours
+
+Based on what you've described:
+
+| Project | Hours | Description |
+|---------|------:|-------------|
+| map-reader-llm | 3 | H11 config audit, thinking-level experiments |
+| personal-assistant | 2 | Retrieval improvements, sessions table |
+| efn | 0.5 | Template fixes |
+| **Total** | **5.5** | |
+
+Look right? I'll log these via /track.
+```
+
+**Guidelines for proposing hours:**
+
+- Be conservative — idle sessions, waiting for experiments, and context-switching
+  all reduce active time below what commit timestamps suggest
+- Round to nearest 0.5h
+- Group related work into one entry per project per day
+- If uncertain about a project's hours, ask rather than guess
+
+Once confirmed, append all entries to `~/personal-assistant/reports/time-log.csv`
+in one step. Use today's date (not catch-up flag) for same-day logging.
+
+If the user has already logged time today (check the CSV), note it and only
+log additional unrecorded hours.
+
+### 5. Append to Standup File
 
 Append the recap to `~/personal-assistant/standups/YYYY-MM-DD.md` after a
 separator line (`---`). If the standup file doesn't exist, create it with
 just the recap section.
 
-### 5. Generate Work-Log Memory
+### 6. Generate Work-Log Memory
 
 Write a `progress` memory (30-day decay) summarising the day. Format:
 
@@ -107,7 +210,7 @@ Write a `progress` memory (30-day decay) summarising the day. Format:
 Follow the same JSONL writing protocol as `/remember` — proper JSON escaping,
 unique ID, append to `memories/memories.jsonl`.
 
-### 5b. Append to Human-Readable Work Log
+### 7. Append to Human-Readable Work Log
 
 Append a dated entry to `~/personal-assistant/reports/work-log.md`. This is a
 persistent, human-readable record the user can review directly (unlike the
@@ -140,28 +243,43 @@ Copy from the recap's "Key developments" section. If none, omit this subsection.
 
 ### Hours
 
-[If the user mentioned hours or time spent, record them here in the format:
-`Project: Xh` (one line per project). If no hours mentioned, omit this subsection.
-See `/track` for the dedicated time-tracking command.]
+[Always include this section — hours are logged in step 4.
+Format: `Project: Xh` (one line per project), plus a total line.]
 ```
 
 **Important**: Keep entries concise — this file will grow over weeks and months.
 Each entry should be scannable in under 10 seconds.
 
-### 6. Update FOCUS.md
+### 8. Plan Tomorrow
 
-If the user specifies new next actions or if today's work changes what comes next:
-
-- **Update** the `Next action` field in relevant focus slots
-- **Update** the `Last updated` date
-
-If the user doesn't mention changes, ask:
+This is the bridge between today's recap and tomorrow's standup. Ask:
 
 ```text
-Any updates to next actions in FOCUS.md, or are they still current?
+What's the plan for tomorrow? Any fixed commitments (meetings, deadlines,
+teaching) I should know about?
 ```
 
-### 7. After Recap
+Then construct a structured plan together:
+
+```text
+### Tomorrow
+
+**Fixed:** [meetings, deadlines, teaching — things with specific times]
+
+**Focus work:**
+- [Specific next action from focus slot 1]
+- [Specific next action from focus slot 2]
+
+**If time allows:** [lower-priority items, backlog candidates]
+```
+
+Use the current FOCUS.md next actions as defaults — if the user doesn't override
+them, carry them forward. Update FOCUS.md `Next action` and `Last updated` fields
+if the user specifies changes.
+
+Include the Tomorrow section in the standup file (appended after the recap).
+
+### 9. After Recap
 
 Ask:
 
@@ -172,19 +290,19 @@ Anything to add to the backlog based on today?
 If the user mentions tasks not in focus or backlog, offer to capture them
 to `tasks/backlog.md`.
 
-### 8. Weekly Review Reminder (Thursday/Friday only)
+### 10. Weekly Review Reminder (Thursday/Friday only)
 
 If today is **Thursday**, add after the recap:
 
 ```text
-📋 Weekly review reminder: Tomorrow is Friday — plan to run /review
+Weekly review reminder: Tomorrow is Friday — plan to run /review
 before end of day. Have you been doing weekly reviews?
 ```
 
 If today is **Friday**, add after the recap:
 
 ```text
-📋 Weekly review: Have you run /review this week? If not, now is a
+Weekly review: Have you run /review this week? If not, now is a
 good time — it takes 10 minutes and the data is freshest while the
 week is still in your head.
 ```
@@ -201,6 +319,8 @@ Skip this step on all other days.
   1 hour to full day" is data, not a failure.
 - The Tomorrow section is critical — it becomes the basis for the next standup's
   "what did you commit to?"
+- The git review step grounds the conversation in evidence rather than memory,
+  which is especially valuable for multi-project days and catch-up logging.
 - If the user runs `/recap` and a recap already exists for today, append a
   second recap with a note: "Second recap — [time]". Multiple recaps in a day
   are fine (e.g., after a mid-day refocus).
