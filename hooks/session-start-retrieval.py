@@ -224,9 +224,15 @@ def retrieve_recent(
     same = []
     other = []
 
+    # Exclude commitment/waiting_for — they duplicate the Task Status
+    # banner from the accountability hook.
+    excluded_categories = {"commitment", "waiting_for"}
+
     for mem in memories:
         created = parse_created_at(mem)
         if not created or created < cutoff:
+            continue
+        if mem.get("category") in excluded_categories:
             continue
         if is_same_project(mem, current_project):
             same.append(mem)
@@ -382,22 +388,22 @@ def format_context(
     if recent:
         lines = [format_memory(m) for m in recent]
         sections.append(
-            f"## Recent Memories (last 7 days) \u2014 {len(recent)} items\n"
-            + "\n".join(f"- {l}" for l in lines)
+            f"## Recent Memories (last 7 days) \u2014 {len(recent)} {'item' if len(recent) == 1 else 'items'}\n"
+            + "\n".join(f"- {entry}" for entry in lines)
         )
 
     if constraints:
         lines = [format_memory(m) for m in constraints]
         sections.append(
-            f"## Relevant Constraints \u2014 {len(constraints)} items\n"
-            + "\n".join(f"- {l}" for l in lines)
+            f"## Relevant Constraints \u2014 {len(constraints)} {'item' if len(constraints) == 1 else 'items'}\n"
+            + "\n".join(f"- {entry}" for entry in lines)
         )
 
     if permanent:
         lines = [format_memory(m) for m in permanent]
         sections.append(
-            f"## Key Decisions & Knowledge \u2014 {len(permanent)} items\n"
-            + "\n".join(f"- {l}" for l in lines)
+            f"## Key Decisions & Knowledge \u2014 {len(permanent)} {'item' if len(permanent) == 1 else 'items'}\n"
+            + "\n".join(f"- {entry}" for entry in lines)
         )
 
     if not sections:
@@ -407,7 +413,7 @@ def format_context(
         "# Memory Context\n\n"
         "The following memories were retrieved from previous sessions.\n"
         "Use `/recall [query]` to retrieve full memory content "
-        "when a topic needs deeper context.\n"
+        "when a topic needs deeper context.\n\n"
     )
     return header + "\n\n".join(sections)
 
@@ -475,7 +481,16 @@ def main() -> None:
     memories = load_all_memories()
 
     if not memories:
-        # No memories yet — output nothing
+        # No memories yet — skip memory retrieval but still load scratchpad
+        scratchpad = load_scratchpad()
+        if scratchpad:
+            print(
+                "# Scratchpad\n\n"
+                "Claude's learning log — update during sessions when "
+                "corrections, preferences, or patterns are noticed.\n"
+                "Path: ~/personal-assistant/data/scratchpad.md\n\n"
+                + scratchpad
+            )
         sys.exit(0)
 
     # Build tag profile from same-project memories for cross-project relevance

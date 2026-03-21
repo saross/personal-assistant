@@ -912,7 +912,7 @@ class TestSectionHeaders:
         ]
 
         output = retrieval.format_context([], [], constraints=constraints)
-        assert "\u2014 1 items" in output
+        assert "\u2014 1 item" in output
         assert "## Relevant Constraints" in output
 
     def test_permanent_header_includes_item_count(self):

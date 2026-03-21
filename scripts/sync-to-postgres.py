@@ -151,7 +151,7 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record["content"],
         record.get("summary"),
         record.get("confidence", "medium"),
-        record.get("research_tags", []),
+        record.get("research_tags") if isinstance(record.get("research_tags"), list) else [],
         record.get("zotero_key"),
         record.get("source_context", ""),
         record["created_at"],

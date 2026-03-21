@@ -132,11 +132,15 @@ def find_session_metadata(
                 logger.warning("Failed to parse %s: %s", meta_path, exc)
             continue
 
-        # Filter by archived_at timestamp if cursor provided
+        # Filter by archived_at timestamp if cursor provided.
+        # Normalise Z → +00:00 for consistent lexicographic comparison.
         if since:
             archived_at = metadata.get("archive", {}).get("archived_at", "")
-            if archived_at and archived_at <= since:
-                continue
+            if archived_at:
+                normalised = archived_at.replace("Z", "+00:00")
+                since_normalised = since.replace("Z", "+00:00")
+                if normalised <= since_normalised:
+                    continue
 
         results.append((meta_path, metadata))
 
@@ -156,15 +160,17 @@ def metadata_to_row(
 
     Maps nested metadata fields to the sessions table columns.
     """
-    session = metadata.get("session", {})
-    project = metadata.get("project", {})
-    model = metadata.get("model", {})
-    stats = metadata.get("statistics", {})
-    tokens = stats.get("tokens", {})
-    tool_calls = stats.get("tool_calls", {})
-    auto = metadata.get("auto_generated", {})
-    three_ps = metadata.get("three_ps", {})
-    archive = metadata.get("archive", {})
+    # Use `or {}` instead of default arg — .get() returns None (not the
+    # default) when the key exists with a null/None value.
+    session = metadata.get("session") or {}
+    project = metadata.get("project") or {}
+    model = metadata.get("model") or {}
+    stats = metadata.get("statistics") or {}
+    tokens = stats.get("tokens") or {}
+    tool_calls = stats.get("tool_calls") or {}
+    auto = metadata.get("auto_generated") or {}
+    three_ps = metadata.get("three_ps") or {}
+    archive = metadata.get("archive") or {}
 
     # Use auto_generated three_ps if top-level is empty
     auto_three_ps = auto.get("three_ps", {})
@@ -322,10 +328,14 @@ def sync(
             continue
         rows.append(row)
 
-        # Track the latest archived_at for cursor advancement
+        # Track the latest archived_at for cursor advancement.
+        # Normalise Z → +00:00 for consistent lexicographic comparison.
         archived_at = metadata.get("archive", {}).get("archived_at", "")
-        if archived_at and archived_at > latest_archived_at:
-            latest_archived_at = archived_at
+        if archived_at:
+            normalised = archived_at.replace("Z", "+00:00")
+            latest_normalised = latest_archived_at.replace("Z", "+00:00")
+            if normalised > latest_normalised:
+                latest_archived_at = archived_at
 
     if not rows:
         logger.info("No valid sessions to upsert")
