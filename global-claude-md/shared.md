@@ -1,17 +1,13 @@
 # Global Claude Code Instructions
+<!-- Target: ≤170 lines. Extract lookup tables to reference files. Check at /retro. -->
 
 ## About me
 
-Hi Claude Code, my name is Shawn, and I'm an archaeologist and ancient historian with a long academic career. I've done diachronic landscape archaeology fieldwork around the Mediterranean, especially Bulgaria and Greece. My other main interests are open science and digital approaches, particularly the application of LLMs to archaeological fieldwork and analysis. I also helped found a startup to commercialise Fieldmark (FAIMS3), customisable open-source software for field data collection on mobile devices. I'm looking forward to working with you on projects related to these pursuits.
+Shawn is an archaeologist and ancient historian. Diachronic landscape archaeology around the Mediterranean (Bulgaria, Greece). Interests: open science, digital approaches, LLMs applied to archaeological fieldwork and analysis. Co-founded a startup to commercialise Fieldmark (FAIMS3), customisable open-source software for field data collection on mobile devices.
 
 ## Language Standards
 
-**UK/Australian English is MANDATORY** for all output, without exception:
-
-- **Applies to**: All text, code, comments, docstrings, documentation, commits, filenames, variable names, function names, and any other written content
-- **Filenames**: Use UK spelling in script and file names (e.g., `analyse-data.py` not `analyze-data.py`, `colour-picker.js` not `color-picker.js`)
-- **Functions/variables**: Use UK spelling (e.g., `analyse_results()`, `normalised_values`, `colour_map`)
-- **Oxford comma**: Always use in lists
+**UK/Australian English is MANDATORY** for all output — text, code, comments, docstrings, documentation, commits, filenames, variable names, function names. Oxford comma always.
 
 ### Common US → UK/AU Conversions
 
@@ -31,11 +27,7 @@ Hi Claude Code, my name is Shawn, and I'm an archaeologist and ancient historian
 | summarize | summarise |
 | synchronize | synchronise |
 
-### Exceptions
-
-- Third-party library names and imports (e.g., `scipy.optimize`, `colorama`)
-- Existing code/filenames when modifying legacy codebases (note the inconsistency if relevant)
-- Direct quotations or references to external standards
+**Exceptions:** Third-party library names/imports (e.g., `scipy.optimize`), existing code in legacy codebases, direct quotations.
 
 ## Code Quality
 
@@ -68,200 +60,72 @@ Follow these linting rules:
 - Include context and rationale for decisions
 - Write for intelligent non-specialists
 
-## File Organization
+## File Organisation
 
-- `scripts/` - Executable scripts
-- `docs/` - Documentation
-- `data/` - Data files
-- `tests/` - Tests
-- `reports/` - Generated reports
-- `planning/` - Plans, to-dos, and other planning documents
+Standard directories: `scripts/`, `docs/`, `data/`, `tests/`, `reports/`, `planning/`.
 
 ## File Naming Conventions
 
 - **Use lowercase with hyphens** for all filenames: `my-document.md`, `analysis-script.py`
-- **Exceptions** (keep uppercase):
-  - `README.md` - Primary readme files
-  - `CHANGELOG.md` - Project changelog
-  - `CONTRIBUTING.md` - Contribution guidelines
-  - `CODE_OF_CONDUCT.md` - GitHub community health file standard
-  - `CITATION.cff` - Citation File Format standard
-  - `CLAUDE.md` - Claude Code instructions
-  - `SKILL.md` - Claude Code skill metadata
-  - `LICENSE` - Licence files
-- **Never use**: Spaces, underscores (except in Python modules), or mixed case (except conventions above)
-- **Examples**:
-  - `extraction-workflow.md`, `setup-guide.md`, `assessment-report.md`
+- **Exceptions** (keep uppercase): README.md, CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CITATION.cff, CLAUDE.md, SKILL.md, LICENSE
+- **Never use**: Spaces, underscores (except in Python modules), or mixed case
 
 ## Session History
 
-When asked to review recent conversations or recall previous work:
-
-- Session transcripts are stored in `~/.claude/` (JSONL format)
-- Use these to understand context from prior sessions when the user references past discussions
-- Project-specific session exports may also be archived in `archive/cc-sessions/` within repositories
+Session transcripts are stored in `~/.claude/` (JSONL). Project-specific exports may be in `archive/cc-sessions/`. Use for context from prior sessions.
 
 ## Session Summaries
 
-At natural stopping points or when a session has covered substantial ground, **proactively offer a session summary**. This helps the user:
+At natural stopping points, **proactively offer a session summary**: numbered list with bold action verbs, grouped logically (e.g., `1. **Fixed the auth bug** in src/auth/login.py`).
 
-- Recognise a good point to start a fresh session
-- Have a record of what was accomplished
-- Resume context quickly in a future session
-
-**Format**: Use a numbered list of accomplishments, grouped logically. Keep it concise but comprehensive. Example:
-
-```markdown
-## Session Summary
-
-In this session we:
-
-1. **Fixed the authentication bug** in `src/auth/login.py`
-2. **Added unit tests** for the new validation logic
-3. **Updated documentation** to reflect the API changes
-4. **Refactored the config loader** to use pathlib
-```
-
-**When to offer a summary**:
-
-- After completing a significant task or milestone
-- When the conversation has become long or covered many topics
-- Before the user explicitly ends the session
-- When context window pressure suggests a fresh start would help
+Offer after milestones, when the conversation is long, before session end, or when context pressure suggests a fresh start.
 
 ## Memory System
 
-Memories are automatically extracted from sessions via hooks and stored
-in `~/personal-assistant/memories/memories.jsonl`.
+Memories are extracted from sessions via hooks and stored in `~/personal-assistant/memories/memories.jsonl`. Categories span research, LLM research, project, GTD, transient, retrospective, and system adaptation. Some categories are permanent, others decay (30–180 days).
 
-### Categories
-
-**Research (permanent):** methodology, ethics, provenance, hypothesis,
-limitation, openness, source_insight
-
-**LLM Research (permanent):** error_mode, surprise, self_reflection,
-prompt_effectiveness
-
-**Project (mixed):** decision (permanent), architecture (permanent),
-pattern (180d), gotcha (180d)
-
-**GTD:** commitment (30d after deadline), waiting_for (14d), contact
-(permanent)
-
-**Transient:** progress (30d), context (30d)
-
-**Retrospective (assigned during review, not extraction):** slip
-(permanent), completion (90d), blocker_real (30d), blocker_excuse
-(permanent)
-
-**System Adaptation:** system_evolution (permanent), system_friction
-(60d), system_success (90d)
-
-### Tag Guidelines
-
-- Use lowercase with hyphens: `gps-accuracy`, `field-method`,
-  `fair-principle`
-- Singular forms preferred (consolidate plurals in monthly gardening)
-- See `~/personal-assistant/memories/tag-vocabulary.txt` for seed
-  vocabulary
-
-### Memory Commands
+Full category list with decay rules and tag guidelines in `~/personal-assistant/global-claude-md/memory-system-reference.md`. **Read that file when** using `/remember`, assigning categories, or working with tags.
 
 - `/recall [query]` — Search memories
 - `/remember [content]` — Manually capture a memory
 
 ## Craft Notebook
 
-The `~/personal-assistant/notes/` directory is the user's personal craft
-notebook — practical learnings for the *user* to revisit, distinct from
-`memories/` which stores context for Claude.
-
-| File | Content |
-|------|---------|
-| `notes/llm-craft.md` | LLM interaction patterns, prompting techniques |
-| `notes/grimoire/` | Effective prompts with mechanism analysis (one file per prompt) |
-| `notes/working-practices.md` | Time management, focus, productivity |
-| `notes/coding-practices.md` | Tooling, debugging, dev environment |
-| `notes/general/` | General notes, reference material, observations (one file per note) |
-
-Use `/craft` for quick entries. Longer observations are discussed in
-conversation and added manually.
+`~/personal-assistant/notes/` — user's practical learnings (LLM craft, grimoire, working/coding practices, general notes). Distinct from `memories/` which stores context for Claude. Use `/craft` for quick entries.
 
 ## Scratchpad
 
-`~/personal-assistant/data/scratchpad.md` is Claude's running learning log —
-loaded every session via the startup hook. It captures corrections, preferences,
-and patterns that compound across sessions.
+`~/personal-assistant/data/scratchpad.md` is Claude's running learning log — loaded every session via the startup hook. Write during sessions when:
 
-### When to write
+- **Constraint articulated**: Shawn corrects your output — record the rule, not the error
+- **Preference discovered**: How Shawn works, not yet in CLAUDE.md
+- **Approach succeeded or failed**: Notably good or poor results
+- **Pattern noticed**: Recurring session dynamics
 
-- **Constraint articulated**: Shawn corrects your output, approach, or assumption.
-  Record the *rule or principle* he articulated, not just the error. These are
-  the highest-value entries — they compound across sessions. Frame as "the rule
-  is X" not "I got Y wrong."
-- **Preference discovered**: Something about how Shawn works that isn't in
-  CLAUDE.md yet.
-- **Approach succeeded or failed**: A technique that produced notably good or
-  poor results.
-- **Pattern noticed**: Recurring observation about session dynamics.
-
-### When NOT to write
-
-- Things that belong in CLAUDE.md (permanent system rules)
-- Things already captured by `/remember` or extraction (project decisions,
-  research methodology, commitments)
-- Routine exchanges or acknowledgements
-- Entries longer than 2–3 lines — the scratchpad is terse
-
-### Format
-
-Append under the relevant section heading. Each entry is a dated bullet:
-
-```text
-- 2026-03-14: Shawn corrected X to Y — reason Z
-```
-
-### Maintenance
-
-Distilled during monthly `/retro`. Patterns get promoted to memories or
-CLAUDE.md rules. Stale entries are pruned. Target: ≤150 lines.
+Highest priority: record the *principle*, not the mistake. Keep entries to 2–3 lines. Full guidance (when NOT to write, format, maintenance) in `~/personal-assistant/global-claude-md/scratchpad-reference.md`. **Read that file before** writing scratchpad entries.
 
 ## File Reorganisation Safeguards
 
-- When reorganising files or housekeeping after a major task is done, **archive** outdated or superseded files or completed checklists—do not delete them
-- **Use a single, unified `archive/` folder at the repository root**—do not create distributed `archive/` subfolders throughout the repository hierarchy
-- Within `archive/`, use categorical subdirectories to organise content (e.g., `archive/preliminary-work/`, `archive/pilot-tilesize/`, `archive/deprecated-scripts/`)
-- If `archive/` does not exist at the repo root, create it before archiving files
+- **Archive** outdated files — do not delete. Use a single `archive/` folder at repo root with categorical subdirectories
+- Create `archive/` if it doesn't exist before archiving
+- **Exception**: Throwaway scripts and untracked temp files with no reproducibility value may be deleted
 
-**Exception — ephemeral files that may be deleted outright:**
+## Checklists and To-dos
 
-- Throwaway diagnostic or test scripts created during a session to verify a hypothesis (e.g., "does the API accept this parameter?") — provided their findings are captured elsewhere (commit messages, code comments, or conversation history)
-- Temporary files that were never tracked by git and have no diagnostic, reproducibility, or open science value
-- The key test: if someone reviewing the project later would gain nothing from finding the file, it can be deleted rather than archived
-
-## Checklists and to-dos
-
-- When completing actions or tasks on a markdown checklist or to-do, **mark the item as finished and retain it** do not delete the item.
-
-  - Mark tasks as done (with [x]) rather than deleting them
-  - Add completion dates when marking tasks complete
-  - Preserve task history for audit trail
-  - Move completed tasks to "Completed Actions" sections if they exist, rather than removing them
+Mark items as done (`[x]`) with completion dates — never delete. Move to "Completed Actions" sections if they exist.
 
 ## Git Commits
 
 ### Commit Granularity
 
-- **Break up large changes** into logical, focused commits — each commit should do one thing well
-- **Keep commits legible**: If a commit message requires extensive explanation, the commit is probably too large
-- Aim for commits that can be understood, reviewed, and if necessary reverted independently
-- When refactoring and adding features, separate the refactoring commit from the feature commit
+- Break up large changes into logical, focused commits — one thing per commit
+- If a commit message requires extensive explanation, the commit is too large
+- Separate refactoring commits from feature commits
 
 ### Commit Messages
 
-- **Always include both**: A concise subject line AND a detailed body explaining the "why"
 - Subject line: Imperative mood, ≤50 characters, no trailing period
-- Body: Wrap at 72 characters, explain motivation and context, not just what changed
+- Body: Wrap at 72 characters, explain the "why" not just the "what"
 - Use conventional commits format:
 
 ```text
@@ -273,104 +137,15 @@ and any important context for reviewers or future maintainers.
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
-### Commit Types
-
-| Type | Purpose |
-|------|---------|
-| `feat` | New feature or capability |
-| `fix` | Bug fix |
-| `docs` | Documentation only |
-| `style` | Formatting, whitespace (no code change) |
-| `refactor` | Code restructuring (no behaviour change) |
-| `perf` | Performance improvement |
-| `test` | Adding or updating tests |
-| `build` | Build system or dependencies |
-| `chore` | Maintenance tasks, tooling |
+Commit types table, gitignore policy, and pre-commit checklist in `~/personal-assistant/global-claude-md/git-reference.md`. **Read that file when** choosing commit types, modifying `.gitignore`, or reviewing before commit.
 
 ### Safety
 
 - Never commit secrets, API keys, .env files
-- Use .gitignore for sensitive files
+- Use .gitignore for sensitive files — be conservative (only ignore secrets, build artefacts, IDE files, large binaries)
 - Test destructive operations before executing
 - Use virtual environments for Python
 
-### Gitignore Policy
-
-Be **cautious and conservative** when adding entries to `.gitignore`. Only ignore files that genuinely should not be tracked:
-
-| Should Ignore | Examples | Reason |
-|---------------|----------|--------|
-| Sensitive/private files | `.env`, `.venv/`, credentials, API keys | Security risk |
-| Copyrighted references | `references/articles/`, downloaded PDFs | Licence restrictions |
-| Very large files (>50 MB) | Large datasets, binary assets | Use Git LFS instead |
-| Build artefacts | `__pycache__/`, `node_modules/`, `*.pyc` | Reproducible from source |
-| IDE/editor files | `.idea/`, `.vscode/`, `*.swp` | User-specific |
-
-**Do NOT automatically ignore:**
-
-- Output/results files (often small, valuable for reproducibility)
-- Generated reports or analyses
-- Configuration files (unless they contain secrets)
-- Data files under a few MB
-
-When uncertain, check the file size first. Small data files (<10 MB) are generally fine to track directly.
-
-### Pre-Commit Checklist
-
-- [ ] Linting passed
-- [ ] UK spelling throughout
-- [ ] Acronyms expanded
-- [ ] Comments added
-- [ ] No secrets in code
-- [ ] Commit message follows format
-
 ## PostgreSQL Query Layer
 
-JSONL is canonical. PostgreSQL is a derived query layer for structured
-queries, full-text search, and tag analytics. It can be fully rebuilt
-from JSONL at any time.
-
-### Connection
-
-- **Database:** `claude_memories`
-- **Auth:** Peer authentication via unix socket (no password)
-- **Connection string:** `postgresql:///claude_memories`
-- **Python:** `psycopg2.connect(dbname="claude_memories")`
-
-### Scripts
-
-| Script | Purpose | Schedule |
-|--------|---------|----------|
-| `scripts/sync-to-postgres.py` | JSONL → PostgreSQL sync | Cron every 5 min |
-| `scripts/apply-decay.py` | Mark expired memories inactive | Weekly manual |
-| `scripts/rebuild-postgres.py` | Full rebuild from JSONL | As needed |
-| `scripts/schema.sql` | Database schema (tables, indexes, views) | One-time |
-
-All scripts are in `~/personal-assistant/scripts/`.
-
-### Useful Queries
-
-```sql
--- Full-text search
-SELECT id, LEFT(content, 80), category FROM memories
-WHERE to_tsvector('english', content) @@ plainto_tsquery('english', 'search terms');
-
--- Category breakdown
-SELECT category, COUNT(*) FROM memories GROUP BY category ORDER BY count DESC;
-
--- Tag analytics (top tags)
-SELECT tag, COUNT(*) FROM memories, UNNEST(research_tags) AS tag
-GROUP BY tag ORDER BY count DESC LIMIT 15;
-
--- Active memories (respects decay rules)
-SELECT * FROM active_memories WHERE category = 'decision' ORDER BY created_at DESC;
-
--- Source breakdown
-SELECT source, COUNT(*) FROM memories GROUP BY source;
-```
-
-### Multi-Machine Setup
-
-PostgreSQL is local per machine. Each machine rebuilds from JSONL
-(git-tracked). Setup on a new machine: install PostgreSQL, apply schema,
-run `rebuild-postgres.py`.
+PostgreSQL is a derived query layer for the memory system (JSONL is canonical). Full documentation in `~/personal-assistant/global-claude-md/postgresql-reference.md`. **Read that file when** querying the memories database or running sync scripts.
