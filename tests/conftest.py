@@ -145,39 +145,3 @@ Last updated: 2026-02-08
 """
 
 
-@pytest.fixture
-def sample_inbox_md():
-    """Sample inbox.md with a mix of checked and unchecked items."""
-    return """# Inbox
-
-Quick captures. Process daily during standup.
-
----
-
-- [ ] 2026-02-08 10:00 | Check Brian's email about figure layout
-- [ ] 2026-02-08 11:30 | Look into Canvas LMS API
-- [x] 2026-02-08 09:15 | ANU teaching slot → Processed: added to focus
-"""
-
-
-@pytest.fixture
-def sample_waiting_for_md():
-    """Sample waiting-for.md with data rows and placeholders."""
-    return """# Waiting For
-
-Items blocked on others. Review weekly.
-
----
-
-| Item | Waiting On | Since | Last Poked | Next Action If No Response |
-|------|------------|-------|------------|---------------------------|
-| Canvas LMS access | ANU IT support | 2026-02-07 | 2026-02-07 | Follow up Monday |
-| — | — | — | — | — |
-"""
-
-
-def write_jsonl(path: Path, records: list[dict]) -> None:
-    """Helper to write a list of dicts as JSONL."""
-    with open(path, "w") as f:
-        for record in records:
-            f.write(json.dumps(record) + "\n")

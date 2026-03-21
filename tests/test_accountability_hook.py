@@ -5,11 +5,7 @@ date arithmetic, and SYSTEM.md parameter reading.
 Tests pure functions only; does not execute the hook end-to-end.
 """
 
-import re
 from datetime import datetime, timedelta
-from pathlib import Path
-
-import pytest
 
 # conftest.py adds hooks/ to sys.path
 import importlib

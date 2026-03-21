@@ -97,7 +97,8 @@ def load_env() -> None:
 # Logging setup
 # ============================================================================
 
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+if __name__ == "__main__" or "pytest" not in sys.modules:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=str(LOG_FILE),
@@ -303,8 +304,22 @@ def load_cursor() -> dict:
     return {}
 
 
+MAX_CURSOR_ENTRIES = 500
+
+
 def save_cursor(cursor: dict) -> None:
-    """Save cursor state atomically."""
+    """Save cursor state atomically, pruning old entries if needed."""
+    # Prune oldest entries if cursor has grown beyond limit.
+    # Stale entries are harmless (trigger a full reparse of that session)
+    # but keeping thousands of them wastes disk and memory.
+    if len(cursor) > MAX_CURSOR_ENTRIES:
+        # Keep the most recent entries — we can't sort by value (UUIDs aren't
+        # ordered), so just keep an arbitrary subset. Old sessions that get
+        # pruned will simply reparse on next encounter (idempotent).
+        keys = list(cursor.keys())
+        for key in keys[:len(keys) - MAX_CURSOR_ENTRIES]:
+            del cursor[key]
+
     CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Write to temp file then rename for atomicity
     tmp = CURSOR_FILE.with_suffix(".tmp")

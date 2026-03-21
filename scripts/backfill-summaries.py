@@ -29,7 +29,7 @@ from pathlib import Path
 # Configuration
 # ============================================================================
 
-PA_DIR = Path.home() / "personal-assistant"
+PA_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = PA_DIR / ".env"
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 LOG_DIR = PA_DIR / "logs"
@@ -79,7 +79,7 @@ def setup_logging() -> logging.Logger:
     logger.setLevel(logging.INFO)
 
     # File handler
-    fh = logging.FileHandler(LOG_FILE)
+    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(fh)
 
@@ -99,7 +99,7 @@ def setup_logging() -> logging.Logger:
 def load_memories() -> list[dict]:
     """Load all memories from JSONL, preserving order."""
     records = []
-    with open(MEMORIES_FILE) as f:
+    with open(MEMORIES_FILE, encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -213,7 +213,7 @@ def generate_summaries(
 
 def write_memories(records: list[dict | None]) -> None:
     """Write all records back to the JSONL file."""
-    with open(MEMORIES_FILE, "w") as f:
+    with open(MEMORIES_FILE, "w", encoding="utf-8") as f:
         for record in records:
             if record is None:
                 f.write("\n")

@@ -81,19 +81,16 @@ def apply_decay(logger: logging.Logger, dry_run: bool = False) -> None:
         logger.warning("Cannot connect to PostgreSQL: %s", exc)
         return
 
-    # SQL to find and mark expired memories.
+    # Shared WHERE clause for decay logic — single source of truth for both
+    # dry-run preview and actual decay execution.
     # Two cases:
     #   1. Standard categories: created_at + decay_days < NOW()
     #   2. Commitment: COALESCE(deadline_at, created_at) + 30 days < NOW()
-    decay_sql = """
-        UPDATE memories m
-        SET is_active = FALSE,
-            decayed_at = NOW()
-        FROM category_config c
-        WHERE m.category = c.category
-          AND m.is_active = TRUE
-          AND c.decay_days IS NOT NULL
-          AND (
+    decay_where = """
+        m.category = c.category
+        AND m.is_active = TRUE
+        AND c.decay_days IS NOT NULL
+        AND (
             -- Standard decay: from created_at
             (m.category != 'commitment'
              AND m.created_at < NOW() - (c.decay_days || ' days')::INTERVAL)
@@ -102,33 +99,30 @@ def apply_decay(logger: logging.Logger, dry_run: bool = False) -> None:
             (m.category = 'commitment'
              AND COALESCE(m.deadline_at, m.created_at)
                  < NOW() - (c.decay_days || ' days')::INTERVAL)
-          )
+        )
+    """
+
+    decay_sql = f"""
+        UPDATE memories m
+        SET is_active = FALSE,
+            decayed_at = NOW()
+        FROM category_config c
+        WHERE {decay_where}
         RETURNING m.id, m.category, m.content, m.created_at, m.deadline_at
+    """
+
+    preview_sql = f"""
+        SELECT m.id, m.category,
+               LEFT(m.content, 80) AS content_preview,
+               m.created_at, m.deadline_at
+        FROM memories m
+        JOIN category_config c ON {decay_where}
     """
 
     try:
         with conn:
             with conn.cursor() as cur:
                 if dry_run:
-                    # Use a SELECT equivalent to preview without changing data
-                    preview_sql = """
-                        SELECT m.id, m.category,
-                               LEFT(m.content, 80) AS content_preview,
-                               m.created_at, m.deadline_at
-                        FROM memories m
-                        JOIN category_config c ON m.category = c.category
-                        WHERE m.is_active = TRUE
-                          AND c.decay_days IS NOT NULL
-                          AND (
-                            (m.category != 'commitment'
-                             AND m.created_at
-                                 < NOW() - (c.decay_days || ' days')::INTERVAL)
-                            OR
-                            (m.category = 'commitment'
-                             AND COALESCE(m.deadline_at, m.created_at)
-                                 < NOW() - (c.decay_days || ' days')::INTERVAL)
-                          )
-                    """
                     cur.execute(preview_sql)
                     rows = cur.fetchall()
                     logger.info("[DRY RUN] Would decay %d memories:", len(rows))

@@ -6,7 +6,6 @@ Tests pure functions only; does not call the Anthropic API.
 """
 
 import json
-import textwrap
 from pathlib import Path
 
 import pytest

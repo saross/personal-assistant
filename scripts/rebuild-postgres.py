@@ -83,7 +83,13 @@ def rebuild(logger: logging.Logger) -> None:
     # Import sync module functions
     import importlib.util
     sync_path = PA_DIR / "scripts" / "sync-to-postgres.py"
+    if not sync_path.exists():
+        logger.error("sync-to-postgres.py not found at %s", sync_path)
+        sys.exit(1)
     spec = importlib.util.spec_from_file_location("sync_to_postgres", sync_path)
+    if not spec or not spec.loader:
+        logger.error("Failed to load module spec from %s", sync_path)
+        sys.exit(1)
     sync_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sync_mod)
 

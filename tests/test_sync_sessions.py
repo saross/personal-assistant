@@ -98,7 +98,6 @@ def archive_tree(tmp_path, sample_metadata) -> Path:
     )
 
     # Session 2: personal-assistant (different project, later timestamp)
-    meta2 = sample_metadata.copy()
     meta2 = json.loads(json.dumps(sample_metadata))  # deep copy
     meta2["session"]["id"] = "def67890-1234-0000-aaaa-bbbbccccdddd"
     meta2["project"]["name"] = "personal-assistant"

@@ -388,8 +388,8 @@ class TestCrossProjectRelevance:
             memories, set(), current_project, set()
         )
 
-        # Should get MAX_PERMANENT_SAME + MAX_PERMANENT_OTHER = 28
-        # (all 8 unused cross-project slots overflow to same-project)
+        # Should get MAX_PERMANENT_SAME + MAX_PERMANENT_OTHER = 50
+        # (all unused cross-project slots overflow to same-project)
         assert len(result) == 25  # Only 25 exist, all included
 
 
@@ -677,7 +677,7 @@ class TestConstraintSpotlight:
 
         now = datetime.now(timezone.utc)
 
-        # Create more constraints than MAX_CONSTRAINTS (5)
+        # Create more constraints than MAX_CONSTRAINTS (10)
         memories = []
         for i in range(10):
             memories.append(self._make_memory(
