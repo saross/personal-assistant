@@ -36,6 +36,10 @@ Shawn is an archaeologist and ancient historian. Diachronic landscape archaeolog
 - Python: Follow PEP 8, use type hints, prefer pathlib
 - Maximum line length: 100 characters
 
+## API Call Review Gate
+
+**Before any API call** (batch or real-time), stop and get explicit approval. Present: (1) model being called (e.g., "Gemini 2.5 Flash"), (2) batch vs real-time, (3) number of calls in the procedure, (4) estimated cost. Approval for one batch does not imply approval for subsequent batches — confirm each stage of chained runs.
+
 ## Implementation and Methodology Review
 
 When implementing a new approach — whether an API integration, statistical method, data pipeline, or any significant technical decision — apply these checks automatically:
