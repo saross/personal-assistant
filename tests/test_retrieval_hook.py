@@ -1061,3 +1061,55 @@ class TestCompactFormat:
         assert retrieval.MAX_PERMANENT_SAME == 35
         assert retrieval.MAX_PERMANENT_OTHER == 15
         assert retrieval.MAX_CONSTRAINTS == 10
+
+
+# ============================================================================
+# Tier 2 Retrieval Instructions
+# ============================================================================
+
+
+class TestRetrievalInstructions:
+    """Tests for Tier 2 autonomous fetch instructions in output."""
+
+    _SAMPLE_RECENT = [{
+        "category": "progress",
+        "content": "Test entry",
+        "research_tags": [],
+        "created_at": "2026-03-14T10:00:00+00:00",
+    }]
+
+    _SAMPLE_PERMANENT = [{
+        "category": "decision",
+        "content": "Permanent entry",
+        "research_tags": ["architecture"],
+        "created_at": "2026-03-01T10:00:00+00:00",
+    }]
+
+    def test_instructions_present_when_memories_exist(self):
+        """Retrieval instructions appear when memories are present."""
+        output = retrieval.format_context(self._SAMPLE_RECENT, [])
+        assert "## Retrieval Instructions" in output
+        assert "fetch-memories.py" in output
+        assert "Wait for user confirmation" in output
+
+    def test_instructions_absent_when_no_memories(self):
+        """No retrieval instructions when there are no memories."""
+        output = retrieval.format_context([], [])
+        assert output == ""
+
+    def test_instructions_after_memory_sections(self):
+        """Instructions appear after all memory sections."""
+        output = retrieval.format_context(
+            self._SAMPLE_RECENT, self._SAMPLE_PERMANENT,
+        )
+        recent_pos = output.index("## Recent Memories")
+        permanent_pos = output.index("## Key Decisions")
+        instructions_pos = output.index("## Retrieval Instructions")
+        assert instructions_pos > permanent_pos > recent_pos
+
+    def test_instructions_include_protocol(self):
+        """Instructions describe the gated announcement protocol."""
+        output = retrieval.format_context(self._SAMPLE_RECENT, [])
+        assert "shall I retrieve" in output
+        assert "When NOT to fetch" in output
+        assert "/recall" in output

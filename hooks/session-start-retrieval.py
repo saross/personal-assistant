@@ -366,7 +366,7 @@ def format_memory(mem: dict) -> str:
     tags = mem.get("research_tags") or []
     if isinstance(tags, str):
         tags = [tags]
-    created = mem.get("created_at", "")[:10]  # Just the date
+    created = (mem.get("created_at") or "")[:10]  # Just the date
 
     line = f"[{category}] {content}"
     if tags:
@@ -408,6 +408,42 @@ def format_context(
 
     if not sections:
         return ""
+
+    # Tier 2 autonomous retrieval instructions — tells CC how and
+    # when to fetch full memory content mid-conversation.
+    sections.append(
+        "## Retrieval Instructions\n\n"
+        "The summaries above are a compact index. When the "
+        "conversation touches a topic matching tags in this "
+        "index, you should retrieve full memory content.\n\n"
+        "**How to fetch:**\n\n"
+        "```bash\n"
+        "python3 ~/personal-assistant/scripts/fetch-memories.py "
+        "--tag <tag-name>\n"
+        "python3 ~/personal-assistant/scripts/fetch-memories.py "
+        "--query \"search terms\"\n"
+        "python3 ~/personal-assistant/scripts/fetch-memories.py "
+        "--category decision --query \"topic\"\n"
+        "```\n\n"
+        "**Protocol:**\n\n"
+        "1. When you recognise a topic match, announce: "
+        "\"I have memories about [topic] — shall I retrieve "
+        "the details?\"\n"
+        "2. Wait for user confirmation before running the "
+        "fetch command.\n"
+        "3. Run the script via Bash and incorporate the results "
+        "into your response.\n\n"
+        "**When NOT to fetch:**\n\n"
+        "- Trivial or passing mentions of a topic\n"
+        "- Topics where full content has already been retrieved "
+        "this session\n"
+        "- When the user is focused on an unrelated task and "
+        "the match is tangential\n"
+        "- When the user has not confirmed after your "
+        "announcement\n\n"
+        "**Manual alternative:** The user can also invoke "
+        "`/recall [query]` directly at any time."
+    )
 
     header = (
         "# Memory Context\n\n"
