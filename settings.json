@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/cc-session archive --from-hook --gzip --auto-metadata --pre-compact && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
+            "command": "export $(grep -v '^#' ~/personal-assistant/.env | xargs) && ~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli archive --from-hook --gzip --auto-metadata --pre-compact && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
             "timeout": 120,
             "async": true
           }
@@ -108,7 +108,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/cc-session archive --from-hook --gzip --auto-metadata && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
+            "command": "export $(grep -v '^#' ~/personal-assistant/.env | xargs) && ~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli archive --from-hook --gzip --auto-metadata && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
             "timeout": 120,
             "async": true
           }
