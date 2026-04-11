@@ -4,6 +4,7 @@
 --   sudo -u postgres createuser shawn
 --   sudo -u postgres createdb claude_memories -O shawn
 --   sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+--   sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION IF NOT EXISTS vector;"
 --
 -- Apply: psql -d claude_memories < scripts/schema.sql
 --
@@ -60,6 +61,18 @@ CREATE INDEX IF NOT EXISTS idx_memories_content_trgm
 -- Full-text search index
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
     ON memories USING GIN(to_tsvector('english', content));
+
+-- Semantic embedding (pgvector — nomic-embed-text, 768 dimensions).
+-- NULL when embedding has not yet been generated.
+-- Requires: CREATE EXTENSION IF NOT EXISTS vector;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding vector(768);
+
+-- HNSW index for cosine similarity search. Partial index on non-null
+-- embeddings only. HNSW chosen over IVFFlat: no training step needed,
+-- works incrementally, better recall at this scale (~15K records).
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
+    ON memories USING hnsw (embedding vector_cosine_ops)
+    WHERE embedding IS NOT NULL;
 
 -- ============================================================================
 -- Sync tracking

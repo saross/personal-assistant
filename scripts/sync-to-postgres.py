@@ -18,6 +18,17 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+# Optional embedding support — gracefully degrades if unavailable
+try:
+    from embed import (
+        build_embed_text,
+        generate_embeddings,
+        is_ollama_available,
+    )
+    HAS_EMBED = True
+except ImportError:
+    HAS_EMBED = False
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -219,6 +230,89 @@ def insert_memories(records: list[tuple], logger: logging.Logger) -> int:
 
 
 # ============================================================================
+# Embedding update (best-effort, post-insert)
+# ============================================================================
+
+EMBED_BATCH_SIZE = 100
+
+
+def _update_embeddings(logger: logging.Logger) -> None:
+    """
+    Embed memories with NULL embedding column.
+
+    Processes up to EMBED_BATCH_SIZE records per invocation. Called after
+    each sync cycle. If Ollama is unavailable, logs a debug message and
+    returns — content sync is never blocked by embedding failures.
+    """
+    if not is_ollama_available():
+        logger.debug("Ollama unavailable — skipping embedding update")
+        return
+
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except ImportError:
+        return
+
+    conn = None
+    try:
+        conn = psycopg2.connect(dbname=DB_NAME)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, content, COALESCE(summary, ''),
+                       COALESCE(source_context, '')
+                FROM memories
+                WHERE embedding IS NULL
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (EMBED_BATCH_SIZE,),
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            return
+
+        texts = [
+            build_embed_text({
+                "content": content,
+                "summary": summary,
+                "source_context": source_context,
+            })
+            for _, content, summary, source_context in rows
+        ]
+
+        embeddings = generate_embeddings(texts)
+
+        pairs = []
+        for (mid, _, _, _), emb in zip(rows, embeddings):
+            if emb is not None:
+                pairs.append((json.dumps(emb), mid))
+
+        if pairs:
+            with conn:
+                with conn.cursor() as cur:
+                    psycopg2.extras.execute_batch(
+                        cur,
+                        "UPDATE memories SET embedding = "
+                        "%s::vector WHERE id = %s",
+                        pairs,
+                        page_size=100,
+                    )
+            logger.info(
+                "Embedded %d memories (%d still pending)",
+                len(pairs), len(rows) - len(pairs),
+            )
+
+    except Exception as exc:
+        logger.warning("Embedding update failed (non-fatal): %s", exc)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+# ============================================================================
 # Main sync logic
 # ============================================================================
 
@@ -271,6 +365,11 @@ def sync(logger: logging.Logger) -> None:
         logger.warning(
             "Insert returned 0 — cursor NOT advanced (PostgreSQL may be down)"
         )
+
+    # Best-effort embedding of memories with NULL embeddings.
+    # Processes up to EMBED_BATCH_SIZE per sync cycle (~100ms overhead).
+    if HAS_EMBED:
+        _update_embeddings(logger)
 
 
 def main() -> None:

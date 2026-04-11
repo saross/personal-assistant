@@ -47,6 +47,7 @@ TAG_VOCAB_FILE = PA_DIR / "memories" / "tag-vocabulary.txt"
 ARCHIVE_ROOT = Path.home() / "cc-archives"
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
+MAX_TOKENS_OUTPUT = 4096
 MAX_EXCHANGES = 30
 MAX_MESSAGE_CHARS = 3000
 MAX_THINKING_CHARS = 1500
@@ -592,7 +593,7 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
                 "custom_id": custom_id,
                 "params": {
                     "model": HAIKU_MODEL,
-                    "max_tokens": 2000,
+                    "max_tokens": MAX_TOKENS_OUTPUT,
                     "messages": [{"role": "user", "content": prompt}],
                 },
             })

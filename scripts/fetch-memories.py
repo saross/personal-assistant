@@ -78,6 +78,13 @@ def parse_args() -> argparse.Namespace:
         help="Retrieve a specific memory by ID.",
     )
     parser.add_argument(
+        "--semantic", "-s",
+        type=str,
+        default=None,
+        metavar="QUERY",
+        help="Semantic similarity search (requires pgvector + embeddings).",
+    )
+    parser.add_argument(
         "--limit", "-n",
         type=int,
         default=MAX_RESULTS,
@@ -90,10 +97,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--limit must be a positive integer")
 
     # Require at least one filter
-    if not any([args.tags, args.query, args.category, args.memory_id]):
+    if not any([args.tags, args.query, args.category, args.memory_id, args.semantic]):
         parser.error(
             "At least one filter required: "
-            "--tag, --query, --category, or --id"
+            "--tag, --query, --category, --id, or --semantic"
         )
 
     return args
@@ -196,6 +203,119 @@ def try_postgres(
     except Exception as exc:  # noqa: BLE001
         print(
             f"[fetch-memories] PostgreSQL query error: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# Semantic search (pgvector)
+# ============================================================================
+
+
+def try_semantic(
+    query: str,
+    category: str | None = None,
+    tags: list[str] | None = None,
+    limit: int = MAX_RESULTS,
+) -> list[dict[str, Any]] | None:
+    """
+    Semantic similarity search via pgvector cosine distance.
+
+    Generates an embedding for the query text via Ollama, then finds
+    the closest memories by cosine similarity. Returns None if pgvector,
+    Ollama, or PostgreSQL is unavailable (caller falls back to FTS).
+
+    Args:
+        query: Free-text search query.
+        category: Optional category filter (exact match).
+        tags: Optional tag filter (array overlap).
+        limit: Maximum results.
+
+    Returns:
+        List of memory dicts with an added ``similarity`` field,
+        or None if semantic search is unavailable.
+    """
+    try:
+        from embed import embed_single
+    except ImportError:
+        print(
+            "[fetch-memories] embed module not available",
+            file=sys.stderr,
+        )
+        return None
+
+    # Generate query embedding
+    query_vector = embed_single(query)
+    if query_vector is None:
+        print(
+            "[fetch-memories] Could not generate query embedding "
+            "(Ollama unavailable?)",
+            file=sys.stderr,
+        )
+        return None
+
+    try:
+        import psycopg2
+    except ImportError:
+        return None
+
+    try:
+        conn = psycopg2.connect(dbname=DB_NAME)
+    except psycopg2.OperationalError as exc:
+        print(
+            f"[fetch-memories] PostgreSQL unavailable: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+    try:
+        columns = [
+            "id", "category", "content", "summary", "confidence",
+            "research_tags", "source_context", "created_at", "project",
+        ]
+        sql = (
+            f"SELECT {', '.join(columns)}, "
+            f"1 - (embedding <=> %s::vector) AS similarity "
+            f"FROM active_memories "
+            f"WHERE embedding IS NOT NULL"
+        )
+        params: list[Any] = [json.dumps(query_vector)]
+
+        if category:
+            sql += " AND category = %s"
+            params.append(category)
+
+        if tags:
+            sql += " AND research_tags && %s"
+            params.append([t.lower() for t in tags])
+
+        sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
+        params.append(json.dumps(query_vector))
+        params.append(limit)
+
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            record: dict[str, Any] = {}
+            for i, col in enumerate(columns):
+                value = row[i]
+                if isinstance(value, datetime):
+                    value = value.isoformat()
+                record[col] = value
+            record["similarity"] = float(row[len(columns)])
+            results.append(record)
+
+        return results
+
+    except Exception as exc:
+        print(
+            f"[fetch-memories] Semantic search error: {exc}",
             file=sys.stderr,
         )
         return None
@@ -368,6 +488,9 @@ def format_output(memories: list[dict[str, Any]]) -> str:
 
         lines.append(f"### [{i}] {category} — {created}")
         lines.append(content)
+        similarity = mem.get("similarity")
+        if similarity is not None:
+            lines.append(f"Similarity: {similarity:.3f}")
         lines.append(f"Confidence: {confidence}")
         lines.append(f"Tags: {tags_str}")
         lines.append(f"Source: {source}")
@@ -389,15 +512,39 @@ def main() -> None:
     go to stderr so CC only sees clean memory content.
     """
     args = parse_args()
+    results = None
 
-    # Try PostgreSQL first (respects decay via active_memories view)
-    results = try_postgres(
-        tags=args.tags,
-        query=args.query,
-        category=args.category,
-        memory_id=args.memory_id,
-        limit=args.limit,
-    )
+    # Determine the effective text query for FTS/JSONL fallback.
+    # --semantic provides the query text if --query is not also set.
+    effective_query = args.query or args.semantic
+
+    # Semantic search path (pgvector cosine similarity)
+    if args.semantic:
+        results = try_semantic(
+            query=args.semantic,
+            category=args.category,
+            tags=args.tags,
+            limit=args.limit,
+        )
+        if results is None:
+            # Semantic unavailable — fall through to FTS
+            print(
+                "[fetch-memories] Semantic search unavailable, "
+                "trying FTS",
+                file=sys.stderr,
+            )
+
+    # Standard search path (FTS via PostgreSQL)
+    if results is None and (
+        effective_query or args.tags or args.category or args.memory_id
+    ):
+        results = try_postgres(
+            tags=args.tags,
+            query=effective_query,
+            category=args.category,
+            memory_id=args.memory_id,
+            limit=args.limit,
+        )
 
     # Fall back to JSONL if PostgreSQL is unavailable
     if results is None:
@@ -407,7 +554,7 @@ def main() -> None:
         )
         results = fallback_jsonl(
             tags=args.tags,
-            query=args.query,
+            query=effective_query,
             category=args.category,
             memory_id=args.memory_id,
             limit=args.limit,
