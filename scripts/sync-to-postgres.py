@@ -316,6 +316,47 @@ def _update_embeddings(logger: logging.Logger) -> None:
 # Main sync logic
 # ============================================================================
 
+def check_canonical_for_duplicates(logger: logging.Logger) -> None:
+    """Warn (once per sync) if the canonical contains duplicate ids.
+
+    Duplicate ids indicate canonical corruption — most commonly from an
+    accidental concat (merge/restore/manual append) or from a bug in a
+    rewrite script. This tripwire was added after the 2026-04-14 dedup
+    recovered from a 2026-03-15 concat accident that went unnoticed for
+    ~30 days. A warning (not a fatal error) is deliberate: a corrupted
+    canonical is bad, but not syncing is worse. The warning gets read
+    out in cron logs and on the next /standup.
+    """
+    seen: set[str] = set()
+    dups: set[str] = set()
+    try:
+        with open(MEMORIES_FILE, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    mid = json.loads(stripped).get("id")
+                except json.JSONDecodeError:
+                    continue
+                if not mid:
+                    continue
+                if mid in seen:
+                    dups.add(mid)
+                else:
+                    seen.add(mid)
+    except OSError as exc:
+        logger.warning("Duplicate-id check could not read canonical: %s", exc)
+        return
+    if dups:
+        logger.warning(
+            "Canonical contains %d duplicate ids — possible corruption. "
+            "Run scripts/dedup-memories.py to investigate. First 3: %s",
+            len(dups),
+            sorted(dups)[:3],
+        )
+
+
 def sync(logger: logging.Logger) -> None:
     """
     Run one sync cycle: read new JSONL lines, insert into PostgreSQL,
@@ -324,6 +365,8 @@ def sync(logger: logging.Logger) -> None:
     if not MEMORIES_FILE.exists():
         logger.warning("Memories file not found: %s", MEMORIES_FILE)
         return
+
+    check_canonical_for_duplicates(logger)
 
     cursor_line = load_cursor()
 
