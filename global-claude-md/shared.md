@@ -153,3 +153,7 @@ Commit types table, gitignore policy, and pre-commit checklist in `~/personal-as
 ## PostgreSQL Query Layer
 
 PostgreSQL is a derived query layer for the memory system (JSONL is canonical). Full documentation in `~/personal-assistant/global-claude-md/postgresql-reference.md`. **Read that file when** querying the memories database or running sync scripts.
+
+## Zotero Library
+
+`~/Zotero/zotero.sqlite` — local reference library. Full schema, query paths, and scripting API in `~/personal-assistant/global-claude-md/zotero-reference.md`. **Read that file when** using `/read`, `/synthesise`, `/cite`, `/cite-new`, or querying Zotero.

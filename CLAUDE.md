@@ -81,6 +81,38 @@ I have permission to be confrontational about:
 
 Hard questions are expected. Honest answers required.
 
+## System Capabilities
+
+Full architecture, data flow, and script inventory in
+`global-claude-md/infrastructure-reference.md`. **Read that file when** working
+on hooks, scripts, sync pipelines, or integration points.
+
+### Reference Docs
+
+| Topic | File | Read when… |
+|-------|------|------------|
+| Architecture & data flow | `global-claude-md/infrastructure-reference.md` | Hooks, scripts, integrations |
+| Memory categories & tags | `global-claude-md/memory-system-reference.md` | `/remember`, `/tags`, assigning categories |
+| PostgreSQL & pgvector | `global-claude-md/postgresql-reference.md` | Querying the database, running sync |
+| Git conventions | `global-claude-md/git-reference.md` | Commit types, `.gitignore` |
+| Scratchpad protocol | `global-claude-md/scratchpad-reference.md` | Writing scratchpad entries |
+| Zotero integration | `global-claude-md/zotero-reference.md` | `/read`, `/cite`, `/synthesise` |
+| Network & servers | `data/global-claude-md/network-resources.md` | SSH, Ollama, server operations |
+
+### Research Commands
+
+- `/read` — Structured paper reading (Zotero)
+- `/synthesise` — Thematic synthesis from memories/collections
+- `/cite` — Quick citation lookup
+- `/cite-new` — Generate BibTeX from DOI
+- `/gaps` — Literature gap analysis across a Zotero collection
+
+### Memory Commands
+
+- `/recall [query]` — Search memories + sessions (FTS + semantic)
+- `/remember [content]` — Manual memory capture
+- `/tags` — Tag vocabulary gardening (monthly: stats, duplicate detection, merge)
+
 ## Context
 
 Shawn is an archaeologist and ancient historian with a long academic career who recently took a redundancy from university. This is a finite window for making progress on research and business goals before returning to "normal" work.
