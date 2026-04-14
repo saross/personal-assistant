@@ -30,6 +30,9 @@ pattern (180d), gotcha (180d)
 
 - Use lowercase with hyphens: `gps-accuracy`, `field-method`,
   `fair-principle`
-- Singular forms preferred (consolidate plurals in monthly gardening)
+- Singular forms preferred (consolidate plurals via `/tags` monthly gardening)
 - See `~/personal-assistant/memories/tag-vocabulary.txt` for seed
   vocabulary
+- `/tags` command runs `scripts/tag-gardening.py` — detects plural pairs,
+  Levenshtein near-duplicates, and prefix relationships. Merge plans are
+  reviewed interactively then applied atomically to the canonical JSONL.
