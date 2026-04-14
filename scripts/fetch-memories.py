@@ -117,6 +117,7 @@ def try_postgres(
     category: str | None = None,
     memory_id: str | None = None,
     limit: int = MAX_RESULTS,
+    project: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """
     Query the ``active_memories`` view in PostgreSQL.
@@ -176,6 +177,10 @@ def try_postgres(
         if category:
             conditions.append("category = %s")
             params.append(category)
+
+        if project:
+            conditions.append("project = %s")
+            params.append(project)
 
         sql = base
         for cond in conditions:

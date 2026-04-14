@@ -61,6 +61,11 @@ audience: "researchers and future instances"
 Purpose: Factual record of what was done, decided, and produced.
 Summarise, don't reflect — that's what session-reflection.md is for.
 
+When relevant, close a log entry with a brief **Contextual assumptions** note:
+what was true at the time that won't be obvious from the facts alone — decisions
+made under time pressure, tool/API constraints that shaped the approach, external
+dependencies that influenced choices. Skip this when the context is self-evident.
+
 ### Always ask
 
 After creating the core documents, ask the user whether they want
@@ -142,13 +147,15 @@ freeform reflection.
 - What surprised you about this session?
 - What would you do differently if you replayed this session?
 - What question emerged that wasn't pursued?
+- What context from this session will be hardest to reconstruct in 6 months?
 
 **When relevant** (use if applicable):
 
 - What felt uncertain or unresolved at the end?
 - What was different about this session compared to recent ones?
 - Where did you and the human disagree, and who was right?
-- What's the single most important thing a future instance should know?
+- What decision or trade-off made today will look arbitrary without this session's context?
+- What's the single most important thing a future reader should know about this session?
 
 **Avoid**: Enumerated lists of "what X brought." If both parties' contributions
 matter, weave them into the narrative rather than listing them separately.
