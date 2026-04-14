@@ -155,15 +155,41 @@ Creator dict keys: `first_name`, `last_name`, `type` (author/editor/etc).
 ## Integration with Memory System
 
 - `source_insight` memories have optional `zotero_key` field
-- `/read` captures insights with the item's key for future linking
-- Write-back (insights → Zotero notes) is planned but not yet built
-- Insights are cached in JSONL (offline-safe) until sync runs
+- `/read` captures insights with the item's 8-char Zotero key
+- `/remember` accepts `zotero:KEY` prefix for manual capture
+- Insights are pushed to Zotero notes by `sync-to-zotero.py`
+- Insights are cached in JSONL (offline-safe) until the sync runs
 
-## Write-Back Architecture (planned, not built)
+## Write-Back Sync
 
-- `pyzotero` library for API access
-- Requires `ZOTERO_LIBRARY_ID` and `ZOTERO_API_KEY` env vars
-- `sync-to-zotero.py` would push `source_insight` memories with
-  `zotero_key` to Zotero item notes
-- Cursor-tracked, same pattern as `sync-to-postgres.py`
-- `pending_zotero_sync` view already defined in schema.sql
+`scripts/sync-to-zotero.py` pushes `source_insight` memories to Zotero item
+notes via the pyzotero API. Manual invocation only (no cron yet):
+
+```bash
+venv/bin/python3 scripts/sync-to-zotero.py [--dry-run] [--limit N] [--verbose]
+```
+
+**Key requirements:**
+
+- `pyzotero` library (install: `venv/bin/pip install pyzotero`)
+- `ZOTERO_LIBRARY_ID` and `ZOTERO_API_KEY` env vars (in `.env`)
+- The memory's `zotero_key` field must contain a valid 8-character
+  alphanumeric Zotero item key (pattern `^[A-Z0-9]{8}$`). Memories with
+  legacy keys (citation slugs, DOIs, arXiv IDs) are skipped with a warning
+  and never touched by the sync
+- Notes must go through the API, never direct SQLite writes
+
+**Idempotency:** each note written by the sync includes a footer with the
+originating memory ID. Before creating a note, the sync fetches existing
+notes on the item and skips any memory that is already present. Safe to
+re-run at any time.
+
+**Cursor tracking:** line-based in `memories/sync-cursors.json` (key:
+`zotero_sync_line`). The cursor only advances on success; failures cause
+retry on the next run.
+
+**Failure handling:**
+
+- Item not found (404) → log + skip, cursor still advances (permanent skip)
+- Other errors → log + mark failed, cursor does NOT advance (retry on next run)
+- Legacy key format → counted as `skipped_legacy`, cursor advances

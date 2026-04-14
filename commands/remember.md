@@ -8,6 +8,7 @@ Manually capture a memory without waiting for automatic extraction.
 /remember [content]
 /remember category:[category] [content]
 /remember category:[category] tags:[tag1,tag2] [content]
+/remember category:source_insight zotero:[8-char-key] tags:[tag1,tag2] [content]
 ```
 
 ## Arguments
@@ -15,10 +16,15 @@ Manually capture a memory without waiting for automatic extraction.
 - `[content]` — The memory to capture (required)
 - `category:[category]` — Explicit category (optional; if omitted, suggest one)
 - `tags:[tag1,tag2]` — Comma-separated tags (optional; if omitted, suggest some)
+- `zotero:[key]` — 8-character Zotero item key (optional; only meaningful for
+  `source_insight`). Populates the memory's `zotero_key` field for later
+  write-back sync.
 
 ## Behaviour
 
-1. **Parse** the input to extract category, tags, and content
+1. **Parse** the input to extract category, tags, zotero key, and content.
+   Recognise these token prefixes: `category:`, `tags:`, `zotero:`. Everything
+   else is content.
 2. **If category not specified**, suggest one based on content and confirm with user
 3. **If tags not specified**, suggest 2-4 relevant tags based on content and vocabulary
 4. **Normalise tags** using these rules in order:
@@ -103,7 +109,17 @@ Captured to memory:
 ## Special Fields
 
 - For `commitment` category: ask about deadline and include `deadline_at` in ISO format
-- For `source_insight` category: ask about Zotero key and include `zotero_key` if known
+- For `source_insight` category: include `zotero_key` in the memory when a
+  Zotero item key is known. If the invocation includes a `zotero:KEY`
+  argument, use that value. Otherwise, when invoked outside of a `/read`
+  session, ask the user for the key — but do not re-ask if you already
+  displayed one in a prior step. **The key must be the 8-character
+  alphanumeric key** from Zotero (e.g., `MPZHXY3P`, `N2C5KIGL`) — not a
+  citation slug, author-year, title, DOI, or arXiv ID. Any other format
+  breaks the Zotero write-back sync. To look up a real key, run
+  `search_items()` from `scripts/zotero.py` and use the `key` field of the
+  returned item dict. If only a citation slug is known and a lookup is
+  impractical, omit the field entirely.
 - For `waiting_for` category: note who you're waiting on in the content
 
 ## Examples
@@ -113,7 +129,7 @@ Captured to memory:
 
 /remember category:decision Using PostgreSQL for memory store because of query complexity
 
-/remember category:source_insight tags:gps-accuracy,field-methods Smith 2024 reports 3-5m degradation under canopy
+/remember category:source_insight zotero:MPZHXY3P tags:gps-accuracy,field-methods Smith 2024 reports 3-5m degradation under canopy
 
 /remember category:commitment tags:deadline Brian needs Fieldmark docs by Wednesday 12 Feb
 ```

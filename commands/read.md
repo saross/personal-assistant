@@ -51,9 +51,10 @@ Which item? (enter number, or refine your search)
 
 For the selected item, gather:
 
-1. **Full metadata** via `get_item(item_id)`:
-   - Title, authors, date, abstract, DOI, publication, volume, pages
-   - Tags and collections
+1. **Full metadata** — use the dict returned by `search_items()` directly
+   (it already contains title, authors, date, abstract, DOI, publication,
+   volume, pages, tags, collections). Only call `get_item(item["key"])`
+   if the `key:` lookup path was used.
 
 2. **PDF** via `get_pdf_path(item_id)`:
    - If a PDF exists, note the path — you can read it with the Read tool
@@ -129,10 +130,18 @@ Should I capture any insights from this reading?
 For each insight to capture, use `/remember` with:
 - **Category:** `source_insight`
 - **Content:** Self-contained insight (understandable without conversation context)
-- **Tags:** Include relevant research tags + the zotero key
-- **Zotero key:** The item's key (for future Zotero sync)
+- **Tags:** Relevant research tags (topic, method, findings)
+- **Zotero key:** The item's 8-character alphanumeric key from Step 3
+  (e.g., `MPZHXY3P`, `N2C5KIGL`) — **NOT** a citation slug, author-year,
+  DOI, or arXiv ID. This must be the exact value from Zotero's internal
+  identifier so the write-back sync can resolve the item via the Zotero API.
 
-Format: `/remember category:source_insight tags:[tags] zotero:[key] [content]`
+Format: `/remember category:source_insight tags:[tags] zotero:[8-char-key] [content]`
+
+**Critical:** The `zotero_key` field must contain only the 8-character
+alphanumeric key shown as `**Zotero key:** [key]` in Step 3's overview.
+Anything else (slugs, titles, DOIs) breaks the downstream Zotero write-back
+sync — the API returns 404 and the insight is never pushed to the item note.
 
 ### 7. Summary
 
