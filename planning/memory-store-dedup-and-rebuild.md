@@ -221,3 +221,14 @@ Total: 40–70 min excluding Phase 3 embedding regen time.
 - Did the 2026-04-11 session reprocessing pass emit records for the
   category_config or sync_state tables too, or only `memories`? Check
   `reprocess-sessions.py` to confirm.
+
+## Related
+
+- `amd-tower-postgres-catchup.md` — independent bug affecting amd-tower
+  only (database schema is 12 days behind the post-refactor codebase).
+  **Sequencing matters**: this dedup plan should run on zbook *first*,
+  push the deduped canonical, then the amd-tower catchup rebuilds from
+  the cleaned canonical in one pass. Running them in the other order
+  wastes embedding compute on duplicates that will be removed shortly
+  after. See the "Coordination with dedup plan" section in the catchup
+  runbook for the full reasoning.
