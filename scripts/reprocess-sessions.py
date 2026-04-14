@@ -426,8 +426,16 @@ def format_memories(
     session_id: str,
     project: str,
     session_date: str,
+    custom_id: str = "",
 ) -> list[dict]:
-    """Format extracted memories with metadata, normalised tags, and IDs."""
+    """Format extracted memories with metadata, normalised tags, and IDs.
+
+    ``custom_id`` is the per-chunk batch request id and must be included in
+    the id hash so memories from different chunks of the same session get
+    distinct ids. Without it, memory ``i=0`` from chunk 0 collides with
+    memory ``i=0`` from chunk 1 and so on (see the 2026-04-14 dedup —
+    851 records were re-id'd to recover from this bug).
+    """
     # Use the session date for created_at (not now), so memories are
     # temporally associated with when they actually happened
     if session_date:
@@ -449,8 +457,9 @@ def format_memories(
         if category not in VALID_CATEGORIES:
             category = "context"
 
-        # Unique ID
-        id_source = f"{session_id}-reprocess-{i}"
+        # Unique ID — include custom_id (batch request id) to prevent
+        # chunk-level collisions within the same session.
+        id_source = f"{session_id}-reprocess-{custom_id}-{i}"
         mem_id = hashlib.sha256(id_source.encode()).hexdigest()[:12]
 
         raw_tags = mem.get("research_tags", [])
@@ -764,6 +773,7 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
             session_id=meta["session_id"],
             project=meta["project"],
             session_date=meta.get("started_at", ""),
+            custom_id=custom_id,
         )
 
         all_memories.extend(memories)
