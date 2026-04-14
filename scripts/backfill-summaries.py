@@ -195,13 +195,30 @@ def parse_response(response_text: str) -> dict[str, str]:
 
 
 def write_memories(records: list[dict | None]) -> None:
-    """Write all records back to the JSONL file."""
+    """Write all records back to the JSONL file.
+
+    After writing, verify the file's line count matches the in-memory
+    record count. If it doesn't, the file has been corrupted (an
+    historical "append instead of overwrite" regression, a concurrent
+    writer interfering, or a partial write) and we raise loudly rather
+    than leave a silently broken canonical.
+    """
+    expected = len(records)
     with open(MEMORIES_FILE, "w", encoding="utf-8") as f:
         for record in records:
             if record is None:
                 f.write("\n")
             else:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    # Invariant: file line count must equal in-memory record count.
+    with open(MEMORIES_FILE, encoding="utf-8") as f:
+        actual = sum(1 for _ in f)
+    if actual != expected:
+        raise RuntimeError(
+            f"write_memories invariant violated: wrote {actual} lines, "
+            f"expected {expected}. Canonical may be corrupted — investigate "
+            f"before any further sync operations."
+        )
 
 
 # ============================================================================
