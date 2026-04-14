@@ -3,21 +3,28 @@
 #
 # Probes a list of candidate Ollama endpoints in priority order and prints
 # the first one that responds to /api/tags within a short timeout. Used to
-# resolve OLLAMA_BASE_URL for embedding-capable scripts on machines without
-# local Ollama (e.g., amd-tower), with automatic fallback when the primary
-# endpoint is down.
+# resolve OLLAMA_BASE_URL for embedding-capable scripts on machines with
+# no dedicated GPU (e.g., amd-tower), with automatic fallback to a local
+# Ollama instance when sapphire is unreachable.
 #
 # Priority order:
-#   1. sapphire (192.168.1.150) — primary, dedicated compute server
-#   2. zbook    (192.168.1.80)  — fallback, when on the home LAN
+#   1. sapphire  (192.168.1.150) — primary, dedicated GPU compute
+#   2. localhost (127.0.0.1)     — fallback, local Ollama on the current
+#                                  machine. CPU-only on amd-tower, which
+#                                  is still adequate for nomic-embed-text
+#                                  (~12 ms/record, ~3 min per 16k backfill)
 #
-# The fallback covers the case where sapphire is rebooted and pending LUKS
-# unlock (physical console access required), or hardware/service failure,
-# while zbook is present. It does NOT help when both machines are
-# unreachable (power cut, off-network) — in that case the wrapper prints
-# an empty string and embed.py falls through to localhost, which fails
-# best-effort on amd-tower and leaves new rows with NULL embeddings
-# (recoverable via backfill-embeddings.py once any endpoint returns).
+# Both candidates use Ollama's default port 11434. The localhost fallback
+# means the pipeline keeps working in every realistic outage: sapphire
+# reboot pending LUKS unlock, hardware or service failure on sapphire,
+# home-network issues, or physical travel away from sapphire's network.
+# The only remaining failure mode is "the current machine's own ollama
+# service is stopped" — in which case the wrapper prints an empty string
+# and exits 1. embed.py then falls through to its own localhost default
+# (same URL), which also fails, and embedding calls return None per
+# record best-effort. sync-to-postgres.py still commits INSERTs, so new
+# rows land with embedding IS NULL (recoverable via backfill-embeddings.py
+# once any endpoint returns).
 #
 # Usage (e.g. in a cron job on amd-tower):
 #     OLLAMA_BASE_URL=$(~/personal-assistant/scripts/ollama-endpoint.sh) \
@@ -35,8 +42,8 @@
 set -u
 
 CANDIDATES=(
-    "http://192.168.1.150:11434"   # sapphire — primary
-    "http://192.168.1.80:11434"    # zbook    — fallback
+    "http://192.168.1.150:11434"   # sapphire  — primary (dedicated GPU)
+    "http://127.0.0.1:11434"       # localhost — fallback (CPU-only on amd-tower)
 )
 
 for url in "${CANDIDATES[@]}"; do
