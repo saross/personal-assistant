@@ -1,0 +1,771 @@
+#!/usr/bin/env python3
+"""
+Academic literature search CLI for the lit-scout agent.
+
+Provides subcommands for querying CrossRef, Semantic Scholar, and OpenAlex
+APIs with automatic fallback, rate limiting, and deduplication. All output
+is JSON to stdout for machine consumption by the lit-scout agent.
+
+Usage:
+    lit-search.py metadata DOI
+    lit-search.py references DOI
+    lit-search.py citations DOI
+    lit-search.py search "QUERY"
+    lit-search.py openalex-cited-by DOI
+
+Requires: httpx (already in the personal-assistant venv)
+No API keys required — uses free tiers and polite pool headers.
+"""
+
+import argparse
+import json
+import logging
+import re
+import sys
+import time
+import urllib.parse
+from typing import Any, Optional
+
+import httpx
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+MAILTO = "shawn@faims.edu.au"
+USER_AGENT = f"lit-scout/1.0 (mailto:{MAILTO})"
+
+# API base URLs
+CROSSREF_BASE = "https://api.crossref.org"
+S2_BASE = "https://api.semanticscholar.org/graph/v1"
+OPENALEX_BASE = "https://api.openalex.org"
+
+# Rate limiting (seconds between requests per source)
+RATE_LIMITS = {
+    "crossref": 0.1,
+    "s2": 0.5,
+    "openalex": 0.1,
+}
+
+# Default result limits
+DEFAULT_SEARCH_LIMIT = 10
+DEFAULT_CITATION_LIMIT = 50
+
+# Track last request time per source for rate limiting
+_last_request: dict[str, float] = {}
+
+# ============================================================================
+# Logging
+# ============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("lit-search")
+
+# ============================================================================
+# HTTP Client
+# ============================================================================
+
+
+def _get_client() -> httpx.Client:
+    """Create an httpx client with appropriate headers."""
+    return httpx.Client(
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+        },
+        timeout=30.0,
+        follow_redirects=True,
+    )
+
+
+def _rate_limit(source: str) -> None:
+    """Enforce per-source rate limiting."""
+    now = time.time()
+    last = _last_request.get(source, 0.0)
+    delay = RATE_LIMITS.get(source, 0.1)
+    elapsed = now - last
+    if elapsed < delay:
+        time.sleep(delay - elapsed)
+    _last_request[source] = time.time()
+
+
+def _safe_get(
+    client: httpx.Client,
+    url: str,
+    source: str,
+    params: Optional[dict] = None,
+) -> Optional[dict]:
+    """
+    Make a GET request with rate limiting and error handling.
+
+    Returns the parsed JSON response, or None on failure.
+    Logs errors to stderr but does not raise.
+    """
+    _rate_limit(source)
+    try:
+        resp = client.get(url, params=params)
+        if resp.status_code == 429:
+            log.warning("%s: rate limited (429). Backing off 5s.", source)
+            time.sleep(5.0)
+            _rate_limit(source)
+            resp = client.get(url, params=params)
+        if resp.status_code != 200:
+            log.warning(
+                "%s: HTTP %d for %s", source, resp.status_code, url
+            )
+            return None
+        data = resp.json()
+        if not isinstance(data, dict):
+            log.warning(
+                "%s: unexpected response type: %s",
+                source, type(data).__name__,
+            )
+            return None
+        return data
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        log.warning("%s: request failed: %s", source, exc)
+        return None
+
+
+# ============================================================================
+# Paper schema normalisation
+# ============================================================================
+
+
+def _normalise_paper(
+    raw: dict,
+    source: str,
+) -> dict[str, Any]:
+    """
+    Normalise a paper record from any API source into the common schema.
+
+    Returns:
+        {title, authors, year, doi, openalex_id, s2_id,
+         citation_count, source, abstract}
+    """
+    if source == "crossref":
+        return _normalise_crossref(raw)
+    elif source == "s2":
+        return _normalise_s2(raw)
+    elif source == "openalex":
+        return _normalise_openalex(raw)
+    else:
+        return {"title": str(raw), "source": source}
+
+
+def _normalise_crossref(raw: dict) -> dict[str, Any]:
+    """Normalise a CrossRef work record."""
+    # Authors: CrossRef uses {given, family} objects
+    authors = []
+    for author in raw.get("author", []):
+        family = author.get("family", "")
+        given = author.get("given", "")
+        if family and given:
+            authors.append(f"{family}, {given}")
+        elif family:
+            authors.append(family)
+
+    # Year: CrossRef nests dates oddly; values can be None
+    year = None
+    for date_field in ("published-print", "published-online", "issued"):
+        date_obj = raw.get(date_field)
+        if not isinstance(date_obj, dict):
+            continue
+        date_parts = date_obj.get("date-parts", [[]])
+        if date_parts and date_parts[0] and date_parts[0][0]:
+            year = date_parts[0][0]
+            break
+
+    return {
+        "title": _first_or_none(raw.get("title", [])),
+        "authors": authors,
+        "year": year,
+        "doi": raw.get("DOI"),
+        "openalex_id": None,
+        "s2_id": None,
+        "citation_count": raw.get("is-referenced-by-count"),
+        "source": "crossref",
+        "abstract": raw.get("abstract"),
+    }
+
+
+def _normalise_s2(raw: dict) -> dict[str, Any]:
+    """Normalise a Semantic Scholar paper record."""
+    authors = []
+    for author in raw.get("authors", []):
+        name = author.get("name", "")
+        if name:
+            authors.append(name)
+
+    # Extract DOI from externalIds
+    external_ids = raw.get("externalIds", {}) or {}
+    doi = external_ids.get("DOI")
+
+    return {
+        "title": raw.get("title"),
+        "authors": authors,
+        "year": raw.get("year"),
+        "doi": doi,
+        "openalex_id": None,
+        "s2_id": raw.get("paperId"),
+        "citation_count": raw.get("citationCount"),
+        "source": "s2",
+        "abstract": raw.get("abstract"),
+    }
+
+
+def _normalise_openalex(raw: dict) -> dict[str, Any]:
+    """Normalise an OpenAlex work record."""
+    authors = []
+    for authorship in raw.get("authorships", []):
+        author = authorship.get("author", {})
+        name = author.get("display_name", "")
+        if name:
+            authors.append(name)
+
+    # OpenAlex DOI includes a URL prefix (various formats seen)
+    doi_url = raw.get("doi") or ""
+    doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi_url) if doi_url else None
+
+    # OpenAlex ID is a URL like https://openalex.org/W1234567
+    oa_id = raw.get("id", "")
+
+    return {
+        "title": raw.get("display_name") or raw.get("title"),
+        "authors": authors,
+        "year": raw.get("publication_year"),
+        "doi": doi,
+        "openalex_id": oa_id,
+        "s2_id": None,
+        "citation_count": raw.get("cited_by_count"),
+        "source": "openalex",
+        "abstract": _reconstruct_openalex_abstract(raw),
+    }
+
+
+def _reconstruct_openalex_abstract(raw: dict) -> Optional[str]:
+    """
+    Reconstruct abstract from OpenAlex's inverted index format.
+
+    OpenAlex stores abstracts as {word: [positions]} for compression.
+    """
+    inverted = raw.get("abstract_inverted_index")
+    if not inverted:
+        return None
+    # Build word list sorted by position
+    words: list[tuple[int, str]] = []
+    for word, positions in inverted.items():
+        for pos in positions:
+            words.append((pos, word))
+    words.sort(key=lambda x: x[0])
+    return " ".join(w for _, w in words)
+
+
+def _first_or_none(lst: list) -> Optional[str]:
+    """Return the first element of a list, or None if empty."""
+    return lst[0] if lst else None
+
+
+# ============================================================================
+# Deduplication
+# ============================================================================
+
+
+def _deduplicate(papers: list[dict]) -> list[dict]:
+    """
+    Deduplicate papers by DOI. When duplicates exist, prefer the record
+    with more complete metadata (more non-None fields).
+    """
+    seen: dict[str, dict] = {}
+    no_doi: list[dict] = []
+
+    for paper in papers:
+        doi = (paper.get("doi") or "").lower().strip()
+        if not doi:
+            no_doi.append(paper)
+            continue
+
+        if doi in seen:
+            # Keep the record with more non-None fields
+            existing_count = sum(
+                1 for v in seen[doi].values() if v is not None
+            )
+            new_count = sum(
+                1 for v in paper.values() if v is not None
+            )
+            if new_count > existing_count:
+                seen[doi] = paper
+        else:
+            seen[doi] = paper
+
+    return list(seen.values()) + no_doi
+
+
+# ============================================================================
+# Subcommand: metadata
+# ============================================================================
+
+
+def cmd_metadata(doi: str, client: httpx.Client) -> dict:
+    """
+    Fetch full metadata for a single paper by DOI.
+
+    Tries CrossRef first, then Semantic Scholar, then OpenAlex.
+    Merges results to produce the most complete record.
+    """
+    results = []
+
+    # CrossRef
+    data = _safe_get(
+        client, f"{CROSSREF_BASE}/works/{urllib.parse.quote(doi, safe='')}", "crossref"
+    )
+    if data and "message" in data:
+        results.append(_normalise_crossref(data["message"]))
+
+    # Semantic Scholar
+    s2_fields = (
+        "title,authors,year,abstract,citationCount,referenceCount,"
+        "fieldsOfStudy,publicationTypes,externalIds"
+    )
+    data = _safe_get(
+        client,
+        f"{S2_BASE}/paper/DOI:{urllib.parse.quote(doi, safe='')}",
+        "s2",
+        params={"fields": s2_fields},
+    )
+    if data and "paperId" in data:
+        record = _normalise_s2(data)
+        # Add extra S2 fields
+        record["reference_count"] = data.get("referenceCount")
+        record["fields_of_study"] = data.get("fieldsOfStudy")
+        record["publication_types"] = data.get("publicationTypes")
+        results.append(record)
+
+    # OpenAlex
+    data = _safe_get(
+        client,
+        f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
+        "openalex",
+        params={"mailto": MAILTO},
+    )
+    if data and "id" in data:
+        record = _normalise_openalex(data)
+        record["is_oa"] = data.get("open_access", {}).get("is_oa")
+        record["oa_url"] = data.get("open_access", {}).get("oa_url")
+        results.append(record)
+
+    if not results:
+        return {"error": f"No metadata found for DOI: {doi}"}
+
+    # Merge: start with first result, fill gaps from subsequent.
+    # Use truthiness check so empty lists and zero counts get overwritten
+    # by populated values from other sources.
+    merged = results[0].copy()
+    for extra in results[1:]:
+        for key, value in extra.items():
+            if value and not merged.get(key):
+                merged[key] = value
+    merged["sources"] = [r["source"] for r in results]
+    return merged
+
+
+# ============================================================================
+# Subcommand: references (backward chaining)
+# ============================================================================
+
+
+def cmd_references(
+    doi: str,
+    client: httpx.Client,
+    limit: int = DEFAULT_CITATION_LIMIT,
+) -> list[dict]:
+    """
+    Get the reference list (backward chaining) for a paper.
+
+    Fallback chain: CrossRef → Semantic Scholar → OpenAlex.
+    Results are merged, deduplicated, and truncated to `limit`.
+    """
+    all_papers: list[dict] = []
+
+    # CrossRef: reference array
+    data = _safe_get(
+        client, f"{CROSSREF_BASE}/works/{urllib.parse.quote(doi, safe='')}", "crossref"
+    )
+    if data and "message" in data:
+        refs = data["message"].get("reference", [])
+        for ref in refs:
+            paper = {
+                "title": ref.get("article-title") or ref.get(
+                    "unstructured"
+                ),
+                "authors": [],
+                "year": _parse_year(ref.get("year")),
+                "doi": ref.get("DOI"),
+                "openalex_id": None,
+                "s2_id": None,
+                "citation_count": None,
+                "source": "crossref",
+                "abstract": None,
+            }
+            # Try to extract author from unstructured string
+            author = ref.get("author")
+            if author:
+                paper["authors"] = [author]
+            if paper["title"] or paper["doi"]:
+                all_papers.append(paper)
+        log.info("CrossRef: found %d references", len(refs))
+
+    # Semantic Scholar: references with metadata
+    s2_fields = (
+        "references.title,references.authors,references.year,"
+        "references.externalIds,references.citationCount"
+    )
+    data = _safe_get(
+        client,
+        f"{S2_BASE}/paper/DOI:{urllib.parse.quote(doi, safe='')}",
+        "s2",
+        params={"fields": s2_fields},
+    )
+    if data and "references" in data:
+        for ref in (data["references"] or []):
+            if ref:
+                all_papers.append(_normalise_s2(ref))
+        log.info(
+            "S2: found %d references", len(data.get("references", []))
+        )
+
+    # OpenAlex: referenced_works list (gives OpenAlex IDs, need to resolve)
+    data = _safe_get(
+        client,
+        f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
+        "openalex",
+        params={"mailto": MAILTO},
+    )
+    if data and "referenced_works" in data:
+        ref_ids = data["referenced_works"][:DEFAULT_CITATION_LIMIT]
+        if ref_ids:
+            # Batch fetch via filter
+            id_filter = "|".join(ref_ids)
+            batch = _safe_get(
+                client,
+                f"{OPENALEX_BASE}/works",
+                "openalex",
+                params={
+                    "filter": f"openalex:{id_filter}",
+                    "per_page": str(len(ref_ids)),
+                    "mailto": MAILTO,
+                },
+            )
+            if batch and "results" in batch:
+                for work in batch["results"]:
+                    all_papers.append(_normalise_openalex(work))
+                log.info(
+                    "OpenAlex: resolved %d/%d references",
+                    len(batch["results"]),
+                    len(ref_ids),
+                )
+
+    return _deduplicate(all_papers)[:limit]
+
+
+# ============================================================================
+# Subcommand: citations (forward chaining)
+# ============================================================================
+
+
+def cmd_citations(
+    doi: str,
+    client: httpx.Client,
+    limit: int = DEFAULT_CITATION_LIMIT,
+) -> list[dict]:
+    """
+    Get papers that cite a given paper (forward chaining).
+
+    Uses Semantic Scholar (best citation data) and OpenAlex (highest volume).
+    Results sorted by citation count descending.
+    """
+    all_papers: list[dict] = []
+
+    # Semantic Scholar: citations with metadata
+    s2_fields = (
+        "citations.title,citations.authors,citations.year,"
+        "citations.externalIds,citations.citationCount"
+    )
+    data = _safe_get(
+        client,
+        f"{S2_BASE}/paper/DOI:{urllib.parse.quote(doi, safe='')}",
+        "s2",
+        params={"fields": s2_fields},
+    )
+    if data and "citations" in data:
+        for cit in (data["citations"] or [])[:limit]:
+            if cit:
+                all_papers.append(_normalise_s2(cit))
+        log.info(
+            "S2: found %d citations",
+            len(data.get("citations", [])),
+        )
+
+    # OpenAlex: cited-by via filter
+    # First resolve DOI to OpenAlex ID
+    oa_data = _safe_get(
+        client,
+        f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
+        "openalex",
+        params={"mailto": MAILTO, "select": "id"},
+    )
+    if oa_data and "id" in oa_data:
+        oa_id = oa_data["id"]
+        cited_by = _safe_get(
+            client,
+            f"{OPENALEX_BASE}/works",
+            "openalex",
+            params={
+                "filter": f"cites:{oa_id}",
+                "per_page": str(min(limit, 50)),
+                "sort": "cited_by_count:desc",
+                "mailto": MAILTO,
+            },
+        )
+        if cited_by and "results" in cited_by:
+            for work in cited_by["results"]:
+                all_papers.append(_normalise_openalex(work))
+            log.info(
+                "OpenAlex: found %d citing papers",
+                len(cited_by["results"]),
+            )
+
+    deduped = _deduplicate(all_papers)
+    # Sort by citation count descending (most-cited first)
+    deduped.sort(
+        key=lambda p: p.get("citation_count") or 0, reverse=True
+    )
+    return deduped[:limit]
+
+
+# ============================================================================
+# Subcommand: search
+# ============================================================================
+
+
+def cmd_search(
+    query: str,
+    client: httpx.Client,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+) -> list[dict]:
+    """
+    Search for papers by keyword/title across multiple sources.
+
+    Uses CrossRef and OpenAlex for broad coverage. Results are
+    deduplicated and truncated to `limit`.
+    """
+    all_papers: list[dict] = []
+
+    # CrossRef search
+    data = _safe_get(
+        client,
+        f"{CROSSREF_BASE}/works",
+        "crossref",
+        params={
+            "query": query,
+            "rows": str(limit),
+            "sort": "relevance",
+            "order": "desc",
+        },
+    )
+    if data and "message" in data:
+        for item in data["message"].get("items", []):
+            all_papers.append(_normalise_crossref(item))
+        log.info(
+            "CrossRef: found %d results",
+            len(data["message"].get("items", [])),
+        )
+
+    # OpenAlex search
+    data = _safe_get(
+        client,
+        f"{OPENALEX_BASE}/works",
+        "openalex",
+        params={
+            "search": query,
+            "per_page": str(limit),
+            "mailto": MAILTO,
+        },
+    )
+    if data and "results" in data:
+        for work in data["results"]:
+            all_papers.append(_normalise_openalex(work))
+        log.info("OpenAlex: found %d results", len(data["results"]))
+
+    return _deduplicate(all_papers)[:limit]
+
+
+# ============================================================================
+# Subcommand: openalex-cited-by
+# ============================================================================
+
+
+def cmd_openalex_cited_by(
+    doi: str,
+    client: httpx.Client,
+    limit: int = DEFAULT_CITATION_LIMIT,
+) -> list[dict]:
+    """
+    Get citing papers specifically from OpenAlex (free, high-volume).
+
+    Useful when Semantic Scholar rate-limits or for bulk checks.
+    """
+    # Resolve DOI to OpenAlex ID
+    oa_data = _safe_get(
+        client,
+        f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
+        "openalex",
+        params={"mailto": MAILTO, "select": "id,cited_by_count"},
+    )
+    if not oa_data or "id" not in oa_data:
+        log.warning("Could not resolve DOI %s in OpenAlex", doi)
+        return []
+
+    oa_id = oa_data["id"]
+    total_citations = oa_data.get("cited_by_count", 0)
+    log.info(
+        "OpenAlex: paper has %d total citations", total_citations
+    )
+
+    # Fetch citing papers
+    cited_by = _safe_get(
+        client,
+        f"{OPENALEX_BASE}/works",
+        "openalex",
+        params={
+            "filter": f"cites:{oa_id}",
+            "per_page": str(min(limit, 50)),
+            "sort": "cited_by_count:desc",
+            "mailto": MAILTO,
+        },
+    )
+    if not cited_by or "results" not in cited_by:
+        log.warning("OpenAlex cited-by query returned no results")
+        return []
+
+    papers = [_normalise_openalex(w) for w in cited_by["results"]]
+    papers.sort(
+        key=lambda p: p.get("citation_count") or 0, reverse=True
+    )
+    return papers[:limit]
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+
+def _parse_year(value: Any) -> Optional[int]:
+    """Attempt to parse a year from various formats."""
+    if value is None:
+        return None
+    try:
+        year = int(str(value)[:4])
+        return year if 1400 <= year <= 2100 else None
+    except (ValueError, TypeError):
+        return None
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+
+def main() -> None:
+    """Parse arguments and dispatch to the appropriate subcommand."""
+    parser = argparse.ArgumentParser(
+        description="Academic literature search CLI for lit-scout.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # metadata
+    p_meta = subparsers.add_parser(
+        "metadata", help="Full metadata for a single DOI"
+    )
+    p_meta.add_argument("doi", help="DOI to look up")
+
+    # references
+    p_refs = subparsers.add_parser(
+        "references", help="Backward chaining: get reference list"
+    )
+    p_refs.add_argument("doi", help="DOI to get references for")
+    p_refs.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CITATION_LIMIT,
+        help=f"Maximum results (default: {DEFAULT_CITATION_LIMIT})",
+    )
+
+    # citations
+    p_cites = subparsers.add_parser(
+        "citations", help="Forward chaining: get citing papers"
+    )
+    p_cites.add_argument("doi", help="DOI to get citations for")
+    p_cites.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CITATION_LIMIT,
+        help=f"Maximum results (default: {DEFAULT_CITATION_LIMIT})",
+    )
+
+    # search
+    p_search = subparsers.add_parser(
+        "search", help="Keyword/title search"
+    )
+    p_search.add_argument("query", help="Search query")
+    p_search.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_SEARCH_LIMIT,
+        help=f"Maximum results (default: {DEFAULT_SEARCH_LIMIT})",
+    )
+
+    # openalex-cited-by
+    p_oa = subparsers.add_parser(
+        "openalex-cited-by",
+        help="OpenAlex-specific cited-by (free, high volume)",
+    )
+    p_oa.add_argument("doi", help="DOI to get citing papers for")
+    p_oa.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CITATION_LIMIT,
+        help=f"Maximum results (default: {DEFAULT_CITATION_LIMIT})",
+    )
+
+    args = parser.parse_args()
+
+    with _get_client() as client:
+        if args.command == "metadata":
+            result = cmd_metadata(args.doi, client)
+        elif args.command == "references":
+            result = cmd_references(args.doi, client, args.limit)
+        elif args.command == "citations":
+            result = cmd_citations(args.doi, client, args.limit)
+        elif args.command == "search":
+            result = cmd_search(args.query, client, args.limit)
+        elif args.command == "openalex-cited-by":
+            result = cmd_openalex_cited_by(
+                args.doi, client, args.limit
+            )
+        else:
+            parser.print_help()
+            sys.exit(1)
+
+    # Output as JSON
+    json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
+    print()  # trailing newline
+
+
+if __name__ == "__main__":
+    main()
