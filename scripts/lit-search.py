@@ -660,6 +660,57 @@ def cmd_openalex_cited_by(
 
 
 # ============================================================================
+# Subcommand: bibtex
+# ============================================================================
+
+
+def cmd_bibtex(
+    dois: list[str],
+    client: httpx.Client,
+) -> str:
+    """
+    Generate BibTeX entries for one or more DOIs via CrossRef content
+    negotiation.
+
+    Uses CrossRef's native BibTeX support (Accept: application/x-bibtex).
+    Returns concatenated BibTeX entries as a single string. Failed DOIs
+    are reported to stderr but do not abort the run.
+    """
+    entries: list[str] = []
+    # Separate client for BibTeX content negotiation — different Accept header
+    bibtex_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/x-bibtex",
+    }
+
+    for doi in dois:
+        _rate_limit("crossref")
+        encoded = urllib.parse.quote(doi, safe='')
+        url = f"{CROSSREF_BASE}/works/{encoded}/transform/application/x-bibtex"
+        try:
+            resp = client.get(url, headers=bibtex_headers)
+            if resp.status_code != 200:
+                log.warning(
+                    "bibtex: HTTP %d for DOI %s", resp.status_code, doi
+                )
+                entries.append(
+                    f"% FAILED: {doi} (HTTP {resp.status_code})\n"
+                )
+                continue
+            entry = resp.text.strip()
+            if entry:
+                entries.append(entry)
+                log.info("bibtex: generated entry for %s", doi)
+            else:
+                entries.append(f"% EMPTY RESPONSE: {doi}\n")
+        except httpx.HTTPError as exc:
+            log.warning("bibtex: request failed for %s: %s", doi, exc)
+            entries.append(f"% FAILED: {doi} ({exc})\n")
+
+    return "\n\n".join(entries) + "\n"
+
+
+# ============================================================================
 # Helpers
 # ============================================================================
 
@@ -743,6 +794,17 @@ def main() -> None:
         help=f"Maximum results (default: {DEFAULT_CITATION_LIMIT})",
     )
 
+    # bibtex
+    p_bib = subparsers.add_parser(
+        "bibtex",
+        help="Generate BibTeX entries for one or more DOIs",
+    )
+    p_bib.add_argument(
+        "dois",
+        nargs="+",
+        help="One or more DOIs to generate BibTeX for",
+    )
+
     args = parser.parse_args()
 
     with _get_client() as client:
@@ -758,6 +820,11 @@ def main() -> None:
             result = cmd_openalex_cited_by(
                 args.doi, client, args.limit
             )
+        elif args.command == "bibtex":
+            # BibTeX output is plain text, not JSON
+            bibtex = cmd_bibtex(args.dois, client)
+            sys.stdout.write(bibtex)
+            return
         else:
             parser.print_help()
             sys.exit(1)
