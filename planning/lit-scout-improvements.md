@@ -99,6 +99,43 @@ Carried forward from the audit of commits `777e859` / `965bbce`:
 - **`litstudy` integration** (NLeSC) for bibliometric analysis —
   co-citation networks, topic modelling. Belongs to a future
   "analyse the field" feature rather than discovery.
+- **`academic-search-mcp-server` (afrise)** as potential replacement
+  for `lit-search.py` — if maintenance becomes burdensome. Ready-made
+  MCP tool schema for S2 + CrossRef. Wait to see if the script
+  approach remains sufficient before migrating.
+
+## Code-quality items from v1 audit (deferred, not yet captured)
+
+These were flagged as low-severity during the 2026-04-16 audit and
+were not addressed in the low-priority-fix pass. Still real but
+low-risk for a CLI tool:
+
+- **No-DOI paper deduplication** (lit-search.py:276 region). Papers
+  without DOIs are appended to `_deduplicate()` output without any
+  title-based dedup. Common in book chapters, conference abstracts,
+  grey literature. Fix: add fuzzy title matching for no-DOI entries
+  (e.g., token-set ratio ≥ 0.90). Deferred because title-based
+  dedup is unreliable and this may be intentionally conservative.
+- **429 back-off escalation + Retry-After header** (lit-search.py
+  `_safe_get`). Current: single 5-second sleep on 429, then retry
+  once, then give up. Missing: exponential back-off, no reading of
+  `Retry-After` header. Fine for interactive CLI use; matters at
+  scale. Fix: read `Retry-After` if present, otherwise exponential
+  back-off with jitter up to N retries.
+- **OpenAlex batch URL length** (lit-search.py:433-443 region). The
+  `id_filter = "|".join(ref_ids)` can produce URLs approaching 2KB
+  when 50 OpenAlex IDs are concatenated. Some HTTP infrastructure
+  limits at 2048 chars. Fix: chunk into batches of ≤25 IDs and merge
+  responses.
+- **Module-level mutable state** (lit-search.py:53,
+  `_last_request: dict`). Rate-limiting uses module-level state —
+  fine for CLI, not thread-safe. Prevents safe library reuse from
+  async/threaded code. Fix: encapsulate in a class or use
+  contextvars. Defer until someone wants to import this as a library.
+- **Module header block** (lit-search.py:1-18). Current docstring is
+  informative but missing conventional elements: no author line, no
+  version, no licence. Style-only. Fix when we add a LICENCE file to
+  the project.
 
 ## Priority order (if promoting to focus)
 
