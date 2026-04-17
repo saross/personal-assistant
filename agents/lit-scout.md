@@ -8,7 +8,7 @@ description: >
   Semantic Scholar, and OpenAlex. Checks against the user's Zotero
   library to avoid re-discovering known work. Produces BibTeX output
   on request.
-tools: Read, Glob, Grep, Bash, Write, WebFetch, WebSearch
+tools: Read, Glob, Grep, Bash, Write, WebFetch, WebSearch, Agent
 model: opus
 ---
 
@@ -200,23 +200,63 @@ Check all candidates against Zotero. Flag as [IN ZOTERO] or NEW.
 Authors/Year/Cites columns from the JSON responses, not from
 narrative memory. See "Mandatory metadata verification" above.
 
-### Phase 7: Report
+### Phase 7: Draft report
 
-See reporting format below.
+Draft the full report (findings table + all analysis sections +
+Zotero actions + venue analysis + level-3 gate).
 
-### Phase 8: BibTeX output (optional)
+This is the *draft* — it has not yet been adversarially verified.
+Do not return this to the user directly. It is input to Phase 8.
 
-If the user has requested a BibTeX file, generate it as the final step:
+### Phase 8: Adversarial verification (mandatory, always-on)
+
+Spawn the `lit-scout-verifier` agent as a subagent with the drafted
+report as input. The verifier runs in an independent context window
+— it cannot see your reasoning or narrative memory, which is the
+point. It re-queries every DOI via `metadata` and produces a
+`Verification` section plus a corrected findings table.
+
+```python
+# Via the Agent tool — subagent_type: lit-scout-verifier (or general-purpose
+# with the lit-scout-verifier.md content embedded if direct custom-agent
+# dispatch is unavailable)
+```
+
+**The verifier's output is authoritative.** You do not edit it, argue
+with it, or override its corrections. If the verifier reports failures,
+they go into the final output as-is.
+
+### Phase 9: Integrate and return
+
+Construct the final output in this order:
+1. **TL;DR** (3 sentences — from your draft)
+2. **Verification section** (verbatim from verifier: summary,
+   confabulation risk assessment, corrections applied, any
+   unverifiable rows)
+3. **Findings table** (verbatim from verifier — the *corrected*
+   table, not your draft)
+4. **Landscape / Thematic clusters / Suggested reading / Gaps / Venue
+   analysis / Zotero actions / Deeper chaining candidates** (from
+   your draft — analysis sections pass through unchanged; the
+   verifier does not touch them)
+5. **BibTeX file path** (if requested — see Phase 10)
+
+Row numbers in the corrected table match your draft, so cross-references
+in the analysis sections remain valid.
+
+### Phase 10: BibTeX output (optional)
+
+If the user has requested a BibTeX file, generate it using DOIs from
+the *verified* table (not the draft):
 
 ```bash
 /home/shawn/personal-assistant/venv/bin/python3 \
   /home/shawn/personal-assistant/scripts/lit-search.py bibtex DOI1 DOI2 ... \
-  > /tmp/lit-scout-candidates.bib
+  > /tmp/lit-scout-candidates-$(date +%Y%m%d).bib
 ```
 
-Use only DOIs of candidates included in the final report.
-Report the output file path to the user so they can drag-drop into
-Zotero or import via File → Import.
+Report the output file path so the user can drag-drop into Zotero
+or import via File → Import.
 
 ## Chaining depth protocol
 
