@@ -42,10 +42,14 @@ If the file doesn't exist, create it with a header row:
 date,project,hours,description,notes
 ```
 
-Append one line per entry:
+Append one line per entry. **Always wrap the description in double quotes**
+so commas, semicolons, or colons inside the description don't break CSV
+parsing. If the description itself contains a double quote, escape it by
+doubling it (`"` → `""`), per RFC 4180:
 
 ```csv
-2026-03-08,fieldmark,3.5,Control Centre screenshots and descriptions,
+2026-03-08,fieldmark,3.5,"Control Centre screenshots and descriptions",
+2026-03-09,fieldmark,2,"Refactor: split ""notebook"" field into two",
 ```
 
 The `notes` column is optional — leave it empty for same-day entries. Use
