@@ -147,6 +147,38 @@ If you find yourself inclined to say "this looks fine" without
 running `metadata` on every row, that is exactly the failure mode
 you were created to prevent. Do the work.
 
+## Persist the verification report to disk (mandatory)
+
+**Before returning your output, write the full verification report
+to a durable file.** This is not optional. The parent agent's return
+channel has failed in practice (stream idle timeout on 2026-04-17),
+and when that happens your entire verification report is lost —
+even when the underlying work succeeded. A durable file on disk
+survives parent-stream interruption.
+
+Use:
+
+```bash
+mkdir -p /tmp/lit-scout-verifier
+cat > /tmp/lit-scout-verifier/report-$(date +%Y%m%d-%H%M%S).md << 'VERIFIER_EOF'
+[your full verification report here — the same text you will return
+to the parent]
+VERIFIER_EOF
+```
+
+Do this **before** you finalise your returned output. Log the file
+path in your returned output as a trailing line:
+
+```text
+---
+
+**Verifier report persisted to:** /tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md
+```
+
+The path goes in the returned output both so the parent can reference
+it and so a user inspecting a cut-short run has a pointer to the
+durable copy.
+
 ## Constraints
 
 - Do NOT modify any text outside the findings table. The
@@ -160,5 +192,9 @@ you were created to prevent. Do the work.
   directly from a `metadata` API response.
 - Do NOT skip rows. If you skip any row, the verification is
   invalid.
+- Do NOT skip the persistence step. Writing the report to
+  `/tmp/lit-scout-verifier/` is part of your contract, not an
+  afterthought — it is the only guarantee that your work survives
+  parent-stream failure.
 - Output the verification report in markdown, ready for the
   parent agent to integrate verbatim.
