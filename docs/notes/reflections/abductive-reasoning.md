@@ -112,23 +112,62 @@ not catch it.
 
 ### Consequence for the project
 
-- `agents/lit-scout.md` updated with mandatory metadata-verification
-  phase and Phase 8 spawning `lit-scout-verifier` as a sub-agent
-- `agents/lit-scout-verifier.md` created with adversarial framing
-  ("you are not here to approve; your job is to find errors")
-- Observation written up in `data/notes/paper-b-working-notes.md`
-  as candidate taxonomy material for Paper B
-- Extended case study at `data/notes/lit-scout-case-study.md` —
-  ~4,500 words of source material for the paper's case study section
+Two guards were added in response to the finding, at different
+architectural levels:
 
-### Confidence note
+- **Workflow-level (Guard A).** `agents/lit-scout.md` updated with a
+  mandatory metadata-verification phase (Phase 6): the proposer must
+  run `metadata DOI` on every candidate and populate narrative
+  columns from the returned JSON verbatim.
+- **Architectural (Guard B).** `agents/lit-scout-verifier.md` created
+  as a fresh-context adversarial sub-agent, spawned at Phase 8 to
+  re-verify every row after the proposer drafts. Adversarial framing
+  ("assume the proposer made mistakes").
+
+Plus:
+
+- Observation written up in `data/notes/paper-b-working-notes.md`
+  as candidate taxonomy material for Paper B.
+- Extended case study at `data/notes/lit-scout-case-study.md` —
+  now with a correction (added 2026-04-19) distinguishing which
+  guard was empirically tested.
+
+### Confidence note (revised 2026-04-19 after transcript
+re-inspection)
 
 The 75% spot-check rate (3/4 rows) is a small-sample estimate, not a
 population rate. The direction of the finding is robust (multiple
 independent mis-attributions on distinct papers in a single run); the
-magnitude would need a larger audit to pin down. The fix's efficacy
-is supported by the v2 run's verified BibTeX file (spot-checks of the
-verified output match CrossRef ground truth) but the v2 run was cut
-short by an unrelated network drop, so full end-to-end validation is
-still pending.
+magnitude would need a larger audit to pin down.
+
+**Which guard was empirically validated matters and I got this
+wrong on first pass.** The v2 run's transcript
+(`/tmp/.../a863ecaade9efa6b4.output`, 90 lines, 35 tool calls) shows
+no Agent tool calls at all. The stream died during Phase 7
+(draft-building) before Phase 8 (verifier sub-agent) was spawned. The
+correct author attributions observed in the v2 partial output (and
+in the BibTeX file that made it to disk) were produced by Guard A
+alone — the mandatory Phase 6 metadata-re-query step inside the
+proposer's own workflow.
+
+So:
+
+- **Guard A (workflow-level):** *validated.* The procedure-level fix
+  (mandatory per-field retrieval) prevented the confabulation. The
+  original prompt-level "never fabricate" constraint failed; its
+  procedural replacement succeeded. This is the empirical finding.
+- **Guard B (architectural sub-agent):** *present but untested.* It
+  exists in the codebase and is wired into lit-scout's Phase 8, but
+  has not run against a real confabulation. Its value remains
+  theoretical and should not be claimed as validated in the paper.
+
+The belief-revision in this entry (partial grounding collapse at the
+synthesis boundary; same-context self-checks cannot catch this;
+independent-context guards are the structural backstop) is supported
+by the v1 failure but the *architectural* part of the fix has not
+yet been tested against that failure mode. The v1→v2 arc
+demonstrates that a procedural fix within the same context was
+sufficient this time; the claim that only an architectural fix
+*could* work remains conjectural until the architectural guard fires
+against a real confabulation.
 
