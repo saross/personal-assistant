@@ -171,3 +171,68 @@ sufficient this time; the claim that only an architectural fix
 *could* work remains conjectural until the architectural guard fires
 against a real confabulation.
 
+### Further update (2026-04-18, after v3 scrutinised test)
+
+The v3 test (fresh query: Bayesian archaeological dating uncertainty,
+25 rows) established two things that refine the confidence picture:
+
+**1. Guard B as designed cannot fire from inside lit-scout.**
+Claude Code's harness explicitly forbids sub-agents from spawning
+sub-agents (docs/sub-agents.md line 469). lit-scout runs as a
+sub-agent, so Phase 8's nested-sub-agent dispatch is not a
+contingent failure mode — it is an architectural impossibility. A
+corpus-wide audit of 1,363 sub-agent transcripts found zero nested
+Agent calls from any user-authored sub-agent. The v3 proposer
+inspected its runtime tool registry, found Agent absent, and fell
+back to same-context verification with explicit self-disclosure.
+
+This means the claim "independent-context guards are the structural
+backstop" is not weakened empirically — it is **not yet evaluable
+in this harness at all** via the sub-agent dispatch mechanism. A
+main-conversation chained architecture (main assistant invokes
+lit-scout, then separately invokes lit-scout-verifier with the
+draft) is realisable and would allow the claim to be tested. Not
+yet attempted.
+
+**2. Same-context adversarial framing catches at least some
+errors that same-context drafting misses.** v3 Row 16 is a real
+Level-1 author-attribution error: CrossRef encoded Philippe Lanos
+& Anne Philippe with family/given ambiguity; the drafter wrote
+"Philippe & Philippe" at 07:21:11; the verification pass at 07:26:01
+re-queried the same DOI, received the same response, and correctly
+parsed it as "Lanos & Philippe." Same model, same context, same
+tool, same data. Different framing (drafting vs adversarial
+verification). Different outcome.
+
+This is a **weaker** claim than context-independent verification,
+but an empirically defended one. It slightly revises the
+"same-context self-checks cannot catch this" part of the original
+belief revision: at least in the specific case of surface-pattern
+confabulation, *a differently-framed same-context pass* can catch
+errors that a drafting pass misses. The mechanism is likely
+attentional: verification framing invites domain-knowledge
+cross-checks (Row 16 required recognising that CrossRef's `family`
+field is wrong for this record, which requires domain knowledge
+about the ChronoModel authorship).
+
+**Net effect on confidence:**
+
+- Guard A validated (unchanged from 2026-04-19 update).
+- Guard B "present but untested" → **"as designed, architecturally
+  unrealisable; a redesign via main-conversation chaining is
+  possible but untested."**
+- Framing-based intra-context verification → **new category with
+  one supporting data point.** Weaker than context-independent
+  verification. Useful as a defence-in-depth layer even when
+  context-independence is unavailable. Worth tracking across
+  future runs to see whether the Row 16 result replicates or was
+  idiosyncratic.
+
+The "only an architectural fix could work" claim is now more
+carefully bounded: architectural fixes *of a particular kind*
+(nested sub-agent spawning) don't work because they can't exist.
+Architectural fixes *of another kind* (main-conversation chaining)
+remain possible but are not yet evidenced. And we now have a small
+piece of evidence that procedural same-context verification *with
+adversarial framing* may be a non-trivial partial substitute.
+
