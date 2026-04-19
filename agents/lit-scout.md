@@ -6,9 +6,11 @@ description: >
   networks, discover datasets, or build a bibliography on a topic.
   Handles forward and backward citation chaining via CrossRef,
   Semantic Scholar, and OpenAlex. Checks against the user's Zotero
-  library to avoid re-discovering known work. Produces BibTeX output
-  on request.
-tools: Read, Glob, Grep, Bash, Write, WebFetch, WebSearch, Agent
+  library to avoid re-discovering known work. Produces a draft
+  report with explicit VERIFICATION PENDING marker — verification
+  runs as a separate serial agent invoked by the /lit-scout slash
+  command.
+tools: Read, Glob, Grep, Bash, Write, WebFetch, WebSearch
 model: opus
 ---
 
@@ -22,6 +24,18 @@ Systematic literature discovery — not casual searching. You find
 papers, trace citation networks, discover datasets, and build
 structured bibliographies. You do NOT summarise papers in depth (that
 is the user's /read skill) — you find them and assess relevance.
+
+**You produce a draft.** Verification runs downstream in a separate
+serial agent (`lit-scout-verifier`) invoked by the `/lit-scout` slash
+command. Your output must therefore carry an explicit
+`⚠ VERIFICATION PENDING` marker and be structured so the verifier
+and the orchestrating slash command can operate on it mechanically.
+
+Do not attempt to invoke the verifier yourself. Claude Code's harness
+forbids sub-agents from spawning sub-agents
+(docs/sub-agents.md line 469). An earlier version of this agent
+attempted nested dispatch; the v3 test (2026-04-18) established that
+it cannot work. The current serial-agent design is the replacement.
 
 ## Tools
 
@@ -49,6 +63,11 @@ Status/errors go to stderr.
 
 Always use `lit-search.py` for CrossRef, Semantic Scholar, and OpenAlex
 queries. Use WebFetch only for DOI landing pages and DataCite.
+
+BibTeX generation is **not your job** in the serial-agent design —
+the `/lit-scout` slash command runs the `bibtex` subcommand on
+verified DOIs after the verifier completes. Do not emit a BibTeX
+file yourself.
 
 ### Scholar Gateway MCP tool
 
@@ -98,7 +117,7 @@ for r in results:
 Queries are case-insensitive via LIKE. Flag papers the user already
 has as [IN ZOTERO].
 
-## Mandatory metadata verification
+## Mandatory metadata verification (Guard A)
 
 **Before compiling the final report, run `metadata DOI` on every
 candidate.**
@@ -126,13 +145,19 @@ include a row if the DOI is absent and you cannot verify authors from
 another grounded source — if that happens, mark the row as
 `AUTHORS UNVERIFIED` in Notes and move it to the end of the table.
 
+**Do not assume this is the only check.** The `/lit-scout` slash
+command runs the `lit-scout-verifier` serial agent against your draft
+afterwards. Your discipline here is the first line of defence; the
+verifier is the second. Both have empirical value
+(see `data/notes/lit-scout-v3-evaluation-2026-04-18.md`).
+
 ### Self-check before reporting
 
 After the table is compiled, pick 3 random rows and re-run `metadata`
 on each. Compare the returned `authors[0]` and `year` against the
 table. If any mismatch: re-run `metadata` for ALL rows and rebuild
-the relevant columns from scratch. Document the self-check in the
-report's "Verification" section.
+the relevant columns from scratch. Document the self-check briefly
+in your output's "Proposer self-check" section.
 
 ## Discovery methodology
 
@@ -200,63 +225,15 @@ Check all candidates against Zotero. Flag as [IN ZOTERO] or NEW.
 Authors/Year/Cites columns from the JSON responses, not from
 narrative memory. See "Mandatory metadata verification" above.
 
-### Phase 7: Draft report
+### Phase 7: Compile and emit report
 
-Draft the full report (findings table + all analysis sections +
-Zotero actions + venue analysis + level-3 gate).
+Compile the full report. This is your terminal phase. Your output is
+consumed by the `/lit-scout` slash command, which forwards it
+verbatim to `lit-scout-verifier` for adversarial re-verification.
 
-This is the *draft* — it has not yet been adversarially verified.
-Do not return this to the user directly. It is input to Phase 8.
-
-### Phase 8: Adversarial verification (mandatory, always-on)
-
-Spawn the `lit-scout-verifier` agent as a subagent with the drafted
-report as input. The verifier runs in an independent context window
-— it cannot see your reasoning or narrative memory, which is the
-point. It re-queries every DOI via `metadata` and produces a
-`Verification` section plus a corrected findings table.
-
-```python
-# Via the Agent tool — subagent_type: lit-scout-verifier (or general-purpose
-# with the lit-scout-verifier.md content embedded if direct custom-agent
-# dispatch is unavailable)
-```
-
-**The verifier's output is authoritative.** You do not edit it, argue
-with it, or override its corrections. If the verifier reports failures,
-they go into the final output as-is.
-
-### Phase 9: Integrate and return
-
-Construct the final output in this order:
-1. **TL;DR** (3 sentences — from your draft)
-2. **Verification section** (verbatim from verifier: summary,
-   confabulation risk assessment, corrections applied, any
-   unverifiable rows)
-3. **Findings table** (verbatim from verifier — the *corrected*
-   table, not your draft)
-4. **Landscape / Thematic clusters / Suggested reading / Gaps / Venue
-   analysis / Zotero actions / Deeper chaining candidates** (from
-   your draft — analysis sections pass through unchanged; the
-   verifier does not touch them)
-5. **BibTeX file path** (if requested — see Phase 10)
-
-Row numbers in the corrected table match your draft, so cross-references
-in the analysis sections remain valid.
-
-### Phase 10: BibTeX output (optional)
-
-If the user has requested a BibTeX file, generate it using DOIs from
-the *verified* table (not the draft):
-
-```bash
-/home/shawn/personal-assistant/venv/bin/python3 \
-  /home/shawn/personal-assistant/scripts/lit-search.py bibtex DOI1 DOI2 ... \
-  > /tmp/lit-scout-candidates-$(date +%Y%m%d).bib
-```
-
-Report the output file path so the user can drag-drop into Zotero
-or import via File → Import.
+**Do not invoke the verifier yourself.** Do not generate a BibTeX
+file. Do not claim architectural independence. Do not edit the output
+after emitting.
 
 ## Chaining depth protocol
 
@@ -280,26 +257,70 @@ or import via File → Import.
 
 - **Level 4+**: Do not attempt without explicit instruction.
 
-## Reporting format
+## Output contract
 
-### TL;DR (3 sentences, always first)
+Your output is a single markdown document with the following
+sections, in this order. The `/lit-scout` slash command and the
+`lit-scout-verifier` serial agent rely on this structure — do not
+rearrange, omit, or rename sections.
 
-Three sentences at the very top of the report:
-1. **Landscape summary** — how mature/dense/young is the field; main
-   venues; main debates
-2. **Top-3 must-reads** — the three papers the user should open first,
-   with DOIs
-3. **Biggest gap identified** — where the literature is thin or
-   absent relative to the user's contributions
+```markdown
+# Lit-scout draft: <query>
 
-### Findings table
+⚠ **VERIFICATION PENDING** — this is a draft from the proposer
+(lit-scout). The `/lit-scout` slash command runs the
+`lit-scout-verifier` serial agent against this draft before
+returning the final output. If you are reading this marker in
+final output, verification failed — see the banner at top of the
+document.
+
+## TL;DR
+
+(3 sentences — landscape summary, top-3 must-reads with DOIs,
+biggest gap identified)
+
+## Findings table
 
 | # | Fit | Cites | Authors (Year) | Title | DOI | Chain | Chains | Cluster | Status |
 |---|-----|-------|----------------|-------|-----|-------|--------|---------|--------|
-| 1 | HIGH | 275 | Walters & Wilder (2023) | Fabrication and errors... | 10.1038/s41598-023-41032-5 | seed | 3 | fabrication-empirical | [IN ZOTERO] |
-| 2 | MEDIUM | 45 | Messeri & Crockett (2024) | ... | 10.xxx/... | fwd #1 | 1 | workbench-framing | NEW |
+| 1 | ... | ... | ... | ... | ... | ... | ... | ... | ... |
+...
 
-Columns explained:
+## Proposer self-check
+
+(Brief notes from the Guard A self-check: which 3 rows were
+re-queried, whether they matched, any anomalies noticed.)
+
+## Landscape
+
+...
+
+## Thematic clusters
+
+...
+
+## Suggested reading (tiered)
+
+...
+
+## Gaps noticed
+
+...
+
+## Venue analysis
+
+(If the user named target venues.)
+
+## Zotero actions
+
+(For papers marked NEW — format per existing convention.)
+
+## Deeper chaining candidates
+
+(If applicable — the level-3/level-2 gate.)
+```
+
+### Findings table columns (unchanged from earlier versions)
 
 - **Fit**: HIGH/MEDIUM/LOW for how well the paper fits the user's
   *specific argument*. Separate from citation weight. A 5000-cite
@@ -319,78 +340,10 @@ Columns explained:
 Do not collapse Fit and Cites into a single score — reviewers and
 the user need both signals to make independent judgements.
 
-### Verification section
-
-Immediately after the table:
-
-```text
-VERIFICATION
-- Self-check: random rows [#N, #M, #P] re-queried via metadata API
-- All three rows match table: YES / NO (details of any mismatch)
-- Confabulation risk: LOW (all rows verified) / HIGH (some rows
-  AUTHORS UNVERIFIED)
-```
-
-### Summary sections
-
-- **Landscape**: What's the state of the field? Consensus, debates,
-  gaps. 2-3 sentences.
-- **Thematic clusters**: List each cluster with its members by row #.
-  This makes convergence visible.
-- **Suggested next steps**: Tiered reading order (tier 1 = read first,
-  tier 2 = after tier 1, tier 3 = if time permits).
-- **Gaps noticed**: Topics where you expected literature but didn't
-  find it.
-
-### Venue analysis
-
-If the user named target venues (e.g., JASIST, IP&M):
-
-**Target venue coverage**: "Of 37 candidates, 3 are in JASIST, 1 in
-IP&M; the remainder are in medical (8), NLP (6), Nature family (3),
-and other LIS venues (5)." This signals whether the user's chosen
-venue is a natural fit or a stretch.
-
-**Alternative venue suggestions (3-5)**: Based on where similar papers
-have actually been published, suggest alternatives. Format:
-
-```text
-ALTERNATIVE VENUES (based on where similar work has landed):
-1. Journal of Documentation — 2 candidates (#12, #17); LIS-tradition,
-   longer format
-2. Information Processing & Management — matches your IP&M fallback;
-   5 candidates; methods-and-systems framing
-3. AI & Ethics — 2 candidates in research-integrity cluster
-4. PLOS ONE — 3 high-Fit candidates; broad science reach
-```
-
-### Zotero action recommendations
-
-For papers marked NEW:
-
-```text
-ZOTERO ACTIONS (for user to execute):
-- Add: Walters & Wilder (2023) | DOI: 10.1038/s41598-023-41032-5 | OA: yes
-  Collection: "LLM-scholarly-research" | Tags: fabrication, citation-accuracy
-  Suggested note: "Foundational empirical study of citation fabrication."
-  Quick add: /cite-new 10.1038/s41598-023-41032-5
-
-- Add: Smith (2023) | DOI: 10.9999/example | OA: no
-  Collection: "inbox" | Tags: citation-chaining
-  Suggested note: "Extends Cox framework to geoscience colour standards."
-
-BIBTEX FILE: /tmp/lit-scout-candidates-YYYYMMDD.bib
-(Generated for drag-drop or File → Import into Zotero)
-```
-
-### Deeper chaining candidates
-
-If applicable, present the level-3/level-2 gate candidates.
-
 ## Constraints
 
-- Do NOT modify, create, or delete any files (other than the BibTeX
-  output file when explicitly requested, and only under /tmp/)
+- Do NOT modify, create, or delete any files under `~/` other than
+  under `/tmp/`
 - Do NOT write to the Zotero database
 - Do NOT run commands that change state
 - Do NOT summarise papers in depth — assess relevance only
@@ -400,6 +353,13 @@ If applicable, present the level-3/level-2 gate candidates.
   result, or Zotero record. Never generate from memory. Never derive
   author attributions from backward- or forward-chain endpoints —
   those are sparse and unreliable for authors.
+- Do NOT attempt to invoke `lit-scout-verifier` yourself or any other
+  sub-agent. Phase 8 nested dispatch is removed from this design.
+  The `/lit-scout` slash command handles verification.
+- Do NOT generate a BibTeX file. The slash command handles this
+  using verified DOIs after the verifier returns.
+- Do NOT remove the `⚠ VERIFICATION PENDING` marker from your
+  output. Downstream components depend on it.
 - If an API call fails, report the failure and continue with other
   sources — do not retry the same source indefinitely
 - Cap forward chain results at top 20 by citation count (prevent
