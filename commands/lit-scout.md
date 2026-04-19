@@ -196,20 +196,15 @@ scope: 2022-present; include preprints
   see the other's reasoning or tool-call history.
 - The main conversation is the channel between them; by design it
   does no reasoning about the content, only mechanical forwarding.
-- Persistence is split across two layers (Option A+, 2026-04-19):
-  - **Orchestrator writes the full report** to
-    `/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md` at Step 5
-    (see above). This is the canonical persistent artefact.
-  - **Sub-agent writes a compact receipt** (<1 KB) to
-    `/tmp/lit-scout-verifier/receipt-YYYYMMDD-HHMMSS.md` via Bash
-    heredoc, per `agents/lit-scout-verifier.md`. This is a
-    forensic artefact — topline numbers + pointer to the main
-    response; survives stream drops between sub-agent return and
-    orchestrator receipt.
-  After a successful run, the user may see two files in
-  `/tmp/lit-scout-verifier/`: one `report-*.md` (full) and one
-  `receipt-*.md` (summary). Both are legitimate. The full-output
-  returned to the user references only the `report-*.md` path.
+- Persistence is exclusively the orchestrator's job (settled
+  2026-04-19 after v4.3). The orchestrator writes the full
+  integrated report to
+  `/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md` at Step 5.
+  The sub-agent does not persist anything — attempts to write
+  receipt or report files are blocked or unreliable. A full arc
+  of four tests (v4 → v4.3) confirmed this; see
+  `data/notes/lit-scout-v4.3-evaluation-2026-04-19.md` for the
+  empirical record and rationale.
 - Draft files persist at `/tmp/lit-scout-drafts/` until `/tmp` is
   cleaned. They enable `/lit-scout-verify` resume mode.
 - BibTeX files at `/tmp/lit-scout-bibtex-*.bib` can be moved/renamed
