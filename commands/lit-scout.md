@@ -196,13 +196,20 @@ scope: 2022-present; include preprints
   see the other's reasoning or tool-call history.
 - The main conversation is the channel between them; by design it
   does no reasoning about the content, only mechanical forwarding.
-- Persistence of the verifier's report is the orchestrator's job,
-  not the sub-agent's. The verifier returns text; this slash
-  command writes it to
-  `/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md` at Step 5.
-  An earlier design required the verifier to persist its own
-  output; the v4 test (2026-04-19) found the harness blocks
-  sub-agent Write on report files, so the responsibility moved up.
+- Persistence is split across two layers (Option A+, 2026-04-19):
+  - **Orchestrator writes the full report** to
+    `/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md` at Step 5
+    (see above). This is the canonical persistent artefact.
+  - **Sub-agent writes a compact receipt** (<1 KB) to
+    `/tmp/lit-scout-verifier/receipt-YYYYMMDD-HHMMSS.md` via Bash
+    heredoc, per `agents/lit-scout-verifier.md`. This is a
+    forensic artefact — topline numbers + pointer to the main
+    response; survives stream drops between sub-agent return and
+    orchestrator receipt.
+  After a successful run, the user may see two files in
+  `/tmp/lit-scout-verifier/`: one `report-*.md` (full) and one
+  `receipt-*.md` (summary). Both are legitimate. The full-output
+  returned to the user references only the `report-*.md` path.
 - Draft files persist at `/tmp/lit-scout-drafts/` until `/tmp` is
   cleaned. They enable `/lit-scout-verify` resume mode.
 - BibTeX files at `/tmp/lit-scout-bibtex-*.bib` can be moved/renamed

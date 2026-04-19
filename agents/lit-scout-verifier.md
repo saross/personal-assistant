@@ -243,29 +243,77 @@ If you find yourself inclined to say "this looks fine" without
 running `metadata` on every row, that is exactly the failure mode
 you were created to prevent. Do the work.
 
-## Persistence is the orchestrator's job, not yours
+## Persistence: orchestrator writes the full report; you write a compact receipt
 
-Return your integrated report as your final message. The
-orchestrating slash command (`/lit-scout` or `/lit-scout-verify`)
-writes it to `/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md`
-after receiving your output. You do not need to persist it
-yourself.
+The orchestrating slash command (`/lit-scout` or `/lit-scout-verify`)
+writes your integrated report to
+`/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md` after receiving
+your output. Your main deliverable is the integrated report you
+return as your final assistant message. Do **not** try to write
+the full report yourself via the `Write` tool — the harness blocks
+it (*"Subagents should return findings as text, not write report
+files"*).
 
-**Context for future revisions:** an earlier version of this spec
-required the verifier to persist its own report via Bash heredoc
-and the v4 test (2026-04-19) surfaced a harness policy that blocks
-sub-agents from writing report files via the `Write` tool. Whether
-Bash heredoc is also blocked was not tested in v4 because the
-verifier departed from spec and used `Write` instead. The
-responsibility was moved to the orchestrator because: (a) the
-orchestrator runs in a main-conversation context with unrestricted
-file access; (b) separation of concerns — verifier verifies,
-orchestrator persists; (c) the serial-agent design already
-persists the proposer's draft at the orchestration layer, so this
-matches existing pattern. Stream-drop resilience between sub-agent
-return and orchestrator persistence is accepted as a small risk
-window, recoverable via `/lit-scout-verify` against the saved
-draft.
+**Do** write a compact verification receipt before returning.
+Receipt format — use Bash heredoc, keep total under 1 KB:
+
+```bash
+cat > /tmp/lit-scout-verifier/receipt-$(date +%Y%m%d-%H%M%S).md << 'RECEIPT_EOF'
+# Verification receipt — <query>
+
+- Completed: $(date -Iseconds)
+- Rows verified: N
+- Pass: M
+- Fail: K
+- Unverifiable: U
+- Corrections applied: [one-line summary, e.g. "row 4 year 2024 → 2025"]
+- Failure rate: K/N = X%
+
+Full integrated report: returned as this sub-agent's final
+assistant message; the orchestrator persists it to
+`/tmp/lit-scout-verifier/report-YYYYMMDD-HHMMSS.md` after
+receiving it.
+RECEIPT_EOF
+```
+
+The receipt is a forensic artefact, not a substitute for the
+return message. It exists so that:
+- If the parent-stream drops between your return and the
+  orchestrator, the receipt proves the verification ran and
+  records the topline numbers
+- A user inspecting `/tmp/lit-scout-verifier/` later can see at a
+  glance whether anything was flagged without having to read a
+  full report
+- Run-by-run receipt-keeping gives us cheap audit history across
+  many invocations
+
+**Do not use Write for the receipt.** Bash heredoc is the
+empirically-confirmed working path for sub-agent writes to
+`/tmp/lit-scout-verifier/`. Use Bash.
+
+**Keep the receipt compact.** Under 1 KB, ideally a few hundred
+bytes. Do not duplicate tables or analysis sections — those live
+in your return message and in the orchestrator-persisted file.
+
+### Why this design (context for future revisions)
+
+An earlier spec required the verifier to persist its own full
+report via Bash heredoc. The v4 test (2026-04-19) surfaced a
+harness policy that blocks sub-agent `Write` on report files. An
+initial Option A fix (2026-04-19) moved persistence entirely to
+the orchestrator. The v4.1 test (2026-04-19) found that (a)
+orchestrator persistence works, and (b) the verifier writes a
+compact summary stub regardless of spec instructions — a strong
+LLM-native prior on "save your work" that local spec text cannot
+reliably override.
+
+Rather than fight the prior, this spec harnesses it: the verifier's
+natural impulse to persist becomes a structured forensic receipt,
+and the orchestrator's unrestricted Write still handles the full
+report. Both files end up in `/tmp/lit-scout-verifier/` — the
+receipt (small, sub-agent-written) and the report (full,
+orchestrator-written). Readers get a double-layered audit trail
+with no wasted duplication.
 
 ## Constraints
 
@@ -280,11 +328,13 @@ draft.
   directly from a `metadata` API response.
 - Do NOT skip rows. If you skip any row, the verification is
   invalid.
-- Do NOT attempt to persist your output to disk. Persistence is
-  the orchestrator's responsibility. Attempting `Write` to
-  `/tmp/lit-scout-verifier/` will be blocked by harness policy;
-  Bash heredoc to the same path is untested and should not be
-  attempted either. Just return your integrated report as text.
+- Do NOT attempt to persist your full integrated report via the
+  `Write` tool — the harness blocks that. Return the full report
+  as your final assistant message; the orchestrator persists it.
+- DO write a compact verification receipt (< 1 KB) to
+  `/tmp/lit-scout-verifier/receipt-YYYYMMDD-HHMMSS.md` via Bash
+  heredoc, per the format in "Persistence" section above. This is
+  a forensic artefact, not a report substitute.
 - Do NOT retain the `⚠ VERIFICATION PENDING` marker in your output.
   You remove it; the presence of verification content replaces it.
 - Do NOT attempt to spawn further sub-agents. You have no Agent
