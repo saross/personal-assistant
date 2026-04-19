@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup.sh — Bootstrap personal-assistant on a new machine.
 #
-# Initialises the data submodule, creates command and skill
+# Initialises the data submodule, creates command, skill, and agent
 # symlinks in ~/.claude/, composes the global CLAUDE.md, and
 # optionally sets up the Python virtual environment.
 #
@@ -21,7 +21,7 @@ echo ""
 # ------------------------------------------------------------
 # Step 1: Initialise and update submodule
 # ------------------------------------------------------------
-echo "[1/7] Initialising data submodule..."
+echo "[1/8] Initialising data submodule..."
 cd "$PA_DIR"
 git submodule update --init --recursive
 echo "  Done."
@@ -29,7 +29,7 @@ echo "  Done."
 # ------------------------------------------------------------
 # Step 2: Symlink settings.json
 # ------------------------------------------------------------
-echo "[2/7] Symlinking settings.json..."
+echo "[2/8] Symlinking settings.json..."
 SETTINGS_SRC="$PA_DIR/settings.json"
 SETTINGS_DST="$CLAUDE_DIR/settings.json"
 if [ -L "$SETTINGS_DST" ]; then
@@ -54,7 +54,7 @@ echo "  Update if your home directory differs."
 # ------------------------------------------------------------
 # Step 3: Create command symlinks
 # ------------------------------------------------------------
-echo "[3/7] Creating command symlinks..."
+echo "[3/8] Creating command symlinks..."
 mkdir -p "$CLAUDE_DIR/commands"
 
 for cmd in "$PA_DIR"/commands/*.md; do
@@ -80,7 +80,7 @@ done
 # ------------------------------------------------------------
 # Step 4: Create skill symlinks
 # ------------------------------------------------------------
-echo "[4/7] Creating skill symlinks..."
+echo "[4/8] Creating skill symlinks..."
 mkdir -p "$CLAUDE_DIR/skills"
 
 for skill_dir in "$PA_DIR"/skills/*/; do
@@ -103,9 +103,35 @@ for skill_dir in "$PA_DIR"/skills/*/; do
 done
 
 # ------------------------------------------------------------
-# Step 5: Python virtual environment
+# Step 5: Create agent symlinks
 # ------------------------------------------------------------
-echo "[5/7] Python virtual environment..."
+echo "[5/8] Creating agent symlinks..."
+mkdir -p "$CLAUDE_DIR/agents"
+
+for agent_file in "$PA_DIR"/agents/*.md; do
+    [ -f "$agent_file" ] || continue
+    agent_name="$(basename "$agent_file")"
+    target="$CLAUDE_DIR/agents/$agent_name"
+    if [ -L "$target" ]; then
+        current="$(readlink "$target")"
+        if [ "$current" != "$agent_file" ]; then
+            ln -sf "$agent_file" "$target"
+            echo "  $agent_name — updated symlink"
+        else
+            echo "  $agent_name — already correct"
+        fi
+    elif [ -e "$target" ]; then
+        echo "  $agent_name — file exists (not a symlink), skipping"
+    else
+        ln -s "$agent_file" "$target"
+        echo "  $agent_name — linked"
+    fi
+done
+
+# ------------------------------------------------------------
+# Step 6: Python virtual environment
+# ------------------------------------------------------------
+echo "[6/8] Python virtual environment..."
 if [ -d "$PA_DIR/venv" ]; then
     echo "  venv/ already exists."
 else
@@ -117,17 +143,17 @@ else
 fi
 
 # ------------------------------------------------------------
-# Step 6: Compose global CLAUDE.md
+# Step 7: Compose global CLAUDE.md
 # ------------------------------------------------------------
-echo "[6/7] Composing global CLAUDE.md..."
+echo "[7/8] Composing global CLAUDE.md..."
 bash "$PA_DIR/scripts/compose-global-claude-md.sh"
 
 # ------------------------------------------------------------
-# Step 7: Verify symlinks
+# Step 8: Verify symlinks
 # ------------------------------------------------------------
-echo "[7/7] Verifying setup..."
+echo "[8/8] Verifying setup..."
 ERRORS=0
-for check in "$SETTINGS_DST" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/skills"; do
+for check in "$SETTINGS_DST" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/skills" "$CLAUDE_DIR/agents"; do
     if [ -e "$check" ]; then
         echo "  OK: $check"
     else

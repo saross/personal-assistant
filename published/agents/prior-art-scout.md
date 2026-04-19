@@ -1,0 +1,1 @@
+../../agents/prior-art-scout.md

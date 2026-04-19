@@ -1,0 +1,1 @@
+../../agents/lit-scout-verifier.md
