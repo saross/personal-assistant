@@ -236,3 +236,78 @@ remain possible but are not yet evidenced. And we now have a small
 piece of evidence that procedural same-context verification *with
 adversarial framing* may be a non-trivial partial substitute.
 
+### Further update (2026-04-19, after the v4.x serial-agent arc)
+
+Four additional lit-scout test runs on 2026-04-19 substantially
+refine the confidence picture:
+
+**1. Main-conversation chained architecture is now empirically
+realised.** v4 (maps/VLMs), v4.1 (Latin inscriptions + SPA), v4.2
+(ABM Mediterranean economies), v4.3 (magnetometer prospection) all
+successfully ran the serial-dispatch pipeline with proposer and
+verifier as separate sub-agent invocations. Test A (serial dispatch
+fires), Test B (context independence), Test D (no main-assistant
+contamination) passed on all four runs. The earlier
+"main-conversation chaining is possible but untested" claim is now
+"tested four times, works reliably."
+
+**2. Two additional catching-power data points surfaced, but
+they're weaker than v3's Row 16.**
+
+- v4 (38 rows): 0 corrections.
+- v4.1 (36 rows): 1 correction — Row 4 Crema (2024) → (2025),
+  accept/print date ambiguity that the proposer's self-check had
+  also flagged. Catching-power attributable mostly to the
+  metadata-authoritative convention rather than to detecting
+  narrative confabulation.
+- v4.2 (31 rows): 0 corrections.
+- v4.3 (45 rows): 0 corrections.
+
+So across five runs (v3 + v4 series), n=2 verifier-caught errors
+on 175 total rows (~1%). v3's Row 16 is the one clear
+confabulation-catch; v4.1's Row 4 is a date-ambiguity. Catching
+power remains "non-zero but small, and contingent on specific
+proposer failure modes rather than routine in well-disciplined
+drafts."
+
+**3. Sub-agent persistence is unreliable across every spec variant
+tried.** The v4.1 Bash-heredoc receipt-stub was an opportunistic
+post-Write-block fallback, not a reproducible design. Subsequent
+attempts to prescribe a sub-agent-written receipt failed: v4.2
+(Option A+ prescription) ignored; v4.3 (Option C Step-1 positioning
++ prescription) ignored. The verifier in v4.3 explicitly cited a
+harness-injected system reminder as authoritative over spec text.
+This is a significant finding: there exists a higher-priority
+instruction channel (harness system-reminders) that sub-agent
+spec text cannot override for concrete tool-choice/persistence
+decisions.
+
+**4. "Domestication" principle holds but requires architectural
+rather than textual mechanism.** Initial framing in
+`data/notes/paper-b-working-notes.md` (morning of 2026-04-19)
+claimed domestication worked via spec text. v4.2/v4.3 showed it
+doesn't. The refined framing: domestication as a design principle
+is achieved architecturally — move the responsibility to a layer
+where the prior doesn't fire — not textually. Orchestrator-only
+persistence (current pure-Option-A spec, committed after v4.3) is
+the architectural instantiation.
+
+**Net confidence update:**
+
+- Main-conversation chained verification: *realisable and tested
+  across 4 runs.* Strong confidence.
+- Independent-context catching power: *non-zero but modest* (n=2
+  across 5 runs). Confidence lower than the v3 Row-16 moment
+  implied.
+- Spec-text control over sub-agent behaviour: *not reliable* for
+  concrete persistence/tool choices. Low confidence in textual
+  coaxing as a design tool.
+- Architectural domestication: *reliable in this case.* High
+  confidence that moving responsibility up the layering removes
+  prior-fighting from the design space.
+
+Paper B should foreground the serial-dispatch design as
+empirically validated; introduce the architectural-domestication
+refinement as the 2026 worked example; treat catching power as a
+cautious, small-n finding that motivates the independence argument
+without overclaiming.
