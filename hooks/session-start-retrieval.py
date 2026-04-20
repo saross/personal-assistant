@@ -118,15 +118,23 @@ def load_all_memories() -> list[dict]:
 
 
 def parse_created_at(mem: dict) -> datetime | None:
-    """Parse the created_at timestamp from a memory record."""
+    """Parse the created_at timestamp from a memory record.
+
+    Always returns a tz-aware datetime (assumes UTC if the stored string
+    has no timezone) so callers can compare against tz-aware cutoffs
+    without TypeError.
+    """
     ts = mem.get("created_at", "")
     if not ts:
         return None
     try:
         # Handle both Z suffix and +00:00 format
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def derive_project(cwd: str) -> Optional[str]:
