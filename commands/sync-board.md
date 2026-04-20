@@ -206,6 +206,35 @@ Compare markdown state to GitHub Issues:
 - Match by title (case-insensitive, trimmed)
 - If ambiguous (multiple matches), flag for user review rather than guessing
 
+**Critical: issue-number + repository collision.** The board can contain
+project items from multiple repos — for example `saross/personal-assistant`
+(active) and `saross/personal-assistant-archive` (archived single-repo
+history). Issue numbers are scoped *per repo*, so two items can share the
+same number (e.g. both repos have an issue #1).
+
+When locating a project item by issue number, **always filter by
+`.content.repository` as well**. Use a `(repo, number)` tuple, never
+number alone:
+
+```bash
+# CORRECT — scoped to the active repo
+jq -r --arg repo "saross/personal-assistant" --argjson n "$issue_num" \
+  '.items[] | select(.content.repository == $repo and .content.number == $n) | .id' \
+  /tmp/gh-project-items.json
+
+# WRONG — will match archive-repo items first and silently operate on the
+# wrong card
+jq -r --argjson n "$issue_num" \
+  '.items[] | select(.content.number == $n) | .id' \
+  /tmp/gh-project-items.json
+```
+
+`gh issue close N` always scopes to the *current* repo, so the close
+action itself is unambiguous. The risk is that a subsequent
+`move_project_item` call (driven by a number-only lookup) silently targets
+a different repo's card. Anchoring both calls to the same
+`(repo, number)` tuple prevents divergence.
+
 **New project labels:** If a task references a project that doesn't have a label yet,
 create the label automatically before creating the Issue.
 
@@ -325,6 +354,9 @@ gh issue close [number] --comment "Completed [date]. Archived to tasks/done/."
 ```
 
 **Move (change board column):**
+
+Resolve `[ITEM_ID]` using the `(repo, number)` tuple (see matching rules
+above). Never look up project items by issue number alone.
 
 ```bash
 gh project item-edit --project-id [PROJECT_ID] --id [ITEM_ID] --field-id [STATUS_FIELD_ID] --single-select-option-id [COLUMN_OPTION_ID]
