@@ -185,4 +185,14 @@ else
     log "parent repo: nothing to commit"
 fi
 
+# ---------------------------------------------------------------------------
+# Symlink sync (heals skill/command/agent drift after new files land)
+# ---------------------------------------------------------------------------
+
+if [[ $DRY_RUN -eq 0 ]]; then
+    log "refreshing ~/.claude/ symlinks + global CLAUDE.md"
+    bash "$SCRIPT_DIR/sync-symlinks.sh" --quiet >>"$LOG_FILE" 2>&1 \
+        || fail "sync-symlinks.sh failed (symlink drift NOT healed this run)"
+fi
+
 log "=== daily-sync complete on $HOST ==="

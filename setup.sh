@@ -19,119 +19,21 @@ echo "PA_DIR: $PA_DIR"
 echo ""
 
 # ------------------------------------------------------------
-# Step 1: Initialise and update submodule
+# Steps 1–5 + compose CLAUDE.md: delegated to sync-symlinks.sh so
+# daily-sync.sh can re-run the same idempotent updates without having
+# to duplicate logic here.
 # ------------------------------------------------------------
-echo "[1/8] Initialising data submodule..."
-cd "$PA_DIR"
-git submodule update --init --recursive
-echo "  Done."
-
-# ------------------------------------------------------------
-# Step 2: Symlink settings.json
-# ------------------------------------------------------------
-echo "[2/8] Symlinking settings.json..."
-SETTINGS_SRC="$PA_DIR/settings.json"
-SETTINGS_DST="$CLAUDE_DIR/settings.json"
-if [ -L "$SETTINGS_DST" ]; then
-    current="$(readlink "$SETTINGS_DST")"
-    if [ "$current" != "$SETTINGS_SRC" ]; then
-        ln -sf "$SETTINGS_SRC" "$SETTINGS_DST"
-        echo "  settings.json — updated symlink"
-    else
-        echo "  settings.json — already correct"
-    fi
-elif [ -e "$SETTINGS_DST" ]; then
-    echo "  settings.json — file exists (not a symlink)"
-    echo "  Back up and remove it, then re-run setup to create symlink:"
-    echo "    cp $SETTINGS_DST ${SETTINGS_DST}.bak && rm $SETTINGS_DST"
-else
-    ln -s "$SETTINGS_SRC" "$SETTINGS_DST"
-    echo "  settings.json — linked"
-fi
+bash "$PA_DIR/scripts/sync-symlinks.sh"
+echo ""
 echo "  NOTE: Read(/home/shawn/**) permission uses an absolute path."
 echo "  Update if your home directory differs."
 
 # ------------------------------------------------------------
-# Step 3: Create command symlinks
+# Python virtual environment (bootstrap-only — intentionally left out
+# of sync-symlinks.sh, which runs daily)
 # ------------------------------------------------------------
-echo "[3/8] Creating command symlinks..."
-mkdir -p "$CLAUDE_DIR/commands"
-
-for cmd in "$PA_DIR"/commands/*.md; do
-    cmd_name="$(basename "$cmd")"
-    target="$CLAUDE_DIR/commands/$cmd_name"
-    if [ -L "$target" ]; then
-        # Update existing symlink to point to new location
-        current="$(readlink "$target")"
-        if [ "$current" != "$cmd" ]; then
-            ln -sf "$cmd" "$target"
-            echo "  $cmd_name — updated symlink"
-        else
-            echo "  $cmd_name — already correct"
-        fi
-    elif [ -e "$target" ]; then
-        echo "  $cmd_name — file exists (not a symlink), skipping"
-    else
-        ln -s "$cmd" "$target"
-        echo "  $cmd_name — linked"
-    fi
-done
-
-# ------------------------------------------------------------
-# Step 4: Create skill symlinks
-# ------------------------------------------------------------
-echo "[4/8] Creating skill symlinks..."
-mkdir -p "$CLAUDE_DIR/skills"
-
-for skill_dir in "$PA_DIR"/skills/*/; do
-    skill_name="$(basename "$skill_dir")"
-    target="$CLAUDE_DIR/skills/$skill_name"
-    if [ -L "$target" ]; then
-        current="$(readlink "$target")"
-        if [ "$current" != "${skill_dir%/}" ]; then
-            ln -sf "${skill_dir%/}" "$target"
-            echo "  $skill_name — updated symlink"
-        else
-            echo "  $skill_name — already correct"
-        fi
-    elif [ -e "$target" ]; then
-        echo "  $skill_name — exists (not a symlink), skipping"
-    else
-        ln -s "${skill_dir%/}" "$target"
-        echo "  $skill_name — linked"
-    fi
-done
-
-# ------------------------------------------------------------
-# Step 5: Create agent symlinks
-# ------------------------------------------------------------
-echo "[5/8] Creating agent symlinks..."
-mkdir -p "$CLAUDE_DIR/agents"
-
-for agent_file in "$PA_DIR"/agents/*.md; do
-    [ -f "$agent_file" ] || continue
-    agent_name="$(basename "$agent_file")"
-    target="$CLAUDE_DIR/agents/$agent_name"
-    if [ -L "$target" ]; then
-        current="$(readlink "$target")"
-        if [ "$current" != "$agent_file" ]; then
-            ln -sf "$agent_file" "$target"
-            echo "  $agent_name — updated symlink"
-        else
-            echo "  $agent_name — already correct"
-        fi
-    elif [ -e "$target" ]; then
-        echo "  $agent_name — file exists (not a symlink), skipping"
-    else
-        ln -s "$agent_file" "$target"
-        echo "  $agent_name — linked"
-    fi
-done
-
-# ------------------------------------------------------------
-# Step 6: Python virtual environment
-# ------------------------------------------------------------
-echo "[6/8] Python virtual environment..."
+echo ""
+echo "[venv] Python virtual environment..."
 if [ -d "$PA_DIR/venv" ]; then
     echo "  venv/ already exists."
 else
@@ -143,17 +45,12 @@ else
 fi
 
 # ------------------------------------------------------------
-# Step 7: Compose global CLAUDE.md
+# Verify
 # ------------------------------------------------------------
-echo "[7/8] Composing global CLAUDE.md..."
-bash "$PA_DIR/scripts/compose-global-claude-md.sh"
-
-# ------------------------------------------------------------
-# Step 8: Verify symlinks
-# ------------------------------------------------------------
-echo "[8/8] Verifying setup..."
+echo ""
+echo "[verify] Checking setup..."
 ERRORS=0
-for check in "$SETTINGS_DST" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/skills" "$CLAUDE_DIR/agents"; do
+for check in "$CLAUDE_DIR/settings.json" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/skills" "$CLAUDE_DIR/agents"; do
     if [ -e "$check" ]; then
         echo "  OK: $check"
     else
