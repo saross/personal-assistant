@@ -76,18 +76,10 @@ log "=== daily-sync start on $HOST (dry-run=$DRY_RUN) ==="
 
 cd "$DATA_DIR"
 
-# Ensure we are on main (the submodule sometimes ends up in detached HEAD
-# after certain git operations). Safe no-op if already on main.
-current_branch="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$current_branch" != "main" ]]; then
-    log "data submodule on '$current_branch' — switching to main"
-    if [[ $DRY_RUN -eq 0 ]]; then
-        git checkout main || fail "failed to switch data submodule to main"
-    fi
-fi
-
-# Stash local changes (typically memories.jsonl + tag-vocabulary.txt from
-# extraction hooks) so we can fast-forward pull cleanly.
+# Stash local changes FIRST (typically memories.jsonl + tag-vocabulary.txt
+# from extraction hooks). Stashing works on any ref including detached
+# HEAD, and leaves a clean tree so the subsequent checkout/pull cannot
+# trip over "local changes would be overwritten".
 has_local_changes=0
 if [[ -n "$(git status --porcelain)" ]]; then
     has_local_changes=1
@@ -95,6 +87,18 @@ if [[ -n "$(git status --porcelain)" ]]; then
     if [[ $DRY_RUN -eq 0 ]]; then
         git stash push -u -m "daily-sync on $HOST $(date +'%Y-%m-%d %H:%M')" \
             >>"$LOG_FILE" 2>&1 || fail "stash push failed"
+    fi
+fi
+
+# Ensure we are on main (the submodule sometimes ends up in detached HEAD
+# after certain git operations, e.g. a commit-data.sh run before a pull).
+# Safe no-op if already on main; safe on a clean tree after the stash.
+current_branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$current_branch" != "main" ]]; then
+    log "data submodule on '$current_branch' — switching to main"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        git checkout main >>"$LOG_FILE" 2>&1 \
+            || fail "failed to switch data submodule to main"
     fi
 fi
 
