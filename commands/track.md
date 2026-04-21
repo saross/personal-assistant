@@ -72,6 +72,25 @@ Tracked: 2h on llm-history-paper (no description)
 Consider adding a brief note for future reference.
 ```
 
+7. **Follow-up capture prompt** (added 2026-04-22). After every
+   `/track` entry, ask once in a single line:
+
+   > **Any follow-up tasks from this block? (quick list, or "none")**
+
+   Rationale: subtasks and deferred items that surface during a work
+   block are cheapest to capture *now*, while still fresh. Deferring
+   capture to `/recap` loses context; deferring further to next week
+   loses the item entirely (see `feedback_capture-everything-at-plan-time`).
+
+   The response is handled the same way as `/capture` input:
+   - "none" / empty → no action, move on.
+   - A short description → append to `tasks/inbox.md` with today's
+     date and the `[track-followup]` tag for later consolidation.
+   - A list → each item becomes one inbox line.
+
+   Keep the prompt one line, tolerant of skipping. Goal is low
+   friction at capture, not ceremony.
+
 ### Reporting (summary)
 
 1. **Read** `~/personal-assistant/reports/time-log.csv`

@@ -279,16 +279,59 @@ if the user specifies changes.
 
 Include the Tomorrow section in the standup file (appended after the recap).
 
-### 9. After Recap
+### 9. Follow-up capture (probe aggressively)
 
-Ask:
+The single weakest point in the current system is under-capture of
+subtasks that surface during work. Shawn's 2026-04-22 self-diagnosis:
+Tuesday's ANU overrun traced to two "obvious" subtasks (Week 7 slide
+deck, weeks-8–11 plan) that weren't captured three weeks earlier when
+the ANU commitment was first scoped. By the time the week arrived,
+they resurfaced as "new" work inside an already-committed window. The
+corrective rule (`feedback_capture-everything-at-plan-time`): over-capture
+at scoping time; consolidate later.
 
-```text
-Anything to add to the backlog based on today?
-```
+`/recap` is the second-cheapest capture moment (after the in-block
+`/track` follow-up prompt). Probe aggressively and specifically, not
+with a single generic "anything to add?" question. Ask all four, one
+at a time — short answers are fine, "none" is valid, but don't let the
+user skip the whole block with one reply.
 
-If the user mentions tasks not in focus or backlog, offer to capture them
-to `tasks/backlog.md`.
+**Probe 1 — deferred within today's work:**
+
+> During today's work, did anything come up that you deliberately
+> pushed off — a subtask, a fix, a refactor, a follow-up — that
+> should be captured before it's forgotten?
+
+**Probe 2 — surprises in today's scope:**
+
+> Did today's tasks take longer or shorter than expected because
+> of subtasks that weren't in the original plan? If so, those
+> subtasks should be in the backlog of the project they surfaced
+> in (so future scoping sees them).
+
+**Probe 3 — upcoming commitments implied by today:**
+
+> Did today's work generate any commitments to others (a message
+> you owe, a file you said you'd send, a review you offered to
+> do)? Those go to `waiting-for.md` with the person named, or to
+> inbox with a due date.
+
+**Probe 4 — backlog candidates:**
+
+> Anything broader — new project idea, feature to explore, tool
+> to try, paper to read — that came up today and is worth a
+> backlog row?
+
+For each probe:
+- Short answer ("none" / empty) → move on.
+- Specific item(s) → capture immediately to the right file
+  (`tasks/inbox.md`, `tasks/backlog.md`, or `tasks/waiting-for.md`).
+- Ambiguous/multiple → capture to inbox for later triage; don't
+  spend recap time consolidating.
+
+Probes 1 and 2 are the experimentally-prioritised ones (they catch
+the "obvious three weeks ago" failure mode). Probes 3 and 4 are the
+existing behaviour made explicit.
 
 ### 10. Weekly Review Reminder (Thursday/Friday only)
 
