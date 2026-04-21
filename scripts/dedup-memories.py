@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import logging
@@ -33,6 +34,11 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+
+# Guard against racing with another machine's extraction-hook appends
+# or a scheduled daily-sync. See scripts/_bulk_rewrite_guard.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -310,6 +316,17 @@ def main() -> None:
     logger = setup_logging()
     logger.info("=== dedup-memories starting (dry_run=%s) ===", args.dry_run)
     logger.info("Canonical: %s", MEMORIES_FILE)
+
+    # Guard against racing with extraction-hook appends or scheduled
+    # sync. Dry-run skips — it does not write.
+    if not args.dry_run:
+        ensure_safe_to_rewrite(reason="dedup-memories: collapse duplicate memory records")
+        atexit.register(release_lock)
+        logger.info(
+            "TIP: commit the result with the trailer so M3 shrink-check "
+            "recognises it as intentional:\n"
+            "    cd data && git commit -m 'dedup: <subject>' -m 'Rewrite-Class: bulk'"
+        )
 
     records, initial_bytes = load_records_with_position()
     logger.info("Loaded %d raw lines (%d bytes) from canonical", len(records), initial_bytes)

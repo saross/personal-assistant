@@ -43,6 +43,39 @@ fi
 mkdir -p "$LOG_DIR"
 
 # ---------------------------------------------------------------------------
+# Config (data/config/sync.json) — read with safe defaults. Rollback
+# switches flip individual features without touching code.
+# ---------------------------------------------------------------------------
+
+CONFIG_FILE="$PA_DIR/data/config/sync.json"
+read_cfg() {
+    # read_cfg <key> <default>
+    # Prints the config value on stdout. If jq parsing fails (e.g. the
+    # file is corrupt), prints the default AND writes a warning to
+    # stderr so the failure isn't silent.
+    local key="$1" default="$2" value jq_stderr
+    if ! command -v jq >/dev/null 2>&1 || [ ! -f "$CONFIG_FILE" ]; then
+        printf '%s' "$default"
+        return
+    fi
+    jq_stderr=$(mktemp)
+    if value=$(jq -r "(.${key} // ${default})" "$CONFIG_FILE" 2>"$jq_stderr"); then
+        rm -f "$jq_stderr"
+        printf '%s' "$value"
+    else
+        echo "[daily-sync] WARNING: could not parse $CONFIG_FILE; using default $default for $key" >&2
+        cat "$jq_stderr" >&2
+        rm -f "$jq_stderr"
+        printf '%s' "$default"
+    fi
+}
+
+RETRY_ON_REJECT="$(read_cfg retry_on_push_reject true)"
+DETECT_JSONL_SHRINK="$(read_cfg detect_jsonl_shrink true)"
+RETRY_ATTEMPTS=3
+RETRY_BACKOFF=5
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
@@ -55,6 +88,112 @@ log() {
 fail() {
     log "ERROR: $*"
     exit "${2:-2}"
+}
+
+# ---------------------------------------------------------------------------
+# push_with_retry — push the current branch, rebasing on rejection.
+#
+# On non-fast-forward rejection (race with another machine's push), the
+# function fetches origin, runs `git pull --rebase`, and re-pushes up to
+# RETRY_ATTEMPTS times. Conflict resolution differs by repo:
+#   - Data submodule: JSONL/vocab conflicts go through the append-safe
+#     resolver (scripts/resolve-merge-conflicts.py). Any other file is
+#     considered unknown and aborts.
+#   - Parent repo: submodule-pointer conflicts on `data` are resolved by
+#     taking our version (we just pushed the data submodule, so our
+#     bump-to-new-SHA is authoritative over origin's stale pointer).
+#     Any other file aborts.
+#
+# Config: retry_on_push_reject=false disables retry and preserves the
+# original fail-fast behaviour.
+#
+# Must be called from inside the repository that is being pushed.
+# ---------------------------------------------------------------------------
+push_with_retry() {
+    local context="$1"  # "data submodule" or "parent repo"
+    local attempt
+    for attempt in $(seq 1 "$RETRY_ATTEMPTS"); do
+        if git push origin main >>"$LOG_FILE" 2>&1; then
+            log "$context: pushed to origin (attempt $attempt/$RETRY_ATTEMPTS)"
+            return 0
+        fi
+        if [[ "$RETRY_ON_REJECT" != "true" ]]; then
+            fail "$context push failed (retry disabled — manual resolution required)"
+        fi
+        if [[ "$attempt" -eq "$RETRY_ATTEMPTS" ]]; then
+            fail "$context push failed after $RETRY_ATTEMPTS attempts (diverged remote — manual resolution required)"
+        fi
+        log "$context push attempt $attempt/$RETRY_ATTEMPTS rejected — fetching + rebasing"
+        git fetch origin main >>"$LOG_FILE" 2>&1 \
+            || fail "$context: fetch failed during retry"
+        # GIT_EDITOR=true prevents the commit-message editor from opening
+        # during rebase --continue on git versions that ignore
+        # core.editor for that specific path.
+        if ! GIT_EDITOR=true git pull --rebase origin main >>"$LOG_FILE" 2>&1; then
+            log "$context: rebase raised conflicts — resolving"
+            local -a rebase_conflicts=()
+            while IFS= read -r _line; do
+                if [[ "$_line" =~ ^(UU|AA|DD|AU|UA|DU|UD)\ (.+)$ ]]; then
+                    rebase_conflicts+=("${BASH_REMATCH[2]}")
+                fi
+            done < <(git status --porcelain)
+            if [[ ${#rebase_conflicts[@]} -eq 0 ]]; then
+                git rebase --abort >>"$LOG_FILE" 2>&1 || true
+                fail "$context: rebase failed but no unmerged paths detected — manual intervention needed"
+            fi
+            # Partition conflicts: JSONL/vocab go to the resolver; the
+            # `data` submodule pointer is resolved by trust-ours; any
+            # other path aborts.
+            local -a jsonl_conflicts=()
+            local -a submodule_conflicts=()
+            local -a unknown_conflicts=()
+            local _f
+            for _f in "${rebase_conflicts[@]}"; do
+                case "$_f" in
+                    memories/memories.jsonl|memories/tag-vocabulary.txt)
+                        jsonl_conflicts+=("$_f")
+                        ;;
+                    data)
+                        submodule_conflicts+=("$_f")
+                        ;;
+                    *)
+                        unknown_conflicts+=("$_f")
+                        ;;
+                esac
+            done
+            if [[ ${#unknown_conflicts[@]} -gt 0 ]]; then
+                git rebase --abort >>"$LOG_FILE" 2>&1 || true
+                fail "$context: rebase produced conflicts on unsupported paths (${unknown_conflicts[*]}) — manual resolution required"
+            fi
+            if [[ ${#jsonl_conflicts[@]} -gt 0 ]]; then
+                local -a jsonl_paths=()
+                for _f in "${jsonl_conflicts[@]}"; do
+                    jsonl_paths+=("$(pwd)/$_f")
+                done
+                "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
+                    "${jsonl_paths[@]}" >>"$LOG_FILE" 2>&1 \
+                    || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: resolver failed during rebase" 3; }
+                git add "${jsonl_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
+                    || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: git add after resolver failed"; }
+            fi
+            if [[ ${#submodule_conflicts[@]} -gt 0 ]]; then
+                # Our bump-to-new-SHA is authoritative because we just
+                # pushed the submodule; origin's pointer is stale.
+                for _f in "${submodule_conflicts[@]}"; do
+                    git checkout --ours -- "$_f" >>"$LOG_FILE" 2>&1 \
+                        || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: checkout --ours failed on $_f"; }
+                    git add "$_f" >>"$LOG_FILE" 2>&1 \
+                        || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: git add after trust-ours failed"; }
+                done
+            fi
+            GIT_EDITOR=true git rebase --continue >>"$LOG_FILE" 2>&1 \
+                || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: rebase --continue failed"; }
+            log "$context: rebase conflicts resolved (${rebase_conflicts[*]})"
+        fi
+        sleep "$RETRY_BACKOFF"
+    done
+    # Defensive: loop should have returned or failed by now
+    fail "$context push: retry loop exited abnormally"
 }
 
 # ---------------------------------------------------------------------------
@@ -153,9 +292,47 @@ if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
     git add -A >>"$LOG_FILE" 2>&1
     git commit -m "chore(auto-sync): daily sync from $HOST $(date +'%Y-%m-%d')" \
         >>"$LOG_FILE" 2>&1 || fail "data commit failed"
-    git push origin main >>"$LOG_FILE" 2>&1 \
-        || fail "data push failed (diverged remote — needs manual resolution)"
-    log "data submodule: pushed to origin"
+    # Shrink check (M3): compare committed-tree line counts (HEAD~1 vs
+    # HEAD) — NOT working-tree counts, which would both already reflect
+    # the resolver's output and thus always match. If memories.jsonl
+    # net-shrank in this commit and the commit message doesn't carry
+    # `Rewrite-Class: bulk`, undo the commit and bail before pushing so
+    # the state can be reviewed.
+    if [[ "$DETECT_JSONL_SHRINK" == "true" ]]; then
+        # `git show HEAD~1:path | wc -l` correctly counts trailing-\n-terminated
+        # lines from the committed tree. HEAD~1 might not exist on a
+        # brand-new branch — guard with rev-parse.
+        if git rev-parse --verify --quiet "HEAD~1" >/dev/null 2>&1; then
+            lines_before=$(git show "HEAD~1:memories/memories.jsonl" 2>/dev/null | wc -l)
+            lines_after=$(git show "HEAD:memories/memories.jsonl" 2>/dev/null | wc -l)
+            if [[ "$lines_after" -lt "$lines_before" ]]; then
+                head_msg="$(git log -1 --format=%B)"
+                if ! echo "$head_msg" | grep -q "^Rewrite-Class: bulk"; then
+                    shrink_report="$LOG_DIR/daily-sync-SHRINK-$(date +'%Y-%m-%d-%H%M%S').txt"
+                    {
+                        echo "Detected unexpected shrink in memories.jsonl during daily-sync."
+                        echo "Before (HEAD~1): $lines_before lines"
+                        echo "After  (HEAD):   $lines_after lines"
+                        echo "Delta:           $((lines_after - lines_before))"
+                        echo ""
+                        echo "Head commit (pre-push):"
+                        echo "$head_msg"
+                        echo ""
+                        echo "git diff --stat HEAD~1..HEAD -- memories/memories.jsonl:"
+                        git diff --stat "HEAD~1..HEAD" -- memories/memories.jsonl
+                    } > "$shrink_report" 2>&1
+                    log "SHRINK DETECTED: $lines_before -> $lines_after lines. Report: $shrink_report"
+                    # Undo the commit so origin is not polluted with a
+                    # suspect shrink. Files remain on disk for inspection.
+                    if ! git reset --soft "HEAD~1" >>"$LOG_FILE" 2>&1; then
+                        log "WARNING: failed to reset soft HEAD~1 after shrink detection; manual recovery may be needed"
+                    fi
+                    fail "data submodule: unexpected shrink detected (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
+                fi
+            fi
+        fi
+    fi
+    push_with_retry "data submodule"
 else
     log "data submodule: nothing to commit"
 fi
@@ -178,9 +355,7 @@ if [[ $DRY_RUN -eq 0 ]] && ! git diff --quiet data; then
     git add data >>"$LOG_FILE" 2>&1
     git commit -m "chore(auto-sync): bump data pointer from $HOST $(date +'%Y-%m-%d')" \
         >>"$LOG_FILE" 2>&1 || fail "parent commit failed"
-    git push origin main >>"$LOG_FILE" 2>&1 \
-        || fail "parent push failed (diverged remote — needs manual resolution)"
-    log "parent repo: pushed submodule bump"
+    push_with_retry "parent repo"
 else
     log "parent repo: nothing to commit"
 fi

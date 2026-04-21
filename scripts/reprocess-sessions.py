@@ -20,6 +20,7 @@ Modes:
 """
 
 import argparse
+import atexit
 import gzip
 import hashlib
 import json
@@ -31,6 +32,11 @@ import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Guard against racing with extraction-hook appends or scheduled sync.
+# See scripts/_bulk_rewrite_guard.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
 from typing import Any, Optional
 
 # ============================================================================
@@ -710,6 +716,20 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
     if not BATCH_STATE_FILE.exists():
         logger.error("No batch state file: %s", BATCH_STATE_FILE)
         sys.exit(1)
+
+    # Guard against racing with extraction-hook appends or scheduled
+    # sync. This path appends to memories.jsonl and modifies
+    # tag-vocabulary.txt — bulk-rewrite class.
+    ensure_safe_to_rewrite(
+        reason=f"reprocess-sessions apply (batch={args.batch_id})"
+    )
+    atexit.register(release_lock)
+    logger.info(
+        "TIP: commit the result with the trailer so M3 shrink-check "
+        "recognises it as intentional (only if net-negative deltas):\n"
+        "    cd data && git commit -m 'reprocess: apply batch %s' -m 'Rewrite-Class: bulk'",
+        args.batch_id,
+    )
 
     state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
     request_map = state.get("request_map", {})

@@ -23,6 +23,13 @@ from collections import Counter
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
+
+# Guard against racing with extraction-hook appends or scheduled sync.
+# Only the merge subcommand rewrites the canonical files — guard is
+# invoked there rather than at module top.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
+import atexit  # noqa: E402
 from typing import Any
 
 # -------------------------------------------------------------------------
@@ -483,6 +490,20 @@ def cmd_merge(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Guard against racing with extraction-hook appends or scheduled
+    # sync. The merge rewrites memories.jsonl and tag-vocabulary.txt
+    # in place.
+    ensure_safe_to_rewrite(
+        reason=f"tag-gardening merge (plan={plan_path.name})"
+    )
+    atexit.register(release_lock)
+    print(
+        "TIP: commit the result with 'Rewrite-Class: bulk' trailer so "
+        "the shrink check recognises it as intentional:\n"
+        "    cd data && git commit -m 'tags: merge' -m 'Rewrite-Class: bulk'",
+        file=sys.stderr,
+    )
 
     if not plan:
         print("Empty merge plan — nothing to do.")

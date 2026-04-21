@@ -110,6 +110,29 @@ def save_cursor(line_number: int, cursor_key: str = "postgres_sync_line") -> Non
     )
 
 
+def save_sync_timestamp() -> None:
+    """
+    Record a wall-clock timestamp of the most recent successful sync.
+
+    Paired with `postgres_sync_line`, this lets /recall (via
+    fetch-memories.py) detect "stale" states — i.e. the JSONL has grown
+    since the last sync, or the cursor hasn't advanced in a while —
+    and warn the caller that /recall results may be incomplete.
+    """
+    from datetime import datetime, timezone
+    data = {}
+    if CURSOR_FILE.exists():
+        try:
+            data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            data = {}
+    data["postgres_last_sync_ts"] = datetime.now(timezone.utc).isoformat()
+    CURSOR_FILE.write_text(
+        json.dumps(data, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 # ============================================================================
 # JSONL parsing
 # ============================================================================
@@ -376,6 +399,10 @@ def sync(logger: logging.Logger) -> None:
 
     if cursor_line >= total_lines:
         logger.info("No new memories to sync (cursor=%d, total=%d)", cursor_line, total_lines)
+        # Freshness marker advances even on no-op — downstream /recall
+        # uses this to distinguish "recently confirmed empty" from
+        # "haven't checked in N hours".
+        save_sync_timestamp()
         return
 
     new_lines = lines[cursor_line:]
@@ -403,6 +430,7 @@ def sync(logger: logging.Logger) -> None:
     # Only advance cursor if insertion succeeded
     if inserted > 0:
         save_cursor(total_lines)
+        save_sync_timestamp()
         logger.info("Cursor advanced to line %d", total_lines)
     else:
         logger.warning(

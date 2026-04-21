@@ -34,8 +34,80 @@ from typing import Any
 
 PA_DIR = Path(__file__).resolve().parent.parent
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
+CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
+SYNC_CONFIG_FILE = PA_DIR / "data" / "config" / "sync.json"
 DB_NAME = "claude_memories"
 MAX_RESULTS = 10
+
+# Freshness-warning thresholds (M3). Both must be exceeded for a warning
+# to fire, so a quiet day doesn't flood stderr.
+RECALL_UNSYNCED_LINE_THRESHOLD = 20
+RECALL_STALENESS_MINUTES = 15
+
+
+# ============================================================================
+# Freshness check (M3): warn when /recall may be returning stale
+# results because sync-to-postgres.py hasn't caught up with JSONL.
+# ============================================================================
+
+def _staleness_warning() -> str | None:
+    """
+    Return a one-line warning string if postgres is materially behind
+    the canonical JSONL, else None. Controlled by
+    ``recall_staleness_warning`` in data/config/sync.json (default: on).
+
+    Checks two things:
+      1. JSONL has grown by more than RECALL_UNSYNCED_LINE_THRESHOLD
+         lines since the last successful sync.
+      2. Last sync timestamp is older than RECALL_STALENESS_MINUTES.
+
+    Both must fire; either alone is noise on a normal day.
+    """
+    # Config gate.
+    try:
+        if SYNC_CONFIG_FILE.exists():
+            cfg = json.loads(SYNC_CONFIG_FILE.read_text(encoding="utf-8"))
+            if not cfg.get("recall_staleness_warning", True):
+                return None
+    except (json.JSONDecodeError, OSError):
+        pass  # fall through to default-on behaviour
+
+    if not CURSOR_FILE.exists() or not MEMORIES_FILE.exists():
+        return None
+
+    try:
+        cursor = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    last_line = cursor.get("postgres_sync_line")
+    last_ts = cursor.get("postgres_last_sync_ts")
+    if last_line is None or last_ts is None:
+        return None
+
+    try:
+        current_lines = sum(1 for _ in MEMORIES_FILE.open(encoding="utf-8"))
+    except OSError:
+        return None
+
+    unsynced = current_lines - int(last_line)
+
+    try:
+        last_sync = datetime.fromisoformat(last_ts)
+        if last_sync.tzinfo is None:
+            last_sync = last_sync.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+    age_minutes = (datetime.now(timezone.utc) - last_sync).total_seconds() / 60.0
+
+    if unsynced > RECALL_UNSYNCED_LINE_THRESHOLD and age_minutes > RECALL_STALENESS_MINUTES:
+        return (
+            f"[fetch-memories] WARNING: postgres is {unsynced} lines / "
+            f"{age_minutes:.0f} min behind JSONL. Recent memories may be "
+            f"missing from /recall until the next sync-to-postgres.py run."
+        )
+    return None
 
 
 # ============================================================================
@@ -518,6 +590,13 @@ def main() -> None:
     """
     args = parse_args()
     results = None
+
+    # Freshness check (M3): surface a warning to stderr if postgres is
+    # materially behind JSONL so /recall callers can decide whether to
+    # wait for the next sync cycle.
+    warning = _staleness_warning()
+    if warning:
+        print(warning, file=sys.stderr)
 
     # Determine the effective text query for FTS/JSONL fallback.
     # --semantic provides the query text if --query is not also set.

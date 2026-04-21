@@ -27,12 +27,19 @@ Options:
 """
 
 import argparse
+import atexit
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
+import sys as _sys_for_guard_import
+
+# Guard against racing with extraction-hook appends or scheduled sync.
+# See scripts/_bulk_rewrite_guard.py.
+_sys_for_guard_import.path.insert(0, str(Path(__file__).resolve().parent))
+from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
 
 # ============================================================================
 # Configuration
@@ -416,6 +423,19 @@ def run_batch_apply(
     """Retrieve results from a completed batch job and apply summaries."""
     from anthropic import Anthropic
 
+    # Guard against racing with extraction-hook appends or scheduled
+    # sync (this path rewrites memories.jsonl in place).
+    ensure_safe_to_rewrite(
+        reason=f"backfill-summaries --batch-apply {batch_id}"
+    )
+    atexit.register(release_lock)
+    logger.info(
+        "TIP: commit the result with the trailer so M3 shrink-check "
+        "recognises it as intentional:\n"
+        "    cd data && git commit -m 'backfill: summaries from batch %s' -m 'Rewrite-Class: bulk'",
+        batch_id,
+    )
+
     client = Anthropic()
 
     # Check batch status
@@ -584,6 +604,19 @@ def main() -> None:
     if not to_backfill:
         logger.info("Nothing to backfill — all records have summaries.")
         return
+
+    # Guard against racing with extraction-hook appends or scheduled
+    # sync. Dry-run and --batch-api submission skip — they do not write
+    # the canonical file. --batch-apply mode is the writer; the guard
+    # runs there instead (handled in run_batch_apply).
+    if not args.dry_run and not args.batch_api:
+        ensure_safe_to_rewrite(reason="backfill-summaries: write summary field to memories.jsonl")
+        atexit.register(release_lock)
+        logger.info(
+            "TIP: commit the result with the trailer so M3 shrink-check "
+            "recognises it as intentional:\n"
+            "    cd data && git commit -m 'backfill: summaries' -m 'Rewrite-Class: bulk'"
+        )
 
     if args.dry_run:
         n_batches = (len(to_backfill) + args.batch_size - 1) // args.batch_size
