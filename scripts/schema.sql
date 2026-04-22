@@ -242,6 +242,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     archive_path TEXT,             -- Filesystem path to session directory
     capture_type TEXT,             -- "session_end" or "pre_compact"
 
+    -- Sub-agent rollup (v1.2 schema). Per-sub-agent detail lives in
+    -- raw_metadata->'subagents'; these typed columns exist so
+    -- "find sub-agent-heavy sessions" is indexable.
+    subagent_count INTEGER DEFAULT 0,
+    subagent_total_cost_usd NUMERIC(10, 4) DEFAULT 0,
+
     -- Full metadata for fields not broken out into columns
     raw_metadata JSONB,
 
@@ -264,6 +270,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_model ON sessions(model_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_capture_type ON sessions(capture_type);
 CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(is_active)
     WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_sessions_subagent_count ON sessions(subagent_count)
+    WHERE subagent_count > 0;
 
 -- Full-text search across title, purpose, and prompt summary
 CREATE INDEX IF NOT EXISTS idx_sessions_fts ON sessions USING GIN(

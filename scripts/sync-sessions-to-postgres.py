@@ -183,6 +183,15 @@ def metadata_to_row(
     # Archive path: the directory containing session.meta.json
     archive_path = str(meta_path.parent)
 
+    # Sub-agent rollup (v1.2 schema). Pre-v1.2 archives lack
+    # subagents_summary; default to zero so the typed columns are
+    # always populated.
+    subagents_summary = stats.get("subagents_summary") or {}
+    subagent_count = subagents_summary.get("count", 0) or 0
+    subagent_total_cost_usd = (
+        subagents_summary.get("estimated_cost_usd", 0.0) or 0.0
+    )
+
     return {
         "id": session.get("id", ""),
         "project": project.get("name", "unknown"),
@@ -210,6 +219,8 @@ def metadata_to_row(
         "provenance_summary": provenance_summary,
         "archive_path": archive_path,
         "capture_type": archive.get("capture_type"),
+        "subagent_count": subagent_count,
+        "subagent_total_cost_usd": subagent_total_cost_usd,
         "raw_metadata": json.dumps(metadata),
     }
 
@@ -249,7 +260,9 @@ def upsert_sessions(
         "tokens_cache_read", "tokens_cache_creation",
         "estimated_cost_usd",
         "prompt_summary", "process_summary", "provenance_summary",
-        "archive_path", "capture_type", "raw_metadata",
+        "archive_path", "capture_type",
+        "subagent_count", "subagent_total_cost_usd",
+        "raw_metadata",
     ]
 
     # Build the UPDATE SET clause (exclude id from updates)
