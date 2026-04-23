@@ -199,7 +199,7 @@ Not what you hope. What you're committing to.
 
 [If today is Friday, append:]
 
-📋 **Weekly review:** Run /review before you finish today. No weekly
+📋 **Weekly review:** Run /weekly-review before you finish today. No weekly
 reviews have been completed yet — building this habit matters.
 ```
 

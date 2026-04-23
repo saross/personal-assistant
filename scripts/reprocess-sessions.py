@@ -66,7 +66,7 @@ BATCH_OUTPUT_COST_PER_M = 2.00
 # Slash commands to skip (mirrors extraction-hook.py)
 COMMAND_MARKERS = [
     "/remember", "/recall", "/capture", "/craft", "/focus",
-    "/done", "/standup", "/recap", "/track", "/review",
+    "/done", "/standup", "/recap", "/track", "/weekly-review",
     "/retro", "/sync-board", "/process-email",
     "End-of-Session Reflection",
 ]

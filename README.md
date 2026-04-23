@@ -61,7 +61,7 @@ A GTD-inspired system enforcing focus through hard limits:
 - Confrontational accountability: escalating questions after 3 days, direct
   confrontation after 7, abandonment discussion after 14
 - `/standup` for morning check-ins, `/recap` for evening calibration
-- `/review` for weekly reckoning, `/retro` for monthly system adaptation
+- `/weekly-review` for weekly reckoning, `/retro` for monthly system adaptation
 
 ### Hooks
 
@@ -83,7 +83,7 @@ A GTD-inspired system enforcing focus through hard limits:
 | `/craft [text]` | Craft notebook entry |
 | `/focus add\|remove\|swap` | Manage focus slots |
 | `/done [task]` | Mark task complete |
-| `/review` | Weekly review + collaborator reports |
+| `/weekly-review` | Weekly review + collaborator reports |
 | `/retro` | Monthly system retrospective |
 | `/sync-board` | Push task state to GitHub Issues |
 | `/process-email` | Email triage |

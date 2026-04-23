@@ -59,7 +59,7 @@ COMMAND_MARKERS = (
     "# /standup \u2014 Daily Accountability Check",
     "# /recap \u2014 End-of-Day Recap",
     "# /track \u2014 Time Tracking",
-    "# /review \u2014 Weekly Review",
+    "# /weekly-review \u2014 Weekly Review",
     "# /retro \u2014 Monthly System Retrospective",
     "# /sync-board \u2014 GitHub Issues Sync",
     "# /process-email \u2014 Email Triage",

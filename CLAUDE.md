@@ -54,7 +54,7 @@ This is the personal assistant system — a cross-project hub for memory, task m
 - `tasks/inbox.md` — Captures awaiting processing
 - `tasks/backlog.md` — Scoped tasks ready to promote to focus (table format)
 - `tasks/waiting-for.md` — Blocked on others
-- `tasks/collaborators.md` — People who receive tailored reports from `/review`
+- `tasks/collaborators.md` — People who receive tailored reports from `/weekly-review`
 - `tasks/done/` — Monthly completion archives
 
 ### Commands
@@ -65,7 +65,7 @@ This is the personal assistant system — a cross-project hub for memory, task m
 - `/capture [text]` — Quick add to inbox
 - `/done [task]` — Mark complete, celebrate, refocus
 - `/focus add|remove|swap` — Change focus (enforces limits)
-- `/review` — Weekly reckoning + collaborator reports
+- `/weekly-review` — Weekly reckoning + collaborator reports
 - `/retro` — Monthly system retrospective
 - `/sync-board` — Push task state to GitHub Issues
 - `/process-email` — Email triage (Gmail MCP or manual paste)

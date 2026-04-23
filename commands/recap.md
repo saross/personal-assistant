@@ -338,14 +338,14 @@ existing behaviour made explicit.
 If today is **Thursday**, add after the recap:
 
 ```text
-Weekly review reminder: Tomorrow is Friday — plan to run /review
+Weekly review reminder: Tomorrow is Friday — plan to run /weekly-review
 before end of day. Have you been doing weekly reviews?
 ```
 
 If today is **Friday**, add after the recap:
 
 ```text
-Weekly review: Have you run /review this week? If not, now is a
+Weekly review: Have you run /weekly-review this week? If not, now is a
 good time — it takes 10 minutes and the data is freshest while the
 week is still in your head.
 ```

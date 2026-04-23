@@ -1,13 +1,17 @@
-# /review — Weekly Review
+# /weekly-review — Weekly Review
 
 The weekly reckoning. Aggregates data from across the system into a scorecard,
 surfaces patterns, generates collaborator reports, and asks one strategic question.
 
+Renamed from `/review` on 2026-04-23 to un-shadow Claude Code's built-in
+`/review` (PR review). Historical references in `planning/` docs still use the
+old name.
+
 ## Usage
 
 ```text
-/review
-/review this-week
+/weekly-review
+/weekly-review this-week
 ```
 
 ## Arguments
