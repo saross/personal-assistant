@@ -31,8 +31,20 @@ Adversarial verification of a `data-profile-scout` report. Independent context, 
 - Percentages, rates, proportions: ±0.1 pp.
 - Chi-square statistics and p-values: ±0.5 % relative.
 - Floating-point summary stats (mean, median, stddev): ±0.1 %.
+- **Comprehensive-mode stochastic claims** (bootstrap CIs, MC permutation p-values, any claim whose category is in `{ci_lower, ci_upper, permutation_pvalue, corrected_pvalue}`): re-run with a different random seed; tolerance **±1 percentage point** on p-values, **±5 % relative** on CI bounds. Claims outside these tolerances are failures.
+- **Comprehensive-mode rank-based effect sizes** (Cliff's delta, Vargha-Delaney A, Spearman ρ): deterministic given the data, tolerance ±0.001 absolute.
+- **Comprehensive-mode diversity indices** (Shannon entropy, Simpson's D, effective N, Gini, Herfindahl): deterministic, tolerance ±0.001 absolute.
 
 Failures outside tolerance are real corrections, not rounding.
+
+## Stochastic-claim verification procedure
+
+For every claim with `category in {permutation_pvalue, corrected_pvalue, ci_lower, ci_upper}`:
+
+1. Locate the method described in the claim's source file and `decisions.md`.
+2. Independently re-run the procedure with a different random seed, same number of resamples, same data.
+3. Compare the new value to the scout's claim against the stochastic-claim tolerance.
+4. If outside tolerance, flag — but also consider whether the *methodology* itself (e.g., the null-model specification, the correction approach) is what the scout claimed it was. A misdescribed method can produce numerically defensible but interpretively wrong claims.
 
 ## Output
 

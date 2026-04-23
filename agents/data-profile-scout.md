@@ -24,8 +24,11 @@ The invocation provides, either in the prompt or in a referenced spec file:
 - `date_columns` — pair of columns treated as a date interval, e.g., `["not_before", "not_after"]`; `null` if the dataset is not date-range-typed.
 - `spatial_columns` — pair like `["Latitude", "Longitude"]` if spatial; `null` if not.
 - `output_dir` — absolute path; you write results here.
-- `venv_python` — absolute path to a Python interpreter with pandas, numpy, scipy, and pyarrow importable.
+- `venv_python` — absolute path to a Python interpreter with pandas, numpy, scipy, pyarrow, and statsmodels importable.
 - `max_runtime_minutes` — soft cap; flag if the work would exceed it.
+- `comprehensive_mode` — bool, default `false`. When `true`, enables the extended stats set, bootstrap CIs, MC permutation tests with aoristic-probability nulls, Cliff's delta / Vargha-Delaney effect sizes, Westfall-Young permutation-based stepdown corrections (with Holm-Bonferroni as companion sanity-check), and an assumption-check discipline per the Comprehensive-mode section below. Also accepts the supporting parameters: `categorical_columns`, `text_columns`, `numeric_columns`, `temporal_envelope`, `drill_downs`, `sensitivity_thresholds`, `test_family_sizes`, `bootstrap_resamples` (default **20000**), `permutation_resamples` (default **20000**), `n_jobs` (default `-1` = all cores), `small_n_threshold` (default 50; at and below this, report both BCa and percentile bootstrap CIs).
+- `primary_key` — column name serving as the row identifier (e.g., `LIST-ID`). Used for duplicate-detection and some joins. Optional.
+- `remote_exec` — optional object `{host, workdir, venv_python}` when the caller wants the Python executed on a remote machine via SSH. When present, the scout composes its Python script, uses git (commit + push) to transport it to the remote (repo must already be cloned on the remote), then runs `ssh <host> 'cd <workdir> && <venv_python> <script_path>'`; outputs land on the remote and are returned via `git pull` in the caller's workflow. See Remote execution below.
 
 ### Output contract
 
@@ -35,7 +38,7 @@ Write to `output_dir`, always as files (never as per-row dumps to stdout):
 - `profile-{subset_name}.md` for each subset level — per-subset stats, top-20 groups, threshold-qualification counts.
 - `artefacts.md` — detailed results per artefact check plus the unexpected-pattern diagnostic.
 - `tables/*.csv` — machine-readable versions of every table referenced in the markdown.
-- `claims.jsonl` — **machine-readable enumeration of every numerical or factual claim made in the markdown reports.** One JSON object per line with fields: `{claim_id, category, description, value, units, source_method, source_file}`. Categories include `count`, `rate`, `percentage`, `mean`, `median`, `chisq`, `pvalue`, `ranking`, `threshold_qualifying`. This is the primary input to the verifier — every claim the verifier should re-check lives here, so verification is structured iteration not markdown parsing.
+- `claims.jsonl` — **machine-readable enumeration of every numerical or factual claim made in the markdown reports.** One JSON object per line. Base fields: `{claim_id, category, description, value, units, source_method, source_file}`. Categories include `count`, `rate`, `percentage`, `mean`, `median`, `chisq`, `pvalue`, `ranking`, `threshold_qualifying`, `effect_size`, `ci_lower`, `ci_upper`, `permutation_pvalue`, `corrected_pvalue`, `diversity_index`, `concentration_share`, `correlation`, `test_statistic`. **Stochastic-category claims** (`permutation_pvalue`, `corrected_pvalue`, `ci_lower`, `ci_upper`) additionally include: `random_seed` (int; the seed used for the resample loop), `resamples` (int), `method_parameters` (object — at minimum `{null_model, correction_method, family_id}` for p-values; `{ci_method, resamples}` for CIs), `code_location` (`{file, function}` pointing to the implementation — typically `code/profile.py`). This is the primary input to the verifier.
 - `decisions.md` — enumerate every judgement call encountered. For each: fact observed / default applied / alternatives considered / rationale / whether this warrants investigator review.
 - `run.log` — short tool-use trace for audit (what commands ran, with timings).
 
@@ -103,6 +106,149 @@ The following **continue with a flagged default**:
 - Fixing the dataset.
 - Making claims beyond description (no inference, no SPA, no modelling — that's downstream).
 - Per-row data dumps.
+
+### Comprehensive mode
+
+When the invocation sets `comprehensive_mode: true`, extend the core profile with the statistics, tests, and CI procedures below. In minimal mode (default), only the core steps above run.
+
+#### Additional outputs (alongside the core output contract)
+
+- `comprehensive.md` — landing page summarising comprehensive-mode findings and cross-referencing the sub-reports below.
+- `distribution-shape.md` — IQR, MAD, skewness, kurtosis, percentiles (5/25/50/75/95) for `date_range` (if `date_columns` present) and every column in `numeric_columns`.
+- `temporal-coverage.md` — per-decade counts (overall + per top-20 subsets at each subset_level), earliest `not_before` and latest `not_after` (overall + per-subset).
+- `categorical-distributions.md` — top-20 value counts plus diversity indices (Shannon entropy, Simpson's D, effective number of categories) for each column in `categorical_columns`.
+- `concentration.md` — top-k share at k ∈ {1, 5, 10, 20} as the primary concentration measure; Gini coefficient and Herfindahl index reported alongside as supplementary.
+- `text-statistics.md` — per-row text lengths (alphabet-filtered character count configurable per text column), distribution stats, correlation with `date_range` if present.
+- `correlations.md` — Spearman rank correlation matrix on `numeric_columns` with BCa bootstrap 95 % CIs; p-value matrix with Holm-Bonferroni correction across the matrix.
+- `null-cooccurrence.md` — for columns whose null rate exceeds `null_cooccurrence_threshold` (default 50 %), fraction of rows null on both vs null on either vs null on neither; flag source-pattern hypotheses (e.g., EDH-only columns null on EDCS rows).
+- `drill-downs/{target_name}.md` — one file per entry in `drill_downs`.
+- `sensitivity-sweep.md` — comparative table of flag-result counts at each threshold in `sensitivity_thresholds`.
+- Per-subset-level `profile-{subset_name}.md` additions: per-group `describe()` stats at **every** `threshold_candidate` (not only the highest), with CI-bearing summary statistics where bootstrap applies.
+- Corresponding CSVs for every table in `tables/`.
+- Every new numerical claim gets a row in `claims.jsonl` with an appropriate `category` (`effect_size`, `ci_lower`, `ci_upper`, `permutation_pvalue`, `corrected_pvalue`, `diversity_index`, `concentration_share`, `correlation`, `test_statistic`, etc.).
+
+#### Bootstrap confidence intervals (applied throughout comprehensive mode)
+
+- **Method**: BCa (bias-corrected and accelerated) for distribution-based statistics; **Wilson score** for proportions/rates (robust at extremes like 0 % or 100 %, where normal-approximation CIs collapse).
+- **Resamples**: `bootstrap_resamples` parameter, default 20 000.
+- **Applies to**: means, medians, std, IQR, MAD, skewness, kurtosis, percentiles (every point estimate in distribution-shape); effect sizes; Spearman correlation coefficients; diversity indices; artefact-check observed/expected ratios.
+- **Applies Wilson** to: all rates (geolocation rate, null rates at threshold, is_within_RE rate, etc.).
+- **Small-n fallback**: for subsets with n < `small_n_threshold` (default 50), report BOTH BCa and percentile-bootstrap CIs. BCa can be unstable under ties and at small n; percentile is more conservative. Flag any subset where the two CIs differ by > 10 % relative width — the investigator should prefer the percentile CI in that case.
+- **Parallelism**: resample loops use `joblib.Parallel(n_jobs=n_jobs)` (default `-1`, all cores). At typical n (10⁵) and 20 000 resamples, this cuts wall-clock by roughly the core count.
+
+#### Best-practice statistical tests (replacing simpler defaults)
+
+**Monte Carlo permutation tests for artefact checks** (`midpoint-inflation`, `editorial-spikes`, and any other artefact check where a null hypothesis is tested):
+
+- **Aoristic-probability null** (Ratcliffe 2002; Crema 2012 — current best-practice null for calendar-dated archaeological data):
+  1. For each row *r*, define the aoristic weight at year *Y*: `w_r(Y) = 1 / date_range_r` if `not_before_r ≤ Y ≤ not_after_r`, else 0. This is the probability mass the row contributes to year *Y* under the "uniform within stated range" null — i.e., the null assumes each row's true date is uniform across its stated uncertainty.
+  2. Expected count at year *Y* under the null: `E[Y] = Σ_r w_r(Y)`.
+  3. Observed count at year *Y* depends on the artefact tested:
+     - Midpoint-inflation: rows where `mid_r = Y`.
+     - Editorial-spikes: rows where a specific endpoint (`not_before_r = Y` or `not_after_r = Y`) occurs.
+  4. Test statistic: excess ratio = observed / E[Y].
+  5. Empirical null distribution by MC resampling: for each resample, redraw each row's `mid` (or endpoint) uniformly within its own `[not_before_r, not_after_r]` interval; recompute observed counts under the resampled placement; collect excess ratios.
+  6. p-value = fraction of resamples with excess ratio ≥ observed.
+- **Resamples**: `permutation_resamples`, default 20 000.
+- **Effect size**: observed / expected ratio with BCa bootstrap 95 % CI.
+
+Rationale: the null worth rejecting is "given each row's stated date-range uncertainty, is its calendar-time placement uniform within that range, or are there editorial-convention concentrations at specific years (midpoints, reign boundaries)?" The aoristic framework encodes this null directly. Simpler uniform-on-mid or chi-square-vs-uniform nulls test related but weaker hypotheses that can be rejected even under a benign editorial-convention-free data-generating process.
+
+**Multiple-comparison correction**:
+
+- **Primary**: **Westfall-Young permutation-based stepdown** (Westfall & Young 1993). Uses the empirical joint distribution of test statistics from the MC permutation to correct for correlation structure among tests. Strictly more powerful than Holm-Bonferroni at the same family-wise error rate guarantee.
+- **Implementation**: during each MC permutation resample, compute the test statistic for every test in the family; record the minimum p-value across the family. Empirical critical value at α for the family = α-quantile of the minimum-p distribution across resamples. For step-down, sort observed p-values ascending and sequentially compare to the critical value from the maximum-of-remaining-tests distribution.
+- **Companion sanity-check**: always also report **Holm-Bonferroni**-corrected p-values alongside. Flag any case where Westfall-Young and Holm-Bonferroni disagree on significance at α = 0.05 — the disagreement is informative (tells the reviewer whether the result depends on exploiting correlation structure or survives even the more-familiar correction).
+- **Family of > 15 tests** (broader scans where FWER is too conservative to be useful): fall back to **Benjamini-Hochberg FDR** — controls expected proportion of false discoveries.
+- **Default** when unspecified: Westfall-Young stepdown with Holm-Bonferroni companion.
+
+Note for archaeology-reviewer familiarity: Westfall-Young is standard in biostatistics and genetics but less common in archaeology. Reporting the Holm-Bonferroni companion mitigates reviewer unfamiliarity while preserving the power advantage of Westfall-Young in the primary claim.
+
+**Distribution-comparison effect sizes** (two-sample comparisons of numeric columns):
+
+- **Cliff's delta** — rank-based, distribution-free; range [-1, 1], interpretation "probability-of-superiority minus its complement."
+- **Vargha-Delaney A** — rank-based, distribution-free; range [0, 1], direct probability-of-superiority interpretation.
+- Reported with BCa bootstrap 95 % CI.
+- **Preferred over Cohen's d** when distributions are non-normal, bounded, or heavy-tailed (as `date_range` is on LIRE-style corpora). Don't use Cohen's d on log-transformed date_range; the log-normality assumption doesn't hold.
+
+**Distribution-comparison tests**:
+
+- **Kolmogorov-Smirnov** (standard; sensitive to mid-distribution location shifts).
+- **Cramér-von Mises** (more sensitive to tail differences).
+- Run both; report both; flag disagreements prominently.
+
+#### Drill-down procedure
+
+When `drill_downs` provided as a list of `{target_name, year_range, description}` entries:
+
+For each drill-down target:
+1. Filter the dataset to the target's year range (inclusive of rows whose `date_range` interval overlaps the window, not only those strictly within it — state the semantics explicitly).
+2. Year-by-year inscription counts within the range.
+3. Contextual comparison: counts in the immediate neighbourhood (year range ±5) and in the full dataset.
+4. MC permutation test (two-stage null) for anomaly at each year within the range, with Holm-Bonferroni correction within the drill-down family.
+5. Focused sub-report at `drill-downs/{target_name}.md`.
+
+#### Sensitivity sweep
+
+When `sensitivity_thresholds` provided for a flag threshold (default application: the unexpected-pattern diagnostic's 5 % flag):
+
+- Run the diagnostic at each threshold value in the list.
+- Report comparative table in `sensitivity-sweep.md`: for each (bucket or test, threshold) pair, does the result flag?
+- Point estimate in headline narrative uses the middle threshold (or first if only two provided).
+
+#### Categorical diversity indices
+
+For each column in `categorical_columns`:
+
+- **Shannon entropy** `H = -Σ p_i log(p_i)`.
+- **Simpson's diversity** `D = 1 - Σ p_i²`.
+- **Effective number of categories** `exp(H)`.
+- **Top-k share** at k ∈ {1, 5, 10, 20}.
+- **Gini coefficient** (supplementary to top-k share).
+
+All with BCa bootstrap 95 % CI.
+
+#### Correlation structure
+
+For pairs of columns in `numeric_columns`:
+
+- **Spearman's rank correlation** (nonparametric; robust to heavy tails and non-linear monotone relationships; appropriate for the skewed bounded distributions in inscription corpora).
+- Kendall's τ as a second rank-based measure in small samples; at n = 182k they converge, Spearman suffices.
+- BCa bootstrap 95 % CI per correlation.
+- Matrix of two-sided p-values with **Holm-Bonferroni** correction across all pairs.
+
+#### Assumption-check discipline (required, not a note)
+
+For every inferential procedure invoked (permutation test, bootstrap CI, parametric effect size, correlation with significance claim, distribution-comparison test), write an explicit entry to `decisions.md` before or alongside the numerical claim. Entry format:
+
+```markdown
+## [YYYY-MM-DD HH:MM] Assumption check N: <method-name>
+
+**Method:** <specific test / estimator, e.g., "BCa bootstrap CI on median date_range for Gallia Narbonensis">
+**Assumption:** <the specific assumption the method makes, e.g., "bootstrap sampling distribution is smooth and approximately pivotal after BCa correction">
+**Check:** <the specific test applied, e.g., "visual inspection of bootstrap distribution; Shapiro-Wilk on bootstrap replicates; comparison against percentile-bootstrap CI per small-n fallback rule">
+**Result:** <holds / violated / partially holds, with specific evidence>
+**Decision:** <use method as planned / switch to fallback <name> / flag to investigator>
+```
+
+This is stricter than a self-critique note: it creates a required audit trail that maps every numerical claim to an explicit assumption-verification step. The verifier should check that every inferential claim in `claims.jsonl` has a corresponding assumption-check entry in `decisions.md`.
+
+Skip the assumption-check entry only for purely descriptive statistics with no inferential assumption beyond "data is what it is" (exact counts, exact means of the realised sample, exact rankings). Anything with a p-value, CI, or effect-size claim requires the entry.
+
+### Remote execution
+
+When the invocation provides `remote_exec: {host, workdir, venv_python}`, Python execution happens on a remote machine via SSH. The pattern:
+
+1. Compose the analysis script locally at `<output_dir>/../code/profile.py`.
+2. `git add <output_dir>/../code/profile.py && git commit && git push` — script ships to the remote via the git remote (remote must have the repo cloned and reachable).
+3. `ssh <host> 'cd <workdir> && git pull && <venv_python> <script_path>'` — Python runs on the remote.
+4. Outputs written to `<workdir>/<output_dir>/` on the remote.
+5. `ssh <host> 'cd <workdir> && git add <output_dir>/ && git commit && git push'`.
+6. Caller does `git pull` locally to retrieve outputs.
+
+When `remote_exec` is unset, the Python runs locally (via `venv_python`) as before.
+
+Rationale: remote execution offloads compute-intensive work (bootstrap CIs, permutation tests) to a more capable machine while preserving the research record in a single versioned repository. No rsync / scp of dataset or outputs; git is the transport.
 
 ## Verifier companion
 
