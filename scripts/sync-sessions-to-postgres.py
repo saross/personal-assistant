@@ -21,9 +21,10 @@ import argparse
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, Iterator, NamedTuple, Optional
 
 # ============================================================================
 # Configuration
@@ -41,6 +42,11 @@ QUARANTINE_FILE = PA_DIR / "data" / "sessions" / "quarantine-postgres-drops.json
 DB_NAME = "claude_memories"
 
 CURSOR_KEY = "sessions_sync_timestamp"
+
+# Advisory-lock key for serialising concurrent sessions-sync runs.
+# Distinct from the memories sync so the two scripts can run in parallel
+# against the same database without contending.
+ADVISORY_LOCK_KEY = "sync-sessions-to-postgres"
 
 
 # ============================================================================
@@ -238,7 +244,8 @@ class InsertResult(NamedTuple):
     Accounting result for a session upsert batch.
 
     Attributes:
-        input_count: Number of rows the caller handed us.
+        input_count: Number of rows attempted after within-batch dedup
+            (see ``duplicates_within_batch``).
         inserted: Number of rows returned by the upsert (should equal
             input_count under DO UPDATE — any shortfall is anomalous).
         expected_dupes: Always 0 for DO UPDATE — kept for shape parity
@@ -248,6 +255,8 @@ class InsertResult(NamedTuple):
             RETURNING. Under DO UPDATE these should never exist;
             anything here is a hard stop (#55).
         db_available: False when we could not reach the database.
+        duplicates_within_batch: Input rows that shared an id with
+            another row in the same batch; the last occurrence won.
     """
 
     input_count: int
@@ -255,6 +264,76 @@ class InsertResult(NamedTuple):
     expected_dupes: int
     unexpected_drops: list[str]
     db_available: bool
+    duplicates_within_batch: int = 0
+
+
+@contextmanager
+def _sync_advisory_lock(logger: logging.Logger) -> Iterator[bool]:
+    """
+    Acquire a PostgreSQL session-scoped advisory lock for the sync cycle.
+
+    Yields True when the sync should proceed, False when another sync
+    already holds the lock. The lock auto-releases when the backing
+    connection closes. If psycopg2 is missing or the database is
+    unreachable, yields True unconditionally — the upsert path handles
+    those cases and leaves the cursor alone (#55).
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        yield True
+        return
+
+    try:
+        conn = psycopg2.connect(dbname=DB_NAME)
+    except psycopg2.OperationalError:
+        yield True
+        return
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(hashtext(%s))",
+                (ADVISORY_LOCK_KEY,),
+            )
+            acquired = bool(cur.fetchone()[0])
+        conn.commit()
+        if not acquired:
+            logger.warning(
+                "Another sessions-sync holds the advisory lock for %r — "
+                "skipping this cycle. Will retry on next invocation.",
+                ADVISORY_LOCK_KEY,
+            )
+            yield False
+            return
+        yield True
+    finally:
+        conn.close()
+
+
+def _load_quarantined_ids() -> set[str]:
+    """
+    Return the set of ids already present in the quarantine JSONL.
+
+    Used to avoid appending duplicate rows on repeated sync runs
+    against a halted cursor.
+    """
+    if not QUARANTINE_FILE.exists():
+        return set()
+    ids: set[str] = set()
+    with QUARANTINE_FILE.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                sid = rec.get("id")
+                if isinstance(sid, str):
+                    ids.add(sid)
+            except json.JSONDecodeError:
+                continue
+    return ids
 
 
 def _write_quarantine(
@@ -264,18 +343,36 @@ def _write_quarantine(
     """
     Append dropped session rows to the quarantine JSONL.
 
-    Creates parent directories and the file if missing.
+    Creates parent directories and the file if missing. Deduplicates
+    against already-quarantined ids so repeated runs against a halted
+    cursor do not grow the file linearly.
     """
+    already = _load_quarantined_ids()
+    new_rows = [r for r in dropped_rows if r.get("id") not in already]
+    if not new_rows:
+        logger.info(
+            "All %d dropped session row(s) already in quarantine — "
+            "no new appends",
+            len(dropped_rows),
+        )
+        return
+    skipped = len(dropped_rows) - len(new_rows)
     try:
         QUARANTINE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with QUARANTINE_FILE.open("a", encoding="utf-8") as f:
-            for row in dropped_rows:
+            for row in new_rows:
                 f.write(json.dumps(row) + "\n")
-        logger.info(
-            "Quarantined %d unexpectedly-dropped session(s) to %s",
-            len(dropped_rows),
-            QUARANTINE_FILE,
-        )
+        if skipped:
+            logger.info(
+                "Quarantined %d new session(s) (skipped %d already "
+                "present) to %s",
+                len(new_rows), skipped, QUARANTINE_FILE,
+            )
+        else:
+            logger.info(
+                "Quarantined %d unexpectedly-dropped session(s) to %s",
+                len(new_rows), QUARANTINE_FILE,
+            )
     except OSError as exc:
         logger.error(
             "Could not write quarantine file %s: %s", QUARANTINE_FILE, exc
@@ -294,7 +391,18 @@ def upsert_sessions(
     clause captures every id PG touched; anything missing from that set
     is an unexpected drop (#55).
     """
-    input_count = len(rows)
+    # Within-batch dedup: multiple metadata files for the same session
+    # id would otherwise let only the last one "win" via ON CONFLICT DO
+    # UPDATE, misleadingly flagging the earlier occurrences as drops.
+    # Collapse to the last occurrence explicitly.
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        sid = row.get("id")
+        if sid:
+            by_id[sid] = row
+    deduped_rows = list(by_id.values())
+    duplicates_within_batch = len(rows) - len(deduped_rows)
+    input_count = len(deduped_rows)
 
     try:
         import psycopg2
@@ -309,6 +417,7 @@ def upsert_sessions(
             expected_dupes=0,
             unexpected_drops=[],
             db_available=False,
+            duplicates_within_batch=duplicates_within_batch,
         )
 
     columns = [
@@ -339,16 +448,13 @@ def upsert_sessions(
         RETURNING id
     """
 
-    # Convert rows to tuples in column order
-    values = []
-    for row in rows:
-        values.append(tuple(row[c] for c in columns))
-
-    input_ids = [row["id"] for row in rows]
+    # Convert deduped rows to tuples in column order
+    values = [tuple(row[c] for c in columns) for row in deduped_rows]
+    input_ids = [row["id"] for row in deduped_rows]
 
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
-    except Exception as exc:
+    except psycopg2.OperationalError as exc:
         logger.warning("Cannot connect to PostgreSQL: %s", exc)
         logger.info(
             "PostgreSQL may be stopped — session.meta.json files remain canonical."
@@ -359,6 +465,7 @@ def upsert_sessions(
             expected_dupes=0,
             unexpected_drops=[],
             db_available=False,
+            duplicates_within_batch=duplicates_within_batch,
         )
 
     try:
@@ -381,14 +488,30 @@ def upsert_sessions(
             expected_dupes=0,
             unexpected_drops=unexpected_drops,
             db_available=True,
+            duplicates_within_batch=duplicates_within_batch,
         )
 
-        logger.info(
-            "Upsert accounting: input=%d inserted=%d unexpected_drops=%d",
-            result.input_count,
-            result.inserted,
-            len(result.unexpected_drops),
+        # DEBUG on the happy path (nothing to notice); INFO when something
+        # actually landed or when an anomaly surfaced.
+        accounting_msg = (
+            "Upsert accounting: input=%d inserted=%d unexpected_drops=%d "
+            "dupes_in_batch=%d"
         )
+        accounting_args = (
+            result.input_count, result.inserted,
+            len(result.unexpected_drops), result.duplicates_within_batch,
+        )
+        if unexpected_drops or duplicates_within_batch or result.inserted:
+            logger.info(accounting_msg, *accounting_args)
+        else:
+            logger.debug(accounting_msg, *accounting_args)
+
+        if duplicates_within_batch:
+            logger.warning(
+                "Input batch contained %d within-batch duplicate session "
+                "id(s); last occurrence won.",
+                duplicates_within_batch,
+            )
         if unexpected_drops:
             logger.error(
                 "Unexpectedly dropped %d session id(s) — not returned "
@@ -397,7 +520,7 @@ def upsert_sessions(
                 unexpected_drops[:10],
             )
         return result
-    except Exception as exc:
+    except psycopg2.Error as exc:
         logger.error("Database error during upsert: %s", exc)
         return InsertResult(
             input_count=input_count,
@@ -405,6 +528,7 @@ def upsert_sessions(
             expected_dupes=0,
             unexpected_drops=[],
             db_available=False,
+            duplicates_within_batch=duplicates_within_batch,
         )
     finally:
         conn.close()
@@ -422,7 +546,23 @@ def sync(
     """
     Run one sync cycle: find new session.meta.json files, upsert into
     PostgreSQL, update cursor.
+
+    Serialised against concurrent runs via a PG advisory lock; if another
+    sessions-sync is in progress, this one exits without touching the
+    cursor.
     """
+    with _sync_advisory_lock(logger) as acquired:
+        if not acquired:
+            return
+        _sync_locked(archive_root, full_resync, logger)
+
+
+def _sync_locked(
+    archive_root: Path,
+    full_resync: bool,
+    logger: logging.Logger,
+) -> None:
+    """Core sync cycle, executed under the advisory lock."""
     since = None if full_resync else load_cursor()
     if since:
         logger.info("Syncing sessions archived after %s", since)

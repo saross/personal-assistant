@@ -288,8 +288,12 @@ class TestFieldConsistency:
 # ============================================================================
 
 
-class _FakePsycopg2OperationalError(Exception):
-    """Stand-in for ``psycopg2.OperationalError`` in patched-sys.modules tests."""
+class _FakePsycopg2Error(Exception):
+    """Stand-in for ``psycopg2.Error`` — base class for all DB errors."""
+
+
+class _FakePsycopg2OperationalError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.OperationalError`` (subclass of Error)."""
 
 
 def _install_fake_psycopg2(
@@ -298,28 +302,33 @@ def _install_fake_psycopg2(
     present_before_ids: list[str],
     returned_ids: list[str],
     raise_on_connect: bool = False,
+    advisory_lock_acquired: bool = True,
 ) -> MagicMock:
     """
     Install a fake ``psycopg2`` package into ``sys.modules`` that the
-    function-level import in ``insert_memories`` will pick up.
+    function-level import in ``insert_memories`` and the advisory-lock
+    helper will pick up.
 
     The mock controls:
       - the pre-flight SELECT result (``present_before_ids``)
       - the RETURNING result of ``execute_values`` (``returned_ids``)
       - whether ``psycopg2.connect`` raises an OperationalError
+      - whether ``pg_try_advisory_lock`` reports acquired (for the
+        contended-lock path)
 
     Returns the fake connection mock so callers can assert on usage.
     """
     fake_psycopg2 = types.ModuleType("psycopg2")
     fake_extras = types.ModuleType("psycopg2.extras")
 
-    # Operational error type must be a subclass of Exception for isinstance.
+    fake_psycopg2.Error = _FakePsycopg2Error
     fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
 
-    # Cursor mock: different fetchall/fetchmany results for pre-flight vs
-    # execute_values. fetch on execute_values happens via its own return.
+    # Cursor mock: fetchall returns the pre-flight SELECT result;
+    # fetchone returns the advisory-lock boolean.
     cur = MagicMock()
     cur.fetchall.return_value = [(mid,) for mid in present_before_ids]
+    cur.fetchone.return_value = (advisory_lock_acquired,)
     cur.__enter__ = MagicMock(return_value=cur)
     cur.__exit__ = MagicMock(return_value=False)
 
@@ -522,3 +531,163 @@ class TestInsertMemoriesAccounting:
         if cursor_file.exists():
             data = json.loads(cursor_file.read_text())
             assert "postgres_sync_line" not in data or data["postgres_sync_line"] == 0
+
+    def test_within_batch_dedup_last_wins(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """
+        Input batch with duplicate ids collapses to the last occurrence.
+        The ``duplicates_within_batch`` counter surfaces the collapse so
+        operators can see canonical-corruption signals without the
+        accounting line looking like a silent-drop event.
+        """
+        # Two records share id ``dup-a``; only the last should survive
+        # the within-batch dedup pass.
+        records = [
+            (
+                "dup-a", "sess", None, "extraction", "progress", "first",
+                None, "medium", [], None, "", "2026-04-23T00:00:00Z", None,
+            ),
+            (
+                "new-b", "sess", None, "extraction", "progress", "x",
+                None, "medium", [], None, "", "2026-04-23T00:00:00Z", None,
+            ),
+            (
+                "dup-a", "sess", None, "extraction", "progress", "second",
+                None, "medium", [], None, "", "2026-04-23T00:00:00Z", None,
+            ),
+        ]
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=["dup-a", "new-b"],
+        )
+        result = sync_mod.insert_memories(records, test_logger)
+        assert result.db_available is True
+        assert result.duplicates_within_batch == 1
+        # Deduped input count: 2 unique ids (dup-a and new-b).
+        assert result.input_count == 2
+        assert result.inserted == 2
+        assert result.unexpected_drops == []
+
+    def test_quarantine_dedup_skips_already_present(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """
+        Repeated calls to _write_quarantine with the same id append
+        only once — the quarantine file does not grow linearly when the
+        cursor is halted and cron re-runs the same input slice.
+        """
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        dropped = [{"id": "mem-x", "content": "payload"}]
+        sync_mod._write_quarantine(dropped, test_logger)
+        sync_mod._write_quarantine(dropped, test_logger)
+        sync_mod._write_quarantine(dropped, test_logger)
+
+        lines = [
+            json.loads(line) for line in quarantine.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+        assert lines[0]["id"] == "mem-x"
+
+    def test_quarantine_dedup_appends_new_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """Mixed new + already-quarantined input writes only the new ids."""
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        sync_mod._write_quarantine(
+            [{"id": "old-1", "content": "a"}], test_logger
+        )
+        sync_mod._write_quarantine(
+            [{"id": "old-1", "content": "a"}, {"id": "new-2", "content": "b"}],
+            test_logger,
+        )
+
+        lines = [
+            json.loads(line) for line in quarantine.read_text().splitlines()
+            if line.strip()
+        ]
+        ids = {ln["id"] for ln in lines}
+        assert ids == {"old-1", "new-2"}
+        assert len(lines) == 2
+
+    def test_advisory_lock_contended_skips_sync(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """
+        When another sync holds the advisory lock, sync() exits cleanly
+        without touching the cursor or calling insert_memories.
+        """
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            json.dumps({
+                "id": "mem-a",
+                "category": "progress",
+                "content": "x",
+                "created_at": "2026-04-23T00:00:00Z",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=["mem-a"],
+            advisory_lock_acquired=False,
+        )
+
+        # Spy on insert_memories — it must not be called when contended.
+        called = {"insert": False}
+        orig_insert = sync_mod.insert_memories
+
+        def _spy(records, logger):
+            called["insert"] = True
+            return orig_insert(records, logger)
+
+        monkeypatch.setattr(sync_mod, "insert_memories", _spy)
+
+        sync_mod.sync(test_logger)
+
+        assert called["insert"] is False
+        # Cursor key should not be set (or left at 0).
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert data.get("postgres_sync_line", 0) == 0
+
+    def test_narrow_exception_reraises_non_psycopg_errors(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """
+        The post-connect except clause catches psycopg2.Error only; a
+        KeyError from a malformed record bubbles up rather than being
+        disguised as ``db_available=False``. This lets programmer bugs
+        surface instead of being swallowed.
+        """
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+        )
+        # Make execute_values raise a non-psycopg error.
+        sys.modules["psycopg2.extras"].execute_values = MagicMock(
+            side_effect=KeyError("missing column")
+        )
+        with pytest.raises(KeyError):
+            sync_mod.insert_memories(
+                self._make_records(["a"]), test_logger
+            )
