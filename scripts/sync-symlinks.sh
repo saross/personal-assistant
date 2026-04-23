@@ -46,6 +46,35 @@ say_verbose() {
 # it alone and reports a warning (user intervention required).
 # ---------------------------------------------------------------------------
 
+# Helper: prune any symlink under $dir that points into $src_dir but whose
+# target no longer exists.  Catches renames and deletions so a removed
+# source file doesn't leave an orphan symlink behind (e.g. the /review ->
+# /weekly-review rename on 2026-04-23).  Leaves non-symlinks and symlinks
+# pointing outside $src_dir alone.
+prune_stale_symlinks() {
+    local dir="$1"
+    local src_dir="$2"
+    local label="$3"
+    [ -d "$dir" ] || return 0
+    local removed=0
+    local link
+    for link in "$dir"/*; do
+        [ -L "$link" ] || continue
+        local target
+        target="$(readlink "$link")"
+        case "$target" in
+            "$src_dir"/*)
+                if [ ! -e "$target" ]; then
+                    rm "$link"
+                    say "  $(basename "$link") — pruned stale $label symlink"
+                    removed=$((removed + 1))
+                fi
+                ;;
+        esac
+    done
+    return 0
+}
+
 ensure_symlink() {
     local src="$1"
     local target="$2"
@@ -90,6 +119,7 @@ ensure_symlink "$PA_DIR/settings.json" "$CLAUDE_DIR/settings.json" "settings.jso
 
 say "[3/6] Linking commands..."
 mkdir -p "$CLAUDE_DIR/commands"
+prune_stale_symlinks "$CLAUDE_DIR/commands" "$PA_DIR/commands" "command"
 for cmd in "$PA_DIR"/commands/*.md; do
     [ -f "$cmd" ] || continue
     ensure_symlink "$cmd" "$CLAUDE_DIR/commands/$(basename "$cmd")" "$(basename "$cmd")"
@@ -101,6 +131,7 @@ done
 
 say "[4/6] Linking skills..."
 mkdir -p "$CLAUDE_DIR/skills"
+prune_stale_symlinks "$CLAUDE_DIR/skills" "$PA_DIR/skills" "skill"
 for skill_dir in "$PA_DIR"/skills/*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
@@ -114,6 +145,7 @@ done
 
 say "[5/6] Linking agents..."
 mkdir -p "$CLAUDE_DIR/agents"
+prune_stale_symlinks "$CLAUDE_DIR/agents" "$PA_DIR/agents" "agent"
 for agent_file in "$PA_DIR"/agents/*.md; do
     [ -f "$agent_file" ] || continue
     ensure_symlink "$agent_file" "$CLAUDE_DIR/agents/$(basename "$agent_file")" "$(basename "$agent_file")"
