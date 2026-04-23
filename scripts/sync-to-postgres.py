@@ -16,7 +16,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 # Optional embedding support — gracefully degrades if unavailable
 try:
@@ -38,6 +38,10 @@ MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "sync.log"
+# Quarantine destination for rows silently dropped by ON CONFLICT.
+# Lives in the data submodule but the *write* is fine — we just do not
+# commit submodule pointer changes as part of this fix (#55).
+QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-postgres-drops.jsonl"
 DB_NAME = "claude_memories"
 
 # All fields we extract from JSONL and insert into PostgreSQL
@@ -197,15 +201,76 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
 # Database operations
 # ============================================================================
 
-def insert_memories(records: list[tuple], logger: logging.Logger) -> int:
+class InsertResult(NamedTuple):
     """
-    Insert memory records into PostgreSQL.
+    Accounting result for a single insert batch.
 
-    Uses execute_values for batch efficiency. ON CONFLICT (id) DO NOTHING
-    handles re-syncs gracefully.
-
-    Returns the number of rows actually inserted.
+    Attributes:
+        input_count: Number of records the caller handed us.
+        inserted: Number of rows PG actually inserted (from RETURNING).
+        expected_dupes: Rows already present at pre-flight — ON CONFLICT
+            was expected to skip these, so they are not anomalies.
+        unexpected_drops: Ids that were neither present pre-flight nor
+            returned by INSERT. These indicate silent row loss (#55).
+        db_available: False when we could not reach the database.
     """
+
+    input_count: int
+    inserted: int
+    expected_dupes: int
+    unexpected_drops: list[str]
+    db_available: bool
+
+
+def _write_quarantine(
+    dropped_records: list[dict[str, Any]],
+    logger: logging.Logger,
+) -> None:
+    """
+    Append dropped memory records to the quarantine JSONL.
+
+    Creates parent directories and the file if missing. We quarantine
+    the *full records* (not just ids) so the drop can be diagnosed and
+    replayed without consulting the canonical.
+    """
+    try:
+        QUARANTINE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with QUARANTINE_FILE.open("a", encoding="utf-8") as f:
+            for rec in dropped_records:
+                f.write(json.dumps(rec) + "\n")
+        logger.info(
+            "Quarantined %d unexpectedly-dropped record(s) to %s",
+            len(dropped_records),
+            QUARANTINE_FILE,
+        )
+    except OSError as exc:
+        logger.error(
+            "Could not write quarantine file %s: %s", QUARANTINE_FILE, exc
+        )
+
+
+def insert_memories(
+    records: list[tuple],
+    logger: logging.Logger,
+) -> InsertResult:
+    """
+    Insert memory records into PostgreSQL with full accounting.
+
+    Workflow:
+      1. Pre-flight: SELECT existing ids so we know what ON CONFLICT is
+         *supposed* to skip (expected duplicates).
+      2. INSERT ... ON CONFLICT DO NOTHING RETURNING id, capturing the
+         set of ids PG actually inserted.
+      3. Classify every input id as inserted, expected-dupe, or
+         unexpected-drop.
+
+    Returns an :class:`InsertResult` so callers can decide whether to
+    advance the sync cursor. Callers MUST treat ``unexpected_drops``
+    non-empty as a hard stop — those rows never landed and skipping
+    them would cause silent loss (#55).
+    """
+    input_count = len(records)
+
     try:
         import psycopg2
         from psycopg2.extras import execute_values
@@ -213,16 +278,13 @@ def insert_memories(records: list[tuple], logger: logging.Logger) -> int:
         logger.error(
             "psycopg2 not installed. Run: venv/bin/pip install psycopg2-binary"
         )
-        return 0
-
-    insert_sql = """
-        INSERT INTO memories (
-            id, session_id, project, source, category, content, summary,
-            confidence, research_tags, zotero_key, source_context,
-            created_at, deadline_at
-        ) VALUES %s
-        ON CONFLICT (id) DO NOTHING
-    """
+        return InsertResult(
+            input_count=input_count,
+            inserted=0,
+            expected_dupes=0,
+            unexpected_drops=[],
+            db_available=False,
+        )
 
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
@@ -232,22 +294,87 @@ def insert_memories(records: list[tuple], logger: logging.Logger) -> int:
             "PostgreSQL may be stopped — this is not critical. "
             "JSONL remains canonical."
         )
-        return 0
+        return InsertResult(
+            input_count=input_count,
+            inserted=0,
+            expected_dupes=0,
+            unexpected_drops=[],
+            db_available=False,
+        )
+
+    input_ids = [r[0] for r in records]
+
+    insert_sql = """
+        INSERT INTO memories (
+            id, session_id, project, source, category, content, summary,
+            confidence, research_tags, zotero_key, source_context,
+            created_at, deadline_at
+        ) VALUES %s
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+    """
 
     try:
         with conn:
             with conn.cursor() as cur:
-                # execute_values with ON CONFLICT returns only the last
-                # batch's rowcount, so we count processed records instead
-                execute_values(cur, insert_sql, records, page_size=100)
-        logger.info(
-            "Sent %d memories to PostgreSQL (duplicates skipped via ON CONFLICT)",
-            len(records),
+                # Pre-flight: which of our input ids are already in PG?
+                # These are the rows ON CONFLICT is expected to skip.
+                cur.execute(
+                    "SELECT id FROM memories WHERE id = ANY(%s)",
+                    (input_ids,),
+                )
+                present_before = {row[0] for row in cur.fetchall()}
+
+                # Insert with RETURNING to capture what PG actually took.
+                returned = execute_values(
+                    cur,
+                    insert_sql,
+                    records,
+                    page_size=100,
+                    fetch=True,
+                )
+                returned_ids = {row[0] for row in returned}
+
+        # Preserve input order when reporting unexpected drops.
+        unexpected_drops = [
+            mid
+            for mid in input_ids
+            if mid not in present_before and mid not in returned_ids
+        ]
+
+        result = InsertResult(
+            input_count=input_count,
+            inserted=len(returned_ids),
+            expected_dupes=len(present_before),
+            unexpected_drops=unexpected_drops,
+            db_available=True,
         )
-        return len(records)
+
+        logger.info(
+            "Insert accounting: input=%d inserted=%d expected_dupes=%d "
+            "unexpected_drops=%d",
+            result.input_count,
+            result.inserted,
+            result.expected_dupes,
+            len(result.unexpected_drops),
+        )
+        if unexpected_drops:
+            logger.error(
+                "Unexpectedly dropped %d id(s) — neither pre-existing "
+                "nor inserted. First 10: %s",
+                len(unexpected_drops),
+                unexpected_drops[:10],
+            )
+        return result
     except Exception as exc:
         logger.error("Database error during insert: %s", exc)
-        return 0
+        return InsertResult(
+            input_count=input_count,
+            inserted=0,
+            expected_dupes=0,
+            unexpected_drops=[],
+            db_available=False,
+        )
     finally:
         conn.close()
 
@@ -411,31 +538,52 @@ def sync(logger: logging.Logger) -> None:
         cursor_line + 1, total_lines, len(new_lines),
     )
 
-    # Parse records
-    records = []
+    # Parse records. We keep both the original dict (for quarantine on
+    # unexpected drop) and the INSERT tuple (for psycopg2), indexed by id.
+    records: list[tuple] = []
+    parsed_by_id: dict[str, dict[str, Any]] = {}
     for offset, line in enumerate(new_lines):
         line_number = cursor_line + offset + 1  # 1-based for logging
         parsed = parse_jsonl_record(line, line_number, logger)
         if parsed is not None:
             records.append(record_to_tuple(parsed))
+            parsed_by_id[parsed["id"]] = parsed
 
     if not records:
         logger.info("No valid records to insert")
         save_cursor(total_lines)
         return
 
-    # Insert into PostgreSQL
-    inserted = insert_memories(records, logger)
+    # Insert into PostgreSQL (returns InsertResult with full accounting).
+    result = insert_memories(records, logger)
 
-    # Only advance cursor if insertion succeeded
-    if inserted > 0:
+    # Cursor advance policy (#55): advance ONLY when we have positive
+    # evidence every input row is accounted for. Specifically:
+    #   - DB was reachable, AND
+    #   - no ids fell through both pre-flight and RETURNING.
+    if not result.db_available:
+        logger.warning(
+            "Insert returned db_available=False — cursor NOT advanced "
+            "(PostgreSQL may be down)"
+        )
+    elif result.unexpected_drops:
+        dropped_records = [
+            parsed_by_id[mid]
+            for mid in result.unexpected_drops
+            if mid in parsed_by_id
+        ]
+        _write_quarantine(dropped_records, logger)
+        logger.error(
+            "Cursor NOT advanced — %d id(s) were silently dropped by "
+            "ON CONFLICT. Dropped ids: %s",
+            len(result.unexpected_drops),
+            result.unexpected_drops[:10],
+        )
+        return
+    else:
         save_cursor(total_lines)
         save_sync_timestamp()
         logger.info("Cursor advanced to line %d", total_lines)
-    else:
-        logger.warning(
-            "Insert returned 0 — cursor NOT advanced (PostgreSQL may be down)"
-        )
 
     # Best-effort embedding of memories with NULL embeddings.
     # Processes up to EMBED_BATCH_SIZE per sync cycle (~100ms overhead).

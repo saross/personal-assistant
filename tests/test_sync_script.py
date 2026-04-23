@@ -7,8 +7,11 @@ Tests pure functions only; does not require a running PostgreSQL instance.
 
 import importlib.util
 import json
+import logging
 import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -278,3 +281,244 @@ class TestFieldConsistency:
     def test_source_in_fields(self):
         """The 'source' field must be present in JSONL_FIELDS."""
         assert "source" in sync_mod.JSONL_FIELDS
+
+
+# ============================================================================
+# Insert Accounting (#55 fix)
+# ============================================================================
+
+
+class _FakePsycopg2OperationalError(Exception):
+    """Stand-in for ``psycopg2.OperationalError`` in patched-sys.modules tests."""
+
+
+def _install_fake_psycopg2(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    present_before_ids: list[str],
+    returned_ids: list[str],
+    raise_on_connect: bool = False,
+) -> MagicMock:
+    """
+    Install a fake ``psycopg2`` package into ``sys.modules`` that the
+    function-level import in ``insert_memories`` will pick up.
+
+    The mock controls:
+      - the pre-flight SELECT result (``present_before_ids``)
+      - the RETURNING result of ``execute_values`` (``returned_ids``)
+      - whether ``psycopg2.connect`` raises an OperationalError
+
+    Returns the fake connection mock so callers can assert on usage.
+    """
+    fake_psycopg2 = types.ModuleType("psycopg2")
+    fake_extras = types.ModuleType("psycopg2.extras")
+
+    # Operational error type must be a subclass of Exception for isinstance.
+    fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
+
+    # Cursor mock: different fetchall/fetchmany results for pre-flight vs
+    # execute_values. fetch on execute_values happens via its own return.
+    cur = MagicMock()
+    cur.fetchall.return_value = [(mid,) for mid in present_before_ids]
+    cur.__enter__ = MagicMock(return_value=cur)
+    cur.__exit__ = MagicMock(return_value=False)
+
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    conn.__enter__ = MagicMock(return_value=conn)
+    conn.__exit__ = MagicMock(return_value=False)
+
+    if raise_on_connect:
+        fake_psycopg2.connect = MagicMock(
+            side_effect=_FakePsycopg2OperationalError("DB down")
+        )
+    else:
+        fake_psycopg2.connect = MagicMock(return_value=conn)
+
+    # execute_values returns RETURNING rows when fetch=True.
+    fake_extras.execute_values = MagicMock(
+        return_value=[(mid,) for mid in returned_ids]
+    )
+
+    monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
+    monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_extras)
+
+    return conn
+
+
+@pytest.fixture
+def test_logger() -> logging.Logger:
+    """Quiet logger for accountability tests."""
+    return logging.getLogger("test-sync")
+
+
+class TestInsertMemoriesAccounting:
+    """Row-level accounting for :func:`insert_memories` (#55)."""
+
+    def _make_records(self, ids: list[str]) -> list[tuple]:
+        """Build minimal INSERT tuples with the given ids."""
+        return [
+            (
+                mid, "sess", None, "extraction", "progress", "c",
+                None, "medium", [], None, "", "2026-04-23T00:00:00Z", None,
+            )
+            for mid in ids
+        ]
+
+    def test_all_new_rows_all_inserted(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """Empty pre-flight + full RETURNING → clean insert, no drops."""
+        ids = ["new-a", "new-b", "new-c"]
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=ids,
+        )
+        result = sync_mod.insert_memories(self._make_records(ids), test_logger)
+        assert result.db_available is True
+        assert result.input_count == 3
+        assert result.inserted == 3
+        assert result.expected_dupes == 0
+        assert result.unexpected_drops == []
+
+    def test_all_duplicates_all_expected(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """All ids pre-existing, 0 returned → all expected dupes, no drops."""
+        ids = ["dup-a", "dup-b"]
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=ids,
+            returned_ids=[],
+        )
+        result = sync_mod.insert_memories(self._make_records(ids), test_logger)
+        assert result.db_available is True
+        assert result.inserted == 0
+        assert result.expected_dupes == 2
+        assert result.unexpected_drops == []
+
+    def test_mixed_new_and_expected_dupes(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """N input, K pre-existing, N-K returned → counts correct, no drops."""
+        ids = ["dup-a", "new-b", "dup-c", "new-d"]
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=["dup-a", "dup-c"],
+            returned_ids=["new-b", "new-d"],
+        )
+        result = sync_mod.insert_memories(self._make_records(ids), test_logger)
+        assert result.db_available is True
+        assert result.input_count == 4
+        assert result.inserted == 2
+        assert result.expected_dupes == 2
+        assert result.unexpected_drops == []
+
+    def test_unexpected_drop_halts_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """Id absent from both pre-flight and RETURNING → drop + no advance."""
+        # Point CURSOR_FILE and QUARANTINE_FILE into tmp_path and MEMORIES_FILE
+        # at a small stub so sync() can run end-to-end.
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            json.dumps({
+                "id": "mem-a",
+                "category": "progress",
+                "content": "x",
+                "created_at": "2026-04-23T00:00:00Z",
+            }) + "\n"
+            + json.dumps({
+                "id": "mem-b",
+                "category": "progress",
+                "content": "y",
+                "created_at": "2026-04-23T00:00:00Z",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        # mem-a absent both pre-flight and RETURNING → unexpected drop.
+        # mem-b returned normally.
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=["mem-b"],
+        )
+
+        sync_mod.sync(test_logger)
+
+        # Cursor must not have advanced.
+        assert not cursor_file.exists() or (
+            json.loads(cursor_file.read_text()).get("postgres_sync_line", 0) == 0
+        )
+        # Quarantine file must contain the dropped record.
+        assert quarantine.exists()
+        lines = [
+            json.loads(line) for line in quarantine.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+        assert lines[0]["id"] == "mem-a"
+
+    def test_unexpected_drop_result_shape(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """Direct check: unexpected_drops is populated on id fall-through."""
+        ids = ["ok-1", "dropped-2", "ok-3"]
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=["ok-1", "ok-3"],
+        )
+        result = sync_mod.insert_memories(self._make_records(ids), test_logger)
+        assert result.db_available is True
+        assert result.unexpected_drops == ["dropped-2"]
+        assert result.inserted == 2
+
+    def test_db_unavailable_no_advance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """psycopg2.connect raising → db_available=False, cursor untouched."""
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            json.dumps({
+                "id": "mem-a",
+                "category": "progress",
+                "content": "x",
+                "created_at": "2026-04-23T00:00:00Z",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            raise_on_connect=True,
+        )
+
+        sync_mod.sync(test_logger)
+
+        # Cursor key should not be set.
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert "postgres_sync_line" not in data or data["postgres_sync_line"] == 0

@@ -7,7 +7,11 @@ Tests pure functions only; does not require a running PostgreSQL instance.
 
 import importlib.util
 import json
+import logging
+import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -376,3 +380,175 @@ class TestEndToEnd:
         assert len(new_sessions) == 1
         _, metadata = new_sessions[0]
         assert metadata["session"]["id"] == "def67890-1234-0000-aaaa-bbbbccccdddd"
+
+
+# ============================================================================
+# Upsert Accounting (#55 fix)
+# ============================================================================
+
+
+class _FakePsycopg2Error(Exception):
+    """Stand-in for ``psycopg2.Error`` in patched-sys.modules tests."""
+
+
+def _install_fake_psycopg2(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    returned_ids: list[str],
+    raise_on_connect: bool = False,
+) -> MagicMock:
+    """
+    Install a fake ``psycopg2`` package into ``sys.modules`` so the
+    function-level import inside ``upsert_sessions`` uses it.
+
+    ``returned_ids`` controls what ``execute_values(fetch=True)`` yields
+    (simulating the ``RETURNING id`` clause).
+    """
+    fake_psycopg2 = types.ModuleType("psycopg2")
+    fake_extras = types.ModuleType("psycopg2.extras")
+
+    # upsert_sessions catches a bare Exception on connect; still define
+    # an Error type for completeness.
+    fake_psycopg2.Error = _FakePsycopg2Error
+
+    cur = MagicMock()
+    cur.__enter__ = MagicMock(return_value=cur)
+    cur.__exit__ = MagicMock(return_value=False)
+
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    conn.__enter__ = MagicMock(return_value=conn)
+    conn.__exit__ = MagicMock(return_value=False)
+
+    if raise_on_connect:
+        fake_psycopg2.connect = MagicMock(
+            side_effect=_FakePsycopg2Error("DB down")
+        )
+    else:
+        fake_psycopg2.connect = MagicMock(return_value=conn)
+
+    fake_extras.execute_values = MagicMock(
+        return_value=[(mid,) for mid in returned_ids]
+    )
+
+    monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
+    monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_extras)
+
+    return conn
+
+
+@pytest.fixture
+def test_logger() -> logging.Logger:
+    """Quiet logger for accountability tests."""
+    return logging.getLogger("test-sync-sessions")
+
+
+def _minimal_row(sid: str) -> dict:
+    """Build a minimal session row dict populated for every column."""
+    columns = [
+        "id", "project", "project_directory", "title", "purpose", "tags",
+        "started_at", "ended_at", "duration_minutes",
+        "model_provider", "model_id",
+        "turns", "human_messages", "assistant_messages",
+        "thinking_blocks", "tool_calls",
+        "tokens_input", "tokens_output",
+        "tokens_cache_read", "tokens_cache_creation",
+        "estimated_cost_usd",
+        "prompt_summary", "process_summary", "provenance_summary",
+        "archive_path", "capture_type",
+        "subagent_count", "subagent_total_cost_usd",
+        "raw_metadata",
+    ]
+    row = {c: None for c in columns}
+    row["id"] = sid
+    row["project"] = "test"
+    row["tags"] = []
+    row["subagent_count"] = 0
+    row["subagent_total_cost_usd"] = 0.0
+    row["raw_metadata"] = "{}"
+    return row
+
+
+class TestUpsertSessionsAccounting:
+    """Row-level accounting for :func:`upsert_sessions` (#55)."""
+
+    def test_all_rows_returned(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """All input ids returned by DO UPDATE → no drops, full insert."""
+        ids = ["s1", "s2", "s3"]
+        _install_fake_psycopg2(monkeypatch, returned_ids=ids)
+        rows = [_minimal_row(sid) for sid in ids]
+        result = sync_mod.upsert_sessions(rows, test_logger)
+        assert result.db_available is True
+        assert result.input_count == 3
+        assert result.inserted == 3
+        assert result.unexpected_drops == []
+
+    def test_unexpected_drop_recorded(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """Id absent from RETURNING → unexpected_drops populated."""
+        ids = ["s1", "s2", "s3"]
+        _install_fake_psycopg2(monkeypatch, returned_ids=["s1", "s3"])
+        rows = [_minimal_row(sid) for sid in ids]
+        result = sync_mod.upsert_sessions(rows, test_logger)
+        assert result.db_available is True
+        assert result.inserted == 2
+        assert result.unexpected_drops == ["s2"]
+
+    def test_drop_halts_cursor_and_quarantines(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        archive_tree: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """Unexpected drop → cursor not advanced, row written to quarantine."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        # Both sessions in archive_tree will be discovered. Return only one
+        # id so the other is "dropped".
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=["abc12345-6789-0000-aaaa-bbbbccccdddd"],
+        )
+
+        sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        # Cursor must not have advanced — no sessions_sync_timestamp key.
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert "sessions_sync_timestamp" not in data
+        # Quarantine file should contain the dropped session row.
+        assert quarantine.exists()
+        lines = [
+            json.loads(line) for line in quarantine.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+        assert lines[0]["id"] == "def67890-1234-0000-aaaa-bbbbccccdddd"
+
+    def test_db_unavailable_no_advance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        archive_tree: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """connect raising → db_available=False, cursor untouched."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[], raise_on_connect=True
+        )
+
+        sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert "sessions_sync_timestamp" not in data
