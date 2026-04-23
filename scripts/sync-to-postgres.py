@@ -15,8 +15,9 @@ Usage:
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, Iterator, NamedTuple, Optional
 
 # Optional embedding support — gracefully degrades if unavailable
 try:
@@ -43,6 +44,10 @@ LOG_FILE = LOG_DIR / "sync.log"
 # commit submodule pointer changes as part of this fix (#55).
 QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-postgres-drops.jsonl"
 DB_NAME = "claude_memories"
+# Advisory-lock key for serialising concurrent sync runs. PG hashes the
+# string to a 32-bit int; `pg_try_advisory_lock` is session-scoped and
+# auto-releases when the connection closes.
+ADVISORY_LOCK_KEY = "sync-to-postgres"
 
 # All fields we extract from JSONL and insert into PostgreSQL
 JSONL_FIELDS = [
@@ -206,13 +211,17 @@ class InsertResult(NamedTuple):
     Accounting result for a single insert batch.
 
     Attributes:
-        input_count: Number of records the caller handed us.
+        input_count: Number of records attempted after within-batch
+            dedup (see ``duplicates_within_batch``).
         inserted: Number of rows PG actually inserted (from RETURNING).
         expected_dupes: Rows already present at pre-flight — ON CONFLICT
             was expected to skip these, so they are not anomalies.
         unexpected_drops: Ids that were neither present pre-flight nor
             returned by INSERT. These indicate silent row loss (#55).
         db_available: False when we could not reach the database.
+        duplicates_within_batch: Input records that shared an id with
+            another record in the same batch; the last occurrence won.
+            Non-zero here usually indicates canonical corruption.
     """
 
     input_count: int
@@ -220,6 +229,85 @@ class InsertResult(NamedTuple):
     expected_dupes: int
     unexpected_drops: list[str]
     db_available: bool
+    duplicates_within_batch: int = 0
+
+
+@contextmanager
+def _sync_advisory_lock(logger: logging.Logger) -> Iterator[bool]:
+    """
+    Acquire a PostgreSQL session-scoped advisory lock for the sync cycle.
+
+    Yields True when the sync should proceed, False when another sync
+    already holds the lock and this run should defer to the next cron
+    tick. The lock auto-releases when the backing connection closes.
+
+    If psycopg2 is missing or the database is unreachable, yields True
+    unconditionally — those cases are handled by the insert path, which
+    logs appropriately and leaves the cursor alone.
+
+    This prevents the race where two overlapping sync runs both see the
+    same ids as missing from pre-flight, both attempt INSERT, and the
+    loser classifies the winner's rows as unexpected_drops (#55).
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        yield True
+        return
+
+    try:
+        conn = psycopg2.connect(dbname=DB_NAME)
+    except psycopg2.OperationalError:
+        yield True
+        return
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(hashtext(%s))",
+                (ADVISORY_LOCK_KEY,),
+            )
+            acquired = bool(cur.fetchone()[0])
+        conn.commit()  # end txn; session-scoped lock persists on conn
+        if not acquired:
+            logger.warning(
+                "Another sync holds the advisory lock for %r — skipping "
+                "this cycle. Will retry on next tick.",
+                ADVISORY_LOCK_KEY,
+            )
+            yield False
+            return
+        yield True
+    finally:
+        conn.close()  # releases the lock if we hold it
+
+
+def _load_quarantined_ids() -> set[str]:
+    """
+    Return the set of ids already present in the quarantine JSONL.
+
+    Used to avoid appending duplicate rows on repeated cron runs. When
+    the cursor halts, subsequent ticks re-read the same input slice and
+    would otherwise quarantine the same ids over and over. Malformed
+    lines are skipped silently — the quarantine file is a diagnostic
+    log, not load-bearing.
+    """
+    if not QUARANTINE_FILE.exists():
+        return set()
+    ids: set[str] = set()
+    with QUARANTINE_FILE.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                mid = rec.get("id")
+                if isinstance(mid, str):
+                    ids.add(mid)
+            except json.JSONDecodeError:
+                continue
+    return ids
 
 
 def _write_quarantine(
@@ -229,20 +317,39 @@ def _write_quarantine(
     """
     Append dropped memory records to the quarantine JSONL.
 
-    Creates parent directories and the file if missing. We quarantine
+    Creates parent directories and the file if missing. Deduplicates
+    against already-quarantined ids so repeated cron runs against the
+    same halted cursor do not grow the file linearly. We quarantine
     the *full records* (not just ids) so the drop can be diagnosed and
     replayed without consulting the canonical.
     """
+    already = _load_quarantined_ids()
+    new_records = [
+        r for r in dropped_records if r.get("id") not in already
+    ]
+    if not new_records:
+        logger.info(
+            "All %d dropped record(s) already in quarantine — no new appends",
+            len(dropped_records),
+        )
+        return
+    skipped = len(dropped_records) - len(new_records)
     try:
         QUARANTINE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with QUARANTINE_FILE.open("a", encoding="utf-8") as f:
-            for rec in dropped_records:
+            for rec in new_records:
                 f.write(json.dumps(rec) + "\n")
-        logger.info(
-            "Quarantined %d unexpectedly-dropped record(s) to %s",
-            len(dropped_records),
-            QUARANTINE_FILE,
-        )
+        if skipped:
+            logger.info(
+                "Quarantined %d new record(s) (skipped %d already present) "
+                "to %s",
+                len(new_records), skipped, QUARANTINE_FILE,
+            )
+        else:
+            logger.info(
+                "Quarantined %d unexpectedly-dropped record(s) to %s",
+                len(new_records), QUARANTINE_FILE,
+            )
     except OSError as exc:
         logger.error(
             "Could not write quarantine file %s: %s", QUARANTINE_FILE, exc
@@ -257,11 +364,13 @@ def insert_memories(
     Insert memory records into PostgreSQL with full accounting.
 
     Workflow:
-      1. Pre-flight: SELECT existing ids so we know what ON CONFLICT is
+      1. Dedupe the input batch by id (last occurrence wins) so that
+         within-batch duplicates are not misclassified as drops.
+      2. Pre-flight: SELECT existing ids so we know what ON CONFLICT is
          *supposed* to skip (expected duplicates).
-      2. INSERT ... ON CONFLICT DO NOTHING RETURNING id, capturing the
+      3. INSERT ... ON CONFLICT DO NOTHING RETURNING id, capturing the
          set of ids PG actually inserted.
-      3. Classify every input id as inserted, expected-dupe, or
+      4. Classify every input id as inserted, expected-dupe, or
          unexpected-drop.
 
     Returns an :class:`InsertResult` so callers can decide whether to
@@ -269,7 +378,16 @@ def insert_memories(
     non-empty as a hard stop — those rows never landed and skipping
     them would cause silent loss (#55).
     """
-    input_count = len(records)
+    # Within-batch dedup: if the same id appears twice in ``records``,
+    # only the last occurrence would "win" in PG anyway (subsequent
+    # inserts against the just-inserted row conflict). Collapse here so
+    # ``input_count`` and the set-based classification stay consistent.
+    by_id: dict[str, tuple] = {}
+    for rec in records:
+        by_id[rec[0]] = rec
+    deduped_records = list(by_id.values())
+    duplicates_within_batch = len(records) - len(deduped_records)
+    input_count = len(deduped_records)
 
     try:
         import psycopg2
@@ -284,6 +402,7 @@ def insert_memories(
             expected_dupes=0,
             unexpected_drops=[],
             db_available=False,
+            duplicates_within_batch=duplicates_within_batch,
         )
 
     try:
@@ -300,9 +419,10 @@ def insert_memories(
             expected_dupes=0,
             unexpected_drops=[],
             db_available=False,
+            duplicates_within_batch=duplicates_within_batch,
         )
 
-    input_ids = [r[0] for r in records]
+    input_ids = [r[0] for r in deduped_records]
 
     insert_sql = """
         INSERT INTO memories (
@@ -319,6 +439,9 @@ def insert_memories(
             with conn.cursor() as cur:
                 # Pre-flight: which of our input ids are already in PG?
                 # These are the rows ON CONFLICT is expected to skip.
+                # ANY(%s) sends the list as a single PG array parameter,
+                # so we are not limited by the ~32k per-statement parameter
+                # ceiling — batches of 100k ids would still fit.
                 cur.execute(
                     "SELECT id FROM memories WHERE id = ANY(%s)",
                     (input_ids,),
@@ -329,7 +452,7 @@ def insert_memories(
                 returned = execute_values(
                     cur,
                     insert_sql,
-                    records,
+                    deduped_records,
                     page_size=100,
                     fetch=True,
                 )
@@ -348,16 +471,33 @@ def insert_memories(
             expected_dupes=len(present_before),
             unexpected_drops=unexpected_drops,
             db_available=True,
+            duplicates_within_batch=duplicates_within_batch,
         )
 
-        logger.info(
+        # Keep the happy path quiet; escalate only when there is
+        # something a human might want to see. Pure re-sync cycles
+        # (all expected_dupes) emit at DEBUG; anything anomalous or
+        # novel is logged at INFO.
+        accounting_msg = (
             "Insert accounting: input=%d inserted=%d expected_dupes=%d "
-            "unexpected_drops=%d",
-            result.input_count,
-            result.inserted,
-            result.expected_dupes,
-            len(result.unexpected_drops),
+            "unexpected_drops=%d dupes_in_batch=%d"
         )
+        accounting_args = (
+            result.input_count, result.inserted, result.expected_dupes,
+            len(result.unexpected_drops), result.duplicates_within_batch,
+        )
+        if unexpected_drops or duplicates_within_batch or result.inserted:
+            logger.info(accounting_msg, *accounting_args)
+        else:
+            logger.debug(accounting_msg, *accounting_args)
+
+        if duplicates_within_batch:
+            logger.warning(
+                "Input batch contained %d within-batch duplicate id(s); "
+                "last occurrence of each id won. Check canonical JSONL "
+                "for corruption.",
+                duplicates_within_batch,
+            )
         if unexpected_drops:
             logger.error(
                 "Unexpectedly dropped %d id(s) — neither pre-existing "
@@ -366,7 +506,7 @@ def insert_memories(
                 unexpected_drops[:10],
             )
         return result
-    except Exception as exc:
+    except psycopg2.Error as exc:
         logger.error("Database error during insert: %s", exc)
         return InsertResult(
             input_count=input_count,
@@ -374,6 +514,7 @@ def insert_memories(
             expected_dupes=0,
             unexpected_drops=[],
             db_available=False,
+            duplicates_within_batch=duplicates_within_batch,
         )
     finally:
         conn.close()
@@ -511,6 +652,10 @@ def sync(logger: logging.Logger) -> None:
     """
     Run one sync cycle: read new JSONL lines, insert into PostgreSQL,
     update cursor.
+
+    Serialised against concurrent runs via a PG advisory lock; if another
+    sync is in progress, this one exits without touching the cursor and
+    the next cron tick retries.
     """
     if not MEMORIES_FILE.exists():
         logger.warning("Memories file not found: %s", MEMORIES_FILE)
@@ -518,6 +663,14 @@ def sync(logger: logging.Logger) -> None:
 
     check_canonical_for_duplicates(logger)
 
+    with _sync_advisory_lock(logger) as acquired:
+        if not acquired:
+            return
+        _sync_locked(logger)
+
+
+def _sync_locked(logger: logging.Logger) -> None:
+    """Core sync cycle, executed under the advisory lock."""
     cursor_line = load_cursor()
 
     # Read all lines and process from cursor position

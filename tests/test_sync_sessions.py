@@ -391,29 +391,41 @@ class _FakePsycopg2Error(Exception):
     """Stand-in for ``psycopg2.Error`` in patched-sys.modules tests."""
 
 
+class _FakePsycopg2OperationalError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.OperationalError`` (subclass of Error)."""
+
+
 def _install_fake_psycopg2(
     monkeypatch: pytest.MonkeyPatch,
     *,
     returned_ids: list[str],
     raise_on_connect: bool = False,
+    advisory_lock_acquired: bool = True,
 ) -> MagicMock:
     """
     Install a fake ``psycopg2`` package into ``sys.modules`` so the
-    function-level import inside ``upsert_sessions`` uses it.
+    function-level import inside ``upsert_sessions`` and the advisory-
+    lock helper use it.
 
     ``returned_ids`` controls what ``execute_values(fetch=True)`` yields
-    (simulating the ``RETURNING id`` clause).
+    (simulating the ``RETURNING id`` clause). ``advisory_lock_acquired``
+    controls what ``pg_try_advisory_lock`` reports back (for tests that
+    want to exercise the contended-lock path).
     """
     fake_psycopg2 = types.ModuleType("psycopg2")
     fake_extras = types.ModuleType("psycopg2.extras")
 
-    # upsert_sessions catches a bare Exception on connect; still define
-    # an Error type for completeness.
     fake_psycopg2.Error = _FakePsycopg2Error
+    fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
 
     cur = MagicMock()
     cur.__enter__ = MagicMock(return_value=cur)
     cur.__exit__ = MagicMock(return_value=False)
+    # pg_try_advisory_lock(...) → [(True,)] or [(False,)] depending on
+    # flag. The upsert path's SELECT does not fetchone; the advisory
+    # lock path does. Returning a tuple is harmless for paths that
+    # ignore fetchone.
+    cur.fetchone.return_value = (advisory_lock_acquired,)
 
     conn = MagicMock()
     conn.cursor.return_value = cur
@@ -422,7 +434,7 @@ def _install_fake_psycopg2(
 
     if raise_on_connect:
         fake_psycopg2.connect = MagicMock(
-            side_effect=_FakePsycopg2Error("DB down")
+            side_effect=_FakePsycopg2OperationalError("DB down")
         )
     else:
         fake_psycopg2.connect = MagicMock(return_value=conn)
@@ -552,3 +564,94 @@ class TestUpsertSessionsAccounting:
         if cursor_file.exists():
             data = json.loads(cursor_file.read_text())
             assert "sessions_sync_timestamp" not in data
+
+    def test_within_batch_dedup_last_wins(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """Duplicate session ids in one batch collapse to the last row."""
+        rows = [
+            _minimal_row("s-dup"),
+            _minimal_row("s-new"),
+            _minimal_row("s-dup"),
+        ]
+        # Mark the two dup rows so we can see which one "won".
+        rows[0]["title"] = "first"
+        rows[2]["title"] = "second"
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=["s-dup", "s-new"]
+        )
+        result = sync_mod.upsert_sessions(rows, test_logger)
+        assert result.db_available is True
+        assert result.duplicates_within_batch == 1
+        assert result.input_count == 2  # deduped
+        assert result.inserted == 2
+        assert result.unexpected_drops == []
+
+    def test_quarantine_dedup_skips_already_present(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """Repeated quarantine calls for the same id append only once."""
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        dropped = [{"id": "s-x", "title": "t"}]
+        sync_mod._write_quarantine(dropped, test_logger)
+        sync_mod._write_quarantine(dropped, test_logger)
+
+        lines = [
+            json.loads(line) for line in quarantine.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+        assert lines[0]["id"] == "s-x"
+
+    def test_advisory_lock_contended_skips_sync(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        archive_tree: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """Contended advisory lock → sync exits without calling upsert."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=["abc12345-6789-0000-aaaa-bbbbccccdddd"],
+            advisory_lock_acquired=False,
+        )
+
+        called = {"upsert": False}
+        orig_upsert = sync_mod.upsert_sessions
+
+        def _spy(rows, logger):
+            called["upsert"] = True
+            return orig_upsert(rows, logger)
+
+        monkeypatch.setattr(sync_mod, "upsert_sessions", _spy)
+
+        sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        assert called["upsert"] is False
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert "sessions_sync_timestamp" not in data
+
+    def test_narrow_exception_reraises_non_psycopg_errors(
+        self, monkeypatch: pytest.MonkeyPatch, test_logger: logging.Logger
+    ) -> None:
+        """
+        KeyError from a malformed row bubbles up rather than being
+        reported as db_available=False — programmer bugs should not be
+        disguised as transient DB trouble.
+        """
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+        sys.modules["psycopg2.extras"].execute_values = MagicMock(
+            side_effect=KeyError("missing column")
+        )
+        rows = [_minimal_row("s-a")]
+        with pytest.raises(KeyError):
+            sync_mod.upsert_sessions(rows, test_logger)
