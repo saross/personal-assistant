@@ -23,7 +23,7 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 # ============================================================================
 # Configuration
@@ -34,6 +34,10 @@ DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "sync-sessions.log"
 CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
+# Quarantine destination for rows silently dropped by the upsert. Lives
+# in the data submodule but we do not commit submodule pointer changes
+# as part of this fix (#55).
+QUARANTINE_FILE = PA_DIR / "data" / "sessions" / "quarantine-postgres-drops.jsonl"
 DB_NAME = "claude_memories"
 
 CURSOR_KEY = "sessions_sync_timestamp"
@@ -229,18 +233,69 @@ def metadata_to_row(
 # Database operations
 # ============================================================================
 
+class InsertResult(NamedTuple):
+    """
+    Accounting result for a session upsert batch.
+
+    Attributes:
+        input_count: Number of rows the caller handed us.
+        inserted: Number of rows returned by the upsert (should equal
+            input_count under DO UPDATE — any shortfall is anomalous).
+        expected_dupes: Always 0 for DO UPDATE — kept for shape parity
+            with the memory sync's InsertResult so callers can share
+            logic if needed later.
+        unexpected_drops: Ids in the input that did not appear in
+            RETURNING. Under DO UPDATE these should never exist;
+            anything here is a hard stop (#55).
+        db_available: False when we could not reach the database.
+    """
+
+    input_count: int
+    inserted: int
+    expected_dupes: int
+    unexpected_drops: list[str]
+    db_available: bool
+
+
+def _write_quarantine(
+    dropped_rows: list[dict[str, Any]],
+    logger: logging.Logger,
+) -> None:
+    """
+    Append dropped session rows to the quarantine JSONL.
+
+    Creates parent directories and the file if missing.
+    """
+    try:
+        QUARANTINE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with QUARANTINE_FILE.open("a", encoding="utf-8") as f:
+            for row in dropped_rows:
+                f.write(json.dumps(row) + "\n")
+        logger.info(
+            "Quarantined %d unexpectedly-dropped session(s) to %s",
+            len(dropped_rows),
+            QUARANTINE_FILE,
+        )
+    except OSError as exc:
+        logger.error(
+            "Could not write quarantine file %s: %s", QUARANTINE_FILE, exc
+        )
+
+
 def upsert_sessions(
     rows: list[dict[str, Any]],
     logger: logging.Logger,
-) -> int:
+) -> InsertResult:
     """
-    Upsert session rows into PostgreSQL.
+    Upsert session rows into PostgreSQL with full accounting.
 
-    Uses ON CONFLICT (id) DO UPDATE so that enriched metadata
-    (e.g. after cc-session update) replaces the previous version.
-
-    Returns the number of rows upserted.
+    Uses ON CONFLICT (id) DO UPDATE so enriched metadata (e.g. after
+    cc-session update) replaces the previous version. The RETURNING
+    clause captures every id PG touched; anything missing from that set
+    is an unexpected drop (#55).
     """
+    input_count = len(rows)
+
     try:
         import psycopg2
         from psycopg2.extras import execute_values
@@ -248,7 +303,13 @@ def upsert_sessions(
         logger.error(
             "psycopg2 not installed. Run: venv/bin/pip install psycopg2-binary"
         )
-        return 0
+        return InsertResult(
+            input_count=input_count,
+            inserted=0,
+            expected_dupes=0,
+            unexpected_drops=[],
+            db_available=False,
+        )
 
     columns = [
         "id", "project", "project_directory", "title", "purpose", "tags",
@@ -275,12 +336,15 @@ def upsert_sessions(
         INSERT INTO sessions ({', '.join(columns)})
         VALUES %s
         ON CONFLICT (id) DO UPDATE SET {update_set}
+        RETURNING id
     """
 
     # Convert rows to tuples in column order
     values = []
     for row in rows:
         values.append(tuple(row[c] for c in columns))
+
+    input_ids = [row["id"] for row in rows]
 
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
@@ -289,17 +353,59 @@ def upsert_sessions(
         logger.info(
             "PostgreSQL may be stopped — session.meta.json files remain canonical."
         )
-        return 0
+        return InsertResult(
+            input_count=input_count,
+            inserted=0,
+            expected_dupes=0,
+            unexpected_drops=[],
+            db_available=False,
+        )
 
     try:
         with conn:
             with conn.cursor() as cur:
-                execute_values(cur, upsert_sql, values, page_size=50)
-        logger.info("Upserted %d sessions into PostgreSQL", len(rows))
-        return len(rows)
+                returned = execute_values(
+                    cur,
+                    upsert_sql,
+                    values,
+                    page_size=50,
+                    fetch=True,
+                )
+                returned_ids = {row[0] for row in returned}
+
+        unexpected_drops = [mid for mid in input_ids if mid not in returned_ids]
+
+        result = InsertResult(
+            input_count=input_count,
+            inserted=len(returned_ids),
+            expected_dupes=0,
+            unexpected_drops=unexpected_drops,
+            db_available=True,
+        )
+
+        logger.info(
+            "Upsert accounting: input=%d inserted=%d unexpected_drops=%d",
+            result.input_count,
+            result.inserted,
+            len(result.unexpected_drops),
+        )
+        if unexpected_drops:
+            logger.error(
+                "Unexpectedly dropped %d session id(s) — not returned "
+                "by DO UPDATE. First 10: %s",
+                len(unexpected_drops),
+                unexpected_drops[:10],
+            )
+        return result
     except Exception as exc:
         logger.error("Database error during upsert: %s", exc)
-        return 0
+        return InsertResult(
+            input_count=input_count,
+            inserted=0,
+            expected_dupes=0,
+            unexpected_drops=[],
+            db_available=False,
+        )
     finally:
         conn.close()
 
@@ -354,17 +460,34 @@ def sync(
         logger.info("No valid sessions to upsert")
         return
 
-    # Upsert into PostgreSQL
-    upserted = upsert_sessions(rows, logger)
+    # Upsert into PostgreSQL (returns InsertResult with full accounting).
+    result = upsert_sessions(rows, logger)
 
-    # Advance cursor only if upsert succeeded
-    if upserted > 0:
+    # Cursor advance policy (#55): advance ONLY when DB was reachable AND
+    # every input id appeared in RETURNING.
+    if not result.db_available:
+        logger.warning(
+            "Upsert returned db_available=False — cursor NOT advanced "
+            "(PostgreSQL may be down)"
+        )
+    elif result.unexpected_drops:
+        rows_by_id = {row["id"]: row for row in rows}
+        dropped_rows = [
+            rows_by_id[mid]
+            for mid in result.unexpected_drops
+            if mid in rows_by_id
+        ]
+        _write_quarantine(dropped_rows, logger)
+        logger.error(
+            "Cursor NOT advanced — %d session id(s) were silently dropped "
+            "by the upsert. Dropped ids: %s",
+            len(result.unexpected_drops),
+            result.unexpected_drops[:10],
+        )
+        return
+    else:
         save_cursor(latest_archived_at)
         logger.info("Cursor advanced to %s", latest_archived_at)
-    else:
-        logger.warning(
-            "Upsert returned 0 — cursor NOT advanced (PostgreSQL may be down)"
-        )
 
 
 def main() -> None:
