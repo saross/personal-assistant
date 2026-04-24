@@ -230,7 +230,9 @@ class TestCrossProjectRelevance:
             memories, set(), current_project, project_tags
         )
 
-        # All three should be included (within MAX_PERMANENT_OTHER=8)
+        # All three should be included (within MAX_PERMANENT_OTHER slots).
+        # Each is a different foreign project so the per-project cap
+        # does not bind.
         result_ids = [m["id"] for m in result]
         assert "high" in result_ids
         assert "low" in result_ids
@@ -245,19 +247,25 @@ class TestCrossProjectRelevance:
         assert len(result) == 3
 
     def test_relevant_cross_project_selected_over_irrelevant(self):
-        """When cross-project exceeds allocation, relevant ones win."""
+        """When cross-project exceeds allocation, relevant ones win.
+
+        Spreads memories across multiple foreign projects so the
+        per-project cap does not artificially limit the result size.
+        """
         from datetime import datetime, timedelta, timezone
 
         now = datetime.now(timezone.utc)
         current_project = "-home-shawn-paper"
 
-        # Create more cross-project memories than MAX_PERMANENT_OTHER
+        # Create more cross-project memories than MAX_PERMANENT_OTHER,
+        # distributed across many foreign projects so the per-project
+        # cap doesn't bite (each project contributes at most one).
         limit = retrieval.MAX_PERMANENT_OTHER
         memories = []
         for i in range(limit + 5):
             tags = ["methodology"] if i < 5 else ["unrelated"]
             memories.append(self._make_memory(
-                f"mem-{i}", "-home-shawn-other", "decision",
+                f"mem-{i}", f"-home-shawn-other-{i}", "decision",
                 tags,
                 (now - timedelta(days=i)).isoformat(),
             ))
@@ -307,20 +315,25 @@ class TestCrossProjectRelevance:
         assert result_ids == ["new", "old"]
 
     def test_recent_cross_project_uses_tag_relevance(self):
-        """Recent cross-project memories also use tag relevance scoring."""
+        """Recent cross-project memories also use tag relevance scoring.
+
+        Uses multiple foreign projects so the per-project cap doesn't
+        artificially constrain the result.
+        """
         from datetime import datetime, timedelta, timezone
 
         now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=7)
+        cutoff = now - timedelta(days=retrieval.RECENT_DAYS)
         current_project = "-home-shawn-paper"
 
-        # Create more recent cross-project memories than available slots
+        # Create more recent cross-project memories than available slots,
+        # across many foreign projects
         limit = retrieval.MAX_RECENT_OTHER
         memories = []
         for i in range(limit + 3):
             tags = ["methodology"] if i < 2 else ["unrelated"]
             memories.append(self._make_memory(
-                f"recent-{i}", "-home-shawn-other", "progress",
+                f"recent-{i}", f"-home-shawn-other-{i}", "progress",
                 tags,
                 (now - timedelta(days=i)).isoformat(),
             ))
@@ -388,9 +401,10 @@ class TestCrossProjectRelevance:
             memories, set(), current_project, set()
         )
 
-        # Should get MAX_PERMANENT_SAME + MAX_PERMANENT_OTHER = 50
-        # (all unused cross-project slots overflow to same-project)
-        assert len(result) == 25  # Only 25 exist, all included
+        # Would get up to MAX_PERMANENT_SAME + MAX_PERMANENT_OTHER slots
+        # (all unused cross-project slots overflow to same-project),
+        # but only 25 same-project memories exist, so all are returned.
+        assert len(result) == 25
 
 
 # ============================================================================
@@ -1054,13 +1068,37 @@ class TestCompactFormat:
         assert "/recall" in output
         assert "full memory content" in output
 
-    def test_increased_slot_allocation(self):
-        """Slot constants reflect Phase 4 increase."""
+    def test_anti_confabulation_warning_in_header(self):
+        """format_context() header includes anti-confabulation warning.
+
+        Added 2026-04-24 to counter Opus 4.7's tendency to weld together
+        plausible-looking fragments from pre-loaded memory summaries.
+        """
+        recent = [{
+            "category": "progress",
+            "confidence": "high",
+            "content": "Test",
+            "research_tags": [],
+            "created_at": "2026-03-14T10:00:00+00:00",
+        }]
+        output = retrieval.format_context(recent, [])
+        assert "Anti-confabulation" in output
+        assert "pointers, not" in output
+        assert "re-read the source file" in output
+
+    def test_slot_allocation_constants(self):
+        """Slot constants reflect 2026-04-24 tuning to reduce
+        Opus 4.7 confabulation-gravity from the high-volume
+        decision/architecture pool."""
         assert retrieval.MAX_RECENT_SAME == 25
         assert retrieval.MAX_RECENT_OTHER == 5
-        assert retrieval.MAX_PERMANENT_SAME == 35
-        assert retrieval.MAX_PERMANENT_OTHER == 15
+        assert retrieval.MAX_PERMANENT_SAME == 20
+        assert retrieval.MAX_PERMANENT_OTHER == 8
         assert retrieval.MAX_CONSTRAINTS == 10
+        assert retrieval.MAX_MIDDLE_AGED == 10
+        assert retrieval.MAX_OTHER_PROJECT_CAP == 3
+        assert retrieval.RECENT_DAYS == 14
+        assert retrieval.MIDDLE_AGED_DAYS == 180
 
 
 # ============================================================================
@@ -1113,3 +1151,241 @@ class TestRetrievalInstructions:
         assert "shall I retrieve" in output
         assert "When NOT to fetch" in output
         assert "/recall" in output
+
+
+# ============================================================================
+# Per-project cap (2026-04-24)
+# ============================================================================
+
+
+class TestPerProjectCap:
+    """Tests for the MAX_OTHER_PROJECT_CAP limit on cross-project slots.
+
+    With one foreign project (e.g., map-reader-llm) dominating the corpus,
+    tag-relevance scoring alone lets it fill all cross-project slots. The
+    per-project cap enforces diversity by capping contributions from any
+    single foreign project.
+    """
+
+    @staticmethod
+    def _make_memory(
+        mem_id: str,
+        project: str,
+        category: str,
+        tags: list,
+        created_at: str,
+    ) -> dict:
+        return {
+            "id": mem_id,
+            "project": project,
+            "category": category,
+            "research_tags": tags,
+            "created_at": created_at,
+            "content": f"content for {mem_id}",
+        }
+
+    def test_apply_per_project_cap_limits_single_project(self):
+        """Cap prevents one project from taking more than N entries."""
+        memories = [
+            self._make_memory(f"m-{i}", "-home-shawn-big-project",
+                              "decision", ["t"], "2026-04-01T00:00:00+00:00")
+            for i in range(10)
+        ]
+        result = retrieval.apply_per_project_cap(memories, limit=8, cap=3)
+        assert len(result) == 3
+
+    def test_apply_per_project_cap_allows_multiple_projects(self):
+        """Cap is per-project, not global; multiple projects fill the limit."""
+        memories = []
+        for project_idx in range(4):
+            for i in range(5):
+                memories.append(self._make_memory(
+                    f"p{project_idx}-{i}", f"-home-shawn-proj-{project_idx}",
+                    "decision", ["t"], "2026-04-01T00:00:00+00:00",
+                ))
+        result = retrieval.apply_per_project_cap(memories, limit=8, cap=3)
+        assert len(result) == 8
+        # Each project contributes at most 3
+        from collections import Counter
+        counts = Counter(m["project"] for m in result)
+        assert max(counts.values()) <= 3
+
+    def test_per_project_cap_applied_in_retrieve_permanent(self):
+        """retrieve_permanent enforces the per-project cap on cross-project."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        current_project = "-home-shawn-paper"
+        # 10 memories all from a single foreign project
+        memories = [
+            self._make_memory(f"m-{i}", "-home-shawn-dominant",
+                              "decision", ["methodology"], now)
+            for i in range(10)
+        ]
+        result = retrieval.retrieve_permanent(
+            memories, set(), current_project, {"methodology"}
+        )
+        # Cap limits to 3 from that single project; no same-project
+        # memories exist to absorb the overflow, so final size is 3.
+        assert len(result) == retrieval.MAX_OTHER_PROJECT_CAP
+
+
+# ============================================================================
+# Middle-aged bucket (gotcha + pattern, 14-180 days)
+# ============================================================================
+
+
+class TestMiddleAgedBucket:
+    """Tests for retrieve_middle_aged() — restores documented 180-day
+    decay for gotcha and pattern categories that was previously collapsed
+    into the 14-day recent bucket only."""
+
+    @staticmethod
+    def _make_memory(
+        mem_id: str,
+        category: str,
+        days_old: int,
+        project: str = "-home-shawn-paper",
+        tags: list | None = None,
+    ) -> dict:
+        from datetime import datetime, timedelta, timezone
+        created = datetime.now(timezone.utc) - timedelta(days=days_old)
+        return {
+            "id": mem_id,
+            "project": project,
+            "category": category,
+            "research_tags": tags or [],
+            "created_at": created.isoformat(),
+            "content": f"{category} memory {mem_id}",
+        }
+
+    def test_returns_gotcha_and_pattern_in_window(self):
+        """Gotcha and pattern memories in the 14–180d window are returned."""
+        memories = [
+            self._make_memory("g1", "gotcha", 30),
+            self._make_memory("p1", "pattern", 60),
+        ]
+        result = retrieval.retrieve_middle_aged(
+            memories, set(), "-home-shawn-paper", set()
+        )
+        ids = {m["id"] for m in result}
+        assert "g1" in ids
+        assert "p1" in ids
+
+    def test_excludes_memories_newer_than_recent_window(self):
+        """Memories within RECENT_DAYS are excluded (belong to recent)."""
+        memories = [
+            self._make_memory("fresh", "gotcha", 2),  # < 14 days
+            self._make_memory("aged", "gotcha", 30),
+        ]
+        result = retrieval.retrieve_middle_aged(
+            memories, set(), "-home-shawn-paper", set()
+        )
+        ids = {m["id"] for m in result}
+        assert "fresh" not in ids
+        assert "aged" in ids
+
+    def test_excludes_memories_older_than_middle_aged_window(self):
+        """Memories older than MIDDLE_AGED_DAYS are excluded."""
+        memories = [
+            self._make_memory("ancient", "gotcha", 200),  # > 180 days
+            self._make_memory("aged", "gotcha", 100),
+        ]
+        result = retrieval.retrieve_middle_aged(
+            memories, set(), "-home-shawn-paper", set()
+        )
+        ids = {m["id"] for m in result}
+        assert "ancient" not in ids
+        assert "aged" in ids
+
+    def test_excludes_other_categories(self):
+        """Only gotcha and pattern are pulled."""
+        memories = [
+            self._make_memory("d1", "decision", 30),
+            self._make_memory("g1", "gotcha", 30),
+        ]
+        result = retrieval.retrieve_middle_aged(
+            memories, set(), "-home-shawn-paper", set()
+        )
+        ids = {m["id"] for m in result}
+        assert "d1" not in ids
+        assert "g1" in ids
+
+    def test_excludes_already_retrieved_ids(self):
+        """IDs already in already_ids are not returned."""
+        memories = [
+            self._make_memory("g1", "gotcha", 30),
+            self._make_memory("g2", "gotcha", 30),
+        ]
+        result = retrieval.retrieve_middle_aged(
+            memories, {"g1"}, "-home-shawn-paper", set()
+        )
+        ids = {m["id"] for m in result}
+        assert "g1" not in ids
+        assert "g2" in ids
+
+    def test_respects_max_middle_aged_limit(self):
+        """Returns at most MAX_MIDDLE_AGED entries."""
+        memories = [
+            self._make_memory(f"g{i}", "gotcha", 20 + i)
+            for i in range(retrieval.MAX_MIDDLE_AGED + 5)
+        ]
+        result = retrieval.retrieve_middle_aged(
+            memories, set(), "-home-shawn-paper", set()
+        )
+        assert len(result) == retrieval.MAX_MIDDLE_AGED
+
+
+# ============================================================================
+# Project-aware scratchpad loading
+# ============================================================================
+
+
+class TestLoadProjectScratchpad:
+    """Tests for load_project_scratchpad() — loads per-project scratchpad
+    keyed on the cwd basename to keep project-specific identifiers out of
+    every session's context."""
+
+    def test_loads_when_cwd_matches_existing_file(self, tmp_path, monkeypatch):
+        """Returns content when data/scratchpads/<name>.md exists."""
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        (scratchpads / "map-reader-llm.md").write_text(
+            "# Per-project\n- test entry\n"
+        )
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+        content, path = retrieval.load_project_scratchpad(
+            "/home/shawn/Code/map-reader-llm"
+        )
+        assert "test entry" in content
+        assert path is not None
+        assert path.name == "map-reader-llm.md"
+
+    def test_returns_empty_when_no_matching_file(self, tmp_path, monkeypatch):
+        """Returns empty when no per-project scratchpad exists for cwd."""
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+        content, path = retrieval.load_project_scratchpad(
+            "/home/shawn/Code/nonexistent-project"
+        )
+        assert content == ""
+        assert path is None
+
+    def test_returns_empty_when_cwd_empty(self, tmp_path, monkeypatch):
+        """Empty cwd short-circuits to empty result."""
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", tmp_path)
+        content, path = retrieval.load_project_scratchpad("")
+        assert content == ""
+        assert path is None
+
+    def test_returns_empty_when_file_empty(self, tmp_path, monkeypatch):
+        """Empty scratchpad file returns empty result."""
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        (scratchpads / "voice-assistant.md").write_text("")
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+        content, path = retrieval.load_project_scratchpad(
+            "/home/shawn/Code/voice-assistant"
+        )
+        assert content == ""
+        assert path is None

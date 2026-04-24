@@ -35,7 +35,8 @@ Read these sources:
 | `~/personal-assistant/tasks/SYSTEM.md` | Current parameters + adjustment history |
 | `~/personal-assistant/memories/memories.jsonl` | Memories in period, especially: `system_evolution`, `system_friction`, `system_success`, `slip`, `completion`, `blocker_real`, `blocker_excuse` |
 | `~/personal-assistant/standups/` | All standups from the month |
-| `~/personal-assistant/data/scratchpad.md` | Scratchpad entries since last distillation |
+| `~/personal-assistant/data/scratchpad.md` | Global scratchpad entries |
+| `~/personal-assistant/data/scratchpads/*.md` | Per-project scratchpads (all files in this directory) |
 
 ### 3. Calculate System Metrics
 
@@ -160,18 +161,28 @@ Examples:
 
 ### 5b. Scratchpad Distillation
 
-Read `~/personal-assistant/data/scratchpad.md`.
+Review the scratchpad layers at **every** retro (not only when size
+thresholds are hit). Process both the global scratchpad and every
+per-project scratchpad file.
 
-1. **Count lines** and report current size vs 150-line threshold.
-2. **Review each entry** and classify:
-   - **Promote** → durable pattern; create memory via `/remember`
-   - **Graduate** → permanent rule; propose addition to CLAUDE.md
+1. **Read** `~/personal-assistant/data/scratchpad.md` and every
+   `*.md` file under `~/personal-assistant/data/scratchpads/`.
+2. **Count lines** for each file and report current size vs target
+   (global ≤80, per-project ≤60).
+3. **Flag entries older than 30 days** in each file — these MUST be
+   reviewed, not skipped. Younger entries may be left alone.
+4. **Review each flagged entry** and classify:
+   - **Promote** → durable pattern → create memory via `/remember`
+   - **Graduate** → permanent rule → propose addition to CLAUDE.md
    - **Consolidate** → merge related entries into one sharper entry
    - **Prune** → stale, superseded, or captured elsewhere; remove
-   - **Keep** → recent and actively useful; leave it
-3. **Present plan** to user for approval before making changes.
-4. **Update** `Last distilled:` date in the scratchpad header.
-5. **Target**: ≤80 lines after distillation.
+   - **Keep** → still actively useful; leave it with a refresh note
+5. **Promote-to-per-project** check: scan the global scratchpad for
+   entries that carry a concrete path, config value, model version,
+   or project name — these may have drifted and belong in a
+   per-project scratchpad. Propose the move.
+6. **Present plan** to user for approval before making any edits.
+7. **Update** `Last distilled:` date in each reviewed file's header.
 
 ### 6. Apply Parameter Changes
 
