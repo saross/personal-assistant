@@ -220,12 +220,27 @@ cd "$DATA_DIR"
 # HEAD, and leaves a clean tree so the subsequent checkout/pull cannot
 # trip over "local changes would be overwritten".
 has_local_changes=0
+stash_pending=0
+# If any step between `git stash push` and the explicit pop below aborts
+# (e.g. pull fails because the cron env has no SSH agent), restore the
+# stash so the user's working tree is not silently buried in a stash
+# stack that grows unbounded. Cleared once the explicit pop completes.
+restore_stash_on_exit() {
+    if [[ "$stash_pending" -eq 1 ]]; then
+        log "WARNING: aborting before stash pop — restoring stashed local changes"
+        if ! git -C "$DATA_DIR" stash pop >>"$LOG_FILE" 2>&1; then
+            log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
+        fi
+    fi
+}
+trap restore_stash_on_exit EXIT
 if [[ -n "$(git status --porcelain)" ]]; then
     has_local_changes=1
     log "data submodule has local changes; stashing for pull"
     if [[ $DRY_RUN -eq 0 ]]; then
         git stash push -u -m "daily-sync on $HOST $(date +'%Y-%m-%d %H:%M')" \
             >>"$LOG_FILE" 2>&1 || fail "stash push failed"
+        stash_pending=1
     fi
 fi
 
@@ -253,6 +268,11 @@ if [[ $has_local_changes -eq 1 ]]; then
     log "data submodule: popping stashed local changes"
     if [[ $DRY_RUN -eq 0 ]]; then
         if ! git stash pop >>"$LOG_FILE" 2>&1; then
+            # `git stash pop` applied the stash to the working tree but
+            # left it conflicted; the stash entry is preserved by git
+            # in this case. Clear the trap flag — re-popping in the
+            # restore handler would corrupt the half-merged tree.
+            stash_pending=0
             log "stash pop raised conflicts — running resolver"
             conflicted_files=()
             while IFS= read -r line; do
@@ -283,6 +303,9 @@ if [[ $has_local_changes -eq 1 ]]; then
             git stash drop >>"$LOG_FILE" 2>&1 || true
             log "conflicts resolved: ${conflicted_files[*]}"
         fi
+        # Pop succeeded (or resolver applied + stash dropped); the trap
+        # no longer needs to restore anything.
+        stash_pending=0
     fi
 fi
 
