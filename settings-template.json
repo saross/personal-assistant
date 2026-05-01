@@ -1,4 +1,5 @@
 {
+  "_README": "Template for ~/personal-assistant/settings.json. The live file is .gitignored so each machine keeps per-machine prefs (effortLevel, verbose, agentPushNotifEnabled, etc). After cloning: cp settings-template.json settings.json and customise.",
   "cleanupPeriodDays": 99999,
   "env": {
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
@@ -134,6 +135,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/personal-assistant/scripts/daily-sync-trigger.sh",
+            "timeout": 90
+          }
+        ]
       }
     ]
   },
@@ -150,7 +160,5 @@
   "alwaysThinkingEnabled": true,
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true,
-  "verbose": true,
-  "agentPushNotifEnabled": true
+  "skipAutoPermissionPrompt": true
 }

@@ -5,6 +5,11 @@
 .last-email-triage
 .sync-board-config
 
+# Per-machine Claude Code config — see settings-template.json for the
+# shared starting point; each machine maintains its own settings.json
+# (effortLevel, verbose, agentPushNotifEnabled, etc).
+settings.json
+
 # Python
 *.pyc
 __pycache__/
