@@ -225,10 +225,17 @@ stash_pending=0
 # (e.g. pull fails because the cron env has no SSH agent), restore the
 # stash so the user's working tree is not silently buried in a stash
 # stack that grows unbounded. Cleared once the explicit pop completes.
+parent_stash_pending=0
 restore_stash_on_exit() {
     if [[ "$stash_pending" -eq 1 ]]; then
-        log "WARNING: aborting before stash pop — restoring stashed local changes"
+        log "WARNING: aborting before stash pop — restoring stashed local changes (data submodule)"
         if ! git -C "$DATA_DIR" stash pop >>"$LOG_FILE" 2>&1; then
+            log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
+        fi
+    fi
+    if [[ "$parent_stash_pending" -eq 1 ]]; then
+        log "WARNING: aborting before stash pop — restoring stashed local changes (parent repo)"
+        if ! git -C "$PA_DIR" stash pop >>"$LOG_FILE" 2>&1; then
             log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
         fi
     fi
@@ -366,10 +373,43 @@ fi
 
 cd "$PA_DIR"
 
+# Stash any uncommitted parent-repo changes (typical case: per-machine
+# settings.json edits) before the pull, mirroring the data-submodule
+# guard above. Without this, `git pull --ff-only` aborts on a dirty
+# tree and the EXIT trap is what keeps the work safe. The submodule
+# pointer (`data`) is intentionally excluded from the stash via
+# pathspec so the bump-detection diff below still sees it.
+parent_has_local_changes=0
+if [[ -n "$(git status --porcelain -- ':!data')" ]]; then
+    parent_has_local_changes=1
+    log "parent repo has local changes; stashing for pull"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        git stash push -u -m "daily-sync parent on $HOST $(date +'%Y-%m-%d %H:%M')" \
+            -- ':!data' >>"$LOG_FILE" 2>&1 || fail "parent stash push failed"
+        parent_stash_pending=1
+    fi
+fi
+
 log "parent repo: pulling origin/main"
 if [[ $DRY_RUN -eq 0 ]]; then
     git pull --ff-only origin main >>"$LOG_FILE" 2>&1 \
         || fail "parent pull failed (not fast-forwardable — manual merge needed)"
+fi
+
+# Pop the parent stash before the bump-detection diff so any locally
+# modified files are back in the working tree. Conflicts here are
+# unexpected (parent-repo files are rarely touched by remotes) and
+# warrant manual intervention rather than the JSONL resolver.
+if [[ $parent_has_local_changes -eq 1 ]] && [[ $DRY_RUN -eq 0 ]]; then
+    log "parent repo: popping stashed local changes"
+    if ! git stash pop >>"$LOG_FILE" 2>&1; then
+        # Stash applied but conflicted; entry is preserved by git.
+        # Clear the flag so the EXIT trap does not re-pop and corrupt
+        # the half-merged tree.
+        parent_stash_pending=0
+        fail "parent repo: stash pop raised conflicts — manual resolution required"
+    fi
+    parent_stash_pending=0
 fi
 
 # Bump submodule pointer if the data submodule moved.
