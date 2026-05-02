@@ -5,6 +5,7 @@ date arithmetic, and SYSTEM.md parameter reading.
 Tests pure functions only; does not execute the hook end-to-end.
 """
 
+import sys
 from datetime import datetime, timedelta
 
 # conftest.py adds hooks/ to sys.path
@@ -103,6 +104,66 @@ class TestCountWaitingItems:
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
         assert accountability.count_waiting_items() == 1
 
+    def test_strikethrough_rows_skipped_live_waiting_for_pattern(
+        self, tmp_path, monkeypatch
+    ):
+        """Audit C-M1 (2026-05-02): the live ``waiting-for.md`` (line
+        7 at audit time) contains a completed row whose Item, Waiting
+        On, and Since cells are struck through but whose Next Action
+        cell carries a visible resolution note (``**Received
+        2026-03-19.** Processing today.``). The completed row must
+        not be counted as still-waiting; this is the exact bug shape
+        flagged by the audit.
+        """
+        waiting = tmp_path / "waiting.md"
+        waiting.write_text(
+            "| Item | Waiting On | Since | Last Poked | Next Action |\n"
+            "|------|------------|-------|------------|-------------|\n"
+            "| ~~Flinders profile info~~ | ~~Talia Barnes~~ "
+            "| ~~2026-03-17~~ | — | "
+            "**Received 2026-03-19.** Processing today. |\n"
+            "| Europe trip dates | Vivi's mother | 2026-04-28 "
+            "| — | Late June |\n"
+        )
+        monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
+        # Two table rows, but the first is a completed/struck-through
+        # item — only the second should count.
+        assert accountability.count_waiting_items() == 1
+
+    def test_strikethrough_rows_skipped_whole_row(
+        self, tmp_path, monkeypatch
+    ):
+        """The whole-row variant — every populated cell struck — is
+        the unambiguous case and must also be skipped.
+        """
+        waiting = tmp_path / "waiting.md"
+        waiting.write_text(
+            "| Item | Waiting On | Since | Last Poked | Next Action |\n"
+            "|------|------------|-------|------------|-------------|\n"
+            "| ~~Old item~~ | ~~Person~~ | ~~2026-01-01~~ "
+            "| — | ~~done~~ |\n"
+            "| Live item | Someone | 2026-04-28 | — | Chase |\n"
+        )
+        monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
+        assert accountability.count_waiting_items() == 1
+
+    def test_partial_strikethrough_in_first_cell_still_counts(
+        self, tmp_path, monkeypatch
+    ):
+        """A row whose first cell mixes a struck-through fragment
+        with un-struck text (e.g. ``~~Old name~~ new name``) is still
+        a live row — only a fully struck-through first cell signals
+        completion.
+        """
+        waiting = tmp_path / "waiting.md"
+        waiting.write_text(
+            "| Item | Waiting On |\n"
+            "|------|------------|\n"
+            "| ~~Old name~~ new name | Someone |\n"
+        )
+        monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
+        assert accountability.count_waiting_items() == 1
+
 
 # ============================================================================
 # Focus Slot Parsing
@@ -156,6 +217,42 @@ class TestParseFocusSlots:
         focus.write_text("# Current Focus\n\nNothing here.\n")
         monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
         assert accountability.parse_focus_slots() == []
+
+    def test_started_field_pins_day_count(self, tmp_path, monkeypatch):
+        """Audit C-C1 (2026-05-02): both ``Started:`` and
+        ``Task starts:`` field names must drive the day-in-focus
+        counter. The rotating-task convention introduced 2026-04-18
+        uses ``Task starts:`` for the *current* task in a slot, while
+        the original ``Started:`` marks slot opening — and only
+        ``Started:`` was previously matched.
+        """
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(
+            "# Current Focus\n\n"
+            "## Slot 1: Plain-Started Slot\n\n"
+            "- **Started:** 2026-02-06\n"
+            "- **Deadline:** 2026-02-28\n\n"
+            "---\n\n"
+            "## Slot 2: Rotating Task Slot\n\n"
+            "- **Task starts:** 2026-04-27\n"
+            "- **Deadline:** 2026-04-29\n\n"
+            "---\n\n"
+            "## Slot 3: Mixed-case Variant\n\n"
+            "- **task STARTS:** 2026-04-25\n"
+            "- **Deadline:** None\n\n"
+            "---\n"
+        )
+        monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
+
+        slots = accountability.parse_focus_slots()
+        assert len(slots) == 3
+        # Slot 1: plain "Started:" — historical happy path.
+        assert slots[0]["started"] == "2026-02-06"
+        # Slot 2: "Task starts:" — was previously parsed as None,
+        # silently breaking days_in_focus for any rotating slot.
+        assert slots[1]["started"] == "2026-04-27"
+        # Slot 3: case-insensitive match on "task STARTS".
+        assert slots[2]["started"] == "2026-04-25"
 
 
 # ============================================================================
@@ -279,3 +376,85 @@ class TestDaysInFocus:
 
     def test_invalid_date(self):
         assert accountability.days_in_focus("garbage") is None
+
+
+# ============================================================================
+# Main — files-missing branch (C-M5)
+# ============================================================================
+
+
+class TestMainFilesMissing:
+    """Tests for the files-missing branch in main().
+
+    Audit C-M5 (2026-05-02): when every input file the banner depends
+    on is absent (typically a fresh clone where the data/ submodule
+    has not yet been pulled), the banner used to print "No items in
+    focus" and "Inbox: 0 items | Waiting for: 0 items" — visually
+    indistinguishable from a clean slate. The fix surfaces the
+    failure visibly via stderr and a clear stdout banner.
+    """
+
+    def test_warns_when_all_task_files_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Point every file path at non-existent locations.
+        monkeypatch.setattr(
+            accountability, "FOCUS_FILE", tmp_path / "nope-FOCUS.md"
+        )
+        monkeypatch.setattr(
+            accountability, "INBOX_FILE", tmp_path / "nope-inbox.md"
+        )
+        monkeypatch.setattr(
+            accountability, "WAITING_FILE", tmp_path / "nope-waiting.md"
+        )
+        monkeypatch.setattr(
+            accountability, "SYSTEM_FILE", tmp_path / "nope-SYSTEM.md"
+        )
+        # Patch stdin (the hook reads-and-discards the JSON payload).
+        import io
+        monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+
+        accountability.main()
+
+        captured = capsys.readouterr()
+        # Stderr carries a parseable WARN line operators can grep.
+        assert "[accountability] WARN" in captured.err
+        assert "task files missing" in captured.err
+        # Stdout carries a clear, user-readable explanation rather
+        # than the misleading "No items in focus" banner.
+        assert "Task files not found" in captured.out
+        assert "No items in focus" not in captured.out
+
+    def test_normal_banner_when_files_present(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Even one of the three present should bypass the
+        # all-missing fast path.
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(
+            "# Current Focus\n\n"
+            "## Slot 1: Test Slot\n\n"
+            "- **Started:** 2026-04-28\n"
+            "- **Deadline:** None\n\n"
+            "---\n"
+        )
+        monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
+        monkeypatch.setattr(
+            accountability, "INBOX_FILE", tmp_path / "nope-inbox.md"
+        )
+        monkeypatch.setattr(
+            accountability, "WAITING_FILE", tmp_path / "nope-waiting.md"
+        )
+        monkeypatch.setattr(
+            accountability, "SYSTEM_FILE", tmp_path / "nope-SYSTEM.md"
+        )
+        import io
+        monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+
+        accountability.main()
+
+        captured = capsys.readouterr()
+        assert "task files missing" not in captured.err
+        # Normal banner emitted.
+        assert "# Task Status" in captured.out
+        assert "Test Slot" in captured.out

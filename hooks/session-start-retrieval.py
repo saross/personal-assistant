@@ -131,6 +131,31 @@ MAX_MIDDLE_AGED = 10
 CONSTRAINT_CATEGORIES = {"error_mode", "prompt_effectiveness"}
 MAX_CONSTRAINTS = 10
 
+# Audit C-C3 (2026-05-02): the canonical ``memories.jsonl`` is
+# append-only with newest records at (broadly) the bottom; the file
+# is not strictly date-monotonic because of backfills, but newest
+# records are always appended at the end. Previously we read the
+# whole file into RAM via ``read_text().splitlines()``; on a slow
+# disk this could push the 10-second hook timeout, and the failure
+# mode was silent (truncated stdout, no signal).
+#
+# Fix: stream the file backwards, decoding one line at a time, and
+# stop after ``MAX_LOAD_RECORDS`` records. The cap must be generous
+# enough to cover the full retrieval window — recent (14d), middle-
+# aged (180d), and permanent (any age) — so it is sized well above
+# the current corpus (~24k records / ~310 records/day at audit
+# time, i.e. ~75 days). 50000 records is ~160 days at present
+# growth rate; the corpus today fits entirely inside the cap with
+# ~2× headroom, while bounding worst-case load under future
+# growth.
+MAX_LOAD_RECORDS = 50000
+
+# How large a chunk to read when streaming the file backwards. Sized
+# to comfortably hold a few hundred lines of typical memory records
+# (~700 bytes/line). Tuned for I/O efficiency, not correctness — any
+# value works.
+REVERSE_READ_CHUNK_BYTES = 64 * 1024
+
 # ============================================================================
 # Memory Loading
 # ============================================================================
@@ -151,32 +176,161 @@ _load_stats: dict = {
 }
 
 
-def load_all_memories() -> list[dict]:
-    """Load all memories from the canonical JSONL file.
+def _iter_lines_reverse(path: Path, chunk_size: int = REVERSE_READ_CHUNK_BYTES):
+    """Yield ``(line_number, line_bytes)`` from ``path`` in reverse order.
 
-    Per-line `JSONDecodeError`s are counted (not raised) so a single
+    Streams the file from the end, reading ``chunk_size`` bytes at a
+    time, and yields each line newest-first along with its 1-indexed
+    line number (where line 1 is the first line of the file). The
+    decoder for the line text is left to the caller so errors can be
+    routed through the existing ``_load_stats`` counters.
+
+    Why backwards: ``memories.jsonl`` is append-only with newest
+    records at the bottom. Reading newest-first lets retrieval cap the
+    scan at ``MAX_LOAD_RECORDS`` while still seeing the most relevant
+    records — see C-C3 in reports/audit-2026-05-02/cluster-C-hooks.md.
+
+    The implementation is adapted from the well-known stdlib pattern
+    (the ``file_read_backwards`` recipe). It tolerates files that do
+    not end with a trailing newline.
+    """
+    with path.open("rb") as fh:
+        fh.seek(0, 2)  # End of file
+        total_size = fh.tell()
+        # First pass: count newlines to derive the 1-indexed line number
+        # of the *last* line. Cheaper than a second seek-and-count
+        # because we already need to read the bytes.
+        # We accumulate line numbers from the bottom up: start at the
+        # total newline count, decrement as we yield.
+        # Avoid an extra full-file scan by counting newlines lazily as
+        # we walk backwards through chunks — initial line_no is the
+        # 1-indexed position of the final non-empty line, which equals
+        # the count of '\n' bytes if the file ends with '\n', else
+        # count('\n') + 1.
+        # Compute the total newline count up front in a streaming pass
+        # — this keeps the logic correct even when the trailing line
+        # has no newline.
+        fh.seek(0)
+        newline_count = 0
+        while True:
+            buf = fh.read(chunk_size)
+            if not buf:
+                break
+            newline_count += buf.count(b"\n")
+        # Determine the 1-indexed line number of the last record.
+        # If file ends with a newline, the final line is newline_count;
+        # otherwise it is newline_count + 1 (the unterminated tail).
+        fh.seek(max(total_size - 1, 0))
+        ends_with_newline = total_size > 0 and fh.read(1) == b"\n"
+        last_line_no = newline_count if ends_with_newline else newline_count + 1
+
+        # Now walk backwards.
+        position = total_size
+        leftover = b""
+        current_line_no = last_line_no
+        while position > 0:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            fh.seek(position)
+            chunk = fh.read(read_size) + leftover
+            # If we are not at the very start, the first fragment in
+            # this chunk may be a partial line — defer it to the next
+            # iteration by stashing it in ``leftover``.
+            if position > 0:
+                first_nl = chunk.find(b"\n")
+                if first_nl == -1:
+                    leftover = chunk
+                    continue
+                leftover = chunk[: first_nl + 1]
+                rest = chunk[first_nl + 1:]
+            else:
+                leftover = b""
+                rest = chunk
+            # Split ``rest`` into lines, preserving order. The trailing
+            # newline (if any) yields an empty final element which we
+            # skip.
+            lines = rest.split(b"\n")
+            if lines and lines[-1] == b"":
+                lines = lines[:-1]
+            # Yield newest-first.
+            for line in reversed(lines):
+                yield current_line_no, line
+                current_line_no -= 1
+        # Emit any remaining leftover (the very first line of the file
+        # when no further chunks remain).
+        if leftover:
+            tail = leftover
+            if tail.endswith(b"\n"):
+                tail = tail[:-1]
+            if tail:
+                yield current_line_no, tail
+
+
+def load_all_memories(max_records: int = MAX_LOAD_RECORDS) -> list[dict]:
+    """Load up to ``max_records`` memories, newest-first.
+
+    Audit C-C3 (2026-05-02): the previous implementation called
+    ``MEMORIES_FILE.read_text().splitlines()`` which materialises the
+    whole 23k-line / ~19 MB file plus a list of decoded strings on
+    every session start, against a 10-second hook timeout. We now
+    stream the file backwards (newest-first) and stop after
+    ``max_records`` successfully-decoded records, bounding the load
+    irrespective of corpus growth.
+
+    Per-line ``JSONDecodeError``s are counted (not raised) so a single
     truncated line does not block session start, but the count and the
     first offending line number are surfaced via stderr at the end of
-    `main()` so the failure is visible.
+    ``main()`` so the failure is visible. The diagnostics from Batch 1
+    (``_load_stats``, ``_record_bad_timestamp``) continue to be called
+    per-line.
+
+    Returned list is sorted oldest-first to preserve the prior
+    behaviour expected by callers: the retrieval functions sort by
+    ``_sort_key`` themselves, but list order otherwise was historically
+    file-order.
     """
     if not MEMORIES_FILE.exists():
         return []
 
-    memories = []
-    for line_num, line in enumerate(MEMORIES_FILE.read_text().splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            memories.append(json.loads(line))
-        except json.JSONDecodeError:
-            # Audit C-M7: count and remember the first offending line so
-            # the end-of-main() summary can point at the corruption.
-            _load_stats["json_decode_errors"] += 1
-            if _load_stats["json_decode_first_line"] is None:
-                _load_stats["json_decode_first_line"] = line_num
-            continue
+    memories: list[dict] = []
+    try:
+        iterator = _iter_lines_reverse(MEMORIES_FILE)
+        for line_num, raw in iterator:
+            if len(memories) >= max_records:
+                break
+            try:
+                line = raw.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                # Treat decode failure the same as a JSON decode
+                # failure — count it and move on. Surfacing happens
+                # via the same end-of-main() summary.
+                _load_stats["json_decode_errors"] += 1
+                if _load_stats["json_decode_first_line"] is None:
+                    _load_stats["json_decode_first_line"] = line_num
+                continue
+            if not line:
+                continue
+            try:
+                memories.append(json.loads(line))
+            except json.JSONDecodeError:
+                # Audit C-M7: count and remember the first offending
+                # line so the end-of-main() summary can point at the
+                # corruption.
+                _load_stats["json_decode_errors"] += 1
+                if _load_stats["json_decode_first_line"] is None:
+                    _load_stats["json_decode_first_line"] = line_num
+                continue
+    except OSError as exc:
+        # Permission errors, disk failures, etc. — surface and return
+        # what we have rather than crashing the hook (audit C-L9).
+        print(
+            f"[retrieval] WARN: failed to read {MEMORIES_FILE}: {exc}",
+            file=sys.stderr,
+        )
+        return memories
 
+    # Reverse so callers see oldest-first, matching prior behaviour.
+    memories.reverse()
     return memories
 
 
@@ -575,6 +729,18 @@ def retrieve_constraints(
 # ============================================================================
 
 
+# Audit C-M12 (2026-05-02): pre-summary-extraction memories have no
+# ``summary`` field, so ``format_memory`` falls back to the full
+# ``content``. Some legacy records carry multi-thousand-character
+# content fields; up to 68 such memories per session would otherwise
+# expand the additionalContext payload by hundreds of kilobytes and
+# re-introduce the fragment-welding surface the compact Level-1 format
+# was designed to remove. Cap the fallback at 300 characters with an
+# explicit truncation marker so the user (and Claude) can see the
+# truncation rather than mistaking the prefix for the whole memory.
+CONTENT_FALLBACK_MAX_CHARS = 300
+
+
 def format_memory(mem: dict) -> str:
     """
     Format a single memory as a compact Level 1 index entry.
@@ -583,9 +749,28 @@ def format_memory(mem: dict) -> str:
     ``[category] summary | tag1, tag2 [YYYY-MM-DD]``
 
     Confidence is omitted (available via ``/recall``).
+
+    When the memory has no ``summary`` field we fall back to
+    ``content``, but truncate to :data:`CONTENT_FALLBACK_MAX_CHARS`
+    with a visible ``…[truncated]`` marker (audit C-M12). Memories
+    whose ``summary`` is present are emitted in full — summaries are
+    already bounded by the extraction hook.
     """
     category = mem.get("category", "unknown")
-    content = mem.get("summary") or mem.get("content", "")
+    summary = mem.get("summary")
+    if summary:
+        # Summaries are already bounded by the extraction hook —
+        # emit verbatim.
+        content = summary
+    else:
+        raw_content = mem.get("content", "") or ""
+        if len(raw_content) > CONTENT_FALLBACK_MAX_CHARS:
+            content = (
+                raw_content[:CONTENT_FALLBACK_MAX_CHARS].rstrip()
+                + "… [truncated; use /recall for full content]"
+            )
+        else:
+            content = raw_content
     tags = mem.get("research_tags") or []
     if isinstance(tags, str):
         tags = [tags]

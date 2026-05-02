@@ -54,7 +54,15 @@ def count_inbox_items() -> int:
 
 
 def count_waiting_items() -> int:
-    """Count data rows in waiting-for.md table."""
+    """Count data rows in waiting-for.md table.
+
+    Audit C-M1 (2026-05-02): a row whose cells are entirely wrapped in
+    GitHub-flavoured strikethrough (``~~…~~``) marks a completed
+    waiting-for item that the user has chosen to leave visible for
+    audit. Such rows must not be counted as still-waiting — previously
+    they inflated the banner count by the number of completed items
+    that had not yet been pruned from the file.
+    """
     if not WAITING_FILE.exists():
         return 0
     content = WAITING_FILE.read_text()
@@ -66,13 +74,31 @@ def count_waiting_items() -> int:
             continue
         if "Waiting On" in line:
             continue
-        # Skip separator rows (all cells are dashes only, e.g. |------|------|)
+        # Split into cells once and reuse — previously the same
+        # comprehension was computed twice (audit C-M1 nit).
         cells = [c.strip() for c in line.split("|")[1:-1]]
+        # Skip separator rows (all cells are dashes only, e.g. |------|------|)
         if all(re.match(r'^-+$', c) for c in cells if c):
             continue
         # Skip placeholder rows with only dashes, em-dashes, or empty cells
-        cells = [c.strip() for c in line.split("|")[1:-1]]
         if all(c in ("—", "-", "--", "") for c in cells):
+            continue
+        # Skip strikethrough-completed rows. Per the audit (C-M1) the
+        # canonical signal is that the first cell — the "Item" column
+        # in waiting-for.md — is wrapped in ``~~…~~``. Trailing
+        # columns may stay un-struck so the user can leave a
+        # resolution note visible (e.g. ``**Received 2026-03-19.**
+        # Processing today.``). The whole-row variant (every
+        # non-empty cell struck) is a valid alternative encoding and
+        # should also be skipped.
+        non_empty = [c for c in cells if c]
+        first_non_empty = non_empty[0] if non_empty else ""
+        is_struck = bool(re.match(r"^~~.+~~$", first_non_empty))
+        if is_struck:
+            continue
+        if non_empty and all(
+            re.match(r"^~~.+~~$", c) for c in non_empty
+        ):
             continue
         count += 1
     return count
@@ -120,9 +146,25 @@ def parse_focus_slots() -> list[dict]:
             "deadline": None,
         }
 
-        # Parse Started date
+        # Parse Started date.
+        #
+        # Audit C-C1 (2026-05-02): the live ``FOCUS.md`` uses two
+        # different field names depending on whether the slot holds a
+        # single task or rotates through several. ``**Started:**``
+        # marks the date a slot was opened; ``**Task starts:**`` (the
+        # rotating-task convention introduced 2026-04-18) marks the
+        # date the *current* task in the slot began. Both should drive
+        # the day-in-focus counter — previously only ``Started:`` was
+        # matched, so any rotating slot silently returned ``None``.
+        #
+        # The match is case-insensitive and whitespace-tolerant; both
+        # variants appear in real FOCUS.md files today (Slot 1 uses
+        # ``Started``, Slot 2 uses ``Task starts``).
         started_match = re.search(
-            r"\*\*Started:\*\*\s*(\d{4}-\d{2}-\d{2})", block
+            r"\*\*\s*(?:Started|Task\s+starts)\s*:\s*\*\*\s*"
+            r"(\d{4}-\d{2}-\d{2})",
+            block,
+            re.IGNORECASE,
         )
         if started_match:
             slot_info["started"] = started_match.group(1)
@@ -208,6 +250,33 @@ def main() -> None:
         json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
         pass
+
+    # Audit C-M5 (2026-05-02): if every input file the banner depends
+    # on is missing — typically a fresh clone where the ``data/``
+    # submodule has not yet been pulled — the previous behaviour was to
+    # emit a banner reading "No items in focus" and "Inbox: 0 items |
+    # Waiting for: 0 items", which is indistinguishable from a clean
+    # slate. Surface the failure visibly instead so the user knows the
+    # banner is uninformative and why.
+    missing = [
+        p for p in (FOCUS_FILE, INBOX_FILE, WAITING_FILE)
+        if not p.exists()
+    ]
+    if len(missing) == 3:
+        msg = (
+            "[accountability] WARN: task files missing — "
+            "FOCUS.md, inbox.md, and waiting-for.md not found "
+            f"under {PA_DIR / 'tasks'} "
+            "(is the data/ submodule pulled?)"
+        )
+        print(msg, file=sys.stderr)
+        print(
+            "# Task Status\n\n"
+            "Task files not found — could not load FOCUS.md, "
+            "inbox.md, or waiting-for.md. Check that the data/ "
+            "submodule is initialised and pulled."
+        )
+        return
 
     # Parse state — degrade gracefully if files are missing
     slots = parse_focus_slots()

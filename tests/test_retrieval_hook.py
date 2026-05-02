@@ -6,6 +6,7 @@ Tests pure functions only; does not execute the hook end-to-end.
 """
 
 import importlib
+import json
 import sys
 
 import pytest
@@ -1389,3 +1390,230 @@ class TestLoadProjectScratchpad:
         )
         assert content == ""
         assert path is None
+
+
+# ============================================================================
+# Streaming load (C-C3) — backwards iteration and load cap
+# ============================================================================
+
+
+class TestStreamingLoad:
+    """Tests for the streaming/backwards loader.
+
+    Audit C-C3 (2026-05-02): the previous implementation read the
+    entire 23 k-line / ~19 MB ``memories.jsonl`` into RAM via
+    ``read_text().splitlines()`` on every session start. The fix
+    streams the file backwards (newest-first) one line at a time and
+    caps the load at :data:`retrieval.MAX_LOAD_RECORDS`. The
+    diagnostics from Batch 1 (``_load_stats`` counters,
+    ``_record_bad_timestamp``) must continue to fire per-line.
+    """
+
+    def _reset_stats(self) -> None:
+        """Reset module-level diagnostic counters between tests."""
+        retrieval._load_stats["json_decode_errors"] = 0
+        retrieval._load_stats["json_decode_first_line"] = None
+        retrieval._load_stats["bad_timestamp_ids"] = set()
+        retrieval._load_stats["bad_timestamp_first_marker"] = None
+
+    def test_iter_lines_reverse_yields_newest_first(self, tmp_path):
+        """``_iter_lines_reverse`` yields lines in reverse file
+        order with correct 1-indexed line numbers.
+        """
+        path = tmp_path / "lines.txt"
+        path.write_text("first\nsecond\nthird\n")
+        results = list(retrieval._iter_lines_reverse(path))
+        # Three lines, yielded newest-first
+        assert [raw for _, raw in results] == [
+            b"third", b"second", b"first",
+        ]
+        assert [n for n, _ in results] == [3, 2, 1]
+
+    def test_iter_lines_reverse_handles_no_trailing_newline(
+        self, tmp_path
+    ):
+        """A file without a trailing newline still yields all lines."""
+        path = tmp_path / "lines.txt"
+        # No final newline — this is a realistic crash/interrupt state.
+        path.write_bytes(b"first\nsecond\nthird")
+        results = list(retrieval._iter_lines_reverse(path))
+        assert [raw for _, raw in results] == [
+            b"third", b"second", b"first",
+        ]
+        assert [n for n, _ in results] == [3, 2, 1]
+
+    def test_iter_lines_reverse_empty_file(self, tmp_path):
+        """An empty file yields no lines."""
+        path = tmp_path / "empty.txt"
+        path.write_bytes(b"")
+        assert list(retrieval._iter_lines_reverse(path)) == []
+
+    def test_iter_lines_reverse_chunk_boundary_safety(self, tmp_path):
+        """A line that straddles a chunk boundary is reassembled
+        correctly. Reproduced by setting ``chunk_size`` smaller than
+        the longest line so the splitter must stitch lines across
+        chunks.
+        """
+        path = tmp_path / "lines.txt"
+        # Each line is ~50 bytes; with a 16-byte chunk size, every
+        # line straddles at least one boundary.
+        lines = [f"line-{i}-" + ("x" * 40) for i in range(10)]
+        path.write_text("\n".join(lines) + "\n")
+        results = list(
+            retrieval._iter_lines_reverse(path, chunk_size=16)
+        )
+        # Decoded, oldest-first should match the input
+        decoded = [raw.decode() for _, raw in results]
+        assert list(reversed(decoded)) == lines
+
+    def test_load_all_memories_returns_oldest_first(
+        self, tmp_path, monkeypatch
+    ):
+        """Public API contract: returned list is oldest-first so
+        downstream callers (which sort by ``_sort_key``) see the
+        same shape as the previous implementation.
+        """
+        self._reset_stats()
+        memories_file = tmp_path / "memories.jsonl"
+        records = [
+            {"id": f"r{i}", "category": "decision", "content": f"m{i}",
+             "created_at": f"2026-04-{i + 1:02d}T10:00:00+00:00"}
+            for i in range(3)
+        ]
+        memories_file.write_text(
+            "\n".join(json.dumps(r) for r in records) + "\n"
+        )
+        monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+
+        loaded = retrieval.load_all_memories()
+        assert [m["id"] for m in loaded] == ["r0", "r1", "r2"]
+
+    def test_load_all_memories_caps_at_max_load_records(
+        self, tmp_path, monkeypatch
+    ):
+        """When the corpus exceeds ``MAX_LOAD_RECORDS``, the loader
+        keeps the *most recent* ``max_records`` entries — the
+        backwards-streaming guarantee.
+        """
+        self._reset_stats()
+        memories_file = tmp_path / "memories.jsonl"
+        # 50 records, with the most recent being r49.
+        records = [
+            {"id": f"r{i}", "category": "decision", "content": f"m{i}",
+             "created_at": f"2026-04-01T{(i % 24):02d}:00:00+00:00"}
+            for i in range(50)
+        ]
+        memories_file.write_text(
+            "\n".join(json.dumps(r) for r in records) + "\n"
+        )
+        monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+
+        # Cap the load at 10 — should keep r40..r49 (newest 10).
+        loaded = retrieval.load_all_memories(max_records=10)
+        assert len(loaded) == 10
+        ids = {m["id"] for m in loaded}
+        # The newest 10 records are r40..r49.
+        assert ids == {f"r{i}" for i in range(40, 50)}
+
+    def test_load_all_memories_counts_bad_lines(
+        self, tmp_path, monkeypatch
+    ):
+        """A truncated/corrupted line is counted in ``_load_stats``
+        rather than crashing the hook — Batch 1's diagnostic
+        infrastructure must remain wired up after the streaming
+        rewrite.
+        """
+        self._reset_stats()
+        memories_file = tmp_path / "memories.jsonl"
+        good = json.dumps(
+            {"id": "good", "category": "decision",
+             "content": "ok",
+             "created_at": "2026-04-29T10:00:00+00:00"}
+        )
+        memories_file.write_text(
+            f"{good}\n"
+            "{this is not valid json\n"
+            f"{good}\n"
+        )
+        monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+
+        loaded = retrieval.load_all_memories()
+        # Two good records, one bad.
+        assert len(loaded) == 2
+        assert retrieval._load_stats["json_decode_errors"] == 1
+        # Streaming backwards means the *first* failure encountered
+        # is the corrupt middle line — line 2.
+        assert retrieval._load_stats["json_decode_first_line"] == 2
+
+
+# ============================================================================
+# Content fallback truncation (C-M12)
+# ============================================================================
+
+
+class TestContentFallbackTruncation:
+    """Tests for the content-fallback truncation in ``format_memory``.
+
+    Audit C-M12 (2026-05-02): when a memory has no ``summary`` field,
+    ``format_memory`` falls back to the full ``content``. Pre-summary-
+    extraction memories carry multi-thousand-character content; up to
+    68 such memories per session would otherwise expand the
+    additionalContext payload by hundreds of kilobytes. The truncated
+    output must carry an explicit marker so the user can see that the
+    visible text is a prefix, not the whole memory.
+    """
+
+    def test_short_content_emitted_verbatim(self):
+        mem = {
+            "category": "decision",
+            "content": "Short legacy content with no summary.",
+            "research_tags": [],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+        result = retrieval.format_memory(mem)
+        assert "Short legacy content with no summary." in result
+        assert "truncated" not in result
+        assert "…" not in result
+
+    def test_long_content_truncated_with_marker(self):
+        long_text = "A" * 5000
+        mem = {
+            "category": "decision",
+            "content": long_text,
+            "research_tags": [],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+        result = retrieval.format_memory(mem)
+        # The full 5000-char string must not appear.
+        assert long_text not in result
+        # The truncation marker is visible.
+        assert "truncated" in result
+        assert "…" in result
+        # Truncation respects the configured cap (allowing for the
+        # appended marker).
+        cap = retrieval.CONTENT_FALLBACK_MAX_CHARS
+        # The kept prefix length is at most ``cap``.
+        # Extract the bracketed-category prefix length so the
+        # comparison is on the content portion.
+        prefix = "[decision] "
+        body = result[len(prefix):]
+        # Body up to the ellipsis must not exceed ``cap``.
+        kept = body.split("…")[0]
+        assert len(kept) <= cap
+
+    def test_summary_present_skips_truncation(self):
+        """When ``summary`` is present (the post-summary-extraction
+        path) we emit it verbatim regardless of length — summaries
+        are already bounded by the extraction hook.
+        """
+        long_summary = "B" * 5000
+        mem = {
+            "category": "decision",
+            "summary": long_summary,
+            "content": "ignored fallback",
+            "research_tags": [],
+            "created_at": "2026-03-10T10:00:00+00:00",
+        }
+        result = retrieval.format_memory(mem)
+        assert long_summary in result
+        assert "truncated" not in result
