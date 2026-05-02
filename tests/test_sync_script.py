@@ -691,3 +691,65 @@ class TestInsertMemoriesAccounting:
             sync_mod.insert_memories(
                 self._make_records(["a"]), test_logger
             )
+
+    def test_poison_lines_are_quarantined_before_advance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """
+        Audit IC2 / B-C4: when every line in a slice fails to parse, the
+        cursor used to advance silently and the corrupt block was lost
+        forever. New contract: quarantine each poison line, then advance.
+        """
+        memories = tmp_path / "memories.jsonl"
+        # All three lines are poison — two malformed, one missing id.
+        memories.write_text(
+            "{not valid json\n"
+            "}}also broken{{\n"
+            + json.dumps({
+                "category": "progress",
+                "content": "x",
+                "created_at": "2026-04-23T00:00:00Z",
+                # No id field — fails required-field validation.
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+        )
+
+        sync_mod.sync(test_logger)
+
+        # Cursor advanced past the poison slice (anti-infinite-loop).
+        assert cursor_file.exists()
+        cursor_data = json.loads(cursor_file.read_text())
+        assert cursor_data["postgres_sync_line"] == 3
+
+        # Each poison line landed in the quarantine with a reason.
+        assert quarantine.exists()
+        entries = [
+            json.loads(line) for line in
+            quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 3
+        reasons = {e["reason"] for e in entries}
+        # Two malformed JSON + one missing-id-field.
+        assert "parse_failure" in reasons
+        assert any(r.startswith("missing_required_field:") for r in reasons)
+        for entry in entries:
+            assert "quarantined_at" in entry
+            assert "raw_line" in entry["record"]
+            assert "line_number" in entry["record"]

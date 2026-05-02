@@ -30,6 +30,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Shared quarantine helper (audit IC2 — quarantine-on-skip).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _sync_cursor import (  # noqa: E402
+    detect_jsonl_shrink,
+    quarantine_record,
+)
+
 # -------------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------------
@@ -40,6 +47,11 @@ MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "sync.log"
+# Quarantine destination for memories whose Zotero target was missing at
+# write time (audit IC2 / D-M10). Lives in the data submodule for
+# consistency with the postgres quarantine paths; IC6 will move all
+# quarantine files outside data/ in a later batch.
+QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-zotero-skipped.jsonl"
 
 CURSOR_KEY = "zotero_sync_line"
 API_SLEEP_SECONDS = 0.5  # Between API writes to avoid rate limits
@@ -120,6 +132,7 @@ def is_valid_zotero_key(key: str | None) -> bool:
 
 def load_pending_memories(
     since_line: int,
+    logger: logging.Logger | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Load memories with a valid zotero_key starting at the given line.
@@ -128,10 +141,31 @@ def load_pending_memories(
         (pending_memories, new_cursor_line, skipped_legacy_count)
 
     ``new_cursor_line`` is the line after the last one read (never less
-    than ``since_line`` — the cursor never rewinds). ``skipped_legacy_count``
+    than ``since_line`` — the cursor never rewinds, except in the
+    explicit shrink-detection branch below). ``skipped_legacy_count``
     counts memories that matched category+zotero_key but had an invalid
     key format.
+
+    Shrink detection (audit IC2 / D-C3): if the canonical JSONL has
+    fewer lines than the saved cursor (compaction, dedup migration,
+    submodule revert), we do **not** silently leave the cursor pinned
+    beyond EOF — every subsequent sync would be a no-op until the file
+    grew past that line, at which point earlier memories would be
+    silently skipped. Instead we WARN, reset the effective cursor to 0,
+    and force a full re-scan; idempotency is preserved by the existing
+    "memory ID in note marker" check.
     """
+    shrunk, line_count = detect_jsonl_shrink(MEMORIES_FILE, since_line)
+    if shrunk:
+        if logger is not None:
+            logger.warning(
+                "Canonical JSONL shrunk below saved cursor (cursor=%d, "
+                "current_lines=%d). Resetting to 0 and forcing full "
+                "re-scan; idempotency relies on the in-note marker check.",
+                since_line, line_count,
+            )
+        since_line = 0
+
     pending: list[dict[str, Any]] = []
     skipped_legacy = 0
     # Sentinel tracking: None means "loop body never ran"
@@ -391,7 +425,7 @@ def run_sync(
     cursor = load_cursor()
     logger.info(f"Resuming from line {cursor}")
 
-    pending, new_cursor, skipped_legacy = load_pending_memories(cursor)
+    pending, new_cursor, skipped_legacy = load_pending_memories(cursor, logger)
     logger.info(
         f"Found {len(pending)} pending memories "
         f"({skipped_legacy} skipped as legacy format) "
@@ -441,14 +475,29 @@ def run_sync(
     # would require fetching existing notes per unique item first, which
     # adds complexity. Given expected volume (tens of memories per month),
     # sequential is fine. Revisit if scale demands it.
+    #
+    # ``skipped_not_found`` memories are quarantined here (audit IC2 /
+    # D-M10) so the cursor can advance past them without losing the
+    # record. A transiently-missing Zotero item (delete-then-restore,
+    # cross-machine sync pending) would otherwise leave a permanent
+    # silent gap; the operator can later replay from the quarantine.
     for mem in pending:
         outcome = sync_memory(zot, mem, logger, dry_run=False)
         summary[outcome] = summary.get(outcome, 0) + 1
+        if outcome == "skipped_not_found":
+            quarantine_record(
+                QUARANTINE_FILE,
+                mem,
+                "zotero_item_missing",
+                logger=logger,
+            )
         # Only sleep after actions that touched the API for writes
         if outcome in ("created", "failed", "skipped_not_found"):
             time.sleep(API_SLEEP_SECONDS)
 
-    # Only advance cursor if no failures (so retry picks up where we left off)
+    # Only advance cursor if no hard failures (so retry picks up where we
+    # left off). ``skipped_not_found`` is quarantined above and therefore
+    # safe to advance past.
     if summary["failed"] == 0:
         save_cursor(new_cursor)
         logger.info(f"Cursor advanced to {new_cursor}")

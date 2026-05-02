@@ -19,6 +19,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple, Optional
 
+# Shared quarantine helper (audit IC2 — quarantine-on-skip).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _sync_cursor import quarantine_record  # noqa: E402
+
 # Optional embedding support — gracefully degrades if unavailable
 try:
     from embed import (
@@ -153,6 +157,10 @@ def parse_jsonl_record(line: str, line_number: int, logger: logging.Logger
 
     Returns None for empty/malformed lines. Applies defaults for
     missing optional fields.
+
+    Note: callers that need to distinguish "blank line" (legitimate skip)
+    from "malformed JSON / missing required field" (poison record that
+    should be quarantined) should use :func:`classify_jsonl_line` below.
     """
     stripped = line.strip()
     if not stripped:
@@ -174,6 +182,43 @@ def parse_jsonl_record(line: str, line_number: int, logger: logging.Logger
             return None
 
     return record
+
+
+def classify_jsonl_line(
+    line: str,
+    line_number: int,
+    logger: logging.Logger,
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """
+    Parse a single JSONL line, returning ``(record, failure_reason)``.
+
+    Outcomes:
+      * ``(record, None)`` — successfully parsed and valid.
+      * ``(None, None)`` — blank/whitespace-only line (legitimate skip,
+        no quarantine).
+      * ``(None, "<reason>")`` — poison record (malformed JSON or
+        missing required field). The caller should quarantine the raw
+        line before advancing the cursor (audit IC2 / B-C4).
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None, None
+    try:
+        record = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        logger.warning("Malformed JSON at line %d: %s", line_number, exc)
+        return None, "parse_failure"
+
+    required = ["id", "category", "content", "created_at"]
+    for field in required:
+        if field not in record or not record[field]:
+            logger.warning(
+                "Missing required field '%s' at line %d (id=%s)",
+                field, line_number, record.get("id", "unknown"),
+            )
+            return None, f"missing_required_field:{field}"
+
+    return record, None
 
 
 def record_to_tuple(record: dict[str, Any]) -> tuple:
@@ -693,17 +738,46 @@ def _sync_locked(logger: logging.Logger) -> None:
 
     # Parse records. We keep both the original dict (for quarantine on
     # unexpected drop) and the INSERT tuple (for psycopg2), indexed by id.
+    # Poison records (malformed JSON, missing required fields) are
+    # quarantined here so the cursor can advance past them without
+    # silently losing data — see audit IC2 / B-C4.
     records: list[tuple] = []
     parsed_by_id: dict[str, dict[str, Any]] = {}
+    poison_count = 0
     for offset, line in enumerate(new_lines):
         line_number = cursor_line + offset + 1  # 1-based for logging
-        parsed = parse_jsonl_record(line, line_number, logger)
+        parsed, failure_reason = classify_jsonl_line(line, line_number, logger)
         if parsed is not None:
             records.append(record_to_tuple(parsed))
             parsed_by_id[parsed["id"]] = parsed
+        elif failure_reason is not None:
+            # Poison record: quarantine the raw line + line number so an
+            # operator can repair the canonical and replay if needed.
+            quarantine_record(
+                QUARANTINE_FILE,
+                {
+                    "line_number": line_number,
+                    "raw_line": line.rstrip("\n"),
+                },
+                failure_reason,
+                logger=logger,
+            )
+            poison_count += 1
+        # else: blank line — legitimate skip, no quarantine.
 
     if not records:
-        logger.info("No valid records to insert")
+        # No valid records — but we still advance the cursor IF every
+        # skipped line was either blank or successfully quarantined as
+        # poison. Without quarantine the corrupt block would be silently
+        # skipped and never re-enter the sync pipeline (audit IC2).
+        if poison_count:
+            logger.warning(
+                "No valid records in slice; %d poison line(s) quarantined "
+                "to %s. Advancing cursor past the poisoned slice.",
+                poison_count, QUARANTINE_FILE,
+            )
+        else:
+            logger.info("No valid records to insert (slice was blank-only)")
         save_cursor(total_lines)
         return
 

@@ -437,8 +437,15 @@ class TestRunSync:
         assert parent == "N2C5KIGL"
 
     def test_item_not_found_does_not_block(self, tmp_path: Path) -> None:
-        """A 404 on one memory logs a warning and proceeds."""
+        """A 404 on one memory is quarantined and the cursor advances.
+
+        Audit IC2 / D-M10: ``skipped_not_found`` used to advance the
+        cursor silently, leaving a permanent gap. New contract is that
+        the missing-target memory is appended to the quarantine JSONL
+        and the cursor advances safely past it.
+        """
         jsonl, cursor, logs = self._setup(tmp_path, SAMPLE_MEMORIES)
+        quarantine = tmp_path / "quarantine-zotero-skipped.jsonl"
 
         mock_zot = MagicMock()
         mock_zot.children.return_value = []
@@ -461,6 +468,7 @@ class TestRunSync:
         with (
             patch.object(sync_to_zotero, "MEMORIES_FILE", jsonl),
             patch.object(sync_to_zotero, "CURSOR_FILE", cursor),
+            patch.object(sync_to_zotero, "QUARANTINE_FILE", quarantine),
             patch.object(sync_to_zotero, "LOG_DIR", logs),
             patch.object(sync_to_zotero, "LOG_FILE", logs / "sync.log"),
             patch.object(
@@ -475,6 +483,23 @@ class TestRunSync:
         assert summary["skipped_not_found"] == 1
         assert summary["created"] == 1
         assert summary["failed"] == 0
+
+        # The skipped memory must have been quarantined so an operator
+        # can replay it once the Zotero target is restored.
+        assert quarantine.exists()
+        entries = [
+            json.loads(line) for line in
+            quarantine.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+        assert len(entries) == 1
+        assert entries[0]["reason"] == "zotero_item_missing"
+        assert entries[0]["record"]["id"] in {
+            "2026-04-12-aaaaaaaaaa01", "2026-04-12-aaaaaaaaaa02",
+        }
+        # And the cursor advanced — no permanent silent gap.
+        assert cursor.exists()
+        cursor_data = json.loads(cursor.read_text())
+        assert cursor_data["zotero_sync_line"] == 5
 
     def test_limit_caps_batch(self, tmp_path: Path) -> None:
         """--limit N processes at most N memories."""
@@ -553,14 +578,20 @@ class TestCursorEdgeCases:
         assert len(pending) == 1
         assert new_cursor == 1
 
-    def test_cursor_not_rewound_when_since_exceeds_length(
+    def test_shrink_resets_cursor_and_rescans(
         self, tmp_path: Path,
     ) -> None:
-        """A cursor larger than the file length is preserved.
+        """A cursor larger than the file length triggers a full re-scan.
 
-        Regression guard: an earlier implementation computed
-        ``new_cursor = line_num + 1`` which could return a value LESS
-        than ``since_line`` if the file had been truncated.
+        Audit IC2 / D-C3: pinning the cursor beyond EOF after the JSONL
+        shrinks (compaction, dedup migration, submodule revert) used to
+        cause every subsequent sync to be a no-op until the file grew
+        past that line, then silently skipped earlier memories.
+
+        New contract: detect_jsonl_shrink resets the effective cursor to
+        zero, the loader re-scans the file from the beginning, and
+        idempotency is preserved by the in-note marker check at sync
+        time.
         """
         jsonl = tmp_path / "memories.jsonl"
         write_jsonl(jsonl, SAMPLE_MEMORIES[:3])  # 3 lines
@@ -570,19 +601,45 @@ class TestCursorEdgeCases:
                 sync_to_zotero.load_pending_memories(100)
             )
 
-        assert pending == []
-        # Cursor never rewinds — stays at or above the input value
-        assert new_cursor >= 100
+        # After shrink detection the cursor is reset to 0 and the file
+        # is fully re-scanned, so the two valid source_insight memories
+        # in the first three lines are surfaced.
+        assert {m["id"] for m in pending} == {
+            "2026-04-12-aaaaaaaaaa01",
+            "2026-04-12-aaaaaaaaaa02",
+        }
+        # The new cursor advances to the post-shrink line count, not the
+        # stale value 100. This is the explicit rewind required by
+        # audit IC2 / D-C3.
+        assert new_cursor == 3
 
-    def test_empty_file_preserves_cursor(self, tmp_path: Path) -> None:
-        """An empty file with any cursor value returns that cursor unchanged."""
+    def test_empty_file_resets_stale_cursor(self, tmp_path: Path) -> None:
+        """An empty file with any positive cursor is detected as shrunk.
+
+        Audit IC2 / D-C3: an empty file with a positive saved cursor is
+        the extreme case of shrink. The loader must NOT keep the cursor
+        pinned at the stale value; it must reset to 0.
+        """
         jsonl = tmp_path / "memories.jsonl"
         jsonl.write_text("", encoding="utf-8")
 
         with patch.object(sync_to_zotero, "MEMORIES_FILE", jsonl):
             _, new_cursor, _ = sync_to_zotero.load_pending_memories(42)
 
-        assert new_cursor == 42
+        # Empty file + positive cursor → shrink detected → reset to 0.
+        assert new_cursor == 0
+
+    def test_empty_file_with_zero_cursor_stays_zero(
+        self, tmp_path: Path,
+    ) -> None:
+        """An empty file with cursor 0 is the cold-start case, not a shrink."""
+        jsonl = tmp_path / "memories.jsonl"
+        jsonl.write_text("", encoding="utf-8")
+
+        with patch.object(sync_to_zotero, "MEMORIES_FILE", jsonl):
+            _, new_cursor, _ = sync_to_zotero.load_pending_memories(0)
+
+        assert new_cursor == 0
 
 
 # -------------------------------------------------------------------------

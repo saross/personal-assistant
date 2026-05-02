@@ -655,3 +655,55 @@ class TestUpsertSessionsAccounting:
         rows = [_minimal_row("s-a")]
         with pytest.raises(KeyError):
             sync_mod.upsert_sessions(rows, test_logger)
+
+    def test_id_less_session_quarantined_and_cursor_advances(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        sample_metadata: dict,
+        test_logger: logging.Logger,
+    ) -> None:
+        """
+        Audit IC2 / B-M2: a session.meta.json that lacks a session id
+        used to be skipped silently, leaving the cursor pinned and
+        spamming the same warning every cron tick. New contract is that
+        the offending metadata is appended to the quarantine and the
+        cursor advances past it.
+        """
+        archive_root = tmp_path / "archive"
+        # Build a single archive entry whose metadata lacks ``session.id``.
+        meta = json.loads(json.dumps(sample_metadata))  # deep copy
+        meta["session"]["id"] = ""  # poison: empty id triggers the skip path
+        meta["archive"]["archived_at"] = "2026-03-15T07:00:00Z"
+        session_dir = archive_root / "broken" / "2026-03-15T05-00_no_id"
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.meta.json").write_text(
+            json.dumps(meta), encoding="utf-8",
+        )
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        # No DB calls should be made — the row is dropped before upsert.
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+
+        sync_mod.sync(archive_root, full_resync=True, logger=test_logger)
+
+        # Cursor advanced to the latest archived_at so the same id-less
+        # metadata is not re-discovered every run.
+        assert cursor_file.exists()
+        data = json.loads(cursor_file.read_text())
+        assert data["sessions_sync_timestamp"] == "2026-03-15T07:00:00Z"
+
+        # The id-less metadata landed in the quarantine.
+        assert quarantine.exists()
+        entries = [
+            json.loads(line) for line in
+            quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1
+        assert entries[0]["reason"] == "missing_session_id"
+        assert entries[0]["record"]["meta_path"].endswith("session.meta.json")

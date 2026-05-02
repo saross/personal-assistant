@@ -26,6 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple, Optional
 
+# Shared quarantine helper (audit IC2 — quarantine-on-skip).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _sync_cursor import quarantine_record  # noqa: E402
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -577,18 +581,15 @@ def _sync_locked(
 
     logger.info("Found %d session(s) to sync", len(sessions))
 
-    # Convert to row dicts
+    # Convert to row dicts. Sessions whose metadata lacks an ``id`` are
+    # quarantined here so the cursor can advance past them without
+    # spamming the same warning every run forever (audit IC2 / B-M2).
     rows = []
     latest_archived_at = since or "2000-01-01T00:00:00Z"
+    skipped_no_id = 0
     for meta_path, metadata in sessions:
-        row = metadata_to_row(meta_path, metadata)
-        if not row["id"]:
-            logger.warning("Session missing id in %s, skipping", meta_path)
-            continue
-        rows.append(row)
-
-        # Track the latest archived_at for cursor advancement.
-        # Normalise Z → +00:00 for consistent lexicographic comparison.
+        # Capture archived_at *before* the id check so the cursor can
+        # still advance past id-less sessions once they are quarantined.
         archived_at = metadata.get("archive", {}).get("archived_at", "")
         if archived_at:
             normalised = archived_at.replace("Z", "+00:00")
@@ -596,8 +597,37 @@ def _sync_locked(
             if normalised > latest_normalised:
                 latest_archived_at = archived_at
 
+        row = metadata_to_row(meta_path, metadata)
+        if not row["id"]:
+            logger.warning("Session missing id in %s, quarantining", meta_path)
+            quarantine_record(
+                QUARANTINE_FILE,
+                {
+                    "meta_path": str(meta_path),
+                    "metadata": metadata,
+                },
+                "missing_session_id",
+                logger=logger,
+            )
+            skipped_no_id += 1
+            continue
+        rows.append(row)
+
     if not rows:
-        logger.info("No valid sessions to upsert")
+        if skipped_no_id:
+            # All discovered sessions were id-less and have been
+            # quarantined. Advance the cursor so subsequent runs do not
+            # rediscover the same poison files; the operator can replay
+            # from the quarantine once the metadata is repaired.
+            logger.warning(
+                "No valid sessions to upsert; %d id-less session(s) "
+                "quarantined to %s. Advancing cursor to %s.",
+                skipped_no_id, QUARANTINE_FILE, latest_archived_at,
+            )
+            if latest_archived_at != (since or "2000-01-01T00:00:00Z"):
+                save_cursor(latest_archived_at)
+        else:
+            logger.info("No valid sessions to upsert")
         return
 
     # Upsert into PostgreSQL (returns InsertResult with full accounting).
