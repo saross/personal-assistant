@@ -65,6 +65,11 @@ _spec.loader.exec_module(fetch_memories)
 DB_NAME = "claude_memories"
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
+# Schema-version guard (audit IC5 / B-X1). Imported here so MCP tools
+# can call ``assert_schema_version`` on every connection they open.
+sys.path.insert(0, str(SCRIPT_DIR))
+from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+
 
 # -------------------------------------------------------------------------
 # PostgreSQL helpers (only needed for tools not covered by fetch-memories)
@@ -85,11 +90,23 @@ def _pg_connect() -> tuple[Any | None, str | None]:
         logger.warning(msg)
         return None, msg
     try:
-        return psycopg2.connect(dbname=DB_NAME), None
+        conn = psycopg2.connect(dbname=DB_NAME)
     except Exception as exc:  # noqa: BLE001 — graceful degradation
         msg = f"PostgreSQL unavailable: {exc}"
         logger.warning(msg)
         return None, msg
+
+    # Schema-version guard (audit IC5). Surface the mismatch through
+    # the same (None, error) channel the connection failure path uses
+    # — this keeps the MCP tool layer's error semantics uniform.
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError as exc:
+        conn.close()
+        msg = str(exc)
+        logger.error(msg)
+        return None, msg
+    return conn, None
 
 
 def _row_to_memory(

@@ -12,6 +12,24 @@
 -- be fully rebuilt at any time via scripts/rebuild-postgres.py.
 
 -- ============================================================================
+-- Schema version meta table (audit IC5, B-X1)
+-- ============================================================================
+-- Every PG-touching script asserts ``meta.schema_version`` against the
+-- ``EXPECTED_SCHEMA_VERSION`` constant in ``scripts/_schema_version.py``
+-- before issuing any query. The two values MUST stay in lockstep — bump
+-- both literals together when the schema changes shape.
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+INSERT INTO meta (key, value) VALUES
+    ('schema_version', '1')
+ON CONFLICT (key) DO NOTHING;
+
+-- ============================================================================
 -- Main memories table
 -- ============================================================================
 

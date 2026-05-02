@@ -35,6 +35,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+# Schema-version guard (audit IC5 / B-X1).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+
 # ============================================================================
 # Configuration — mirror the existing sync scripts so we use the same DB and
 # canonical locations. Do not invent new env-var names.
@@ -141,6 +145,15 @@ def _read_postgres_ids(
     except psycopg2.OperationalError as exc:
         logger.error("Cannot connect to PostgreSQL: %s", exc)
         return None
+
+    # Schema-version guard (audit IC5). Audit exits 2 on schema
+    # mismatch — distinct from "missing rows" exit 1, mirroring the
+    # script's existing exit-code conventions.
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
 
     try:
         with conn:

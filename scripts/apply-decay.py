@@ -19,6 +19,10 @@ import logging
 import sys
 from pathlib import Path
 
+# Schema-version guard (audit IC5 / B-X1).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -80,6 +84,13 @@ def apply_decay(logger: logging.Logger, dry_run: bool = False) -> None:
     except psycopg2.OperationalError as exc:
         logger.warning("Cannot connect to PostgreSQL: %s", exc)
         return
+
+    # Schema-version guard (audit IC5).
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
 
     # Shared WHERE clause for decay logic — single source of truth for both
     # dry-run preview and actual decay execution.

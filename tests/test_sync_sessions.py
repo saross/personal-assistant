@@ -423,9 +423,22 @@ def _install_fake_psycopg2(
     cur.__exit__ = MagicMock(return_value=False)
     # pg_try_advisory_lock(...) → [(True,)] or [(False,)] depending on
     # flag. The upsert path's SELECT does not fetchone; the advisory
-    # lock path does. Returning a tuple is harmless for paths that
-    # ignore fetchone.
-    cur.fetchone.return_value = (advisory_lock_acquired,)
+    # lock path does. Schema-version assertion (audit IC5) also calls
+    # fetchone — return the seeded version when ``meta`` is queried,
+    # the advisory-lock boolean otherwise.
+    last_sql = {"value": ""}
+
+    def _exec(sql, *args, **kwargs):
+        last_sql["value"] = sql
+        return None
+
+    def _fetchone():
+        if "meta" in last_sql["value"]:
+            return ("1",)
+        return (advisory_lock_acquired,)
+
+    cur.execute.side_effect = _exec
+    cur.fetchone.side_effect = _fetchone
 
     conn = MagicMock()
     conn.cursor.return_value = cur

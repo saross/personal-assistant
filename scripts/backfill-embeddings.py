@@ -37,6 +37,8 @@ DEFAULT_BATCH_SIZE = 200
 # Import embed module from same directory
 sys.path.insert(0, str(PA_DIR / "scripts"))
 from embed import build_embed_text, generate_embeddings, is_ollama_available
+# Schema-version guard (audit IC5 / B-X1).
+from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 
 
 # ============================================================================
@@ -143,6 +145,12 @@ def backfill(
         sys.exit(1)
 
     conn = psycopg2.connect(dbname=DB_NAME)
+    # Schema-version guard (audit IC5).
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
     missing = count_missing(conn)
 
     if limit > 0:

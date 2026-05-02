@@ -26,6 +26,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+# Shared helpers live under ``scripts/`` — both hooks and CLI scripts
+# import them by extending sys.path. Centralised so any drift across
+# writers becomes a single-line edit (audit IC3, IC4, A-CF3).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from _command_markers import COMMAND_MARKERS  # noqa: E402
+from _timestamps import now_iso  # noqa: E402
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -47,28 +54,8 @@ MAX_EXCHANGES = 30         # Cap exchanges sent to Haiku
 MAX_MESSAGE_CHARS = 3000   # Truncate individual messages
 MAX_THINKING_CHARS = 1500  # Truncation for thinking blocks
 
-# Markers for slash command exchanges to skip during extraction.
-# When a user message contains one of these, it and the subsequent
-# assistant response are filtered out — they're already handled by
-# the command itself (e.g., /remember writes directly to JSONL).
-COMMAND_MARKERS = (
-    "# /remember \u2014 Manual Memory Capture",
-    "# /recall \u2014 Search Memories",
-    "# /capture \u2014 Quick Inbox Capture",
-    "# /craft \u2014 Quick Craft Notebook Entry",
-    "# /focus \u2014 Manage Focus Slots",
-    "# /done \u2014 Mark Task Complete",
-    "# /standup \u2014 Daily Accountability Check",
-    "# /recap \u2014 End-of-Day Recap",
-    "# /track \u2014 Time Tracking",
-    "# /weekly-review \u2014 Weekly Review",
-    "# /retro \u2014 Monthly System Retrospective",
-    "# /sync-board \u2014 GitHub Issues Sync",
-    "# /process-email \u2014 Email Triage",
-    # Reflection protocol — reflection docs are the canonical record;
-    # extracting from them creates lossy duplicates
-    "# End-of-Session Reflection",
-)
+# COMMAND_MARKERS is imported from scripts/_command_markers at the
+# top of this module — see audit IC1 / A-Critical #3 fix.
 
 # ============================================================================
 # Environment Loading
@@ -578,9 +565,10 @@ def format_memories(
     set to 'extraction' to distinguish from manual captures, and a
     'project' field identifying the working directory.
     """
-    now = datetime.now(timezone.utc)
-    timestamp = now.isoformat()
-    date_prefix = now.strftime("%Y-%m-%d")
+    # Use shared helper (audit IC4) — guarantees the same ISO format
+    # for all writers of memory ``created_at``.
+    timestamp = now_iso()
+    date_prefix = timestamp[:10]
     memories = []
     all_tags = []
 

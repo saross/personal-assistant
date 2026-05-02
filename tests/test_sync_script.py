@@ -325,10 +325,25 @@ def _install_fake_psycopg2(
     fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
 
     # Cursor mock: fetchall returns the pre-flight SELECT result;
-    # fetchone returns the advisory-lock boolean.
+    # fetchone returns the schema-version row when ``meta`` is queried
+    # (audit IC5 boot-time assertion) and the advisory-lock boolean
+    # otherwise.
     cur = MagicMock()
     cur.fetchall.return_value = [(mid,) for mid in present_before_ids]
-    cur.fetchone.return_value = (advisory_lock_acquired,)
+
+    last_sql = {"value": ""}
+
+    def _exec(sql, *args, **kwargs):
+        last_sql["value"] = sql
+        return None
+
+    def _fetchone():
+        if "meta" in last_sql["value"]:
+            return ("1",)
+        return (advisory_lock_acquired,)
+
+    cur.execute.side_effect = _exec
+    cur.fetchone.side_effect = _fetchone
     cur.__enter__ = MagicMock(return_value=cur)
     cur.__exit__ = MagicMock(return_value=False)
 

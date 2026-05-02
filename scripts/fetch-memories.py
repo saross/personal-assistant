@@ -28,6 +28,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Schema-version guard (audit IC5 / B-X1).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -215,6 +219,13 @@ def try_postgres(
         )
         return None
 
+    # Schema-version guard (audit IC5).
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
+
     try:
         columns = [
             "id", "category", "content", "summary", "confidence",
@@ -347,6 +358,13 @@ def try_semantic(
             file=sys.stderr,
         )
         return None
+
+    # Schema-version guard (audit IC5).
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
 
     try:
         columns = [

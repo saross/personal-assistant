@@ -46,6 +46,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+# Shared project-id encoder. Both this hook (which derives the id from
+# cwd to filter memories) and the extraction hook (which writes the id
+# into the ``project`` field) MUST agree byte-for-byte. Centralised in
+# scripts/project_id.py to prevent the two from drifting (audit IC3,
+# C-C4, C-X3).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from project_id import encode_project_id  # noqa: E402
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -219,12 +227,13 @@ def derive_project(cwd: str) -> Optional[str]:
     """
     Derive the project identifier from the current working directory.
 
-    Matches the encoding used by Claude Code for project directories
-    under ~/.claude/projects/ (path separators replaced with hyphens).
+    Thin wrapper over :func:`scripts.project_id.encode_project_id` —
+    keeps the call sites in this module untouched while routing the
+    encoding through the shared helper. Both writers (the extraction
+    hook) and readers (this hook) reference the same source of truth
+    so they cannot drift (audit IC3).
     """
-    if not cwd:
-        return None
-    return str(Path(cwd).resolve()).replace("/", "-")
+    return encode_project_id(cwd)
 
 
 def is_same_project(mem: dict, current_project: Optional[str]) -> bool:
@@ -319,7 +328,15 @@ def apply_per_project_cap(
 
 
 def _sort_key(mem: dict) -> datetime:
-    """Return parsed datetime for sorting; epoch for unparseable timestamps."""
+    """Return parsed datetime for sorting; epoch for unparseable timestamps.
+
+    Defence-in-depth: writers (extraction-hook, reprocess-sessions) all
+    emit full ISO-8601 timestamps now (audit IC4 fix in batch 4), so
+    the ``datetime.min`` substitution should be unreachable on records
+    written after that batch landed. The fallback is kept to absorb
+    legacy malformed records still on disk and any future writer that
+    forgets to use scripts/_timestamps.now_iso.
+    """
     return parse_created_at(mem) or datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -796,8 +813,10 @@ def main() -> None:
     current_project = derive_project(cwd)
 
     # Personal-assistant is the cross-project hub — it needs visibility
-    # into all projects, so skip project-aware filtering entirely
-    pa_project = str(PA_DIR.resolve()).replace("/", "-")
+    # into all projects, so skip project-aware filtering entirely.
+    # Use the shared encoder so this comparison cannot drift from the
+    # writer-side encoding (audit IC3).
+    pa_project = encode_project_id(str(PA_DIR))
     if current_project == pa_project:
         current_project = None
 

@@ -22,6 +22,9 @@ from typing import Any, Iterator, NamedTuple, Optional
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import quarantine_record  # noqa: E402
+# Schema-version guard (audit IC5 / B-X1) — every PG-touching script
+# asserts the on-disk schema version before issuing queries.
+from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 
 # Optional embedding support — gracefully degrades if unavailable
 try:
@@ -306,6 +309,14 @@ def _sync_advisory_lock(logger: logging.Logger) -> Iterator[bool]:
         yield True
         return
 
+    # Schema-version guard (audit IC5). On mismatch we exit non-zero
+    # rather than silently proceed against an unexpected shape.
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
+
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -467,6 +478,14 @@ def insert_memories(
             duplicates_within_batch=duplicates_within_batch,
         )
 
+    # Schema-version guard (audit IC5). Mismatch is treated as fatal —
+    # silently proceeding could insert against the wrong shape.
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
+
     input_ids = [r[0] for r in deduped_records]
 
     insert_sql = """
@@ -593,6 +612,12 @@ def _update_embeddings(logger: logging.Logger) -> None:
     conn = None
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
+        # Schema-version guard (audit IC5).
+        try:
+            assert_schema_version(conn)
+        except SchemaVersionError:
+            conn.close()
+            sys.exit(2)
         with conn.cursor() as cur:
             cur.execute(
                 """

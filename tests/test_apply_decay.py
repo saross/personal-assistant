@@ -28,7 +28,13 @@ _spec.loader.exec_module(decay_mod)
 
 @pytest.fixture()
 def mock_db():
-    """Create mock psycopg2 connection and cursor with context manager support."""
+    """Create mock psycopg2 connection and cursor with context manager support.
+
+    The cursor's ``fetchone`` returns ``("1",)`` when the most recent
+    SQL contained ``meta`` (the schema-version assertion added under
+    audit IC5) and ``None`` otherwise. Tests that need a different
+    fetchone shape can override on the returned ``mock_cur``.
+    """
     mock_conn = MagicMock()
     mock_cur = MagicMock()
     mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -37,6 +43,20 @@ def mock_db():
     mock_cur.__exit__ = MagicMock(return_value=False)
     mock_conn.cursor.return_value = mock_cur
     mock_cur.fetchall.return_value = []
+
+    last_sql = {"value": ""}
+
+    def _exec(sql, *args, **kwargs):
+        last_sql["value"] = sql
+        return None
+
+    def _fetchone():
+        if "meta" in last_sql["value"]:
+            return ("1",)
+        return None
+
+    mock_cur.execute.side_effect = _exec
+    mock_cur.fetchone.side_effect = _fetchone
     return mock_conn, mock_cur
 
 
@@ -92,15 +112,24 @@ class TestApplyDecayDryRun:
     """Dry run should query but not update."""
 
     def test_dry_run_executes_select_not_update(self, mock_db):
-        """Dry run should run preview SQL (SELECT), not decay SQL (UPDATE)."""
+        """Dry run should run preview SQL (SELECT), not decay SQL (UPDATE).
+
+        Note: under audit IC5 the schema-version assertion runs a
+        ``SELECT … FROM meta`` first; we filter that out and assert on
+        the substantive decay query only.
+        """
         mock_conn, mock_cur = mock_db
         logger = logging.getLogger("test-dry-run")
 
         with patch("psycopg2.connect", return_value=mock_conn):
             decay_mod.apply_decay(logger, dry_run=True)
 
-        assert mock_cur.execute.call_count == 1
-        executed_sql = mock_cur.execute.call_args[0][0]
+        decay_calls = [
+            c for c in mock_cur.execute.call_args_list
+            if not ("meta" in c.args[0] and "schema_version" in c.args[0])
+        ]
+        assert len(decay_calls) == 1
+        executed_sql = decay_calls[0].args[0]
         assert "SELECT" in executed_sql
         assert "UPDATE" not in executed_sql
 
@@ -126,15 +155,24 @@ class TestApplyDecayReal:
     """Real execution should UPDATE memories."""
 
     def test_real_run_executes_update(self, mock_db):
-        """Real run should execute UPDATE SQL."""
+        """Real run should execute UPDATE SQL.
+
+        Note: under audit IC5 the schema-version assertion runs a
+        ``SELECT … FROM meta`` first; we filter that out and assert on
+        the substantive decay query only.
+        """
         mock_conn, mock_cur = mock_db
         logger = logging.getLogger("test-real-run")
 
         with patch("psycopg2.connect", return_value=mock_conn):
             decay_mod.apply_decay(logger, dry_run=False)
 
-        assert mock_cur.execute.call_count == 1
-        executed_sql = mock_cur.execute.call_args[0][0]
+        decay_calls = [
+            c for c in mock_cur.execute.call_args_list
+            if not ("meta" in c.args[0] and "schema_version" in c.args[0])
+        ]
+        assert len(decay_calls) == 1
+        executed_sql = decay_calls[0].args[0]
         assert "UPDATE" in executed_sql
         assert "is_active = FALSE" in executed_sql
         assert "decayed_at = NOW()" in executed_sql
@@ -194,9 +232,32 @@ class TestApplyDecayErrors:
         assert "Cannot connect" in warning_msg
 
     def test_query_error(self, mock_db):
-        """Should log error if SQL execution fails."""
+        """Should log error if SQL execution fails.
+
+        The schema-version assertion (audit IC5) issues a query first;
+        this test forces that one to succeed and the subsequent decay
+        query to raise — the decay error path is what we are pinning.
+        """
         mock_conn, mock_cur = mock_db
-        mock_cur.execute.side_effect = Exception("syntax error")
+
+        # Override the mock's execute to handle two distinct cases:
+        # (1) the schema-version SELECT returns ``("1",)`` via fetchone,
+        # (2) the decay query raises ``Exception("syntax error")``.
+        last_sql = {"value": ""}
+
+        def _exec(sql, *args, **kwargs):
+            last_sql["value"] = sql
+            if "meta" in sql and "schema_version" in sql:
+                return None
+            raise Exception("syntax error")
+
+        def _fetchone():
+            if "meta" in last_sql["value"]:
+                return ("1",)
+            return None
+
+        mock_cur.execute.side_effect = _exec
+        mock_cur.fetchone.side_effect = _fetchone
 
         logger = MagicMock()
 
@@ -216,7 +277,12 @@ class TestDecaySQL:
 
     @staticmethod
     def _get_executed_sql(dry_run: bool) -> str:
-        """Helper: run apply_decay with mocks and return the executed SQL."""
+        """Helper: run apply_decay with mocks and return the decay SQL.
+
+        The schema-version assertion (audit IC5) issues a ``SELECT
+        value FROM meta`` before the decay query — this helper filters
+        it out and returns the substantive decay SQL only.
+        """
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -226,12 +292,34 @@ class TestDecaySQL:
         mock_conn.cursor.return_value = mock_cur
         mock_cur.fetchall.return_value = []
 
+        last_sql = {"value": ""}
+
+        def _exec(sql, *args, **kwargs):
+            last_sql["value"] = sql
+            return None
+
+        def _fetchone():
+            if "meta" in last_sql["value"]:
+                return ("1",)
+            return None
+
+        mock_cur.execute.side_effect = _exec
+        mock_cur.fetchone.side_effect = _fetchone
+
         logger = logging.getLogger("test-sql")
 
         with patch("psycopg2.connect", return_value=mock_conn):
             decay_mod.apply_decay(logger, dry_run=dry_run)
 
-        return mock_cur.execute.call_args[0][0]
+        # Find the first decay SQL — skip the schema-version SELECT.
+        for call in mock_cur.execute.call_args_list:
+            sql = call.args[0]
+            if "meta" in sql and "schema_version" in sql:
+                continue
+            return sql
+        raise AssertionError(
+            "No decay SQL was executed — only schema-version checks ran."
+        )
 
     def test_standard_decay_uses_created_at(self):
         """Non-commitment categories should decay based on created_at."""

@@ -38,6 +38,10 @@ from pathlib import Path
 # See scripts/_bulk_rewrite_guard.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
+# Shared writer helpers — keep COMMAND_MARKERS and timestamp shape in
+# lockstep with hooks/extraction-hook.py (audit IC1, IC4).
+from _command_markers import COMMAND_MARKERS  # noqa: E402
+from _timestamps import coerce_to_iso, now_iso  # noqa: E402
 from typing import Any, Optional
 
 # ============================================================================
@@ -64,13 +68,10 @@ MIN_CONTENT_LENGTH = 500
 BATCH_INPUT_COST_PER_M = 0.40
 BATCH_OUTPUT_COST_PER_M = 2.00
 
-# Slash commands to skip (mirrors extraction-hook.py)
-COMMAND_MARKERS = [
-    "/remember", "/recall", "/capture", "/craft", "/focus",
-    "/done", "/standup", "/recap", "/track", "/weekly-review",
-    "/retro", "/sync-board", "/process-email",
-    "End-of-Session Reflection",
-]
+# COMMAND_MARKERS is imported from _command_markers (audit IC1 / A-Critical
+# #3 fix). The previous bare-string list ("/remember", "/recall", ...)
+# false-positive matched any user prose mentioning a command name; the
+# shared module uses the strict document-header form.
 
 # Categories and prompt (shared with extraction-hook.py)
 CATEGORIES_REFERENCE = """
@@ -477,14 +478,14 @@ def format_memories(
     851 records were re-id'd to recover from this bug).
     """
     # Use the session date for created_at (not now), so memories are
-    # temporally associated with when they actually happened
-    if session_date:
-        timestamp = session_date
-        date_prefix = session_date[:10]
-    else:
-        now = datetime.now(timezone.utc)
-        timestamp = now.isoformat()
-        date_prefix = now.strftime("%Y-%m-%d")
+    # temporally associated with when they actually happened. The
+    # canonical shape is full ISO-8601 with UTC offset — the schema
+    # column is TIMESTAMPTZ NOT NULL and the live extraction hook
+    # writes the same shape (audit IC4, A-Medium #6, A-CF4). Date-only
+    # ``YYYY-MM-DD`` fed in by historical session metadata is upgraded
+    # to ``T00:00:00+00:00`` rather than passed through verbatim.
+    timestamp = coerce_to_iso(session_date, fallback=now_iso())
+    date_prefix = timestamp[:10]
 
     memories = []
     all_tags: list[str] = []
