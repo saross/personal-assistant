@@ -28,7 +28,11 @@ from pathlib import Path
 # Only the merge subcommand rewrites the canonical files — guard is
 # invoked there rather than at module top.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
+from _bulk_rewrite_guard import (  # noqa: E402
+    ensure_safe_to_rewrite,
+    lock_jsonl_for_rewrite,
+    release_lock,
+)
 import atexit  # noqa: E402
 from typing import Any
 
@@ -541,94 +545,147 @@ def cmd_merge(args: argparse.Namespace) -> None:
         f"→ {len(set(replacements.values()))} winners"
     )
 
-    # Load and transform memories
+    # Load and transform memories. Hold LOCK_EX on the canonical for
+    # the entire read-modify-rename window so the extraction hook's
+    # LOCK_SH appends drain before we read and are blocked until we
+    # rename. Dry-run reads without the lock — there is no rewrite,
+    # so excluding the appender would be unnecessary churn.
     memories_touched = 0
     tags_replaced = 0
     lines: list[str] = []
 
-    with open(MEMORIES_JSONL, "r", encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped:
-                lines.append(line)
-                continue
-
-            try:
-                mem = json.loads(stripped)
-            except json.JSONDecodeError:
-                lines.append(line)
-                continue
-
-            # Determine which field holds tags (consistent with
-            # _get_tags / build_tag_counts)
-            tag_field = (
-                "research_tags"
-                if "research_tags" in mem
-                else "tags"
-            )
-            tags = _get_tags(mem)
-            if not tags:
-                # Preserve original line to avoid reformatting noise
-                lines.append(line)
-                continue
-
-            new_tags: list[str] = []
-            changed = False
-            for tag in tags:
-                tag_lower = tag.lower()
-                if tag_lower in replacements:
-                    new_tags.append(replacements[tag_lower])
-                    changed = True
-                    tags_replaced += 1
-                else:
-                    new_tags.append(tag)
-
-            if changed:
-                # Deduplicate preserving order
-                new_tags = list(dict.fromkeys(new_tags))
-                mem[tag_field] = new_tags
-                memories_touched += 1
-                lines.append(
-                    json.dumps(mem, ensure_ascii=False) + "\n"
-                )
-            else:
-                # Preserve original line to avoid reformatting noise
-                lines.append(line)
-
-    print(
-        f"  Memories affected: {memories_touched}\n"
-        f"  Tag replacements: {tags_replaced}\n"
-        f"  Tags retired: {len(replacements)}"
-    )
-
     if args.dry_run:
+        # Read-only path: load and report, do not rewrite.
+        with open(MEMORIES_JSONL, "r", encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    continue
+                try:
+                    mem = json.loads(stripped)
+                except json.JSONDecodeError:
+                    lines.append(line)
+                    continue
+                tag_field = (
+                    "research_tags" if "research_tags" in mem else "tags"
+                )
+                tags = _get_tags(mem)
+                if not tags:
+                    lines.append(line)
+                    continue
+                new_tags = []
+                changed = False
+                for tag in tags:
+                    tag_lower = tag.lower()
+                    if tag_lower in replacements:
+                        new_tags.append(replacements[tag_lower])
+                        changed = True
+                        tags_replaced += 1
+                    else:
+                        new_tags.append(tag)
+                if changed:
+                    new_tags = list(dict.fromkeys(new_tags))
+                    mem[tag_field] = new_tags
+                    memories_touched += 1
+                    lines.append(json.dumps(mem, ensure_ascii=False) + "\n")
+                else:
+                    lines.append(line)
+        print(
+            f"  Memories affected: {memories_touched}\n"
+            f"  Tag replacements: {tags_replaced}\n"
+            f"  Tags retired: {len(replacements)}"
+        )
         print("\n[DRY RUN] No files modified.")
         return
 
-    # Atomic write: write to temp file, then rename.
-    # Note: the extraction hook appends without locking, so there is
-    # a narrow race window where appends between our read and rename
-    # could be lost. This is acceptable for a manual monthly command —
-    # run it when no active sessions are extracting memories.
-    tmp_path = MEMORIES_JSONL.with_suffix(".jsonl.tmp")
-    tmp_path.write_text("".join(lines), encoding="utf-8")
-    os.rename(str(tmp_path), str(MEMORIES_JSONL))
+    # Real run: hold the JSONL exclusive lock through read + rename.
+    with lock_jsonl_for_rewrite(MEMORIES_JSONL):
+        with open(MEMORIES_JSONL, "r", encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    continue
 
-    print(f"  Updated: {MEMORIES_JSONL}")
+                try:
+                    mem = json.loads(stripped)
+                except json.JSONDecodeError:
+                    lines.append(line)
+                    continue
 
-    # Update vocabulary file
-    if VOCABULARY_FILE.exists():
-        vocab = load_vocabulary()
-        # Remove losers, add winners
-        vocab -= set(replacements.keys())
-        vocab |= set(replacements.values())
-        # Write sorted
-        sorted_vocab = sorted(vocab)
-        VOCABULARY_FILE.write_text(
-            "\n".join(sorted_vocab) + "\n",
-            encoding="utf-8",
+                # Determine which field holds tags (consistent with
+                # _get_tags / build_tag_counts)
+                tag_field = (
+                    "research_tags"
+                    if "research_tags" in mem
+                    else "tags"
+                )
+                tags = _get_tags(mem)
+                if not tags:
+                    # Preserve original line to avoid reformatting noise
+                    lines.append(line)
+                    continue
+
+                new_tags: list[str] = []
+                changed = False
+                for tag in tags:
+                    tag_lower = tag.lower()
+                    if tag_lower in replacements:
+                        new_tags.append(replacements[tag_lower])
+                        changed = True
+                        tags_replaced += 1
+                    else:
+                        new_tags.append(tag)
+
+                if changed:
+                    # Deduplicate preserving order
+                    new_tags = list(dict.fromkeys(new_tags))
+                    mem[tag_field] = new_tags
+                    memories_touched += 1
+                    lines.append(
+                        json.dumps(mem, ensure_ascii=False) + "\n"
+                    )
+                else:
+                    # Preserve original line to avoid reformatting noise
+                    lines.append(line)
+
+        print(
+            f"  Memories affected: {memories_touched}\n"
+            f"  Tag replacements: {tags_replaced}\n"
+            f"  Tags retired: {len(replacements)}"
         )
-        print(f"  Updated: {VOCABULARY_FILE} ({len(sorted_vocab)} tags)")
+
+        # Atomic write: write to temp file, then rename. The
+        # surrounding LOCK_EX on MEMORIES_JSONL keeps the extraction
+        # hook's appends queued behind us until the rename completes.
+        tmp_path = MEMORIES_JSONL.with_suffix(".jsonl.tmp")
+        tmp_path.write_text("".join(lines), encoding="utf-8")
+        os.rename(str(tmp_path), str(MEMORIES_JSONL))
+
+        print(f"  Updated: {MEMORIES_JSONL}")
+
+    # Update vocabulary file under its own LOCK_EX. The extraction
+    # hook's update_vocabulary path appends under LOCK_SH; this
+    # exclusive lock drains in-flight appends and blocks new ones for
+    # the duration of the rewrite.
+    if VOCABULARY_FILE.exists():
+        with lock_jsonl_for_rewrite(VOCABULARY_FILE):
+            vocab = load_vocabulary()
+            # Remove losers, add winners
+            vocab -= set(replacements.keys())
+            vocab |= set(replacements.values())
+            # Write sorted
+            sorted_vocab = sorted(vocab)
+            tmp_vocab = VOCABULARY_FILE.with_suffix(
+                VOCABULARY_FILE.suffix + ".tmp"
+            )
+            tmp_vocab.write_text(
+                "\n".join(sorted_vocab) + "\n",
+                encoding="utf-8",
+            )
+            os.rename(str(tmp_vocab), str(VOCABULARY_FILE))
+            print(f"  Updated: {VOCABULARY_FILE} ({len(sorted_vocab)} tags)")
 
     # Log
     _log_merge(plan, memories_touched, tags_replaced)

@@ -14,15 +14,17 @@ Modifications from design review (cc-design-questions-response.md):
   - Automatic singularisation skipped (handled in monthly /tags gardening)
 """
 
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # ============================================================================
 # Configuration
@@ -278,14 +280,22 @@ def load_seed_tags() -> list[str]:
 
 
 def update_vocabulary(new_tags: list[str]) -> None:
-    """Add newly seen tags to the vocabulary file."""
+    """
+    Add newly seen tags to the vocabulary file under a shared flock.
+
+    The tag-vocabulary file is rewritten in place by
+    ``scripts/tag-gardening.py merge``; the same shared/exclusive
+    flock pattern used for ``memories.jsonl`` keeps this appender
+    out of the rewriter's read-modify-rename window.
+    """
     existing = set(load_seed_tags())
     novel = set(new_tags) - existing
-    if novel:
-        with open(VOCABULARY_FILE, "a") as f:
-            for tag in sorted(novel):
-                f.write(f"{tag}\n")
-        logger.info("Added %d new tags to vocabulary: %s", len(novel), sorted(novel))
+    if not novel:
+        return
+    payload = "".join(f"{tag}\n" for tag in sorted(novel)).encode("utf-8")
+    with _shared_locked_append_fd(VOCABULARY_FILE) as fd:
+        os.write(fd, payload)
+    logger.info("Added %d new tags to vocabulary: %s", len(novel), sorted(novel))
 
 
 # ============================================================================
@@ -630,13 +640,89 @@ def format_memories(
     return memories
 
 
-def append_memories(memories: list[dict]) -> None:
-    """Append memories to the canonical JSONL file."""
-    MEMORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+@contextmanager
+def _shared_locked_append_fd(target_path: Path) -> Iterator[int]:
+    """
+    Open ``target_path`` for appending and hold a shared (``LOCK_SH``)
+    flock for the duration of the context.
 
-    with open(MEMORIES_FILE, "a") as f:
-        for mem in memories:
-            f.write(json.dumps(mem) + "\n")
+    Multiple appenders may hold ``LOCK_SH`` concurrently — this is a
+    fast path. A bulk rewriter holding ``LOCK_EX`` (via
+    ``_bulk_rewrite_guard.lock_jsonl_for_rewrite``) will block until
+    every appender releases ``LOCK_SH``, and any appender that
+    arrives while ``LOCK_EX`` is held will wait until the rewrite
+    completes.
+
+    Rename-under-fd race: a rewriter atomically renames a temp file
+    over ``target_path``. If the appender opened ``target_path``
+    before the rename (acquiring an fd to the now-orphaned inode A)
+    and only acquired ``LOCK_SH`` afterwards (on the orphan), its
+    write would land on the orphan and be lost. To prevent this we
+    open + lock + ``fstat``-vs-``stat`` and retry until the fd we
+    hold is the same inode the path resolves to. ``LOCK_SH`` is
+    fully serialised against the rewriter's ``LOCK_EX`` because the
+    flock is on the open file description, not the path — but the
+    inode-identity check is what guarantees the open file
+    description is the post-rename inode.
+    """
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        fd = os.open(
+            str(target_path),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+            0o644,
+        )
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        try:
+            fd_ino = os.fstat(fd).st_ino
+            path_ino = os.stat(target_path).st_ino
+        except FileNotFoundError:
+            # Path vanished between open and stat — retry.
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+            continue
+        if fd_ino != path_ino:
+            # We hold a flock on an orphan inode (the rewriter
+            # renamed under us). Drop and retry.
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+            continue
+        break
+    try:
+        # O_APPEND already places writes at end of file at kernel
+        # level; the lseek is belt-and-braces so a caller can still
+        # see the offset for diagnostics.
+        os.lseek(fd, 0, os.SEEK_END)
+        yield fd
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+def append_memories(memories: list[dict]) -> None:
+    """
+    Append memories to the canonical JSONL file under a shared flock.
+
+    Holding ``LOCK_SH`` lets multiple appenders proceed concurrently
+    while blocking against bulk rewriters, which take ``LOCK_EX`` via
+    :func:`_bulk_rewrite_guard.lock_jsonl_for_rewrite`. A rewrite
+    in flight will pause this append until the rewrite completes.
+    """
+    if not memories:
+        return
+    payload = "".join(json.dumps(mem) + "\n" for mem in memories)
+    encoded = payload.encode("utf-8")
+    with _shared_locked_append_fd(MEMORIES_FILE) as fd:
+        os.write(fd, encoded)
 
 
 # ============================================================================

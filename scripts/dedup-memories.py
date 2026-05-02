@@ -38,7 +38,11 @@ from pathlib import Path
 # Guard against racing with another machine's extraction-hook appends
 # or a scheduled daily-sync. See scripts/_bulk_rewrite_guard.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
+from _bulk_rewrite_guard import (  # noqa: E402
+    ensure_safe_to_rewrite,
+    lock_jsonl_for_rewrite,
+    release_lock,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -328,20 +332,68 @@ def main() -> None:
             "    cd data && git commit -m 'dedup: <subject>' -m 'Rewrite-Class: bulk'"
         )
 
-    records, initial_bytes = load_records_with_position()
-    logger.info("Loaded %d raw lines (%d bytes) from canonical", len(records), initial_bytes)
+    # For dry-run, read without holding the JSONL lock — there is no
+    # rewrite, so the appender does not need to be excluded.
+    if args.dry_run:
+        records, initial_bytes = load_records_with_position()
+        logger.info("Loaded %d raw lines (%d bytes) from canonical", len(records), initial_bytes)
+        deduped, stats = _run_dedup_and_invariants(records, logger)
+        _log_stats(stats, deduped, logger)
+        logger.info("Dry run: no file written. Exiting.")
+        return
 
+    # Real run: hold LOCK_EX on memories.jsonl for the entire
+    # read-modify-rename window. Appenders (extraction-hook) take
+    # LOCK_SH and will be blocked between our read and rename, so
+    # the byte-tail preservation block below is now belt-and-braces:
+    # it should never trigger under correct locking, but it preserves
+    # data if some unguarded writer ever bypasses the lock.
+    with lock_jsonl_for_rewrite(MEMORIES_FILE):
+        records, initial_bytes = load_records_with_position()
+        logger.info("Loaded %d raw lines (%d bytes) from canonical", len(records), initial_bytes)
+
+        deduped, stats = _run_dedup_and_invariants(records, logger)
+        _log_stats(stats, deduped, logger)
+
+        # Belt-and-braces concurrent-append detection. Under correct
+        # locking this should never fire. If it does, a writer is
+        # bypassing the lock — preserve the tail and log loudly.
+        current_size = MEMORIES_FILE.stat().st_size
+        new_tail_bytes = b""
+        if current_size > initial_bytes:
+            with open(MEMORIES_FILE, "rb") as f:
+                f.seek(initial_bytes)
+                new_tail_bytes = f.read()
+            added_lines = new_tail_bytes.count(b"\n")
+            logger.warning(
+                "Concurrent append detected DESPITE LOCK_EX: file grew "
+                "%d bytes (%d lines) during dedup. Preserving new tail "
+                "verbatim. Investigate which writer bypassed the flock.",
+                current_size - initial_bytes, added_lines,
+            )
+        elif current_size < initial_bytes:
+            logger.error(
+                "Canonical SHRANK during dedup (initial=%d, current=%d). Aborting to avoid data loss.",
+                initial_bytes, current_size,
+            )
+            sys.exit(1)
+
+        final_count = write_output(deduped, new_tail_bytes, logger)
+        logger.info("Wrote %d lines to %s", final_count, MEMORIES_FILE)
+    logger.info("Backup is at: %s", MEMORIES_FILE.with_suffix(".jsonl.bak.2026-04-14"))
+    logger.info("=== dedup-memories complete ===")
+
+
+def _run_dedup_and_invariants(
+    records: list[tuple[int, dict | None, str]],
+    logger: logging.Logger,
+) -> tuple[list[tuple[int, dict | None, str]], dict[str, int]]:
+    """Run dedup and invariant checks; abort via sys.exit on failure."""
     deduped, stats = dedup(records, logger)
 
-    logger.info("--- dedup stats ---")
-    for k, v in stats.items():
-        logger.info("  %-30s %d", k, v)
-    net_change = len(deduped) - stats["total_input_lines"]
-    logger.info("  net line change:              %+d", net_change)
-
-    # Invariants
+    # Invariant: no duplicate ids in output
     ids_in_output: dict[str, int] = defaultdict(int)
-    for lineno, rec, _raw in deduped:
+    for _lineno, rec, _raw in deduped:
         if rec is not None and "id" in rec:
             ids_in_output[rec["id"]] += 1
     dup_ids_remaining = {i: c for i, c in ids_in_output.items() if c > 1}
@@ -357,7 +409,8 @@ def main() -> None:
         sys.exit(1)
     logger.info("INVARIANT OK: all output ids unique (%d total)", len(ids_in_output))
 
-    for lineno, rec, raw in deduped:
+    # Invariant: every kept record serialises cleanly
+    for lineno, rec, _raw in deduped:
         if rec is None:
             continue
         try:
@@ -367,35 +420,20 @@ def main() -> None:
             logger.error("INVARIANT FAILURE: record not serialisable at lineno=%d: %s", lineno, exc)
             sys.exit(1)
     logger.info("INVARIANT OK: all kept records serialise as JSON")
+    return deduped, stats
 
-    if args.dry_run:
-        logger.info("Dry run: no file written. Exiting.")
-        return
 
-    # Check for concurrent appends: compare current file size to initial_bytes
-    current_size = MEMORIES_FILE.stat().st_size
-    new_tail_bytes = b""
-    if current_size > initial_bytes:
-        with open(MEMORIES_FILE, "rb") as f:
-            f.seek(initial_bytes)
-            new_tail_bytes = f.read()
-        added_lines = new_tail_bytes.count(b"\n")
-        logger.warning(
-            "Concurrent append detected: file grew %d bytes (%d lines) during dedup. "
-            "Preserving new tail verbatim.",
-            current_size - initial_bytes, added_lines,
-        )
-    elif current_size < initial_bytes:
-        logger.error(
-            "Canonical SHRANK during dedup (initial=%d, current=%d). Aborting to avoid data loss.",
-            initial_bytes, current_size,
-        )
-        sys.exit(1)
-
-    final_count = write_output(deduped, new_tail_bytes, logger)
-    logger.info("Wrote %d lines to %s", final_count, MEMORIES_FILE)
-    logger.info("Backup is at: %s", MEMORIES_FILE.with_suffix(".jsonl.bak.2026-04-14"))
-    logger.info("=== dedup-memories complete ===")
+def _log_stats(
+    stats: dict[str, int],
+    deduped: list[tuple[int, dict | None, str]],
+    logger: logging.Logger,
+) -> None:
+    """Emit dedup statistics to the log."""
+    logger.info("--- dedup stats ---")
+    for k, v in stats.items():
+        logger.info("  %-30s %d", k, v)
+    net_change = len(deduped) - stats["total_input_lines"]
+    logger.info("  net line change:              %+d", net_change)
 
 
 if __name__ == "__main__":

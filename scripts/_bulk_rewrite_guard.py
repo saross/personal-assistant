@@ -61,8 +61,9 @@ import logging
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -262,6 +263,17 @@ def ensure_safe_to_rewrite(reason: str) -> None:
     data/config/sync.json, the guard still runs and logs every step,
     but non-zero results become warnings rather than aborts. This is a
     rollback switch, not a disable switch — the log trail is preserved.
+
+    NOTE: this guard serialises bulk rewriters against each other and
+    against ``daily-sync.sh``, but it does NOT block the extraction
+    hook's append path. Callers performing an in-place rewrite of
+    ``memories.jsonl`` (or ``tag-vocabulary.txt``) MUST additionally
+    wrap the read-modify-rename window in
+    :func:`lock_jsonl_for_rewrite` so concurrent appends drain before
+    the rewrite proceeds and are blocked for its duration. The two
+    locks are deliberately separate: this guard's checks happen once
+    at script start, whereas the file-level lock must be held only
+    around the actual rewrite, which may be much later in the script.
     """
     cfg = _load_config()
     enforce = cfg.get("require_clean_origin_for_bulk", True)
@@ -304,6 +316,53 @@ def ensure_safe_to_rewrite(reason: str) -> None:
         "guard failed but enforcement disabled — proceeding despite "
         "unsafe state (reason=%r)", reason,
     )
+
+
+@contextmanager
+def lock_jsonl_for_rewrite(jsonl_path: Path) -> Iterator[None]:
+    """
+    Hold an ``LOCK_EX`` flock on ``jsonl_path`` for the duration of an
+    in-place rewrite. Appenders (notably ``hooks/extraction-hook.py``)
+    take ``LOCK_SH``; this exclusive lock waits for all in-flight
+    appends to drain, then blocks new appends until the rewrite
+    completes.
+
+    Critical invariant: the caller MUST hold this lock for the entire
+    read-modify-rename window — NOT just the rename. Otherwise an
+    append between the read and the rename is silently overwritten.
+
+    Pair with :func:`ensure_safe_to_rewrite`, which serialises against
+    other bulk rewriters and ``daily-sync.sh``. The two locks are
+    deliberately separate concerns:
+
+    * ``ensure_safe_to_rewrite`` (advisory ``logs/daily-sync.lock``):
+      run once at script start, gates the entire run.
+    * ``lock_jsonl_for_rewrite`` (advisory flock on the file itself):
+      held only for the rewrite window so the extraction hook can
+      append during preparatory phases (loading records, calling
+      Haiku, etc.) and merely waits during the brief rename window.
+
+    The lock is process-local advisory: it has no effect on processes
+    that do not also call ``flock(2)`` on the same file. Both writers
+    in the codebase (the extraction hook and the bulk rewriters) do.
+    """
+    # ``O_RDWR`` so the flock is consistent with append-mode openers
+    # (which use ``O_WRONLY``); the lock is on the open file
+    # description, not the bytes. ``O_CREAT`` is intentionally absent:
+    # if the canonical does not exist, that is an operator error and
+    # should fail loudly rather than silently create an empty file
+    # under our lock.
+    fd = os.open(str(jsonl_path), os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            # Best-effort unlock — closing the fd releases the lock too.
+            pass
+        os.close(fd)
 
 
 def mark_bulk_rewrite_commit_msg(subject: str, *, rewrite_class: str = "bulk") -> str:

@@ -39,7 +39,11 @@ import sys as _sys_for_guard_import
 # Guard against racing with extraction-hook appends or scheduled sync.
 # See scripts/_bulk_rewrite_guard.py.
 _sys_for_guard_import.path.insert(0, str(Path(__file__).resolve().parent))
-from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
+from _bulk_rewrite_guard import (  # noqa: E402
+    ensure_safe_to_rewrite,
+    lock_jsonl_for_rewrite,
+    release_lock,
+)
 
 # ============================================================================
 # Configuration
@@ -209,14 +213,28 @@ def write_memories(records: list[dict | None]) -> None:
     historical "append instead of overwrite" regression, a concurrent
     writer interfering, or a partial write) and we raise loudly rather
     than leave a silently broken canonical.
+
+    NOTE: this function truncates and rewrites the canonical. Callers
+    MUST wrap it (and the immediately preceding load) in
+    ``lock_jsonl_for_rewrite(MEMORIES_FILE)`` so concurrent appends
+    from the extraction hook are not silently overwritten.
     """
     expected = len(records)
-    with open(MEMORIES_FILE, "w", encoding="utf-8") as f:
+    # Atomic-ish write: stage to a temp path, fsync, then rename. The
+    # surrounding LOCK_EX (held by the caller via
+    # ``lock_jsonl_for_rewrite``) keeps the extraction-hook appender
+    # blocked for the duration. We retain the post-write line-count
+    # invariant from the original implementation.
+    tmp_path = MEMORIES_FILE.with_suffix(MEMORIES_FILE.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         for record in records:
             if record is None:
                 f.write("\n")
             else:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.rename(str(tmp_path), str(MEMORIES_FILE))
     # Invariant: file line count must equal in-memory record count.
     with open(MEMORIES_FILE, encoding="utf-8") as f:
         actual = sum(1 for _ in f)
@@ -226,6 +244,50 @@ def write_memories(records: list[dict | None]) -> None:
             f"expected {expected}. Canonical may be corrupted — investigate "
             f"before any further sync operations."
         )
+
+
+def _apply_summaries_under_lock(
+    summaries: dict[str, str],
+    logger: logging.Logger,
+) -> tuple[int, int]:
+    """
+    Apply a ``{id: summary}`` mapping to the canonical under LOCK_EX.
+
+    Re-reads the file inside the lock, attaches each summary to the
+    matching record, and rewrites. Re-reading inside the lock means
+    any extraction-hook appends that landed since the previous
+    invocation are preserved. Returns ``(applied, missing)`` —
+    summaries that matched a record vs ones whose id was not found.
+    """
+    if not summaries:
+        return 0, 0
+    with lock_jsonl_for_rewrite(MEMORIES_FILE):
+        records = load_memories()
+        applied = 0
+        missing = 0
+        index_by_id: dict[str, int] = {}
+        for i, rec in enumerate(records):
+            if rec is None:
+                continue
+            mid = rec.get("id")
+            if mid:
+                index_by_id[mid] = i
+        for mid, summary in summaries.items():
+            idx = index_by_id.get(mid)
+            if idx is None:
+                missing += 1
+                continue
+            rec = records[idx]
+            if rec is None:
+                missing += 1
+                continue
+            rec["summary"] = summary
+            applied += 1
+        if applied:
+            write_memories(records)
+        else:
+            logger.info("No summaries matched on re-read — skipping rewrite")
+    return applied, missing
 
 
 # ============================================================================
@@ -280,7 +342,15 @@ def run_sync(
     args: argparse.Namespace,
     logger: logging.Logger,
 ) -> None:
-    """Run backfill in synchronous mode (original behaviour)."""
+    """Run backfill in synchronous mode (original behaviour).
+
+    Each batch's summaries are applied under ``lock_jsonl_for_rewrite``
+    by re-reading the canonical inside the lock, so any extraction-hook
+    appends that landed since the previous batch are preserved.
+    The ``all_records`` list is kept in sync with the on-disk state for
+    in-memory progress tracking, but the disk write reads fresh records
+    each time.
+    """
     total_generated = 0
     total_failed = 0
     batch_count = 0
@@ -304,7 +374,10 @@ def run_sync(
         for idx, record in batch_items:
             mem_id = record.get("id", "unknown")
             if mem_id in summaries:
-                all_records[idx]["summary"] = summaries[mem_id]
+                # Track in memory so subsequent batches see the
+                # update for any progress reporting.
+                if all_records[idx] is not None:
+                    all_records[idx]["summary"] = summaries[mem_id]
                 batch_hits += 1
             else:
                 total_failed += 1
@@ -315,8 +388,16 @@ def run_sync(
             "  → %d/%d summaries generated", batch_hits, len(batch_items)
         )
 
-        # Write after each batch for incremental progress
-        write_memories(all_records)
+        # Write after each batch for incremental progress, holding
+        # LOCK_EX so concurrent extraction-hook appends are queued
+        # behind us rather than silently overwritten.
+        applied, missing = _apply_summaries_under_lock(summaries, logger)
+        if missing:
+            logger.warning(
+                "Batch %d: %d summary id(s) not found in canonical "
+                "on re-read (likely dedup or rewrite happened mid-run)",
+                batch_count, missing,
+            )
 
         # Rate limiting delay (skip after last batch)
         if batch_start + args.batch_size < len(to_backfill):
@@ -463,7 +544,11 @@ def run_batch_apply(
         )
         sys.exit(1)
 
-    # Load memories
+    # Load memories outside the lock for progress reporting; the
+    # actual rewrite happens inside ``lock_jsonl_for_rewrite`` below
+    # via ``_apply_summaries_under_lock``, which re-reads the file
+    # under the lock to pick up any extraction-hook appends that
+    # arrived during the API roundtrips above.
     all_records = load_memories()
     # Build an ID → index lookup for fast updates
     id_to_index = {}
@@ -471,10 +556,12 @@ def run_batch_apply(
         if rec is not None and rec.get("id"):
             id_to_index[rec["id"]] = i
 
-    # Retrieve and apply results
+    # Retrieve results and accumulate id → summary, then apply once
+    # at the end under the rewrite lock.
     total_applied = 0
     total_failed = 0
     total_parse_errors = 0
+    pending_summaries: dict[str, str] = {}
 
     for result in client.messages.batches.results(batch_id):
         custom_id = result.custom_id
@@ -506,10 +593,20 @@ def run_batch_apply(
             idx = id_to_index.get(mem_id)
             if idx is not None and all_records[idx] is not None:
                 all_records[idx]["summary"] = summary
+                pending_summaries[mem_id] = summary
                 total_applied += 1
 
-    # Write updated records
-    write_memories(all_records)
+    # Write updated records under LOCK_EX (re-reads inside the lock).
+    if pending_summaries:
+        applied, missing = _apply_summaries_under_lock(
+            pending_summaries, logger,
+        )
+        if missing:
+            logger.warning(
+                "%d summary id(s) not found in canonical on re-read "
+                "(likely dedup happened between load and write)",
+                missing,
+            )
 
     total_with_summaries = sum(
         1 for r in all_records

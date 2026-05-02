@@ -21,6 +21,7 @@ Modes:
 
 import argparse
 import atexit
+import fcntl
 import gzip
 import hashlib
 import json
@@ -402,15 +403,48 @@ def normalise_tags(tags: list) -> list[str]:
 
 
 def update_vocabulary(new_tags: list[str]) -> None:
-    """Append novel tags to the vocabulary file."""
+    """Append novel tags to the vocabulary file under a shared flock.
+
+    Mirrors the extraction-hook pattern: LOCK_SH on the vocab file so
+    appenders proceed concurrently and block only against
+    ``tag-gardening.py merge``'s LOCK_EX rewrite.
+    """
     existing: set[str] = set()
     if TAG_VOCAB_FILE.exists():
         existing = set(TAG_VOCAB_FILE.read_text().splitlines())
     novel = [t for t in new_tags if t and t not in existing]
-    if novel:
-        with open(TAG_VOCAB_FILE, "a") as f:
-            for tag in sorted(set(novel)):
-                f.write(tag + "\n")
+    if not novel:
+        return
+    payload = "".join(
+        f"{tag}\n" for tag in sorted(set(novel))
+    ).encode("utf-8")
+    TAG_VOCAB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        fd = os.open(
+            str(TAG_VOCAB_FILE),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+            0o644,
+        )
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        try:
+            if os.fstat(fd).st_ino == os.stat(TAG_VOCAB_FILE).st_ino:
+                break
+        except FileNotFoundError:
+            pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+    try:
+        os.lseek(fd, 0, os.SEEK_END)
+        os.write(fd, payload)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
 
 
 def load_seed_tags(n: int = 30) -> list[str]:
@@ -799,12 +833,45 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
         all_memories.extend(memories)
         total_memories += len(memories)
 
-    # Append all memories at once
+    # Append all memories at once under a shared flock. This mirrors
+    # the extraction hook's append path: LOCK_SH allows multiple
+    # appenders concurrently while waiting for any in-flight bulk
+    # rewriter (LOCK_EX via lock_jsonl_for_rewrite) to finish. The
+    # open-flock-fstat-vs-stat loop closes the rename-under-fd race
+    # in which a rewriter renames a temp file over the canonical
+    # between our ``os.open`` and our ``flock`` — leaving us holding
+    # a fd to an orphan inode and silently losing the appended bytes.
     if all_memories:
         MEMORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(MEMORIES_FILE, "a", encoding="utf-8") as f:
-            for mem in all_memories:
-                f.write(json.dumps(mem) + "\n")
+        payload = "".join(
+            json.dumps(mem) + "\n" for mem in all_memories
+        ).encode("utf-8")
+        while True:
+            fd = os.open(
+                str(MEMORIES_FILE),
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+                0o644,
+            )
+            fcntl.flock(fd, fcntl.LOCK_SH)
+            try:
+                if os.fstat(fd).st_ino == os.stat(MEMORIES_FILE).st_ino:
+                    break
+            except FileNotFoundError:
+                pass
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+        try:
+            os.lseek(fd, 0, os.SEEK_END)
+            os.write(fd, payload)
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
 
     logger.info(
         "Reprocessing complete: %d memories from %d requests (%d failed)",
