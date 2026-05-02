@@ -18,11 +18,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import importlib
 
 tag_gardening = importlib.import_module("tag-gardening")
+# Also import the guard module so we can patch the original symbol as
+# well as the one bound into tag_gardening's namespace.
+_bulk_rewrite_guard = importlib.import_module("_bulk_rewrite_guard")
 
 
 # -------------------------------------------------------------------------
 # Fixtures
 # -------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _bypass_rewrite_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate merge tests from the live data submodule's git state.
+
+    ``cmd_merge`` calls ``ensure_safe_to_rewrite`` to refuse running
+    while ``data/memories/memories.jsonl`` or ``tag-vocabulary.txt``
+    have uncommitted changes. During development the extraction-hook
+    routinely appends new memories to those files, so the guard
+    correctly aborts and these tests fail through no fault of their
+    own.
+
+    The merge tests exercise the merge algorithm, not the guard's
+    clean-tree gate (which is — or should be — exercised by its own
+    tests). Replacing it with a no-op for the duration of each test
+    lets the tests use their tmp_path fixtures cleanly. Patching is
+    applied at both the source module and the tag-gardening namespace
+    binding to be robust against import-style changes.
+    """
+    noop = lambda *args, **kwargs: None  # noqa: E731
+    monkeypatch.setattr(
+        tag_gardening, "ensure_safe_to_rewrite", noop, raising=False,
+    )
+    monkeypatch.setattr(
+        _bulk_rewrite_guard, "ensure_safe_to_rewrite", noop,
+        raising=False,
+    )
 
 SAMPLE_MEMORIES = [
     {
