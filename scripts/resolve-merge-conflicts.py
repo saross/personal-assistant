@@ -11,7 +11,9 @@ is actually two valid additions on either side.
 
 The correct resolution is the set union. This script rewrites the conflicted
 files in place, stripping conflict markers and deduplicating:
-  - memories.jsonl: by the JSON `id` field (empty/malformed lines kept as-is)
+  - memories.jsonl: by the JSON `id` field. Blank lines are dropped (harmless
+    for JSONL); malformed-but-non-empty lines are kept (first occurrence wins
+    by string equality).
   - tag-vocabulary.txt: by exact line match
 
 Invocation

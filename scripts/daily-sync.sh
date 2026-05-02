@@ -6,7 +6,8 @@
 #   2. At sync time, commit local captures, pull remote captures from the
 #      other machine(s), resolve append-only conflicts automatically, push.
 #
-# Safe to run at any time. Designed for cron but also fine interactively.
+# Safe to run at any time. Invoked from the SessionStart hook via
+# scripts/daily-sync-trigger.sh; also fine to run interactively.
 #
 # Usage:
 #   scripts/daily-sync.sh              # normal sync
@@ -17,6 +18,7 @@
 #   1 — another instance is running (flock busy)
 #   2 — git operation failed unexpectedly
 #   3 — merge-conflict resolver failed
+#   4 — unexpected JSONL shrink detected (push aborted; see shrink report)
 #
 # Locking: uses flock on a file in the log dir to prevent concurrent runs.
 # Logging: appends to logs/daily-sync.log on every invocation.
@@ -233,9 +235,10 @@ cd "$DATA_DIR"
 has_local_changes=0
 stash_pending=0
 # If any step between `git stash push` and the explicit pop below aborts
-# (e.g. pull fails because the cron env has no SSH agent), restore the
-# stash so the user's working tree is not silently buried in a stash
-# stack that grows unbounded. Cleared once the explicit pop completes.
+# (e.g. pull fails in any non-interactive env without an SSH agent),
+# restore the stash so the user's working tree is not silently buried
+# in a stash stack that grows unbounded. Cleared once the explicit pop
+# completes.
 parent_stash_pending=0
 restore_stash_on_exit() {
     if [[ "$stash_pending" -eq 1 ]]; then
@@ -402,6 +405,22 @@ fi
 # ---------------------------------------------------------------------------
 
 cd "$PA_DIR"
+
+# Ensure the parent repo is on main before any pull / commit / push.
+# `push_with_retry` hardcodes `git push origin main` and the rebase
+# paths above pull `origin main` regardless of the local branch — on
+# a feature branch the bump commit would land on the feature branch
+# while the (unchanged) local main was published, silently orphaning
+# the bump. Mirrors the data-half guard at line 268-275 and the
+# parallel guard added to commit-data.sh in `db957e5`.
+parent_current_branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$parent_current_branch" != "main" ]]; then
+    log "parent repo on '$parent_current_branch' — switching to main"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        git checkout main >>"$LOG_FILE" 2>&1 \
+            || fail "failed to switch parent repo to main"
+    fi
+fi
 
 # Stash any uncommitted parent-repo changes (typical case: per-machine
 # settings.json edits) before the pull, mirroring the data-submodule

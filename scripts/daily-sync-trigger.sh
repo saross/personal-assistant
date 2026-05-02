@@ -18,6 +18,11 @@
 # Concurrent-session protection: daily-sync.sh has its own flock; if two
 # sessions race past the lock check (rare) only one sync proceeds.
 
+# Note: deliberately `-uo pipefail` without `-e`. This script must always
+# exit 0 (see "Exit codes" above) so a sync failure does not break the
+# SessionStart hook chain or block the session itself; with `-e` an early
+# command failure would short-circuit past the explicit error handling
+# below.
 set -uo pipefail
 
 LOCK_FILE="${HOME}/.cache/daily-sync-last-run"
@@ -43,7 +48,20 @@ if "$SYNC_SCRIPT" >&2; then
     echo "[daily-sync-trigger] sync complete" >&2
 else
     rc=$?
-    echo "[daily-sync-trigger] sync failed (exit $rc) — lock not updated; will retry next session" >&2
+    # Differentiate benign lock contention (exit 1 — another sync /
+    # commit-data is already running, common when interactive
+    # commit-data.sh runs during the first session of the day) from
+    # genuine failure (exit 2 = git error, 3 = resolver error, 4 =
+    # unexpected JSONL shrink). Both leave the lock file unset so
+    # the next session retries.
+    case "$rc" in
+        1)
+            echo "[daily-sync-trigger] lock contention (another sync / commit-data is running); will retry next session" >&2
+            ;;
+        *)
+            echo "[daily-sync-trigger] sync failed (exit $rc) — lock not updated; will retry next session" >&2
+            ;;
+    esac
 fi
 
 exit 0

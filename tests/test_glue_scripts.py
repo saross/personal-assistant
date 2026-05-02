@@ -28,6 +28,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMMIT_DATA_SCRIPT = REPO_ROOT / "scripts" / "commit-data.sh"
 SYNC_SYMLINKS_SCRIPT = REPO_ROOT / "scripts" / "sync-symlinks.sh"
+DAILY_SYNC_SCRIPT = REPO_ROOT / "scripts" / "daily-sync.sh"
 
 
 # ============================================================================
@@ -274,3 +275,173 @@ class TestSyncSymlinksDanglingDetection:
         assert "updated symlink" in combined
         # The link now points at new_src.
         assert target.resolve() == new_src.resolve()
+
+
+# ============================================================================
+# daily-sync.sh — parent-repo branch guard (Batch 11 Medium)
+# ============================================================================
+
+
+class TestDailySyncParentBranchGuard:
+    """``daily-sync.sh`` must guard the parent-repo half against running
+    on a non-main branch, mirroring the data-submodule guard at
+    line 268-275 and the parallel guard in ``commit-data.sh``.
+
+    The previous implementation had no parent-branch check, so a
+    daily-sync invoked from a feature branch in the parent would
+    silently FF-pull origin/main into the feature branch, commit the
+    submodule pointer bump there, and push the (unchanged) local main —
+    orphaning the bump on a branch that is never published. Same shape
+    as the ``commit-data.sh`` push-to-wrong-branch bug fixed in
+    ``db957e5``; calibration audit 2026-05-02 found this residual gap.
+    """
+
+    @pytest.fixture()
+    def fake_pa_with_remote(self, tmp_path: Path) -> Path:
+        """Build a fake personal-assistant tree with bare-repo remotes
+        for both the parent and the data submodule, so the script's
+        ``git pull --ff-only origin main`` calls succeed.
+
+        Returns the parent working copy. The parent starts on a feature
+        branch named ``feature/x``; ``main`` exists locally and on the
+        bare remote so the branch-switch path can complete successfully.
+        """
+        # Bare remotes for both halves of the sync.
+        data_remote = tmp_path / "data.git"
+        parent_remote = tmp_path / "parent.git"
+        data_remote.mkdir()
+        parent_remote.mkdir()
+        _git("init", "--bare", "--quiet", "--initial-branch=main", cwd=data_remote)
+        _git("init", "--bare", "--quiet", "--initial-branch=main", cwd=parent_remote)
+
+        # Data working copy (will become the submodule).
+        data_src = tmp_path / "data-src"
+        data_src.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=data_src)
+        (data_src / "seed.txt").write_text("seed\n")
+        (data_src / "config").mkdir()
+        (data_src / "config" / "sync.json").write_text("{}\n")
+        _git("add", "-A", cwd=data_src)
+        _git("commit", "--quiet", "-m", "seed data", cwd=data_src)
+        _git("remote", "add", "origin", str(data_remote), cwd=data_src)
+        _git("push", "--quiet", "origin", "main", cwd=data_src)
+
+        # Parent working copy.
+        pa_dir = tmp_path / "pa"
+        pa_dir.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=pa_dir)
+        # Symlink the script under test in.
+        (pa_dir / "scripts").mkdir()
+        (pa_dir / "scripts" / "daily-sync.sh").symlink_to(DAILY_SYNC_SCRIPT)
+        (pa_dir / "scripts" / "resolve-merge-conflicts.py").symlink_to(
+            REPO_ROOT / "scripts" / "resolve-merge-conflicts.py"
+        )
+        (pa_dir / "scripts" / "sync-symlinks.sh").symlink_to(
+            REPO_ROOT / "scripts" / "sync-symlinks.sh"
+        )
+        (pa_dir / "scripts" / "compose-global-claude-md.sh").write_text(
+            "#!/usr/bin/env bash\nexit 0\n"
+        )
+        (pa_dir / "scripts" / "compose-global-claude-md.sh").chmod(0o755)
+
+        # venv stub: daily-sync.sh references "$PA_DIR/venv/bin/python3"
+        # only on the resolver path, which we won't hit in this test.
+        (pa_dir / "venv" / "bin").mkdir(parents=True)
+        (pa_dir / "venv" / "bin" / "python3").symlink_to("/usr/bin/python3")
+
+        # Add the data submodule. Use file:// URL so submodule add works.
+        env = os.environ.copy()
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "Test Bot",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test Bot",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_SYSTEM": "/dev/null",
+            }
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--quiet",
+                str(data_remote),
+                "data",
+            ],
+            cwd=str(pa_dir),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        _git("commit", "--quiet", "-m", "add data submodule", cwd=pa_dir)
+        _git("remote", "add", "origin", str(parent_remote), cwd=pa_dir)
+        _git("push", "--quiet", "origin", "main", cwd=pa_dir)
+
+        # Switch the parent to a feature branch so the new guard fires.
+        _git("checkout", "--quiet", "-b", "feature/x", cwd=pa_dir)
+
+        return pa_dir
+
+    def test_parent_on_feature_branch_switches_to_main(
+        self, fake_pa_with_remote: Path
+    ) -> None:
+        """When the parent repo is on a feature branch, daily-sync must
+        log the switch-to-main message and end on main, not silently
+        operate on the feature branch."""
+        pa_dir = fake_pa_with_remote
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "Test Bot",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test Bot",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_SYSTEM": "/dev/null",
+                # Allow file:// submodule operations during the run.
+                "GIT_ALLOW_PROTOCOL": "file",
+            }
+        )
+        result = subprocess.run(
+            ["bash", str(pa_dir / "scripts" / "daily-sync.sh")],
+            cwd=str(pa_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Combined log output is on stderr (via the `log` function).
+        combined = result.stdout + result.stderr
+        assert (
+            "parent repo on 'feature/x' — switching to main" in combined
+        ), (
+            f"Expected branch-switch log line; got:\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}\n"
+            f"rc={result.returncode}"
+        )
+        # And the parent must actually be on main afterwards.
+        post = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=pa_dir)
+        assert post.stdout.strip() == "main", (
+            f"Expected parent to be on main after sync; got "
+            f"'{post.stdout.strip()}'"
+        )
+
+    def test_source_has_parent_branch_guard(self) -> None:
+        """Defence in depth: the script source must contain the
+        parent-branch guard. Catches accidental removal in future
+        refactors."""
+        source = DAILY_SYNC_SCRIPT.read_text(encoding="utf-8")
+        # The guard checks the parent's current branch and either
+        # switches or fails.
+        assert "parent_current_branch" in source, (
+            "daily-sync.sh missing parent-branch guard variable "
+            "(Batch 11 Medium 2026-05-02)."
+        )
+        assert "failed to switch parent repo to main" in source, (
+            "daily-sync.sh missing parent branch-switch failure path."
+        )
