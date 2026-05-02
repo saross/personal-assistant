@@ -86,6 +86,16 @@ ensure_symlink() {
         if [ "$current" != "$src" ]; then
             ln -sf "$src" "$target"
             say "  $label — updated symlink"
+        elif [ ! -e "$target" ]; then
+            # Audit 2026-05-02 E-Medium: target string matches but the
+            # source no longer exists. Previous code reported "already
+            # correct" and left the dangling link in place. Re-create the
+            # link (still pointing at the missing source) but flag it as
+            # broken so the user notices, and surface the missing source
+            # path so the cause is obvious. The pruning helper handles
+            # the deletion case for in-tree symlinks; this catch covers
+            # the gap for everything else.
+            say "  $label — WARNING: dangling symlink (source missing: $src)"
         else
             say_verbose "  $label — already correct"
         fi

@@ -431,3 +431,60 @@ class TestVerifyDetectsIssues:
             or (archive_dir / "session.jsonl").exists()
         )
         assert not has_jsonl
+
+
+# ============================================================================
+# Tests — Unresolved project root sentinel (Audit 2026-05-02 E-Medium)
+# ============================================================================
+
+
+class TestProjectRootSentinel:
+    """Tests for the None-sentinel replacement of the legacy /tmp fallback.
+
+    Previously, ``resolve_project_mapping`` used ``Path("/tmp")`` to mark
+    unresolved project roots. Because ``/tmp`` exists on every Unix host
+    and is a directory, the sentinel masqueraded as a real project root
+    in the downstream ``is_dir()`` guard. The fix replaces the sentinel
+    with ``None`` and updates the call site to handle the missing root
+    explicitly.
+    """
+
+    def test_unresolved_root_serialises_as_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An encoded dir with no JSONL cwd and no reconstructable path
+        produces ``project_root=None`` (not ``Path('/tmp')``)."""
+        # Build a minimal projects/ tree with one encoded dir whose
+        # encoded name cannot be reconstructed (no matching directory
+        # exists on the test filesystem).
+        projects_dir = tmp_path / "projects"
+        unresolvable = projects_dir / "-no-such-path-anywhere-xyz"
+        unresolvable.mkdir(parents=True)
+        # An empty session JSONL — _extract_cwd_from_jsonl returns None
+        # because there is no `cwd` field.
+        (unresolvable / "session.jsonl").write_text(
+            '{"type": "user", "message": {"role": "user"}}\n'
+        )
+
+        monkeypatch.setattr(bulk_archive, "CLAUDE_PROJECTS_DIR", projects_dir)
+
+        logger = logging.getLogger("test_project_root_sentinel")
+        mapping = bulk_archive.resolve_project_mapping(logger)
+
+        assert "-no-such-path-anywhere-xyz" in mapping
+        project_root, _project_name = mapping["-no-such-path-anywhere-xyz"]
+        # The fix: None, not Path("/tmp").
+        assert project_root is None, (
+            f"Expected None sentinel, got {project_root!r}. The /tmp "
+            f"sentinel would silently masquerade as a real project root."
+        )
+
+    def test_legacy_tmp_sentinel_is_gone(self) -> None:
+        """The literal ``Path('/tmp')`` sentinel must not appear in the
+        resolver source. This is a defence-in-depth check against
+        accidental reintroduction of the bug."""
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+        # Only flag the sentinel pattern, not legitimate /tmp usage in
+        # comments or unrelated paths.
+        assert 'project_root or Path("/tmp")' not in source
+        assert "Path('/tmp'), project_name" not in source

@@ -180,19 +180,22 @@ def _reconstruct_path_from_encoded(encoded: str) -> Path | None:
 
 def resolve_project_mapping(
     logger: logging.Logger,
-) -> dict[str, tuple[Path, str]]:
+) -> dict[str, tuple[Path | None, str]]:
     """
     Build a mapping from encoded project directory names to (project_root,
     project_name) tuples.
 
     Strategy: for each project dir in ~/.claude/projects/, find a session
     JSONL and extract ``cwd``. Falls back to path reconstruction from the
-    encoded name.
+    encoded name. When neither succeeds, ``project_root`` is ``None`` —
+    the call site must consult ``archive_root`` instead of treating any
+    fallback path as a real project directory.
 
     Returns:
         Dictionary mapping encoded dir name to (project_root, project_name).
+        ``project_root`` may be ``None`` if it could not be resolved.
     """
-    mapping: dict[str, tuple[Path, str]] = {}
+    mapping: dict[str, tuple[Path | None, str]] = {}
 
     if not CLAUDE_PROJECTS_DIR.is_dir():
         logger.warning("Claude projects dir not found: %s", CLAUDE_PROJECTS_DIR)
@@ -230,7 +233,13 @@ def resolve_project_mapping(
                 encoded, project_name,
             )
 
-        mapping[encoded] = (project_root or Path("/tmp"), project_name)
+        # Audit 2026-05-02 E-Medium: previous code used `Path("/tmp")` as
+        # an unresolved-root sentinel. `/tmp` exists on every Unix host,
+        # so the fallback masqueraded as a real project root downstream
+        # (the `is_dir()` guard at line ~575 always returned True). Use
+        # `None` instead and let the call site take the explicit
+        # archive_root branch unambiguously.
+        mapping[encoded] = (project_root, project_name)
 
     logger.info("Resolved %d project directories", len(mapping))
     return mapping
@@ -242,7 +251,7 @@ def resolve_project_mapping(
 
 
 def discover_sessions(
-    project_mapping: dict[str, tuple[Path, str]],
+    project_mapping: dict[str, tuple[Path | None, str]],
     min_turns: int,
     logger: logging.Logger,
 ) -> list[dict[str, Any]]:
@@ -324,7 +333,12 @@ def discover_sessions(
                 "session_id": session_id,
                 "session_path": str(jsonl_file),
                 "encoded_dir": encoded,
-                "project_root": str(project_root),
+                # Serialise unresolved roots as JSON null (not the string
+                # "None") so the consumer can distinguish "no project
+                # root" from a directory literally named ``None``.
+                "project_root": (
+                    str(project_root) if project_root is not None else None
+                ),
                 "project_name": project_name,
                 "size_bytes": jsonl_file.stat().st_size,
                 "turns": stats.get("turns", 0),
@@ -560,7 +574,15 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         session_path = Path(entry["session_path"])
         session_id = entry["session_id"]
         project_name = entry["project_name"]
-        project_root_path = Path(entry["project_root"])
+        # Audit 2026-05-02 E-Medium: ``project_root`` may be JSON null
+        # (unresolved). Treat that as "no project root" and let the
+        # downstream archiver fall back to ``archive_root`` rather than
+        # synthesising a Path("None") that would silently masquerade as
+        # a real directory.
+        raw_project_root = entry.get("project_root")
+        project_root_path: Path | None = (
+            Path(raw_project_root) if raw_project_root else None
+        )
 
         if i % 10 == 0 or i == 1:
             logger.info(
@@ -573,7 +595,8 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                 session_path=session_path,
                 project_root=(
                     project_root_path
-                    if project_root_path.is_dir()
+                    if project_root_path is not None
+                    and project_root_path.is_dir()
                     else None
                 ),
                 stats_only=True,

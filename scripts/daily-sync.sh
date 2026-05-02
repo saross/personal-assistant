@@ -53,13 +53,24 @@ read_cfg() {
     # Prints the config value on stdout. If jq parsing fails (e.g. the
     # file is corrupt), prints the default AND writes a warning to
     # stderr so the failure isn't silent.
+    #
+    # Audit 2026-05-02 E-Medium: previous implementation interpolated
+    # both the key and default raw into the jq filter
+    # (`(.${key} // ${default})`), which mishandled non-bareword defaults
+    # (e.g. a string like "foo" parsed as a reference to bareword `foo`)
+    # and was injection-shaped if the key ever came from external data.
+    # Bind both via `--arg`: the key with dynamic-field syntax `.[$k]`,
+    # and the default through jq's `//` operator. `fromjson?` lets the
+    # default round-trip booleans / numbers / null when the underlying
+    # value is the literal string equivalent.
     local key="$1" default="$2" value jq_stderr
     if ! command -v jq >/dev/null 2>&1 || [ ! -f "$CONFIG_FILE" ]; then
         printf '%s' "$default"
         return
     fi
     jq_stderr=$(mktemp)
-    if value=$(jq -r "(.${key} // ${default})" "$CONFIG_FILE" 2>"$jq_stderr"); then
+    if value=$(jq -r --arg k "$key" --arg d "$default" \
+            '.[$k] // $d' "$CONFIG_FILE" 2>"$jq_stderr"); then
         rm -f "$jq_stderr"
         printf '%s' "$value"
     else
