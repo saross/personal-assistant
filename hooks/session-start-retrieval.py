@@ -128,22 +128,65 @@ MAX_CONSTRAINTS = 10
 # ============================================================================
 
 
+# Module-level diagnostics surfaced at end of main() so silent drops are
+# visible. Audit 2026-05-02 (C-M6, C-M7): per-line failures used to be
+# swallowed without any signal — a future bug in extraction or a
+# truncated write would silently strip memories from retrieval.
+_load_stats: dict = {
+    "json_decode_errors": 0,
+    "json_decode_first_line": None,  # 1-indexed line number of first failure
+    # Track unique memory records that produced a bad timestamp; using a
+    # set keyed on id() keeps the count honest even though parse_created_at
+    # is called many times per record across the retrieval passes.
+    "bad_timestamp_ids": set(),
+    "bad_timestamp_first_marker": None,  # id (or summary excerpt) of first
+}
+
+
 def load_all_memories() -> list[dict]:
-    """Load all memories from the canonical JSONL file."""
+    """Load all memories from the canonical JSONL file.
+
+    Per-line `JSONDecodeError`s are counted (not raised) so a single
+    truncated line does not block session start, but the count and the
+    first offending line number are surfaced via stderr at the end of
+    `main()` so the failure is visible.
+    """
     if not MEMORIES_FILE.exists():
         return []
 
     memories = []
-    for line in MEMORIES_FILE.read_text().splitlines():
+    for line_num, line in enumerate(MEMORIES_FILE.read_text().splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
         try:
             memories.append(json.loads(line))
         except json.JSONDecodeError:
+            # Audit C-M7: count and remember the first offending line so
+            # the end-of-main() summary can point at the corruption.
+            _load_stats["json_decode_errors"] += 1
+            if _load_stats["json_decode_first_line"] is None:
+                _load_stats["json_decode_first_line"] = line_num
             continue
 
     return memories
+
+
+def _record_bad_timestamp(mem: dict) -> None:
+    """Record a memory whose created_at could not be parsed.
+
+    Called from `parse_created_at` on every failure path. Deduplicates
+    by Python `id()` so multiple retrieval passes over the same dict do
+    not inflate the count.
+    """
+    marker = id(mem)
+    if marker in _load_stats["bad_timestamp_ids"]:
+        return
+    _load_stats["bad_timestamp_ids"].add(marker)
+    if _load_stats["bad_timestamp_first_marker"] is None:
+        _load_stats["bad_timestamp_first_marker"] = (
+            mem.get("id") or (mem.get("summary") or "")[:60] or "<no id>"
+        )
 
 
 def parse_created_at(mem: dict) -> datetime | None:
@@ -152,14 +195,20 @@ def parse_created_at(mem: dict) -> datetime | None:
     Always returns a tz-aware datetime (assumes UTC if the stored string
     has no timezone) so callers can compare against tz-aware cutoffs
     without TypeError.
+
+    Returns None on a missing or unparseable timestamp; per-record
+    failures are de-duplicated and counted so the end-of-main() summary
+    can surface silent drops (audit C-M6).
     """
     ts = mem.get("created_at", "")
     if not ts:
+        _record_bad_timestamp(mem)
         return None
     try:
         # Handle both Z suffix and +00:00 format
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
+        _record_bad_timestamp(mem)
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -691,6 +740,36 @@ def load_project_scratchpad(cwd: str) -> tuple[str, Optional[Path]]:
 # ============================================================================
 
 
+def _emit_load_diagnostics() -> None:
+    """Print a single-line stderr summary if any silent drops occurred.
+
+    Audit C-M6 / C-M7: previously, JSON parse failures and unparseable
+    timestamps were swallowed without any signal. This makes those
+    failure modes visible without flooding stderr in the happy path.
+    """
+    json_errors = _load_stats["json_decode_errors"]
+    bad_ts = len(_load_stats["bad_timestamp_ids"])
+    if json_errors == 0 and bad_ts == 0:
+        return
+    bits = []
+    if json_errors:
+        bits.append(
+            f"{json_errors} JSON parse error"
+            f"{'s' if json_errors != 1 else ''}"
+            f" (first at line {_load_stats['json_decode_first_line']})"
+        )
+    if bad_ts:
+        bits.append(
+            f"{bad_ts} unparseable created_at"
+            f"{'s' if bad_ts != 1 else ''}"
+            f" (first: {_load_stats['bad_timestamp_first_marker']})"
+        )
+    print(
+        f"[retrieval] WARN: dropped memories — {'; '.join(bits)}",
+        file=sys.stderr,
+    )
+
+
 def main() -> None:
     """
     SessionStart hook entry point.
@@ -701,7 +780,15 @@ def main() -> None:
     # Parse hook input
     try:
         hook_input = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        # Audit C-M7: surface stdin parse failures rather than silently
+        # treat the session as having no cwd. Without `cwd` the project
+        # tagging is incorrect, so a malformed payload here meaningfully
+        # degrades retrieval — the operator should see it.
+        print(
+            f"[retrieval] WARN: hook stdin was not valid JSON: {exc}",
+            file=sys.stderr,
+        )
         hook_input = {}
 
     # Derive current project from working directory
@@ -743,6 +830,7 @@ def main() -> None:
         # No memories yet — skip memory retrieval but still load scratchpad
         if scratchpad_sections:
             print("\n\n".join(scratchpad_sections))
+        _emit_load_diagnostics()
         sys.exit(0)
 
     # Build tag profile from same-project memories for cross-project relevance
@@ -785,11 +873,13 @@ def main() -> None:
     parts.extend(scratchpad_sections)
 
     if not parts:
+        _emit_load_diagnostics()
         sys.exit(0)
 
     # Inject into session context — plain text stdout is added as
     # additionalContext for SessionStart hooks
     print("\n\n".join(parts))
+    _emit_load_diagnostics()
 
 
 if __name__ == "__main__":

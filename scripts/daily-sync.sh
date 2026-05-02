@@ -333,8 +333,27 @@ if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
         # lines from the committed tree. HEAD~1 might not exist on a
         # brand-new branch — guard with rev-parse.
         if git rev-parse --verify --quiet "HEAD~1" >/dev/null 2>&1; then
-            lines_before=$(git show "HEAD~1:memories/memories.jsonl" 2>/dev/null | wc -l)
-            lines_after=$(git show "HEAD:memories/memories.jsonl" 2>/dev/null | wc -l)
+            # Audit 2026-05-02 (E daily-sync.sh:336-337): previously
+            # both `git show` calls discarded stderr and `wc -l`
+            # returned 0 on any error, so a path move (e.g. memories
+            # renamed) would evade the shrink check entirely. Capture
+            # stderr to a temp file and log a WARN if either side
+            # errors so the failure is visible.
+            git_show_err=$(mktemp)
+            if ! lines_before=$(git show "HEAD~1:memories/memories.jsonl" 2>"$git_show_err" | wc -l); then
+                lines_before=0
+            fi
+            if [[ -s "$git_show_err" ]]; then
+                log "WARN: git show HEAD~1:memories/memories.jsonl emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
+            fi
+            : >"$git_show_err"
+            if ! lines_after=$(git show "HEAD:memories/memories.jsonl" 2>"$git_show_err" | wc -l); then
+                lines_after=0
+            fi
+            if [[ -s "$git_show_err" ]]; then
+                log "WARN: git show HEAD:memories/memories.jsonl emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
+            fi
+            rm -f "$git_show_err"
             if [[ "$lines_after" -lt "$lines_before" ]]; then
                 head_msg="$(git log -1 --format=%B)"
                 if ! echo "$head_msg" | grep -q "^Rewrite-Class: bulk"; then

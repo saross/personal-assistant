@@ -241,8 +241,17 @@ class TestFormatDeadlineStatus:
         assert "deadline" in result
         assert far in result
 
-    def test_invalid_date(self):
-        assert accountability.format_deadline_status("not-a-date") == ""
+    def test_invalid_date(self, capsys):
+        # Audit C-M4 (2026-05-02): unparseable deadlines used to return
+        # an empty string, hiding the parse failure on the very surface
+        # the banner exists to make loud. The fix surfaces the bad value
+        # in the banner and emits a stderr WARN.
+        result = accountability.format_deadline_status("not-a-date")
+        assert "not-a-date" in result
+        assert "UNPARSEABLE" in result
+        captured = capsys.readouterr()
+        assert "[accountability] WARN" in captured.err
+        assert "not-a-date" in captured.err
 
 
 # ============================================================================

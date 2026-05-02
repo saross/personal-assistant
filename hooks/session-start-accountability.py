@@ -141,14 +141,26 @@ def parse_focus_slots() -> list[dict]:
 
 
 def format_deadline_status(deadline_str: str | None) -> str:
-    """Format deadline as a human-readable status string."""
+    """Format deadline as a human-readable status string.
+
+    Audit C-M4: a malformed deadline (e.g. ``2026-13-01``) used to return
+    an empty string, which silently hid the parse failure on the very
+    surface this hook exists to make loud. We now surface the unparseable
+    value so the user sees the broken field on the banner and a warning
+    on stderr.
+    """
     if not deadline_str:
         return ""
 
     try:
         deadline = datetime.strptime(deadline_str, "%Y-%m-%d").date()
-    except ValueError:
-        return ""
+    except ValueError as exc:
+        print(
+            f"[accountability] WARN: unparseable deadline "
+            f"{deadline_str!r}: {exc}",
+            file=sys.stderr,
+        )
+        return f"deadline {deadline_str} (UNPARSEABLE)"
 
     today = datetime.now().date()
     delta = (deadline - today).days

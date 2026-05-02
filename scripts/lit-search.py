@@ -104,18 +104,55 @@ def _safe_get(
 
     Returns the parsed JSON response, or None on failure.
     Logs errors to stderr but does not raise.
+
+    Audit 2026-05-02 (D-M1, D-M2): the 429 path used to retry exactly
+    once with a flat 5 s sleep, without honouring `Retry-After` and
+    without distinguishing "still rate-limited" from "definitively not
+    found". A second 429 silently fell through to the generic non-200
+    branch and the caller saw a `None` indistinguishable from a 404.
+    The retry now honours `Retry-After`, and a repeated 429 logs an
+    explicit `WARN` with the source so silent rate-limit pressure
+    surfaces in the lit-scout run log.
     """
     _rate_limit(source)
     try:
         resp = client.get(url, params=params)
         if resp.status_code == 429:
-            log.warning("%s: rate limited (429). Backing off 5s.", source)
-            time.sleep(5.0)
+            # Honour Retry-After if the server supplies it; cap at 30 s
+            # so a misbehaving header can't stall the run indefinitely.
+            # Default to 5 s to preserve historical behaviour when the
+            # header is absent or unparseable.
+            retry_after_hdr = resp.headers.get("Retry-After", "")
+            backoff = 5.0
+            if isinstance(retry_after_hdr, str) and retry_after_hdr.strip():
+                try:
+                    backoff = min(30.0, max(1.0, float(retry_after_hdr)))
+                except ValueError:
+                    backoff = 5.0
+            log.warning(
+                "%s: rate limited (429). Backing off %.1fs.", source, backoff,
+            )
+            time.sleep(backoff)
             _rate_limit(source)
             resp = client.get(url, params=params)
+            if resp.status_code == 429:
+                log.warning(
+                    "[lit-search] WARN: %s still rate-limited after retry "
+                    "(HTTP 429); returning None — caller cannot distinguish "
+                    "this from 404. URL: %s",
+                    source, url,
+                )
+                return None
         if resp.status_code != 200:
+            # Distinguish retryable transient failures (5xx) from terminal
+            # 4xx so the log makes the failure mode visible. We still
+            # return None — fixing the cursor-of-truth semantics is the
+            # job of a later batch (D-X4) — but the log line tells the
+            # operator which kind of failure happened.
+            kind = "transient (5xx)" if 500 <= resp.status_code < 600 else "terminal"
             log.warning(
-                "%s: HTTP %d for %s", source, resp.status_code, url
+                "%s: HTTP %d (%s) for %s",
+                source, resp.status_code, kind, url,
             )
             return None
         data = resp.json()
@@ -127,7 +164,12 @@ def _safe_get(
             return None
         return data
     except (httpx.HTTPError, json.JSONDecodeError) as exc:
-        log.warning("%s: request failed: %s", source, exc)
+        # Specific exceptions only — a programming bug should still crash
+        # rather than be swallowed as "request failed".
+        log.warning(
+            "[lit-search] WARN: %s request failed (%s): %s",
+            source, type(exc).__name__, exc,
+        )
         return None
 
 
