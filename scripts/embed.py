@@ -18,9 +18,17 @@ Usage:
 import json
 import logging
 import os
+import sys
 import urllib.request
 import urllib.error
+from pathlib import Path
 from typing import Any
+
+# Shared HTTP retry helper (audit IC7). Importing by absolute filesystem
+# path because ``embed.py`` may be invoked from a working directory that
+# does not contain ``scripts/`` on ``sys.path``.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _http_retry import urlopen_with_retry  # noqa: E402
 
 # ============================================================================
 # Configuration
@@ -73,6 +81,20 @@ def is_ollama_available(model: str = DEFAULT_MODEL) -> bool:
 
     Hits the ``/api/tags`` endpoint and checks the model list.
 
+    The match is **exact** on the model name returned by Ollama, with
+    one allowed concession: an Ollama tag suffix (``:latest``,
+    ``:q8_0``) on the *installed* name is treated as the same model
+    (because ``ollama pull nomic-embed-text`` installs it as
+    ``nomic-embed-text:latest``). A bare ``nomic-embed-text`` request
+    will therefore match ``nomic-embed-text`` or ``nomic-embed-text:*``,
+    but **not** ``nomic-embed-text-v1.5`` or ``my-fork-of-nomic-embed-text``.
+
+    Audit context (A-Medium #9, 2026-05-02): the previous implementation
+    used a substring match (``model in m``), which would silently accept
+    a fine-tuned variant with a different embedding dimension and break
+    pgvector cosine-distance comparisons across the canonical embedding
+    space.
+
     Args:
         model: Model name to check for (default: nomic-embed-text).
 
@@ -85,8 +107,12 @@ def is_ollama_available(model: str = DEFAULT_MODEL) -> bool:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             models = [m.get("name", "") for m in data.get("models", [])]
-            # Match on model name prefix (handles tags like :latest)
-            return any(model in m for m in models)
+            # Exact match, or exact match with a tag suffix
+            # (``nomic-embed-text:latest`` matches ``nomic-embed-text``).
+            return any(
+                installed == model or installed.startswith(model + ":")
+                for installed in models
+            )
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         logger.debug("Ollama availability check failed: %s", exc)
         return False
@@ -126,7 +152,13 @@ def generate_embeddings(
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # Audit IC7: route the Ollama call through the shared retry
+        # helper so a brief outage (model swap, ollama serve restart) no
+        # longer leaves rows permanently unembedded. The helper retries
+        # transient errors with exponential backoff plus jitter; final
+        # failures still propagate to the existing except ladder below
+        # so the graceful-degradation contract is preserved.
+        with urlopen_with_retry(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             embeddings = data.get("embeddings", [])
 

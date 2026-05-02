@@ -4,15 +4,28 @@ Backfill semantic embeddings for existing memories in PostgreSQL.
 
 Generates embeddings via Ollama (nomic-embed-text) for all memories
 where the embedding column is NULL. Safe to re-run — only processes
-records without embeddings.
+records without embeddings (idempotent: running twice produces the same
+end state).
+
+Audit context (B-M10, IC7, 2026-05-02): pairs with the ASC ordering fix
+in ``sync-to-postgres.py``. The cron-driven embedding loop only walks
+``EMBED_BATCH_SIZE=100`` rows per tick; this script is the catch-up
+tool for any backlog that accumulated under the previous DESC ordering
+or during an Ollama outage.
 
 Usage:
-    venv/bin/python3 scripts/backfill-embeddings.py [--dry-run] [--batch-size N] [--limit N]
+    venv/bin/python3 scripts/backfill-embeddings.py [--dry-run]
+        [--batch-size N] [--limit N] [--catch-up]
 
 Options:
     --dry-run       Report count without generating embeddings
     --batch-size N  Records per Ollama API call (default: 200)
     --limit N       Process at most N records (0 = all, default)
+    --catch-up      Process *every* row currently lacking an embedding,
+                    oldest first; ignores --limit. Continues past
+                    individual batch failures rather than aborting on
+                    the first all-failed batch (the default behaviour
+                    aborts to surface a sustained Ollama outage).
 """
 
 import argparse
@@ -84,7 +97,11 @@ def fetch_batch(
     Fetch a batch of memories needing embeddings.
 
     Returns list of (id, content, summary, source_context) tuples,
-    ordered by created_at DESC (newest first).
+    ordered by created_at ASC (oldest first).
+
+    The ordering matches ``sync-to-postgres.py``'s embedding loop after
+    the B-M10 fix: oldest-first so that older unembedded rows cannot be
+    starved by a steady stream of newer arrivals.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -93,7 +110,7 @@ def fetch_batch(
                    COALESCE(source_context, '')
             FROM memories
             WHERE embedding IS NULL
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
             LIMIT %s OFFSET %s
             """,
             (batch_size, offset),
@@ -134,8 +151,29 @@ def backfill(
     limit: int,
     dry_run: bool,
     logger: logging.Logger,
+    catch_up: bool = False,
 ) -> None:
-    """Run the embedding backfill."""
+    """
+    Run the embedding backfill.
+
+    Parameters
+    ----------
+    batch_size:
+        Rows per Ollama API call.
+    limit:
+        Maximum rows to process. 0 means "all". Ignored when ``catch_up``
+        is true.
+    dry_run:
+        Report counts without calling Ollama.
+    logger:
+        Configured logger.
+    catch_up:
+        Process every currently-unembedded row, oldest first, and tolerate
+        individual batch failures (skip the failing rows by advancing the
+        SQL ``OFFSET`` past them so the next batch is fresh data).
+        Idempotent: running twice in a row is harmless because each call
+        only sees rows still lacking embeddings.
+    """
     # Check Ollama
     if not dry_run and not is_ollama_available():
         logger.error(
@@ -153,13 +191,18 @@ def backfill(
         sys.exit(2)
     missing = count_missing(conn)
 
-    if limit > 0:
+    if catch_up:
+        to_process = missing
+    elif limit > 0:
         to_process = min(missing, limit)
     else:
         to_process = missing
 
     logger.info("Memories without embeddings: %d", missing)
-    logger.info("Will process: %d (batch size: %d)", to_process, batch_size)
+    logger.info(
+        "Will process: %d (batch size: %d, catch-up: %s)",
+        to_process, batch_size, catch_up,
+    )
 
     if dry_run:
         n_batches = (to_process + batch_size - 1) // batch_size
@@ -169,10 +212,15 @@ def backfill(
 
     total_embedded = 0
     batch_num = 0
+    # In catch-up mode we advance ``offset`` past any batch where every
+    # record failed, so a single poison record (e.g. a row whose content
+    # tickles a model-specific bug) cannot stall the entire run. A
+    # subsequent invocation revisits the skipped rows because they still
+    # lack embeddings — i.e. the skip is observational, not destructive.
+    offset = 0
 
     while total_embedded < to_process:
-        # Always fetch from offset 0 since previous batch was updated
-        batch = fetch_batch(conn, batch_size)
+        batch = fetch_batch(conn, batch_size, offset=offset)
         if not batch:
             break
 
@@ -209,14 +257,29 @@ def backfill(
             f", {skipped} skipped" if skipped else "",
         )
 
-        # Guard against infinite loop: if an entire batch fails to
-        # embed, break rather than retrying the same records forever
         if updated == 0:
+            if catch_up:
+                # Skip past this batch and continue. The offset advance
+                # is a within-run heuristic; the next ``fetch_batch``
+                # still uses ``WHERE embedding IS NULL`` so cleared rows
+                # never reappear in the same loop.
+                logger.warning(
+                    "Batch %d: all %d embeddings failed — skipping "
+                    "and continuing (catch-up mode)",
+                    batch_num, len(records),
+                )
+                offset += len(records)
+                continue
+            # Default behaviour: abort to surface a sustained outage.
             logger.error(
                 "Batch %d: all %d embeddings failed — aborting",
                 batch_num, len(records),
             )
             break
+
+        # Successful batch: keep offset at 0 so the next fetch returns
+        # the next-oldest unembedded slice.
+        offset = 0
 
     conn.close()
     logger.info("Backfill complete: %d memories embedded", total_embedded)
@@ -241,10 +304,23 @@ def main() -> None:
         "--limit", type=int, default=0,
         help="Max records to process (0 = all)",
     )
+    parser.add_argument(
+        "--catch-up", action="store_true",
+        help=(
+            "Process every unembedded row (oldest first); skip past "
+            "batches whose embeddings all fail rather than aborting"
+        ),
+    )
 
     args = parser.parse_args()
     logger = setup_logging()
-    backfill(args.batch_size, args.limit, args.dry_run, logger)
+    backfill(
+        args.batch_size,
+        args.limit,
+        args.dry_run,
+        logger,
+        catch_up=args.catch_up,
+    )
 
 
 if __name__ == "__main__":

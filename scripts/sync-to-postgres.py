@@ -619,13 +619,27 @@ def _update_embeddings(logger: logging.Logger) -> None:
             conn.close()
             sys.exit(2)
         with conn.cursor() as cur:
+            # Audit B-M10 (re-tiered Critical, 2026-05-02): the previous
+            # ``ORDER BY created_at DESC`` walked the unembedded queue
+            # newest-first. Under any sustained arrival rate exceeding
+            # ``EMBED_BATCH_SIZE`` per cycle, the *oldest* unembedded
+            # rows would never reach the front of the queue. The HNSW
+            # partial index excludes rows with NULL embeddings, so those
+            # records were silently absent from /recall results — a
+            # wrong-results failure mode rather than a crash.
+            #
+            # ASC ordering means new arrivals temporarily wait while the
+            # backlog drains, but they are caught up on the next cron
+            # tick. Under bursty load both orderings behave identically;
+            # under steady load ASC is the only one that bounds the age
+            # of an unembedded row.
             cur.execute(
                 """
                 SELECT id, content, COALESCE(summary, ''),
                        COALESCE(source_context, '')
                 FROM memories
                 WHERE embedding IS NULL
-                ORDER BY created_at DESC
+                ORDER BY created_at ASC
                 LIMIT %s
                 """,
                 (EMBED_BATCH_SIZE,),

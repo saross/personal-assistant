@@ -111,6 +111,71 @@ class TestIsOllamaAvailable:
         ):
             assert embed.is_ollama_available() is False
 
+    def test_exact_match_rejects_substring_variant(self) -> None:
+        """
+        Audit A-Medium #9: ``nomic-embed-text`` must not satisfy a check
+        for ``nomic-embed-text-v1.5`` (or vice versa). The previous
+        substring match accepted variants whose embedding dimensions
+        could differ from the canonical model.
+        """
+        mock_response = json.dumps({
+            "models": [{"name": "nomic-embed-text:latest"}]
+        }).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_response
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("embed.urllib.request.urlopen", return_value=mock_resp):
+            # Bare model installed; querying for a *longer* name fails.
+            assert embed.is_ollama_available("nomic-embed-text-v1.5") is False
+
+    def test_exact_match_rejects_fork_with_suffix(self) -> None:
+        """A fork like ``my-fork-of-nomic-embed-text`` must not match."""
+        mock_response = json.dumps({
+            "models": [{"name": "my-fork-of-nomic-embed-text:latest"}]
+        }).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_response
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("embed.urllib.request.urlopen", return_value=mock_resp):
+            assert embed.is_ollama_available("nomic-embed-text") is False
+
+    def test_exact_match_accepts_tag_suffix(self) -> None:
+        """
+        Installed name with an Ollama tag suffix (``:latest``, ``:q8_0``)
+        is the *same* model as the bare name; we still accept it.
+        """
+        mock_response = json.dumps({
+            "models": [{"name": "nomic-embed-text:q8_0"}]
+        }).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_response
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("embed.urllib.request.urlopen", return_value=mock_resp):
+            assert embed.is_ollama_available("nomic-embed-text") is True
+
+    def test_exact_match_accepts_bare_name(self) -> None:
+        """A bare installed name with no tag is also accepted."""
+        mock_response = json.dumps({
+            "models": [{"name": "nomic-embed-text"}]
+        }).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_response
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("embed.urllib.request.urlopen", return_value=mock_resp):
+            assert embed.is_ollama_available("nomic-embed-text") is True
+
 
 # ============================================================================
 # Tests — generate_embeddings
