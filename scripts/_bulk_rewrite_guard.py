@@ -63,7 +63,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -202,7 +202,7 @@ def _working_tree_clean_on(files: tuple[str, ...]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-_lock_fd: Optional[int] = None
+_lock_fd: int | None = None
 
 
 def _acquire_lock() -> bool:

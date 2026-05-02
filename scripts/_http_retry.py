@@ -67,8 +67,6 @@ import random
 import time
 import urllib.error
 import urllib.request
-from typing import Optional
-
 logger = logging.getLogger("http-retry")
 
 # Default transient HTTP status codes — RFC 9110 408 + 429 + the common
@@ -88,7 +86,7 @@ RETRY_AFTER_MIN_S = 1.0
 # ---------------------------------------------------------------------------
 
 
-def parse_retry_after(value: Optional[str]) -> Optional[float]:
+def parse_retry_after(value: str | None) -> float | None:
     """
     Parse an HTTP ``Retry-After`` header value (seconds form).
 
@@ -245,7 +243,7 @@ def urlopen_with_retry(
     if max_attempts < 1:
         max_attempts = 1
 
-    last_exc: Optional[BaseException] = None
+    last_exc: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             return urllib.request.urlopen(request, timeout=timeout)

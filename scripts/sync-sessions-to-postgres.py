@@ -24,7 +24,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple, Optional
+from typing import Any, Iterator, NamedTuple
 
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -123,8 +123,8 @@ def save_cursor(timestamp: str) -> None:
 
 def find_session_metadata(
     archive_root: Path,
-    since: Optional[str] = None,
-    logger: Optional[logging.Logger] = None,
+    since: str | None = None,
+    logger: logging.Logger | None = None,
 ) -> list[tuple[Path, dict[str, Any]]]:
     """
     Walk the archive tree and return parsed session.meta.json files.

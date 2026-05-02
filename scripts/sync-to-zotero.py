@@ -49,8 +49,9 @@ LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "sync.log"
 # Quarantine destination for memories whose Zotero target was missing at
 # write time (audit IC2 / D-M10). Lives in the data submodule for
-# consistency with the postgres quarantine paths; IC6 will move all
-# quarantine files outside data/ in a later batch.
+# consistency with the postgres quarantine paths but is .gitignored
+# (data/.gitignore: memories/quarantine-*.jsonl) so quarantine events
+# do not leak into the auto-commit cycle (audit IC6).
 QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-zotero-skipped.jsonl"
 
 CURSOR_KEY = "zotero_sync_line"

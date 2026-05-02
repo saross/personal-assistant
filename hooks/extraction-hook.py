@@ -24,7 +24,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 # Shared helpers live under ``scripts/`` — both hooks and CLI scripts
 # import them by extending sys.path. Centralised so any drift across
@@ -331,8 +331,8 @@ def save_cursor(cursor: dict) -> None:
 
 def parse_transcript(
     transcript_path: str,
-    last_uuid: Optional[str],
-) -> tuple[list[dict], Optional[str]]:
+    last_uuid: str | None,
+) -> tuple[list[dict], str | None]:
     """
     Parse a Claude Code transcript JSONL file.
 
@@ -348,7 +348,7 @@ def parse_transcript(
     found_cursor = last_uuid is None  # If no cursor, start from beginning
     skip_next_assistant = False  # Flag to skip assistant response to a command
 
-    with open(transcript_path) as f:
+    with open(transcript_path, encoding="utf-8") as f:
         for line in f:
             try:
                 entry = json.loads(line)

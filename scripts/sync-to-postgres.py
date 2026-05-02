@@ -17,7 +17,7 @@ import logging
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple, Optional
+from typing import Any, Iterator, NamedTuple
 
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -154,7 +154,7 @@ def save_sync_timestamp() -> None:
 # ============================================================================
 
 def parse_jsonl_record(line: str, line_number: int, logger: logging.Logger
-                       ) -> Optional[dict[str, Any]]:
+                       ) -> dict[str, Any] | None:
     """
     Parse a single JSONL line into a record dict.
 
@@ -191,7 +191,7 @@ def classify_jsonl_line(
     line: str,
     line_number: int,
     logger: logging.Logger,
-) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+) -> tuple[dict[str, Any] | None, str | None]:
     """
     Parse a single JSONL line, returning ``(record, failure_reason)``.
 

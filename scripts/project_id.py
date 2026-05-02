@@ -30,10 +30,9 @@ Audit refs
 """
 
 from pathlib import Path
-from typing import Optional
 
 
-def encode_project_id(cwd: str) -> Optional[str]:
+def encode_project_id(cwd: str) -> str | None:
     """Encode *cwd* as the canonical project id used by memory writers.
 
     Resolves *cwd* to an absolute path (matching the historical

@@ -44,7 +44,6 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 # Shared project-id encoder. Both this hook (which derives the id from
 # cwd to filter memories) and the extraction hook (which writes the id
@@ -377,7 +376,7 @@ def parse_created_at(mem: dict) -> datetime | None:
     return dt
 
 
-def derive_project(cwd: str) -> Optional[str]:
+def derive_project(cwd: str) -> str | None:
     """
     Derive the project identifier from the current working directory.
 
@@ -390,7 +389,7 @@ def derive_project(cwd: str) -> Optional[str]:
     return encode_project_id(cwd)
 
 
-def is_same_project(mem: dict, current_project: Optional[str]) -> bool:
+def is_same_project(mem: dict, current_project: str | None) -> bool:
     """
     Determine whether a memory belongs to the current project.
 
@@ -409,7 +408,7 @@ def is_same_project(mem: dict, current_project: Optional[str]) -> bool:
 
 def collect_project_tags(
     memories: list[dict],
-    current_project: Optional[str],
+    current_project: str | None,
 ) -> set[str]:
     """
     Collect all tags from same-project memories to build a relevance profile.
@@ -463,7 +462,7 @@ def apply_per_project_cap(
     Prevents one high-volume foreign project from crowding out signal from
     smaller projects in the cross-project slot allocation.
     """
-    counts: dict[Optional[str], int] = {}
+    counts: dict[str | None, int] = {}
     taken: list[dict] = []
     for mem in memories:
         if len(taken) >= limit:
@@ -497,8 +496,8 @@ def _sort_key(mem: dict) -> datetime:
 def retrieve_recent(
     memories: list[dict],
     cutoff: datetime,
-    current_project: Optional[str],
-    project_tags: Optional[set[str]] = None,
+    current_project: str | None,
+    project_tags: set[str] | None = None,
 ) -> list[dict]:
     """
     Get memories from the last N days, split by project affinity.
@@ -549,8 +548,8 @@ def retrieve_recent(
 def retrieve_permanent(
     memories: list[dict],
     recent_ids: set[str],
-    current_project: Optional[str],
-    project_tags: Optional[set[str]] = None,
+    current_project: str | None,
+    project_tags: set[str] | None = None,
 ) -> list[dict]:
     """
     Get permanent high-value memories not already in the recent list,
@@ -593,8 +592,8 @@ def retrieve_permanent(
 def retrieve_middle_aged(
     memories: list[dict],
     already_ids: set[str],
-    current_project: Optional[str],
-    project_tags: Optional[set[str]] = None,
+    current_project: str | None,
+    project_tags: set[str] | None = None,
 ) -> list[dict]:
     """
     Retrieve gotcha and pattern memories aged 7–180 days.
@@ -670,8 +669,8 @@ def retrieve_middle_aged(
 def retrieve_constraints(
     memories: list[dict],
     already_ids: set[str],
-    current_project: Optional[str],
-    project_tags: Optional[set[str]] = None,
+    current_project: str | None,
+    project_tags: set[str] | None = None,
 ) -> list[dict]:
     """
     Retrieve constraint-type memories for the dedicated spotlight section.
@@ -909,7 +908,7 @@ def load_scratchpad() -> str:
     return content
 
 
-def load_project_scratchpad(cwd: str) -> tuple[str, Optional[Path]]:
+def load_project_scratchpad(cwd: str) -> tuple[str, Path | None]:
     """
     Load a per-project scratchpad keyed on the basename of the cwd.
 
@@ -1053,16 +1052,20 @@ def main() -> None:
     )
 
     # Middle-aged bucket — gotcha/pattern in the 14–180 day window,
-    # excluding anything already pulled into recent or permanent
-    middle_ids = recent_ids | {m.get("id") for m in permanent if m.get("id")}
+    # excluding anything already pulled into recent or permanent.
+    # ``taken_ids`` accumulates ids already claimed by earlier buckets;
+    # each subsequent retrieval extends it, avoiding cross-bucket
+    # duplication (audit C-L3 — variable was previously misnamed
+    # ``middle_ids``).
+    taken_ids = recent_ids | {m.get("id") for m in permanent if m.get("id")}
     middle_aged = retrieve_middle_aged(
-        memories, middle_ids, current_project, project_tags
+        memories, taken_ids, current_project, project_tags
     )
 
     # Constraint spotlight — dedicated slots for error_mode/prompt_effectiveness
     # (excluded from PERMANENT_CATEGORIES so they only appear here).
     # Exclude everything pulled by other buckets to avoid duplication.
-    all_ids = middle_ids | {m.get("id") for m in middle_aged if m.get("id")}
+    all_ids = taken_ids | {m.get("id") for m in middle_aged if m.get("id")}
     constraints = retrieve_constraints(
         memories, all_ids, current_project, project_tags
     )

@@ -24,7 +24,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # ============================================================================
 # Configuration

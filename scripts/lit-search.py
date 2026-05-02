@@ -24,7 +24,7 @@ import re
 import sys
 import time
 import urllib.parse
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -97,8 +97,8 @@ def _safe_get(
     client: httpx.Client,
     url: str,
     source: str,
-    params: Optional[dict] = None,
-) -> Optional[dict]:
+    params: dict | None = None,
+) -> dict | None:
     """
     Make a GET request with rate limiting and error handling.
 
@@ -213,7 +213,7 @@ def _openalex_paginate(
         return []
 
     collected: list[dict] = []
-    cursor: Optional[str] = OPENALEX_INITIAL_CURSOR
+    cursor: str | None = OPENALEX_INITIAL_CURSOR
     seen_cursors: set[str] = set()
 
     while cursor and len(collected) < limit:
@@ -368,7 +368,7 @@ def _normalise_openalex(raw: dict) -> dict[str, Any]:
     }
 
 
-def _reconstruct_openalex_abstract(raw: dict) -> Optional[str]:
+def _reconstruct_openalex_abstract(raw: dict) -> str | None:
     """
     Reconstruct abstract from OpenAlex's inverted index format.
 
@@ -386,7 +386,7 @@ def _reconstruct_openalex_abstract(raw: dict) -> Optional[str]:
     return " ".join(w for _, w in words)
 
 
-def _first_or_none(lst: list) -> Optional[str]:
+def _first_or_none(lst: list) -> str | None:
     """Return the first element of a list, or None if empty."""
     return lst[0] if lst else None
 
@@ -885,7 +885,7 @@ def cmd_bibtex(
 # ============================================================================
 
 
-def _parse_year(value: Any) -> Optional[int]:
+def _parse_year(value: Any) -> int | None:
     """Attempt to parse a year from various formats."""
     if value is None:
         return None

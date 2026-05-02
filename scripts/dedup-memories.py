@@ -32,7 +32,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Guard against racing with another machine's extraction-hook appends
@@ -151,7 +151,7 @@ def reid_reprocess_collision(
         old_id = rec.get("id", "")
         date_prefix = old_id[:10] if len(old_id) >= 10 and old_id[4] == "-" else created_at[:10]
         if not date_prefix:
-            date_prefix = datetime.utcnow().strftime("%Y-%m-%d")
+            date_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         id_source = f"{session_id}-reprocess-relineno-{lineno}-{i}"
         new_hash = hashlib.sha256(id_source.encode()).hexdigest()[:12]
         new_id = f"{date_prefix}-{new_hash}"

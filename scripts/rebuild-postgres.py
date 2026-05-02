@@ -66,7 +66,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 # Schema-version guard (audit IC5 / B-X1).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -334,7 +334,7 @@ def reset_cursor_key(
 # ============================================================================
 
 
-def _open_connection(logger: logging.Logger) -> Optional[Any]:
+def _open_connection(logger: logging.Logger) -> Any | None:
     """Open a psycopg2 connection or return None on failure.
 
     Logs the failure cause and returns None rather than raising — the
@@ -387,7 +387,7 @@ def perform_rebuild(
     logger: logging.Logger,
     *,
     cursor_file: Path = CURSOR_FILE,
-    open_conn: Callable[[logging.Logger], Optional[Any]] = _open_connection,
+    open_conn: Callable[[logging.Logger], Any | None] = _open_connection,
 ) -> int:
     """Execute every reset target in order. Returns process exit code.
 
@@ -468,7 +468,7 @@ def perform_rebuild(
 # ============================================================================
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
     ``--dry-run`` is the implicit default: when neither ``--yes`` nor
@@ -510,7 +510,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code (caller exits with it).
 
     Exit codes:

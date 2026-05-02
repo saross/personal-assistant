@@ -42,7 +42,7 @@ from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E4
 # lockstep with hooks/extraction-hook.py (audit IC1, IC4).
 from _command_markers import COMMAND_MARKERS  # noqa: E402
 from _timestamps import coerce_to_iso, now_iso  # noqa: E402
-from typing import Any, Optional
+from typing import Any
 
 # ============================================================================
 # Configuration

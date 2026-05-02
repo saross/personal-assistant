@@ -33,8 +33,6 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-
 # Schema-version guard (audit IC5 / B-X1).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
@@ -125,7 +123,7 @@ def _read_jsonl_ids(jsonl_path: Path, logger: logging.Logger) -> set[str]:
 def _read_postgres_ids(
     table: str,
     logger: logging.Logger,
-) -> Optional[set[str]]:
+) -> set[str] | None:
     """
     Return the set of ids from a PostgreSQL table, or ``None`` on error.
 
@@ -171,7 +169,7 @@ def _read_postgres_ids(
 def audit_memories(
     jsonl_path: Path,
     logger: logging.Logger,
-) -> Optional[AuditResult]:
+) -> AuditResult | None:
     """Reconcile memory ids between the JSONL canonical and PostgreSQL."""
     if not jsonl_path.exists():
         logger.error("Canonical JSONL not found: %s", jsonl_path)
@@ -223,7 +221,7 @@ def _read_session_archive_ids(
 def audit_sessions(
     archive_root: Path,
     logger: logging.Logger,
-) -> Optional[AuditResult]:
+) -> AuditResult | None:
     """Reconcile session ids between archive metadata and PostgreSQL."""
     canonical_ids = _read_session_archive_ids(archive_root, logger)
     postgres_ids = _read_postgres_ids("sessions", logger)
