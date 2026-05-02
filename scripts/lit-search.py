@@ -174,6 +174,85 @@ def _safe_get(
 
 
 # ============================================================================
+# OpenAlex cursor pagination
+# ============================================================================
+
+# OpenAlex caps `per_page` at 200 (the API rejects larger values). Cursor
+# pagination starts with the literal token `*` and follows
+# `meta.next_cursor` until the API returns a null/empty cursor.
+OPENALEX_PER_PAGE_MAX = 200
+OPENALEX_INITIAL_CURSOR = "*"
+
+
+def _openalex_paginate(
+    client: httpx.Client,
+    url: str,
+    base_params: dict,
+    limit: int,
+) -> list[dict]:
+    """
+    Iterate OpenAlex cursor pagination until `limit` results are
+    collected or the cursor terminates.
+
+    Audit 2026-05-02 (D-M5, D-M6): the previous code hard-capped each
+    request at `per_page=min(limit, 50)` and never followed the cursor,
+    so a `--limit 200` request returned at most 50 results. OpenAlex
+    supports `cursor=*` opaque-token pagination — that is the API's
+    correct mechanism for deep paging. `page=N` offset pagination is
+    capped at 10 000 results and is *not* what OpenAlex prefers; cursor
+    is the documented choice for any traversal beyond the first page.
+
+    The helper requests `per_page = min(remaining, OPENALEX_PER_PAGE_MAX)`
+    each iteration so it never overshoots the user's `--limit`.
+
+    Defensive against malformed responses: a missing `meta.next_cursor`
+    or a cursor that does not advance terminates the loop. This avoids
+    an infinite loop if the API ever echoes back a stale cursor.
+    """
+    if limit <= 0:
+        return []
+
+    collected: list[dict] = []
+    cursor: Optional[str] = OPENALEX_INITIAL_CURSOR
+    seen_cursors: set[str] = set()
+
+    while cursor and len(collected) < limit:
+        remaining = limit - len(collected)
+        per_page = max(1, min(remaining, OPENALEX_PER_PAGE_MAX))
+        params = dict(base_params)
+        params["per_page"] = str(per_page)
+        params["cursor"] = cursor
+
+        page = _safe_get(client, url, "openalex", params=params)
+        if not page or "results" not in page:
+            # Either the request failed (logged in `_safe_get`) or the
+            # API returned no results envelope. Stop rather than loop.
+            break
+
+        results = page.get("results") or []
+        if not results:
+            break
+        collected.extend(results)
+
+        # Defensive: detect a cursor that does not advance. The API
+        # contract says `next_cursor` should differ from the cursor we
+        # just used; if it matches, or if we have seen this cursor
+        # before, terminate to avoid infinite loops on malformed
+        # responses. (`cursor` here is what we sent on this iteration.)
+        next_cursor = (page.get("meta") or {}).get("next_cursor")
+        if (
+            not next_cursor
+            or next_cursor == cursor
+            or next_cursor in seen_cursors
+        ):
+            break
+        seen_cursors.add(cursor)
+        cursor = next_cursor
+
+    return collected[:limit]
+
+
+# ============================================================================
 # Paper schema normalisation
 # ============================================================================
 
@@ -317,10 +396,54 @@ def _first_or_none(lst: list) -> Optional[str]:
 # ============================================================================
 
 
+def _merge_paper_records(base: dict, extra: dict) -> dict:
+    """
+    Merge two paper records sharing a DOI, filling gaps in `base` from
+    `extra` rather than discarding one.
+
+    Audit 2026-05-02 (D-M4): the previous "more non-None fields wins"
+    heuristic dropped complementary metadata. CrossRef carries DOI, year,
+    title, authors but not abstract; OpenAlex carries DOI, abstract,
+    citation count. Picking one record discarded fields the other
+    populated. This merger preserves the same gap-fill semantics already
+    used by `cmd_metadata` (truthiness check, so empty lists / zero counts
+    can be filled in by populated values from other sources).
+
+    `sources` is accumulated as a list so the merged record records every
+    upstream that contributed.
+    """
+    merged = dict(base)
+    for key, value in extra.items():
+        if key == "source":
+            # Single-source field is replaced by the multi-source `sources`.
+            continue
+        if value and not merged.get(key):
+            merged[key] = value
+
+    # Track all contributing sources. Promote `source` to `sources` list.
+    sources: list[str] = []
+    for record in (base, extra):
+        existing = record.get("sources")
+        if isinstance(existing, list):
+            sources.extend(existing)
+        single = record.get("source")
+        if single and single not in sources:
+            sources.append(single)
+    if sources:
+        merged["sources"] = sources
+    return merged
+
+
 def _deduplicate(papers: list[dict]) -> list[dict]:
     """
-    Deduplicate papers by DOI. When duplicates exist, prefer the record
-    with more complete metadata (more non-None fields).
+    Deduplicate papers by DOI, merging complementary metadata across
+    sources rather than discarding one.
+
+    Records without a DOI cannot be paired and are passed through
+    unchanged. Case is normalised before comparison; whitespace is
+    stripped — DOIs are case-insensitive per the DOI spec.
+
+    Audit 2026-05-02 (D-M4): switched from "winner-takes-all" to merge.
     """
     seen: dict[str, dict] = {}
     no_doi: list[dict] = []
@@ -332,15 +455,9 @@ def _deduplicate(papers: list[dict]) -> list[dict]:
             continue
 
         if doi in seen:
-            # Keep the record with more non-None fields
-            existing_count = sum(
-                1 for v in seen[doi].values() if v is not None
-            )
-            new_count = sum(
-                1 for v in paper.values() if v is not None
-            )
-            if new_count > existing_count:
-                seen[doi] = paper
+            # Merge complementary fields from this duplicate into the
+            # record we already have.
+            seen[doi] = _merge_paper_records(seen[doi], paper)
         else:
             seen[doi] = paper
 
@@ -488,28 +605,35 @@ def cmd_references(
         params={"mailto": MAILTO},
     )
     if data and "referenced_works" in data:
-        ref_ids = data["referenced_works"][:DEFAULT_CITATION_LIMIT]
+        # Audit 2026-05-02 (D-M5): truncate to the user's `--limit`, not
+        # to the hard-coded `DEFAULT_CITATION_LIMIT` (50). The previous
+        # code silently capped the OpenAlex contribution at 50 even when
+        # the user asked for more, then deduped against CrossRef and S2
+        # at `limit`. The user's flag was partially ignored.
+        all_ref_ids: list[str] = data["referenced_works"] or []
+        ref_ids = all_ref_ids[:limit]
         if ref_ids:
-            # Batch fetch via filter
+            # OpenAlex batch resolves multiple IDs via the `openalex:` filter.
+            # `per_page` is capped at OPENALEX_PER_PAGE_MAX (200) by the API;
+            # if the user asks for more, page the filter via cursor.
             id_filter = "|".join(ref_ids)
-            batch = _safe_get(
+            base_params = {
+                "filter": f"openalex:{id_filter}",
+                "mailto": MAILTO,
+            }
+            results = _openalex_paginate(
                 client,
                 f"{OPENALEX_BASE}/works",
-                "openalex",
-                params={
-                    "filter": f"openalex:{id_filter}",
-                    "per_page": str(len(ref_ids)),
-                    "mailto": MAILTO,
-                },
+                base_params,
+                limit=len(ref_ids),
             )
-            if batch and "results" in batch:
-                for work in batch["results"]:
-                    all_papers.append(_normalise_openalex(work))
-                log.info(
-                    "OpenAlex: resolved %d/%d references",
-                    len(batch["results"]),
-                    len(ref_ids),
-                )
+            for work in results:
+                all_papers.append(_normalise_openalex(work))
+            log.info(
+                "OpenAlex: resolved %d/%d references",
+                len(results),
+                len(ref_ids),
+            )
 
     return _deduplicate(all_papers)[:limit]
 
@@ -562,24 +686,26 @@ def cmd_citations(
     )
     if oa_data and "id" in oa_data:
         oa_id = oa_data["id"]
-        cited_by = _safe_get(
+        # Audit 2026-05-02 (D-M6): the previous code requested
+        # `per_page=min(limit, 50)` and never followed pagination, so a
+        # `--limit 500` request returned at most 50 citing papers. Cursor
+        # pagination is OpenAlex's documented mechanism for deep paging;
+        # use it so `--limit` is honoured.
+        results = _openalex_paginate(
             client,
             f"{OPENALEX_BASE}/works",
-            "openalex",
-            params={
+            {
                 "filter": f"cites:{oa_id}",
-                "per_page": str(min(limit, 50)),
                 "sort": "cited_by_count:desc",
                 "mailto": MAILTO,
             },
+            limit=limit,
         )
-        if cited_by and "results" in cited_by:
-            for work in cited_by["results"]:
-                all_papers.append(_normalise_openalex(work))
-            log.info(
-                "OpenAlex: found %d citing papers",
-                len(cited_by["results"]),
-            )
+        for work in results:
+            all_papers.append(_normalise_openalex(work))
+        log.info(
+            "OpenAlex: found %d citing papers", len(results),
+        )
 
     deduped = _deduplicate(all_papers)
     # Sort by citation count descending (most-cited first)
@@ -678,23 +804,25 @@ def cmd_openalex_cited_by(
         "OpenAlex: paper has %d total citations", total_citations
     )
 
-    # Fetch citing papers
-    cited_by = _safe_get(
+    # Fetch citing papers via cursor pagination.
+    # Audit 2026-05-02 (D-M6): the previous code took the first page only
+    # (`per_page=min(limit, 50)`); a paper with 5 000 citations and a
+    # `--limit 500` flag returned 50.
+    raw_results = _openalex_paginate(
         client,
         f"{OPENALEX_BASE}/works",
-        "openalex",
-        params={
+        {
             "filter": f"cites:{oa_id}",
-            "per_page": str(min(limit, 50)),
             "sort": "cited_by_count:desc",
             "mailto": MAILTO,
         },
+        limit=limit,
     )
-    if not cited_by or "results" not in cited_by:
+    if not raw_results:
         log.warning("OpenAlex cited-by query returned no results")
         return []
 
-    papers = [_normalise_openalex(w) for w in cited_by["results"]]
+    papers = [_normalise_openalex(w) for w in raw_results]
     papers.sort(
         key=lambda p: p.get("citation_count") or 0, reverse=True
     )

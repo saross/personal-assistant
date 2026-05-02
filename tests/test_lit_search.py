@@ -787,3 +787,373 @@ class TestBibtex:
         result = lit_search.cmd_bibtex(["10.9999/oops"], client)
         assert "FAILED" in result
         assert "10.9999/oops" in result
+
+
+# ============================================================================
+# Tests: Batch 9 — Cluster D pagination correctness (D-M4, D-M5, D-M6)
+# ============================================================================
+
+
+def _openalex_page(results, next_cursor):
+    """Build an OpenAlex-shaped response page for pagination tests."""
+    return {
+        "results": results,
+        "meta": {"next_cursor": next_cursor},
+    }
+
+
+def _openalex_work(idx: int, citations: int = 0) -> dict:
+    """Synthesise a minimal OpenAlex work record for pagination tests."""
+    return {
+        "id": f"https://openalex.org/W{idx:06d}",
+        "doi": f"https://doi.org/10.9999/page-{idx}",
+        "display_name": f"Paper {idx}",
+        "publication_year": 2024,
+        "cited_by_count": citations,
+        "authorships": [
+            {"author": {"display_name": f"Author {idx}"}}
+        ],
+    }
+
+
+class TestOpenAlexCursorPagination:
+    """
+    D-M6 pin: OpenAlex cursor pagination must use the API's documented
+    `cursor=*` opaque-token mechanism, not page-number / offset paging,
+    and must follow `meta.next_cursor` until exhausted or `limit` met.
+    """
+
+    @patch.object(lit_search, "_safe_get")
+    def test_initial_request_uses_star_cursor(self, mock_get):
+        """First request sets cursor=* — the OpenAlex initial token."""
+        mock_get.return_value = _openalex_page(
+            [_openalex_work(1)], next_cursor=None,
+        )
+        client = MagicMock()
+        lit_search._openalex_paginate(
+            client, "http://test/works", {"filter": "x"}, limit=5,
+        )
+        # Inspect the params actually passed
+        first_call_kwargs = mock_get.call_args_list[0].kwargs
+        params = first_call_kwargs["params"]
+        assert params["cursor"] == "*"
+        # And we should NOT be using `page=` offset paging.
+        assert "page" not in params
+
+    @patch.object(lit_search, "_safe_get")
+    def test_follows_next_cursor_to_completion(self, mock_get):
+        """The helper follows meta.next_cursor across multiple pages."""
+        mock_get.side_effect = [
+            _openalex_page(
+                [_openalex_work(i) for i in range(3)],
+                next_cursor="cursor-page-2",
+            ),
+            _openalex_page(
+                [_openalex_work(i) for i in range(3, 6)],
+                next_cursor="cursor-page-3",
+            ),
+            _openalex_page(
+                [_openalex_work(i) for i in range(6, 8)],
+                next_cursor=None,
+            ),
+        ]
+        client = MagicMock()
+        results = lit_search._openalex_paginate(
+            client, "http://test/works", {"filter": "x"}, limit=100,
+        )
+        assert len(results) == 8
+        # Subsequent requests pass the cursor returned by the previous
+        # page — proving cursor-token threading.
+        cursors_used = [
+            call.kwargs["params"]["cursor"]
+            for call in mock_get.call_args_list
+        ]
+        assert cursors_used == ["*", "cursor-page-2", "cursor-page-3"]
+
+    @patch.object(lit_search, "_safe_get")
+    def test_limit_caps_total_results(self, mock_get):
+        """The helper stops once `limit` results have been collected."""
+        # Each page returns 50 records and a cursor; we ask for 75.
+        mock_get.side_effect = [
+            _openalex_page(
+                [_openalex_work(i) for i in range(50)],
+                next_cursor="page-2",
+            ),
+            _openalex_page(
+                [_openalex_work(i) for i in range(50, 100)],
+                next_cursor="page-3",
+            ),
+        ]
+        client = MagicMock()
+        results = lit_search._openalex_paginate(
+            client, "http://test/works", {"filter": "x"}, limit=75,
+        )
+        assert len(results) == 75
+
+    @patch.object(lit_search, "_safe_get")
+    def test_stops_on_repeated_cursor(self, mock_get):
+        """A misbehaving API echoing the same cursor must not infinite-loop."""
+        # API returns the same cursor over and over with one record each.
+        mock_get.side_effect = [
+            _openalex_page([_openalex_work(0)], next_cursor="stuck"),
+            _openalex_page([_openalex_work(1)], next_cursor="stuck"),
+            _openalex_page([_openalex_work(2)], next_cursor="stuck"),
+        ]
+        client = MagicMock()
+        # The helper deduplicates seen cursors, so the second time it
+        # encounters "stuck" it stops.
+        results = lit_search._openalex_paginate(
+            client, "http://test/works", {"filter": "x"}, limit=100,
+        )
+        # First page (cursor=*) yields 1 record; second page
+        # (cursor=stuck) yields another, then we refuse to chase
+        # "stuck" again. So at most 2 records.
+        assert len(results) <= 2
+
+    @patch.object(lit_search, "_safe_get")
+    def test_per_page_never_exceeds_api_max(self, mock_get):
+        """`per_page` must never exceed OPENALEX_PER_PAGE_MAX (200)."""
+        mock_get.return_value = _openalex_page(
+            [_openalex_work(i) for i in range(200)],
+            next_cursor=None,
+        )
+        client = MagicMock()
+        lit_search._openalex_paginate(
+            client, "http://test/works", {"filter": "x"}, limit=10_000,
+        )
+        for call in mock_get.call_args_list:
+            params = call.kwargs["params"]
+            assert int(params["per_page"]) <= lit_search.OPENALEX_PER_PAGE_MAX
+
+    @patch.object(lit_search, "_safe_get")
+    def test_safe_get_failure_terminates(self, mock_get):
+        """A `None` return from `_safe_get` stops the loop cleanly."""
+        mock_get.return_value = None
+        client = MagicMock()
+        results = lit_search._openalex_paginate(
+            client, "http://test/works", {"filter": "x"}, limit=50,
+        )
+        assert results == []
+
+
+class TestCitationsLimitHonoured:
+    """
+    D-M6 pin: cmd_citations must return more than 50 results when the
+    user asks for more and the API has them.
+    """
+
+    @patch.object(lit_search, "_safe_get")
+    def test_citations_returns_more_than_50_when_requested(self, mock_get):
+        """`--limit 100` returns ~100 results, not silently capped at 50."""
+        # First call: S2 paper (no citations envelope to keep it simple)
+        # Second call: OpenAlex DOI resolve
+        # Subsequent calls: paginated `_safe_get` for the cursor walk
+        s2_response = {**S2_PAPER, "citations": []}
+        oa_resolve = {"id": "https://openalex.org/W123"}
+        # Two pages of 50 OpenAlex citing papers → 100 records total.
+        page_1 = _openalex_page(
+            [_openalex_work(i, citations=100 - i) for i in range(50)],
+            next_cursor="page-2",
+        )
+        page_2 = _openalex_page(
+            [_openalex_work(i, citations=100 - i) for i in range(50, 100)],
+            next_cursor=None,
+        )
+        mock_get.side_effect = [
+            s2_response,
+            oa_resolve,
+            page_1,
+            page_2,
+        ]
+        client = MagicMock()
+        result = lit_search.cmd_citations(
+            "10.1371/journal.pcbi.1009041", client, limit=100,
+        )
+        # Each OpenAlex paper has a unique DOI so no dedup collapse.
+        assert len(result) == 100
+
+
+class TestOpenAlexCitedByLimitHonoured:
+    """
+    D-M6 pin: cmd_openalex_cited_by must paginate beyond the first 50.
+    """
+
+    @patch.object(lit_search, "_safe_get")
+    def test_returns_more_than_50_when_requested(self, mock_get):
+        """`--limit 75` returns 75 papers, not 50."""
+        oa_resolve = {
+            "id": "https://openalex.org/W123",
+            "cited_by_count": 200,
+        }
+        page_1 = _openalex_page(
+            [_openalex_work(i, citations=100 - i) for i in range(50)],
+            next_cursor="page-2",
+        )
+        page_2 = _openalex_page(
+            [_openalex_work(i, citations=100 - i) for i in range(50, 100)],
+            next_cursor="page-3",
+        )
+        mock_get.side_effect = [oa_resolve, page_1, page_2]
+        client = MagicMock()
+        result = lit_search.cmd_openalex_cited_by(
+            "10.1371/journal.pcbi.1009041", client, limit=75,
+        )
+        assert len(result) == 75
+
+
+class TestReferencesLimitHonoured:
+    """
+    D-M5 pin: cmd_references' OpenAlex contribution must respect the
+    user's `--limit`, not silently truncate at DEFAULT_CITATION_LIMIT (50).
+    """
+
+    @patch.object(lit_search, "_safe_get")
+    def test_openalex_contribution_uses_limit_not_default(self, mock_get):
+        """When --limit=100, OpenAlex resolves up to 100 referenced_works."""
+        # 1) CrossRef returns no useful refs
+        # 2) S2 returns no refs
+        # 3) OpenAlex DOI resolve returns 100 referenced_works
+        # 4) The paginated batch resolves them all
+        crossref_empty = {"message": {}}
+        s2_empty = {"references": []}
+        oa_resolve = {
+            "referenced_works": [
+                f"https://openalex.org/W{i:06d}" for i in range(100)
+            ],
+        }
+        page_1 = _openalex_page(
+            [_openalex_work(i) for i in range(100)],
+            next_cursor=None,
+        )
+        mock_get.side_effect = [
+            crossref_empty,
+            s2_empty,
+            oa_resolve,
+            page_1,
+        ]
+        client = MagicMock()
+        result = lit_search.cmd_references(
+            "10.1371/journal.pcbi.1009041", client, limit=100,
+        )
+        # Each OpenAlex work has a unique DOI; no dedup loss.
+        assert len(result) == 100
+
+    @patch.object(lit_search, "_safe_get")
+    def test_openalex_truncates_to_limit_not_default(self, mock_get):
+        """
+        Inverse of the bug: when `referenced_works` has 200 entries and
+        the user asks for `--limit 30`, OpenAlex should request only 30,
+        not the old hard-coded 50.
+        """
+        crossref_empty = {"message": {}}
+        s2_empty = {"references": []}
+        oa_resolve = {
+            "referenced_works": [
+                f"https://openalex.org/W{i:06d}" for i in range(200)
+            ],
+        }
+        page_1 = _openalex_page(
+            [_openalex_work(i) for i in range(30)],
+            next_cursor=None,
+        )
+        mock_get.side_effect = [
+            crossref_empty, s2_empty, oa_resolve, page_1,
+        ]
+        client = MagicMock()
+        result = lit_search.cmd_references(
+            "10.1371/journal.pcbi.1009041", client, limit=30,
+        )
+        assert len(result) <= 30
+        # Final result is capped at limit — pin the cap.
+        # And we should not have asked OpenAlex to resolve more than 30
+        # IDs; inspect the filter parameter on the paginated call.
+        # Calls: CrossRef(0), S2(1), OpenAlex resolve(2), paginate page(3).
+        paginate_call_params = mock_get.call_args_list[3].kwargs["params"]
+        id_filter = paginate_call_params["filter"]
+        # The filter is "openalex:id1|id2|..." — count the ids.
+        ids_passed = id_filter.split(":", 1)[1].split("|")
+        assert len(ids_passed) <= 30
+
+
+class TestDedupeMergesAcrossPageBoundaries:
+    """
+    D-M4 pin: when the same record appears across two paginated pages
+    (e.g., concurrent edits or sort-tie reorderings), `_deduplicate`
+    must merge complementary fields, not emit two records.
+    """
+
+    def test_complementary_fields_are_merged_not_dropped(self):
+        """
+        CrossRef record on page 1 has DOI+year+title but no abstract;
+        OpenAlex record on page 2 has DOI+abstract+citation_count but
+        no year. The merged record retains both year and abstract.
+        """
+        page_one_record = {
+            "doi": "10.1234/dup",
+            "title": "Paper",
+            "year": 2021,
+            "authors": ["Smith"],
+            "abstract": None,
+            "citation_count": None,
+            "source": "crossref",
+        }
+        page_two_record = {
+            "doi": "10.1234/dup",
+            "title": "Paper",
+            "year": None,
+            "authors": [],
+            "abstract": "Long-form abstract text.",
+            "citation_count": 42,
+            "source": "openalex",
+        }
+        merged = lit_search._deduplicate(
+            [page_one_record, page_two_record]
+        )
+        assert len(merged) == 1
+        record = merged[0]
+        assert record["year"] == 2021
+        assert record["abstract"] == "Long-form abstract text."
+        assert record["citation_count"] == 42
+
+    def test_record_emitted_once_not_twice(self):
+        """Two API responses for the same DOI collapse to one record."""
+        page_one = [
+            {"doi": "10.1234/a", "title": "A", "source": "crossref"},
+            {"doi": "10.1234/b", "title": "B", "source": "crossref"},
+        ]
+        page_two = [
+            # 'a' reappears on page 2 (e.g., concurrent edit shifts pos)
+            {"doi": "10.1234/a", "title": "A", "source": "openalex"},
+            {"doi": "10.1234/c", "title": "C", "source": "openalex"},
+        ]
+        result = lit_search._deduplicate(page_one + page_two)
+        dois = sorted([p["doi"] for p in result])
+        assert dois == ["10.1234/a", "10.1234/b", "10.1234/c"]
+        # And the merged 'a' record carries both contributing sources.
+        a_record = next(p for p in result if p["doi"] == "10.1234/a")
+        sources = a_record.get("sources") or []
+        assert "crossref" in sources
+        assert "openalex" in sources
+
+    def test_merge_preserves_when_one_record_has_extra_field(self):
+        """
+        Field present on only one record survives the merge — this is
+        the heart of D-M4: complementary fields no longer dropped.
+        """
+        record_a = {
+            "doi": "10.1234/x",
+            "title": "X",
+            "s2_id": "S2-XYZ",
+            "abstract": None,
+            "source": "s2",
+        }
+        record_b = {
+            "doi": "10.1234/x",
+            "title": "X",
+            "abstract": "Abstract from CrossRef",
+            "source": "crossref",
+        }
+        merged = lit_search._deduplicate([record_a, record_b])
+        assert len(merged) == 1
+        assert merged[0]["s2_id"] == "S2-XYZ"
+        assert merged[0]["abstract"] == "Abstract from CrossRef"
