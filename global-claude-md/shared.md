@@ -35,6 +35,19 @@ Standard directories: `scripts/`, `docs/`, `data/`, `tests/`, `reports/`, `plann
 
 **Before any API call** (batch or real-time), stop and get explicit approval. Present: (1) model being called (e.g., "Gemini 2.5 Flash"), (2) batch vs real-time, (3) number of calls in the procedure, (4) estimated cost. Approval for one batch does not imply approval for subsequent batches — confirm each stage of chained runs.
 
+## AI use in teaching contexts
+
+In any teaching project (course convening, marking, student feedback, curriculum design), before uploading content to AI tools, ask: **"Is anyone other than me identifiable in or attributable to what I'm about to upload?"**
+
+- **No** → Claude is fine.
+- **Yes** (a student, a colleague's teaching material, an institution-confidential source) → don't upload, or get express consent, or switch to an institutionally-approved tool. For ANU teaching, ANU policy requires **both** an approved tool (Microsoft Copilot Enterprise, Adobe Firefly) AND express per-student opt-in consent — neither alone is sufficient.
+
+Per-course policies, where they exist, override this default. Check the course repository's `CLAUDE.md` or `docs/policies/ai-use-policy.md` first.
+
+**Research collaborations are governed separately** — Shawn's research involves multi-institutional partners with varied requirements and pre-existing collegial consent for AI use. Apply research-side governance per the project at hand; do not extend the teaching rule into research.
+
+Detailed reasoning, statutory and ANU-policy citations, and known pitfalls are documented in the HUMN8031 dossier at `~/Code/ANU-HUMN8031-2026/docs/policies/ai-use-dossier.md`. The principles generalise across ANU teaching contexts; verify against the policy of any other institution before applying elsewhere.
+
 ## Implementation and Methodology Review
 
 When implementing a new approach — whether an API integration, statistical method, data pipeline, or any significant technical decision — apply these checks automatically:
