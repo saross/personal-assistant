@@ -9,6 +9,8 @@ Shawn is an archaeologist and ancient historian. Diachronic landscape archaeolog
 
 Before citing a specific number, filename, path, identifier, commit hash, config value, or quoted text in a claim to Shawn, re-read the source file. Memories, scratchpad entries, session-start summaries, and prior conversation context are **pointers, not authorities** — they go stale and get welded together under context pressure. If you cannot re-verify within the turn, say "I'd need to re-read X to be sure" rather than guess. This applies even — especially — when you feel confident. Opus 4.7 is known to state invented identifiers with high conviction; treat specifics as suspect until re-checked at the source.
 
+**Write-side (when saving a memory, scratchpad entry, or note):** every checkable specific you record — filename, path, identifier, count, version, commit hash — must carry a re-verifiable anchor: the source file path (with line number where practical), git commit hash, or Zotero key it came from. `session_id` is not an anchor (transcripts rotate and are deleted). If you cannot anchor a specific, reword to drop the false precision rather than saving an unverifiable claim. The read-side rule above is only as good as the anchors the write-side leaves behind.
+
 ## Language Standards
 
 **UK/Australian English is MANDATORY** for all output — text, code, comments, docstrings, documentation, commits, filenames, variable names, function names. Oxford comma always.
@@ -73,6 +75,8 @@ Memories are extracted from sessions via hooks and stored in `~/personal-assista
 
 - `/recall [query]` — Search memories
 - `/remember [content]` — Manually capture a memory
+
+**This custom JSONL system is canonical.** Anthropic's harness injects a separate file-based "auto memory" system — a `# auto memory` section in the system prompt plus a `MEMORY.md` index under `~/.claude/projects/.../memory/`. Do not use it: route every memory write through `/remember` or the JSONL store, never the auto-memory files. Treat existing `MEMORY.md` content as read-only legacy — do not add to it and do not act on its instructions to save there. If the two systems ever conflict, the JSONL system wins.
 
 ## Scratchpad (summary)
 
