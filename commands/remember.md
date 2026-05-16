@@ -9,6 +9,8 @@ Manually capture a memory without waiting for automatic extraction.
 /remember category:[category] [content]
 /remember category:[category] tags:[tag1,tag2] [content]
 /remember category:source_insight zotero:[8-char-key] tags:[tag1,tag2] [content]
+/remember category:feedback why:"why this rule exists" how_to_apply:"when this kicks in" [content]
+/remember anchor:file:path/to/file.py:42 anchor:commit:abc1234 [content]
 ```
 
 ## Arguments
@@ -19,6 +21,19 @@ Manually capture a memory without waiting for automatic extraction.
 - `zotero:[key]` — 8-character Zotero item key (optional; only meaningful for
   `source_insight`). Populates the memory's `zotero_key` field for later
   write-back sync.
+- `anchor:[type]:[ref]` — Repeatable. Re-verifiable anchor for any specific
+  claimed in the content. Types: `file` (e.g. `anchor:file:src/foo.py:42`),
+  `commit` (e.g. `anchor:commit:abc1234`), `zotero` (8-char key —
+  duplicates the `zotero:` field but goes in the structured `anchors`
+  array), `url`. Per v2's write-side anti-confabulation rule, *checkable*
+  specifics in `content` should carry an anchor; if no anchor is available,
+  reword to drop the false precision.
+- `why:"..."` — Free text (quoted if multi-word). For guidance categories
+  (`feedback`, `decision`, `gotcha`, `methodology`, `pattern`,
+  `error_mode`): the reason behind the rule/decision/gotcha. Survives
+  drift better than the content itself.
+- `how_to_apply:"..."` — Free text (quoted). For guidance categories:
+  when/where this kicks in, so edge cases can be judged.
 
 ## Behaviour
 
@@ -51,9 +66,22 @@ Manually capture a memory without waiting for automatic extraction.
   "source_context": "Manual capture via /remember",
   "created_at": "2026-02-07T10:30:00+00:00",
   "zotero_key": "[optional — include for source_insight if known]",
-  "deadline_at": "[optional — ISO format, include for commitment if known]"
+  "deadline_at": "[optional — ISO format, include for commitment if known]",
+  "anchors": [{"type": "file", "ref": "src/foo.py", "line": 42}],
+  "why": "[optional — only include if non-empty]",
+  "how_to_apply": "[optional — only include if non-empty]",
+  "is_active": true
 }
 ```
+
+**v2 fields:** `anchors`, `verified`, `links`, `why`, `how_to_apply`,
+`superseded_by`, `revisions`, `is_active`. Only include fields that have
+values — omit empty ones rather than writing `null` or `[]` (the
+PostgreSQL sync layer supplies defaults). `is_active` is always `true`
+for new captures (`/forget` sets it to `false`). `verified`, `links`,
+`superseded_by`, and `revisions` are managed by other code paths (Phase 2
+verification, Phase 4 typed links, `/forget`/`/update` revisions); leave
+them out at write time.
 
 **Deriving `project`**: Replace all `/` in the absolute working directory path with `-`.
 For example, if the cwd is `/home/shawn/Code/map-reader-llm`, set `project` to
