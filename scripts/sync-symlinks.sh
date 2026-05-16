@@ -11,9 +11,11 @@
 #   - setup.sh (during new-machine bootstrap)
 #   - daily-sync.sh (end of each daily cron run, to heal drift)
 #
-# Does NOT create the Python venv or install dependencies — those are
-# bootstrap concerns, not daily-sync concerns. Run setup.sh explicitly
-# for a fresh machine.
+# Idempotent: also verifies declared Python dependencies
+# (requirements.txt) are present and installs any missing ones, so that
+# session-archive hooks and other machine-spanning automation can't
+# silently fail when a venv drifts. Does NOT create the venv itself —
+# that's still bootstrap-only (run setup.sh on a fresh machine).
 
 set -euo pipefail
 
@@ -114,7 +116,7 @@ ensure_symlink() {
 # Step 1: Submodule init/update (idempotent; no-op once up to date)
 # ---------------------------------------------------------------------------
 
-say "[1/6] Ensuring data submodule is initialised..."
+say "[1/7] Ensuring data submodule is initialised..."
 cd "$PA_DIR"
 git submodule update --init --recursive --quiet
 say_verbose "  Submodule ready."
@@ -123,14 +125,14 @@ say_verbose "  Submodule ready."
 # Step 2: settings.json symlink
 # ---------------------------------------------------------------------------
 
-say "[2/6] Linking settings.json..."
+say "[2/7] Linking settings.json..."
 ensure_symlink "$PA_DIR/settings.json" "$CLAUDE_DIR/settings.json" "settings.json"
 
 # ---------------------------------------------------------------------------
 # Step 3: Command symlinks
 # ---------------------------------------------------------------------------
 
-say "[3/6] Linking commands..."
+say "[3/7] Linking commands..."
 mkdir -p "$CLAUDE_DIR/commands"
 prune_stale_symlinks "$CLAUDE_DIR/commands" "$PA_DIR/commands" "command"
 for cmd in "$PA_DIR"/commands/*.md; do
@@ -142,7 +144,7 @@ done
 # Step 4: Skill symlinks
 # ---------------------------------------------------------------------------
 
-say "[4/6] Linking skills..."
+say "[4/7] Linking skills..."
 mkdir -p "$CLAUDE_DIR/skills"
 prune_stale_symlinks "$CLAUDE_DIR/skills" "$PA_DIR/skills" "skill"
 for skill_dir in "$PA_DIR"/skills/*/; do
@@ -156,7 +158,7 @@ done
 # Step 5: Agent symlinks
 # ---------------------------------------------------------------------------
 
-say "[5/6] Linking agents..."
+say "[5/7] Linking agents..."
 mkdir -p "$CLAUDE_DIR/agents"
 prune_stale_symlinks "$CLAUDE_DIR/agents" "$PA_DIR/agents" "agent"
 for agent_file in "$PA_DIR"/agents/*.md; do
@@ -168,8 +170,45 @@ done
 # Step 6: Compose global CLAUDE.md
 # ---------------------------------------------------------------------------
 
-say "[6/6] Composing global CLAUDE.md..."
+say "[6/7] Composing global CLAUDE.md..."
 bash "$PA_DIR/scripts/compose-global-claude-md.sh" >/dev/null
 say_verbose "  Composed."
+
+# ---------------------------------------------------------------------------
+# Step 7: Verify Python dependencies (cc-session-toolkit and friends)
+#
+# Why this lives in sync-symlinks rather than setup.sh-only:
+# session-archive hooks (`cc_session_toolkit.cli archive` on
+# SessionEnd/PreCompact) silently fail when the package is missing from
+# the venv. Drift between machines — or a reformatted box — should not
+# require the user to remember a manual pip step. The check is cheap
+# in the common case (a handful of import probes); install only runs
+# when something is actually missing.
+# ---------------------------------------------------------------------------
+
+say "[7/7] Verifying Python dependencies..."
+if [ ! -d "$PA_DIR/venv" ]; then
+    say "  WARNING: venv/ not present — run setup.sh to bootstrap."
+elif [ ! -f "$PA_DIR/requirements.txt" ]; then
+    say "  WARNING: requirements.txt missing — cannot verify deps."
+else
+    # Probe each declared top-level package. Import name differs from
+    # pip name in some cases (psycopg2-binary → psycopg2,
+    # cc-session-toolkit → cc_session_toolkit) so the list is hand-
+    # maintained alongside requirements.txt.
+    if "$PA_DIR/venv/bin/python3" -c "
+import importlib.util, sys
+required = ['anthropic', 'psycopg2', 'pytest', 'mcp', 'pyzotero', 'cc_session_toolkit']
+missing = [m for m in required if importlib.util.find_spec(m) is None]
+sys.exit(1 if missing else 0)
+" 2>/dev/null; then
+        say_verbose "  All declared dependencies present."
+    else
+        say "  Missing one or more declared dependencies — installing from requirements.txt..."
+        "$PA_DIR/venv/bin/pip" install --quiet --upgrade -r "$PA_DIR/requirements.txt" \
+            && say "  Dependencies installed/updated." \
+            || say "  WARNING: pip install failed; archive hooks may continue to silently fail."
+    fi
+fi
 
 say "sync-symlinks complete."

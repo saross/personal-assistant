@@ -34,15 +34,16 @@ echo "  Update if your home directory differs."
 # ------------------------------------------------------------
 echo ""
 echo "[venv] Python virtual environment..."
-if [ -d "$PA_DIR/venv" ]; then
-    echo "  venv/ already exists."
-else
+if [ ! -d "$PA_DIR/venv" ]; then
     echo "  Creating venv..."
     python3 -m venv "$PA_DIR/venv"
-    echo "  Installing dependencies..."
-    "$PA_DIR/venv/bin/pip" install --quiet anthropic psycopg2-binary pytest
-    echo "  Done."
+else
+    echo "  venv/ already exists."
 fi
+echo "  Installing/updating dependencies from requirements.txt..."
+"$PA_DIR/venv/bin/pip" install --quiet --upgrade pip
+"$PA_DIR/venv/bin/pip" install --quiet -r "$PA_DIR/requirements.txt"
+echo "  Done."
 
 # ------------------------------------------------------------
 # Verify

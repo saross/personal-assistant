@@ -1,0 +1,23 @@
+# Personal-assistant Python dependencies.
+#
+# Edit this file when a new top-level dependency is needed. The list is
+# read by setup.sh (fresh-machine bootstrap) and by
+# scripts/sync-symlinks.sh's verify_python_deps step (daily-sync
+# self-heal). Transitive dependencies are resolved automatically by pip.
+#
+# Version constraints are deliberately loose — pip resolves to a
+# compatible set per machine. Pin a version only if a specific bug
+# forces it; record the reason next to the pin.
+#
+# cc-session-toolkit is declared as a git+ssh dependency for fresh-
+# machine bootstraps. Developers can override locally with
+#     pip install -e ~/Code/cc-session-toolkit
+# after the initial install — pip prefers the editable install when
+# both are present.
+
+anthropic
+psycopg2-binary
+pytest
+mcp
+pyzotero
+cc-session-toolkit @ git+ssh://git@github.com/saross/cc-session-toolkit.git@main
