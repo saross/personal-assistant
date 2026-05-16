@@ -26,8 +26,10 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 INSERT INTO meta (key, value) VALUES
-    ('schema_version', '1')
-ON CONFLICT (key) DO NOTHING;
+    ('schema_version', '2')
+ON CONFLICT (key) DO UPDATE
+    SET value = EXCLUDED.value, updated_at = NOW()
+    WHERE meta.value != EXCLUDED.value;
 
 -- ============================================================================
 -- Main memories table
@@ -91,6 +93,43 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding vector(768);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops)
     WHERE embedding IS NOT NULL;
+
+-- ============================================================================
+-- v2 additions (2026-05-16) — Memory System v2
+-- ============================================================================
+-- Source anchors, verification status, typed links between memories,
+-- structured rationale (why/how_to_apply), and supersession tracking
+-- (for /forget /update commands and cross-session supersession).
+-- See planning/memory-system-v2-design.md and -implementation-plan.md.
+
+-- anchors: array of {type, ref, line?} for re-verifying claimed specifics.
+-- type ∈ {file, commit, zotero, url}.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS anchors JSONB DEFAULT '[]'::jsonb;
+
+-- verified: NULL=unknown, 'true' / 'false' / 'pending' / 'stale' / 'tier3'.
+-- Set by Phase 2 verification pipeline; NULL on pre-v2 entries.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS verified TEXT;
+
+-- links: array of {relation, target_id} where relation ∈ {revises, supersedes,
+-- supports, contradicts, refines, depends-on}.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS links JSONB DEFAULT '[]'::jsonb;
+
+-- Structured rationale for guidance-bearing categories (feedback, decision,
+-- gotcha, methodology, pattern, error_mode). Plain text; optional.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS why TEXT;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS how_to_apply TEXT;
+
+-- Supersession: memory_id of the entry that replaces this one. Set by
+-- /forget, /update, or cross-session supersession (Phase 4).
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS superseded_by TEXT;
+
+-- Revision history: append-only on /update; each entry has
+-- {revised_at, prior_content, reason?}.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS revisions JSONB DEFAULT '[]'::jsonb;
+
+-- Index for supersession chain queries (small partial index).
+CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by)
+    WHERE superseded_by IS NOT NULL;
 
 -- ============================================================================
 -- Sync tracking
@@ -167,6 +206,11 @@ INSERT INTO category_config (category, decay_days, description) VALUES
     ('system_evolution', NULL, 'How the PA system itself changes'),
     ('system_friction', 60, 'Where the system creates friction'),
     ('system_success', 90, 'What works well in the system')
+ON CONFLICT (category) DO NOTHING;
+
+-- v2 additions: formalise feedback (was a rogue category used by /remember)
+INSERT INTO category_config (category, decay_days, description) VALUES
+    ('feedback', NULL, 'Guidance/preferences with structured why + how_to_apply')
 ON CONFLICT (category) DO NOTHING;
 
 -- ============================================================================
@@ -276,6 +320,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Sync tracking
     synced_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ============================================================================
+-- Sessions table idempotent column adds
+-- ============================================================================
+-- The CREATE TABLE above only creates these columns on fresh DBs.
+-- Existing DBs need explicit ALTER TABLE ADD COLUMN IF NOT EXISTS to
+-- pick up columns added since the initial create. Adding new sessions
+-- columns: also add the corresponding ALTER here.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS subagent_count INTEGER DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS subagent_total_cost_usd NUMERIC(10, 4) DEFAULT 0;
 
 -- ============================================================================
 -- Session indexes

@@ -185,8 +185,10 @@ class TestRecordToTuple:
 
     def test_full_record(self, sample_memories):
         """Complete record should produce a correct tuple."""
+        from psycopg2.extras import Json
         result = sync_mod.record_to_tuple(sample_memories[0])
-        assert result == (
+        # First 13 fields are pre-v2 fixed values.
+        assert result[:13] == (
             "2026-02-07-abc123",     # id
             "test-session-1",         # session_id
             "-home-shawn-test-project",  # project
@@ -201,6 +203,16 @@ class TestRecordToTuple:
             "2026-02-07T10:00:00+00:00",  # created_at
             None,                     # deadline_at
         )
+        # v2 fields (2026-05-16): anchors, verified, links, why,
+        # how_to_apply, superseded_by, revisions. JSONB fields are
+        # wrapped in psycopg2.extras.Json — compare via .adapted.
+        assert isinstance(result[13], Json) and result[13].adapted == []  # anchors
+        assert result[14] is None                                          # verified
+        assert isinstance(result[15], Json) and result[15].adapted == []  # links
+        assert result[16] is None                                          # why
+        assert result[17] is None                                          # how_to_apply
+        assert result[18] is None                                          # superseded_by
+        assert isinstance(result[19], Json) and result[19].adapted == []  # revisions
 
     def test_record_with_deadline(self, sample_memories):
         """Commitment record with deadline should include deadline_at."""
@@ -213,6 +225,7 @@ class TestRecordToTuple:
 
     def test_missing_optional_fields_get_defaults(self):
         """Record with only required fields should get sensible defaults."""
+        from psycopg2.extras import Json
         minimal = {
             "id": "test-minimal",
             "category": "progress",
@@ -229,6 +242,14 @@ class TestRecordToTuple:
         assert result[9] is None          # zotero_key default
         assert result[10] == ""           # source_context default
         assert result[12] is None         # deadline_at default
+        # v2 defaults
+        assert isinstance(result[13], Json) and result[13].adapted == []  # anchors
+        assert result[14] is None                                          # verified
+        assert isinstance(result[15], Json) and result[15].adapted == []  # links
+        assert result[16] is None                                          # why
+        assert result[17] is None                                          # how_to_apply
+        assert result[18] is None                                          # superseded_by
+        assert isinstance(result[19], Json) and result[19].adapted == []  # revisions
 
     def test_source_field_included(self, sample_memories):
         """Source field (extraction/manual) should be at index 3."""
@@ -238,9 +259,10 @@ class TestRecordToTuple:
         assert manual_tuple[3] == "manual"
 
     def test_tuple_length_matches_fields(self, sample_memories):
-        """Tuple length should match JSONL_FIELDS count (13)."""
+        """Tuple length should match JSONL_FIELDS count (20 after v2)."""
         result = sync_mod.record_to_tuple(sample_memories[0])
         assert len(result) == len(sync_mod.JSONL_FIELDS)
+        assert len(result) == 20
 
     def test_tags_preserved_as_list(self, sample_memories):
         """research_tags should remain a list for PostgreSQL TEXT[] column."""
@@ -270,11 +292,14 @@ class TestFieldConsistency:
     """Ensure JSONL_FIELDS matches the tuple produced by record_to_tuple."""
 
     def test_field_list_contents(self):
-        """JSONL_FIELDS should contain all expected fields."""
+        """JSONL_FIELDS should contain all expected fields (pre-v2 + v2)."""
         expected = {
             "id", "session_id", "project", "source", "category", "content",
             "summary", "confidence", "research_tags", "zotero_key",
             "source_context", "created_at", "deadline_at",
+            # v2 additions (2026-05-16)
+            "anchors", "verified", "links", "why", "how_to_apply",
+            "superseded_by", "revisions",
         }
         assert set(sync_mod.JSONL_FIELDS) == expected
 
@@ -324,6 +349,18 @@ def _install_fake_psycopg2(
     fake_psycopg2.Error = _FakePsycopg2Error
     fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
 
+    # Fake Json wrapper for JSONB columns (v2 schema). record_to_tuple
+    # imports Json lazily from psycopg2.extras to wrap anchors/links/
+    # revisions; the mock just stores .adapted so tests can introspect.
+    class _FakeJson:
+        def __init__(self, value):
+            self.adapted = value
+
+        def __repr__(self):
+            return f"FakeJson({self.adapted!r})"
+
+    fake_extras.Json = _FakeJson
+
     # Cursor mock: fetchall returns the pre-flight SELECT result;
     # fetchone returns the schema-version row when ``meta`` is queried
     # (audit IC5 boot-time assertion) and the advisory-lock boolean
@@ -339,7 +376,10 @@ def _install_fake_psycopg2(
 
     def _fetchone():
         if "meta" in last_sql["value"]:
-            return ("1",)
+            # Schema version: bumped to "2" on 2026-05-16 with the v2
+            # schema migration. Must match _schema_version.EXPECTED_SCHEMA_VERSION
+            # and the seed value in scripts/schema.sql.
+            return ("2",)
         return (advisory_lock_acquired,)
 
     cur.execute.side_effect = _exec

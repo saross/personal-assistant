@@ -52,7 +52,7 @@ def mock_db():
 
     def _fetchone():
         if "meta" in last_sql["value"]:
-            return ("1",)
+            return ("2",)
         return None
 
     mock_cur.execute.side_effect = _exec
@@ -253,7 +253,7 @@ class TestApplyDecayErrors:
 
         def _fetchone():
             if "meta" in last_sql["value"]:
-                return ("1",)
+                return ("2",)
             return None
 
         mock_cur.execute.side_effect = _exec
@@ -300,7 +300,7 @@ class TestDecaySQL:
 
         def _fetchone():
             if "meta" in last_sql["value"]:
-                return ("1",)
+                return ("2",)
             return None
 
         mock_cur.execute.side_effect = _exec

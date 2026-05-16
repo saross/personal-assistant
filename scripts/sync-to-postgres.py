@@ -56,11 +56,17 @@ DB_NAME = "claude_memories"
 # auto-releases when the connection closes.
 ADVISORY_LOCK_KEY = "sync-to-postgres"
 
-# All fields we extract from JSONL and insert into PostgreSQL
+# All fields we extract from JSONL and insert into PostgreSQL.
+# v2 additions (2026-05-16): anchors, verified, links, why, how_to_apply,
+# superseded_by, revisions. Pre-v2 entries lack these fields; record_to_tuple
+# defaults them to empty / NULL appropriately.
 JSONL_FIELDS = [
     "id", "session_id", "project", "source", "category", "content",
     "summary", "confidence", "research_tags", "zotero_key",
     "source_context", "created_at", "deadline_at",
+    # v2 schema
+    "anchors", "verified", "links", "why", "how_to_apply",
+    "superseded_by", "revisions",
 ]
 
 
@@ -228,11 +234,18 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
     """
     Convert a parsed JSONL record to an INSERT-ready tuple.
 
-    Field order matches JSONL_FIELDS:
-        id, session_id, project, source, category, content, summary,
-        confidence, research_tags, zotero_key, source_context,
-        created_at, deadline_at
+    Field order matches JSONL_FIELDS and the INSERT column list in
+    insert_records(). v2 JSONB fields (anchors, links, revisions) are
+    wrapped in psycopg2.extras.Json so they serialise correctly into
+    JSONB columns; v2 TEXT fields default to NULL when absent.
     """
+    # Lazy import — psycopg2 is only loaded when this codepath runs,
+    # matching the pattern used elsewhere in the file.
+    from psycopg2.extras import Json
+
+    def _list_or_empty(value: Any) -> list:
+        return value if isinstance(value, list) else []
+
     return (
         record["id"],
         record.get("session_id", ""),
@@ -247,6 +260,14 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("source_context", ""),
         record["created_at"],
         record.get("deadline_at"),
+        # v2 fields (2026-05-16)
+        Json(_list_or_empty(record.get("anchors"))),
+        record.get("verified"),
+        Json(_list_or_empty(record.get("links"))),
+        record.get("why"),
+        record.get("how_to_apply"),
+        record.get("superseded_by"),
+        Json(_list_or_empty(record.get("revisions"))),
     )
 
 
@@ -492,7 +513,9 @@ def insert_memories(
         INSERT INTO memories (
             id, session_id, project, source, category, content, summary,
             confidence, research_tags, zotero_key, source_context,
-            created_at, deadline_at
+            created_at, deadline_at,
+            anchors, verified, links, why, how_to_apply,
+            superseded_by, revisions
         ) VALUES %s
         ON CONFLICT (id) DO NOTHING
         RETURNING id
