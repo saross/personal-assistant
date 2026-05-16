@@ -168,3 +168,32 @@ Captured to memory:
 - Confidence defaults to "high" for manual captures (the user chose to remember it)
 - The memory should be self-contained — understandable without conversation context
 - If the user's phrasing is ambiguous, rephrase for clarity before saving
+
+## Autonomous capture (memory-system v2)
+
+When Claude self-invokes `/remember` without the user typing the command
+— per the v2 self-driving tenet and change D (announce-and-save) — the
+announcement format **must** be:
+
+```text
+# Saved to memory: [category] — [summary]
+```
+
+The leading `# ` plus the literal `Saved to memory:` phrase forms a
+`COMMAND_MARKERS` entry (see `scripts/_command_markers.py`). The
+extraction hook then skips this assistant turn, preventing the
+autonomous save from being re-extracted as a fresh memory.
+
+Triggers for autonomous capture (default — be conservative):
+
+- User articulates a durable preference or constraint
+  ("I want…", "always…", "never…", "don't…")
+- A non-obvious decision is made with rationale
+- An approach notably succeeds or fails (record what worked + why)
+- An error mode emerges with a correction (record the correction,
+  not the pre-correction state — see EXTRACTION_PROMPT
+  self-correction guidance for parallel behaviour)
+
+Procedure: announce in-conversation as above, then follow the
+`/remember` steps above (parse, normalise, write to JSONL). Do not
+batch — write immediately so subsequent recall can find the entry.

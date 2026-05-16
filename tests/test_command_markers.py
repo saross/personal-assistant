@@ -152,10 +152,12 @@ def test_reprocess_sessions_uses_shared_markers(
 
 
 def test_marker_count_matches_documented(shared_markers):
-    """The marker list has the expected size — 13 slash commands plus
-    the reflection-protocol marker.
+    """The marker list has the expected size — 15 slash commands
+    (Phase 1 added /forget and /update), the reflection-protocol
+    marker, and 3 autonomous-write announcement markers (Phase 3:
+    Saved/Forgot/Updated memory).
 
     Bumping this number is fine when adding a new slash command, but
     the test forces a deliberate update rather than silent drift.
     """
-    assert len(shared_markers) == 14
+    assert len(shared_markers) == 19

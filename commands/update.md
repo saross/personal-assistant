@@ -61,14 +61,16 @@ when the right move is retirement rather than revision.
 Same L1 memory-correction pattern as `/forget`. When Claude detects a
 recalled memory has a content-level error (claim slightly wrong, but
 the core observation is still useful), invoke `/update` with the
-correction. Announcement format:
+correction. The announcement format **must** be:
 
 ```text
-Marking memory [id] as updated: [reason]
+# Updated memory: [id] — [reason]
 ```
 
-The extraction hook's COMMAND_MARKERS (Phase 3 extension) skips this
-turn so the correction isn't re-extracted as a fresh memory.
+The leading `# ` plus the literal `Updated memory:` phrase is a
+`COMMAND_MARKERS` entry (see `scripts/_command_markers.py`) so the
+extraction hook skips the announcement turn, preventing the autonomous
+update from being re-extracted as a fresh memory.
 
 ## What `/update` does NOT do
 

@@ -57,9 +57,21 @@ COMMAND_MARKERS: tuple[str, ...] = (
     "# /retro — Monthly System Retrospective",
     "# /sync-board — GitHub Issues Sync",
     "# /process-email — Email Triage",
+    "# /forget — Soft-delete Memory",
+    "# /update — Revise Memory",
     # Reflection protocol — reflection docs are the canonical record;
     # extracting from them creates lossy duplicates.
     "# End-of-Session Reflection",
+    # v2 (2026-05-16) — autonomous memory-write announce lines.
+    # Claude emits these when self-invoking /remember, /forget, or
+    # /update outside of an explicit slash-command invocation; the
+    # extraction hook skips them so the announce turn isn't re-extracted
+    # as a fresh memory. The leading "# " plus specific phrasing makes
+    # prose false-positives negligible. See:
+    # planning/memory-system-v2-design.md change D (announce-and-save).
+    "# Saved to memory:",
+    "# Forgot memory:",
+    "# Updated memory:",
 )
 
 

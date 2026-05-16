@@ -54,13 +54,17 @@ want to correct rather than retire.
 Per the v2 design's L1 memory-correction layer and the self-driving
 tenet, Claude may invoke `/forget` autonomously without the user
 typing it — for example when a recall surfaces a memory whose specifics
-contradict the current session's verified facts. Use the announcement
-format so the extraction hook can skip the announcement turn (avoiding
-double-extraction of the correction):
+contradict the current session's verified facts. The announcement
+format **must** be:
 
 ```text
-Marking memory [id] as forgotten: [reason]
+# Forgot memory: [id] — [reason]
 ```
+
+The leading `# ` plus the literal `Forgot memory:` phrase is a
+`COMMAND_MARKERS` entry (see `scripts/_command_markers.py`) so the
+extraction hook skips the announcement turn, preventing the autonomous
+forget from being re-extracted as a "Claude forgot X" observation.
 
 Then execute the same procedure above.
 
