@@ -32,6 +32,8 @@ from typing import Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from _command_markers import COMMAND_MARKERS  # noqa: E402
 from _timestamps import now_iso  # noqa: E402
+import anchor_verify  # noqa: E402 — v2 anchor verification (Phase 2)
+from project_id import repo_set_for  # noqa: E402 — v2 repo discovery
 
 # ============================================================================
 # Configuration
@@ -163,13 +165,36 @@ Today's date is {today}. Use the current year ({year}) when interpreting relativ
 Return a JSON array. Each object must have:
 - `category`: One of the categories above
 - `content`: The memory (1-3 sentences, specific and self-contained)
-- `confidence`: "high", "medium", or "low"
+- `confidence`: "high", "medium", or "low" (advisory; downstream verification overrides)
 - `research_tags`: Array of relevant tags (see guidelines below)
 - `summary`: One-sentence summary (max 150 characters) for quick scanning at session start. \
 Must be self-contained and capture the core insight or decision.
 - `zotero_key`: If a Zotero item key was mentioned, include it (optional)
 - `deadline_at`: For commitments, the deadline in ISO format (optional)
 - `source_context`: Brief note on conversation context (optional)
+
+## v2 fields (memory-system v2, 2026-05-16)
+
+These fields tighten the corpus against confabulation. Populate them \
+when the underlying information is *present in the transcript*; do \
+not invent.
+
+- `anchors`: Array of `{{"type": "file"|"commit"|"zotero", "ref": "<value>", "line": <int>?}}` \
+re-verifying any specific cited in `content`. Values must come from the \
+transcript verbatim — never invented or paraphrased. Required for any \
+memory in `decision`, `progress`, `architecture`, `gotcha`, `provenance`, \
+or `completion`: if you cannot find a concrete anchor in the transcript, \
+either lower the memory's confidence to "low" *or* reword `content` to \
+drop the false precision. Example anchors:
+  - `{{"type": "file", "ref": "scripts/anchor_verify.py", "line": 42}}`
+  - `{{"type": "commit", "ref": "abc1234"}}`
+  - `{{"type": "zotero", "ref": "MPZHXY3P"}}`
+- `why`: Free text. For guidance-bearing categories \
+(`feedback`, `decision`, `gotcha`, `methodology`, `pattern`, `error_mode`): \
+the reason behind the rule — what incident or constraint drove it. \
+Survives drift better than the content itself. Skip when not relevant.
+- `how_to_apply`: Free text. For the same guidance categories: when or \
+where the guidance kicks in, so edge cases can be judged.
 
 ## Tag Guidelines
 
@@ -188,6 +213,24 @@ Must be self-contained and capture the core insight or decision.
 - Skip routine exchanges, greetings, acknowledgements
 - Prefer fewer high-quality memories over many low-quality ones
 - Typical extraction: 2-8 memories per session
+
+## Self-correction handling (v2, 2026-05-16)
+
+When the conversation contains a self-correction — phrases like \
+"actually that was wrong", "correcting myself", "on closer inspection", \
+"the previous figure of X turned out to be Y", or any place where a \
+prior claim is *revised* later in the same transcript — extract only \
+the **corrected version**, not the original claim. Do not produce two \
+memories for the same fact (one wrong, one right). If the original \
+claim has independent structural value (e.g. it explains a real \
+process even though one number was off), you may extract it but mark \
+its `confidence` as "low".
+
+This addresses a known failure mode: the 2026-05-16 conversation \
+produced a "422 transcripts lost" claim that was extracted as \
+confidence:high before a cross-machine correction four turns later \
+revised the figure to ~40. Catching the correction at extraction \
+time prevents the confabulation from entering the corpus.
 
 <conversation>
 {conversation}
@@ -550,7 +593,33 @@ VALID_CATEGORIES = {
     "system_evolution",
     "system_friction",
     "system_success",
+    # v2 (2026-05-16) — formalises previously-rogue category
+    "feedback",
 }
+
+# Categories that benefit from structured why/how_to_apply rationale.
+# Phase 2 confidence binding requires both fields populated for these
+# categories to bind 'verified: true' to confidence 'high'.
+GUIDANCE_CATEGORIES = frozenset({
+    "feedback",
+    "decision",
+    "gotcha",
+    "methodology",
+    "pattern",
+    "error_mode",
+})
+
+# Categories that the v2 design requires to carry at least one anchor.
+# A memory in one of these categories without an anchor will be
+# downgraded by the confidence binding rubric.
+ANCHOR_REQUIRED_CATEGORIES = frozenset({
+    "decision",
+    "progress",
+    "architecture",
+    "gotcha",
+    "provenance",
+    "completion",
+})
 
 
 def format_memories(
@@ -618,6 +687,32 @@ def format_memories(
             record["zotero_key"] = mem["zotero_key"]
         if mem.get("deadline_at"):
             record["deadline_at"] = mem["deadline_at"]
+
+        # v2 (2026-05-16): pass through extracted anchors and guidance
+        # fields. anchor_verify (called separately after this function)
+        # populates ``verified`` and overrides ``confidence``.
+        anchors = mem.get("anchors")
+        if isinstance(anchors, list) and anchors:
+            # Filter for well-formed entries: {type: str, ref: str, line?: int}
+            cleaned = []
+            for a in anchors:
+                if not isinstance(a, dict):
+                    continue
+                a_type = a.get("type")
+                a_ref = a.get("ref")
+                if not isinstance(a_type, str) or not isinstance(a_ref, str):
+                    continue
+                entry = {"type": a_type, "ref": a_ref}
+                line = a.get("line")
+                if isinstance(line, int):
+                    entry["line"] = line
+                cleaned.append(entry)
+            if cleaned:
+                record["anchors"] = cleaned
+        if mem.get("why"):
+            record["why"] = mem["why"]
+        if mem.get("how_to_apply"):
+            record["how_to_apply"] = mem["how_to_apply"]
 
         memories.append(record)
 
@@ -772,6 +867,35 @@ def main() -> None:
     if extracted:
         try:
             memories = format_memories(extracted, session_id, project=project)
+
+            # v2 (2026-05-16) Phase 2: mechanical anchor verification.
+            # Each memory's anchors are checked against the local repo
+            # set; ``verified`` is written into the record and
+            # ``confidence`` is overridden by the binding rubric.
+            # Tier-3 fallback (transcript-grep) is deferred to Phase
+            # 0b — verify_memory returns None when no anchors are
+            # present, and the rubric maps that to confidence: low.
+            try:
+                repos = repo_set_for(project)
+                for record in memories:
+                    verified = anchor_verify.verify_memory(record, repos)
+                    if verified is not None:
+                        record["verified"] = verified
+                    record["confidence"] = anchor_verify.bind_confidence(
+                        verified,
+                        has_why=bool(record.get("why")),
+                        has_how_to_apply=bool(record.get("how_to_apply")),
+                        is_guidance_category=(
+                            record.get("category") in GUIDANCE_CATEGORIES
+                        ),
+                    )
+            except Exception as ve:  # noqa: BLE001 — fail-soft per anchor_verify contract
+                logger.warning(
+                    "Anchor verification failed for session %s: %s — "
+                    "memories appended with Haiku-rated confidence",
+                    session_id, ve,
+                )
+
             append_memories(memories)
 
             # Only advance cursor AFTER successful append

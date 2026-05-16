@@ -54,3 +54,131 @@ def encode_project_id(cwd: str) -> str | None:
     if not cwd:
         return None
     return str(Path(cwd).resolve()).replace("/", "-")
+
+
+def decode_project_id(project_id: str) -> Path | None:
+    """Inverse of ``encode_project_id``.
+
+    Replaces every ``-`` with ``/`` to reconstruct the original cwd
+    path. Returns ``None`` for empty or whitespace-only input.
+
+    Caveat: encoding is lossy when path components themselves contain
+    hyphens (e.g. ``~/Code/cc-session-toolkit``). The historical
+    encoding does not distinguish path separator hyphens from intrinsic
+    hyphens, so decode reconstructs a *candidate* path; callers that
+    need a verified path should resolve against the filesystem and
+    fall back gracefully if the candidate does not exist.
+
+    Examples
+    --------
+    >>> decode_project_id("-home-shawn-personal-assistant")
+    PosixPath('/home/shawn/personal-assistant')
+    >>> decode_project_id("-home-shawn-Code-cc-session-toolkit")  # ambiguous
+    PosixPath('/home/shawn/Code/cc/session/toolkit')
+    """
+    if not project_id or not project_id.strip():
+        return None
+    return Path(project_id.replace("-", "/"))
+
+
+# ============================================================================
+# Repo-set discovery (Memory System v2, Phase 2)
+# ============================================================================
+#
+# anchor_verify.py needs to check whether a file or commit referenced by a
+# memory exists somewhere — not just in the cwd repo where the memory was
+# written, but across the user's active project tree. The discovery walks
+# a fixed set of root paths and finds every ``.git`` directory within a
+# bounded depth. The list of roots is intentionally a constant rather than
+# a config file so behaviour is predictable across machines.
+#
+# Scope decision (Shawn, 2026-05-15): all active project directories,
+# including ~/Code/teaching/* and ~/personal-assistant itself, plus the
+# pa-data submodule.
+
+# Discovery roots and their max walk depths. Tuples of (path, max_depth)
+# where max_depth is the number of directory levels below the root to
+# search for ``.git``. Depth 1 means "this directory only"; depth 2 means
+# "this directory and its immediate children".
+REPO_DISCOVERY_ROOTS: tuple[tuple[Path, int], ...] = (
+    (Path.home() / "Code", 2),
+    (Path.home() / "personal-assistant", 1),
+    (Path.home() / "personal-assistant" / "data", 1),
+)
+
+
+def repo_set() -> list[Path]:
+    """Discover all active git repos under the configured discovery roots.
+
+    Walks each root in ``REPO_DISCOVERY_ROOTS`` to its configured depth
+    and collects directories that contain a ``.git`` entry (directory
+    *or* file — submodules use a ``.git`` file pointing at the parent's
+    ``.git/modules/...``).
+
+    Returns a deduplicated list of absolute paths. Empty list if no
+    roots exist (e.g. fresh machine before clones).
+    """
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    def _walk(root: Path, depth: int) -> None:
+        if not root.exists():
+            return
+        # Depth 1: check the root itself for ``.git``.
+        if (root / ".git").exists() and root not in seen:
+            found.append(root)
+            seen.add(root)
+        # Depth >= 2: descend one level and recurse.
+        if depth >= 2:
+            try:
+                for child in root.iterdir():
+                    if child.is_dir():
+                        _walk(child, depth - 1)
+            except (PermissionError, OSError):
+                pass
+
+    for root, depth in REPO_DISCOVERY_ROOTS:
+        _walk(root, depth)
+
+    return found
+
+
+def repo_set_for(project_id: str | None) -> list[Path]:
+    """Return the repo set with the decoded project path ordered first.
+
+    When ``anchor_verify`` checks whether a file referenced by a memory
+    exists, the most likely match is in the project where the memory
+    was written. Returning that path first lets verification short-
+    circuit on the common case.
+
+    Falls back to ``repo_set()`` (unordered) when *project_id* is
+    ``None``, empty, or decodes to a path not in the discovered set.
+    """
+    discovered = repo_set()
+    if not project_id:
+        return discovered
+
+    candidate = decode_project_id(project_id)
+    if candidate is None:
+        return discovered
+
+    # Match by resolved-path equality. The decoded path may not match a
+    # discovered repo exactly when path components contain hyphens (see
+    # ``decode_project_id`` caveat) — in that case fall back to discovery
+    # order without prioritisation.
+    try:
+        candidate_resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return discovered
+
+    primary: list[Path] = []
+    rest: list[Path] = []
+    for repo in discovered:
+        try:
+            if repo.resolve() == candidate_resolved:
+                primary.append(repo)
+                continue
+        except (OSError, RuntimeError):
+            pass
+        rest.append(repo)
+    return primary + rest
