@@ -213,6 +213,12 @@ class TestRecordToTuple:
         assert result[17] is None                                          # how_to_apply
         assert result[18] is None                                          # superseded_by
         assert isinstance(result[19], Json) and result[19].adapted == []  # revisions
+        # v3 fields (2026-05-17): source_message_uuid (Gap 1) — defaults
+        # to None when absent from the JSONL record; licence and
+        # extractor_model_id (Gap 3) — both default to None when absent.
+        assert result[20] is None                                          # source_message_uuid
+        assert result[21] is None                                          # licence
+        assert result[22] is None                                          # extractor_model_id
 
     def test_record_with_deadline(self, sample_memories):
         """Commitment record with deadline should include deadline_at."""
@@ -250,6 +256,10 @@ class TestRecordToTuple:
         assert result[17] is None                                          # how_to_apply
         assert result[18] is None                                          # superseded_by
         assert isinstance(result[19], Json) and result[19].adapted == []  # revisions
+        # v3 defaults (Gap 1 + Gap 3)
+        assert result[20] is None                                          # source_message_uuid
+        assert result[21] is None                                          # licence
+        assert result[22] is None                                          # extractor_model_id
 
     def test_source_field_included(self, sample_memories):
         """Source field (extraction/manual) should be at index 3."""
@@ -259,10 +269,10 @@ class TestRecordToTuple:
         assert manual_tuple[3] == "manual"
 
     def test_tuple_length_matches_fields(self, sample_memories):
-        """Tuple length should match JSONL_FIELDS count (20 after v2)."""
+        """Tuple length should match JSONL_FIELDS count (23 after v3 + Gap 3)."""
         result = sync_mod.record_to_tuple(sample_memories[0])
         assert len(result) == len(sync_mod.JSONL_FIELDS)
-        assert len(result) == 20
+        assert len(result) == 23
 
     def test_tags_preserved_as_list(self, sample_memories):
         """research_tags should remain a list for PostgreSQL TEXT[] column."""
@@ -282,6 +292,58 @@ class TestRecordToTuple:
         result = sync_mod.record_to_tuple(record)
         assert result[8] == []
 
+    def test_source_message_uuid_propagates_to_tuple(self):
+        """v3: source_message_uuid (when present) lands at index 20.
+
+        Provenance audit Gap 1 (2026-05-17): the tuple position must
+        match the INSERT column order in :func:`insert_memories`. A
+        legitimate UUID flows through unchanged for the verifier's
+        UUID-indexed lookup path.
+        """
+        record = {
+            "id": "test-with-uuid",
+            "category": "progress",
+            "content": "Anchor me.",
+            "created_at": "2026-05-17T00:00:00+00:00",
+            "source_message_uuid": "msg-uuid-anchor",
+        }
+        result = sync_mod.record_to_tuple(record)
+        assert result[20] == "msg-uuid-anchor"
+
+    def test_licence_propagates_to_tuple(self):
+        """v3: licence (when present) lands at index 21.
+
+        Provenance audit Gap 3 (2026-05-17): when a record carries a
+        sharing licence (e.g. populated post-hoc by a curation pass),
+        the value flows through to the PG column unchanged.
+        """
+        record = {
+            "id": "test-with-licence",
+            "category": "progress",
+            "content": "Shareable.",
+            "created_at": "2026-05-17T00:00:00+00:00",
+            "licence": "CC-BY-4.0",
+        }
+        result = sync_mod.record_to_tuple(record)
+        assert result[21] == "CC-BY-4.0"
+
+    def test_extractor_model_id_propagates_to_tuple(self):
+        """v3: extractor_model_id (when present) lands at index 22.
+
+        Provenance audit Gap 3 (2026-05-17): the Haiku version that
+        produced the memory is preserved for RO-Crate attribution and
+        for model-version invalidation passes after a Haiku regression.
+        """
+        record = {
+            "id": "test-with-model",
+            "category": "progress",
+            "content": "Attributed.",
+            "created_at": "2026-05-17T00:00:00+00:00",
+            "extractor_model_id": "claude-haiku-4-5-20251001",
+        }
+        result = sync_mod.record_to_tuple(record)
+        assert result[22] == "claude-haiku-4-5-20251001"
+
 
 # ============================================================================
 # Field Order Consistency
@@ -292,7 +354,7 @@ class TestFieldConsistency:
     """Ensure JSONL_FIELDS matches the tuple produced by record_to_tuple."""
 
     def test_field_list_contents(self):
-        """JSONL_FIELDS should contain all expected fields (pre-v2 + v2)."""
+        """JSONL_FIELDS should contain all expected fields (pre-v2 + v2 + v3)."""
         expected = {
             "id", "session_id", "project", "source", "category", "content",
             "summary", "confidence", "research_tags", "zotero_key",
@@ -300,6 +362,9 @@ class TestFieldConsistency:
             # v2 additions (2026-05-16)
             "anchors", "verified", "links", "why", "how_to_apply",
             "superseded_by", "revisions",
+            # v3 additions (2026-05-17): source_message_uuid (Gap 1),
+            # licence + extractor_model_id (Gap 3).
+            "source_message_uuid", "licence", "extractor_model_id",
         }
         assert set(sync_mod.JSONL_FIELDS) == expected
 
@@ -376,10 +441,12 @@ def _install_fake_psycopg2(
 
     def _fetchone():
         if "meta" in last_sql["value"]:
-            # Schema version: bumped to "2" on 2026-05-16 with the v2
-            # schema migration. Must match _schema_version.EXPECTED_SCHEMA_VERSION
-            # and the seed value in scripts/schema.sql.
-            return ("2",)
+            # Schema version: bumped to "3" on 2026-05-17 with the v3
+            # schema migration (source_message_uuid column for tier-3
+            # verifier fallback). Must match
+            # _schema_version.EXPECTED_SCHEMA_VERSION and the seed
+            # value in scripts/schema.sql.
+            return ("3",)
         return (advisory_lock_acquired,)
 
     cur.execute.side_effect = _exec

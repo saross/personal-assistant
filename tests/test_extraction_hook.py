@@ -446,6 +446,160 @@ class TestFormatMemories:
         result = eh.format_memories(extracted, "test-session")
         assert "summary" not in result[0]
 
+    def test_source_message_uuid_propagated(self):
+        """When provided, source_message_uuid lands on every record.
+
+        Provenance audit Gap 1 (2026-05-17): the UUID of the last
+        transcript message included in the extraction batch is the
+        tier-3 verifier's anchor when mechanical anchor matching
+        fails. Every memory in a batch shares the same UUID — the
+        verifier uses it to seek directly into the archived
+        transcript rather than re-grepping the whole file.
+        """
+        extracted = [
+            {
+                "category": "decision",
+                "content": "First memory.",
+                "confidence": "high",
+                "research_tags": [],
+            },
+            {
+                "category": "progress",
+                "content": "Second memory.",
+                "confidence": "medium",
+                "research_tags": [],
+            },
+        ]
+        result = eh.format_memories(
+            extracted,
+            "test-session",
+            source_message_uuid="msg-uuid-42",
+        )
+        assert len(result) == 2
+        assert result[0]["source_message_uuid"] == "msg-uuid-42"
+        assert result[1]["source_message_uuid"] == "msg-uuid-42"
+
+    def test_source_message_uuid_omitted_when_none(self):
+        """No source_message_uuid argument → field absent from record.
+
+        Keeps the field optional, matching the schema-side default of
+        NULL and avoiding spurious empty strings in legacy reads.
+        """
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some content.",
+                "confidence": "high",
+                "research_tags": [],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert "source_message_uuid" not in result[0]
+
+    def test_source_message_uuid_omitted_when_empty_string(self):
+        """Empty string source_message_uuid → field omitted, not stored.
+
+        An empty UUID is not a valid anchor and would only mislead the
+        verifier. Treat it the same as ``None``.
+        """
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some content.",
+                "confidence": "high",
+                "research_tags": [],
+            }
+        ]
+        result = eh.format_memories(
+            extracted, "test-session", source_message_uuid=""
+        )
+        assert "source_message_uuid" not in result[0]
+
+    def test_extractor_model_id_defaults_to_haiku_constant(self):
+        """v3 (Gap 3): every record carries the HAIKU_MODEL value by default.
+
+        Provenance audit Gap 3 (2026-05-17): the extractor model ID is
+        emitted into every memory record for RO-Crate attribution and
+        for invalidation passes after a Haiku regression. Defaults to
+        the module-level ``HAIKU_MODEL`` constant — the same value the
+        Anthropic API call uses, so the record and the call site are
+        guaranteed to agree.
+        """
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some content.",
+                "confidence": "high",
+                "research_tags": [],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert result[0]["extractor_model_id"] == eh.HAIKU_MODEL
+
+    def test_extractor_model_id_override(self):
+        """Explicit extractor_model_id overrides the HAIKU_MODEL default.
+
+        Lets re-extraction tools (e.g. a future bake-off harness)
+        attribute their records to a model other than the one the live
+        hook is currently configured for.
+        """
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some content.",
+                "confidence": "high",
+                "research_tags": [],
+            }
+        ]
+        result = eh.format_memories(
+            extracted,
+            "test-session",
+            extractor_model_id="claude-haiku-5-0-future",
+        )
+        assert result[0]["extractor_model_id"] == "claude-haiku-5-0-future"
+
+    def test_licence_defaults_to_none(self):
+        """v3 (Gap 3): licence is None by default (RO-Crate user opt-in).
+
+        Provenance audit Gap 3 (2026-05-17): RO-Crate requires a
+        licence string on shared records but none has been set
+        project-wide. Default to ``None`` so the user explicitly opts
+        in to a licence at the moment the record becomes shareable.
+        """
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some content.",
+                "confidence": "high",
+                "research_tags": [],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert "licence" in result[0]
+        assert result[0]["licence"] is None
+
+    def test_licence_explicit_override(self):
+        """An explicit licence string lands on every record in the batch."""
+        extracted = [
+            {
+                "category": "decision",
+                "content": "First.",
+                "confidence": "high",
+                "research_tags": [],
+            },
+            {
+                "category": "progress",
+                "content": "Second.",
+                "confidence": "medium",
+                "research_tags": [],
+            },
+        ]
+        result = eh.format_memories(
+            extracted, "test-session", licence="CC-BY-4.0"
+        )
+        assert result[0]["licence"] == "CC-BY-4.0"
+        assert result[1]["licence"] == "CC-BY-4.0"
+
 
 # ============================================================================
 # Cursor Tracking

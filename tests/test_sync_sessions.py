@@ -434,7 +434,7 @@ def _install_fake_psycopg2(
 
     def _fetchone():
         if "meta" in last_sql["value"]:
-            return ("2",)
+            return ("3",)
         return (advisory_lock_acquired,)
 
     cur.execute.side_effect = _exec

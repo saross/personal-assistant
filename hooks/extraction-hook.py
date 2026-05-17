@@ -626,6 +626,9 @@ def format_memories(
     extracted: list[dict],
     session_id: str,
     project: str = "",
+    source_message_uuid: str | None = None,
+    licence: str | None = None,
+    extractor_model_id: str | None = None,
 ) -> list[dict]:
     """
     Format extracted memories with metadata, normalised tags, and IDs.
@@ -633,6 +636,28 @@ def format_memories(
     Each memory gets a unique ID, normalised tags, a 'source' field
     set to 'extraction' to distinguish from manual captures, and a
     'project' field identifying the working directory.
+
+    ``source_message_uuid`` records the UUID of the last transcript
+    message included in the extraction batch — the same UUID the
+    session cursor advances to on success. It is the entry point the
+    tier-3 archive verifier uses when anchor matching fails: looking
+    up a memory by UUID directly inside the archived transcript is
+    much cheaper than re-grepping every transcript line. Memories
+    extracted before this field was added simply omit it; the field
+    is optional throughout the read path.
+
+    ``licence`` and ``extractor_model_id`` close provenance audit Gap 3
+    (2026-05-17). ``licence`` is RO-Crate's sharing field — left
+    ``None`` by default so the user explicitly opts in to a licence
+    string when a record becomes shareable; emitting one by default
+    would either lie about a non-existent project-wide policy or
+    silently commit Shawn to a default he never chose.
+    ``extractor_model_id`` attributes the memory's content to a
+    specific Haiku version; defaults to :data:`HAIKU_MODEL` so the
+    field always carries the value of the model that actually produced
+    the extraction. Both fields are always present on v3 records (vs.
+    optional for pre-v3 records) so RO-Crate consumers can rely on the
+    shape.
     """
     # Use shared helper (audit IC4) — guarantees the same ISO format
     # for all writers of memory ``created_at``.
@@ -678,7 +703,23 @@ def format_memories(
             "research_tags": normalised,
             "source_context": mem.get("source_context", ""),
             "created_at": timestamp,
+            # v3 provenance fields (audit Gap 3, 2026-05-17). Always
+            # emitted so RO-Crate / FAIR consumers can rely on the
+            # shape; ``licence`` is None until the user opts in.
+            "licence": licence,
+            "extractor_model_id": (
+                extractor_model_id
+                if extractor_model_id is not None
+                else HAIKU_MODEL
+            ),
         }
+
+        # Source-message anchor for tier-3 verifier fallback. Only
+        # attach when we have a non-empty UUID — pre-existing memories
+        # in the corpus may have been written without one and the read
+        # path treats it as optional.
+        if source_message_uuid:
+            record["source_message_uuid"] = source_message_uuid
 
         # Optional fields — only include when present
         if mem.get("summary"):
@@ -866,7 +907,12 @@ def main() -> None:
 
     if extracted:
         try:
-            memories = format_memories(extracted, session_id, project=project)
+            memories = format_memories(
+                extracted,
+                session_id,
+                project=project,
+                source_message_uuid=new_last_uuid,
+            )
 
             # v2 (2026-05-16) Phase 2: mechanical anchor verification.
             # Each memory's anchors are checked against the local repo

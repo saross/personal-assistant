@@ -60,6 +60,13 @@ ADVISORY_LOCK_KEY = "sync-to-postgres"
 # v2 additions (2026-05-16): anchors, verified, links, why, how_to_apply,
 # superseded_by, revisions. Pre-v2 entries lack these fields; record_to_tuple
 # defaults them to empty / NULL appropriately.
+# v3 additions (2026-05-17):
+#   - source_message_uuid — transcript-message anchor used by the tier-3
+#     archive verifier (Gap 1). Optional; pre-v3 entries default to NULL.
+#   - licence, extractor_model_id — RO-Crate / FAIR sharing fields
+#     (Gap 3). licence defaults to NULL until the user opts in;
+#     extractor_model_id defaults to NULL for pre-v3 rows and to
+#     HAIKU_MODEL for v3+ extraction-hook writes.
 JSONL_FIELDS = [
     "id", "session_id", "project", "source", "category", "content",
     "summary", "confidence", "research_tags", "zotero_key",
@@ -67,6 +74,8 @@ JSONL_FIELDS = [
     # v2 schema
     "anchors", "verified", "links", "why", "how_to_apply",
     "superseded_by", "revisions",
+    # v3 schema
+    "source_message_uuid", "licence", "extractor_model_id",
 ]
 
 
@@ -268,6 +277,10 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("how_to_apply"),
         record.get("superseded_by"),
         Json(_list_or_empty(record.get("revisions"))),
+        # v3 fields (2026-05-17)
+        record.get("source_message_uuid"),
+        record.get("licence"),
+        record.get("extractor_model_id"),
     )
 
 
@@ -515,7 +528,8 @@ def insert_memories(
             confidence, research_tags, zotero_key, source_context,
             created_at, deadline_at,
             anchors, verified, links, why, how_to_apply,
-            superseded_by, revisions
+            superseded_by, revisions,
+            source_message_uuid, licence, extractor_model_id
         ) VALUES %s
         ON CONFLICT (id) DO NOTHING
         RETURNING id

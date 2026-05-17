@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 INSERT INTO meta (key, value) VALUES
-    ('schema_version', '2')
+    ('schema_version', '3')
 ON CONFLICT (key) DO UPDATE
     SET value = EXCLUDED.value, updated_at = NOW()
     WHERE meta.value != EXCLUDED.value;
@@ -130,6 +130,42 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS revisions JSONB DEFAULT '[]'::json
 -- Index for supersession chain queries (small partial index).
 CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by)
     WHERE superseded_by IS NOT NULL;
+
+-- ============================================================================
+-- v3 additions (2026-05-17) — provenance audit Gaps 1 and 3
+-- ============================================================================
+-- source_message_uuid records the UUID of the last transcript message
+-- included in an extraction batch (same value the session cursor
+-- advances to on success). Lets the tier-3 archive verifier fall back
+-- from anchor matching to direct message lookup when an anchor goes
+-- stale. Optional — pre-v3 memories lack the field.
+
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_message_uuid TEXT;
+
+-- Partial index for verifier UUID lookups. The vast majority of pre-v3
+-- rows will carry NULL here for some time after the migration, so a
+-- partial index keeps the structure small.
+CREATE INDEX IF NOT EXISTS idx_memories_source_message_uuid
+    ON memories(source_message_uuid)
+    WHERE source_message_uuid IS NOT NULL;
+
+-- Gap 3 (RO-Crate / FAIR sharing fields). ``licence`` carries an
+-- SPDX-style identifier (or URI) governing reuse of a memory record
+-- when shared; left NULL by default so the user explicitly opts in
+-- at the moment a record becomes shareable. ``extractor_model_id``
+-- attributes the memory's content to a specific Haiku version
+-- (sourced from ``HAIKU_MODEL`` in hooks/extraction-hook.py); always
+-- populated on v3+ records.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS licence TEXT;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS extractor_model_id TEXT;
+
+-- Partial index for "find me everything extracted by model X" queries
+-- — useful for an extractor bake-off, model-version provenance audits,
+-- or invalidation passes after a Haiku regression. Pre-v3 rows carry
+-- NULL here so a partial index stays compact.
+CREATE INDEX IF NOT EXISTS idx_memories_extractor_model_id
+    ON memories(extractor_model_id)
+    WHERE extractor_model_id IS NOT NULL;
 
 -- ============================================================================
 -- Sync tracking

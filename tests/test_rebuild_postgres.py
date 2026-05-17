@@ -64,7 +64,7 @@ def rebuild_mod():
 # ---------------------------------------------------------------------------
 
 
-def _build_fake_conn(schema_version: str = "2"):
+def _build_fake_conn(schema_version: str = "3"):
     """Return a MagicMock psycopg2-style connection.
 
     ``cursor().fetchone()`` returns ``(schema_version,)``; ``rowcount``

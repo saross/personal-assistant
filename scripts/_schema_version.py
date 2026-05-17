@@ -49,7 +49,7 @@ from typing import Any
 # changes in any way that affects column shape, view definition, or
 # meta-table content. The literal must match the value seeded by
 # scripts/schema.sql in the meta table.
-EXPECTED_SCHEMA_VERSION = "2"
+EXPECTED_SCHEMA_VERSION = "3"
 
 
 class SchemaVersionError(RuntimeError):
