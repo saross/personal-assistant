@@ -146,6 +146,45 @@ underlying record (Phase 0 unlocks topic-search).
   draft wiki-page diffs for review
 - [ ] **Close 3 provenance audit gaps** — see pending tasks
 
+### F. Auto-metadata production switch — Gemini Flex + tuned prompt (new 2026-05-18)
+
+`cc_session_toolkit/archive.py:_generate_auto_metadata()` currently uses
+Claude Haiku 4.5 with a sampled-message prompt. The 2026-05-18 bake-off
+established that **Gemini 3 Flash Preview (Flex tier) + a tuned
+full-transcript prompt** is the right production choice on every
+dimension that matters:
+
+| Dimension | Outcome |
+|---|---|
+| Quality (vs Haiku, 42 cells) | base prompt: 1/42 G; v1 tuned: 12/42 G; v2 tuned + title rule: 17–18/42 G — Gemini wins meaningfully |
+| Reliability | Gemini 10/10 sessions; Haiku 7/10 (3 long-bin context overruns at 200K) |
+| Cost (per session, 7 in-window) | Gemini Flex ~$0.014; Haiku Batch ~$0.029 — Gemini ~½ |
+| Architectural complexity | single one-shot call vs Haiku-with-chunking + cross-chunk stitching |
+| Long sessions | Gemini handles 264K-token sessions natively; no chunking |
+
+**Production prompt:** `data/experiments/bake-off-metadata-2026-05-18/prompt-gemini-v2.md` (6,422 tokens; production-candidate, includes the title-rule addition for named-entity preservation).
+
+**Status:**
+
+- [x] 2026-05-18 Bake-off across 5 rounds; verdict landed
+- [x] 2026-05-18 `prompt-gemini-v2.md` finalised
+- [ ] **Wire `prompt-gemini-v2.md` into `archive.py:_generate_auto_metadata()`** — swap `anthropic` call for `google.genai` Flex call with `thinking_budget=0` + 503-retry; pass prompt via `system_instruction`; user message is delimited transcript + post-transcript output reminder
+- [ ] **Switch `EXTRACTOR_MODEL_ID` constant** from `claude-haiku-4-5-20251001` to `gemini-3-flash-preview` (re-verify ID before GA rename)
+- [ ] **Backfill 307 historic sessions** with the new prompt + dedup-by-session-id (~$8.30 estimated, separate API approval)
+- [ ] **QA pass** on ~20 sampled backfill outputs before declaring done
+- [ ] **Re-verify Gemini model ID at GA** — currently "Preview"; expect rename
+
+Bake-off artefacts (all in `data/experiments/bake-off-metadata-2026-05-18/`):
+- `sample-manifest.json` (10 sessions, 4/3/3 stratified by length, all <190K tokens)
+- `prompt.md` (base / round-1+2)
+- `prompt-gemini.md` (round-3 tuned)
+- `prompt-gemini-v2.md` (round-4+5; production-candidate)
+- `LAUNCH-PLAN.md`
+- Four populated rubrics (`review-rubric-populated*.md`)
+- Archived response sets (`responses-round-1/`, `responses-gemini-baseline/`, `responses-gemini-tuned-v1/`, `responses-gemini-v2-round-4/`, `responses/`)
+
+Bake-off spend: ~$1.45 across 5 Gemini rounds + 2 Haiku batches (29% of $5 cap).
+
 ### E. Open-science / RDA IG (Documenting GenAI Interactions in Research)
 
 Shawn co-chairs an RDA Interest Group with Brian Ballsun-Stanton.
@@ -187,6 +226,14 @@ Read these *before* starting new work. Most should take <5 min each.
 - [x] 2026-05-17 **zbook + rpi-server hook health.** Both have v2 code; only
   amd-tower has Postgres so verification only writes to the DB on
   amd-tower. Check that hook firings on zbook didn't choke.
+- [ ] **First firing of v3 extraction hook** (new 2026-05-18). After schema v3 went live (Gaps 1+3 columns `source_message_uuid`, `licence`, `extractor_model_id`), confirm the next `SessionEnd` / `PreCompact` writes the new fields cleanly. Query:
+  ```sql
+  SELECT COUNT(*) FILTER (WHERE source_message_uuid IS NOT NULL) AS with_uuid,
+         COUNT(*) FILTER (WHERE extractor_model_id IS NOT NULL) AS with_model,
+         COUNT(*) FILTER (WHERE created_at > '2026-05-18T00:00:00+00:00') AS post_v3
+  FROM memories;
+  ```
+  `with_model / post_v3` should approach 1.0 (the field is always emitted on v3+).
 
 ## Pending tasks (cross-session)
 
@@ -218,20 +265,28 @@ These survive across sessions. Mark `[x]` with date when done.
 - [ ] **Phase 5 — migration sweep** — **demoted**; still useful as backfill for `verified` field but no longer gating anything
 - [ ] **Phase 6 — extractor bake-off** — **deprioritised** (prior-art-scout: write strategy ~3–8 retrieval-accuracy points vs ~20 for retrieval; wrong lever)
 
+**Small open follow-ups (new 2026-05-18):**
+
+- [ ] **SessionStart-hook sidecar for `commit_at_start`** — writes per-session-id file under `data/code-state/`; read by `cc_session_toolkit/archive.py:create_session_metadata()` to complete Gap 2's `code_state` block (currently emits `commit_at_start = None`).
+- [ ] **Hook hardening (`~/.claude/settings.json:91,112`)** — the brittle `export $(grep -v '^#' ~/personal-assistant/.env | xargs)` shell idiom dropped `ANTHROPIC_API_KEY` for hook-archived sessions in 2026-03 (32 sessions lost their auto-metadata). Python fallback `_ensure_anthropic_api_key()` (added 2026-04-10) now masks the failure but the shell pattern is redundant + fragile. Replace with `set -a; . ~/personal-assistant/.env; set +a`, or remove the shell-load and rely on the Python fallback alone.
+- [ ] **`pg_trgm` extension missing on `claude_memories` DB** — `idx_memories_content_trgm` (`scripts/schema.sql:79`) has been silently failing to create. Non-critical (full-text search uses a different index). Either run `sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION pg_trgm;"` or drop the index from schema.sql.
+- [ ] **`scripts/bake-off-metadata.py` tidy-up**: (a) add a `--yes` flag so non-interactive runs don't need `echo yes |` workaround; (b) fix path mismatch where submit writes to `out-dir/haiku/batch-state.json` but apply expects `out-dir/batch-state.json`.
+
 **Workstream D — memory-system rethink + wiki formalisation (new 2026-05-17):**
 
-- [ ] **Implement `/handoff` as actual skill** in `commands/` (protocol exists at `global-claude-md/handoff-protocol.md`)
-- [ ] **Draft `global-claude-md/session-start-protocol.md`** — short companion to handoff-protocol.md; covers reading continuity.md first, spot-checking things-to-verify, de-weighting the auto-loaded recall dump, eventual auto-loading of wiki/notes index files
-- [ ] **Pilot wiki migration on personal-assistant** — move `planning/` and `docs/` under `wiki/`; add `wiki/index.md`
-- [ ] **Sketch `notes/index.md` + initial wiki-tag vocabulary** — cluster the corpus to surface real topics first
+- [x] 2026-05-18 **Implement `/handoff` as actual skill** in `commands/handoff.md` — thin invoker that points at `handoff-protocol.md`
+- [x] 2026-05-18 **Draft `global-claude-md/session-start-protocol.md`** — symmetric bookend to `/handoff`; silent fires at session-start; covers continuity.md read, things-to-verify spot-check, recall-dump de-weighting, future auto-loading of wiki/notes indexes
+- [ ] **Pilot wiki migration on personal-assistant** — move `planning/`, `docs/`, `continuity.md`, etc. under `wiki/`; add `wiki/index.md` (sketch landed at `planning/wiki-index-draft.md` 2026-05-18); split `notes/_tags.md` content into `wiki/index.md` at migration time
+- [x] 2026-05-18 **Sketch `notes/index.md` + initial wiki-tag vocabulary** — 24-tag set across four groupings (craft scaffolding 8, failure modes 5, domains 6, cross-cutting 5); pre-staged in `notes/_tags.md` ready to lift to `wiki/index.md` at pilot migration
 - [ ] **Extend `/weekly-review` with cluster-and-carry curation step** — produce candidate wiki-page diffs
 - [ ] **Phase 0 archive consolidation — priority promoted** (open-science topic-search depends on this)
+- [ ] **Lit-scout file moves at pilot-migration time** — destinations decided 2026-05-18: `v3-bayesian-dating` → inscriptions; `v4` (maps) → map-reader-llm; `v4.1` (SPA Latin inscriptions) → inscriptions; `v4.2` (ABM Mediterranean economies) → inscriptions; `v4.3` (magnetometer) → `archive/lit-searches/magnetometer-2026-04-19/`; all `*-evaluation-*` / `*-verifier-*` → `wiki/docs/lit-scout-evaluations/`; `paper-b-working-notes.md` + `lit-scout-case-study.md` → Paper B project wiki; `general/2026-03-15-persona-affordance-design-paper-seed.md` → map-reader-llm
 
-**Provenance audit gaps to close opportunistically (from workstream D audit, 2026-05-17):**
+**Provenance audit gaps (from workstream D audit, 2026-05-17) — all three closed 2026-05-18:**
 
-- [ ] **Gap 1: add `source_message_uuid` to extracted memories** in `hooks/extraction-hook.py` `format_memories()`. UUIDs already parsed but discarded. Enables tier-3 verifier fallback. Highest-value-low-cost fix.
-- [ ] **Gap 2: capture `code_state.{commit_at_start, commit_at_end, dirty_at_end}` on session records** in `cc_session_toolkit/archive.py` `create_session_metadata()`. One `git rev-parse HEAD` call.
-- [ ] **Gap 3: add `license` and `extractor_model_id` to memory + session records.** RO-Crate-required for sharing; extractor model ID currently hard-coded constant only.
+- [x] 2026-05-18 **Gap 1: `source_message_uuid` on extracted memories** — `hooks/extraction-hook.py` `format_memories()` now plumbs the batch-tail UUID through. Schema v2 → v3; partial index added. Live PG migration applied.
+- [x] 2026-05-18 **Gap 2: `code_state.{commit_at_start, commit_at_end, dirty_at_end}` on session records** — `cc_session_toolkit/archive.py` now captures `commit_at_end` + `dirty_at_end` via `capture_code_state()`. `commit_at_start` is an honest gap: archive runs at session-close only, so the start commit requires a SessionStart-hook sidecar (queued as separate task; see Pending below).
+- [x] 2026-05-18 **Gap 3: `licence` + `extractor_model_id` on memory + session records** — UK spelling (`licence`) used across PA + cc-session-toolkit. Memory schema v3 absorbs both columns; live PG migration applied. cc-session-toolkit's `create_session_metadata()` accepts `licence` and `extractor_model_id` kwargs. PA `extraction-hook.py` defaults `licence=None` (user opts in at sharing time) and `extractor_model_id=HAIKU_MODEL`.
 - [ ] **Bonus: populate the empty `prompt_summary` / `process_summary` / `provenance_summary` fields** in session.meta.json (schema present, generation missing). Quiet embarrassment for the RDA IG POC framing.
 
 ## Open decisions / questions
@@ -302,6 +357,36 @@ reopen settled questions:
   (2026-05-17 audit finding). Pre-commitment to the RDA IG framework
   was built into `cc_session_toolkit` design. Summary-string
   generation needs to actually run to make the system a credible POC.
+- **Auto-metadata provider: Gemini Flex over Haiku Batch** (2026-05-18).
+  Bake-off scored Gemini-tuned-v2 17–7 vs Haiku across 42 cells, with
+  18 ties. Gemini's 1M-token context sidesteps the chunking complexity
+  that would otherwise plague the ~30% of sessions exceeding Haiku's
+  200K window. Single-provider, single-shot call, ~half Haiku's cost.
+  Production prompt: `data/experiments/bake-off-metadata-2026-05-18/prompt-gemini-v2.md`.
+- **Full transcript over sampled-messages for auto-metadata** (2026-05-18).
+  The previous `archive.py:_generate_auto_metadata()` prompt fed Haiku
+  only first-and-last user messages. The new prompt sends the entire
+  distilled transcript. Required for grounded Three Ps summaries (a
+  sampled-input prompt can't characterise `process_summary` faithfully).
+- **`thinking_budget=0` for structured-JSON generation on Gemini 3 Flash**
+  (2026-05-18). Gemini 3 Flash Preview is a reasoning model; without
+  `thinking_config={"thinking_budget": 0}`, thinking tokens consume the
+  output budget before any visible JSON is emitted (first bake-off run
+  produced 0/10 parseable responses with `max_output_tokens=1024`).
+  Disabling thinking also gives apples-to-apples comparison with Haiku
+  (which has no thinking mode).
+- **System-prompt + delimited-transcript structure** (2026-05-18 prompt
+  redesign). Putting instructions in the user message alongside the
+  transcript caused Haiku to *continue the conversation* on 5/10
+  sessions (treating `[assistant]` markers as chat turns). Fix:
+  instructions to `system=` / `system_instruction=`; transcript wrapped
+  in `<transcript>` tags with neutral `--- Role ---` dividers; output
+  reminder *after* the closing tag. Eliminated the failure mode.
+- **`/handoff` ritual: per session-close, in-project** (2026-05-18, first
+  formal use). Five steps per `global-claude-md/handoff-protocol.md`.
+  At step 4, *draft* candidate user-observations rather than ask
+  blank-page question. At step 5, default is commit-and-push everything
+  batched by logical area.
 
 ## Reference docs
 
@@ -322,6 +407,67 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-18 (Mon) — Provenance audit closure + wiki sketch + auto-metadata bake-off
+
+Long session run as deliberate background while primary foreground was
+elsewhere. Three discrete movements:
+
+**(1) Three quick steps in parallel.** Dispatched agents for `/handoff`
+skill implementation, `session-start-protocol.md` draft, and provenance
+Gap 1 (`source_message_uuid` plumbing). All three returned green; schema
+bumped v2 → v3 with live PG migration applied. Tests 680 → 690.
+
+**(2) Wiki design exercise.** Decided structural ambiguity (Option A2:
+`personal-assistant/wiki/` plays both roles, with cross-project
+sub-collections like `notes/`, `grimoire/`, future `templates/`,
+`bibliographies/` sitting alongside PA-project artefacts). Drafted
+`notes/index.md` (notes-specific) + `notes/_tags.md` (24-tag vocab
+across four groupings) + `planning/wiki-index-draft.md` (sketch of the
+eventual top-level `wiki/index.md`). Frontmatter shape settled
+(title + tags + created + updated + status). Lit-scout file destinations
+decided for the pilot migration (table in workstream D pending tasks).
+
+**(3) Provenance audit Gaps 2 + 3.** Dispatched agent for both gaps
+across two repos (PA + cc-session-toolkit). `code_state.{commit_at_end,
+dirty_at_end}` now captured at archive time; `commit_at_start` is an
+honest gap requiring a SessionStart-hook sidecar (queued). `licence` +
+`extractor_model_id` plumbed through; UK spelling unified after agent
+defaulted to American; live PG migration applied for both new columns.
+
+**(4) Auto-metadata bake-off.** What started as a cost question
+("should we backfill the 32 empty March cohort with Haiku?") became a
+top-to-bottom redesign. Found the 2026-03 cohort regression had already
+been fixed 2026-04-10 (commit `aeebe158` — brittle `export $(... |
+xargs)` shell idiom in hook settings; Python `.env` fallback masks it
+now). But also found 49 other sessions on a different fallback path
+("No description provided"), and discovered the existing prompt sees
+only sampled messages — not the full transcript. Pivoted to a
+full-transcript redesign + provider bake-off (Haiku Batch vs Gemini
+Flash Flex). Ran 5 iterations: base prompt → tuned-v1 (added Specifics
+Requirement section + comparisons table) → tuned-v2 (added Structural
+Requirements: sequencing, rejected alternatives, contrastive numbers,
+user voice, conceptual characterisation, session-shape labelling) →
+v2.1 (added title named-entity rule). Verdict landed: **Gemini Flex +
+`prompt-gemini-v2.md` wins on every dimension** (quality 17–7 Haiku
+in cells; reliability 10/10 vs 7/10; cost ½ Haiku; single one-shot
+call vs chunking complexity).
+
+**(5) Started this session-close ritual.** First formal use of
+`/handoff` since the skill was implemented earlier in the same session
+— mildly recursive.
+
+- New PA files: `commands/handoff.md`, `global-claude-md/session-start-protocol.md`, `planning/wiki-index-draft.md`, `scripts/extract-transcript-text.py`, `scripts/bake-off-metadata.py`, `scripts/resample-bake-off-manifest.py`
+- Modified PA files (Gaps 1+3): `hooks/extraction-hook.py`, `scripts/schema.sql`, `scripts/_schema_version.py`, `scripts/sync-to-postgres.py`, 5 test files
+- New PA wiki seeds (this `/handoff`): `wiki/working-notes.md`, `wiki/user-observations.md`
+- New cc-session-toolkit files (Gaps 2+3): `src/cc_session_toolkit/archive.py`, `src/cc_session_toolkit/config.py`, `tests/test_subagent_archive.py`
+- Data submodule: `notes/index.md`, `notes/_tags.md`, `experiments/bake-off-metadata-2026-05-18/` (prompts, manifest, launch plan, 4 populated rubrics, 5 response sets)
+- Network-resources correction (data submodule, from concurrent work on the pg_trgm thread)
+- Tests: 680 → 690 PA passing; cc-session-toolkit 202 → 214
+- Live PG migration applied: 3 new columns (`source_message_uuid`, `licence`, `extractor_model_id`) + 2 partial indexes
+- Bake-off spend: ~$1.45 (29% of $5 cap)
+- Architectural decisions added below: 3 new ones (Gemini for auto-metadata; named-entity preservation in titles; full-transcript over sampled)
+- Commits pending — to be made at this `/handoff` step 5
 
 ### 2026-05-17 (Sun) — Memory-system top-to-bottom rethink + Vector 2 design + wiki formalisation
 
