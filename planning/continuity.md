@@ -221,6 +221,7 @@ These survive across sessions. Mark `[x]` with date when done.
 **Workstream D — memory-system rethink + wiki formalisation (new 2026-05-17):**
 
 - [ ] **Implement `/handoff` as actual skill** in `commands/` (protocol exists at `global-claude-md/handoff-protocol.md`)
+- [ ] **Draft `global-claude-md/session-start-protocol.md`** — short companion to handoff-protocol.md; covers reading continuity.md first, spot-checking things-to-verify, de-weighting the auto-loaded recall dump, eventual auto-loading of wiki/notes index files
 - [ ] **Pilot wiki migration on personal-assistant** — move `planning/` and `docs/` under `wiki/`; add `wiki/index.md`
 - [ ] **Sketch `notes/index.md` + initial wiki-tag vocabulary** — cluster the corpus to surface real topics first
 - [ ] **Extend `/weekly-review` with cluster-and-carry curation step** — produce candidate wiki-page diffs
