@@ -1,0 +1,53 @@
+---
+description: Session-close ritual. Invoke on /handoff, "let's wrap up", "before we close out", "wrap session", or any end-of-session / session-close signal in a single project. Updates continuity, captures observations, flags wiki candidates, drafts user-observation candidates, and commits-and-pushes batched by logical area.
+---
+
+# /handoff — Session-Close Ritual
+
+End-of-session ritual that updates continuity, captures fresh observations,
+and lands a clean working tree before context is lost. Distinct from `/recap`
+(daily, multi-project, accountability) — `/handoff` is per session-close in a
+single project and serves continuity for the next session.
+
+## Usage
+
+```text
+/handoff
+```
+
+No arguments. Adapts to session weight (light / heavy / verification-only).
+
+## Behaviour
+
+1. **Read** `~/personal-assistant/global-claude-md/handoff-protocol.md` and
+   execute the five steps it defines. The protocol is authoritative — do not
+   improvise from this skill; read it fresh each invocation.
+
+2. **Honour the adaptation rules** in the protocol:
+   - Light session → skip steps 2–4; update continuity only if needed.
+   - Heavy design session → all five steps; budget ~10 minutes.
+   - Verification-only → often no continuity update at all.
+
+3. **Key refinements** (do not omit, even when the protocol summary is
+   skimmed):
+   - **Step 4 (user observations):** *draft 2–4 candidate observations*
+     about how we worked together this session, then surface them for
+     accept / edit / discard / replace. Do not ask a blank-page question —
+     candidates jog memory and are useful even when wrong.
+   - **Step 5 (commit and push):** *default is commit-and-push everything*
+     before handoff closes, batched by logical area (design-doc, protocol-doc,
+     continuity, notes — one commit per area). Bundle into a single commit
+     only if all changes belong to one logical area. Surface push failures
+     rather than working around them.
+
+4. **Apply the anti-confabulation rule** when drafting the continuity diff:
+   re-read any cited filenames, line numbers, commit hashes, or config values
+   at the source before including them. Sessions are long; specifics drift.
+
+## Notes
+
+- The protocol doc is the source of truth. This skill is a thin invoker.
+- `/handoff` does not curate wiki pages (that is `/weekly-review`), does not
+  modify `FOCUS.md`, and does not surface memories for review.
+- If the session was load-bearing and you are tempted to skip the continuity
+  update — stop. That is the highest-cost failure mode.
