@@ -146,13 +146,11 @@ underlying record (Phase 0 unlocks topic-search).
   draft wiki-page diffs for review
 - [ ] **Close 3 provenance audit gaps** — see pending tasks
 
-### F. Auto-metadata production switch — Gemini Flex + tuned prompt (new 2026-05-18)
+### F. Auto-metadata production switch — Gemini Flex + tuned prompt (new 2026-05-18; wire-up landed 2026-05-18, backfill gated on review)
 
-`cc_session_toolkit/archive.py:_generate_auto_metadata()` currently uses
-Claude Haiku 4.5 with a sampled-message prompt. The 2026-05-18 bake-off
-established that **Gemini 3 Flash Preview (Flex tier) + a tuned
-full-transcript prompt** is the right production choice on every
-dimension that matters:
+The 2026-05-18 bake-off established **Gemini 3 Flash Preview (Flex
+tier) + a tuned full-transcript prompt** as the right production
+choice on every dimension that matters:
 
 | Dimension | Outcome |
 |---|---|
@@ -162,23 +160,84 @@ dimension that matters:
 | Architectural complexity | single one-shot call vs Haiku-with-chunking + cross-chunk stitching |
 | Long sessions | Gemini handles 264K-token sessions natively; no chunking |
 
-**Production prompt:** `data/experiments/bake-off-metadata-2026-05-18/prompt-gemini-v2.md` (6,422 tokens; production-candidate, includes the title-rule addition for named-entity preservation).
+**Production prompt (shipping):** bundled as package data at
+`cc_session_toolkit/prompts/auto_metadata.md` (copy of bake-off-winner
+`prompt-gemini-v2.md`, 477 lines / ~25.6 KB / ~6,400 tokens). Override
+the bundled prompt with env var `CC_AUTO_METADATA_PROMPT_PATH`.
 
 **Status:**
 
 - [x] 2026-05-18 Bake-off across 5 rounds; verdict landed
 - [x] 2026-05-18 `prompt-gemini-v2.md` finalised
-- [ ] **Wire `prompt-gemini-v2.md` into `archive.py:_generate_auto_metadata()`** — swap `anthropic` call for `google.genai` Flex call with `thinking_budget=0` + 503-retry; pass prompt via `system_instruction`; user message is delimited transcript + post-transcript output reminder
-- [ ] **Switch `EXTRACTOR_MODEL_ID` constant** from `claude-haiku-4-5-20251001` to `gemini-3-flash-preview` (re-verify ID before GA rename)
-- [ ] **Backfill 307 historic sessions** with the new prompt + dedup-by-session-id (~$8.30 estimated, separate API approval)
-- [ ] **QA pass** on ~20 sampled backfill outputs before declaring done
-- [ ] **Re-verify Gemini model ID at GA** — currently "Preview"; expect rename
+- [x] 2026-05-18 **F1: Gemini Flex wired into
+  `archive.py:generate_auto_metadata()`.** Full-transcript path via the
+  new `cc_session_toolkit.transcript_text` module (ported from PA's
+  `scripts/extract-transcript-text.py`); `thinking_budget=0`,
+  `service_tier="flex"`, 503-retry with (30s, 60s, 120s) backoff.
+  Sampled-message machinery (`_is_meta_message`, `_META_*`,
+  `_ensure_anthropic_api_key`) all removed. `re` import dropped.
+  Optional dep flipped from `anthropic>=0.40` to `google-genai>=2.3`.
+- [x] 2026-05-18 **F2: `EXTRACTOR_MODEL_ID` switched** from
+  `claude-haiku-4-5-20251001` to `gemini-3-flash-preview` (still
+  Preview — see GA-rename watch below).
+- [x] 2026-05-18 **PA venv reinstalled with `pip install -e ~/Code/cc-session-toolkit`**
+  so the hook picks up the new path on next SessionEnd.
+- [x] 2026-05-18 **`scripts/backfill-session-metadata.py` updated** —
+  uses `_ensure_gemini_api_key`; cost line shows ~$0.027/session;
+  `update_metadata` now writes Three Ps natively (was preserving empty
+  defaults from prior Haiku schema).
+- [ ] **F3: Backfill 307 historic sessions** — **BLOCKED on Shawn's
+  approval after live-output review.** Est. ~$8.30 (Gemini Flex
+  one-shot, ~$0.027/session). Requires explicit gate approval per the
+  API Call Review Gate in `~/.claude/CLAUDE.md`.
+- [ ] **F4: QA pass on ~20 sampled backfill outputs** — gates declaring
+  workstream F done. Compare against bake-off rubrics
+  (`review-rubric-populated-final.md`).
+- [ ] **Re-verify Gemini model ID at GA** — currently "Preview"; expect
+  rename (`gemini-3-flash`?). Set a calendar nudge for next major
+  release.
+
+**What Shawn does after a few SessionEnds fire:**
+
+1. Wait for ~2–3 real SessionEnds to fire after `pip install -e` took
+   effect. Each end-of-session triggers
+   `cc_session_toolkit.cli archive --auto-metadata` via the
+   PreCompact / SessionEnd hooks; the new Gemini Flex path runs
+   automatically.
+2. Spot-check the outputs by reading the new `session.meta.json`
+   files. Each one is under `~/cc-archives/<project>/<dated-session>/session.meta.json`.
+   Look at:
+   - `auto_generated.title` — names of files, people, projects
+     preserved? Five-to-ten-word descriptive title?
+   - `auto_generated.purpose` — captures the *why*, not just *what*?
+   - `auto_generated.tags` — lowercase-hyphenated, 2–5 items, on-topic?
+   - `three_ps.{prompt_summary, process_summary, provenance_summary}` —
+     populated (not empty strings)? Grounded in actual session events?
+     User-voice paraphrase rather than CC's? Sequenced process
+     narrative? Rejected alternatives preserved?
+3. Cross-reference against the bake-off rubrics at
+   `data/experiments/bake-off-metadata-2026-05-18/review-rubric-populated-final.md`
+   so you have a calibrated sense of the v2 prompt's known quality
+   profile.
+4. Also check `data/logs/auto-metadata.log` for any Gemini API errors
+   (503 preemptions, JSON parse failures). The hook-side handler
+   collapses failures to `None` rather than aborting the archive, so
+   they won't show up as user-visible breakage.
+5. When satisfied: explicitly approve the F3 backfill. Phrase that
+   triggers the gate: e.g. *"approved: run F3 backfill"*. CC will
+   then run `python scripts/backfill-session-metadata.py --archive-root <root>`
+   on the ~307 sessions and report back per the API Call Review Gate
+   protocol.
+6. If outputs look wrong (hallucinated names, empty Three Ps,
+   continued-conversation failure mode): **do not approve F3**. The
+   bundled prompt is overridable via `CC_AUTO_METADATA_PROMPT_PATH`;
+   iterate on the prompt and re-fire before scaling.
 
 Bake-off artefacts (all in `data/experiments/bake-off-metadata-2026-05-18/`):
 - `sample-manifest.json` (10 sessions, 4/3/3 stratified by length, all <190K tokens)
 - `prompt.md` (base / round-1+2)
 - `prompt-gemini.md` (round-3 tuned)
-- `prompt-gemini-v2.md` (round-4+5; production-candidate)
+- `prompt-gemini-v2.md` (round-4+5; production-candidate, *original* — the shipping copy lives in the toolkit package data)
 - `LAUNCH-PLAN.md`
 - Four populated rubrics (`review-rubric-populated*.md`)
 - Archived response sets (`responses-round-1/`, `responses-gemini-baseline/`, `responses-gemini-tuned-v1/`, `responses-gemini-v2-round-4/`, `responses/`)
@@ -226,14 +285,37 @@ Read these *before* starting new work. Most should take <5 min each.
 - [x] 2026-05-17 **zbook + rpi-server hook health.** Both have v2 code; only
   amd-tower has Postgres so verification only writes to the DB on
   amd-tower. Check that hook firings on zbook didn't choke.
-- [ ] **First firing of v3 extraction hook** (new 2026-05-18). After schema v3 went live (Gaps 1+3 columns `source_message_uuid`, `licence`, `extractor_model_id`), confirm the next `SessionEnd` / `PreCompact` writes the new fields cleanly. Query:
-  ```sql
-  SELECT COUNT(*) FILTER (WHERE source_message_uuid IS NOT NULL) AS with_uuid,
-         COUNT(*) FILTER (WHERE extractor_model_id IS NOT NULL) AS with_model,
-         COUNT(*) FILTER (WHERE created_at > '2026-05-18T00:00:00+00:00') AS post_v3
-  FROM memories;
-  ```
-  `with_model / post_v3` should approach 1.0 (the field is always emitted on v3+).
+- [x] 2026-05-18 **First firing of v3 extraction hook**. 13 post-v3 memories
+  (`created_at > 2026-05-18T00:00`), all 13 with both
+  `source_message_uuid` *and* `extractor_model_id` populated; every
+  one used `claude-haiku-4-5-20251001` as expected. No
+  schema/sync/anchor tracebacks in `logs/extraction.log`. Only blemish
+  was a single transient `529 overloaded_error` at 13:38:59
+  (Anthropic-side capacity, request_id `req_011Cb9LZzm1ph8knL9g9iP2s`)
+  caught cleanly by the existing handler; next firing at 14:11
+  succeeded. Schema v3 + Gaps 1+3 pipeline is healthy.
+- [ ] **First firing of Gemini Flex auto-metadata path** (new 2026-05-18,
+  workstream F1+F2). PA venv reinstalled with editable
+  cc-session-toolkit; next SessionEnd / PreCompact runs the new path
+  automatically. Spot-checks:
+  - **No log noise:** `tail -50 ~/personal-assistant/data/logs/auto-metadata.log`
+    — look for "Calling Gemini Flex for ...", "Success for ...".
+    Tracebacks or "FAIL"/"ERROR" lines mean the wire-up has a bug.
+  - **Real outputs:** pick the most recent archive
+    (`ls -td ~/cc-archives/personal-assistant/*/ | head -3`),
+    read `session.meta.json`. Verify `auto_generated` carries a
+    descriptive title, non-empty purpose, lowercase-hyphenated tags;
+    `three_ps` has all three summaries populated (not empty strings).
+  - **Sidecar:** the SessionStart sidecar at
+    `~/personal-assistant/data/code-state/<session_id>.json` should
+    have been written; `code_state.commit_at_start` in the
+    `session.meta.json` should be the SHA at session start.
+  - **`extractor_model_id` field:** new sessions should carry
+    `gemini-3-flash-preview` (not `claude-haiku-4-5-20251001`).
+  - **Model ID GA-rename watch:** if Google renames `gemini-3-flash-preview`
+    → `gemini-3-flash` at GA, the call will start failing with
+    "model not found". Bump the constant in
+    `cc_session_toolkit/config.py:EXTRACTOR_MODEL_ID`.
 
 ## Pending tasks (cross-session)
 
@@ -267,10 +349,20 @@ These survive across sessions. Mark `[x]` with date when done.
 
 **Small open follow-ups (new 2026-05-18):**
 
-- [ ] **SessionStart-hook sidecar for `commit_at_start`** — writes per-session-id file under `data/code-state/`; read by `cc_session_toolkit/archive.py:create_session_metadata()` to complete Gap 2's `code_state` block (currently emits `commit_at_start = None`).
-- [ ] **Hook hardening (`~/.claude/settings.json:91,112`)** — the brittle `export $(grep -v '^#' ~/personal-assistant/.env | xargs)` shell idiom dropped `ANTHROPIC_API_KEY` for hook-archived sessions in 2026-03 (32 sessions lost their auto-metadata). Python fallback `_ensure_anthropic_api_key()` (added 2026-04-10) now masks the failure but the shell pattern is redundant + fragile. Replace with `set -a; . ~/personal-assistant/.env; set +a`, or remove the shell-load and rely on the Python fallback alone.
+- [x] 2026-05-18 **SessionStart-hook sidecar for `commit_at_start`** — `hooks/session-start-code-state.py` writes `data/code-state/<session_id>.json`; `cc_session_toolkit/archive.py:capture_code_state()` now takes `session_id` + `sidecar_dir` kwargs and reads the sidecar best-effort. Hook wired into `settings.json` SessionStart array. Tests: 6 new in `test_subagent_archive.py`; full toolkit 220 passing.
+- [x] 2026-05-18 **Hook hardening (`~/.claude/settings.json:91,112`)** — replaced `export $(grep -v '^#' ... | xargs)` with `set -a && . ~/personal-assistant/.env && set +a` on both PreCompact + SessionEnd archive commands. The Python `.env`-fallback pattern (`_ensure_anthropic_api_key` → `_ensure_gemini_api_key` post-F1) is retained inside `cc_session_toolkit.archive` as belt-and-braces.
 - [ ] **`pg_trgm` extension missing on `claude_memories` DB** — `idx_memories_content_trgm` (`scripts/schema.sql:79`) has been silently failing to create. Non-critical (full-text search uses a different index). Either run `sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION pg_trgm;"` or drop the index from schema.sql.
-- [ ] **`scripts/bake-off-metadata.py` tidy-up**: (a) add a `--yes` flag so non-interactive runs don't need `echo yes |` workaround; (b) fix path mismatch where submit writes to `out-dir/haiku/batch-state.json` but apply expects `out-dir/batch-state.json`.
+- [x] 2026-05-18 **`scripts/bake-off-metadata.py` tidy-up**: (a) `--yes` flag added (bypasses interactive `input()` for non-interactive runs); (b) `haiku_apply` path now navigates to `<root>/haiku/` to match where `haiku_submit` persists `batch-state.json`; print hint in submit updated to print `out_dir.parent` so the copy-paste is correct.
+
+**Workstream F — auto-metadata production switch (new 2026-05-18):**
+
+- [x] 2026-05-18 **F1: Gemini Flex wired into `cc_session_toolkit.archive.generate_auto_metadata`** — full replacement. New module `cc_session_toolkit/transcript_text.py` (ported from PA `scripts/extract-transcript-text.py`); new package data `cc_session_toolkit/prompts/auto_metadata.md` (shipping copy of `prompt-gemini-v2.md`); new helpers `_load_auto_metadata_prompt`, `_build_auto_metadata_user_message`, `_parse_metadata_response_json`, `_call_gemini_once`, `_call_gemini_with_retry`, `_ensure_gemini_api_key`. Old sampled-message machinery (`_is_meta_message`, `_META_*` sets, sampled-message loop, `_ensure_anthropic_api_key`, `re` import) all removed. `pyproject.toml` `api` extra flipped `anthropic>=0.40` → `google-genai>=2.3`; `prompts/*.md` added to package data. Test suite reshaped: dropped 32 obsolete sampling/meta-filter tests, added 17 Gemini-shape tests (helpers, integration with mocked `google.genai` client, 503 retry recovery, exhausted-retry → None, unparseable JSON → None). Toolkit 205 passing. PA suite 690 still passing — no callers broken.
+- [x] 2026-05-18 **F2: `EXTRACTOR_MODEL_ID` switched** from `claude-haiku-4-5-20251001` to `gemini-3-flash-preview` in `cc_session_toolkit/config.py`. New constants `AUTO_METADATA_MAX_OUTPUT_TOKENS=1024`, `AUTO_METADATA_FLEX_RETRY_WAITS_SECONDS=(30, 60, 120)`, `GEMINI_FLEX_INPUT_PRICE_PER_MTOK=0.25`, `GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK=1.50`.
+- [x] 2026-05-18 **PA venv reinstalled** with `pip install -e ~/Code/cc-session-toolkit` so hook firings on amd-tower use the new path. zbook + rpi-server pip installs still pinned to the old non-editable wheel — re-run editable install on those machines or push a new tagged release before relying on the new path there.
+- [x] 2026-05-18 **`scripts/backfill-session-metadata.py` updated** for the Gemini path: `_ensure_gemini_api_key`, cost line ~$0.027/session, `update_metadata` writes Three Ps natively (was preserving empty defaults).
+- [ ] **F3: Backfill 307 historic sessions** — BLOCKED on Shawn's gate approval after live-output review. Est. ~$8.30.
+- [ ] **F4: QA pass on ~20 sampled backfill outputs** — depends on F3.
+- [ ] **GA-rename watch**: model id `gemini-3-flash-preview` is still "Preview"; bump constant when GA renames to `gemini-3-flash` (or similar).
 
 **Workstream D — memory-system rethink + wiki formalisation (new 2026-05-17):**
 
@@ -285,7 +377,7 @@ These survive across sessions. Mark `[x]` with date when done.
 **Provenance audit gaps (from workstream D audit, 2026-05-17) — all three closed 2026-05-18:**
 
 - [x] 2026-05-18 **Gap 1: `source_message_uuid` on extracted memories** — `hooks/extraction-hook.py` `format_memories()` now plumbs the batch-tail UUID through. Schema v2 → v3; partial index added. Live PG migration applied.
-- [x] 2026-05-18 **Gap 2: `code_state.{commit_at_start, commit_at_end, dirty_at_end}` on session records** — `cc_session_toolkit/archive.py` now captures `commit_at_end` + `dirty_at_end` via `capture_code_state()`. `commit_at_start` is an honest gap: archive runs at session-close only, so the start commit requires a SessionStart-hook sidecar (queued as separate task; see Pending below).
+- [x] 2026-05-18 **Gap 2: `code_state.{commit_at_start, commit_at_end, dirty_at_end}` on session records** — `cc_session_toolkit/archive.py` now captures `commit_at_end` + `dirty_at_end` via `capture_code_state()`. `commit_at_start` closed 2026-05-18 via `hooks/session-start-code-state.py` sidecar + `capture_code_state(session_id=...)` lookup; `CODE_STATE_SIDECAR_DIR` config constant in `cc_session_toolkit.config`.
 - [x] 2026-05-18 **Gap 3: `licence` + `extractor_model_id` on memory + session records** — UK spelling (`licence`) used across PA + cc-session-toolkit. Memory schema v3 absorbs both columns; live PG migration applied. cc-session-toolkit's `create_session_metadata()` accepts `licence` and `extractor_model_id` kwargs. PA `extraction-hook.py` defaults `licence=None` (user opts in at sharing time) and `extractor_model_id=HAIKU_MODEL`.
 - [ ] **Bonus: populate the empty `prompt_summary` / `process_summary` / `provenance_summary` fields** in session.meta.json (schema present, generation missing). Quiet embarrassment for the RDA IG POC framing.
 
@@ -387,6 +479,23 @@ reopen settled questions:
   At step 4, *draft* candidate user-observations rather than ask
   blank-page question. At step 5, default is commit-and-push everything
   batched by logical area.
+- **Production prompt ships as toolkit package data** (2026-05-18,
+  workstream F wire-up). `cc_session_toolkit/prompts/auto_metadata.md`
+  is the shipping copy of `prompt-gemini-v2.md`; load via
+  `importlib.resources`. Env var `CC_AUTO_METADATA_PROMPT_PATH` overrides
+  for prompt iteration without re-installing the package. The PA
+  `data/experiments/.../prompt-gemini-v2.md` copy stays as the
+  historical bake-off artefact. Reasoning: the toolkit is meant to be
+  self-contained and reproducible across machines; coupling its
+  production prompt to a PA submodule path would break that.
+- **Transcript extractor lives in the toolkit, not PA scripts**
+  (2026-05-18, workstream F wire-up). The script-form
+  `scripts/extract-transcript-text.py` in PA stays for ad-hoc CLI
+  smoke-testing, but the canonical module is now
+  `cc_session_toolkit.transcript_text`. Production callers
+  (`archive.generate_auto_metadata`, backfill script) import the
+  module; only humans use the CLI. Symmetric with the prompt-shipping
+  decision: keep the toolkit reproducible standalone.
 
 ## Reference docs
 
@@ -407,6 +516,72 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-18 (Mon, follow-up session) — Small follow-ups + v3 spot-check + workstream F1+F2 wire-up
+
+PA-infrastructure session run as deliberate background. Three movements,
+all completed in one window:
+
+**(1) Three small open follow-ups closed.** `hooks/session-start-code-state.py`
+(new SessionStart hook) writes `data/code-state/<session_id>.json`
+sidecar with `commit_at_start`; `cc_session_toolkit.archive.capture_code_state`
+extended with `session_id` + `sidecar_dir` kwargs and a
+`_load_code_state_sidecar` helper. New `CODE_STATE_SIDECAR_DIR` config
+constant with env-var override. Hook wired into both `settings.json`
+(live) and `settings-template.json` (tracked). Toolkit tests 214 → 220
+passing; 6 new in `test_subagent_archive.py`. Hook hardening: both
+PreCompact + SessionEnd archive commands swapped
+`export $(grep -v '^#' ... | xargs)` → `set -a && . ... && set +a` —
+robust to quoted/spaced values. Bake-off script tidy: `--yes` flag
+added; `haiku_apply` path fixed (was reading from wrong dir); print
+hint updated to `out_dir.parent`.
+
+**(2) v3 hook spot-check — healthy.** 13 post-v3 memories
+(`created_at > 2026-05-18T00:00`), all 13 with both
+`source_message_uuid` *and* `extractor_model_id` populated; every one
+recorded `claude-haiku-4-5-20251001`. Zero schema/sync/anchor
+tracebacks. Single transient Anthropic 529 Overloaded at 13:38:59
+(request id `req_011Cb9LZzm1ph8knL9g9iP2s`) caught cleanly; next firing
+at 14:11 succeeded. v3 schema (Gaps 1+3 columns) is writing correctly
+end-to-end through hook → JSONL → Postgres.
+
+**(3) Workstream F1+F2: Gemini Flex wired into production.** Full swap
+of `cc_session_toolkit.archive.generate_auto_metadata` from Anthropic
+Haiku Batch (sampled-message) to Google Gemini 3 Flash Preview (Flex
+tier, full distilled transcript). Design choices surfaced as
+`AskUserQuestion` upfront — Shawn accepted all four defaults: prompt
+bundles into toolkit as package data; transcript extractor copies into
+toolkit as a module; Anthropic path drops entirely (no fallback);
+backfill held until live SessionEnds reviewed. New module
+`cc_session_toolkit/transcript_text.py` (ported from
+`scripts/extract-transcript-text.py`). New package data
+`cc_session_toolkit/prompts/auto_metadata.md` (shipping copy of
+`prompt-gemini-v2.md`; override via `CC_AUTO_METADATA_PROMPT_PATH`).
+New helpers `_load_auto_metadata_prompt`,
+`_build_auto_metadata_user_message` (system_instruction +
+`<transcript>` tags + post-transcript reminder),
+`_parse_metadata_response_json`, `_call_gemini_once`
+(`thinking_budget=0`, `service_tier="flex"`), `_call_gemini_with_retry`
+(503 backoff (30, 60, 120)), `_ensure_gemini_api_key`. Sampling /
+meta-filter machinery removed entirely (`_is_meta_message`, `_META_*`,
+`_ensure_anthropic_api_key`, `re` import). `EXTRACTOR_MODEL_ID` switched
+`claude-haiku-4-5-20251001` → `gemini-3-flash-preview`. `pyproject.toml`
+`api` extra flipped `anthropic>=0.40` → `google-genai>=2.3`. PA venv
+reinstalled with editable cc-session-toolkit so the hook picks up the
+new path on next SessionEnd. Tests reshaped: toolkit 220 → 205 (32
+obsolete sampling/meta-filter tests dropped; 17 new Gemini-shape tests
+added — helpers, integration with mocked `google.genai` client, 503
+retry recovery, exhausted-retry → None, non-503 → None, unparseable
+JSON → None). PA suite 690 unchanged. F3 (~$8.30 backfill of 307
+sessions) and F4 (QA on ~20 samples) parked behind explicit gate
+approval after Shawn reviews live SessionEnd outputs.
+
+- PA new: `hooks/session-start-code-state.py`
+- PA modified: `settings.json` + `settings-template.json` (set-a hardening, SessionStart sidecar wiring), `scripts/bake-off-metadata.py` (--yes flag, haiku-apply path fix), `planning/continuity.md` (substantial — workstream F status, things-to-verify, three new architectural decisions, this session-log entry), `wiki/working-notes.md` (new entries from this session), `wiki/user-observations.md` (new candidates), `notes/_inbox.md` (new wiki candidates)
+- Toolkit new: `src/cc_session_toolkit/transcript_text.py`, `src/cc_session_toolkit/prompts/auto_metadata.md`
+- Toolkit modified: `src/cc_session_toolkit/archive.py` (capture_code_state sidecar lookup + full Gemini Flex swap), `src/cc_session_toolkit/config.py` (CODE_STATE_SIDECAR_DIR + EXTRACTOR_MODEL_ID flip + Gemini constants), `pyproject.toml` (anthropic → google-genai + prompts package-data), `tests/test_subagent_archive.py` (+6 sidecar tests), `tests/test_hook.py` (sampling tests → Gemini tests, net -15), `scripts/backfill-session-metadata.py` (Gemini API key + cost line + three_ps native write)
+- Tests: toolkit 205 passing; PA 690 passing (with 2 deselected)
+- Commits pending — to be made at this `/handoff` step 5
 
 ### 2026-05-18 (Mon) — Provenance audit closure + wiki sketch + auto-metadata bake-off
 

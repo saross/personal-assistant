@@ -88,3 +88,86 @@ delegated judgment. This is a strong working pattern when both
 parties understand the contract.
 
 [ ] accept   [ ] edit   [ ] discard
+
+---
+
+## 2026-05-18 (follow-up session) — Drafted candidates (pending review)
+
+Four candidates drafted at the second 2026-05-18 `/handoff` (the
+small-follow-ups + v3-spot-check + F1+F2 wire-up session).
+
+### Candidate 5: Verification-before-implementation as default
+
+Mid-session, after I proposed a priority queue including both quick
+spot-checks and the bigger F-arc, Shawn replied *"let's do the quick
+spot check first"*. The v3 hook health check was cheap (one SQL query,
+under a minute) and confirmed nothing was broken before committing to
+the much larger F1+F2 swap. Had v3 been broken, F1 would have been the
+wrong work; the cheap check de-risked the costly one.
+
+**What this means in practice:** when offering a punch list that mixes
+quick verifications with larger arcs, Shawn defaults to spot-checks
+first. The pattern is *don't build on unverified state* — and the
+spot-checks are small enough to be effectively free. Worth proposing
+verifications proactively even when I think the state is fine; the
+cost of asking is dominated by the cost of being wrong.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 6: API Call Review Gate operated as a live safeguard, not a nominal one
+
+When laying out F-arc options, I offered "hold off backfill until live
+SessionEnds confirm clean" as the recommended path versus "backfill
+immediately after wire-up". Shawn picked hold-off. That gate was real:
+without it, F1 would have rolled into a 307-session API call window
+the same session, against zero live validation. The gate only fires
+when I surface it as an explicit option — if I had bundled F1 + F3
+into one window assuming approval, the safeguard would have been
+silently bypassed.
+
+**What this means in practice:** the CLAUDE.md "API Call Review Gate"
+is a working safeguard Shawn uses actively. When chained API stages are
+in scope, present each stage as a separate gate-able decision, not as
+a single rollup approval. "Stage A approved" does not authorise stage
+B. This generalises beyond cost — applies to any chain where each link
+warrants independent approval.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 7: Continuity-first session warm-up beats memory-first
+
+Session open: *"Let's Pick up where we left off — read planning/continuity.md first."*
+That instruction is load-bearing. continuity.md was 540 lines of
+current state across multiple workstreams; the recall dump (43 KB of
+memories) would have been pure noise for context-warmup. Reading
+continuity first gave me grounded priorities; the small follow-ups
+were already named there as `[ ]` items waiting to be checked off.
+
+**What this means in practice:** when Shawn says "pick up where we left
+off", the right first move is *always* `Read planning/continuity.md`,
+not /recall or a memory scan. Memory is candidate pool; continuity is
+the surfacing layer (per the 2026-05-17 architectural decision). The
+session-start payload already provides memory dumps automatically; my
+job is to bring continuity into focus.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 8: Pause for design alignment when scope exceeds the briefing
+
+When the F-arc started, the briefing said "wire Gemini Flex into
+archive.py + switch the constant + backfill + QA pass" — four bullets.
+The actual scope was bigger: prompt location, extractor location,
+fallback policy, backfill timing — four design choices that branched
+outcomes meaningfully. I paused with `AskUserQuestion` and surfaced
+all four as side-by-side options with explicit recommendations. Shawn
+took all four defaults; the work proceeded without backtracking.
+
+**What this means in practice:** when the scope I'm about to plunge
+into exceeds what the briefing names, pause to surface the design
+choices BEFORE writing code. Especially with default-recommendations
+shown — they make delegation a 30-second decision rather than a
+mid-implementation derailment. Cheaper to clarify scope at the
+question-mark than to refactor after the wrong abstraction is in
+place. (This is a sibling to Candidate 1's pattern.)
+
+[ ] accept   [ ] edit   [ ] discard

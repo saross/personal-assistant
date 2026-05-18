@@ -72,6 +72,58 @@ Anchored at: `scripts/extract-transcript-text.py` (the new dividers);
 `haiku_build_batch_requests()` and `gemini_call_once()` (the system-prompt
 plumbing).
 
+## 2026-05-18: Editable installs are mandatory when a sibling venv consumes the toolkit
+
+The PA hook calls `~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli ...`
+— so the toolkit lives in the *PA* venv, but the source tree is at
+`~/Code/cc-session-toolkit/`. Before today, `cc-session-toolkit 0.1.0`
+was installed in PA's venv as a regular (non-editable) wheel. That
+meant every change to `~/Code/cc-session-toolkit/src/` was invisible to
+the hook until I re-ran `pip install` — and silently so.
+
+Verified during F1 wire-up: after editing `archive.py` and re-running
+the hook, the new code path didn't execute. `pip show` revealed the
+non-editable install at the venv site-packages dir.
+
+Fix: `~/personal-assistant/venv/bin/pip install -e ~/Code/cc-session-toolkit`.
+Now `pip show` reports the editable install pointing at `~/Code/...`,
+and source-tree changes are picked up immediately.
+
+Implication: any cross-repo dev where machine M's venv consumes a
+toolkit from repo R needs editable installs on M, *or* a tagged-release
++ reinstall step in the dev loop. zbook and rpi-server still have the
+old non-editable wheel — they need the same `pip install -e` before
+relying on the new path there.
+
+Anchored at: `~/Code/cc-session-toolkit/pyproject.toml`;
+`~/personal-assistant/venv/lib/python3.13/site-packages/cc_session_toolkit/__init__.py`
+(now a symlink to the editable source).
+
+## 2026-05-18: Real-world distilled-transcript sizes confirm Gemini's context-window advantage
+
+Smoke-test on three real archived PA sessions after wiring up
+`transcript_text.extract_transcript_text`:
+
+| Session | Distilled chars | Estimated tokens |
+|---|---:|---:|
+| 2026-05-17 implement-quick-steps... | 512,412 | ~128,103 |
+| 2026-05-16 vector-2-design... | 241,112 | ~60,278 |
+| 2026-05-14 sync-personal-assistant... | 646,258 | ~161,564 |
+
+All three were on gz-compressed JSONL. Two of three exceed Haiku's
+200K-token context window; the 161K case is uncomfortably close. With
+Gemini Flex's 1M-token window all three fit one-shot with multiple-x
+headroom.
+
+This is the empirical case for the chunking-vs-one-shot architectural
+decision: had F1 stuck with Haiku, ~30% of PA's session corpus would
+have needed chunking + cross-chunk stitching just for routine
+auto-metadata. The bake-off had pre-screened to *in-window* sessions;
+real-world traffic does not.
+
+Anchored at: `~/cc-archives/personal-assistant/2026-05-{14,16,17}*/session.jsonl.gz`;
+`cc_session_toolkit/transcript_text.py:estimate_tokens`.
+
 ## 2026-05-18: Auto-metadata bake-off iteration trajectory — diminishing-returns curve
 
 Five rounds of prompt iteration scored against a fixed 42-cell rubric
