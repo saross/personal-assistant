@@ -383,10 +383,14 @@ def haiku_submit(
     state_path.write_text(json.dumps(state, indent=2) + "\n")
     print(f"[haiku] submitted batch {batch_job.id}")
     print(f"[haiku] state persisted to {state_path}")
+    # ``out_dir`` here is the provider subdir (e.g. ``<root>/haiku``);
+    # apply expects the user to pass the *root* ``--out-dir`` and
+    # navigates into the provider subdir itself. Print the parent so
+    # the hint copy-pastes cleanly.
     print(
         f"[haiku] retrieve with: "
         f"scripts/bake-off-metadata.py --provider haiku "
-        f"--haiku-apply {batch_job.id} --out-dir {out_dir}"
+        f"--haiku-apply {batch_job.id} --out-dir {out_dir.parent}"
     )
     return batch_job.id
 
@@ -757,6 +761,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "Skip the interactive 'yes' confirmation before live API calls. "
+            "Use only for non-interactive runs where the API Call Review Gate "
+            "approval has already been recorded out-of-band."
+        ),
+    )
+    parser.add_argument(
         "--haiku-apply",
         metavar="BATCH_ID",
         help=(
@@ -805,7 +818,9 @@ def main() -> int:
         if args.provider != "haiku":
             print("--haiku-apply is only valid with --provider haiku")
             return 2
-        haiku_apply(args.haiku_apply, args.out_dir)
+        # submit persists batch-state.json under the provider subdir
+        # (<out-dir>/haiku/), so apply must navigate to the same subdir.
+        haiku_apply(args.haiku_apply, args.out_dir / "haiku")
         return 0
 
     requests = assemble_requests(args.manifest, args.prompt)
@@ -824,12 +839,18 @@ def main() -> int:
         "Live mode requested. This will make billed API calls. "
         "Re-run with --dry-run first if you have not yet reviewed the cost."
     )
-    answer = input(
-        f"Type 'yes' to proceed with {args.provider} live calls: "
-    )
-    if answer.strip().lower() != "yes":
-        print("Aborted.")
-        return 0
+    if args.yes:
+        print(
+            f"--yes flag set; proceeding with {args.provider} live calls "
+            "without interactive prompt."
+        )
+    else:
+        answer = input(
+            f"Type 'yes' to proceed with {args.provider} live calls: "
+        )
+        if answer.strip().lower() != "yes":
+            print("Aborted.")
+            return 0
 
     if args.provider == "haiku":
         haiku_submit(requests, provider_dir, system_prompt)
