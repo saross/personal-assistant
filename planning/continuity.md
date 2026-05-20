@@ -329,6 +329,22 @@ Read these *before* starting new work. Most should take <5 min each.
     `gemini-3-flash-preview` → `gemini-3-flash` at GA, the call will
     start failing with "model not found". Bump
     `cc_session_toolkit/config.py:EXTRACTOR_MODEL_ID`.
+- [ ] **rpi-server NVMe destination path + free space**
+  (new 2026-05-20, gates Phase 0 consolidation). The Phase 0 plan
+  was revised 2026-05-20 to be mount-based rather than install-based
+  on rpi-server (see architectural-decisions). Before mounting on
+  amd-tower we need:
+  - **Exact mount source** on rpi-server (which NVMe device, which
+    path under it, e.g. `/mnt/nvme0n1p1/cc-archives-consolidated/`?).
+  - **Free space available** on that device (consolidated archive is
+    estimated at **~1.45 GB** from the 2026-05-20 inventory,
+    excluding the unfetched LLM-History-Paper LFS contents — so
+    ~2-4 GB headroom is the realistic working budget).
+  - **Mount mechanism preference** — SSHFS (simpler, no server-side
+    config; performance fine for archival writes) vs NFS (faster but
+    needs export config on rpi-server). Shawn can mount; the
+    mount details just aren't yet in the planning doc. Recorded as
+    known-unknown.
 
 ## Pending tasks (cross-session)
 
@@ -339,22 +355,68 @@ These survive across sessions. Mark `[x]` with date when done.
   after ≥1 week of stable v2 operation. Default removal target:
   pa-data copy (keeps git lean; the 96 MB `claude_memories.dump` is
   the bulk).
+- [ ] **Pre-consolidation inventory (amd-tower)** — **done
+  2026-05-20**: see `planning/archive-inventory-2026-05-20.md` for
+  the full picture. Headline numbers (amd-tower only; zbook +
+  rpi-server out of scope):
+  - **307 unique main-thread session IDs** total across all
+    locations (the earlier 32-session figure was the
+    archived-and-needing-F3 subset, not the full population).
+  - **~1.97 GB** across 1,360 transcript files (433 main + 927
+    subagent). Real on-disk dedup-aware estimate for the
+    consolidated destination: **~1.45 GB** (excluding the
+    LLM-History-Paper LFS contents that need pulling from
+    git-lfs storage first).
+  - **Zero genuine content conflicts.** 170 main-thread SIDs
+    appear in >1 location, all explained by live-uncompressed
+    vs archive-gzip (or LFS-pointer vs worktree-real-bytes for
+    map-reader-llm).
+  - **32 archived sessions need F3 backfill** (matches existing
+    F3 estimate of $1.26 mean / $2.79 p90).
+  - **61 live-only sessions** never archived (~177 MB
+    uncompressed). Sweep these into archive before consolidation
+    so they get auto-metadata at write time.
+  - **182 manual `.txt` exports** (Oct–Nov 2025) under three
+    `archive/cc-interactions/` dirs (~10.7 MB). Out of scope for
+    F3; need their own `manual-exports/` subdir in the
+    consolidated archive.
 - [ ] **Phase 0 — focused session**: archive layout consolidation.
-  Sub-items:
-  - [ ] Backfill amd-tower's 91 unarchived live transcripts
-  - [ ] Reconcile two archive layouts (old `~/cc-archives/` vs new
-    `<project>/archive/cc-sessions/`) when consolidating
-  - [ ] Set up `~/cc-archives-consolidated/` on rpi-server NVMe
-  - [ ] Add rsync step to `daily-sync.sh`
-  - [ ] Build `scripts/resolve_session_id.py` (cross-machine resolver)
-  - [ ] Decide on indexing pattern: rpi-side cron vs working-machine
-    SSHFS-mounted index
+  Sub-items (revised 2026-05-20 — rpi-server is now mount-only, NOT
+  install-target; see architectural-decision below):
+  - [ ] Sweep amd-tower's 61 unarchived live main-thread sessions
+    (per the 2026-05-20 inventory) so they pick up the current
+    meta.json contract + Gemini Flex auto-metadata at write time
+    rather than via F3 later.
+  - [ ] Reconcile three archive layouts on amd-tower (old
+    `~/cc-archives/` — 40 sessions; current per-project
+    `<project>/archive/cc-sessions/` — 203 files split between
+    LFS-pointer stubs and smudged real files; map-reader-llm
+    worktree archive — 87 real files that back the per-project
+    LFS pointers).
+  - [ ] **Mount rpi-server's NVMe** on amd-tower (SSHFS / NFS — not
+    decided yet) and copy `~/cc-archives-consolidated/<project>/<session>/`
+    directly to the mounted location. No toolkit install on
+    rpi-server; rpi-server is purely a storage target.
+  - [ ] Add rsync step to `daily-sync.sh` (working-machine side
+    only — pushes to the mounted rpi-server NVMe).
+  - [ ] Build `scripts/resolve_session_id.py` (cross-machine
+    resolver — runs on the working machine, queries the
+    mounted consolidated archive's index).
+  - [ ] Decide on indexing pattern: **working-machine-driven only**
+    (was "rpi-side cron vs working-machine SSHFS-mounted index" —
+    revised; rpi-server has no toolkit, no cron, no Python env, so
+    indexing must happen on the working machine writing to the
+    mounted destination).
+  - [ ] Handle the 182 manual `.txt` exports as a `manual-exports/`
+    subdir under the consolidated root (not F3-eligible — different
+    format, predates auto-archive).
 - [ ] **Phase 0e — R2 wiring** (once Phase 0b stable): rclone push
-  from rpi-server to R2 daily; working-machine push to R2 when
-  rpi-server unreachable (travel mode); rpi-server reconciles on next
-  sight. R2 credentials are configured on all three machines already
-  (see `~/personal-assistant/.env` on amd-tower + zbook, and
-  `~/.config/rclone/rclone.conf` on rpi-server).
+  from the working machine to R2 daily (rather than rpi→R2 — revised
+  2026-05-20, since rpi-server has no toolkit and cannot run rclone
+  on a schedule). Working machine pushes to R2 from the mounted
+  rpi-server NVMe contents; R2 acts as offsite + travel bridge.
+  Working-machine credentials in `~/personal-assistant/.env` on
+  amd-tower + zbook (`R2_*` keys).
 - [x] 2026-05-17 **Vector 2 — open design doc** (`planning/vector-2-design.md`) — done; implementation parked under workstream D
 - [ ] **Phase 4 — typed links** — **superseded by workstream D**; the typed-links problem is now solved by wiki-page cross-references + working-notes references + frontmatter tags
 - [ ] **Phase 5 — migration sweep** — **demoted**; still useful as backfill for `verified` field but no longer gating anything
@@ -494,15 +556,24 @@ Deferred (with reason):
 - [ ] **F3: Backfill historic sessions** — BLOCKED on Shawn's gate
   approval after live-output review. **Refined estimate (2026-05-20):**
   ~$1.26 mean / ~$2.79 p90 worst-case envelope on amd-tower's 32 sessions
-  needing backfill (the 307 figure in earlier notes was a multi-machine
-  total; zbook + rpi-server populations unsurveyed). Per-session mean
-  ~$0.039, p90 ~$0.087. Cost-estimate now uses a 20-session sample
-  distilled through the production extractor — no flat-rate approximation.
-  Run with `python3 scripts/backfill-session-metadata.py --dry-run` to
-  see fresh numbers. Two-stage option recommended: do amd-tower first
-  (~$1-3, low risk; tests the pipeline against a real population),
-  then propagate to zbook + rpi-server after re-installing the editable
-  toolkit on those machines.
+  needing backfill (the 307 figure in earlier notes was actually the
+  full unique-main-thread-session count across all locations, not just
+  the needing-F3 subset — confirmed by the 2026-05-20 inventory; see
+  `planning/archive-inventory-2026-05-20.md`). The needing-F3 set is
+  the 32 sessions under `~/cc-archives/<project>/` whose meta files
+  have `auto_generated.purpose == "Auto-metadata unavailable"`.
+  Per-session mean ~$0.039, p90 ~$0.087. Cost-estimate uses a
+  20-session sample distilled through the production extractor — no
+  flat-rate approximation. Run with `python3 scripts/backfill-session-metadata.py --dry-run`
+  to see fresh numbers. Two-stage option recommended: do amd-tower
+  first (~$1-3, low risk; tests the pipeline against a real
+  population), then propagate to zbook **once zbook's own inventory
+  pass is complete** (rpi-server is NOT a target — no toolkit
+  installed; rpi-server is destination-only, mount-based).
+  **Note**: the inventory also surfaced 61 *live-only* sessions on
+  amd-tower that have never been archived. Sweeping those into the
+  archive before F3 fires will let them pick up Gemini Flex
+  auto-metadata at write time and avoid needing backfill at all.
 - [ ] **F4: QA pass on ~20 sampled backfill outputs** — depends on F3.
 - [ ] **GA-rename watch**: model id `gemini-3-flash-preview` is still
   "Preview"; bump constant when GA renames to `gemini-3-flash` (or
@@ -555,6 +626,18 @@ reopen settled questions:
   canonical `~/cc-archives-consolidated/<project>/<session>/`;
   working machines hold full local mirrors. R2 is offsite + travel
   bridge. Decided 2026-05-16.
+- **rpi-server is mount-only, not install-target** for the cc
+  archive (2026-05-20, revising Phase 0 plan). rpi-server has no
+  cc-session-toolkit install, no Python venv, no cron-driven
+  archive automation, and is not in scope for F3 backfill. It is
+  purely a storage destination — working machines mount its NVMe
+  (SSHFS / NFS — pattern TBD), and all archive writes, indexing,
+  and rclone-to-R2 pushes happen on the working machine writing to
+  the mounted destination. This supersedes earlier sub-tasks that
+  envisioned rpi-side cron or installing the toolkit there. The
+  existing pre-v2 backups at `~/cc-archives/pre-v2/` on rpi-server
+  are legacy bootstrap artefacts and do NOT imply ongoing toolkit
+  installation there.
 - **Inscriptions** is *revitalisation* not abandonment. Drift sweep
   must distinguish revitalisation drift (preserve memory, mark
   `verified: stale`) from true staleness (`verified: false`).
