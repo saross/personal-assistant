@@ -74,6 +74,15 @@ GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK = 1.50
 # Wait pattern for Flex preemption (HTTP 503) retries.
 FLEX_RETRY_WAITS_SECONDS = (30, 60, 120)
 
+# Approximate token cost of the bake-off system prompt
+# (``data/experiments/bake-off-metadata-2026-05-18/prompt.md``). Measured
+# at ~1,500 tokens on 2026-05-20 via the chars/4 heuristic against the
+# committed prompt text. Used in ``estimate_cost_usd`` so the per-call
+# input figure includes the system layer (Anthropic and Gemini both bill
+# system tokens at the input rate); without it the dry-run estimate
+# under-counted by ``SYSTEM_PROMPT_TOKENS_APPROX * n_requests`` tokens.
+SYSTEM_PROMPT_TOKENS_APPROX = 1500
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -252,8 +261,12 @@ def estimate_cost_usd(
     object runs ~300 tokens; 350 is a safe estimate that still beats the
     1,024-token max we send.
     """
+    # Per-request input tokens = user_message tokens + system prompt tokens.
+    # The system prompt is sent on every call (no caching across requests),
+    # so the aggregate input cost must include ``n_requests`` copies of it.
     total_input = sum(
-        max(1, len(r.user_message) // 4) for r in requests
+        max(1, len(r.user_message) // 4) + SYSTEM_PROMPT_TOKENS_APPROX
+        for r in requests
     )
     total_output = output_tokens_per_call * len(requests)
 
@@ -283,9 +296,21 @@ def estimate_cost_usd(
             {
                 "session_id": r.session_id,
                 "bin": r.bin,
-                "input_tokens": max(1, len(r.user_message) // 4),
+                # Per-session input tokens include the system prompt
+                # (sent on every call) — matches the aggregate.
+                "input_tokens": (
+                    max(1, len(r.user_message) // 4)
+                    + SYSTEM_PROMPT_TOKENS_APPROX
+                ),
                 "cost_usd": round(
-                    (max(1, len(r.user_message) // 4) / 1_000_000) * in_rate
+                    (
+                        (
+                            max(1, len(r.user_message) // 4)
+                            + SYSTEM_PROMPT_TOKENS_APPROX
+                        )
+                        / 1_000_000
+                    )
+                    * in_rate
                     + (output_tokens_per_call / 1_000_000) * out_rate,
                     4,
                 ),
@@ -425,6 +450,24 @@ def haiku_apply(
         if result.result.type != "succeeded":
             (out_dir / f"{session_id}.json").write_text(
                 json.dumps({"error": result.result.type}, indent=2) + "\n"
+            )
+            n_fail += 1
+            continue
+        # An empty ``content`` list (rare but possible if the model
+        # returns a successful result with no text blocks) would raise
+        # IndexError below. Persist a structured failure record and
+        # continue rather than crashing the whole retrieval loop.
+        if not result.result.message.content:
+            (out_dir / f"{session_id}.json").write_text(
+                json.dumps(
+                    {"error": "succeeded result had empty content list"},
+                    indent=2,
+                )
+                + "\n"
+            )
+            print(
+                f"[haiku] succeeded result for {session_id} carried no "
+                "content blocks — recording empty-content error"
             )
             n_fail += 1
             continue

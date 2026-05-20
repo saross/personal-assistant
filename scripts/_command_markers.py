@@ -55,7 +55,8 @@ COMMAND_MARKERS: tuple[str, ...] = (
     "# /track — Time Tracking",
     "# /weekly-review — Weekly Review",
     "# /retro — Monthly System Retrospective",
-    "# /sync-board — GitHub Issues Sync",
+    # Verified 2026-05-20 against ``commands/sync-board.md`` header.
+    "# /sync-board — GitHub Projects Board Sync",
     "# /process-email — Email Triage",
     "# /forget — Soft-delete Memory",
     "# /update — Revise Memory",

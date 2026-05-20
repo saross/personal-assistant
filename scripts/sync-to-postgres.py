@@ -84,10 +84,22 @@ JSONL_FIELDS = [
 # ============================================================================
 
 def setup_logging() -> logging.Logger:
-    """Configure logging to file and stderr."""
+    """Configure logging to file and stderr.
+
+    Guards against handler stacking: ``logging.getLogger(name)`` returns
+    the same logger across calls, and ``addHandler`` would otherwise
+    duplicate emit lines each time ``main()`` runs in a long-lived
+    process (tests, MCP server). Skip configuration when handlers
+    already exist.
+    """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("sync-to-postgres")
     logger.setLevel(logging.INFO)
+
+    if logger.handlers:
+        # Already configured (this process has called setup_logging
+        # before). Do not stack a second pair of handlers.
+        return logger
 
     # File handler
     fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
@@ -649,12 +661,22 @@ def _update_embeddings(logger: logging.Logger) -> None:
     conn = None
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
-        # Schema-version guard (audit IC5).
+        # Schema-version guard (audit IC5). Embedding update is best-
+        # effort and runs AFTER a successful insert pass; calling
+        # ``sys.exit(2)`` here makes the operator see a non-zero exit
+        # code despite the sync having actually completed. Downgrade to
+        # a warning + early return so the exit code reflects the actual
+        # outcome — embeddings will catch up on the next cron tick once
+        # the schema mismatch is resolved.
         try:
             assert_schema_version(conn)
-        except SchemaVersionError:
+        except SchemaVersionError as exc:
+            logger.warning(
+                "Skipping embedding update — schema-version mismatch: %s",
+                exc,
+            )
             conn.close()
-            sys.exit(2)
+            return
         with conn.cursor() as cur:
             # Audit B-M10 (re-tiered Critical, 2026-05-02): the previous
             # ``ORDER BY created_at DESC`` walked the unembedded queue

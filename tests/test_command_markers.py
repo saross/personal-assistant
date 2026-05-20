@@ -111,7 +111,7 @@ COMMAND_HEADERS = [
     "# /track — Time Tracking",
     "# /weekly-review — Weekly Review",
     "# /retro — Monthly System Retrospective",
-    "# /sync-board — GitHub Issues Sync",
+    "# /sync-board — GitHub Projects Board Sync",
     "# /process-email — Email Triage",
     "# End-of-Session Reflection",
 ]
