@@ -23,6 +23,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PA_DIR="$(dirname "$SCRIPT_DIR")"
 CLAUDE_DIR="${HOME}/.claude"
 
+# C4 (2026-05-19): track dependency-install failures so we exit non-zero
+# at end of script. Previously a failed pip install was logged but the
+# script still exited 0, hiding the failure from daily-sync.sh / cron.
+DEPS_FAILED=0
+
 # Optional: --quiet suppresses "already correct" lines so cron logs stay
 # slim. Changes and errors are always printed.
 QUIET=0
@@ -205,10 +210,29 @@ sys.exit(1 if missing else 0)
         say_verbose "  All declared dependencies present."
     else
         say "  Missing one or more declared dependencies — installing from requirements.txt..."
-        "$PA_DIR/venv/bin/pip" install --quiet --upgrade -r "$PA_DIR/requirements.txt" \
-            && say "  Dependencies installed/updated." \
-            || say "  WARNING: pip install failed; archive hooks may continue to silently fail."
+        # C4 (2026-05-19): capture pip's exit code explicitly. The
+        # earlier ``&& ... || ...`` form swallowed the failure — bash's
+        # short-circuit ``||`` makes the whole expression exit 0 once
+        # the warning ``say`` runs, and ``set -e`` does not re-trigger.
+        # Result: the self-heal could fail silently and cron would
+        # report success, defeating Step 7's whole purpose.
+        if "$PA_DIR/venv/bin/pip" install --quiet --upgrade -r "$PA_DIR/requirements.txt"; then
+            say "  Dependencies installed/updated."
+        else
+            pip_exit=$?
+            say "  ERROR: pip install failed (exit $pip_exit); archive hooks will continue to fail silently. Resolve before next session."
+            DEPS_FAILED=1
+        fi
     fi
+fi
+
+# C4 (2026-05-19): surface dependency-install failure to the caller
+# (daily-sync.sh / cron) by exiting non-zero. All other steps having
+# succeeded is not enough — a missing dep silently breaks SessionEnd
+# archiving on every machine that re-syncs from a broken state.
+if [ "${DEPS_FAILED:-0}" -eq 1 ]; then
+    say "sync-symlinks FAILED (dependency install)."
+    exit 1
 fi
 
 say "sync-symlinks complete."
