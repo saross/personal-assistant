@@ -60,6 +60,16 @@ for check in "$CLAUDE_DIR/settings.json" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/ski
     fi
 done
 
+# ``set -euo pipefail`` does not catch a non-zero ERRORS counter; without
+# this check the script could finish with "Setup Complete" and exit 0
+# even when verify failures were printed. Bail out instead so a missing
+# symlink causes a CI-style failure that the caller will notice.
+if [ "$ERRORS" -gt 0 ]; then
+    echo ""
+    echo "=== Setup INCOMPLETE — $ERRORS verify check(s) failed ==="
+    exit 1
+fi
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
