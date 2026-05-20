@@ -3,11 +3,13 @@ Tests for extraction-hook.py — tag normalisation, transcript parsing,
 memory formatting, cursor tracking, and command filtering.
 
 Tests pure functions only; does not call the Anthropic API. The
-``TestExtractMemoriesTransientErrors`` class mocks the SDK to exercise
-the C2 audit fix (2026-05-19).
+``TestExtractMemoriesTransientErrors`` and ``TestCursorFileLock``
+classes mock the Anthropic SDK and exercise the C2/C3 audit fixes
+respectively (2026-05-19).
 """
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -867,3 +869,64 @@ class TestExtractMemoriesTransientErrors:
         assert cursor_file.exists()
         saved = json.loads(cursor_file.read_text())
         assert saved.get("sess-Y") == "uuid-A"
+
+
+# ============================================================================
+# C3 (2026-05-19): Cursor file flock — concurrent main() invocations
+# ============================================================================
+
+
+class TestCursorFileLock:
+    """Verify ``cursor_file_lock`` serialises concurrent mutators.
+
+    Stop / PreCompact / SessionEnd hooks all fire close together on
+    session-close; without flock, the last writer wins and the cursor
+    lags the JSONL.
+    """
+
+    def test_lock_serialises_concurrent_writers(self, tmp_path, monkeypatch):
+        """Five threads each appending one line under the lock — no losses.
+
+        Simulates the load-mutate-save race that motivated C3. The
+        critical section reads the file, appends, and writes back;
+        without serialisation a thread that reads before another's
+        write will overwrite it.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        # Seed an empty dict.
+        target.write_text("{}")
+
+        n_threads = 5
+        barrier = threading.Barrier(n_threads)
+        errors: list[BaseException] = []
+
+        def worker(idx: int) -> None:
+            try:
+                barrier.wait(timeout=5)
+                with eh.cursor_file_lock():
+                    current = json.loads(target.read_text())
+                    # Simulated processing window — long enough that
+                    # an unlocked race would clobber.
+                    import time as _t
+                    _t.sleep(0.02)
+                    current[f"sess-{idx}"] = f"uuid-{idx}"
+                    target.write_text(json.dumps(current))
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=worker, args=(i,)) for i in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"worker errors: {errors!r}"
+        saved = json.loads(target.read_text())
+        # Every worker's mutation must have landed.
+        for i in range(n_threads):
+            assert saved.get(f"sess-{i}") == f"uuid-{i}", (
+                f"lost write from worker {i}; final state: {saved!r}"
+            )

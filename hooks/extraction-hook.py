@@ -367,6 +367,48 @@ def save_cursor(cursor: dict) -> None:
     tmp.rename(CURSOR_FILE)
 
 
+@contextmanager
+def cursor_file_lock() -> Iterator[None]:
+    """
+    Hold an exclusive flock over the cursor file for the entire
+    load-process-save region.
+
+    Why a separate lock file: the cursor file itself is rewritten via
+    tmp-file + atomic rename, which would invalidate any fd we held
+    against the original inode. A sidecar lock file (never renamed)
+    sidesteps the rename-under-fd hazard that ``_shared_locked_append_fd``
+    has to navigate for the JSONL.
+
+    Why this exists (C3, 2026-05-19): ``~/.claude/settings.json`` wires
+    this hook on ``Stop``, ``PreCompact``, and ``SessionEnd``, all of
+    which can fire seconds apart at session-close. The append path on
+    ``memories.jsonl`` is already serialised by the shared/exclusive
+    flock pattern in :func:`_shared_locked_append_fd`, but the cursor
+    file is NOT — two ``load_cursor → mutate → save_cursor`` cycles
+    racing would let the later writer overwrite the earlier's advance.
+    The result: JSONL grows but cursor lags, the next firing
+    re-extracts the same window, and dedup-by-id can't catch the
+    duplicate because the id embeds a fresh timestamp.
+
+    ``fcntl.flock`` is advisory; cooperation is enforced by every
+    cursor-mutating code path going through ``main()`` (or directly
+    using this context). Linux-only — matches PA's infra constraint.
+    """
+    lock_path = CURSOR_FILE.with_suffix(CURSOR_FILE.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            # flock is released automatically when the fd closes, but
+            # being explicit makes the lifecycle easier to reason about.
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
 # ============================================================================
 # Transcript Parsing
 # ============================================================================
@@ -940,104 +982,118 @@ def main() -> None:
         logger.debug("No transcript at %s, nothing to extract", transcript_path)
         sys.exit(0)
 
-    # Load cursor to find where we left off in this session's transcript
-    cursor = load_cursor()
-    last_uuid = cursor.get(session_id)
+    # C3 (2026-05-19): hold an exclusive flock across the entire
+    # load → parse → extract → append → save region. Stop / PreCompact
+    # / SessionEnd hooks fire seconds apart at session-close; without
+    # this lock, two invocations racing each other will both read the
+    # same starting cursor, both append to the JSONL, and the later
+    # writer will overwrite the earlier's cursor advance — producing
+    # duplicate memories on the next firing (the id embeds a fresh
+    # timestamp so dedup-by-id misses them). The lock spans the
+    # Anthropic call (~5s) too, which is acceptable at hook firing rate.
+    with cursor_file_lock():
+        # Load cursor to find where we left off in this session's transcript
+        cursor = load_cursor()
+        last_uuid = cursor.get(session_id)
 
-    # Parse new content from transcript
-    messages, new_last_uuid = parse_transcript(transcript_path, last_uuid)
+        # Parse new content from transcript
+        messages, new_last_uuid = parse_transcript(transcript_path, last_uuid)
 
-    if not messages:
-        logger.debug("No new messages in session %s", session_id)
-        sys.exit(0)
+        if not messages:
+            logger.debug("No new messages in session %s", session_id)
+            sys.exit(0)
 
-    logger.info(
-        "Processing %d new messages from session %s", len(messages), session_id
-    )
-
-    # Extract memories via Haiku
-    extracted = extract_memories(messages, session_id)
-
-    # C2 (2026-05-19): a None return signals a *transient* API failure
-    # (5xx/429/network). Do NOT advance the cursor — the next hook
-    # firing will retry the same window. An empty list means the API
-    # succeeded but Haiku found nothing worth keeping; we DO advance
-    # so we don't reprocess sterile content forever.
-    if extracted is None:
         logger.info(
-            "Skipping cursor advance due to transient API error (session %s); "
-            "window will be retried on next hook firing",
-            session_id,
-        )
-        # Suppress hook output and exit cleanly — no work persisted.
-        print(json.dumps({"suppressOutput": True}))
-        return
-
-    if extracted:
-        try:
-            memories = format_memories(
-                extracted,
-                session_id,
-                project=project,
-                source_message_uuid=new_last_uuid,
-            )
-
-            # v2 (2026-05-16) Phase 2: mechanical anchor verification.
-            # Each memory's anchors are checked against the local repo
-            # set; ``verified`` is written into the record and
-            # ``confidence`` is overridden by the binding rubric.
-            # Tier-3 fallback (transcript-grep) is deferred to Phase
-            # 0b — verify_memory returns None when no anchors are
-            # present, and the rubric maps that to confidence: low.
-            try:
-                repos = repo_set_for(project)
-                for record in memories:
-                    verified = anchor_verify.verify_memory(record, repos)
-                    if verified is not None:
-                        record["verified"] = verified
-                    record["confidence"] = anchor_verify.bind_confidence(
-                        verified,
-                        has_why=bool(record.get("why")),
-                        has_how_to_apply=bool(record.get("how_to_apply")),
-                        is_guidance_category=(
-                            record.get("category") in GUIDANCE_CATEGORIES
-                        ),
-                    )
-            except Exception as ve:  # noqa: BLE001 — fail-soft per anchor_verify contract
-                logger.warning(
-                    "Anchor verification failed for session %s: %s — "
-                    "memories appended with Haiku-rated confidence",
-                    session_id, ve,
-                )
-
-            append_memories(memories)
-
-            # Only advance cursor AFTER successful append
-            if new_last_uuid:
-                cursor[session_id] = new_last_uuid
-                save_cursor(cursor)
-
-            logger.info(
-                "Extracted %d memories from %d messages (session %s)",
-                len(memories),
-                len(messages),
-                session_id,
-            )
-        except Exception as e:
-            logger.error("Failed to save memories for session %s: %s", session_id, e)
-            # Don't advance cursor — will retry next time
-            sys.exit(1)
-    else:
-        # No memories extracted, but still advance cursor so we don't
-        # reprocess the same content
-        if new_last_uuid:
-            cursor[session_id] = new_last_uuid
-            save_cursor(cursor)
-        logger.info(
-            "No memories extracted from %d messages (session %s)",
+            "Processing %d new messages from session %s",
             len(messages),
             session_id,
         )
+
+        # Extract memories via Haiku
+        extracted = extract_memories(messages, session_id)
+
+        # C2 (2026-05-19): a None return signals a *transient* API failure
+        # (5xx/429/network). Do NOT advance the cursor — the next hook
+        # firing will retry the same window. An empty list means the API
+        # succeeded but Haiku found nothing worth keeping; we DO advance
+        # so we don't reprocess sterile content forever.
+        if extracted is None:
+            logger.info(
+                "Skipping cursor advance due to transient API error "
+                "(session %s); window will be retried on next hook firing",
+                session_id,
+            )
+            # Suppress hook output and exit cleanly — no work persisted.
+            print(json.dumps({"suppressOutput": True}))
+            return
+
+        if extracted:
+            try:
+                memories = format_memories(
+                    extracted,
+                    session_id,
+                    project=project,
+                    source_message_uuid=new_last_uuid,
+                )
+
+                # v2 (2026-05-16) Phase 2: mechanical anchor verification.
+                # Each memory's anchors are checked against the local repo
+                # set; ``verified`` is written into the record and
+                # ``confidence`` is overridden by the binding rubric.
+                # Tier-3 fallback (transcript-grep) is deferred to Phase
+                # 0b — verify_memory returns None when no anchors are
+                # present, and the rubric maps that to confidence: low.
+                try:
+                    repos = repo_set_for(project)
+                    for record in memories:
+                        verified = anchor_verify.verify_memory(record, repos)
+                        if verified is not None:
+                            record["verified"] = verified
+                        record["confidence"] = anchor_verify.bind_confidence(
+                            verified,
+                            has_why=bool(record.get("why")),
+                            has_how_to_apply=bool(record.get("how_to_apply")),
+                            is_guidance_category=(
+                                record.get("category") in GUIDANCE_CATEGORIES
+                            ),
+                        )
+                except Exception as ve:  # noqa: BLE001 — fail-soft per anchor_verify contract
+                    logger.warning(
+                        "Anchor verification failed for session %s: %s — "
+                        "memories appended with Haiku-rated confidence",
+                        session_id, ve,
+                    )
+
+                append_memories(memories)
+
+                # Only advance cursor AFTER successful append
+                if new_last_uuid:
+                    cursor[session_id] = new_last_uuid
+                    save_cursor(cursor)
+
+                logger.info(
+                    "Extracted %d memories from %d messages (session %s)",
+                    len(memories),
+                    len(messages),
+                    session_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to save memories for session %s: %s", session_id, e
+                )
+                # Don't advance cursor — will retry next time
+                sys.exit(1)
+        else:
+            # No memories extracted, but still advance cursor so we don't
+            # reprocess the same content
+            if new_last_uuid:
+                cursor[session_id] = new_last_uuid
+                save_cursor(cursor)
+            logger.info(
+                "No memories extracted from %d messages (session %s)",
+                len(messages),
+                session_id,
+            )
 
     # Suppress hook output from appearing in the conversation
     print(json.dumps({"suppressOutput": True}))
