@@ -475,15 +475,23 @@ def parse_transcript(
                         text_parts.append(block)
                 content = " ".join(text_parts)
 
-            # Skip slash command exchanges — these are handled by
-            # the commands themselves (e.g., /remember writes to JSONL
-            # directly, so extraction would produce duplicates)
+            # Skip slash command exchanges — these are handled by the
+            # commands themselves (e.g., /remember writes to JSONL
+            # directly, so extraction would produce duplicates).
+            #
+            # The skip flag must persist across consecutive user entries
+            # — Model Context Protocol (MCP) servers occasionally inject
+            # tool_result-as-user entries between a real user turn and
+            # the assistant's response. Auto-clearing the flag on a
+            # non-command user entry (the previous behaviour) would
+            # un-skip the assistant turn that was actually the slash-
+            # command response, producing sporadic double-extractions.
+            # The flag is cleared only by the first assistant turn that
+            # follows.
             if entry.get("type") == "user":
                 if any(marker in content for marker in COMMAND_MARKERS):
                     skip_next_assistant = True
                     continue
-                else:
-                    skip_next_assistant = False
             elif entry.get("type") == "assistant" and skip_next_assistant:
                 skip_next_assistant = False
                 continue

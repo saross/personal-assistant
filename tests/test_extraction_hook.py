@@ -221,30 +221,14 @@ class TestParseTranscript:
         assert len(messages) == 1
         assert messages[0]["content"] == "Normal"
 
-    def test_skip_flag_resets_on_normal_user_message(self, tmp_path):
-        """Non-command user message after a command should reset skip flag."""
-        transcript = tmp_path / "transcript.jsonl"
-        entries = [
-            # Command exchange — both should be filtered
-            make_transcript_entry(
-                "user",
-                "# /remember \u2014 Manual Memory Capture\n\nSome content",
-                "uuid-1",
-            ),
-            # Normal user message immediately after (no assistant in between)
-            make_transcript_entry("user", "Normal question", "uuid-2"),
-            # This assistant response should NOT be skipped
-            make_transcript_entry("assistant", "Normal answer", "uuid-3"),
-        ]
-        with open(transcript, "w") as f:
-            for e in entries:
-                f.write(json.dumps(e) + "\n")
+    # NOTE: a prior test test_skip_flag_resets_on_normal_user_message
+    # was removed 2026-05-20 because it pinned the pre-M6-fix behaviour
+    # (which let a non-command user entry between a slash command and
+    # its response un-skip that response). The new behaviour — flag
+    # persists until consumed by the next assistant turn — is exercised
+    # by ``test_command_skip_flag_persists_across_user_entries`` further
+    # down in this class.
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
-        assert len(messages) == 2
-        contents = [m["content"] for m in messages]
-        assert "Normal question" in contents
-        assert "Normal answer" in contents
 
     def test_structured_content_blocks(self, tmp_path):
         """Handles list-of-blocks content format."""
@@ -284,6 +268,71 @@ class TestParseTranscript:
 
         messages, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages[0]["content"]) == eh.MAX_MESSAGE_CHARS
+
+    def test_command_skip_flag_persists_across_user_entries(
+        self, tmp_path
+    ):
+        """The slash-command skip flag must survive an intervening
+        non-command user entry (e.g., an MCP tool_result-as-user).
+
+        Pre-M6 fix: the flag was auto-cleared by any non-command user
+        entry, so a sequence of:
+
+            user(/remember) -> user(MCP injection) -> assistant(/remember reply)
+
+        would un-skip the assistant turn, producing a sporadic
+        double-extraction of the slash-command response.
+
+        Fixed behaviour: the flag clears only when the next assistant
+        turn consumes it, regardless of how many user entries arrive
+        in between.
+        """
+        transcript = tmp_path / "transcript.jsonl"
+        entries = [
+            # Pre-command baseline that should appear in output.
+            make_transcript_entry("user", "Normal question", "uuid-1"),
+            make_transcript_entry("assistant", "Normal answer", "uuid-2"),
+            # Slash-command user entry — sets skip_next_assistant=True.
+            make_transcript_entry(
+                "user",
+                "# /remember — Manual Memory Capture\n\nSave this",
+                "uuid-3",
+            ),
+            # MCP-style intervening user entry. Pre-fix this cleared the
+            # flag; post-fix it must not.
+            make_transcript_entry(
+                "user", "[tool_result] {\"status\":\"ok\"}", "uuid-4",
+            ),
+            # The actual /remember response — must STILL be skipped.
+            make_transcript_entry(
+                "assistant",
+                "Captured to memory: Save this",
+                "uuid-5",
+            ),
+            # Post-command baseline that should appear.
+            make_transcript_entry("user", "Back to normal", "uuid-6"),
+        ]
+        with open(transcript, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        messages, _ = eh.parse_transcript(str(transcript), None)
+        contents = [m["content"] for m in messages]
+        # The /remember response must not appear.
+        assert not any(
+            "Captured to memory" in c for c in contents
+        ), (
+            "skip flag was cleared by the intervening user entry; "
+            "the /remember response leaked into the extraction batch "
+            "(M6 regression)"
+        )
+        # The MCP-style user entry itself is still emitted — only the
+        # assistant response after a command is filtered.
+        assert any("tool_result" in c for c in contents)
+        # Pre- and post-command baselines preserved.
+        assert any("Normal question" in c for c in contents)
+        assert any("Normal answer" in c for c in contents)
+        assert any("Back to normal" in c for c in contents)
 
 
 # ============================================================================
