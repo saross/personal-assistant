@@ -31,19 +31,26 @@ Failure policy:
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 PA_DIR = Path.home() / "personal-assistant"
 SIDECAR_DIR = PA_DIR / "data" / "code-state"
 LOG_FILE = PA_DIR / "data" / "logs" / "session-start-code-state.log"
 
+# Shared helpers live under ``scripts/`` — extend sys.path here so the
+# hook can pull the canonical ``now_iso`` from ``_timestamps`` rather
+# than rolling its own ``datetime.now(timezone.utc)`` formatting (which
+# would drift from the rest of the PA codebase). Mirrors the pattern
+# in ``hooks/extraction-hook.py``.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from _timestamps import now_iso  # noqa: E402
+
 
 def _log(message: str, level: str = "INFO") -> None:
     """Append a timestamped line to the hook log.  Best-effort."""
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        timestamp = now_iso()
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(f"{timestamp} [{level}] {message}\n")
     except OSError:
@@ -113,17 +120,20 @@ def main() -> int:
         "session_id": session_id,
         "commit_at_start": commit,
         "project_root": str(Path(cwd).resolve()),
-        "captured_at": datetime.now(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        ),
+        "captured_at": now_iso(),
     }
 
     try:
         SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
         sidecar_path = SIDECAR_DIR / f"{session_id}.json"
-        sidecar_path.write_text(
+        # Atomic write: write to a sibling ``.json.tmp`` then rename onto
+        # the target so a concurrent reader never sees a partially-written
+        # sidecar. Same pattern as ``hooks/extraction-hook.save_cursor``.
+        tmp_path = sidecar_path.with_suffix(".json.tmp")
+        tmp_path.write_text(
             json.dumps(sidecar, indent=2) + "\n", encoding="utf-8"
         )
+        tmp_path.rename(sidecar_path)
     except OSError as exc:
         _log(
             f"failed to write sidecar for session_id={session_id}: {exc}",
