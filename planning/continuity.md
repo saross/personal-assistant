@@ -294,27 +294,40 @@ Read these *before* starting new work. Most should take <5 min each.
   (Anthropic-side capacity, request_id `req_011Cb9LZzm1ph8knL9g9iP2s`)
   caught cleanly by the existing handler; next firing at 14:11
   succeeded. Schema v3 + Gaps 1+3 pipeline is healthy.
-- [ ] **First firing of Gemini Flex auto-metadata path** (new 2026-05-18,
-  workstream F1+F2). PA venv reinstalled with editable
-  cc-session-toolkit; next SessionEnd / PreCompact runs the new path
-  automatically. Spot-checks:
-  - **No log noise:** `tail -50 ~/personal-assistant/data/logs/auto-metadata.log`
-    — look for "Calling Gemini Flex for ...", "Success for ...".
-    Tracebacks or "FAIL"/"ERROR" lines mean the wire-up has a bug.
-  - **Real outputs:** pick the most recent archive
-    (`ls -td ~/cc-archives/personal-assistant/*/ | head -3`),
-    read `session.meta.json`. Verify `auto_generated` carries a
-    descriptive title, non-empty purpose, lowercase-hyphenated tags;
-    `three_ps` has all three summaries populated (not empty strings).
-  - **Sidecar:** the SessionStart sidecar at
-    `~/personal-assistant/data/code-state/<session_id>.json` should
-    have been written; `code_state.commit_at_start` in the
-    `session.meta.json` should be the SHA at session start.
-  - **`extractor_model_id` field:** new sessions should carry
-    `gemini-3-flash-preview` (not `claude-haiku-4-5-20251001`).
-  - **Model ID GA-rename watch:** if Google renames `gemini-3-flash-preview`
-    → `gemini-3-flash` at GA, the call will start failing with
-    "model not found". Bump the constant in
+- [x] 2026-05-19 **First firing of Gemini Flex auto-metadata path**
+  (workstream F1+F2). Verified on the pa-data session
+  `9e6d3a24-dd08-42cf-91b0-3d7a01dbaac4` (Sat→Sun rollover, 76,972
+  content tokens, single one-shot call, ~5s wall). Output at
+  `~/cc-archives/pa-data/2026-05-17T12-44_wire-gemini-flex-auto-metadata-and/session.meta.json`
+  passes every quality gate: descriptive title with named entities,
+  purpose captures the why, 5 lowercase-hyphenated tags, all three
+  Three Ps populated and grounded, `extractor_model_id` =
+  `gemini-3-flash-preview`. Sidecar absent on this firing (expected —
+  hook landed mid-session, so no sidecar existed at start). Today's
+  session will be the first with full `commit_at_start` provenance.
+  Zero log noise; the only entries in `auto-metadata.log` are this
+  real firing plus test-fixture errors from `pytest`.
+- [ ] **First firing of v3 hook with C2 sentinel + C3 cursor lock**
+  (new 2026-05-20, audit follow-ups). After the C2/C3 commits land
+  in PA + pa-data, next SessionEnd / PreCompact / Stop will exercise:
+  - **Cursor flock** at `data/memories/extraction-cursor.json.lock`
+    — file is created the first time `cursor_file_lock()` runs;
+    `ls -la data/memories/` should show it after a couple firings.
+  - **Transient-error sentinel** — on a 529 / 503 / network-timeout
+    from Anthropic, look for the new log line "Skipping cursor
+    advance due to transient API error (session ...)". If that
+    fires, the next hook run should re-process the same window. If
+    you don't see a transient error in normal operation, that's
+    fine — the path is exercised by tests.
+  - **PA venv re-install** is NOT required for the hook changes
+    (extraction-hook.py is invoked directly, not via the toolkit).
+    But the toolkit changes from 2026-05-19+20 (transcript_text,
+    archive.py null guards, etc.) DO require a venv that picks them
+    up — already editable-installed on amd-tower, still pinned on
+    zbook + rpi-server (defer until you next use those machines).
+  - **Model ID GA-rename watch** (carry-over): if Google renames
+    `gemini-3-flash-preview` → `gemini-3-flash` at GA, the call will
+    start failing with "model not found". Bump
     `cc_session_toolkit/config.py:EXTRACTOR_MODEL_ID`.
 
 ## Pending tasks (cross-session)
@@ -354,15 +367,151 @@ These survive across sessions. Mark `[x]` with date when done.
 - [ ] **`pg_trgm` extension missing on `claude_memories` DB** — `idx_memories_content_trgm` (`scripts/schema.sql:79`) has been silently failing to create. Non-critical (full-text search uses a different index). Either run `sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION pg_trgm;"` or drop the index from schema.sql.
 - [x] 2026-05-18 **`scripts/bake-off-metadata.py` tidy-up**: (a) `--yes` flag added (bypasses interactive `input()` for non-interactive runs); (b) `haiku_apply` path now navigates to `<root>/haiku/` to match where `haiku_submit` persists `batch-state.json`; print hint in submit updated to print `out_dir.parent` so the copy-paste is correct.
 
+**Audit follow-ups (from 2026-05-19 code audit across 21 files / ~10,800 lines):**
+
+The audit ran 6 parallel subagents over all source code touched in the
+prior week (PA hooks, scripts, shell; cc-session-toolkit production +
+tests). Findings categorised C/M/Low. Most landed across 2026-05-19
+and 2026-05-20 in three batches (priorities 1-6 by Shawn directly;
+then C2+C3+C4 via agent; then M7-M15 + Lows via parallel agent; then
+M6 directly).
+
+Done:
+
+- [x] 2026-05-19 **M1 + M2**: `transcript_text.py` pathological edges
+  (single-fragment-over-budget, head+tail overlap) — tail-truncation
+  fallback with non-negative clamp; 6 new tests in
+  `test_transcript_text.py`. Toolkit 220 → 226.
+- [x] 2026-05-19 **C1**: `archive.py:_call_gemini_once` now raises
+  `RuntimeError` when `response.text is None` (safety filter / MAX_TOKENS
+  / no candidates); outer handler degrades gracefully. Previously
+  uncaught `AttributeError` was crashing the archive.
+- [x] 2026-05-19 **M3**: `result.get(key, default)` → `result.get(key) or default`
+  on title/purpose/tags/three_ps in both `archive.py` and
+  `scripts/backfill-session-metadata.py`. Handles Gemini's occasional
+  `"tags": null` output.
+- [x] 2026-05-19 **M4**: backfill cost-estimate refined — `--cost-sample-size N`
+  (default 20) samples real distillations to compute mean/p90/max per-
+  session cost. Drove the F3 cost re-estimate from $8.30 to $1.26-$2.79
+  on amd-tower's actual 32 sessions.
+- [x] 2026-05-19 **M5**: stale "Haiku" references replaced with
+  Gemini Flex (or `EXTRACTOR_MODEL_ID` interpolation) in
+  `archive.py`, `cli.py`, `tests/test_hook.py`. Historical-context
+  references in module docstrings explaining the 2026-05-18 switch
+  left intentional.
+- [x] 2026-05-19 **M6 (cost-analysis correction)**: prepended note
+  to `data/experiments/transcript-cap-analysis-2026-05-19/findings.md`
+  explaining that `analyse_caps.py` did not strip framing scaffolds;
+  absolute cost figures inflated ~10-15% (deltas unaffected). Refined
+  F3 estimate noted as ~$4.75 not $5.52 (subsequently superseded by
+  the per-machine $1.26-$2.79 from the M4 sampler).
+- [x] 2026-05-20 **C2**: `extraction-hook.py` distinguishes transient
+  Anthropic errors (5xx, 429, network timeout) from permanent ones.
+  Transient → return `None` sentinel → cursor does NOT advance →
+  retry on next firing. Permanent → existing behaviour (log, return
+  `[]`, cursor advances). 8 new tests in `tests/test_extraction_hook.py`.
+- [x] 2026-05-20 **C3**: `extraction-hook.py` cursor file now wrapped
+  in `fcntl.flock` via `cursor_file_lock()` context manager covering
+  load → process → save. Sidecar lock file at
+  `data/memories/extraction-cursor.json.lock`, gitignored. 1 new
+  threaded test confirms serialisation.
+- [x] 2026-05-20 **C4**: `scripts/sync-symlinks.sh` Step 7 pip exit
+  code now captured and propagated. Script exits non-zero on pip
+  failure (was silently exiting 0 — defeated the entire purpose of
+  the 2026-05-15 self-heal step).
+- [x] 2026-05-20 **M7**: `anchor_verify.verify_memory` returns `None`
+  when zero anchors are well-formed (previously collapsed to "true").
+  Production hot path was protected by extraction-hook's anchor
+  filter; module-contract fix matters for drift-sweep / re-verification
+  callers.
+- [x] 2026-05-20 **M9**: `scripts/extract-transcript-text.py` is now
+  a thin wrapper around `cc_session_toolkit.transcript_text`. Bake-off
+  + resample scripts that imported the PA script now exercise the
+  same distillation as production. Drift eliminated.
+- [x] 2026-05-20 **M10**: `scripts/resample-bake-off-manifest.py`
+  glob results now sorted; hardcoded "2026-05-17" replaced with
+  runtime UTC ISO. Sampling reproducible across machines.
+- [x] 2026-05-20 **M11**: `setup.sh` verify block now exits 1 when
+  `ERRORS > 0` (was silently exiting 0 — verify was theatre).
+- [x] 2026-05-20 **M13**: `test_sha_matches_file_bytes` no longer
+  tautological (literal hex on known bytes vs same-helper round-trip).
+- [x] 2026-05-20 **M14**: 503-retry tests now assert `call_count`.
+  Loop-break-after-one-attempt regressions would be caught.
+- [x] 2026-05-20 **M15**: empty-session test now uses
+  `pytest.importorskip("google.genai")` so it tests the real code
+  path instead of passing from the ImportError branch.
+- [x] 2026-05-20 **M6**: `extraction-hook.py` slash-command skip flag
+  no longer auto-cleared by intervening non-command user entries.
+  Real-world MCP-injected tool_result-as-user entries no longer
+  un-skip the assistant turn — fixes sporadic `/remember` double-
+  extraction.
+- [x] 2026-05-20 **Lows batch**: ~12 small fixes including
+  `archive.py` exception widening + sidecar `isinstance(dict)` guard;
+  `session-start-code-state.py` atomic sidecar write + `_timestamps.now_iso`;
+  `_command_markers.py` `/sync-board` marker drift (was "GitHub
+  Issues Sync", now "GitHub Projects Board Sync"); `sync-to-postgres.py`
+  logger handler stacking + `_update_embeddings` exit semantics;
+  `bake-off-metadata.py` content-block guard + system-prompt token
+  inclusion in cost estimate; `project_id.py` deferred `Path.home()`
+  + wider recursion error catch; `analyse_caps.py` tolerant decoding.
+
+Deferred (with reason):
+
+- [ ] **M12**: `schema.sql:75` `idx_memories_active` partial index
+  serves no purpose (predicate `is_active = TRUE` matches ~all rows).
+  Fix would drop or flip the predicate. Deferred to schema v4 with
+  migration plan — schema changes have higher blast radius (live PG
+  is at v3; this needs a v4 bump + `ALTER INDEX` migration). Audit
+  note added in-file at `schema.sql:74-79`.
+- [ ] **Memory-id non-idempotency** (`extraction-hook.py:679-681`):
+  ids use wall-clock timestamp, so re-running on the same content
+  produces different ids. Workaround exists in `scripts/dedup-memories.py`.
+  Better fix: use `source_message_uuid + i` for true idempotency.
+  Defer — not a bug, just a recurring tax.
+- [ ] **Pricing-constant deduplication**: Gemini Flex prices live in
+  `cc_session_toolkit/config.py`, `analyse_caps.py`, and
+  `bake-off-metadata.py`. A shared `pa_pricing.py` module would make
+  Google price changes a one-line edit. Cross-file refactor; defer.
+- [ ] **`MEMORIES_FILE.read_text()` in-memory load**
+  (`scripts/sync-to-postgres.py:798`): loads entire JSONL (~10MB) into
+  memory. Fine at current scale; could become a problem at 100k+
+  records. Defer.
+- [ ] **`pg_trgm` extension missing** (carry-over from 2026-05-18):
+  `idx_memories_content_trgm` (`scripts/schema.sql:79`) silently fails
+  to create. Either run `sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION pg_trgm;"`
+  or drop the index from schema.sql.
+- [ ] **Three Ps `*_summary` fields backfill** for pre-2026-05-18
+  sessions (carry-over from 2026-05-17). F3 backfill will populate
+  these natively going forward; the older sessions remain empty until
+  backfilled. RDA IG POC framing slight embarrassment until closed.
+
 **Workstream F — auto-metadata production switch (new 2026-05-18):**
 
 - [x] 2026-05-18 **F1: Gemini Flex wired into `cc_session_toolkit.archive.generate_auto_metadata`** — full replacement. New module `cc_session_toolkit/transcript_text.py` (ported from PA `scripts/extract-transcript-text.py`); new package data `cc_session_toolkit/prompts/auto_metadata.md` (shipping copy of `prompt-gemini-v2.md`); new helpers `_load_auto_metadata_prompt`, `_build_auto_metadata_user_message`, `_parse_metadata_response_json`, `_call_gemini_once`, `_call_gemini_with_retry`, `_ensure_gemini_api_key`. Old sampled-message machinery (`_is_meta_message`, `_META_*` sets, sampled-message loop, `_ensure_anthropic_api_key`, `re` import) all removed. `pyproject.toml` `api` extra flipped `anthropic>=0.40` → `google-genai>=2.3`; `prompts/*.md` added to package data. Test suite reshaped: dropped 32 obsolete sampling/meta-filter tests, added 17 Gemini-shape tests (helpers, integration with mocked `google.genai` client, 503 retry recovery, exhausted-retry → None, unparseable JSON → None). Toolkit 205 passing. PA suite 690 still passing — no callers broken.
 - [x] 2026-05-18 **F2: `EXTRACTOR_MODEL_ID` switched** from `claude-haiku-4-5-20251001` to `gemini-3-flash-preview` in `cc_session_toolkit/config.py`. New constants `AUTO_METADATA_MAX_OUTPUT_TOKENS=1024`, `AUTO_METADATA_FLEX_RETRY_WAITS_SECONDS=(30, 60, 120)`, `GEMINI_FLEX_INPUT_PRICE_PER_MTOK=0.25`, `GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK=1.50`.
 - [x] 2026-05-18 **PA venv reinstalled** with `pip install -e ~/Code/cc-session-toolkit` so hook firings on amd-tower use the new path. zbook + rpi-server pip installs still pinned to the old non-editable wheel — re-run editable install on those machines or push a new tagged release before relying on the new path there.
 - [x] 2026-05-18 **`scripts/backfill-session-metadata.py` updated** for the Gemini path: `_ensure_gemini_api_key`, cost line ~$0.027/session, `update_metadata` writes Three Ps natively (was preserving empty defaults).
-- [ ] **F3: Backfill 307 historic sessions** — BLOCKED on Shawn's gate approval after live-output review. Est. ~$8.30.
+- [ ] **F3: Backfill historic sessions** — BLOCKED on Shawn's gate
+  approval after live-output review. **Refined estimate (2026-05-20):**
+  ~$1.26 mean / ~$2.79 p90 worst-case envelope on amd-tower's 32 sessions
+  needing backfill (the 307 figure in earlier notes was a multi-machine
+  total; zbook + rpi-server populations unsurveyed). Per-session mean
+  ~$0.039, p90 ~$0.087. Cost-estimate now uses a 20-session sample
+  distilled through the production extractor — no flat-rate approximation.
+  Run with `python3 scripts/backfill-session-metadata.py --dry-run` to
+  see fresh numbers. Two-stage option recommended: do amd-tower first
+  (~$1-3, low risk; tests the pipeline against a real population),
+  then propagate to zbook + rpi-server after re-installing the editable
+  toolkit on those machines.
 - [ ] **F4: QA pass on ~20 sampled backfill outputs** — depends on F3.
-- [ ] **GA-rename watch**: model id `gemini-3-flash-preview` is still "Preview"; bump constant when GA renames to `gemini-3-flash` (or similar).
+- [ ] **GA-rename watch**: model id `gemini-3-flash-preview` is still
+  "Preview"; bump constant when GA renames to `gemini-3-flash` (or
+  similar).
+- [ ] **Manual Gemini list-price re-verification** before F3 commits.
+  Constants in `cc_session_toolkit/config.py:60-61` were verified
+  2026-05-17; Google has historically adjusted preview-tier prices on
+  short notice. 30-second check against
+  https://ai.google.dev/gemini-api/docs/pricing#flex.
 
 **Workstream D — memory-system rethink + wiki formalisation (new 2026-05-17):**
 
@@ -495,7 +644,64 @@ reopen settled questions:
   `cc_session_toolkit.transcript_text`. Production callers
   (`archive.generate_auto_metadata`, backfill script) import the
   module; only humans use the CLI. Symmetric with the prompt-shipping
-  decision: keep the toolkit reproducible standalone.
+  decision: keep the toolkit reproducible standalone. **2026-05-20
+  follow-up**: the PA script is now a *thin wrapper* re-exporting
+  the toolkit's symbols — drift is impossible going forward (M9).
+- **850K-token session-level transcript cap with middle-truncation**
+  (2026-05-19, design landed). Per-block caps on `tool_result` /
+  `tool_use_input` removed entirely; replaced with a single
+  session-total budget at 85% of Gemini 3 Flash Preview's 1M-token
+  context. Cap fires on ~1 in 242 historic sessions (one
+  llm-reproducibility outlier at 974K tokens uncapped). When it
+  fires, middle-truncation preserves session head (user framing) +
+  tail (commits / handoff) and drops repetitive middle (paper-after-
+  paper extractions, file-after-file refactors). Empirical basis:
+  `data/experiments/transcript-cap-analysis-2026-05-19/findings.md`.
+  Pathological edges (single fragment > budget, head+tail overlap)
+  fall back to a tail-truncation marker with non-negative clamp,
+  added 2026-05-19 after audit.
+- **Cost estimation grounded in per-session sampling, not flat per-
+  session averages** (2026-05-20, M4 audit fix). Flat $0.027/session
+  estimates under-state cost when long-tail sessions approach the
+  cap. New `--cost-sample-size N` (default 20) in
+  `scripts/backfill-session-metadata.py` distils a real sample
+  through the production extractor and reports mean / p90 / max
+  per-session cost + a worst-case envelope. Drove the F3 cost
+  re-estimate from $8.30 to $1.26-$2.79 on amd-tower's actual
+  population.
+- **Anthropic API failure semantics: transient vs permanent**
+  (2026-05-20, C2 audit fix). `hooks/extraction-hook.py`
+  `extract_memories` now returns `None` (sentinel) on transient
+  errors (5xx, 429, network timeout) — cursor does NOT advance,
+  next firing retries. Permanent errors (4xx, programming bugs)
+  preserve the prior behaviour: log, return `[]`, cursor advances.
+  Reasoning: indefinite re-processing on permanent input errors
+  blocks all downstream extraction; transient errors deserve a
+  retry not a silent skip.
+- **Cursor file flocked across concurrent hook firings**
+  (2026-05-20, C3 audit fix). `~/.claude/settings.json` wires the
+  extraction hook on `Stop` + `PreCompact` + `SessionEnd` — all
+  three can fire close together on session-close. `cursor_file_lock()`
+  context manager wraps load → process → save in an `fcntl.flock`
+  exclusive lock on a sidecar lockfile. Holds the lock through the
+  Anthropic call (~5s) — serialises hook firings, which is
+  acceptable at this rate. Alternative (optimistic-concurrency
+  merge) more complex and not warranted.
+- **Reasoning-trace capture from Claude Code is upstream-blocked**
+  (2026-05-19, CoT capture investigation). Thinking text is empty in
+  CC session JSONLs as of v2.1.72 (Feb/Mar 2026 rollout of
+  Anthropic's `tengu_quiet_hollow` server flag +
+  `redact-thinking-2026-02-12` beta header that CC now sends). Three
+  related issues closed as won't-fix; one open feature request
+  (`anthropics/claude-code#39343` — `ThinkingBlock` hook event) is
+  the right upstream fix. Workaround `showThinkingSummaries: true`
+  no longer functions on Opus 4.7. Treat thinking-block metadata
+  (count, signature) as the captured signal; community capture
+  tools (`agentsight`, `claude-code-proxy`) exist but none is
+  research-grade. Full investigation at
+  `docs/open-science/cot-capture-claude-code-investigation-2026-05-19.md`.
+  Directly relevant to workstream E (RDA IG) — candidate IG output
+  or JOSS tools paper.
 
 ## Reference docs
 
@@ -509,6 +715,8 @@ reopen settled questions:
 | Continuity-doc protocol | `global-claude-md/continuity-protocol.md` | Updating continuity.md; deciding what belongs in it |
 | `/handoff` protocol | `global-claude-md/handoff-protocol.md` | End-of-session ritual; deciding which observations to capture |
 | RDA IG context (Three Ps framework) | `docs/open-science/RDA_IG_Statement_of_Work.docx`, `RDA_IG_Summary_and_Description.docx` | Aligning system with research-data standards; provenance audit |
+| Cap-analysis findings (850K decision basis) | `data/experiments/transcript-cap-analysis-2026-05-19/findings.md` | Why the cap is 850K; what middle-truncate sacrifices on outliers; the framing-strip correction note |
+| CoT capture investigation (RDA IG-relevant) | `docs/open-science/cot-capture-claude-code-investigation-2026-05-19.md` | Why thinking blocks are empty in CC JSONLs; survey of community capture tools; recommendations across short / medium / long horizons |
 | Current FOCUS slots | `tasks/FOCUS.md` | Knowing whether to mention slot pressure (don't if PA work is deliberate background) |
 
 ---
@@ -516,6 +724,121 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-20 (Wed) — Audit remediation: C2 + C3 + C4 + M7-M15 + Lows + M6
+
+Long session with substantial parallel agent dispatch. After yesterday's
+audit + priorities 1-6, dispatched two background agents to clear the
+remaining audit findings. Both landed cleanly with no rebase conflicts.
+
+**(1) C2/C3/C4 agent** — `extraction-hook.py` + `sync-symlinks.sh`.
+Transient Anthropic errors (5xx, 429, network timeout) now return a
+`None` sentinel from `extract_memories`; `main()` distinguishes
+sentinel from empty-list and skips cursor advance on transient errors.
+Cursor file wrapped in `fcntl.flock` via `cursor_file_lock()` context
+manager so concurrent `Stop` / `PreCompact` / `SessionEnd` firings
+serialise rather than race. `sync-symlinks.sh` Step 7 pip exit code
+now captured and propagated (was `&& ... || ...`, silently swallowed).
+9 new tests in `tests/test_extraction_hook.py`. PA suite 690 → 699
+passing.
+
+**(2) Cleanup agent** — M7 (anchor_verify zero-anchors → None), M9
+(extract-transcript-text.py → thin wrapper around toolkit module),
+M10 (resample reproducibility — sorted glob + runtime timestamp),
+M11 (setup.sh ERRORS check), M12 (note-only — schema change deferred
+to v4), M13/M14/M15 (toolkit test tightening), plus ~12 Lows across
+`archive.py`, `session-start-code-state.py`, `_command_markers.py`
+(sync-board marker drift), `sync-to-postgres.py`, `bake-off-metadata.py`,
+`project_id.py`, `analyse_caps.py`. 12 commits in PA, 2 in toolkit,
+1 in pa-data. Toolkit 226/226 passing throughout.
+
+**(3) M6 direct** — `extraction-hook.py` slash-command skip flag
+auto-clear bug. Pre-fix: any non-command user entry cleared the skip
+flag, so MCP-injected tool_result-as-user between `/remember` and its
+assistant response un-skipped the response (sporadic double-extraction).
+Post-fix: flag persists until the next assistant turn consumes it.
+Removed `test_skip_flag_resets_on_normal_user_message` (pinned buggy
+behaviour) and added `test_command_skip_flag_persists_across_user_entries`
+with realistic MCP scenario + pre/post baselines.
+
+Total commits this session: 14 (PA), 2 (toolkit), 1 (pa-data). All
+three repos clean and pushed.
+
+- New PA tests: `tests/test_extraction_hook.py` net +9 tests (10 added,
+  1 removed); now 60 tests total
+- New toolkit tests: `tests/test_transcript_text.py` already +6 from
+  yesterday; this session added M13/M14/M15 assertions to existing
+  tests
+- Architectural decisions added below: 6 new ones (850K cap +
+  middle-truncate; sampled cost estimation; transient-vs-permanent
+  Anthropic semantics; cursor flock; CoT capture upstream-blocked;
+  extract-transcript-text as thin wrapper)
+
+### 2026-05-19 (Tue) — Audit + 850K cap design + CoT investigation + priorities 1-6
+
+Substantial session running as deliberate PA-infrastructure background.
+Four movements:
+
+**(1) Cap analysis + 850K design.** After discovering per-block caps
+in `transcript_text.py` (TOOL_RESULT_MAX_CHARS=4000, TOOL_USE_INPUT_MAX_CHARS=1500)
+were clipping substantive content from summarisation, ran empirical
+analysis over 242 archived sessions (`analyse_caps.py`). Three regimes
+costed: current caps (A), uncapped tool blocks (B), B + thinking blocks
+(C). Found B and C nearly indistinguishable because 229/242 sessions
+have empty thinking text (Anthropic redaction; see CoT investigation
+below). Found B delta over A is negligible (~$3 backfill, ~$1.50/mo
+ongoing) but worst-case session under B lands at 974K tokens — 97.5%
+of Gemini's 1M context. Decided on uncapping + 850K-token emergency
+cap with middle-truncation (preserves head + tail, drops repetitive
+middle). Worst-case session under middle-truncate would lose ~6 user
+turns out of 69 vs ~13 lost under tail-truncate. Implementation +
+tests landed same day.
+
+**(2) Code audit.** Dispatched 6 parallel subagents over 21 source
+files / ~10,800 lines (toolkit core, toolkit tests, PA hooks, PA memory-
+system v2 scripts, PA bake-off/experiments, PA shell). Consolidated
+report identified 4 Critical, 15 Medium, ~20 Low findings. Most
+significant: archive.py uncaught AttributeError when Gemini's
+`response.text` is None (safety-filter case); extraction-hook silent
+cursor advance on Anthropic API failure; cursor file not flocked
+across concurrent firings; sync-symlinks pip exit code swallowed.
+
+**(3) Priorities 1-6.** Shawn approved direct fix of M1+M2 (transcript_text
+pathological edges), C1 (response.text None guard), M3 (`.get() or
+default` for null Gemini fields), M5 (stale Haiku sweep), M4 (refined
+backfill cost estimator with `--cost-sample-size`), M6 correction
+note. All landed across the toolkit + PA. Toolkit 220 → 226.
+
+**(4) CoT capture investigation.** Dispatched claude-code-guide (CC
+docs + settings audit) + prior-art-scout (community-tool survey).
+Confirmed thinking text is empty in CC JSONLs by Anthropic design as
+of v2.1.72 (`tengu_quiet_hollow` flag + `redact-thinking-2026-02-12`
+beta header). Three relevant issues closed as won't-fix; one open
+feature request (`#39343`) is the right upstream fix. Surveyed
+community tools: `agentsight` (eBPF), `claude-code-proxy` (Go MITM),
+`llm-interceptor` (Python mitmproxy) — none built for research-grade
+FAIR capture. Wrote report at
+`docs/open-science/cot-capture-claude-code-investigation-2026-05-19.md`
+with three-horizon recommendations including candidate JOSS tools
+paper + RDA IG Tier-2 output framing.
+
+**(5) Commit-and-push.** 3 commits to toolkit, 2 to pa-data, 3 to PA
+(including `.gitignore` for stray `archive/cc-sessions/` and submodule
+pointer bump). All pushed.
+
+- New PA file: `docs/open-science/cot-capture-claude-code-investigation-2026-05-19.md`
+- New pa-data: `experiments/transcript-cap-analysis-2026-05-19/` (script + findings.md + per-session.csv + summary.txt)
+- New toolkit file: `tests/test_transcript_text.py` (15 + 6 pathological tests)
+- Modified toolkit: `transcript_text.py` (uncap + 850K + middle-truncate + pathological edges),
+  `archive.py` (None guard, .get() or default, Haiku → Gemini Flex),
+  `cli.py` (Haiku → Gemini Flex), `tests/test_hook.py` (M5 docstring),
+  `scripts/backfill-session-metadata.py` (.get() or default, --cost-sample-size sampler)
+- Architectural decisions added: 5 new (850K cap rationale + middle-
+  truncate over tail-truncate; sampled cost estimation; full-transcript
+  rather than capped; reasoning-trace upstream blocked; analyse_caps
+  framing-strip caveat)
+- Agent dispatches: claude-code-guide (CC docs check), prior-art-scout
+  (community capture tools), 6 parallel general-purpose (code audit)
 
 ### 2026-05-18 (Mon, follow-up session) — Small follow-ups + v3 spot-check + workstream F1+F2 wire-up
 
