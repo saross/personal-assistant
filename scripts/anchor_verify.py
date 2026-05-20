@@ -233,6 +233,7 @@ def verify_memory(record: dict[str, Any], repo_set: list[Path]) -> str | None:
         return None
 
     any_pending = False
+    saw_any_valid_anchor = False
     for anchor in anchors:
         if not isinstance(anchor, dict):
             continue  # malformed; skip silently
@@ -245,6 +246,12 @@ def verify_memory(record: dict[str, Any], repo_set: list[Path]) -> str | None:
         if verifier is None:
             continue  # unknown anchor type — ignore rather than fail
 
+        # Reaching the verifier call means the anchor was structurally
+        # valid and of a known type. Track this so an ``anchors`` list
+        # that is entirely malformed / unknown-type does NOT collapse to
+        # the "verified == true" branch below (zero valid anchors is
+        # contractually equivalent to "no anchors" per the docstring).
+        saw_any_valid_anchor = True
         try:
             result = verifier(ref, list(repo_set))
         except Exception:  # noqa: BLE001 — fail-soft per module contract
@@ -255,6 +262,13 @@ def verify_memory(record: dict[str, Any], repo_set: list[Path]) -> str | None:
         if result == "pending":
             any_pending = True
 
+    if not saw_any_valid_anchor:
+        # Same semantics as an empty/missing ``anchors`` field per the
+        # docstring: "None" means no verifiable anchors present. The
+        # production hot path is protected by ``hooks/extraction-hook.py``
+        # filtering anchors before write, so this branch is a latent
+        # module-contract fix rather than a routine code path.
+        return None
     return "pending" if any_pending else "true"
 
 
