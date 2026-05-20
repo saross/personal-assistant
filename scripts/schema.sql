@@ -71,6 +71,11 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories USING GIN(research_tags);
 CREATE INDEX IF NOT EXISTS idx_memories_zotero ON memories(zotero_key)
     WHERE zotero_key IS NOT NULL;
+-- 2026-05-20 audit note: this partial index is effectively a full
+-- index because is_active defaults to TRUE; ~all rows match. Consider
+-- dropping or flipping predicate to (is_active = FALSE) so the index
+-- is small and useful for the rarer "show soft-deleted" query. Defer
+-- to schema v4 with migration plan.
 CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(is_active)
     WHERE is_active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project)
