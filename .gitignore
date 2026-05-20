@@ -23,3 +23,9 @@ venv/
 
 # Pytest cache
 .pytest_cache/
+
+# Stray session archives. Canonical archive lives in
+# ~/cc-archives/<project>/<session>/ (cc-session-toolkit's
+# DEFAULT_ARCHIVE_ROOT) and the data submodule's archive/. The
+# PA *public* repo should not carry session content.
+archive/cc-sessions/
