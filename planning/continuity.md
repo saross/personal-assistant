@@ -980,8 +980,7 @@ Removed `test_skip_flag_resets_on_normal_user_message` (pinned buggy
 behaviour) and added `test_command_skip_flag_persists_across_user_entries`
 with realistic MCP scenario + pre/post baselines.
 
-Total commits this session: 14 (PA), 2 (toolkit), 1 (pa-data). All
-three repos clean and pushed.
+Total commits this session so far: 14 (PA), 2 (toolkit), 1 (pa-data).
 
 - New PA tests: `tests/test_extraction_hook.py` net +9 tests (10 added,
   1 removed); now 60 tests total
@@ -992,6 +991,50 @@ three repos clean and pushed.
   middle-truncate; sampled cost estimation; transient-vs-permanent
   Anthropic semantics; cursor flock; CoT capture upstream-blocked;
   extract-transcript-text as thin wrapper)
+
+**(4) Pre-consolidation inventory + LFS plan.** Shawn asked whether to
+consolidate transcripts on rpi-server NVMe before F3 backfill; agreed
+it was the right sequencing. Dispatched a read-only inventory agent
+across all amd-tower archive locations (cast a wide net per Shawn's
+prompt: included `.claude/projects/` live store,
+`archive/cc-interactions/` pre-Dec-2025 manual exports, and the
+search ranged broadly under `~/`). Findings: **307 unique main-thread
+session IDs across 1,360 files / ~1.97 GB raw / ~1.45 GB consolidated**,
+of which only **32 need F3** — the "307 historic sessions" figure in
+prior continuity entries was the total unique-session count, not the
+F3-needing subset. 61 live-only sessions never archived (need pre-F3
+sweep). 182 manual `.txt` exports surfaced (Shawn's hunch confirmed).
+Zero genuine content conflicts (170 size-mismatches all benign: live
+vs gzip of same content). One genuinely unexpected discovery:
+map-reader-llm has a worktree-archive at
+`.claude/worktrees/agent-a59a9dae0bff3f27b/` that holds **canonical
+content**; the per-project `archive/cc-sessions/` there is full of
+Git LFS pointer stubs. LLM-History-Paper similarly has 49 LFS-pointer
+files. Inventory artefact at `planning/archive-inventory-2026-05-20.md`.
+
+Shawn requested LFS extraction NOW (not at journal submission) for
+both projects; agreed. Expanded Phase 0 task list to 10 numbered
+steps with concrete commands covering `git lfs pull` → 61-live
+sweep → mount rpi NVMe → rsync per-source → park `.txt` exports →
+`git lfs untrack` → `git rm --cached` + gitignore
+`archive/cc-sessions/` in every project. New architectural decision
+recorded: project repos do not carry `archive/cc-sessions/` going
+forward; consolidated mount is the only location for transcripts.
+`git lfs migrate export` full history rewrite deferred indefinitely
+to post-journal-submission (low blast-radius cleanup, not blocking).
+
+- Inventory + Phase-0-revision commit: `63b798d`
+- LFS sequence expansion commit: `8c2e115`
+- Auto-sync that landed mid-session: `8c0ba53`
+- New PA file: `planning/archive-inventory-2026-05-20.md`
+- Architectural decision added: "Project repos do not carry
+  `archive/cc-sessions/`" (per-project gitignore + permanent LFS
+  resolution as a side benefit)
+
+**(5) Handoff ritual** (this segment). Standard `/handoff` five-step
+close: continuity extended (this entry), 3 working-notes drafted +
+accepted, 3 wiki-candidate inbox entries added, 4 user-observations
+drafted + all accepted by Shawn. Final commits below.
 
 ### 2026-05-19 (Tue) — Audit + 850K cap design + CoT investigation + priorities 1-6
 

@@ -171,3 +171,82 @@ question-mark than to refactor after the wrong abstraction is in
 place. (This is a sibling to Candidate 1's pattern.)
 
 [ ] accept   [ ] edit   [ ] discard
+
+
+### Candidate 9: Lead with the decision + the why when Shawn asks "should we …?"
+
+Twice today Shawn opened a major-decision question ("should we
+consolidate first?", "should we de-track LFS now or wait?") and twice
+I led with a direct recommendation, three reasons, and a recommended
+sequence. Both times Shawn replied "agree" and we moved straight to
+execution.
+
+**What this means in practice:** when the question is decisional, the
+response should be (decision, why, what-to-do-next). Asking "what
+would you like to do?" with no scaffolding wastes the cognitive
+moment when both of us have the context loaded. Pattern is consistent
+with Candidate 1 (pre-emptive structural clarification) and
+Candidate 8 (pause for design alignment when scope exceeds the
+briefing) — all three say: when a decision is approaching, do the
+decision-prep work openly rather than punting to Shawn.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 10: Check for a one-line user-side reframe before elaborating an objection
+
+When I cited the "rpi-server toolkit install overhead" as a Phase 0
+friction, Shawn answered in one sentence: "we can mount that storage
+on this machine, we don't have to install the entire apparatus."
+That single reframe dissolved the entire objection cluster and
+unlocked a cleaner architecture. The reframe was available to me too
+— but I'd elaborated the objection before checking.
+
+**What this means in practice:** when my analysis surfaces an
+objection of the form "we'd need to install / set up / coordinate X
+on machine Y", pause to ask whether the constraint is real before
+treating it as a design driver. One short check ("is X actually a
+hard requirement, or could we mount / proxy / wrap instead?") beats a
+long elaboration of a non-problem. Shawn's one-line reframes are
+load-bearing input — probe for them earlier.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 11: Verification of agent findings worked as designed today
+
+The audit produced 6 subagent reports with ~50+ specific findings
+(file:line, claim, impact). Before consolidating into a single report,
+I re-verified the highest-impact findings directly: `archive.py:368`
+`response.text` None crash, `extraction-hook:962-967` cursor advance
+on API failure, `anchor_verify` zero-anchors → "true",
+`analyse_caps.py` framing-strip omission. One subagent claim was
+**downgraded from Critical to Low after verification** (Hook C1:
+`parse_transcript` dict-content crash — theoretical, not observed in
+real transcripts).
+
+**What this means in practice:** the discipline of "trust but verify"
+worked as designed — the consolidated report had no confabulated
+findings reaching Shawn. The cost of verification (re-read the cited
+file:line, run the mental trace) is small relative to the cost of a
+false-positive Critical finding reaching the user. Keep doing this,
+especially with multiple parallel agents whose outputs cannot
+cross-check each other.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 12: Small-batches-each-verified is sustainable for high-tempo days
+
+~25 commits across three repos today (toolkit 5, pa-data 4, PA 16)
+with zero test-suite regressions. The pattern was: agent does work
+→ run tests → if green, commit and push → next batch. The full
+toolkit suite ran ~12 times today (226/226 throughout); the PA suite
+ran ~4 times (690 → 699 with 9 net new tests).
+
+**What this means in practice:** no "fix everything and run tests at
+the end" antipattern emerged. Today's commit messages are
+individually tight, the history reads cleanly, and reverting any
+single change is straightforward. The cadence sustained across both
+directly-authored work and two parallel background agents. Pattern is
+robust for high-tempo days when the alternative (batched bulk
+changes) would have lost legibility and made bisecting harder.
+
+[ ] accept   [ ] edit   [ ] discard

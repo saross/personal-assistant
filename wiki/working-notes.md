@@ -148,3 +148,56 @@ stylistic / model-intrinsic rather than addressable, productionise.
 
 Anchored at: `data/experiments/bake-off-metadata-2026-05-18/` (all
 prompts, response sets, populated rubrics).
+
+
+## 2026-05-20: F3 backfill scope is 32 sessions, not 307
+
+The "307 historic sessions" figure in earlier continuity entries was a
+misread: it is the **total unique main-thread session count across all
+amd-tower archive locations**, not the subset needing F3. The
+F3-needing subset (`auto_generated.purpose == "Auto-metadata unavailable"`)
+is exactly 32. This matches the refined cost estimate computed by
+`scripts/backfill-session-metadata.py --cost-sample-size 20` ($1.26
+mean / $2.79 p90 worst-case envelope). Inventory at
+`planning/archive-inventory-2026-05-20.md`.
+
+
+## 2026-05-20: Two parallel background agents on the same repo, zero conflicts
+
+Ran C2+C3+C4 agent and M7-M15+Lows cleanup agent concurrently against
+`~/personal-assistant/`. Coordination: explicit file-ownership rules
+in the prompts (C2/C3/C4 owned `extraction-hook.py`,
+`sync-symlinks.sh`, `data/.gitignore`; cleanup owned everything else).
+Both agents instructed to `git pull --rebase` before pushing.
+
+Result: cleanup agent's pull was a no-op (sibling's commits had
+already landed); zero rebase conflicts; 14 PA commits + 2 toolkit
+commits + 1 pa-data commit shipped in one window.
+
+Pattern is reusable for future multi-agent work on shared repos:
+split scope by file ownership, dispatch in parallel, defensive
+rebase. Anchored at this continuity entry plus commit log
+`87abe5d..0ec0a7b` (PA), `41758a3..6ac9fe2` (toolkit).
+
+
+## 2026-05-20: Worktree-archives can hold canonical bytes that per-project archives stub
+
+map-reader-llm's per-project `archive/cc-sessions/` is full of Git LFS
+pointer stubs (87 sessions). The canonical bytes live at
+`.claude/worktrees/agent-a59a9dae0bff3f27b/archive/cc-sessions/` — the
+worktree was created when LFS smudge was active, so it has real
+content. Any tool reading the per-project layer (cc-session-toolkit
+backfill, rsync to consolidated store, grep across transcripts) gets
+pointer-text not session content, and most fail silently or with
+cryptic errors.
+
+**Inventory pre-flight is what surfaced this** — would have been easy
+to miss until consolidation failed mid-rsync.
+
+Future: any project using Git LFS for archive content needs explicit
+verification that the per-project layer has been LFS-pulled, OR migrate
+to the new architecture where `archive/cc-sessions/` is gitignored and
+lives only on the consolidated mount (per the 2026-05-20 architectural
+decision). LLM-History-Paper has the same pattern with 49 pointer
+stubs in its `archive/cc-sessions/`. Anchored at
+`planning/archive-inventory-2026-05-20.md`.
