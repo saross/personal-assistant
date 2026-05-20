@@ -34,6 +34,7 @@ Overwrites ``data/experiments/bake-off-metadata-2026-05-18/sample-manifest.json`
 
 from __future__ import annotations
 
+import datetime
 import glob
 import importlib.util
 import json
@@ -212,11 +213,18 @@ def _meta_project_name(meta: dict) -> Optional[str]:
 
 
 def enumerate_archive_candidates() -> list[Candidate]:
-    """Walk all archive globs; return one Candidate per non-LFS transcript."""
+    """Walk all archive globs; return one Candidate per non-LFS transcript.
+
+    ``glob.glob`` returns filesystem-order results, which differ across
+    machines, so each call is wrapped in ``sorted(...)`` to make the
+    enumeration order deterministic. This matters because the downstream
+    ``random.seed(42)`` shuffle is only reproducible if the input list
+    is identical across runs.
+    """
     seen_paths: set[str] = set()
     out: list[Candidate] = []
     for pattern in ARCHIVE_GLOBS:
-        for path_str in glob.glob(pattern):
+        for path_str in sorted(glob.glob(pattern)):
             if path_str in seen_paths:
                 continue
             seen_paths.add(path_str)
@@ -250,12 +258,16 @@ def enumerate_archive_candidates() -> list[Candidate]:
 
 
 def enumerate_live_candidates() -> list[Candidate]:
-    """Walk live globs under ~/.claude/projects/."""
+    """Walk live globs under ~/.claude/projects/.
+
+    Wraps ``glob.glob`` in ``sorted(...)`` for deterministic order across
+    machines — see ``enumerate_archive_candidates`` for the rationale.
+    """
     seen_paths: set[str] = set()
     out: list[Candidate] = []
     for pattern in LIVE_GLOBS:
         is_subagent = "/subagents/" in pattern
-        for path_str in glob.glob(pattern):
+        for path_str in sorted(glob.glob(pattern)):
             if path_str in seen_paths:
                 continue
             seen_paths.add(path_str)
@@ -452,7 +464,12 @@ def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
         total_tokens += s.content_tokens
 
     manifest = {
-        "generated_at": "2026-05-17",
+        # Stamp the moment of generation. Hardcoding a date (the previous
+        # value was "2026-05-17") makes the provenance trail dishonest the
+        # next time the script runs.
+        "generated_at": datetime.datetime.now(
+            tz=datetime.timezone.utc
+        ).isoformat(),
         "rng_seed": RNG_SEED,
         "extractor": "scripts/extract-transcript-text.py",
         "token_estimator": "chars / 4",
@@ -471,7 +488,9 @@ def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
         },
         "pool_stats": pool_stats,
         "notes": (
-            "Re-sampled 2026-05-17 to cap distilled-text tokens at 190K so "
+            f"Re-sampled "
+            f"{datetime.datetime.now(tz=datetime.timezone.utc).date().isoformat()} "
+            "to cap distilled-text tokens at 190K so "
             "every session fits Haiku 4.5's 200K context window (200K minus "
             "~3K for prompt + header + output budget, plus safety buffer for "
             "the chars/4 heuristic's known under-counting of dense content). "
@@ -523,7 +542,15 @@ def main() -> int:
     # the archive and the live pool (or any other duplication), keep the
     # archived copy first because it ships with a session.meta.json. Falling
     # back to the live copy only if no archive copy exists.
-    raw_combined = arch + live
+    #
+    # Sort the combined list by (session_id, transcript_path) before
+    # bucketing so the ``random.seed(42)`` shuffle downstream is
+    # reproducible regardless of dict-key insertion order or filesystem
+    # traversal order across machines.
+    raw_combined = sorted(
+        arch + live,
+        key=lambda c: (c.session_id or "", c.transcript_path),
+    )
     n_before_dedup = len(raw_combined)
     seen_ids: set[str] = set()
     all_candidates: list[Candidate] = []
