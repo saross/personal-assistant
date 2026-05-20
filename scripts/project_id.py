@@ -100,17 +100,26 @@ def decode_project_id(project_id: str) -> Path | None:
 # where max_depth is the number of directory levels below the root to
 # search for ``.git``. Depth 1 means "this directory only"; depth 2 means
 # "this directory and its immediate children".
-REPO_DISCOVERY_ROOTS: tuple[tuple[Path, int], ...] = (
-    (Path.home() / "Code", 2),
-    (Path.home() / "personal-assistant", 1),
-    (Path.home() / "personal-assistant" / "data", 1),
-)
+#
+# Computed inside ``_repo_discovery_roots`` rather than at module import
+# time so the lookup re-reads ``Path.home()`` on every call. If HOME
+# changes mid-process — a test harness using ``monkeypatch.setenv``, or
+# a privilege drop via sudo — a module-level tuple would otherwise pin
+# the old paths for the lifetime of the process.
+def _repo_discovery_roots() -> tuple[tuple[Path, int], ...]:
+    """Return the discovery-root tuple, evaluated against the *current* HOME."""
+    home = Path.home()
+    return (
+        (home / "Code", 2),
+        (home / "personal-assistant", 1),
+        (home / "personal-assistant" / "data", 1),
+    )
 
 
 def repo_set() -> list[Path]:
     """Discover all active git repos under the configured discovery roots.
 
-    Walks each root in ``REPO_DISCOVERY_ROOTS`` to its configured depth
+    Walks each root returned by ``_repo_discovery_roots()`` to its depth
     and collects directories that contain a ``.git`` entry (directory
     *or* file — submodules use a ``.git`` file pointing at the parent's
     ``.git/modules/...``).
@@ -131,13 +140,28 @@ def repo_set() -> list[Path]:
         # Depth >= 2: descend one level and recurse.
         if depth >= 2:
             try:
-                for child in root.iterdir():
-                    if child.is_dir():
-                        _walk(child, depth - 1)
+                children = list(root.iterdir())
             except (PermissionError, OSError):
-                pass
+                return
+            for child in children:
+                try:
+                    if not child.is_dir():
+                        continue
+                except OSError:
+                    # ``is_dir`` can raise on broken symlinks or other
+                    # transient stat failures — skip the entry rather
+                    # than aborting the whole walk.
+                    continue
+                try:
+                    _walk(child, depth - 1)
+                except OSError:
+                    # Recursive descent can fail on symlink loops or
+                    # other filesystem oddities; widen the catch beyond
+                    # the inner ``iterdir`` so a single bad subtree
+                    # doesn't take down the whole discovery pass.
+                    continue
 
-    for root, depth in REPO_DISCOVERY_ROOTS:
+    for root, depth in _repo_discovery_roots():
         _walk(root, depth)
 
     return found
