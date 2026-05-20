@@ -383,33 +383,155 @@ These survive across sessions. Mark `[x]` with date when done.
 - [ ] **Phase 0 — focused session**: archive layout consolidation.
   Sub-items (revised 2026-05-20 — rpi-server is now mount-only, NOT
   install-target; see architectural-decision below):
-  - [ ] Sweep amd-tower's 61 unarchived live main-thread sessions
-    (per the 2026-05-20 inventory) so they pick up the current
-    meta.json contract + Gemini Flex auto-metadata at write time
-    rather than via F3 later.
-  - [ ] Reconcile three archive layouts on amd-tower (old
-    `~/cc-archives/` — 40 sessions; current per-project
-    `<project>/archive/cc-sessions/` — 203 files split between
-    LFS-pointer stubs and smudged real files; map-reader-llm
-    worktree archive — 87 real files that back the per-project
-    LFS pointers).
-  - [ ] **Mount rpi-server's NVMe** on amd-tower (SSHFS / NFS — not
-    decided yet) and copy `~/cc-archives-consolidated/<project>/<session>/`
-    directly to the mounted location. No toolkit install on
-    rpi-server; rpi-server is purely a storage target.
-  - [ ] Add rsync step to `daily-sync.sh` (working-machine side
-    only — pushes to the mounted rpi-server NVMe).
-  - [ ] Build `scripts/resolve_session_id.py` (cross-machine
-    resolver — runs on the working machine, queries the
-    mounted consolidated archive's index).
-  - [ ] Decide on indexing pattern: **working-machine-driven only**
-    (was "rpi-side cron vs working-machine SSHFS-mounted index" —
-    revised; rpi-server has no toolkit, no cron, no Python env, so
-    indexing must happen on the working machine writing to the
-    mounted destination).
-  - [ ] Handle the 182 manual `.txt` exports as a `manual-exports/`
-    subdir under the consolidated root (not F3-eligible — different
-    format, predates auto-archive).
+
+  **Step 1 — Resolve Git LFS contents.** Two projects currently store
+  transcripts via Git LFS, which means the per-project archive layer
+  holds pointer stubs rather than real bytes. The toolkit's backfill
+  cannot read pointer stubs; consolidation cannot rsync them safely.
+  Per-project commands:
+
+  ```bash
+  # map-reader-llm (final-stages code, near paper-writing transition)
+  cd ~/Code/map-reader-llm && git lfs pull
+  # Verify: the per-project archive's bytes should now match the
+  # worktree archive's bytes (per the 2026-05-20 inventory finding
+  # that the worktree holds canonical content). Spot-check 3-5
+  # session IDs by comparing SHA-256 between
+  # archive/cc-sessions/<...>/session.jsonl.gz
+  # and
+  # .claude/worktrees/agent-a59a9dae0bff3f27b/archive/cc-sessions/<...>/session.jsonl.gz
+
+  # LLM-History-Paper (49 pointer stubs in archive/cc-sessions/)
+  cd ~/Code/LLM-History-Paper && git lfs pull
+  # Verify: stub files now have real gzip magic bytes (00 1f 8b ...)
+  # rather than the LFS pointer-text format ("version https://git-lfs...").
+  ```
+
+  This step is **read-only on the remotes** — `git lfs pull` only
+  fetches LFS object bytes to the local cache and smudges them into
+  the working tree. No history changes, no risk to other clones.
+
+  **Step 2 — Sweep the 61 unarchived live sessions.** Per the
+  2026-05-20 inventory, amd-tower has 61 main-thread sessions
+  present in `~/.claude/projects/*.jsonl` with no corresponding
+  archive entry. Each must go through the archive hook so it
+  receives the current `session.meta.json` contract + Gemini Flex
+  auto-metadata at write time (avoids inflating the F3 scope from
+  32 → 93 and saves ~60 × $0.04 = ~$2.40 vs. backfilling later).
+
+  ```bash
+  # Approach: iterate the live JSONLs, identify the unarchived
+  # subset (per inventory), and invoke the toolkit's archive CLI
+  # for each. The exact loop depends on whether the inventory
+  # produced a list of session_ids — check
+  # planning/archive-inventory-2026-05-20.md for the explicit
+  # paths or session_ids of the 61 live-onlys.
+  ```
+
+  **Step 3 — Mount rpi-server NVMe.** SSHFS preferred (per-user,
+  no root needed) but NFS is also viable if rpi-server already
+  exports the NVMe share. Path TBD — see
+  "Things to verify next session" above for the path + free-space
+  pre-checks before mounting. Suggested mount point:
+  `~/cc-archives-mounted/`. Confirm the mount survives a logout/
+  login cycle (add to `~/.config/sshfs-fstab` or systemd user
+  service if it doesn't).
+
+  **Step 4 — rsync sources to mounted destination.** One location
+  at a time, verify per pass. Target structure:
+  `~/cc-archives-mounted/cc-archives-consolidated/<project>/<session>/`.
+  Source order (most-canonical first):
+
+  ```bash
+  # 1. The current per-project archive (post-LFS-pull)
+  rsync -av ~/Code/<project>/archive/cc-sessions/ \
+        ~/cc-archives-mounted/cc-archives-consolidated/
+
+  # 2. The legacy global archive (~/cc-archives/) — only sessions
+  #    not already present in the per-project layer
+  rsync -av --ignore-existing ~/cc-archives/ \
+        ~/cc-archives-mounted/cc-archives-consolidated/
+
+  # 3. The pa-data submodule's archive (data/archive/cc-sessions/)
+  rsync -av --ignore-existing \
+        ~/personal-assistant/data/archive/cc-sessions/ \
+        ~/cc-archives-mounted/cc-archives-consolidated/
+
+  # 4. The map-reader-llm worktree archive (canonical for that project)
+  #    — only needed if the LFS-pull in Step 1 didn't fully restore the
+  #    per-project layer to match the worktree.
+  ```
+
+  After each rsync, spot-check: `du -sh` the destination, count
+  `session.jsonl(.gz)` files vs. expected, sample 2-3 SHA-256s.
+
+  **Step 5 — Park the 182 manual `.txt` exports.** Create
+  `~/cc-archives-mounted/cc-archives-consolidated/manual-exports/<project>/`
+  and rsync the three `archive/cc-interactions/` dirs into it. Add a
+  README explaining: pre-December-2025 manual exports, different
+  format, not F3-eligible, retained as research-provenance artefacts.
+
+  **Step 6 — De-track Git LFS for `archive/cc-sessions/` in the two
+  affected project repos.** Non-destructive: stops new files from
+  going to LFS; existing history-resident pointers are left alone.
+  Per-project:
+
+  ```bash
+  cd ~/Code/map-reader-llm  # then LLM-History-Paper
+  git lfs untrack "archive/cc-sessions/**"
+  # .gitattributes now has the pattern removed; commit the change:
+  git add .gitattributes
+  git commit -m "chore(lfs): stop tracking archive/cc-sessions via LFS"
+  ```
+
+  **Step 7 — Remove `archive/cc-sessions/` from each project repo
+  + gitignore the path.** This is the architectural fix that makes
+  the LFS de-tracking permanent: transcripts no longer live in
+  project repos at all, only on the rpi-server mount.
+
+  ```bash
+  cd ~/Code/<project>
+  # Verify the consolidated copy on the mount is byte-identical
+  # to the project copy before removing the project copy.
+  diff -qr archive/cc-sessions/ \
+       ~/cc-archives-mounted/cc-archives-consolidated/<project>/
+  # If clean, remove from the index (does NOT delete from disk yet):
+  git rm -r --cached archive/cc-sessions/
+  echo "archive/cc-sessions/" >> .gitignore
+  git add .gitignore
+  git commit -m "chore: move archive/cc-sessions to consolidated mount"
+  # Now safe to delete the on-disk copy:
+  rm -rf archive/cc-sessions/
+  ```
+
+  Apply to all projects with an `archive/cc-sessions/`, not only
+  the LFS ones — this is the new architecture for every project.
+
+  **Step 8 — Add rsync step to `daily-sync.sh`** (working-machine
+  side only — pushes new local archive writes to the mounted
+  rpi-server NVMe). Local hook should keep writing to
+  `~/cc-archives/<project>/<session>/` (the legacy global path) as
+  its scratch destination; `daily-sync.sh` moves the day's new
+  archives to the mounted consolidated location, then prunes the
+  local scratch.
+
+  **Step 9 — Build `scripts/resolve_session_id.py`** (cross-machine
+  resolver — runs on the working machine, queries the mounted
+  consolidated archive's index).
+
+  **Step 10 — Decide on indexing pattern: working-machine-driven
+  only.** rpi-server has no toolkit, no cron, no Python env, so
+  indexing must happen on the working machine writing to the
+  mounted destination. (Was previously "rpi-side cron vs
+  working-machine SSHFS-mounted index" — revised.)
+
+  **Deferred to post-journal-submission**: `git lfs migrate export
+  --include="archive/cc-sessions/**" --everything` in the two
+  affected repos, to fully purge LFS pointer stubs from git history.
+  This is a force-push history rewrite — only worth doing for GitHub
+  LFS storage-quota cleanup or to keep clones lean. Orphaned pointers
+  in old commits aren't actively harmful; defer this until both
+  papers are submitted.
 - [ ] **Phase 0e — R2 wiring** (once Phase 0b stable): rclone push
   from the working machine to R2 daily (rather than rpi→R2 — revised
   2026-05-20, since rpi-server has no toolkit and cannot run rclone
@@ -638,6 +760,20 @@ reopen settled questions:
   existing pre-v2 backups at `~/cc-archives/pre-v2/` on rpi-server
   are legacy bootstrap artefacts and do NOT imply ongoing toolkit
   installation there.
+- **Project repos do not carry `archive/cc-sessions/`** (2026-05-20,
+  Phase 0 architectural conclusion). The consolidated rpi-server
+  NVMe mount is the only location for transcripts. Project repos
+  add `archive/cc-sessions/` to their `.gitignore` and `git rm
+  --cached` any existing entries. This (a) prevents future drift
+  between per-project archive copies and the consolidated store,
+  (b) keeps project-repo working copies small and clones fast, and
+  (c) eliminates the LFS-tracking problem permanently for projects
+  that previously used Git LFS for transcripts (map-reader-llm,
+  LLM-History-Paper). `git lfs untrack "archive/cc-sessions/**"`
+  stops new files from going to LFS; the orphaned pointers in old
+  commits are harmless and a full `git lfs migrate export` history
+  rewrite is deferred until post-journal-submission (low blast-
+  radius cleanup, not blocking).
 - **Inscriptions** is *revitalisation* not abandonment. Drift sweep
   must distinguish revitalisation drift (preserve memory, mark
   `verified: stale`) from true staleness (`verified: false`).
