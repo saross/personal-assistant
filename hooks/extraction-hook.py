@@ -473,9 +473,32 @@ def parse_transcript(
 # ============================================================================
 
 
-def extract_memories(messages: list[dict], session_id: str) -> list[dict]:
-    """Send conversation to Haiku for structured memory extraction."""
+def extract_memories(messages: list[dict], session_id: str) -> list[dict] | None:
+    """
+    Send conversation to Haiku for structured memory extraction.
+
+    Returns
+    -------
+    list[dict]
+        Extracted memories (possibly empty) — the API call succeeded
+        and the cursor MAY be advanced.
+    None
+        Sentinel signalling a *transient* Anthropic API failure (5xx,
+        429 rate-limit, or network timeout/connection). The caller
+        MUST NOT advance the cursor — the same message window should
+        be retried on the next hook firing.
+
+    Audit C2 (2026-05-19): previously any exception was logged and
+    returned ``[]``, causing ``main()`` to advance the cursor past a
+    window that Anthropic was momentarily unable to process. The
+    affected memories were then silently lost forever. Distinguishing
+    transient (retry-worthy) from permanent (give-up) errors restores
+    at-least-once delivery for the common case (529 overload) while
+    keeping bounded behaviour for hopeless inputs (4xx, malformed JSON,
+    programming bugs).
+    """
     try:
+        import anthropic
         from anthropic import Anthropic
     except ImportError:
         logger.error("anthropic package not installed — cannot extract")
@@ -512,8 +535,38 @@ def extract_memories(messages: list[dict], session_id: str) -> list[dict]:
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
+    except (anthropic.APITimeoutError, anthropic.APIConnectionError) as e:
+        # Network-level transient: SDK could not reach the API or the
+        # request timed out. The window is unprocessed; retry next firing.
+        logger.error(
+            "Haiku API transient network error (session %s): %s", session_id, e
+        )
+        return None
+    except anthropic.APIStatusError as e:
+        # The API responded with an HTTP error. 5xx and 429 are transient
+        # (server overload, rate limit) — preserve the window so the next
+        # firing retries. RateLimitError (429) and InternalServerError
+        # (500-class) are APIStatusError subclasses, so this branch covers
+        # them via status_code inspection rather than separate handlers.
+        status = getattr(e, "status_code", None)
+        if status is not None and (status >= 500 or status == 429):
+            logger.error(
+                "Haiku API transient error (status %d, session %s): %s",
+                status, session_id, e,
+            )
+            return None
+        # 4xx other than 429 (auth, malformed request, etc.): permanent.
+        # Retrying will not help; advance cursor to avoid wedging on a
+        # window the API will keep rejecting.
+        logger.error(
+            "Haiku API permanent error (status %s, session %s): %s",
+            status, session_id, e,
+        )
+        return []
     except Exception as e:
-        logger.error("Haiku API call failed: %s", e)
+        # Anything else (programming bug, JSON glitch, etc.) is treated
+        # as permanent. Existing pre-C2 behaviour preserved.
+        logger.error("Haiku API call failed (unclassified): %s", e)
         return []
 
     # Guard against empty or unexpected response structure
@@ -904,6 +957,21 @@ def main() -> None:
 
     # Extract memories via Haiku
     extracted = extract_memories(messages, session_id)
+
+    # C2 (2026-05-19): a None return signals a *transient* API failure
+    # (5xx/429/network). Do NOT advance the cursor — the next hook
+    # firing will retry the same window. An empty list means the API
+    # succeeded but Haiku found nothing worth keeping; we DO advance
+    # so we don't reprocess sterile content forever.
+    if extracted is None:
+        logger.info(
+            "Skipping cursor advance due to transient API error (session %s); "
+            "window will be retried on next hook firing",
+            session_id,
+        )
+        # Suppress hook output and exit cleanly — no work persisted.
+        print(json.dumps({"suppressOutput": True}))
+        return
 
     if extracted:
         try:

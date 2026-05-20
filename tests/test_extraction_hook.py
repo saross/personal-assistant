@@ -2,11 +2,14 @@
 Tests for extraction-hook.py — tag normalisation, transcript parsing,
 memory formatting, cursor tracking, and command filtering.
 
-Tests pure functions only; does not call the Anthropic API.
+Tests pure functions only; does not call the Anthropic API. The
+``TestExtractMemoriesTransientErrors`` class mocks the SDK to exercise
+the C2 audit fix (2026-05-19).
 """
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -667,3 +670,200 @@ class TestSeedTags:
         assert "new-tag" in content
         # Existing tag not duplicated
         assert content.count("existing-tag") == 1
+
+
+# ============================================================================
+# C2 (2026-05-19): Transient vs permanent Anthropic API errors
+# ============================================================================
+
+
+def _long_conversation() -> list[dict]:
+    """Build a conversation long enough to clear MIN_CONTENT_LENGTH."""
+    # MIN_CONTENT_LENGTH is 500; pack a single message well past that.
+    return [{"role": "user", "content": "x" * 800, "uuid": "u1"}]
+
+
+def _make_api_status_error(status_code: int) -> Exception:
+    """Build an ``anthropic.APIStatusError`` with the given status_code.
+
+    We avoid invoking the real constructor (which insists on an
+    ``httpx.Response``) by setting the attribute on a bare instance.
+    Acceptable for unit-test purposes — the production code paths only
+    read ``status_code``.
+    """
+    import anthropic
+
+    err = anthropic.APIStatusError.__new__(anthropic.APIStatusError)
+    Exception.__init__(err, f"status {status_code}")
+    err.status_code = status_code
+    return err
+
+
+class _StringIO:
+    """Minimal stdin replacement for main() — only ``read()`` is used."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+
+    def read(self) -> str:
+        return self._payload
+
+
+class TestExtractMemoriesTransientErrors:
+    """C2: transient API errors must return None, not [].
+
+    The cursor-advance decision in ``main()`` depends on this:
+    ``None`` means do-not-advance (retry-worthy), ``[]`` means advance
+    (API succeeded or input was hopeless).
+    """
+
+    def test_internal_server_error_returns_none(self):
+        """A 5xx (overload, 529) is transient — return None."""
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.side_effect = _make_api_status_error(529)
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-1")
+        assert result is None
+
+    def test_rate_limit_429_returns_none(self):
+        """429 rate-limit is transient — return None."""
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.side_effect = _make_api_status_error(429)
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-1")
+        assert result is None
+
+    def test_400_permanent_returns_empty_list(self):
+        """A 4xx other than 429 is permanent — return [] (advance cursor)."""
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.side_effect = _make_api_status_error(400)
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-1")
+        assert result == []
+
+    def test_timeout_returns_none(self):
+        """Network timeout is transient — return None."""
+        import anthropic
+
+        # APITimeoutError takes a request arg; bypass via __new__ to keep
+        # the test independent of SDK constructor details.
+        timeout = anthropic.APITimeoutError.__new__(anthropic.APITimeoutError)
+        Exception.__init__(timeout, "timed out")
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.side_effect = timeout
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-1")
+        assert result is None
+
+    def test_connection_error_returns_none(self):
+        """SDK-level connection error is transient — return None."""
+        import anthropic
+
+        conn_err = anthropic.APIConnectionError.__new__(anthropic.APIConnectionError)
+        Exception.__init__(conn_err, "connection refused")
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.side_effect = conn_err
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-1")
+        assert result is None
+
+    def test_unknown_exception_returns_empty_list(self):
+        """A non-Anthropic exception is treated as permanent — return []."""
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.side_effect = RuntimeError("bug")
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-1")
+        assert result == []
+
+    def test_main_does_not_advance_cursor_on_transient_error(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: a transient API failure must leave the cursor unchanged.
+
+        Constructs a tiny transcript, mocks the Anthropic client to
+        raise a 529, runs main(), and asserts the cursor file is
+        unchanged afterwards.
+        """
+        # Stage a transcript with two messages
+        transcript = tmp_path / "transcript.jsonl"
+        entries = [
+            make_transcript_entry("user", "x" * 800, "uuid-A"),
+            make_transcript_entry("assistant", "y" * 800, "uuid-B"),
+        ]
+        with open(transcript, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        # Redirect cursor / memories / vocab to tmp_path so we don't
+        # touch the live PA state during the test.
+        cursor_file = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(eh, "MEMORIES_FILE", tmp_path / "memories.jsonl")
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", tmp_path / "tags.txt")
+        monkeypatch.setattr(eh, "load_env", lambda: None)
+
+        hook_payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-X"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(hook_payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.side_effect = _make_api_status_error(529)
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        # Cursor file must NOT contain an entry for sess-X (we never
+        # advanced past the transient failure).
+        if cursor_file.exists():
+            saved = json.loads(cursor_file.read_text())
+            assert "sess-X" not in saved, (
+                "transient API failure must not advance cursor; "
+                f"found {saved!r}"
+            )
+
+    def test_main_advances_cursor_on_permanent_error(
+        self, tmp_path, monkeypatch
+    ):
+        """Permanent API errors advance the cursor (no infinite reprocessing)."""
+        transcript = tmp_path / "transcript.jsonl"
+        entries = [
+            make_transcript_entry("user", "x" * 800, "uuid-A"),
+        ]
+        with open(transcript, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        cursor_file = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(eh, "MEMORIES_FILE", tmp_path / "memories.jsonl")
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", tmp_path / "tags.txt")
+        monkeypatch.setattr(eh, "load_env", lambda: None)
+
+        hook_payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-Y"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(hook_payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.side_effect = _make_api_status_error(400)
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        # Empty list → cursor advances to the last seen UUID.
+        assert cursor_file.exists()
+        saved = json.loads(cursor_file.read_text())
+        assert saved.get("sess-Y") == "uuid-A"
