@@ -329,22 +329,24 @@ Read these *before* starting new work. Most should take <5 min each.
     `gemini-3-flash-preview` → `gemini-3-flash` at GA, the call will
     start failing with "model not found". Bump
     `cc_session_toolkit/config.py:EXTRACTOR_MODEL_ID`.
-- [ ] **rpi-server NVMe destination path + free space**
-  (new 2026-05-20, gates Phase 0 consolidation). The Phase 0 plan
-  was revised 2026-05-20 to be mount-based rather than install-based
-  on rpi-server (see architectural-decisions). Before mounting on
-  amd-tower we need:
-  - **Exact mount source** on rpi-server (which NVMe device, which
-    path under it, e.g. `/mnt/nvme0n1p1/cc-archives-consolidated/`?).
-  - **Free space available** on that device (consolidated archive is
-    estimated at **~1.45 GB** from the 2026-05-20 inventory,
-    excluding the unfetched LLM-History-Paper LFS contents — so
-    ~2-4 GB headroom is the realistic working budget).
-  - **Mount mechanism preference** — SSHFS (simpler, no server-side
-    config; performance fine for archival writes) vs NFS (faster but
-    needs export config on rpi-server). Shawn can mount; the
-    mount details just aren't yet in the planning doc. Recorded as
-    known-unknown.
+- [x] 2026-05-21 **rpi-server NVMe destination path + free space.**
+  Resolved. Destination is `~/mnt/rpi-shares/cc-archives-consolidated/`
+  (= `rpi-server:/opt/encrypted/workspace/shares/cc-archives-consolidated/`),
+  mounted on working machines via the pre-existing `mount-rpi-shares`
+  SSHFS alias (`~/.bash_aliases:9`). Encrypted SSD share, 393 GB total
+  capacity, **300 GB available** at mount time (df reading; ~322 GB
+  matched Shawn's check — small precision difference, no concern).
+  Generous headroom for the ~1.45 GB initial consolidation. Folder
+  structure laid out at the destination: share-root README + an
+  inner `cc-archives-consolidated/README.md` documenting the layout
+  contract, write-side rules, sizing, and cross-references; reserved
+  subdirs `_indexes/` (for the future session_id resolver/manifests)
+  and `manual-exports/` (for the 182 pre-Dec-2025 `.txt` exports).
+  SSHFS-vs-NFS decision resolved in favour of SSHFS — already wired
+  via existing alias, no server-side config required, performance
+  fine for archival writes. Persistence handled by re-running
+  `mount-rpi-shares` per session (per the existing convention; no
+  fstab entry or systemd unit needed).
 
 ## Pending tasks (cross-session)
 
@@ -428,34 +430,46 @@ These survive across sessions. Mark `[x]` with date when done.
   # paths or session_ids of the 61 live-onlys.
   ```
 
-  **Step 3 — Mount rpi-server NVMe.** SSHFS preferred (per-user,
-  no root needed) but NFS is also viable if rpi-server already
-  exports the NVMe share. Path TBD — see
-  "Things to verify next session" above for the path + free-space
-  pre-checks before mounting. Suggested mount point:
-  `~/cc-archives-mounted/`. Confirm the mount survives a logout/
-  login cycle (add to `~/.config/sshfs-fstab` or systemd user
-  service if it doesn't).
+  **Step 3 — Mount rpi-server SSD share.** Resolved 2026-05-21.
+  Run the existing alias:
+
+  ```bash
+  mount-rpi-shares
+  # = sshfs -o compression=no,ServerAliveInterval=15,reconnect \
+  #         shawn@rpi-server:/opt/encrypted/workspace/shares \
+  #         ~/mnt/rpi-shares
+  # Confirm:
+  df -h ~/mnt/rpi-shares
+  # Expect: shawn@rpi-server:/opt/encrypted/workspace/shares 393G ... 300G ... /home/shawn/mnt/rpi-shares
+  ```
+
+  Per-session re-mount via the alias (no fstab entry, no systemd
+  unit — keep it simple, matches the existing `mount-rpi-vantec` /
+  `mount-rpi-qnap` convention). Note the silent-empty-dir failure
+  mode: if the SSHFS mount is not active, `~/mnt/rpi-shares/`
+  appears as a regular empty local directory, which would route
+  writes to amd-tower's disk rather than rpi-server. Always
+  `df -h` to confirm the mount before writing in any script.
 
   **Step 4 — rsync sources to mounted destination.** One location
   at a time, verify per pass. Target structure:
-  `~/cc-archives-mounted/cc-archives-consolidated/<project>/<session>/`.
+  `~/mnt/rpi-shares/cc-archives-consolidated/<project>/<session>/`.
   Source order (most-canonical first):
 
   ```bash
   # 1. The current per-project archive (post-LFS-pull)
   rsync -av ~/Code/<project>/archive/cc-sessions/ \
-        ~/cc-archives-mounted/cc-archives-consolidated/
+        ~/mnt/rpi-shares/cc-archives-consolidated/
 
   # 2. The legacy global archive (~/cc-archives/) — only sessions
   #    not already present in the per-project layer
   rsync -av --ignore-existing ~/cc-archives/ \
-        ~/cc-archives-mounted/cc-archives-consolidated/
+        ~/mnt/rpi-shares/cc-archives-consolidated/
 
   # 3. The pa-data submodule's archive (data/archive/cc-sessions/)
   rsync -av --ignore-existing \
         ~/personal-assistant/data/archive/cc-sessions/ \
-        ~/cc-archives-mounted/cc-archives-consolidated/
+        ~/mnt/rpi-shares/cc-archives-consolidated/
 
   # 4. The map-reader-llm worktree archive (canonical for that project)
   #    — only needed if the LFS-pull in Step 1 didn't fully restore the
@@ -466,7 +480,7 @@ These survive across sessions. Mark `[x]` with date when done.
   `session.jsonl(.gz)` files vs. expected, sample 2-3 SHA-256s.
 
   **Step 5 — Park the 182 manual `.txt` exports.** Create
-  `~/cc-archives-mounted/cc-archives-consolidated/manual-exports/<project>/`
+  `~/mnt/rpi-shares/cc-archives-consolidated/manual-exports/<project>/`
   and rsync the three `archive/cc-interactions/` dirs into it. Add a
   README explaining: pre-December-2025 manual exports, different
   format, not F3-eligible, retained as research-provenance artefacts.
@@ -494,7 +508,7 @@ These survive across sessions. Mark `[x]` with date when done.
   # Verify the consolidated copy on the mount is byte-identical
   # to the project copy before removing the project copy.
   diff -qr archive/cc-sessions/ \
-       ~/cc-archives-mounted/cc-archives-consolidated/<project>/
+       ~/mnt/rpi-shares/cc-archives-consolidated/<project>/
   # If clean, remove from the index (does NOT delete from disk yet):
   git rm -r --cached archive/cc-sessions/
   echo "archive/cc-sessions/" >> .gitignore
@@ -744,10 +758,11 @@ reopen settled questions:
 - **Custom memory system is canonical**; Anthropic's harness-injected
   auto-memory and `MEMORY.md` are *legacy* — never write to them.
   Routed via the write-side rule in `global-claude-md/shared.md`.
-- **Session archive: full mirror everywhere.** rpi-server NVMe holds
-  canonical `~/cc-archives-consolidated/<project>/<session>/`;
-  working machines hold full local mirrors. R2 is offsite + travel
-  bridge. Decided 2026-05-16.
+- **Session archive: full mirror everywhere.** rpi-server SSD share
+  holds canonical `~/mnt/rpi-shares/cc-archives-consolidated/<project>/<session>/`
+  (path resolved 2026-05-21; see decision below); working machines
+  hold full local mirrors. R2 is offsite + travel bridge. Decided
+  2026-05-16.
 - **rpi-server is mount-only, not install-target** for the cc
   archive (2026-05-20, revising Phase 0 plan). rpi-server has no
   cc-session-toolkit install, no Python venv, no cron-driven
@@ -760,6 +775,24 @@ reopen settled questions:
   existing pre-v2 backups at `~/cc-archives/pre-v2/` on rpi-server
   are legacy bootstrap artefacts and do NOT imply ongoing toolkit
   installation there.
+- **Consolidation destination: `~/mnt/rpi-shares/cc-archives-consolidated/`**
+  (2026-05-21). The canonical cc transcript store lives on the
+  rpi-server encrypted SSD share at
+  `/opt/encrypted/workspace/shares/cc-archives-consolidated/`, mounted
+  on working machines via the existing `mount-rpi-shares` SSHFS alias.
+  393 GB total / ~300 GB free at consolidation time — ample headroom
+  vs. the ~1.45 GB initial corpus. Distinct from the bulk-storage
+  tiers on the same rpi-server: `rpi-vantec` (15 TB, mount-rpi-vantec)
+  and `rpi-qnap` (26 TB, mount-rpi-qnap) are mounted via sibling
+  aliases and reserved for bulk archival data, not the hot working
+  archive. The destination's layout is published on the mount itself:
+  share-root `README.md` documents the share as a whole; inner
+  `cc-archives-consolidated/README.md` documents the cc-archives
+  contract (write-side rules, subdir contracts, sizing, cross-refs).
+  Reserved subdirs at consolidation time: `_indexes/` (cross-project
+  session_id index, manifests — populated in Phase 0 Step 9-10);
+  `manual-exports/` (the 182 pre-Dec-2025 `.txt` exports, per the
+  2026-05-20 inventory).
 - **Project repos do not carry `archive/cc-sessions/`** (2026-05-20,
   Phase 0 architectural conclusion). The consolidated rpi-server
   NVMe mount is the only location for transcripts. Project repos
@@ -943,6 +976,47 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-21 (Thu) — Phase 0 destination resolved; rpi-shares layout published
+
+Short PA-infrastructure background segment closing the rpi-server
+destination question that gated Phase 0 consolidation. Discovered the
+pre-existing `mount-rpi-shares` SSHFS alias (`~/.bash_aliases:9`) —
+destination is `shawn@rpi-server:/opt/encrypted/workspace/shares`
+mounted at `~/mnt/rpi-shares/`, 393 GB capacity / 300 GB available
+(df reading; ~322 GB by Shawn's earlier check — same order of
+magnitude, no concern), encrypted SSD share, previously empty
+(newly available storage). Laid out the directory structure at
+`~/mnt/rpi-shares/cc-archives-consolidated/` with reserved subdirs
+`_indexes/` and `manual-exports/`, plus two READMEs (share-root +
+inner) documenting the share's role + the cc-archives layout
+contract, write-side rules, sizing, and cross-references back to
+this file and the 2026-05-20 inventory.
+
+Phase 0 plan updated in place: Step 3 ("Mount rpi-server NVMe") is
+now a one-line `mount-rpi-shares` invocation with the silent-empty-dir
+guardrail noted; Steps 4, 5, 7 rsync targets re-pointed from the
+placeholder `~/cc-archives-mounted/cc-archives-consolidated/` to the
+real `~/mnt/rpi-shares/cc-archives-consolidated/`. The
+"Things to verify" item for rpi-server NVMe path + free space is
+closed. New architectural decision recorded: destination location
++ tier distinction (SSD share for hot working archive;
+vantec/qnap for bulk). One small correction folded into the
+architectural-decisions section: the "full mirror everywhere"
+canonical path was previously written as `~/cc-archives-consolidated/`
+(no mount prefix); now reads `~/mnt/rpi-shares/cc-archives-consolidated/`.
+
+- New files on the rpi-shares mount: `README.md`,
+  `cc-archives-consolidated/README.md`, plus the reserved
+  empty subdirs `_indexes/` and `manual-exports/`
+- Modified PA planning docs: `planning/continuity.md` (this entry +
+  verify-queue close + Phase 0 Step 3 rewrite + path replace_all +
+  architectural-decisions edits), `planning/archive-inventory-2026-05-20.md`
+  (Step 1 of "Recommended consolidation sequence"),
+  `planning/memory-system-v2-implementation-plan.md` (Section 3.2 0b
+  destination path + mount-alias correction)
+- No code changes
+- Commits pending — to be made at session close
 
 ### 2026-05-20 (Wed) — Audit remediation: C2 + C3 + C4 + M7-M15 + Lows + M6
 

@@ -197,10 +197,16 @@ but is empty.
 
 ## Recommended consolidation sequence
 
-1. **Pre-sweep**: mount rpi-server's NVMe destination on amd-tower
-   via SSHFS or NFS (path + free space TBD next session — see
-   "Things to verify"). Confirm the destination layout will be
-   `~/cc-archives-consolidated/<project>/<session>/`.
+1. **Pre-sweep**: mount rpi-server's SSD share on the working
+   machine. Resolved 2026-05-21 — destination is
+   `~/mnt/rpi-shares/cc-archives-consolidated/<project>/<session>/`,
+   reached via the existing `mount-rpi-shares` SSHFS alias
+   (`~/.bash_aliases:9` →
+   `rpi-server:/opt/encrypted/workspace/shares`). 393 GB capacity /
+   ~300 GB free; layout structure (READMEs + reserved `_indexes/` +
+   `manual-exports/` subdirs) already published on the mount. Confirm
+   the mount is live with `df -h ~/mnt/rpi-shares` before any rsync
+   pass (silent-empty-dir failure mode if unmounted).
 2. **Live → archive sweep first**, before consolidation. Run the
    toolkit's `cc_session_toolkit.cli archive` over the 61
    unarchived live main-thread sessions so they pick up the current

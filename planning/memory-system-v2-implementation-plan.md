@@ -81,9 +81,14 @@ fail to resolve.
 
 ### 3.2 0b — Canonical rpi-server archive
 
-- Create `~/cc-archives-canonical/` on rpi-server NVMe (uncompressed,
-  single canonical location, SSHFS-mounted via the existing
-  `mount-rpi-storage` alias).
+- Canonical store lives at
+  `~/mnt/rpi-shares/cc-archives-consolidated/` on working machines
+  (= `rpi-server:/opt/encrypted/workspace/shares/cc-archives-consolidated/`),
+  uncompressed, single canonical location. Reached via the existing
+  `mount-rpi-shares` SSHFS alias (resolved 2026-05-21; `mount-rpi-storage`
+  is the catch-all that mounts shares + vantec + qnap together, but
+  only `rpi-shares` is needed for the cc archive). Layout and READMEs
+  published on the mount.
 - Add an rsync step to `daily-sync.sh`: each machine pushes its
   `~/cc-archives/` to the rpi-server canonical directory. Conflict-free
   because each machine writes only its own session IDs into its own archive.
@@ -611,7 +616,8 @@ benchmarks, coverage tooling) live in
   `global-claude-md/infrastructure-reference.md` would help future Claudes
   navigate. Correct the stale `archive/cc-sessions/` reference in the
   global Reference Docs table to `~/cc-archives/` (and post-Phase-0b, to
-  `~/cc-archives-canonical/` on rpi-server).
+  `~/mnt/rpi-shares/cc-archives-consolidated/` — the resolved destination
+  per 2026-05-21).
 
 ## 11. Risks
 
