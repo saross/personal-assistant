@@ -255,3 +255,70 @@ Pattern generalises beyond style guides: any task with structure
 "agent extracts/analyses, human judges" benefits from the split.
 Captured in agent definition under "Reconciliation with prior style
 guides — NOT YOUR JOB".
+
+
+## 2026-05-22 (late evening): Reference-list contamination is the default failure mode for stylometry on academic prose
+
+Ran `Hiro-Inagawa/write-like-me`'s `scripts/stylometry.py` against the
+same 18-paper Zotero corpus that produced corpus-style-analyser run-1.
+Two concrete leakages visible in the output: (a) co-author surnames
+`sobotkova` (56) and `ross` (52) appeared in the top-20 sentence-initial
+words; (b) URL fragments `doi` (2.054/1k), `https` (1.891/1k), `org`
+(1.284/1k) appeared in the top-30 distinctive content words. Roughly 5%
+of the corpus passing through `compute_features` was reference-list noise.
+
+Write-like-me's markdown stripper (`stylometry.py:115-160`) catches
+frontmatter, code fences, inline code, tables, image tags, and inline
+`[N]` citations — but does not detect the references-section boundary
+in academic prose. Run-1 stripped references explicitly per paper (per
+its `Run notes` section); the difference is visible in the corpus
+footprint — 116,842 words (write-like-me) vs 139,105 words (run-1), a
+~16% delta that's mostly write-like-me's *over*-stripping of legitimate
+markdown structure combined with *under*-stripping of references.
+
+Generalises: any stylometry tool that doesn't ship an explicit
+academic-references heuristic will leak reference-list content into
+sentence-initial-word and top-content-word distributions when fed
+academic papers. The corrective for v2 of corpus-style-analyser is an
+explicit references-section regex (`^(References|Bibliography|Works\s+Cited|Literature\s+Cited)\b`
+case-insensitive, truncate after the last occurrence) with a fallback
+heuristic that detects high-density `Author, A. (Year)` patterns. The
+fallback matters: ~30% of academic publishers use venue-specific
+synonyms or omit the heading entirely.
+
+This is general for tool-evaluation, not just stylometry: when running a
+genre-agnostic tool against domain-specific text, check the input/output
+mass balance before trusting the distributional outputs.
+
+
+## 2026-05-22 (late evening): Multi-author benchmark suites need scrutiny before applying to single-author voice work
+
+The Wang et al. 2025 "Catch Me If You Can" evaluation ensemble (arXiv
+2509.14543) was on the corpus-style-analyser v2 adoption shortlist as
+a way to measure whether the produced style guide actually moves LLM
+output toward Shawn's voice. The Plan agent's investigation of the
+open-source release at `github.com/jaaack-wang/llms-implicit-writing-styles-imitation`
+(MIT, 5 stars, last push 2026-01-16) surfaced a structural mismatch:
+three of the four metrics — authorship attribution accuracy, authorship
+verification, and AI-detection rate — are designed for *multi-author*
+benchmarks. AA and AV ask "is this text by author X vs Y" or "are
+these two texts by the same author"; both require ≥2 authors to
+discriminate against. The Shawn corpus has one. AI-detection requires
+external services (GPTZero). Only the style-matcher metric (Mahalanobis
+distance over stylometric feature space) ports cleanly.
+
+The adopted scope for Phase 5 of v2 is therefore a **reduced two-metric
+CC-only suite**: Mahalanobis distance over Phase-1 features + the
+8-metric tolerance gate from write-like-me's `references/07-verification.md`.
+Both run on CPU with no external API. Optional GPTZero appendix for
+generation-time AI-detection scores (~$0.05/1000 words external API
+spend, opt-in).
+
+Generalises: benchmark-shaped evaluation ensembles often assume the
+discriminative-classification frame (which-of-N-classes is this?) that
+fits academic benchmark datasets but not within-author personalisation
+work. Before adopting a published ensemble, check whether the metrics
+were designed for the *between-class* problem or the *within-class
+match-to-target* problem. The frames look identical until you try to
+run them on a single-author corpus and three of four metrics become
+undefined.

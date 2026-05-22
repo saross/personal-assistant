@@ -346,3 +346,91 @@ a candidate"). Spec-level edits in particular benefit from the
 context still being warm.
 
 [x] accept   [ ] edit   [ ] discard
+
+---
+
+## 2026-05-22 (late evening) — Drafted candidates (reviewed at handoff)
+
+Four candidates drafted at the 2026-05-22 late-evening `/handoff` (the
+style-guide-workstream session: comparator pass against
+`Hiro-Inagawa/write-like-me` + prior-art rescan + v2 implementation
+plan + 10 design decisions). All four accepted inline by Shawn.
+
+### Candidate 18: Evaluate-before-adopt is Shawn's strong default
+
+At every decision point this session, Shawn extended the evaluation
+chain rather than accepting an earlier verdict and moving to
+implementation: desk eval → end-to-end test → comparison report →
+re-scan → plan. When the desk eval returned "compose, do not fork",
+Shawn explicitly pushed back ("before we reconcile … I'd like to freeze
+them as a potential comparison for outputs from write-like-me. I think
+we should evaluate and potentially test write-like-me"). The pushback
+was productive — the end-to-end test surfaced three real failure modes
+(citation pollution, silent textstat break, baseline em-dash conflict)
+that materially refined the compose-with-minimised-scope verdict.
+
+Heuristic: when I produce a verdict from a read-only pass, default to
+offering an end-to-end empirical test as the next step rather than
+treating the verdict as terminal.
+
+[x] accept   [ ] edit   [ ] discard
+
+### Candidate 19: Re-verify negative findings before committing implementation effort
+
+Shawn explicitly requested the prior-art rescan even though the original
+verdict ("no prior art with the attestation schema") was clear. His
+phrasing: "Can you send an agent to re-scan the 7 failed github repos
+please?" — naming a concrete gap rather than asking generally for
+"another look". The rescan caught `ngpepin/stylometric-transfer`, the
+most technically complete tool found across both passes — a
+licence-blocked find that didn't change the verdict but materially
+shaped the v2 plan (the fingerprint schema and deviation-report
+architecture became design inspiration).
+
+Pattern: when a negative finding is about to drive a commitment of
+implementation effort, pay the cost of one verification pass before
+committing. Heuristic for me: when reporting a negative finding from a
+search with acknowledged gaps, surface the gaps prominently and offer
+the verification pass rather than packaging the result as final.
+
+[x] accept   [ ] edit   [ ] discard
+
+### Candidate 20: Compact-decision interfaces scale to design-question batches
+
+The `AskUserQuestion`-with-recommended-defaults format closed all 10 v2
+design questions in three batches with zero follow-up clarifications and
+zero defaults overridden. The "recommended default first + brief
+description + one or two concrete alternatives" structure let Shawn
+either ratify by checking the recommended box or push back specifically.
+Notable: Shawn accepted all 10 recommendations, but the format made the
+alternatives visible enough that a real disagreement would have
+surfaced.
+
+Pattern works because the recommendations were grounded in concrete
+trade-offs (per-paper granularity vs aggregate-only; LIWC commercial vs
+free) rather than aesthetic preference. Heuristic for me: for
+design-question batches, prefer recommended-default-first format over
+open-ended "what do you want?" — it surfaces disagreements more cheaply
+than aesthetic-preference questions.
+
+[x] accept   [ ] edit   [ ] discard
+
+### Candidate 21: Proactive licence-awareness matched Shawn's stance without prompting
+
+When the prior-art rescan surfaced `ngpepin/stylometric-transfer`'s
+PolyForm Noncommercial 1.0.0 licence, I flagged it proactively as a
+concern given Shawn's commercial-Fieldmark context, before asking what
+to do. Shawn confirmed directly ("inspiration only ... I can't
+guarantee I'd never use this in a commercial context"). The principle
+then carried forward through the rest of the session: LIWC-2007
+commercial dictionary rejected for the same reason; write-like-me's
+MIT code re-implemented rather than vendored (because MIT attribution
+overhead wasn't worth ~30 lines per metric).
+
+Pattern: Shawn treats licence-friction-with-commercial-use as a hard
+constraint, not a soft preference. Heuristic for me: when surfacing a
+tool/library/dependency, scan for non-permissive licences and flag them
+at first mention, with the trade-off framed against Shawn's
+commercial-Fieldmark context.
+
+[x] accept   [ ] edit   [ ] discard
