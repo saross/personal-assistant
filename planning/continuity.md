@@ -1077,6 +1077,98 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-22 (Fri) — Task-system arc 2026-05-18 → 2026-05-22 + new corpus-style-analyser agent
+
+Multi-day conversational session covering the full Mon→Fri standup +
+recap cycles (2026-05-18 → 2026-05-22), one major focus-slot rotation,
+the first `/sync-board` execution, and a new reusable agent
+definition. Distinct from the parallel PA-infrastructure session below
+(Phase 0 LFS pull + consolidation).
+
+**(1) Daily standups + recaps recovered cleanly across the week.**
+Standup + recap pair for each of 2026-05-18 (Mon), 2026-05-19 (Tue),
+2026-05-20 (Wed), 2026-05-21 (Thu), and 2026-05-22 (Fri standup;
+recap to follow at EOD). All five standup files landed in
+`~/personal-assistant/standups/`; recaps appended to each, then to
+`reports/work-log.md` + `memories/memories.jsonl` (`progress`
+category, daily-recap tag). Time logged daily into
+`reports/time-log.csv` with no missing days.
+
+**(2) Major slot rotation 2026-05-21.** Inscriptions prereg lodgement
+(the long-running Slot 1 task since 2026-05-14) closed Wed
+2026-05-20 at 18:15 (OSF tag `osf-lodgement-2026-05-20`). HUMN8031
+Week 11 class delivered + course wrapped same week. Both slots
+rotated 2026-05-21: Slot 1 → "RAC-TRAC talk materials for Adela's
+Friday delivery" (1-week task; talk Fri 2026-05-22 22:20 Sydney =
+14:20 Aarhus); Slot 2 → "EFN BolgiaTen arc". Paper B moved to
+Paused; Map-reader stayed Paused. Slot 3 initially set to EFN
+website review (queued); re-rotated 2026-05-22 to **EFN outreach
+campaign planning (#83)** after UNSW outreach decision-day closed
+silent. Website review pushed to "After Slot 3 closes".
+
+**(3) BolgiaTen Slot 2 scope expanded 2026-05-21.** Originally framed
+as "proposal support", expanded same-day after the GroundSite
+Discussion meeting: BolgiaTen want the **dev plan in next week**,
+shape is **backlog creation** (per-feature delta now-Fieldmark →
+desired-MVP at TRL5, then prioritise). Updated in FOCUS.md
+end-of-session 2026-05-22. Next BolgiaTen meeting Mon 2026-05-25
+(time TBD).
+
+**(4) `/sync-board` Phase 1 executed via background agent
+2026-05-21.** 8 ops (4 moves + 3 creates + 1 waiting-for-add).
+Project board now shows Slot 1 (#102) + Slot 2 (#103) in Focus,
+#104 website review in Backlog, #105 UNSW in Waiting for, #73
+Paper-B moved to Paused, #79/#80 moved Inbox→Backlog. Phases 2–4
+(recently-done audit, full backlog audit, archive-repo cleanup)
+deferred to a future dedicated session.
+
+**(5) New reusable agent: `corpus-style-analyser`.** Saved at
+`~/.claude/agents/corpus-style-analyser.md` (global subagent
+definition). Empirically derives a writing style guide from a
+Zotero-cataloged corpus with strict anti-confabulation discipline:
+every claim carries count + ≥2 verbatim quotes + paper key +
+explicit status (`attested` / `attested-rarely` /
+`absent-when-searched` / `aspirational`). Parameterised for re-use
+across newer Claude versions or different genres (substack,
+business, teaching). Aspirational section deliberately generated
+*independent* of corpus, to be reconciled in a follow-up
+human-in-the-loop session against the user's prior conscious style
+guides. **Run-1 (academic, 2015-present, Shawn-publications minus
+Style-exclude tag) completed 2026-05-22** — 18 papers, 139,105
+words analysed, 51KB output at
+`~/personal-assistant/notes/style-guides/academic/style-guide-academic-2026-05-22.md`.
+Top empirical findings: first-person plural default (16/18
+papers), throat-clearing systematically absent, UK orthography 76%
+on core probe. Reconciliation captured to inbox for follow-up
+session.
+
+**(6) Waiting-for + inbox hygiene.** UNSW outreach closed (silent
+past decision-point); Odette PM offer added + updated (call
+expected Fri afternoon). Penny welfare-check resolved during Thu
+morning meetings. Jiayuan Li moderated-mark closed. Two
+long-deferred EFN inbox items (`fieldnote.au/privacy` corrections,
+Indigenous Data Sovereignty plan) promoted from inbox to backlog
+2026-05-18.
+
+- Files modified (task system): `tasks/FOCUS.md` (multiple updates
+  across the week — final state has new slot definitions),
+  `tasks/inbox.md` (numerous adds + ticks),
+  `tasks/waiting-for.md` (UNSW closed, Odette added/updated),
+  `tasks/backlog.md` (#79, #80 row promotions; #83 active-arc
+  annotation; new ANU Week 11 reusable-asset row).
+- Files added (session artefacts): `standups/2026-05-18.md` →
+  `standups/2026-05-22.md` (five new), `reports/work-log.md`
+  (entries for 18, 19, 20, 21 appended), `reports/time-log.csv`
+  (multiple entries each day).
+- Files added (new agent + first output):
+  `~/.claude/agents/corpus-style-analyser.md` (global, not in PA
+  git), `notes/style-guides/academic/style-guide-academic-2026-05-22.md`.
+- Memories: progress memories for each recap (2026-05-18 →
+  2026-05-21), plus a `decision` memory for the new agent and its
+  run-1 output.
+- No commits yet — all changes landed live in the working tree
+  through the conversation; handoff is committing now.
+
 ### 2026-05-22 (Fri) — Phase 0 LFS pull + comprehensive consolidation + layout cleanup
 
 Long PA-infrastructure background session executing most of Phase 0 in

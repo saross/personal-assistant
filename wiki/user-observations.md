@@ -250,3 +250,61 @@ robust for high-tempo days when the alternative (batched bulk
 changes) would have lost legibility and made bisecting harder.
 
 [ ] accept   [ ] edit   [ ] discard
+
+
+### Candidate 13: Pushback on misframed external deadlines is fast and decisive
+
+Wed-morning standup framed the Adela handoff as "midday Thursday hard
+deadline". Shawn corrected within a turn: "synopsis today (= her Fri
+morning Aarhus), full text tomorrow". Pattern: when I anchor a
+deadline to a confident-sounding but wrong frame, Shawn doesn't
+negotiate or qualify — he restates the correct frame and moves on.
+
+Means I should hold deadline claims more lightly when they're
+inferred from secondary sources, and surface uncertainty rather
+than confidently overdetermine.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 14: Meta-questions about session shape improve workflow design
+
+Mid-task ("we should take extra care with agent definition, and then
+save the agent"), Shawn raised: "Should we undertake this task in a
+new session?". The question split spawn-now from review-later, kept
+the current session focused on Adela's talk, and made the agent
+definition a durable artefact rather than a one-off prompt.
+
+Useful pattern: Shawn periodically reframes the workflow itself, not
+just the work. I should expect these meta-reframes and welcome them
+— they usually improve the design rather than just the output.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 15: Empirical verification as a hard requirement, not a nice-to-have
+
+When building the style-guide agent, Shawn specified "build in some
+verification / checking suggested style guide inclusions back against
+the corpus" *before* I'd surfaced verification design. This wasn't a
+refinement of my proposal — it was a core requirement he reached for
+unprompted.
+
+Pattern: for any empirical-construction work, default to
+verification-as-structural-feature, not as a quality-check phase. He
+will insist on it; build it in from the start rather than retrofitting
+it after a "first pass" that the user has to reject.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 16: "Later, as comparison" methodological framing transfers
+
+The decision to read the existing style guides *after* the corpus
+pass (not before) was endorsed crisply by Shawn — "see later as
+comparison". The frame transfers: independent reconstruction first,
+then diff against prior framing.
+
+Useful for any task where the goal is "do better than the prior
+version" rather than "elaborate the prior version". Default to
+walling off the prior version during construction; pull it in for
+diff and reconciliation after.
+
+[ ] accept   [ ] edit   [ ] discard

@@ -201,3 +201,57 @@ lives only on the consolidated mount (per the 2026-05-20 architectural
 decision). LLM-History-Paper has the same pattern with 49 pointer
 stubs in its `archive/cc-sessions/`. Anchored at
 `planning/archive-inventory-2026-05-20.md`.
+
+
+## 2026-05-22: Anti-confabulation discipline applied to empirical-construction agents
+
+When generating something that *feels* generative (a style guide, a
+literature taxonomy, a methodological framework), the standard
+anti-confabulation rule — re-verify checkable specifics at source —
+needs structural enforcement, not just intent. The
+`corpus-style-analyser` agent (`~/.claude/agents/corpus-style-analyser.md`)
+enforces this via:
+
+- Explicit per-claim status fields (`attested` / `attested-rarely` /
+  `absent-when-searched` / `aspirational` / `derived-by-inference`).
+- Required ≥2 verbatim quotations with paper key + section locator
+  per attested claim.
+- Separate evidence ledger (Appendix C) so each numbered claim in
+  the body can be falsified by re-reading the named passage.
+- An aspirational section explicitly walled off from corpus, so
+  "things the agent thinks should be in the guide" cannot leak into
+  the empirical sections without a status downgrade.
+
+Result: claims are empirically falsifiable by re-reading the named
+source. Generalises to any agent that constructs claims from a
+corpus, not just style — works for taxonomies, methodological
+frameworks, lit-review summaries. Run-1 output at
+`notes/style-guides/academic/style-guide-academic-2026-05-22.md`
+demonstrates the scaffolding in practice on 18 papers / 139k words.
+
+
+## 2026-05-22: Background-agent + parent-session-reconciliation pattern for HIL empirical work
+
+For tasks that have a batch-y empirical pass AND a human-judgement
+reconciliation pass, splitting them across an agent invocation (batch,
+runs while you do other work) and a future parent-session (interactive
+Q&A) outperforms a single long interactive session. Run-1 of the
+style guide demonstrated this: agent built the empirical guide +
+aspirational section in ~14 minutes background while Shawn worked on
+the inscriptions talk; reconciliation against prior conscious guides
+is captured as an inbox follow-up for a fresh-eyes session.
+
+Two specific benefits over single-session:
+
+1. **Lower handoff cost than expected.** The agent's output file is
+   the durable artefact; no conversation state needs to be carried
+   forward. Reconciliation can happen any time, in any session.
+2. **Fresh-eyes for the judgement pass.** Reconciliation under tired
+   attention at the tail of a long session is materially worse than
+   reconciliation under fresh attention in a new session, especially
+   for taste-driven decisions (style, voice, methodology).
+
+Pattern generalises beyond style guides: any task with structure
+"agent extracts/analyses, human judges" benefits from the split.
+Captured in agent definition under "Reconciliation with prior style
+guides — NOT YOUR JOB".
