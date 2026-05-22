@@ -473,6 +473,48 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# cc-archives sync — push new local ~/cc-archives/ content to the
+# canonical store at ~/mnt/rpi-shares/cc-archives-consolidated/
+# (Phase 0 Step 8, landed 2026-05-22).
+#
+# Architecture: rpi-server's SSD share holds the canonical store;
+# working machines hold full local mirrors at ~/cc-archives/. The
+# production archive hook writes to the local mirror; this step
+# pushes new content UP to canonical.
+#
+# Conservative semantics:
+# - --ignore-existing: never overwrite, never delete from canonical.
+#   The canonical store is authoritative for anything already there.
+# - Skip silently if rpi-shares isn't mounted (Shawn may be travelling,
+#   network may be down). Don't fail the whole daily-sync over this.
+# - Mount-presence check uses `df` grep to distinguish a live SSHFS
+#   mount from the silent-empty-dir failure mode where
+#   ~/mnt/rpi-shares/ exists locally but isn't backed by rpi-server.
+# ---------------------------------------------------------------------------
+
+if [[ $DRY_RUN -eq 0 ]]; then
+    CC_ARCHIVES_LOCAL="$HOME/cc-archives"
+    CC_ARCHIVES_CANONICAL="$HOME/mnt/rpi-shares/cc-archives-consolidated"
+
+    if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]]; then
+        log "cc-archives sync: mount point missing ($CC_ARCHIVES_CANONICAL) — skipped"
+    elif ! df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+        log "cc-archives sync: rpi-shares not mounted (silent-empty-dir state) — skipped"
+    elif [[ ! -d "$CC_ARCHIVES_LOCAL" ]]; then
+        log "cc-archives sync: $CC_ARCHIVES_LOCAL missing — nothing to push"
+    else
+        log "cc-archives sync: pushing $CC_ARCHIVES_LOCAL/ → $CC_ARCHIVES_CANONICAL/"
+        if rsync -a --ignore-existing --stats \
+            "$CC_ARCHIVES_LOCAL/" "$CC_ARCHIVES_CANONICAL/" \
+            >>"$LOG_FILE" 2>&1; then
+            log "cc-archives sync: complete"
+        else
+            log "cc-archives sync: rsync exited non-zero (see log)"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Symlink sync (heals skill/command/agent drift after new files land)
 # ---------------------------------------------------------------------------
 
