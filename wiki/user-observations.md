@@ -308,3 +308,41 @@ walling off the prior version during construction; pull it in for
 diff and reconciliation after.
 
 [ ] accept   [ ] edit   [ ] discard
+
+---
+
+## 2026-05-22 (evening) — Drafted candidates (reviewed at handoff)
+
+Four candidates drafted at the 2026-05-22 evening `/handoff` (the
+data-profile-iterate smoke test + documentation_defect calibration
+session). Shawn reviewed inline: candidates 1, 2, and 4 discarded;
+candidate 3 accepted. Recording only the accepted entry below for
+the paper trail; the discarded drafts are visible in the session
+transcript if needed.
+
+### Candidate 17: Implement calibration recommendations at the analytical moment, not as a deferred action
+
+After the data-profile-iterate smoke test produced a post-run note
+that recommended two spec edits (a `documentation_defect` status
+on the verifier side; tighter `source_method` discipline on the
+proposer side), Shawn replied *"please implement both of your
+recommended edits"* immediately — rather than treating the
+recommendation as a candidate for a later session. This worked
+well: the calibration insight was still fully loaded in context,
+the spec edits were small and the right size for immediate action,
+and the implicit test for whether the recommendation was concrete
+enough to implement was "can I actually do it now without further
+conversation?" — which it was.
+
+Heuristic: calibration recommendations made at the analytical
+moment should default to immediate implementation, not be deferred
+to "next session". Deferring usually means the context evaporates;
+the recommendation arrives in a future session as a one-liner
+without the surrounding judgement that made it concrete. When
+proposing a calibration edit alongside an analytical finding,
+default to also offering to implement it in the same turn unless
+the user signals otherwise (e.g. "let's sleep on it" or "park as
+a candidate"). Spec-level edits in particular benefit from the
+context still being warm.
+
+[x] accept   [ ] edit   [ ] discard
