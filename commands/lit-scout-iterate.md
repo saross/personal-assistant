@@ -254,8 +254,10 @@ wants.)
 **Final verifier report:** ${ITERATE_ROOT}/iter-{N}/report.md
 **Final claims:** ${ITERATE_ROOT}/iter-{N}/claims.jsonl
 **Final corrections:** ${ITERATE_ROOT}/iter-{N}/corrections.jsonl
+**Zotero import manifest:** ${ITERATE_ROOT}/zotero-import-manifest.json
+(M items created, K skipped as duplicates — see "## Zotero import" section in final report)
 **BibTeX file:** /tmp/lit-scout-iterate-bibtex-YYYYMMDD-HHMMSS.bib
-(N entries; drag-drop into Zotero or File → Import)
+(N entries; backup deliverable — primary destination is the Zotero staging subcollection)
 ```
 
 #### Outcome-detail blocks
@@ -290,6 +292,77 @@ wants.)
   output without iteration. To enable closed-loop verification,
   ensure the proposer agent definition includes the Iterate mode
   + Machine-readable claims block sections."
+
+### Zotero staging import
+
+Run after the final iteration completes on any terminal verdict
+**except `LEGACY_PROPOSER`** (no structured claims means nothing to
+import). The corrected Findings table is the deliverable users
+actually act on; staging it directly into Zotero saves the manual
+BibTeX-import step and propagates iterate-mode corrections (e.g.,
+CrossRef family/given swaps) into the user's library — closing the
+2026-05-22 BibTeX-coverage gap.
+
+```bash
+/home/shawn/personal-assistant/venv/bin/python3 \
+  /home/shawn/personal-assistant/scripts/lit-scout-zotero-import.py \
+  "${ITERATE_ROOT}" \
+  --query "<the user's original query verbatim>" \
+  --live
+```
+
+The script:
+
+1. Reads `iter-N/claims.jsonl` (corrected values), `iter-N/corrections.jsonl`
+   (warning-tag list), and `iter-N/report.md` (Fit/cluster from the
+   verifier's corrected Findings table).
+2. Dedups against every local Zotero library via sqlite (matches DOI
+   case-insensitively across all 16 libraries). Skipped items are
+   recorded with the library + existing collection context, **not**
+   re-created.
+3. Fetches fresh CrossRef metadata for each non-skipped DOI to fill
+   journal-article fields (publicationTitle, volume, issue, pages,
+   ISSN, abstract). Author field is overridden from `claims.jsonl`
+   so iterate-mode corrections take precedence over raw CrossRef.
+4. Creates a dated subcollection
+   `YYYY-MM-DD-<query-slug>` under the staging collection (key from
+   `$ZOTERO_STAGING_COLLECTION`). Idempotent — re-uses existing
+   subcollection if name matches.
+5. Batch-creates items (50 per pyzotero call) with tags:
+   - `lit-scout-staging` (every import)
+   - `lit-scout-run:YYYYMMDD-HHMMSS` (workspace timestamp)
+   - `lit-scout-fit:high|medium|low` (preserves proposer's Fit)
+   - `lit-scout-cluster:<slug>` (preserves proposer's cluster label)
+   - `lit-scout-unverified:<field>` for any row where the verifier's
+     final status was `fail`, `partial`, or `unverifiable` —
+     surfaces in Zotero's tag filter for review
+6. Writes `${ITERATE_ROOT}/zotero-import-manifest.json` with the
+   full audit trail. Re-invocations against the same workspace
+   merge with the prior manifest (idempotent — already-imported
+   DOIs skip).
+
+The script's stdout markdown is appended verbatim to the final
+report as the "## Zotero import" section, slotted between the
+verifier's "## Zotero actions" pass-through and the existing
+BibTeX file pointer.
+
+**Required env vars** (sourced from `~/personal-assistant/.env`):
+
+- `ZOTERO_LIBRARY_ID` — user ID for personal library (e.g. `3097511`)
+- `ZOTERO_API_KEY_PERSONAL` — key with personal-library write +
+  all-groups read
+- `ZOTERO_STAGING_COLLECTION` — top-level staging collection key
+  (e.g. `IX8XR97K`)
+
+**Smoke-test pattern for first-time setup or after Zotero schema
+changes:** add `--limit 1` to import a single item first, eyeball
+it in the Zotero client, then re-run without `--limit` to finish
+the rest. The manifest dedups so the smoke-test item isn't
+re-created.
+
+**Dry-run is the script's default** (omit `--live`) — useful for
+inspecting the plan without touching Zotero. Driver invocation
+always passes `--live`.
 
 ### BibTeX generation
 
@@ -340,6 +413,8 @@ scope: 2022-present; include preprints
 | Cap reached | Status CAP_REACHED | Inspect the final FAIL claims and their fix_hints; the proposer may be unable to satisfy the verifier on those rows. |
 | Stall | Status NO_PROGRESS | Same as cap-reached, but earlier. Often indicates an ambiguous fix_hint or a metadata API inconsistency. |
 | BibTeX errors | Step BibTeX returns non-zero | Note in output; still return integrated report. |
+| Zotero import errors | `lit-scout-zotero-import.py --live` returns non-zero | Note the failure in the Zotero-import section but still return the integrated report and BibTeX. Common causes: missing env vars (`ZOTERO_API_KEY_PERSONAL`, `ZOTERO_STAGING_COLLECTION`), revoked key, network drop mid-batch. The workspace and manifest remain intact for manual re-run via `scripts/lit-scout-zotero-import.py <workspace> --query "..." --live`. |
+| Zotero import partial failure | Some items in `failed_live` block | The manifest records which DOIs succeeded; re-running picks up from there via the idempotent skip-list. |
 | User abort | Loop interrupted | The partial trajectory in `${ITERATE_ROOT}/` is inspectable. Future runs should use a new ITERATE_ROOT. |
 
 ## Notes
