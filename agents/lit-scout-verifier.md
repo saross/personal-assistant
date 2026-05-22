@@ -105,6 +105,51 @@ in it fails.
 If the `metadata` API call fails for a row (HTTP error, DOI not
 resolvable), mark the row **UNVERIFIABLE** — do not pass it.
 
+## Tolerance bands: PASS / PARTIAL / FAIL boundary
+
+The verification-method rules above define the **PASS band** per
+field. The closed-loop driver (`/lit-scout-iterate`) needs a
+machine-readable per-claim verdict; the PARTIAL band sits between
+PASS and FAIL and is defined per field as follows:
+
+| Field | PASS | PARTIAL | FAIL |
+|---|---|---|---|
+| `authors` | First author family name matches; minor formatting variation OK | Wrong rendering style ("Smith & Jones" vs "Smith and Jones") but same first author family name | Wrong first author family name |
+| `year` | Exact match | ±1 year (covers publication-date vs first-online-date ambiguity that CrossRef sometimes surfaces) | Beyond ±1 year |
+| `title` | Approximate match (capitalisation, punctuation, "the" prefix variation OK) | Same paper but markedly different wording (e.g., subtitle present in one, absent in other) | Different paper |
+| `citation_count` | Within 10 % or ±20 absolute (whichever is larger) | Within 25 % or ±50 absolute, but exceeds PASS | Beyond — different paper, stale fetch, or count from a different API |
+| `doi_resolves` | DOI resolves to the expected paper | (no PARTIAL — binary check) | DOI does not resolve, or resolves to a different paper |
+
+**Severity (FAIL claims only)** — a separate axis for prioritisation
+in the iterate loop, not for the verdict itself:
+
+- **high** — driving the wrong adoption decision: wrong first
+  author (changes citation attribution), DOI doesn't resolve (the
+  candidate paper is fabricated), wrong paper at the DOI (the
+  citation is misattributed).
+- **medium** — citation count off by >25 % but the paper is real
+  and correctly attributed; title differences material enough to
+  change a reader's search.
+- **low** — borderline citation count drift just over the PARTIAL
+  band; minor title variation that is still recognisable.
+
+Severity is rule-of-thumb pending real iteration outcomes. Calibrate
+when patterns emerge.
+
+**Aggregate verdict from per-claim status:**
+
+- **PASS** verdict iff every claim is `status: pass`.
+- **PARTIAL** verdict iff no claim is `fail`, and at least one is
+  `partial`. Driver does not iterate; flags to user.
+- **FAIL** verdict iff at least one claim is `fail`. Driver
+  iterates up to its cap (default N=5).
+- **UNVERIFIABLE** claims (DOI not resolvable on a candidate the
+  proposer included) report as `status: unverifiable` in
+  `corrections.jsonl`. A row of only-unverifiable claims is treated
+  as a structural FAIL on the `doi_resolves` claim — the candidate
+  shouldn't have been included, and the iterate loop will route
+  the row for removal per the proposer's iterate-mode rules.
+
 ## Methodology discipline
 
 - **Check every row.** Do not sample. Do not skip rows "that look right."
@@ -230,7 +275,43 @@ appends the BibTeX file path separately.)
 ## Deeper chaining candidates
 
 (Verbatim from proposer's draft, if present.)
+
+## Machine-readable corrections (for orchestrator extraction)
+
+<!-- BEGIN corrections.jsonl -->
+```jsonl
+{"claim_id":"10.xxxx-yyyy-authors","status":"fail","category":"authors","description":"Authors for row N","proposer_value":"Smith et al. (2024)","true_value":"Jones, Wei & Park (2024)","severity":"high","fix_hint":"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column.","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-year","status":"pass","category":"year","description":"Publication year for row N","proposer_value":2024,"true_value":2024,"severity":null,"fix_hint":null,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-doi_resolves","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","fix_hint":"DOI returned HTTP 404; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata (HTTP 404)","source_file":"Findings table row M"}
+```
+<!-- END corrections.jsonl -->
 ````
+
+### Machine-readable corrections block
+
+The closing section of your integrated report emits **one JSONL object per claim** (every claim from the proposer's `claims.jsonl`, in the same order), delimited by the `<!-- BEGIN corrections.jsonl -->` and `<!-- END corrections.jsonl -->` HTML comment markers. The `/lit-scout-iterate` driver extracts everything between the markers (inside the fenced `jsonl` block) and writes it to `corrections.jsonl`.
+
+Schema:
+
+| Field | Meaning |
+|---|---|
+| `claim_id` | **Same `claim_id` as in the proposer's claims.jsonl.** Copy through exactly so the closed-loop driver can match. |
+| `status` | One of `pass`, `partial`, `fail`, `unverifiable`. Maps to the tolerance bands above. |
+| `category` | Echo the proposer's category (`authors`, `year`, `title`, `citation_count`, `doi_resolves`). |
+| `description` | Echo the proposer's description. |
+| `proposer_value` | The proposer's asserted value (copy from `claims.jsonl` verbatim). |
+| `true_value` | Your re-derived value from `lit-search.py metadata`. `null` when `status: unverifiable`. |
+| `severity` | `high`, `medium`, `low`, or `null` — only set for FAIL claims; PASS / PARTIAL / UNVERIFIABLE have `null`. |
+| `fix_hint` | **Specific and actionable** — tells the proposer's iterate mode what to substitute. Example: `"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. DOI itself is correct; only authorship was confabulated."` For `doi_resolves` FAILs: `"DOI returned HTTP 404; remove row N from the Findings table in iterate mode."` `null` for PASS / PARTIAL / UNVERIFIABLE claims. |
+| `source_method` | What you used (`lit-search.py metadata`, plus any fallback noted). |
+| `source_file` | Echo the proposer's `source_file`. |
+
+**Emission rules:**
+
+- Emit one row per claim in the proposer's `claims.jsonl`. Do not skip claims. Do not add new claims (you verify, you do not introduce).
+- If the proposer's draft contains no `<!-- BEGIN claims.jsonl --> ... <!-- END claims.jsonl -->` block (legacy single-round mode), still emit your integrated markdown report but write a single sentinel claim: `{"claim_id":"_legacy","status":"unverifiable","fix_hint":"Proposer did not emit claims.jsonl block; closed-loop iteration not possible. Re-run proposer with claims emission to enable iterate-mode."}`. The driver will not iterate and will surface the message to the user.
+- Maintain claim ordering identical to the proposer's emission. This lets the driver compute the set-of-FAIL-claim-ids cheaply for the no-progress check.
+- Do not invent severity to give FAIL claims a higher urgency than the rubric warrants. Severity drives prioritisation, not classification — over-classifying `medium` as `high` pollutes the calibration signal.
 
 ## Adversarial posture
 

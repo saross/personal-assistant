@@ -257,6 +257,74 @@ after emitting.
 
 - **Level 4+**: Do not attempt without explicit instruction.
 
+## Iterate mode
+
+The `/lit-scout-iterate` slash command runs the proposer + verifier
+as a closed loop, re-invoking the proposer with the verifier's
+machine-readable corrections when the verdict is FAIL. The driver
+passes you two extra parameters in iterate mode (both via the
+dispatch prompt):
+
+- `previous_corrections_path` — absolute path to the
+  `corrections.jsonl` from the previous verifier run.
+- `previous_draft_path` — absolute path to your previous draft
+  markdown (so you can preserve PASS-claim content verbatim).
+
+**When these are present, do not re-run discovery.** Skip phases
+1–5 entirely. Your job in iterate mode is targeted correction:
+
+1. **Load the previous state.** Read `previous_draft_path` to recover
+   the full prior report; read `previous_corrections_path` to learn
+   which claims passed, which failed, and how to fix the failures.
+2. **Partition claims by status:**
+   - `pass` — preserve every field in the corresponding row of the
+     Findings table verbatim. Do not re-query.
+   - `partial` — preserve verbatim. The `/lit-scout-iterate` driver
+     does not route PARTIAL verdicts into iterate mode (policy
+     2026-05-22); if a PARTIAL claim reaches you in iterate mode,
+     flag in your Proposer self-check section and pass through.
+   - `unverifiable` — preserve verbatim and pass through. Same
+     reasoning as PARTIAL.
+   - `fail` — apply the verifier's correction. The verifier's
+     `true_value` is authoritative (it came from a fresh
+     `lit-search.py metadata` call); substitute it into the row's
+     field, and add a brief note in Proposer self-check that the
+     claim was corrected at iteration N.
+3. **Handle row-level failures.** When the `fail` claim is the DOI
+   itself (`category: "doi_resolves"`, status fail) — i.e., the DOI
+   does not resolve and the row's identity is in doubt — **remove
+   the row** from the corrected Findings table in V1. Append it to
+   a new "## Rows removed in iterate mode" section with the row's
+   original data and the verifier's reason. Do not attempt to
+   substitute a replacement paper in V1; that is a V2 enhancement.
+4. **Re-emit the report.** Pass through every section of the
+   previous draft verbatim, with substitutions applied only to the
+   Findings-table fields that the verifier flagged. The analysis
+   sections (Landscape, Thematic clusters, Suggested reading, Gaps
+   noticed, Venue analysis, Zotero actions, Deeper chaining
+   candidates) pass through unchanged unless a removed row
+   invalidates a specific paragraph — in that case, edit the
+   minimum text required and note the edit in Proposer self-check.
+5. **Re-emit the machine-readable claims block** (see Output
+   contract). Preserve `claim_id`s exactly. PASS-claim rows
+   re-emit with identical `value`. FAIL claims re-emit with the
+   substituted `value` and `source_method: "iterate mode: applied
+   verifier correction at iteration N"`.
+
+**Stable `claim_id` requirement.** Iterate mode depends on
+`claim_id` being deterministic across runs. Scheme:
+`<doi-slug>-<field>` where `doi-slug` is the DOI with `/` replaced
+by `-` and lowercased (e.g., `10.1234-foo.bar-authors`). For rows
+flagged `AUTHORS UNVERIFIED` (no DOI), omit them from claims
+emission — they are not part of the closed-loop verification
+pipeline.
+
+**No-progress check.** The driver compares the set of FAIL
+`claim_id`s across iterations. If unchanged, the loop terminates
+with status `NO_PROGRESS`. Your discipline is to emit
+deterministic IDs and faithfully apply the verifier's corrections;
+the driver handles termination.
+
 ## Output contract
 
 Your output is a single markdown document with the following
@@ -264,7 +332,7 @@ sections, in this order. The `/lit-scout` slash command and the
 `lit-scout-verifier` serial agent rely on this structure — do not
 rearrange, omit, or rename sections.
 
-```markdown
+````markdown
 # Lit-scout draft: <query>
 
 ⚠ **VERIFICATION PENDING** — this is a draft from the proposer
@@ -318,7 +386,39 @@ re-queried, whether they matched, any anomalies noticed.)
 ## Deeper chaining candidates
 
 (If applicable — the level-3/level-2 gate.)
+
+## Machine-readable claims (for orchestrator extraction)
+
+<!-- BEGIN claims.jsonl -->
+```jsonl
+{"claim_id":"10.xxxx-yyyy-authors","category":"authors","description":"Authors for row N","value":"Smith et al. (2024)","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-year","category":"year","description":"Publication year for row N","value":2024,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-title","category":"title","description":"Title for row N","value":"...","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-citation_count","category":"citation_count","description":"Citation count for row N","value":1234,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-doi_resolves","category":"doi_resolves","description":"DOI resolves to expected paper for row N","value":true,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
 ```
+<!-- END claims.jsonl -->
+````
+
+### Machine-readable claims block
+
+The closing section emits **one JSONL object per verifiable claim**, delimited by the `<!-- BEGIN claims.jsonl -->` and `<!-- END claims.jsonl -->` HTML comment markers. The `/lit-scout-iterate` driver extracts everything between the markers (inside the fenced `jsonl` block) and writes it to `claims.jsonl`. Schema:
+
+| Field | Meaning |
+|---|---|
+| `claim_id` | **Deterministic ID** — `<doi-slug>-<field>` where `doi-slug` is the DOI lowercased with `/`→`-` (e.g., `10.1038-sdata.2016.18-authors`). Must be reproducible across runs to support iterate-mode matching. |
+| `category` | One of: `authors`, `year`, `title`, `citation_count`, `doi_resolves`. |
+| `description` | Short human-readable claim description. |
+| `value` | The asserted value (string for authors/title; integer for year/citation_count; boolean for doi_resolves). |
+| `source_method` | `"lit-search.py metadata"` for fresh-discovery claims, or `"iterate mode: applied verifier correction at iteration N"` in iterate mode. |
+| `source_file` | `"Findings table row N"` — where in the report the claim appears. |
+
+**Emission rules:**
+
+- Emit five claims per row that has a DOI: authors, year, title, citation_count, doi_resolves.
+- For rows flagged `AUTHORS UNVERIFIED` (no DOI), **do not emit claims**. Those rows are surfaced to the user via the existing markdown but are outside the closed-loop verification pipeline.
+- Preserve the same row ordering as the Findings table.
+- In iterate mode, re-emit every PASS claim verbatim (same `claim_id`, same `value`) and re-emit corrected FAIL claims with the substituted `value`. Removed rows (DOI doesn't resolve) drop their claim_ids from the block.
 
 ### Findings table columns (unchanged from earlier versions)
 

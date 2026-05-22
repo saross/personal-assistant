@@ -325,11 +325,11 @@ until first non-CC API spend.
 
 | Pair | Status | Closed loop? |
 |---|---|---|
-| `lit-scout` + `lit-scout-verifier` | shipped 2026-04-19; verifier returns integrated markdown via assistant-message channel | **no** — contract is markdown; retrofit pending |
+| `lit-scout` + `lit-scout-verifier` | single-round shipped 2026-04-19; closed-loop wired 2026-05-22 — both sides emit machine-readable blocks via HTML-comment markers (sub-agent Write of report files is blocked, so the driver extracts inline); `/lit-scout-iterate` driver added | **yes** — closed; smoke-test pending |
 | `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver | **yes** — closed; smoke-test pending |
-| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22 (verifier ran via general-purpose fallback as the agent was created mid-session) | **no** — contract is markdown; retrofit deferred until data-profile-iterate has real-run experience |
+| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22 (verifier ran via general-purpose fallback as the agent was created mid-session) | **no** — contract is markdown; retrofit deferred until ≥1 closed-loop pair has real-run experience |
 
-**Live next-steps for the data-profile pair (the reference implementation):**
+**Live next-steps across the closed-loop pairs:**
 
 - [ ] **Smoke-test `/data-profile-iterate` on a real dataset.** First
   run should be on a small-to-medium parquet (≤200k rows) so wall
@@ -337,37 +337,50 @@ until first non-CC API spend.
   candidate. Use a fresh session — `data-profile-proposer` subagent
   type registers at session start. Capture: terminal verdict,
   iteration count, any FAIL claims that survived to NO_PROGRESS or
-  CAP_REACHED. (See dedicated test prompt in the architectural-
-  decisions section below for an exact paste-able invocation.)
-- [ ] **Calibrate the severity rubric** (high/medium/low for FAIL
-  claims). Current bands are rule-of-thumb (high ≥10 % drift /
-  decision-changing; medium ≥5× tolerance; low at the boundary).
-  Tighten against real iteration outcomes — what severity bucket
-  did real-fix-required claims fall into?
-- [ ] **Decide whether to quantify "how partial" precisely.** The
-  current PARTIAL band is "exceeded PASS tolerance by ≤5×". A
-  finer metric (continuous "how-partial" score) could let the
-  driver auto-iterate on PARTIAL above a threshold. Defer until
-  ≥3 real runs surface a pattern.
-- [ ] **Lift the closed-loop pattern to `lit-scout`** (step #3 of the
-  original upskilling sequence). Bigger lift than data-profile —
-  the lit-scout pair needs structured-claims emission added to
-  *both* proposer and verifier in one pass. Wait for ≥1 successful
-  data-profile iteration before generalising.
-- [ ] **Lift to `prior-art-scout`** (step #4 in the sequence). Same
-  shape as lit-scout retrofit; lower priority because the existing
-  pair already catches material confabulations via markdown
-  contract.
+  CAP_REACHED. Dedicated paste-able test prompt was provided
+  2026-05-22 in the agent-orchestration conversation.
+- [ ] **Smoke-test `/lit-scout-iterate` on a real query.** Pick a
+  bibliography target where iteration value is high — e.g., a
+  topic with mixed-quality citations on Google Scholar, or one
+  where the prior `/lit-scout` runs surfaced material
+  confabulations. Capture: terminal verdict, iteration count,
+  which fields most often required correction (authors / year /
+  title / citation_count / doi_resolves), how many rows the
+  iterate-mode `doi_resolves` removal path eliminated.
+- [ ] **Calibrate the severity rubric across both pairs.** Current
+  bands are rule-of-thumb (data-profile: high ≥10 % drift /
+  decision-changing; medium ≥5× tolerance; low at the boundary.
+  lit-scout: high = wrong first author / DOI fabricated / wrong
+  paper at DOI; medium = >25 % citation drift / material title
+  difference; low = borderline drift). Tighten against real
+  iteration outcomes.
+- [ ] **Decide whether to quantify "how partial" precisely.** Both
+  pairs currently use rule-of-thumb PARTIAL bands. A finer metric
+  (continuous "how-partial" score) could let the driver
+  auto-iterate on PARTIAL above a threshold. Defer until ≥3 real
+  runs surface a pattern.
+- [ ] **Lift to `prior-art-scout`** (the last remaining unconverted
+  pair). Same shape as lit-scout retrofit. Lower priority because
+  the existing pair already catches material confabulations via
+  markdown contract; the closed-loop gain is auto-iteration on
+  FAIL rather than detection per se.
 
-**Reference docs for the pair:**
+**Reference docs for the closed-loop pairs:**
 
-- Driver: `~/personal-assistant/commands/data-profile-iterate.md`
-- Proposer: `~/personal-assistant/agents/data-profile-proposer.md`
-- Verifier: `~/personal-assistant/agents/data-profile-verifier.md`
+- `/data-profile-iterate` driver: `~/personal-assistant/commands/data-profile-iterate.md`
+- data-profile proposer: `~/personal-assistant/agents/data-profile-proposer.md`
+- data-profile verifier: `~/personal-assistant/agents/data-profile-verifier.md`
+- `/lit-scout-iterate` driver: `~/personal-assistant/commands/lit-scout-iterate.md`
+- lit-scout proposer: `~/personal-assistant/agents/lit-scout.md`
+- lit-scout verifier: `~/personal-assistant/agents/lit-scout-verifier.md`
 - Architecture rationale + 2×2 orchestration grid: craft notebook
   entries 2026-04-18 ("Agent definitions are specifications…",
   "Orchestration patterns are a 2×2…", "Subagents are context
   management…")
+- Inline-block transport rationale (lit-scout specific): sub-agent
+  Write of `.md` files is blocked per 2026-04-19 v4.x evaluation;
+  closed-loop transport uses fenced `jsonl` blocks with HTML-comment
+  markers extracted by the driver.
 
 ---
 
