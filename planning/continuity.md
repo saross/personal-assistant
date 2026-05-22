@@ -311,6 +311,64 @@ Substack / business / teaching) and across LLM model versions.
    output toward Shawn's voice. Relevant for the longitudinal
    cross-model-version comparison built into the agent's design.
 
+### H. Agent-orchestration upskilling — closed-loop proposer-verifier pairs
+
+Meta-workstream tracking the agent-design discipline that emerged
+from the 2026-05-20→22 upskilling thread (see craft notebook entries
+2026-04-18 and 2026-05-22). The pattern is: every proposer agent that
+makes verifiable claims gets a verifier; the contract between them is
+a machine-readable structured file (`claims.jsonl` / `corrections.jsonl`),
+not free-form markdown; a thin driver loops proposer → verifier →
+re-invoke proposer with corrections until PASS or termination
+condition. Cost/capacity discipline (workstream item #4) is deferred
+until first non-CC API spend.
+
+| Pair | Status | Closed loop? |
+|---|---|---|
+| `lit-scout` + `lit-scout-verifier` | shipped 2026-04-19; verifier returns integrated markdown via assistant-message channel | **no** — contract is markdown; retrofit pending |
+| `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver | **yes** — closed; smoke-test pending |
+| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22 (verifier ran via general-purpose fallback as the agent was created mid-session) | **no** — contract is markdown; retrofit deferred until data-profile-iterate has real-run experience |
+
+**Live next-steps for the data-profile pair (the reference implementation):**
+
+- [ ] **Smoke-test `/data-profile-iterate` on a real dataset.** First
+  run should be on a small-to-medium parquet (≤200k rows) so wall
+  clock per iteration is bounded. Inscriptions corpus is a natural
+  candidate. Use a fresh session — `data-profile-proposer` subagent
+  type registers at session start. Capture: terminal verdict,
+  iteration count, any FAIL claims that survived to NO_PROGRESS or
+  CAP_REACHED. (See dedicated test prompt in the architectural-
+  decisions section below for an exact paste-able invocation.)
+- [ ] **Calibrate the severity rubric** (high/medium/low for FAIL
+  claims). Current bands are rule-of-thumb (high ≥10 % drift /
+  decision-changing; medium ≥5× tolerance; low at the boundary).
+  Tighten against real iteration outcomes — what severity bucket
+  did real-fix-required claims fall into?
+- [ ] **Decide whether to quantify "how partial" precisely.** The
+  current PARTIAL band is "exceeded PASS tolerance by ≤5×". A
+  finer metric (continuous "how-partial" score) could let the
+  driver auto-iterate on PARTIAL above a threshold. Defer until
+  ≥3 real runs surface a pattern.
+- [ ] **Lift the closed-loop pattern to `lit-scout`** (step #3 of the
+  original upskilling sequence). Bigger lift than data-profile —
+  the lit-scout pair needs structured-claims emission added to
+  *both* proposer and verifier in one pass. Wait for ≥1 successful
+  data-profile iteration before generalising.
+- [ ] **Lift to `prior-art-scout`** (step #4 in the sequence). Same
+  shape as lit-scout retrofit; lower priority because the existing
+  pair already catches material confabulations via markdown
+  contract.
+
+**Reference docs for the pair:**
+
+- Driver: `~/personal-assistant/commands/data-profile-iterate.md`
+- Proposer: `~/personal-assistant/agents/data-profile-proposer.md`
+- Verifier: `~/personal-assistant/agents/data-profile-verifier.md`
+- Architecture rationale + 2×2 orchestration grid: craft notebook
+  entries 2026-04-18 ("Agent definitions are specifications…",
+  "Orchestration patterns are a 2×2…", "Subagents are context
+  management…")
+
 ---
 
 ## Things to verify on next session (priority queue)
