@@ -132,6 +132,22 @@ problem is not a match. Be specific:
 
 ## How to report
 
+Begin the report with a single-line verification marker on its own
+line:
+
+```text
+⚠ VERIFICATION PENDING
+```
+
+This marker signals to a paired `prior-art-scout-verifier` (and to
+any human reader) that the structural claims in the candidates table
+(URL, Stars/DLs, Last active, licence assertions in Notes) have not
+yet been re-checked against authoritative source APIs. The verifier
+removes this marker when it produces an integrated, corrections-
+applied report. If you are not paired with a verifier on this
+invocation, leave the marker in place — it warns the reader that
+the table contains LLM-asserted specifics about external resources.
+
 ### Section 1: Executive summary (3-5 sentences)
 
 What's the landscape? Is this a solved problem, a partially-solved
