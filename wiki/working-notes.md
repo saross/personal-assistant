@@ -429,3 +429,162 @@ toolkit issue, not blocking).
 Anchors: `~/personal-assistant/scripts/resolve_session_id.py` (the
 fallback impl); `~/Code/cc-session-toolkit/src/cc_session_toolkit/catalogue.py`
 `rebuild_catalogue` for the source-side fix.
+
+## 2026-05-22 (night): Secrets hygiene in env-sourcing — two leak surfaces
+
+Two operational failures observed while provisioning a new Zotero API key:
+
+1. **bash treats `VAR-NAME=value` as a command, not an assignment.** When
+   `.env` contained `ZOTERO_API_KEY_PAPER-B=<value>` (hyphen in name),
+   `set -a && . ~/personal-assistant/.env && set +a` parsed the line as
+   an attempt to run a command named `ZOTERO_API_KEY_PAPER-B=<value>`,
+   then printed `command not found` *including the offending line in the
+   error message*. The key value ended up in stdout and from there into
+   the session transcript.
+
+2. **pyzotero embeds API keys as URL path segments in `GET /keys/<key>`
+   and dumps the full URL into exception strings on 403.** Observed
+   immediately after the revoke-and-reissue of the leaked Paper-B key:
+   `UserNotAuthorisedError` traceback included the URL with the (now
+   dead) key value embedded.
+
+Operational rules that follow:
+
+- Env-var names: all-uppercase + underscores. Never hyphens. Convention
+  for multi-target services: `<SERVICE>_API_KEY_<TARGET>` (e.g.
+  `ZOTERO_API_KEY_PERSONAL`, `ZOTERO_API_KEY_PAPER_B`).
+- pyzotero traceback strings are NOT safe to forward into shared logs,
+  paste into tickets, or copy from a session transcript without
+  redacting the `?key=` or `/keys/<key>` URL fragments.
+- Treat any key value that has appeared in stdout or a traceback as
+  compromised even if "no one was watching" — log capture or scrollback
+  may have preserved it.
+
+Anchors: incident timestamps in this session's transcript; bash leak
+visible after the `Permission to use Bash with command grep -i "zotero"
+.env has been denied` event; pyzotero leak visible in the 403 retry
+after key revoke. Mitigation pattern landed: read keys from disk via
+Python `Path.read_text()` parsing rather than bash sourcing, when the
+variable name might contain forbidden characters.
+
+## 2026-05-22 (night): Closed-loop corrections must thread through to the deliverable, not via derivatives
+
+Worked example from `/lit-scout-iterate` 2026-05-22:
+
+Row 16 = Lanos & Philippe (2018) ChronoModel paper, DOI
+`10.29220/csam.2018.25.2.131`. CrossRef returns
+`authors[0]={family: "Philippe", given: "Lanos"}` — family/given
+swapped from the canonical attribution. Same DOI flowed through three
+output paths:
+
+| Path | Author rendering | Source |
+|---|---|---|
+| Verifier's `claims.jsonl` (`value` field) | `Lanos, Philippe; Philippe, Anne` | iterate-mode correction at iter-1 |
+| Verifier's `report.md` Findings table | `Lanos & Philippe (2018)` | iterate-mode correction at iter-1 |
+| `lit-search.py bibtex` output `.bib` file | `author={Philippe, Lanos and Anne, Philippe}` | raw CrossRef, never corrected |
+| `scripts/lit-scout-zotero-import.py` Zotero item | `lastName='Lanos', firstName='Philippe'` | claims.jsonl + CrossRef merge |
+
+Same DOI, same closed loop, four outputs, two correct and one wrong
+because it re-queried the source instead of consuming the correction.
+
+The principle: **derivative artefacts re-query the source by default**.
+If the closed-loop's corrections live only in the markdown / JSONL,
+they only reach the user via paths that read those files. The
+`.bib` file produced by a fresh CrossRef API call inherits the raw
+encoding and silently undermines the verifier's work. Fix patterns:
+(a) thread corrections through explicitly (Zotero-import path, here:
+authors built from `claims.jsonl`, rest from CrossRef); (b) overlay
+the corrections at emission time (`lit-search.py bibtex --corrections`
+flag, deferred); (c) avoid the derivative path entirely (treat Zotero
+as primary, .bib as backup — the design decision made this session).
+
+Generalises beyond lit-scout: any closed-loop pair whose corrections
+live in a structured contract file needs an audit of every consumer
+to ensure they read the contract, not the upstream source.
+
+Anchors: `commands/lit-scout-iterate.md` "### Zotero staging import"
+section; `scripts/lit-scout-zotero-import.py:build_zotero_item` where
+the author-from-claims override happens; the row 16 entry in
+`/tmp/lit-scout-iterate-20260522-190212/iter-1/claims.jsonl` vs
+`/tmp/lit-scout-iterate-bibtex-20260522-194400.bib`.
+
+## 2026-05-22 (night): DOI dedup catches 2.5× more than text-based dedup on academic corpora
+
+Direct measurement, single corpus (n=35 Bayesian-archaeology papers,
+typical methodological-foundation literature):
+
+- Lit-scout proposer's `[IN ZOTERO]` flag — uses
+  `scripts/zotero.py:search_items`, a LIKE-based title + creator-name
+  fuzzy text search on the local sqlite: **caught 2 of 5 duplicates**
+  (Williams 2012 `2VNLIW93`, Lee & Ramsey 2012 `X2LIEQTE`).
+- Staging-import script's `find_existing_by_doi` —
+  `SELECT … WHERE LOWER(idv.value) = LOWER(?)` against the DOI field
+  across all 16 local libraries: **caught all 5 duplicates** (added
+  Crema & Bevan 2021 `7RJBCSPN`, Shennan et al. 2013 `XBJKDIUS`,
+  Timpson et al. 2014 `Z8PCHCSH`).
+
+Two of the misses were group-library items (SDAM-AU, TRAP) that the
+proposer's text search did find for some rows but not these — likely
+fuzzy-text precision issues at the boundary of multi-author titles
+where the surface forms diverge between CrossRef metadata and Shawn's
+typed Zotero entries.
+
+The principle: for academic-paper corpora where DOI is reliably
+present, **DOI is the right dedup primary key**. Text search is a
+fallback for entries without DOIs (e.g. older books, grey literature),
+not a substitute. Single measurement — generalise carefully; would be
+worth re-measuring on a corpus where titles are short / less
+distinctive.
+
+Follow-up captured in continuity workstream H: add a `find_by_doi()`
+fast-path to `scripts/zotero.py:search_items` so the lit-scout
+proposer's dedup matches the staging-import script's coverage.
+
+Anchors: `scripts/zotero.py:search_items` (current text-based impl);
+`scripts/lit-scout-zotero-import.py:find_existing_by_doi` (the DOI
+SQL query); the dry-run output in this session's transcript showing
+the 5-vs-2 split with named DOIs.
+
+## 2026-05-22 (night): Anti-confabulation discipline failure — misread a Python dict literal
+
+Recorded as a concrete instance of the failure mode the global
+anti-confabulation rule was written to prevent.
+
+Context: probing the new Zotero key's permissions. pyzotero's
+`key_info()` returned a dict like:
+
+```python
+{'access': {'user': {...}, 'groups': {
+    'all': {'library': True, 'write': True},
+    '525489': {'library': True, 'write': False},
+    ...
+    '5861859': {'library': True, 'write': True},  # ← Paper-B
+    ...
+}}}
+```
+
+I asserted with confidence that Paper-B (`5861859`) had `write: False`,
+which would have meant the new key's scope was inverted from intent.
+Shawn pushed back: "if it's the old key, it will fail." Single-sentence
+challenge that flipped my diagnostic — re-read character-by-character,
+confirmed `write: True` on Paper-B, retracted.
+
+Failure mode: speed-reading a long dict-repr output, taking the wrong
+boolean value to be the one I expected, and asserting it with the same
+confidence I'd have if I'd verified it. The global rule
+(`~/.claude/CLAUDE.md` anti-confabulation section) says: "Before citing
+a specific number, filename, path, identifier, commit hash, config
+value, or quoted text in a claim to Shawn, re-read the source file."
+That includes character-by-character re-reading of structured output
+already in the conversation, not just file paths.
+
+The recovery worked because: (a) Shawn challenged via consequence-
+reasoning, not memory ("if it were X, then Y would have happened —
+Y didn't happen, therefore not X"); (b) I admitted the misread
+rather than re-justifying. Good failure to file because the recovery
+pattern is concrete and reusable.
+
+Anchors: this session's transcript; the exact pyzotero response is
+preserved in the bash output around the key-info probe; the apology
+turn followed by a character-by-character re-read confirms the
+correction.

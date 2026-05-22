@@ -1550,6 +1550,124 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-22 (Fri night → Sat early) — /lit-scout-iterate smoke test + Zotero staging-import shipped
+
+Follow-on session immediately after the three-closed-loop-pairs work
+below. Goal: smoke-test the new `/lit-scout-iterate` on a real query,
+then act on the surfaced finding (BibTeX correction-propagation gap)
+rather than deferring it. The "act now" choice produced the
+Zotero staging-import pipeline — a meaningfully new capability that
+makes the closed-loop's iterate-mode corrections reach the user's
+library directly, not via a fragile BibTeX intermediate.
+
+**(1) Smoke test.** Query: "Bayesian methods for archaeological
+dating and chronological modelling". Workspace
+`/tmp/lit-scout-iterate-20260522-190212/`. 35 rows × 5 categories =
+175 claims. Iter-0 returned 1 FAIL (row 16, Lanos & Philippe 2018,
+CrossRef family/given swap, severity high); iter-1 converged PASS.
+The proposer's Guard A self-check explicitly *noticed* the swap and
+flagged it for the verifier — but didn't correct its own table.
+That's the exact division of labour the closed-loop pattern is meant
+to enable: proposer is allowed to be imperfect; verifier catches.
+Post-run note at `/tmp/lit-scout-iterate-20260522-190212/post-run-note.md`
+captured five calibration findings, including the failure_type
+recommendation (now landed in `prior-art-scout-verifier`) and the
+BibTeX correction-propagation gap (closed in this session, see below).
+
+**(2) Zotero staging-import — design.** Four decisions locked via
+`AskUserQuestion`: (a) trigger policy = auto-import on any non-LEGACY
+terminal verdict; (b) subcollection naming = `YYYY-MM-DD-<query-slug>`
+(timestamp-first for chronological sort, slug truncated to ~50 chars);
+(c) dedup on hit = skip + record (no duplicate-stub clutter); (d) tag
+scheme = `lit-scout-staging` + `lit-scout-run:TS` + `lit-scout-fit:<level>`
++ `lit-scout-cluster:<slug>`, plus `lit-scout-unverified:<field>` for
+FAIL / PARTIAL / UNVERIFIABLE rows (per a fifth question).
+
+**(3) Zotero key provisioning + bash-hyphen incident.** Shawn
+provisioned a new personal-library write key
+(`ZOTERO_API_KEY_PERSONAL`) and a top-level `staging` collection
+(`IX8XR97K`). One operational hazard surfaced and was resolved:
+naming the env var `ZOTERO_API_KEY_PAPER-B` (hyphen instead of
+underscore) caused `set -a && . .env && set +a` to interpret the line
+as a command, dumping the key value verbatim into bash's
+"command not found" error string. Key revoked and reissued under
+`ZOTERO_API_KEY_PAPER_B` (underscore). pyzotero compounded the risk
+by embedding API keys as URL path segments in `GET /keys/<key>` and
+dumping the full URL into traceback strings on 403 — exception output
+is not safe to forward into shared logs. Naming convention settled:
+`ZOTERO_API_KEY_<TARGET>` with `<TARGET>` being the library write
+scope (so `_PERSONAL`, `_PAPER_B`); the unqualified `ZOTERO_API_KEY`
+is reserved for backward compat with the existing
+`scripts/sync-to-zotero.py` consumer (currently broken pending an
+aliasing decision — captured as a follow-up).
+
+**(4) Implementation.** New script
+`scripts/lit-scout-zotero-import.py` (~430 lines). Reads the final
+iteration's `claims.jsonl` for corrected values; fetches fresh
+CrossRef metadata for journal-article fields (publicationTitle,
+volume, issue, pages, ISSN, abstract); overrides the author field
+from the corrected `claims.jsonl` so iterate-mode corrections
+propagate end-to-end. Dedup query runs against all 16 local Zotero
+libraries by DOI via sqlite immutable-mode read (`scripts/zotero.py`
+pattern). Idempotent via a workspace-side
+`zotero-import-manifest.json`. Dry-run by default; `--live` to write;
+`--limit N` for smoke-testing.
+
+**(5) End-to-end validation.** Two-stage live run against the
+smoke-test workspace. Stage 1: `--live --limit 1` created Bronk
+Ramsey (2009) `Bayesian Analysis of Radiocarbon Dates` in new
+subcollection `3C7UZ5AC` under staging — round-trip-fetch confirmed
+all fields landed correctly (compound surname "Bronk Ramsey"
+preserved as `lastName`, journal metadata from CrossRef, all four
+design-tag categories present). Stage 2: `--live` without limit
+created the remaining 29; manifest dedup correctly skipped the
+already-imported one. Final state: 30 items in subcollection, 5
+group-library duplicates correctly skipped (SDAM-AU + TRAP libraries
+that the proposer's text-based `[IN ZOTERO]` flag missed 3 of).
+**Row 16 Lanos/Philippe verified clean in Zotero**: first author
+`lastName='Lanos'` — concrete demonstration that the iterate-mode
+correction propagated all the way through, where the parallel `.bib`
+file (still uncorrected from CrossRef raw) shows
+`author={Philippe, Lanos and Anne, Philippe}`.
+
+**(6) Driver wiring.** `commands/lit-scout-iterate.md` updated with
+new "### Zotero staging import" subsection between Final reporting
+and BibTeX generation; failure-modes table gains two rows;
+Final-reporting markdown template now references the manifest.
+Zotero is now the primary deliverable; BibTeX is backup.
+
+**(7) Follow-ups recorded in workstream H** (continuity.md edits
+this session): (a) BibTeX correction-propagation gap closed
+[x] 2026-05-22 (Zotero-import path replaces it); (b) Zotero
+staging-import shipped [x] 2026-05-22; (c) manifest `items_skipped`
+dedup-on-merge bug [ ]; (d) promote proposer Zotero dedup to
+DOI-based [ ]; (e) update `global-claude-md/zotero-reference.md`
+with the new env-var convention and bash-hyphen-trap warning [ ].
+
+- Files added (scripts): `scripts/lit-scout-zotero-import.py`
+  (~430 lines; dry-run default; `--limit` smoke-test mode;
+  manifest-idempotent).
+- Files modified (commands): `commands/lit-scout-iterate.md`
+  (Zotero staging import section + failure-modes table rows +
+  manifest pointer in Final reporting).
+- Files modified (planning): `planning/continuity.md` (workstream H
+  pair-status row updated; BibTeX gap closed; Zotero shipped
+  bullet; three new actionable follow-ups; reference docs section
+  gains pointer to the import script; this session log entry).
+- `.env` (untracked) gained `ZOTERO_API_KEY_PERSONAL` +
+  `ZOTERO_STAGING_COLLECTION`; reorganised under symmetric naming
+  `ZOTERO_API_KEY_PAPER_B` / `ZOTERO_API_KEY_PERSONAL`.
+- Zotero state: subcollection `staging → 2026-05-22-bayesian-methods-for-archaeological-dating-and-chr` (`3C7UZ5AC`) created with 30 items + 4-tag-category scheme.
+- Workspace artefacts at `/tmp/lit-scout-iterate-20260522-190212/`:
+  `iter-0/` + `iter-1/` (claims, draft, corrections, report markdowns);
+  `post-run-note.md` (smoke-test calibration findings);
+  `zotero-import-manifest.json` (durable import audit trail).
+- Commits this session (main repo): `43ab371`
+  (`feat(scripts,commands): auto-import /lit-scout-iterate results to Zotero staging`),
+  `b1ea23a` (`docs(planning): continuity update for lit-scout Zotero staging-import`).
+- Data submodule untouched (passive logging changes deferred to a
+  separate /handoff cycle).
+
 ### 2026-05-22 (Fri, late evening) — Agent-orchestration upskilling: three closed-loop pairs landed
 
 Long meta / agent-design session running parallel to the Phase 0 and

@@ -580,3 +580,114 @@ assessment, BEFORE proposing recovery. Don't bury it in a longer
 update.
 
 [ ] accept   [ ] edit   [ ] discard
+
+## 2026-05-22 (night → 2026-05-23 early) — Drafted candidates from /lit-scout-iterate smoke + Zotero staging-import session
+
+### Candidate 28: Consequence-reasoning beats memory-citation for pushback
+
+When I asserted Paper-B had `write: False` (from a misread of the
+pyzotero `key_info()` dict output), Shawn's pushback was a single
+sentence: *"if it's the old key, it will fail."* No memory-citation,
+no "I think you're wrong about X" — a consequence-check, predicting
+what would happen under the wrong hypothesis, and observing whether
+it was happening. The probe didn't fail, so it couldn't be the old
+key, so it must be the new key, so the dict I was reading must
+actually reflect the new scope. The diagnostic flipped immediately.
+
+Pattern: empirical falsification (predict, observe, infer) is more
+effective and lower-friction than direct contradiction.
+
+Heuristic for me, going forward: when I suspect I'm being told
+something wrong, propose a consequence-check before asserting the
+contrary. "If X were true, we'd see Y — do we see Y?" is faster and
+more collaborative than "I don't think X is true." It also forces me
+into empirical territory rather than memory territory, which is where
+my errors disproportionately live (per the anti-confabulation rule
+and Candidate 27's lineage).
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 29: My "defer until later" logic gets overridden by adjacent design moves
+
+Post-run note from the lit-scout smoke test said: *"BibTeX correction-
+propagation gap; defer until rubric calibration is further along."*
+That was the right call given the architecture at the time. Then
+Shawn asked an adjacent question — about implementing Zotero staging
+— and within ~3 hours we'd closed the BibTeX gap via a different
+path entirely (treat Zotero as primary, `.bib` as backup, route
+corrections through the Zotero pipeline). The deferral wasn't wrong;
+it was made obsolete.
+
+Pattern: my "defer X" calls rest on assumptions about the current
+architecture. Shawn's design questions sometimes change the
+architecture and the deferral becomes moot. If I treat my deferrals
+as durable verdicts, I'll miss the moment where an adjacent move
+resolves them differently.
+
+Heuristic: when I write a "defer X" recommendation, flag which
+architectural assumption it's resting on. Then when an adjacent
+design question comes up, I can ask: "does this change the
+assumption that made X a defer?" Often it will, and the deferral can
+be retired with the move.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 30: AskUserQuestion as decision-scaffolding, not satisficing
+
+Used the structured-question tool four times this session: smoke-test
+query selection, query phrasing, smoke-test scope (1-item / 30-item /
+none), unverified-row handling, key-collision resolution (interrupted
+mid-question by Shawn's naming question, which became the better
+discussion). Shawn picked Recommended on all four substantive ones.
+
+Pattern: when there's a real choice with non-trivial alternatives,
+structured questions with concrete tradeoffs surface them efficiently
+and Shawn engages with them. They worked best when the Recommended
+option was credible (would have stood on its own merits) AND the
+alternatives weren't obviously worse — i.e., when the question was
+genuine and Shawn was being asked to apply preferences I couldn't
+infer.
+
+Anti-pattern to watch for: using AskUserQuestion as cover for
+satisficing. If I find myself drafting a question where one option is
+clearly right and the others are strawmen, I should skip the
+question and just do the obvious thing.
+
+Heuristic: use the tool when I can write a credible Recommended
+label AND ≥2 alternatives that a reasonable user might pick. Skip
+otherwise.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 31: Real-empirical-testing as the design-mode default
+
+Session prioritised real runs over mocked / dry-run-only ones at
+every gate, in sequence: real `/lit-scout-iterate` (not a unit test)
+→ real Zotero key probes (not stubs) → dry-run + 1-item smoke +
+29-item bulk (all live writes) → spot-check the row 16 Lanos/Philippe
+result in actual Zotero via the API round-trip. Each step produced
+calibration data that fed forward into the next design decision.
+
+Pattern: in design sessions for tools that interact with external
+systems (Zotero, CrossRef, sub-agents, hooks), running the real thing
+as early as possible converts design decisions into empirical
+decisions. Mocking is appropriate for unit tests of pure functions;
+it actively harmful for tool architecture decisions where the
+empirical behaviour IS the design.
+
+Concrete payoffs this session:
+- 1-item smoke caught the parser bug (no Fit/cluster tags) that the
+  dry-run output had partially obscured.
+- Round-trip API fetch of the row 16 item proved the iterate-mode
+  correction propagated end-to-end — a claim I couldn't otherwise
+  have made with confidence.
+- Discovering that the lit-scout proposer's text-based `[IN ZOTERO]`
+  check missed 3 of 5 actual duplicates would have been invisible in
+  any mock.
+
+Heuristic: in design mode, when a real run is technically possible
+(no destructive blast radius, no untrusted code path), default to
+real. Reserve dry-runs for the moment immediately before the live
+write, not for the design phase.
+
+[ ] accept   [ ] edit   [ ] discard
