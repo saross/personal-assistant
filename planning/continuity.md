@@ -326,19 +326,54 @@ until first non-CC API spend.
 | Pair | Status | Closed loop? |
 |---|---|---|
 | `lit-scout` + `lit-scout-verifier` | single-round shipped 2026-04-19; closed-loop wired 2026-05-22 — both sides emit machine-readable blocks via HTML-comment markers (sub-agent Write of report files is blocked, so the driver extracts inline); `/lit-scout-iterate` driver added | **yes** — closed; smoke-test pending |
-| `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver | **yes** — closed; smoke-test pending |
+| `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver; **smoke-tested on LIRE v3.0 2026-05-22** — PARTIAL verdict on iter-0 (81/83 PASS, 2 PARTIAL, 0 FAIL), loop terminated per policy without entering iterate mode; `documentation_defect` status added to the contract from the smoke-test calibration (commit `2e89bd1`) | **yes** — closed; plumbing confirmed; iterate-mode behaviour still unexercised |
 | `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22 (verifier ran via general-purpose fallback as the agent was created mid-session) | **no** — contract is markdown; retrofit deferred until ≥1 closed-loop pair has real-run experience |
 
 **Live next-steps across the closed-loop pairs:**
 
-- [ ] **Smoke-test `/data-profile-iterate` on a real dataset.** First
-  run should be on a small-to-medium parquet (≤200k rows) so wall
-  clock per iteration is bounded. Inscriptions corpus is a natural
-  candidate. Use a fresh session — `data-profile-proposer` subagent
-  type registers at session start. Capture: terminal verdict,
-  iteration count, any FAIL claims that survived to NO_PROGRESS or
-  CAP_REACHED. Dedicated paste-able test prompt was provided
-  2026-05-22 in the agent-orchestration conversation.
+- [x] 2026-05-22 **Smoke-test `/data-profile-iterate` on a real
+  dataset — partial outcome.** Ran on LIRE v3.0 (182,853 rows × 64
+  cols) with config at `~/Code/inscriptions/runs/2026-05-22-data-profile-smoke/config.json`;
+  workspace at `…/iterate-20260522-162723/`. Iter-0 returned PARTIAL
+  (81 PASS, 2 PARTIAL, 0 FAIL, 0 unverifiable) and the loop
+  terminated per driver policy without entering iterate mode.
+  Plumbing confirmed end-to-end: proposer emits deterministic
+  `claim_id`s; verifier emits the `corrections.jsonl` contract;
+  driver reads `verdict.md` and routes correctly. Verifier flagged
+  both group-count claims (`count-province-group-count`,
+  `count-urban-area-group-count`) as `source_method`-string
+  misdescriptions — strictly beyond the 0.5 % exact-count tolerance
+  (1.54 % relative) but the verifier classified them as PARTIAL low
+  rather than FAIL because the values were internally consistent
+  with the report's tables. This judgement call exposed a real
+  spec gap which we closed in-session by adding a
+  `documentation_defect` status (see next bullet).
+- [ ] **Synthetic-FAIL test to exercise iterate mode.** The
+  bigger gap exposed by 2026-05-22's smoke test: the closed loop's
+  actual *raison d'être* — iterate mode handling FAIL with
+  `fix_hint` re-derivation — has not been tested on real data. The
+  LIRE corpus produced 0 FAIL claims (it is in fact clean), so the
+  proposer was never re-invoked with `previous_corrections_path`.
+  Options for a follow-up test: (a) deliberately inject a buggy
+  proposer prompt that under-counts on purpose, (b) use a known-
+  noisy dataset where genuine FAIL is likely, (c) write a unit-
+  level test that hands the proposer a synthetic `corrections.jsonl`
+  with FAIL rows and confirms iterate mode rewires correctly. Do
+  this *before* generalising the closed-loop pattern to any other
+  pair (`lit-scout` retrofit, `prior-art-scout` lift).
+- [x] 2026-05-22 **Added `documentation_defect` status to the
+  verifier/proposer contract.** Carved out of the PARTIAL band for
+  source_method-string defects where the numeric value reproduces
+  the report's tables but the `source_method` string describes a
+  different procedure. Non-iterating (rolls up to PARTIAL aggregate
+  verdict); proposer's iterate-mode partition handles it via string
+  substitution on `source_method` with no value re-derivation.
+  Companion tightening on the proposer side requires
+  `source_method` strings to state `dropna` (and other
+  result-affecting default kwargs) explicitly at write time.
+  Commit `2e89bd1`. Spec edits in
+  `agents/data-profile-verifier.md` (3 hunks) and
+  `agents/data-profile-proposer.md` (2 hunks).
 - [ ] **Smoke-test `/lit-scout-iterate` on a real query.** Pick a
   bibliography target where iteration value is high — e.g., a
   topic with mixed-quality citations on Google Scholar, or one
@@ -353,7 +388,10 @@ until first non-CC API spend.
   lit-scout: high = wrong first author / DOI fabricated / wrong
   paper at DOI; medium = >25 % citation drift / material title
   difference; low = borderline drift). Tighten against real
-  iteration outcomes.
+  iteration outcomes. **Note 2026-05-22:** the data-profile smoke
+  test exercised only `severity: low` (and only via the new
+  `documentation_defect` path) — high/medium calibration is still
+  entirely on paper. Tied to the synthetic-FAIL test above.
 - [ ] **Decide whether to quantify "how partial" precisely.** Both
   pairs currently use rule-of-thumb PARTIAL bands. A finer metric
   (continuous "how-partial" score) could let the driver
@@ -1199,6 +1237,68 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-22 (Fri, evening) — Data-profile closed-loop smoke test + documentation_defect calibration
+
+Smoke-tested the `/data-profile-iterate` driver (workstream H, the
+reference implementation of the closed-loop proposer-verifier pattern)
+end-to-end on the LIRE v3.0 inscription corpus. Goal was to surface
+real iteration outcomes that could calibrate the severity rubric and
+PARTIAL-tolerance band. Iter-0 returned PARTIAL (81/83 PASS, 2 PARTIAL
+on `count-province-group-count` and `count-urban-area-group-count`, 0
+FAIL, 0 unverifiable). Loop terminated per policy without entering
+iterate mode.
+
+The two PARTIAL rows were the actual calibration finding. By the
+spec's exact-count rule (PASS=±0, PARTIAL=≤0.5 % relative drift,
+FAIL=beyond 0.5 %), a 1-of-65 group-count divergence is 1.54 %
+relative — strictly beyond PARTIAL, so should be FAIL by the letter.
+The verifier instead called them PARTIAL low on the grounds that the
+proposer's numeric value (66) was internally consistent with the
+report's tables (which display `<null>` as a group), and only the
+`source_method` string (`df.groupby(['province']).ngroups` — which
+defaults `dropna=True` and would yield 65) was wrong. Defensible
+judgement; not authorised by the spec. We closed the gap by adding
+a fifth corrections.jsonl status — `documentation_defect` — that
+explicitly captures "value is right, description is wrong" cases,
+keeps numeric tolerance bands clean, and gives the proposer's
+iterate mode a cheap string-substitution path. Aggregate
+verdict rolls `documentation_defect` into PARTIAL (non-iterating).
+
+The bigger gap the smoke test exposed: **iterate mode itself was
+never exercised**. The plumbing (proposer emits stable IDs, verifier
+emits the JSONL contract, driver routes on verdict) is confirmed,
+but the proposer was never re-invoked with `previous_corrections_path`
+because LIRE produced 0 FAIL claims. The closed loop's real
+behaviour — reading `fix_hint`, re-deriving values, no-progress
+termination — still needs a synthetic-FAIL follow-up test before
+the pattern can be generalised to `lit-scout` (workstream H next
+step).
+
+- Commits: `2e89bd1` (`feat(agents): add documentation_defect status
+  to proposer/verifier contract` — 2 files, 6 insertions, 2 deletions)
+- Spec edits: `agents/data-profile-verifier.md` (status enum
+  extended; new bullet definition; aggregate-verdict rules updated);
+  `agents/data-profile-proposer.md` (iterate-mode partition handles
+  `documentation_defect` via string substitution; new "source_method
+  ambiguity" failure-mode bullet requires explicit `dropna` and
+  other result-affecting kwargs at write time)
+- Smoke-test artefacts (under `~/Code/inscriptions/runs/2026-05-22-data-profile-smoke/`):
+  `config.json` (the invocation); `iterate-20260522-162723/iter-0/`
+  containing `summary.md`, `profile-province.md`,
+  `profile-urban-area.md`, `artefacts.md`, `claims.jsonl` (83
+  claims), `corrections.jsonl` (81 pass / 2 partial), `verdict.md`,
+  `decisions.md`, `tables/` (12 CSVs), `code/profile.py`
+- Agent runs: one `data-profile-proposer` (first-run mode, ~1.5 s
+  Python wall-clock, 8 tool uses, 58K tokens); one
+  `data-profile-verifier` (full-data re-derivation, 21 tool uses,
+  57K tokens)
+- Continuity updates (this file): workstream H table row updated
+  with smoke-test result + `documentation_defect` note; live
+  next-steps reorganised — smoke-test bullet marked done with
+  partial outcome flag; new bullet added for synthetic-FAIL
+  iterate-mode test; severity-rubric calibration bullet annotated
+  to note only `low` was exercised
 
 ### 2026-05-22 (Fri) — Task-system arc 2026-05-18 → 2026-05-22 + new corpus-style-analyser agent
 
