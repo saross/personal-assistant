@@ -519,11 +519,122 @@ Read these *before* starting new work. Most should take <5 min each.
 
 These survive across sessions. Mark `[x]` with date when done.
 
+### Post-Phase-0 + Step-2 cleanup register (added 2026-05-22)
+
+Now that the canonical store at `~/mnt/rpi-shares/cc-archives-consolidated/`
+(3.4 GB / 702 sessions + 183 manual exports) is fully populated AND mirrored
+locally to `~/cc-archives/` on amd-tower + zbook, several pre-consolidation
+copies are redundant and can be cleaned up with appropriate safety checks.
+Five categories:
+
+- [x] 2026-05-22 **A — worktree dir + /tmp test artifacts** (~6.4 GB
+  freed on amd-tower). Removed
+  `~/Code/map-reader-llm/.claude/worktrees/agent-a59a9dae0bff3f27b/`
+  (already gitignored as of commit `0efda174`; SHA spot-checks
+  confirmed byte-identical to rpi-shares' map-reader-llm content
+  before deletion). Plus /tmp Step 2 logs, dry-run logs, comparison
+  test artefacts.
+
+- [ ] **B — Phase 0 Steps 6 + 7 (per-project `archive/cc-sessions/`
+  removal)** — ~1.25 GB on amd-tower + similar on zbook. The
+  destructive part of the Phase 0 architectural decision "project
+  repos do not carry `archive/cc-sessions/`". Affected projects on
+  amd-tower: `~/Code/map-reader-llm/archive/cc-sessions/` (418 MB,
+  LFS-tracked), `~/Code/LLM-History-Paper/archive/cc-sessions/`
+  (117 MB, LFS-tracked), `~/Code/llm-reproducibility/archive/cc-sessions/`
+  (717 MB, not LFS). Similar tree on zbook for the same projects.
+
+  **Per-project safety procedure** (run for each project before
+  destructive ops):
+
+  ```bash
+  # 1. List session_ids actually present in the source
+  PROJECT_ARCHIVE=~/Code/<project>/archive/cc-sessions
+  cd "$PROJECT_ARCHIVE"
+  # Extract from session.meta.json files where possible
+  find . -name "session.meta.json" -exec \
+    python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('session',{}).get('id',''))" \
+    {} \; > /tmp/src-sids.txt
+  # Plus from dir-name UUIDs where meta.json missing
+  # ...
+
+  # 2. Build rpi-shares' known-session_ids set from CATALOG.json
+  python3 -c "
+  import json
+  data = json.load(open('/home/shawn/mnt/rpi-shares/cc-archives-consolidated/CATALOG.json'))
+  for s in data.get('sessions', []):
+      print(s.get('id',''))
+  " > /tmp/dest-sids.txt
+
+  # 3. Set difference: source sids NOT in destination = "missing"
+  comm -23 <(sort -u /tmp/src-sids.txt) <(sort -u /tmp/dest-sids.txt) > /tmp/missing.txt
+  echo "missing in dest: $(wc -l < /tmp/missing.txt)"
+  # 4. STOP if any missing. Otherwise proceed to git operations:
+
+  cd ~/Code/<project>
+  git lfs untrack "archive/cc-sessions/**"   # Steps 6 — LFS-tracked repos only
+  git rm -r --cached archive/cc-sessions/    # Step 7 — un-track from git
+  echo "archive/cc-sessions/" >> .gitignore
+  git add .gitignore .gitattributes
+  git commit -m "chore: stop tracking archive/cc-sessions/ (post-Phase-0)"
+  git push
+  rm -rf archive/cc-sessions/                # local removal
+  # On zbook: git pull, then rm -rf archive/cc-sessions/
+  ```
+
+  **Caveat 1**: `rebuild_catalogue` scans one level deep — nested
+  sub-category sessions (e.g. `LLM-History-Paper/theseus-ship/`,
+  `map-reader-llm/vlm-burial-mound-detection/`) may not show in
+  CATALOG.json. For those projects, also check that source-side
+  sub-category subdir contents are reflected on rpi-shares' nested
+  paths before destructive ops.
+
+  **Caveat 2**: Git LFS untrack stops new files going to LFS but
+  leaves history-resident pointer stubs in old commits. The full
+  `git lfs migrate export --include="archive/cc-sessions/**"
+  --everything` history rewrite is **deferred to post-journal-
+  submission** (force-push history rewrite; not blocking).
+
+- [ ] **C — pre-v2 backup cleanup** (~96 MB pa-data copy +
+  ~96 MB rpi-server copy). Cooldown gate: ≥1 week of stable v2
+  operation. v2 shipped 2026-05-16; today is 2026-05-22 (6 days).
+  **Wait until 2026-05-23 or 2026-05-24** before removing. Safety
+  check: confirm zero v2-related errors in `logs/extraction.log`
+  for the cooldown window. Default removal target per earlier
+  decision: pa-data copy first (keeps the git submodule lean —
+  the 96 MB `claude_memories.dump` is the bulk).
+
+- [ ] **D — source-side `archive/cc-interactions/`** (~11 MB across
+  3 project repos) — **KEEP for now**. These are pre-Dec-2025
+  manual `/export` `.txt` outputs in `~/Code/{blue-mountains,
+  fieldmark-docs-staging,llm-reproducibility}/archive/cc-interactions/`.
+  They're now mirrored to rpi-shares' `manual-exports/<project>/`
+  AND to working-machine local `~/cc-archives/manual-exports/`,
+  but the source-repo copies are tracked git content + represent
+  the original research-provenance location. Small, immutable,
+  historical. Not a high-value cleanup target; revisit only if
+  source repo bloat becomes an issue.
+
+- [ ] **E — Do NOT cleanup (reference list)**:
+  - `~/.claude/projects/*.jsonl` — CC's live runtime store; CC
+    manages 30-day retention; production hook reads/writes here.
+  - `~/cc-archives/` — the new full local mirror; ~3.4 GB on each
+    working machine; offline + travel resilience.
+  - rpi-shares canonical store at `~/mnt/rpi-shares/cc-archives-consolidated/`.
+  - `data/experiments/bake-off-metadata-2026-05-18/` and any future
+    experiment artefacts — research provenance.
+  - Git LFS objects in history for map-reader-llm + LLM-History-Paper
+    — deferred to post-journal-submission per the 2026-05-20
+    architectural decision.
+
+### Older / non-cleanup pending tasks
+
 - [ ] **Backup cleanup**: remove one of the two pre-v2 backups (in
   `data/archive/pre-v2/` or `~/cc-archives/pre-v2/` on rpi-server)
   after ≥1 week of stable v2 operation. Default removal target:
   pa-data copy (keeps git lean; the 96 MB `claude_memories.dump` is
-  the bulk).
+  the bulk). *(Duplicates item C above — kept here for historical
+  cross-reference; resolve via item C.)*
 - [ ] **Pre-consolidation inventory (amd-tower)** — **done
   2026-05-20**: see `planning/archive-inventory-2026-05-20.md` for
   the full picture. Headline numbers (amd-tower only; zbook +
