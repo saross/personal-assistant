@@ -53,7 +53,7 @@ For every claim with `category in {permutation_pvalue, corrected_pvalue, ci_lowe
   ```json
   {
     "claim_id": "stable-id-from-proposer",
-    "status": "pass|partial|fail|unverifiable",
+    "status": "pass|partial|fail|unverifiable|documentation_defect",
     "category": "count|rate|chisq|pvalue|...",
     "description": "short human-readable claim description",
     "proposer_value": <number or string as the proposer claimed>,
@@ -69,6 +69,7 @@ For every claim with `category in {permutation_pvalue, corrected_pvalue, ci_lowe
   - `severity` ranking (FAIL only): **high** = order-of-magnitude wrong, fundamental category error, or a claim that materially drives downstream decisions (e.g., a count miscalculated by 30 %, a chi-square that flips a flag); **medium** = tolerance exceeded but same order of magnitude (e.g., 5 % off when tolerance is 1 %); **low** = small drift that crossed tolerance but is unlikely to affect any decision.
   - `fix_hint` (FAIL only) must be specific and actionable, not "value is wrong". Good: `"Recompute count grouping by primary_key, not raw row count — duplicates inflated this by 4,712"`. Bad: `"This number is wrong; check it"`. The proposer reads this in iterate mode and uses it to re-derive the claim.
   - PARTIAL claims (tolerance exceeded but within the tolerance multiplier — see Tolerances below) carry the same fields as FAIL claims but with `severity: low|medium` only. Whether to iterate on PARTIAL is the driver's decision; per current driver policy (2026-05-22), PARTIAL is **flagged but not iterated** — the proposer is only re-invoked on FAIL.
+  - `documentation_defect` claims (introduced 2026-05-22 from the LIRE smoke test) — the proposer's numeric value reproduces the report's own tables, narrative, and downstream cross-references consistently, but the `source_method` string in `claims.jsonl` describes a procedure that would yield a different value than was actually used (e.g., omits a non-default kwarg like `dropna=False`, or names the wrong function). Treat as **non-iterating** (like PARTIAL) but classified separately so the verdict surfaces the defect as audit-trail rather than numeric drift. `fix_hint` is the corrected `source_method` string verbatim, ready for the user (or the proposer in iterate mode) to drop in. `severity` is `low` by default; raise to `medium` only when the misdescription would route a downstream re-derivation to the wrong code path. Use this status instead of bending the numeric tolerance bands to absorb description-only defects.
 - `verdict.md` — one paragraph rendering one of three verdicts:
   - **PASS** — every claim reproduces within tolerance.
   - **PARTIAL** — some claims diverge within the partial-tolerance band (see Tolerances); investigator review recommended; list the divergences. Driver does **not** auto-iterate on PARTIAL.
@@ -100,9 +101,10 @@ The 5× multiplier is deliberately rule-of-thumb pending real-run experience; it
 **Aggregate verdict from per-claim status**:
 
 - **PASS** verdict iff every claim is `status: pass`.
-- **PARTIAL** verdict iff no claim is `fail`, and at least one is `partial`. Driver does not iterate; flags to user.
+- **PARTIAL** verdict iff no claim is `fail`, and at least one is `partial` **or** `documentation_defect`. Driver does not iterate; flags to user. The `verdict.md` prose must distinguish numeric-divergence PARTIAL claims from documentation_defect claims so the user can see at a glance whether the issue is in the audit trail or in the values.
 - **FAIL** verdict iff at least one claim is `fail` (including structural failures). Driver iterates up to cap.
 - **UNVERIFIABLE** claims do **not** force a verdict on their own; they are reported in `corrections.md` and `corrections.jsonl` with `status: unverifiable`. If every non-PASS claim is unverifiable, prefer PARTIAL verdict and explain in `verdict.md` that the verification capacity was limited (rather than that the data is corrupt).
+- `documentation_defect` claims do **not** roll up to FAIL even when their numeric divergence (the gap between `proposer_value` and the literal `source_method` output) exceeds the FAIL band. The classification is the verifier's deliberate judgement that the *value* is correct and the *description* is what is wrong; using FAIL would force the driver into a re-derivation loop that rewrites a string rather than fixing a number.
 
 ## Adversarial discipline
 

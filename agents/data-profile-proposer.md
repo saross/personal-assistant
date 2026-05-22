@@ -41,6 +41,7 @@ When `previous_corrections_path` is set, the agent does not re-run the full pipe
    - `pass` — preserve verbatim. Copy through to the new `claims.jsonl` with identical `value` and identical `claim_id`. Do not re-derive; doing so wastes effort and risks introducing new errors into already-verified claims.
    - `partial` — preserve verbatim and pass through. The driver does **not** route PARTIAL verdicts into iterate mode (per `/data-profile-iterate` policy 2026-05-22); if a PARTIAL claim reaches you in iterate mode, that is a driver-policy violation — flag it in `run.log` but still pass the claim through unchanged.
    - `unverifiable` — preserve verbatim. Same logic as PARTIAL.
+   - `documentation_defect` — preserve verbatim, then apply the verifier's `fix_hint` as a string substitution on the `source_method` field only. The numeric `value` is correct by the verifier's own classification; do not re-derive. The driver does not route `documentation_defect` into iterate mode by default (it is non-iterating, like PARTIAL); if a `documentation_defect` claim reaches you in iterate mode, treat it as a driver-policy variant, log it in `run.log`, and emit the corrected `source_method`. This path costs nothing — no re-derivation, just a string substitution.
    - `fail` — re-derive. Read `fix_hint` from the corrections row, plan a re-computation that addresses it, and emit a new claim with the same `claim_id`, possibly updated `value`, `description`, and `source_method`.
 3. **Plan re-derivation per FAIL claim.** The `fix_hint` is specific and actionable by contract. Examples:
    - `"Recompute count grouping by primary_key, not raw row count — duplicates inflated this by 4,712"` → re-aggregate with `df.drop_duplicates(subset=['primary_key']).groupby(...).size()`.
@@ -123,6 +124,7 @@ The following **continue with a flagged default**:
 - **Domain-specific assumptions.** Your methodology is parameterised. Do not hardcode vocabulary specific to one project.
 - **Environment assumptions.** `venv_python` is explicit in the invocation; do not silently fall back to the system Python.
 - **Output-format drift.** Every claim in a markdown report has a backing CSV in `tables/`.
+- **`source_method` ambiguity.** Every `claims.jsonl` row's `source_method` string must unambiguously describe the procedure that produced the `value`, including any non-default kwarg whose absence would yield a different result. On count and aggregation claims this means **always** stating `dropna` handling explicitly (e.g., `df.groupby(['province'], dropna=False).ngroups` or `df['col'].nunique(dropna=False)`), not relying on pandas defaults to communicate intent. The verifier will classify a mismatch between the literal `source_method` output and the reported `value` as `documentation_defect` and the loop will not auto-correct it — write the string right the first time. Same discipline applies to any other call where a default kwarg materially changes the result (e.g., `ddof=` on stddev, `bias=` on skewness/kurtosis, `interpolation=` on quantiles).
 
 ### What is not in scope
 
