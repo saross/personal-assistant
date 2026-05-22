@@ -333,7 +333,7 @@ until first non-CC API spend.
 |---|---|---|
 | `lit-scout` + `lit-scout-verifier` | single-round shipped 2026-04-19; closed-loop wired 2026-05-22 — both sides emit machine-readable blocks via HTML-comment markers (sub-agent Write of report files is blocked, so the driver extracts inline); `/lit-scout-iterate` driver added | **yes** — closed; smoke-test pending |
 | `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver; **smoke-tested on LIRE v3.0 2026-05-22** — PARTIAL verdict on iter-0 (81/83 PASS, 2 PARTIAL, 0 FAIL), loop terminated per policy without entering iterate mode; `documentation_defect` status added to the contract from the smoke-test calibration (commit `2e89bd1`) | **yes** — closed; plumbing confirmed; iterate-mode behaviour still unexercised |
-| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22 (verifier ran via general-purpose fallback as the agent was created mid-session) | **no** — contract is markdown; retrofit deferred until ≥1 closed-loop pair has real-run experience |
+| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22; closed-loop wired same day after lit-scout smoke-test confirmed the pattern — proposer emits claims block (per source-type catalogue); verifier emits corrections block with `severity` × `failure_type` two-axis classification and `documentation_defect` status; `/prior-art-scout-iterate` driver added | **yes** — closed; smoke-test pending |
 
 **Live next-steps across the closed-loop pairs:**
 
@@ -380,14 +380,18 @@ until first non-CC API spend.
   Commit `2e89bd1`. Spec edits in
   `agents/data-profile-verifier.md` (3 hunks) and
   `agents/data-profile-proposer.md` (2 hunks).
-- [ ] **Smoke-test `/lit-scout-iterate` on a real query.** Pick a
-  bibliography target where iteration value is high — e.g., a
-  topic with mixed-quality citations on Google Scholar, or one
-  where the prior `/lit-scout` runs surfaced material
-  confabulations. Capture: terminal verdict, iteration count,
-  which fields most often required correction (authors / year /
-  title / citation_count / doi_resolves), how many rows the
-  iterate-mode `doi_resolves` removal path eliminated.
+- [x] 2026-05-22 **Smoke-test `/lit-scout-iterate` on a real
+  query — PASS in 2 iterations.** Ran on "Bayesian methods for
+  archaeological dating and chronological modelling"; workspace at
+  `/tmp/lit-scout-iterate-20260522-190212/`. 35 rows × 5 categories
+  = 175 claims; iter-0 returned FAIL with 1 claim (row 16 authors,
+  CrossRef family/given swap, `severity: high`), iter-1 converged
+  PASS. FAIL set shrank monotonically. Only `authors` field
+  required correction (1/175 = 0.57 %); `doi_resolves` removal
+  path NOT exercised (0 unresolvable DOIs in this domain — clean
+  corpus). Surfaced two follow-up items: typed `failure_type`
+  axis (now in the spec) and BibTeX correction-propagation gap
+  (deferred).
 - [ ] **Calibrate the severity rubric across both pairs.** Current
   bands are rule-of-thumb (data-profile: high ≥10 % drift /
   decision-changing; medium ≥5× tolerance; low at the boundary.
@@ -403,11 +407,41 @@ until first non-CC API spend.
   (continuous "how-partial" score) could let the driver
   auto-iterate on PARTIAL above a threshold. Defer until ≥3 real
   runs surface a pattern.
-- [ ] **Lift to `prior-art-scout`** (the last remaining unconverted
-  pair). Same shape as lit-scout retrofit. Lower priority because
-  the existing pair already catches material confabulations via
-  markdown contract; the closed-loop gain is auto-iteration on
-  FAIL rather than detection per se.
+- [x] 2026-05-22 **Lift to `prior-art-scout`** (the last
+  remaining unconverted pair). Proposer gains Iterate mode +
+  per-source-type Machine-readable claims block (catalogue covers
+  GitHub / GitLab / PyPI / npm / HF / paper / generic URL).
+  Verifier gains Tolerance bands, severity + `failure_type`
+  rubric (incorporating the lit-scout smoke-test calibration
+  finding from the same day), `documentation_defect` status
+  (mirroring data-profile), and the Machine-readable corrections
+  block. `/prior-art-scout-iterate` driver mirrors
+  `/lit-scout-iterate`. Smoke-test pending.
+- [ ] **Smoke-test `/prior-art-scout-iterate`.** Now the last
+  unconverted pair has closed-loop wiring; same shape as the
+  lit-scout smoke test (real query, capture trajectory,
+  failure_type distribution, calibration recommendations).
+  Suggested query: a domain prone to invented repos / DOIs so
+  the `url_resolves` / `doi_resolves` row-removal path is
+  exercised (it was NOT exercised in the lit-scout smoke test).
+- [ ] **Backport `failure_type` axis to `lit-scout-verifier`** (and
+  the data-profile pair). The lit-scout smoke test 2026-05-22
+  surfaced a real gap: the single severity axis can't distinguish
+  `confabulation` (proposer cheated) from `encoding_artefact`
+  (source-API quirk like CrossRef family/given swap) — both
+  warrant `severity: high` but they call for very different
+  calibration responses. `failure_type` is now in
+  `prior-art-scout-verifier`; small spec edits will land it in
+  `lit-scout-verifier` and `data-profile-verifier` for symmetry.
+- [ ] **BibTeX correction-propagation gap** (lit-scout-specific).
+  The iterate-mode correction lives in the markdown / JSONL
+  output but `lit-search.py bibtex` re-queries CrossRef and
+  recovers the raw (uncorrected) value, so the user-facing .bib
+  is still wrong on rows the loop corrected. Two fix paths
+  (driver-side post-processing of the .bib, or a
+  `lit-search.py bibtex --corrections` flag that overlays the
+  verified values); defer until rubric calibration is further
+  along per the smoke-test note 2026-05-22.
 
 **Reference docs for the closed-loop pairs:**
 
@@ -417,14 +451,26 @@ until first non-CC API spend.
 - `/lit-scout-iterate` driver: `~/personal-assistant/commands/lit-scout-iterate.md`
 - lit-scout proposer: `~/personal-assistant/agents/lit-scout.md`
 - lit-scout verifier: `~/personal-assistant/agents/lit-scout-verifier.md`
+- `/prior-art-scout-iterate` driver: `~/personal-assistant/commands/prior-art-scout-iterate.md`
+- prior-art-scout proposer: `~/personal-assistant/agents/prior-art-scout.md`
+- prior-art-scout verifier: `~/personal-assistant/agents/prior-art-scout-verifier.md`
 - Architecture rationale + 2×2 orchestration grid: craft notebook
   entries 2026-04-18 ("Agent definitions are specifications…",
   "Orchestration patterns are a 2×2…", "Subagents are context
   management…")
-- Inline-block transport rationale (lit-scout specific): sub-agent
-  Write of `.md` files is blocked per 2026-04-19 v4.x evaluation;
-  closed-loop transport uses fenced `jsonl` blocks with HTML-comment
-  markers extracted by the driver.
+- Inline-block transport rationale (lit-scout + prior-art-scout):
+  sub-agent Write of `.md` files is blocked per 2026-04-19 v4.x
+  evaluation; closed-loop transport uses fenced `jsonl` blocks
+  with HTML-comment markers extracted by the driver. Data-profile
+  uses direct file Write since its agents have unrestricted Write
+  to the configured `output_dir`.
+- Severity × failure_type rubric (2026-05-22 calibration finding):
+  every FAIL claim carries both `severity` (high/medium/low —
+  drives prioritisation) and `failure_type` (confabulation /
+  encoding_artefact / metadata_drift / stale_count — drives
+  calibration of how much to trust the proposer). Originated in
+  the lit-scout smoke test; landed in `prior-art-scout-verifier`
+  same day; backport to lit-scout + data-profile pending.
 
 ---
 

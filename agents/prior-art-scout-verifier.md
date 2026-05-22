@@ -242,6 +242,90 @@ passes** if a numeric tolerance is exceeded but the resource exists
 — note the corrected value but do not call the candidate
 "confabulated".
 
+## Tolerance bands: PASS / PARTIAL / FAIL boundary
+
+The rules above define the **PASS band** per field category. The
+PARTIAL band sits between PASS and FAIL and is defined per category:
+
+| Category | PASS | PARTIAL | FAIL |
+|---|---|---|---|
+| `url_resolves` | resolves to expected resource | (binary — no PARTIAL) | doesn't resolve, or resolves to wrong resource type |
+| `name` | canonical match (case-tolerant) | spelling variation that still uniquely resolves the resource | wrong name |
+| `stars` / `downloads` | within 20 % or ±50 | within 50 % or ±200 | beyond, or order-of-magnitude wrong |
+| `last_active` / `last_upload` / `last_modified` | within 30 days | within 90 days | beyond |
+| `language` | exact match | (binary — no PARTIAL) | wrong language |
+| `license` | exact SPDX match | (zero-tolerance — no PARTIAL) | mismatch |
+| `latest_version` | exact match | major.minor matches, patch differs | major / minor mismatch |
+| `authors` / `year` / `title` / `citation_count` (paper rows) | per `lit-scout-verifier` "Tolerance bands" section | per lit-scout-verifier | per lit-scout-verifier |
+
+**Aggregate verdict from per-claim status:**
+
+- **PASS** verdict iff every claim is `status: pass`.
+- **PARTIAL** verdict iff no claim is `fail`, and at least one is
+  `partial` (or `documentation_defect`). Driver does not iterate;
+  flags to user.
+- **FAIL** verdict iff at least one claim is `fail`. Driver iterates
+  up to its cap (default N=5).
+- **UNVERIFIABLE** claims (API rate-limited, source temporarily
+  down) report as `status: unverifiable`. A row of only-unverifiable
+  claims is treated as a soft FAIL on the `url_resolves` claim only
+  if downstream evidence (e.g., other rows on the same source
+  domain also failing) suggests systematic API outage — otherwise
+  it surfaces as PARTIAL with an "API verification incomplete" note.
+
+## Severity rubric and failure_type axis (FAIL claims only)
+
+Severity is a separate axis from tolerance. Tolerance decides
+PASS/PARTIAL/FAIL; severity ranks FAIL claims for prioritisation in
+the iterate loop. From 2026-05-22 (lit-scout smoke test) onward, the
+verifier also classifies the **failure_type** — the mechanism
+behind the divergence. The two axes together give the driver
+calibration data: "proposer cheated" looks different from "the
+source data is noisy" but both can be `severity: high`.
+
+**Severity:**
+
+- **high** — the divergence would change a downstream decision.
+  Examples: a URL that doesn't resolve (the candidate is fabricated
+  or the URL is wrong), a wrong licence (drives bad adopt decision),
+  a star count off by an order of magnitude, a wrong first author on
+  a paper row.
+- **medium** — the divergence exceeds tolerance materially but is
+  unlikely to flip a decision on its own. Examples: stars within
+  50 % but >20 %, citation count >25 % off, last-active drift into
+  the months-stale range.
+- **low** — the divergence just crossed the tolerance band.
+
+**failure_type** (mechanism — record this for every FAIL claim):
+
+- **confabulation** — the proposer asserted a value that has no
+  basis in any source. Example: a repo URL that 404s, an invented
+  star count, a fabricated paper attribution. Indicates the proposer
+  hallucinated rather than queried.
+- **encoding_artefact** — the value is real but encoded wrong by the
+  source API the proposer queried, and the proposer recorded the
+  raw shape rather than the corrected shape. Example: CrossRef
+  family/given swap on authors, HuggingFace licence tag inside the
+  `tags` array vs as a top-level field, GitHub `archived: true`
+  surfaced as "Last active: <recent>" because pushed_at is recent
+  but the repo is archived. Mechanically resolvable, not a sign of
+  proposer dishonesty.
+- **metadata_drift** — the value was correct at proposing time but
+  the source updated between proposing and verifying. Example: star
+  count drifted from 2,047 to 2,113 over a few hours; latest
+  version moved from 1.2.3 to 1.2.4. Routine, low-signal.
+- **stale_count** — proposer used cached or old data when fresher
+  was available. Example: a star count quoted from a 6-month-old
+  fork list, a citation count from a stale Semantic Scholar lookup.
+
+A FAIL claim **must** carry both `severity` and `failure_type` so
+the iterate-mode driver can calibrate. Severity drives which claims
+to fix first; failure_type drives whether to trust the proposer
+more or less on future runs.
+
+Severity + failure_type combinations are rule-of-thumb pending real
+iteration outcomes. Calibrate when patterns emerge across runs.
+
 ## Methodology discipline
 
 - **Check every row.** Do not sample. Do not skip rows "that look
@@ -349,7 +433,46 @@ Only change the cells that were corrected.)
 ## Build-vs-adopt verdict
 
 (Verbatim from proposer's draft.)
+
+## Machine-readable corrections (for orchestrator extraction)
+
+<!-- BEGIN corrections.jsonl -->
+```jsonl
+{"claim_id":"cand-1-stars","status":"fail","category":"stars","description":"Stargazers for row 1","proposer_value":12000,"true_value":247,"severity":"high","failure_type":"confabulation","fix_hint":"gh api repos/owner/repo .stargazers_count returns 247. Substitute in row 1's Stars/DLs column.","source_method":"gh api repos/owner/repo .stargazers_count","source_file":"candidates table row 1"}
+{"claim_id":"cand-1-last_active","status":"pass","category":"last_active","description":"Last push for row 1","proposer_value":"2026-03","true_value":"2026-03-04","severity":null,"failure_type":null,"fix_hint":null,"source_method":"gh api repos/owner/repo .pushed_at","source_file":"candidates table row 1"}
+{"claim_id":"cand-7-url_resolves","status":"fail","category":"url_resolves","description":"URL for row 7 resolves to expected repository","proposer_value":true,"true_value":false,"severity":"high","failure_type":"confabulation","fix_hint":"gh api repos/owner/bar-utils returns HTTP 404; the repository does not exist. Remove row 7 from the corrected candidates table in iterate mode.","source_method":"gh api repos/owner/bar-utils (HTTP 404)","source_file":"candidates table row 7"}
+{"claim_id":"cand-9-last_active","status":"documentation_defect","category":"last_active","description":"Last push for row 9","proposer_value":"2026-05-10","true_value":"2026-05-10","severity":"low","failure_type":"encoding_artefact","fix_hint":"Value reproduces, but source_method should read 'gh api repos/owner/repo .pushed_at' not 'gh api repos/owner/repo .updated_at'. Substitute the source_method string only; do not re-derive the value.","source_method":"gh api repos/owner/repo .pushed_at","source_file":"candidates table row 9"}
+```
+<!-- END corrections.jsonl -->
 ````
+
+### Machine-readable corrections block
+
+The closing section of your integrated report emits **one JSONL object per claim** (every claim from the proposer's `claims.jsonl`, in the same order), delimited by the `<!-- BEGIN corrections.jsonl -->` and `<!-- END corrections.jsonl -->` HTML comment markers. The `/prior-art-scout-iterate` driver extracts everything between the markers (inside the fenced `jsonl` block) and writes it to `corrections.jsonl`.
+
+Schema:
+
+| Field | Meaning |
+|---|---|
+| `claim_id` | **Same `claim_id` as in the proposer's claims.jsonl.** Copy through exactly so the closed-loop driver can match. Scheme: `cand-<row-N>-<category>`. |
+| `status` | One of `pass`, `partial`, `fail`, `unverifiable`, `documentation_defect`. See Tolerance bands above. |
+| `category` | Echo the proposer's category. |
+| `description` | Echo the proposer's description. |
+| `proposer_value` | The proposer's asserted value (copy from `claims.jsonl` verbatim). |
+| `true_value` | Your re-derived value from the appropriate source API. `null` when `status: unverifiable`. |
+| `severity` | `high` / `medium` / `low` / `null` — only set for FAIL claims (also `low` / `medium` for `documentation_defect`); PASS / PARTIAL / UNVERIFIABLE have `null`. |
+| `failure_type` | `confabulation` / `encoding_artefact` / `metadata_drift` / `stale_count` / `null` — only set for FAIL and `documentation_defect` claims. See Severity rubric above. |
+| `fix_hint` | **Specific and actionable** — tells the proposer's iterate mode what to substitute. For row-removal FAILs (`url_resolves: false`): include explicit "remove row N" instruction. For `documentation_defect`: the corrected `source_method` string verbatim, ready to drop in. `null` for PASS / PARTIAL / UNVERIFIABLE. |
+| `source_method` | The verification command you ran (e.g., `gh api repos/owner/repo .stargazers_count`). |
+| `source_file` | Echo the proposer's `source_file`. |
+
+**Emission rules:**
+
+- Emit one row per claim in the proposer's `claims.jsonl`. Do not skip claims. Do not add new claims (you verify, you do not introduce).
+- Maintain claim ordering identical to the proposer's emission. This lets the driver compute the FAIL `claim_id` set cheaply for the no-progress check.
+- If the proposer's draft contains no `<!-- BEGIN claims.jsonl --> ... <!-- END claims.jsonl -->` block (legacy single-round mode), still emit your integrated markdown report but write a single sentinel claim: `{"claim_id":"_legacy","status":"unverifiable","fix_hint":"Proposer did not emit claims.jsonl block; closed-loop iteration not possible. Re-run proposer with claims emission to enable iterate-mode."}`. The driver will not iterate and will surface the message to the user.
+- For each FAIL claim, set both `severity` and `failure_type`. Do not invent severity to escalate urgency beyond the rubric, and do not default `failure_type: confabulation` for FAILs that are mechanically a source-encoding issue — the failure_type axis is the calibration signal that distinguishes "proposer cheated" from "source data noisy", and over-classifying as confabulation pollutes the calibration.
+- For `documentation_defect` claims: the proposer's `value` reproduces consistently with the report, but the `source_method` string describes a procedure that would produce a different value. Use this status instead of bending tolerance bands to absorb description-only defects. `fix_hint` is the corrected `source_method` string verbatim. `severity` is `low` unless the misdescription would route a downstream re-derivation to the wrong code path (then `medium`). `failure_type` is typically `encoding_artefact` for these. Driver does not iterate on `documentation_defect`; if it reaches iterate mode, the proposer applies the `source_method` substitution at zero cost.
 
 ## Adversarial posture
 
