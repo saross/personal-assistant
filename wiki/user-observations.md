@@ -510,3 +510,73 @@ or workstream entry that survives the conversation. Don't shortcut to
 honest.
 
 [ ] accept   [ ] edit   [ ] discard
+
+---
+
+## 2026-05-22 — Drafted candidates from Phase 0 closeout + Gemini 3.5 Flash migration session
+
+### Candidate 25: "Proper-fix preference" as a working-style fingerprint
+
+Multiple decision points today surfaced the same preference pattern.
+When I offered Option B (workaround `--from-hook` loop) vs Option C
+(patch `cmd_archive` properly with tests), Shawn picked C — and then
+made it durable: *"Strong preference for proper fixes over workarounds.
+Minimise technical debt. Fix things 'right' from the start. Please
+/remember this, unless we are under extreme time pressure for some
+reason, I always want to do things properly from the beginning."*
+This pattern appeared again at the post-fix audit cycle (clean up
+ALL low items rather than ship-and-defer) and at the Gemini 3.5
+Flash migration (accept the 3× cost rather than skip-the-migration-
+for-this-batch).
+
+Heuristic for me: when I'm about to propose Option-B-as-default,
+name the trade-off explicitly — the "fix vs workaround" choice is
+decision-density-high for him; he wants the choice in the open, not
+the workaround as a fait accompli. Memory captured as
+`2026-05-22-e020f8b3cb4b`.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 26: Documentation-gap-catching reflex at structural breakpoints
+
+Several times in this session, Shawn caught documentation gaps I'd
+not noticed: (a) mid-Phase-0, *"we must not have updated continuity.md
+to reflect a previous discussion where we thought it best to
+comprehensively consolidate all transcripts"* — flagging that the
+scope-narrowing in the 2026-05-20 inventory hadn't carried the earlier
+comprehensive intent into the active doc; (b) post-closeout, *"is
+continuity.md up-to-date?"* — which surfaced the narrative gap (state
+register current, but the closeout sweep wasn't in the session log).
+
+Both checks happened at STRUCTURAL boundaries — when work was about
+to depend on the documented state. Pattern: my handoff-completeness
+intuition isn't enough; an explicit "is this captured?" check at every
+architectural transition prevents downstream drift. Heuristic for me:
+treat any architectural decision the user articulates verbally as a
+documentation event — if I don't immediately update the doc, name it
+explicitly so the user can prompt.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 27: Error-disclosure as expected baseline, not exceptional discipline
+
+When I made the rsync-direction mistake in Phase D, my first inclination
+was to investigate first and disclose only what I'd found. Shawn's
+framing of subsequent questions implicitly required full disclosure
+rather than partial reassurance — the verification done with him
+watching, not the result handed over after I'd quietly fixed it.
+Earlier in the day I had explicitly acknowledged the audit-pre-launch
+mistake ("I should have stopped at the dry-run output and addressed it,
+not pressed on"); that disclosure pattern set the baseline.
+
+Pattern: the working dynamic assumes I'll surface mistakes without
+hedging, and that disclosure-then-recovery is the norm. The
+2026-05-22-mirror-dryrun-direction memory captures the specific
+gotcha; the meta-observation is that the *expectation* IS the
+discipline — Shawn doesn't enforce error-disclosure as a separate
+rule, he just operates as if it's the baseline. Heuristic for me:
+when I notice an error, lead with what I got wrong + why + impact
+assessment, BEFORE proposing recovery. Don't bury it in a longer
+update.
+
+[ ] accept   [ ] edit   [ ] discard

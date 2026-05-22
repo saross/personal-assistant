@@ -365,3 +365,67 @@ still wrong on rows the loop corrected. Two fix paths (driver-side
 post-processing or a `lit-search.py bibtex --corrections` flag);
 deferred until rubric calibration is further along. Captured as
 a follow-up item in workstream H.
+
+## 2026-05-22: CC live-store JSONL shape — `cwd` is typically NOT on line 1
+
+Sampling 50 unarchived main-thread sessions on amd-tower, only 5 of 50
+(10%) carry the `cwd` field on line 1 of the JSONL. The other 45 carry
+it on lines 2-10, behind one or more leading metadata records of type
+`summary` (`{"leafUuid","summary","type"}`), `permission-mode`, or
+`progress` that lack `cwd`. **Implication**: any toolkit that needs to
+extract session-level metadata from a live JSONL by parsing the first
+line will mass-misroute. The toolkit's `_extract_cwd_from_jsonl` had
+this bug; pre-fix dry-run would have routed 78 of 96 amd-tower sessions
+to a single `shawn/` bucket. Fix scans up to 20 records. Generalises:
+CC's live JSONLs are append-streamed, with session-state metadata
+flowing in alongside content; first-line assumptions are fragile.
+
+Anchor: cc-session-toolkit commit `1dd4d69` (the audit-criticals fix
+that added the multi-line scan to `_extract_cwd_from_jsonl`).
+
+## 2026-05-22: Gemini 3 Flash Preview vs Gemini 3.5 Flash empirical comparison
+
+3-session head-to-head on the toolkit's production prompt
+(`prompt-gemini-v2.md`), small/medium/large session sizes
+(~7K/228K/397K input tokens respectively, distilled):
+
+- **JSON structural defects**: 3.5 Flash 0 of 3; 3 Flash Preview 1 of 3
+  (a stray `three_ps.`-prefixed key under `three_ps` that would have
+  degraded `provenance_summary` to empty via the M3 `.get() or default`
+  guard).
+- **Named-entity preservation**: 3.5 Flash picked up specific commit
+  hashes (`a2e40fd`), git tags (`osf-lodgement-2026-05-20`), people's
+  names (Adela Sobotková), 95% CI bounds — where 3 Flash Preview
+  generalised or omitted these.
+- **Numeric specificity**: 3.5 Flash more often reproduced explicit
+  test counts, percent changes, and stat values exactly; 3 Flash
+  Preview summarised.
+- **Wall-clock**: 3.5 Flash ~20% faster on smaller sessions
+  (~4.3s → 2.4s small; 8.7s → 5.9s medium; 13.5s → 12.8s large —
+  the gap closes on big inputs).
+- **Cost**: 3.5 Flash 3× the Flex price (empirically: $0.75/$4.50 vs
+  $0.25/$1.50 per M input/output tokens — confirmed by direct
+  `usage_metadata` token counts × API list price).
+
+Production migration accepted on the price-quality trade-off (RDA-IG
+provenance fidelity). Toolkit commit `cdc7c65`.
+
+## 2026-05-22: Toolkit's `rebuild_catalogue` scans one level deep
+
+`cc-session catalogue --rebuild --archive-root <root>` produces
+`CATALOG.json` with only one-level project scanning. Nested
+sub-category sessions (e.g. `LLM-History-Paper/theseus-ship/<session>/`,
+`map-reader-llm/vlm-burial-mound-detection/<session>/`) don't appear in
+the catalogue's session list. `_legacy/` content similarly absent.
+Post-Phase-C state on rpi-shares: **411 catalogued sessions vs ~595
+actually present** in `session.meta.json` files on the filesystem.
+
+**Implication**: consumers that use `CATALOG.json` as the source of
+truth need to know about this depth limit. `scripts/resolve_session_id.py`
+papers over it by falling back to filesystem `rglob` after a catalogue
+miss. Worth a toolkit-side fix to recurse (deferred — separate
+toolkit issue, not blocking).
+
+Anchors: `~/personal-assistant/scripts/resolve_session_id.py` (the
+fallback impl); `~/Code/cc-session-toolkit/src/cc_session_toolkit/catalogue.py`
+`rebuild_catalogue` for the source-side fix.
