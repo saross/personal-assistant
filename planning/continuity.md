@@ -581,14 +581,24 @@ Five categories:
   before deletion). Plus /tmp Step 2 logs, dry-run logs, comparison
   test artefacts.
 
-- [ ] **B — Phase 0 Steps 6 + 7 (per-project `archive/cc-sessions/`
-  removal)** — ~1.25 GB on amd-tower + similar on zbook. The
-  destructive part of the Phase 0 architectural decision "project
-  repos do not carry `archive/cc-sessions/`". Affected projects on
-  amd-tower: `~/Code/map-reader-llm/archive/cc-sessions/` (418 MB,
-  LFS-tracked), `~/Code/LLM-History-Paper/archive/cc-sessions/`
-  (117 MB, LFS-tracked), `~/Code/llm-reproducibility/archive/cc-sessions/`
-  (717 MB, not LFS). Similar tree on zbook for the same projects.
+- [x] 2026-05-22 **B — Phase 0 Steps 6 + 7 (per-project
+  `archive/cc-sessions/` removal)** — DONE. Per-project verification
+  script (`/tmp/verify-project-archive.py`, since cleaned up)
+  confirmed 100% of source session_ids present in rpi-shares before
+  any destructive op. amd-tower: 202 sessions across 3 projects;
+  zbook: 251 across 4. All verified clean. Per-project sequence
+  executed (git lfs untrack for LFS-tracked repos → git rm --cached
+  → gitignore → commit → push → rm -rf). Commits:
+  - map-reader-llm: `2f83ec58` (amd-tower) + zbook pulled + removed
+  - LLM-History-Paper: `226def9` (amd-tower) + zbook pulled + removed
+  - llm-reproducibility: `1b191cd` (amd-tower) + zbook pulled + removed
+  - theseus-ship: `7359144` (zbook-only)
+  Total freed: ~1.25 GB on amd-tower + ~1.24 GB on zbook. Pre-existing
+  audit caveats remain unaddressed: `rebuild_catalogue`'s one-level
+  scan limit, and the deferred `git lfs migrate export` history
+  rewrite (post-journal-submission per the 2026-05-20 decision).
+
+- [ ] **B (originally pending)** — *superseded by completed entry above*
 
   **Per-project safety procedure** (run for each project before
   destructive ops):
@@ -762,16 +772,35 @@ Five categories:
   exports, 297 GB mount headroom, full mirrors on amd-tower + zbook.
   Still pending in Phase 0:
 
-  - [ ] **Steps 6-10** — `git lfs untrack`, `git rm --cached
-    archive/cc-sessions/` + gitignore in every project repo,
-    daily-sync.sh rsync step, `scripts/resolve_session_id.py`,
-    indexing pattern.
+  - [x] 2026-05-22 **Steps 6 + 7** — `git lfs untrack` (LFS repos)
+    + `git rm --cached archive/cc-sessions/` + gitignore + commit/push
+    + `rm -rf` on every affected project across amd-tower + zbook.
+    See cleanup register entry B above for per-project commit hashes.
+  - [x] 2026-05-22 **Step 8** — `daily-sync.sh` cc-archives section
+    added (commit `800f01a`). Pushes ~/cc-archives/ → rpi-shares
+    canonical via `rsync -a --ignore-existing` on every SessionStart
+    via the existing daily-sync-trigger.sh hook chain. Mount-presence
+    check via `df` grep ("rpi-server" in source) handles the
+    silent-empty-dir failure mode.
+  - [x] 2026-05-22 **Step 9** — `scripts/resolve_session_id.py`
+    landed (commit `800f01a`). Two-stage resolution: fast-path
+    CATALOG.json lookup, exhaustive filesystem rglob fallback for
+    nested sub-categories + `_legacy/` content. Smoke-tested against
+    4 location classes — all resolve correctly.
+  - [x] 2026-05-20 **Step 10 — indexing pattern decided**:
+    working-machine-driven only. No rpi-server-side automation
+    (no toolkit, no cron, no Python env). Captured in the
+    "Architectural decisions worth not re-litigating" section.
   - [ ] **Content-equivalence dedup pass** (new follow-up 2026-05-22) —
     `/export`-era duplicates inside `~/cc-archives/` ancestry now living
     in the consolidated store. SHA dedup misses these; tractable via
     file-extension-and-co-presence-within-session-dir as a marker.
     Lower priority; cautious approach to avoid losing content that
     only exists in the `/export` framing.
+
+  **Phase 0 — DONE**. All 10 steps + Step 4.5 layout cleanups (v1 + v2)
+  completed 2026-05-22. Sole outstanding follow-up: content-equivalence
+  dedup pass for `/export`-era duplicates (deferred, low-priority).
 
   Original step definitions below (Steps 1, 3, 4, 5 retained for
   historical context — execution details captured above):
