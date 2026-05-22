@@ -1594,6 +1594,57 @@ the $25 cap. Well under approval.
 - Architectural decisions added below: 4 new (Gemini 3.5 Flash;
   _legacy/ umbrella; Step 2 per-machine for code_state; local mirrors)
 
+**(7) Phase 0 closeout sweep** (continuation, post-commit `6d87d01`).
+Four further sub-arcs landed before session close:
+
+- **Cleanup register A** (commit pending) — removed
+  `~/Code/map-reader-llm/.claude/worktrees/agent-a59a9dae0bff3f27b/`
+  (~6.4 GB, larger than the cc-sessions/ portion alone) and the
+  ~700 KB of /tmp test/log artefacts from today's runs. SHA spot-checks
+  before the destructive op confirmed worktree content was
+  byte-identical to rpi-shares' map-reader-llm subtree.
+
+- **Phase 0 Steps 6 + 7 destructive ops** (per-project
+  `archive/cc-sessions/` removal). Per-project safety verification
+  script confirmed 100% of source session_ids present in rpi-shares
+  before any destructive op (`/tmp/verify-project-archive.py`, since
+  cleaned). amd-tower: 202 sessions across 3 projects;
+  zbook: 251 across 4. Sequence per project: `git lfs untrack` (LFS
+  repos) → `git rm --cached` → gitignore → commit → push → `rm -rf`.
+  Five commits: `2f83ec58` map-reader-llm, `226def9` LLM-History-Paper,
+  `1b191cd` llm-reproducibility (amd-tower); `7359144` theseus-ship
+  (zbook-only); zbook pulled-then-removed for the three amd-tower ones.
+  Total freed: ~1.25 GB amd-tower + ~1.24 GB zbook.
+
+- **Step 8 — daily-sync.sh cc-archives section** (commit `800f01a`).
+  Added a section between the parent-repo push and the symlink-sync
+  step that does `rsync -a --ignore-existing $HOME/cc-archives/ →
+  ~/mnt/rpi-shares/cc-archives-consolidated/` on every SessionStart
+  via the existing daily-sync-trigger.sh hook chain. Mount-presence
+  check via `df` grep ("rpi-server" in source) handles the
+  silent-empty-dir failure mode.
+
+- **Step 9 — `scripts/resolve_session_id.py`** (commit `800f01a`).
+  Two-stage resolution: fast CATALOG.json lookup, then exhaustive
+  filesystem rglob fallback for nested sub-categories +
+  `_legacy/` content. Smoke-tested against four location classes —
+  catalogued, LLM-History-Paper/theseus-ship/ nested,
+  map-reader-llm/vlm-burial-mound-detection/ nested, _legacy/Code/ —
+  all resolve correctly.
+
+- **Step 10 — indexing pattern** was decided 2026-05-20
+  (working-machine-driven only); no new work needed.
+
+- **Phase 0 closeout commit `1f0c6c1`** — continuity register updated
+  with the per-step completion markers; "Phase 0 — DONE" recorded.
+  Sole outstanding follow-up is the deferred content-equivalence
+  dedup pass for `/export`-era duplicates.
+
+**Day's commit total across all repos**: 18 commits across 6 repos.
+**API spend today**: ~$8.5-11.5 against the $25 cap.
+**Disk freed across both working machines**: ~9.5 GB (worktree +
+per-project archives).
+
 ### 2026-05-22 (Fri, late evening) — Style-guide workstream G: comparator pass + rescan + v2 implementation plan DECIDED
 
 Resumed the morning's style-guide work after the run-1 + prior-art-scout
