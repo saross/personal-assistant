@@ -259,7 +259,7 @@ IG framework. Reference docs:
 and `RDA_IG_Summary_and_Description.docx`. Provenance audit
 (workstream D) was first concrete alignment action.
 
-### G. Style-guide construction (multi-genre, academic kick-off) — *agent built + run-1 complete + prior-art surveyed 2026-05-22; reconciliation + fork-vs-build pending*
+### G. Style-guide construction (multi-genre, academic kick-off) — *agent + run-1 + prior-art + comparator pass + v2 plan complete 2026-05-22; Phase 1 implementation ready*
 
 `corpus-style-analyser` agent (global, at
 `~/.claude/agents/corpus-style-analyser.md`) empirically derives a
@@ -275,10 +275,16 @@ Substack / business / teaching) and across LLM model versions.
 | Agent definition | done 2026-05-22 |
 | Run-1 (academic) | done 2026-05-22 — `notes/style-guides/academic/style-guide-academic-2026-05-22.md` (51 KB; 18 papers, 139,105 words) |
 | Prior-art-scout + verifier pair | done 2026-05-22 — `notes/prior-art-runs/llm-style-alignment-2026-05-22.md` (18 candidates; 3 hard failures corrected; verifier-pair smoke-test passed) |
-| Reconciliation of aspirational section vs prior conscious style guides | **pending** (queued as inbox follow-up 2026-05-22) |
-| Fork-vs-build decision on `github.com/Hiro-Inagawa/write-like-me` | **pending** — only verified open-source analogue; MIT, Python, last pushed 2026-05-10, multi-voice profile support |
-| Methodology incorporations for v2 agent revision (Author Writing Sheet aggregation, Biber MDA vocabulary, Panickssery reverse-prompt, "Catch Me If You Can" evaluation suite) | **pending** |
-| Substack / business / teaching genre runs | not started |
+| Desk evaluation of `Hiro-Inagawa/write-like-me` | done 2026-05-22 — `notes/prior-art-runs/write-like-me-evaluation-2026-05-22.md` |
+| End-to-end comparator pass (write-like-me vs run-1 on same 18-paper corpus) | done 2026-05-22 — `notes/style-guides/academic/write-like-me-comparator-2026-05-22/comparison-report.md` |
+| Fork-vs-build decision on `Hiro-Inagawa/write-like-me` | **DECIDED 2026-05-22: compose with minimised scope** (re-implement the additive measurements under run-1 evidence discipline; do not vendor `stylometry.py`; do not adopt universal baseline em-dash zero-tolerance) |
+| Prior-art rescan (under-searched corners — HF Spaces, GitLab, gh api) | done 2026-05-22 — `notes/prior-art-runs/llm-style-alignment-rescan-2026-05-22.md` |
+| `ngpepin/stylometric-transfer` (most-complete tool found across both passes, PolyForm Noncommercial 1.0.0) | **DECIDED 2026-05-22: inspiration only** (read for fingerprint schema + deviation-report shape; lift no code; licence becomes a problem the moment commercial use surfaces) |
+| v2 agent implementation plan | **DECIDED 2026-05-22** — `planning/style-guide-agent-v2-implementation-plan.md`; all 10 design questions resolved with recommended defaults; total envelope 12–18 h focused work + ~$0.50 API spend per generation run (Phase 4 only) |
+| Step-Back Profiling Gist preamble (Tang et al. 2024) | deferred 2026-05-22 — memory captured (`decision` category), inbox follow-up added; revisit when downstream LLM consumer needs a compact context-card |
+| Phase 1 — measurement-layer extensions (reference-list stripping pre-pass, MATTR, hapax, passive ratio, nominalisation, dependency depth, POS bigrams, paragraph stats, 8-metric verification gate doc) | **ready to execute** (deterministic, no API, 4–6 h focused work) |
+| Reconciliation of aspirational section vs prior conscious style guides | pending — prior guides located at `~/Code/prompts/System-setup/` (committed `e17a2f5`: `claude40-writing-style-guide.md` 320L, `claude40-writing-style-guide-short.md` 187L, `chatGPT45-writing-style-guide.md` 113L); deliberate separate human-in-the-loop session per agent definition |
+| Substack / business / teaching genre runs | not started; v2 agent should drive these after academic register is settled |
 
 **Key prior-art findings (post-verification):**
 
@@ -572,16 +578,33 @@ These survive across sessions. Mark `[x]` with date when done.
     triaged (not divergence — `/export`-vs-auto-archive content-equiv
     pattern instance).
 
-  **Consolidation arc complete** — total 3.1 GB at the destination,
-  594 `session.jsonl*` files across 16 project_ids, 297 GB mount
-  headroom. Still pending in Phase 0:
+  - [x] 2026-05-22 **Step 2** — Gemini 3.5 Flash sweep of unarchived
+    live JSONLs across amd-tower (76 sessions) + zbook (33 sessions)
+    = **109 main-thread sessions archived**, 0 errors, 116
+    trivial-skipped, ~$7-10 total spend against the $25 cap. Sapphire's
+    13 sessions were scp'd to amd-tower's live store pre-Step-2 and
+    folded into the amd-tower batch. Critical cwd-extraction bug in
+    `_extract_cwd_from_jsonl` discovered + fixed before launching
+    (see toolkit commit `1dd4d69`); without that fix ~90% of sessions
+    would have mis-routed to `shawn/`.
+  - [x] 2026-05-22 **Layout cleanup v2** — `_legacy/` umbrella
+    consolidates the earlier `_legacy-archive/` + `_misc-cwd/` + the
+    dormant sapphire-era projects + grouped TRAP work. Top-level now
+    16 active project_ids + 3 reserved namespaces + 2 root files.
+  - [x] 2026-05-22 **Mirror rpi-shares → working-machine local stores**
+    — amd-tower + zbook each hold a full 3.4 GB / 885-file copy at
+    `~/cc-archives/`. One-shot via `rsync -av --delete`; ongoing
+    automation is Phase 0 Step 8 (still pending).
+  - [x] 2026-05-22 **Sapphire cleanup** — `~/.claude/` removed
+    (including `.credentials.json`). CC CLI was already absent.
+    Sapphire is now CC-free per the operational decision that it's
+    a compute server, not a CC client.
 
-  - [ ] **Step 2** — Gemini Flex sweep of unarchived live JSONLs
-    (was scoped to amd-tower's 61 per the 2026-05-20 inventory; the
-    2026-05-22 cross-machine verifier surfaced a much larger pool:
-    1,024 + 2,043 + 17 = 3,084 live JSONLs across amd-tower + zbook +
-    sapphire). **API gate to be re-presented with the revised scope
-    + cost envelope.**
+  **Phase 0 consolidation + Step 2 sweep arc complete** — 3.4 GB
+  canonical at rpi-shares, 702 session files + 183 manual `.txt`
+  exports, 297 GB mount headroom, full mirrors on amd-tower + zbook.
+  Still pending in Phase 0:
+
   - [ ] **Steps 6-10** — `git lfs untrack`, `git rm --cached
     archive/cc-sessions/` + gitignore in every project repo,
     daily-sync.sh rsync step, `scripts/resolve_session_id.py`,
@@ -985,6 +1008,46 @@ reopen settled questions:
   existing pre-v2 backups at `~/cc-archives/pre-v2/` on rpi-server
   are legacy bootstrap artefacts and do NOT imply ongoing toolkit
   installation there.
+- **Auto-metadata extractor: Gemini 3.5 Flash (GA)**, not 3 Flash Preview
+  (2026-05-22, model migration). Decision basis: 3-session head-to-head
+  on amd-tower's actual unarchived live JSONLs (small/medium/large).
+  3.5 Flash showed zero JSON structural defects vs 1-of-3 for 3 Flash
+  Preview (a stray `three_ps.`-prefixed key under `three_ps` that would
+  degrade `provenance_summary` via the M3 `.get() or default` guard);
+  materially better named-entity preservation (commit hashes, git tags,
+  people's names, CI bounds); ~20% faster wall-clock. 3× Flex price
+  ($0.75/$4.50 vs $0.25/$1.50 per M input/output tokens, verified
+  empirically) accepted for the price-quality trade-off — Three Ps
+  fidelity matters for the RDA-IG framing, and 3 Flash Preview was
+  going to need migration eventually anyway. Production `EXTRACTOR_MODEL_ID`
+  flipped + pricing constants updated in cli.py 2026-05-22 (commit
+  `cdc7c65`).
+- **`_legacy/` umbrella for no-new-sessions content** (2026-05-22,
+  layout cleanup v2). Subsumes the earlier `_legacy-archive/` (pre-toolkit
+  scaffolding) + `_misc-cwd/` (cwd-derived sessions: Code, shawn) +
+  dormant sapphire-era project_ids (sciphi-project, gemma-project,
+  llm_models) + the grouped TRAP archaeological work
+  (`_legacy/trap/TRAP-WD-2020-04/` + `_legacy/trap/trap-extraction/`).
+  Single top-level namespace for everything that won't grow; active
+  project_ids stay at the consolidated root.
+- **Step 2 (Gemini Flex sweep of unarchived live JSONLs) ran per-machine,
+  not batched at amd-tower** (2026-05-22 operational decision). Each
+  working machine (amd-tower, zbook) ran `cc-session archive --all
+  --gzip --auto-metadata --archive-root ~/mnt/rpi-shares/...` against
+  its own live store. Chosen over the alternative "scp zbook's live
+  JSONLs to amd-tower, run once" because per-machine preserves
+  `code_state.commit_at_end` + `dirty_at_end` accuracy — the project
+  repos that produced each session live on their own machines. The
+  sapphire content was an exception (live JSONLs scp'd to amd-tower
+  pre-Step-2, since sapphire has no toolkit + no project repos worth
+  preserving code_state against).
+- **Working machines hold full local mirrors of rpi-shares at `~/cc-archives/`**
+  (2026-05-22, operationally realised — was an architectural decision
+  on 2026-05-16, "full mirror everywhere"). Periodic `rsync -av --delete
+  ~/mnt/rpi-shares/cc-archives-consolidated/ ~/cc-archives/` brings each
+  machine into exact sync with the canonical store. Provides offline
+  archive access + write-side scratch + travel resilience. Daily
+  automation of this mirror is Phase 0 Step 8 (still pending).
 - **Consolidation is comprehensive across all working machines**, not
   amd-tower-only (2026-05-22, scope expansion). The 2026-05-20 inventory
   was explicitly amd-tower-scoped (zbook + rpi-server out of scope);
@@ -1237,6 +1300,205 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-22 (Fri, afternoon→evening) — Step 2 sweep + toolkit audit-cycle + Gemini 3.5 Flash migration + Phase C-D-E
+
+Long PA-infrastructure session continuing the morning's Phase 0 work.
+Six discrete arcs landed in sequence:
+
+**(1) Toolkit audit cycle — three commits.** First-fix
+(`a3e7197 feat(cli): global-mode dispatch for archive + catalogue
+subcommands`) introduced `_cmd_archive_global` + `_extract_cwd_from_jsonl`
++ dispatched `cmd_archive` and `cmd_catalogue` on `--archive-root`,
+plus a regression fix for `auto_metadata` flow-through in per-project
+mode. Audit ran via the `/audit` skill across cli.py + test_hook.py —
+found a CRITICAL `_extract_cwd_from_jsonl` line-1-only bug (90% of
+real live JSONLs have `cwd` on lines 2-10, behind leading
+`type: summary`/`permission-mode`/`progress` records), plus mediums:
+no agent-*.jsonl exclusion, no trivial-session filter in batch mode,
+no tilde expansion on `--archive-root`. Audit-criticals fix
+(`1dd4d69 fix(cli): audit follow-ups — cwd scan, trivial filter,
+agent-* exclusion`) closed the critical + four mediums. Audit-lows
+fix (`32742ca fix(cli): close remaining audit follow-ups`) added
+explicit-selector error for global-mode no-flag invocation,
+typo-protection on cmd_catalogue's archive-root, the
+update_catalogue-per-project call-count test, --force + --session-id
+tests in global mode, tilde-expansion regression test, fixed
+inaccurate comments. Test count 220 → 249 (+29). Without the
+critical fix, the Step 2 sweep would have mass-routed ~340 of the
+~375-then-projected sessions to a single `shawn/` bucket and
+silently degraded provenance_summary.
+
+**(2) Gemini 3 Flash Preview → 3.5 Flash migration**
+(`cdc7c65 feat(model): migrate auto-metadata extractor to Gemini
+3.5 Flash (GA)`). After cwd-bug fix changed the actionable scope
+from 375 → 107 sessions, ran a head-to-head 3-session comparison
+($0.64 spend) against the toolkit's production prompt. Findings:
+3.5 Flash had zero JSON structural defects (3 Flash Preview had 1
+of 3 — a stray `three_ps.`-prefixed key under `three_ps` that would
+degrade provenance_summary via the M3 `.get() or default` guard);
+materially better named-entity preservation (commit hashes, tags,
+people's names, CI bounds); ~20% faster wall-clock; 3× Flex price
+(confirmed empirically: $0.75/$4.50 vs $0.25/$1.50 per M input/output
+tokens). Shawn expanded the API gate from $10 to $25 to accept the
+price-quality trade-off; production migration committed in lockstep
+(same call shape, `thinking_budget=0` honoured, same 1M context).
+
+**(3) Step 2 sweep — per-machine for code_state fidelity.** amd-tower
+phase ran first: 76 sessions, ~6 min wall-clock, 23 trivial-skipped,
+0 errors. Spot-checks confirmed exemplary outputs — named-entity-rich
+titles ("Complete HUMN8031 teaching wrap-up, inscriptions
+preregistration lodgement, and academic style guide construction";
+"Resolve PostgreSQL trigram extension and index migration error";
+"Smoke test data-profile iteration loop on LIRE v3.0 parquet"),
+clean three_ps schema (zero defects across all 76), `extractor_model_id:
+gemini-3.5-flash` recorded, code_state populated. zbook phase ran
+second: 33 sessions, ~4.5 min, 93 trivial-skipped, 0 errors, 5
+projects touched (theseus-ship, vlm-burial-mound-detection, Code,
+shawn, personal-assistant). Total Step 2: **109 main-thread sessions
+archived to rpi-shares**.
+
+**(4) Phase C — layout cleanup v2** (consolidation under `_legacy/`).
+Subsumed `_legacy-archive/` + `_misc-cwd/` + all dormant project
+subdirs + the TRAP-WD-2020-04 + trap-extraction grouping into a
+single `_legacy/` umbrella with READMEs documenting the structure.
+Top-level dropped from 31 entries (post-Step-2 sprawl) to 21
+(16 active project_ids + 3 reserved namespaces + 2 root files).
+Sub-categories nested under their parent projects:
+`LLM-History-Paper/theseus-ship/` (60 sessions),
+`map-reader-llm/vlm-burial-mound-detection/` (149 sessions).
+Global CATALOG.json rebuilt — 411 sessions across 16 active project
+roots (note: rebuild_catalogue scans one level deep; nested
+sub-category sessions not in the rollup — separate toolkit fix
+deferred).
+
+**(5) Phase D — mirror rpi-shares back to working machines.**
+amd-tower + zbook each got a full `rsync -av --delete` mirror from
+rpi-shares to `~/cc-archives/`. Both machines now hold 702
+`session.jsonl(.gz)` + 183 `.txt` (manual exports) = 885 files /
+3.4 GB matching rpi-shares exactly. **Methodology gotcha**: the
+pre-flight dry-run check ran in the wrong direction (local → rpi-shares
+instead of rpi-shares → local), which showed misleading "deletion"
+lines that I incorrectly interpreted as safe. The actual mirror
+(rpi-shares → local with --delete) DID delete some local-only content
+that wasn't in rpi-shares — but verification confirmed those session_ids
+ARE in the rebuilt catalogue (re-archived by Step 2 at new
+canonical paths), so no actual data loss. Saved to memory as
+`2026-05-22-mirror-dryrun-direction` so the gotcha doesn't recur.
+
+**(6) Phase E — sapphire cleanup.** `rm -rf ~/.claude` on sapphire
+(13 live JSONLs from Aug 2025 already imported to amd-tower and
+processed by Step 2; `.credentials.json` + settings + projects/
+all removed). CC CLI was already not installed there. sapphire is
+now CC-free, matching the operational decision to use it only for
+compute offload.
+
+**Pre-Phase-D dry-run cost-summary** (estimated from auto-metadata
+log token counts; not exhaustively reconciled): ~$6-9 for the 109
+Step 2 calls plus ~$0.64 for the bake-off test = ~$7-10 total against
+the $25 cap. Well under approval.
+
+- Toolkit commits today: `a3e7197`, `1dd4d69`, `32742ca`, `cdc7c65`
+  (cli.py global-mode + audit follow-ups + Gemini 3.5 Flash migration)
+- rpi-shares destination size: 3.4 GB / 702 session files + 183 `.txt`
+- Local mirrors: amd-tower + zbook each hold full 3.4 GB copy
+- New memories: `2026-05-22-e020f8b3cb4b` (proper-fix preference),
+  `2026-05-22-mirror-dryrun-direction` (rsync direction gotcha)
+- Background agents dispatched: 2 (cli.py audit + test_hook.py audit)
+- Architectural decisions added below: 4 new (Gemini 3.5 Flash;
+  _legacy/ umbrella; Step 2 per-machine for code_state; local mirrors)
+
+### 2026-05-22 (Fri, late evening) — Style-guide workstream G: comparator pass + rescan + v2 implementation plan DECIDED
+
+Resumed the morning's style-guide work after the run-1 + prior-art-scout
+pair landed earlier in the day. Shawn directed the session along three
+tracks: (a) freeze run-1 and the prior conscious guides as comparators
+before doing any reconciliation; (b) evaluate then test
+`Hiro-Inagawa/write-like-me` rather than just deciding off the desk
+eval; (c) build a complete v2 implementation plan from the lifts that
+survive the comparison. All three closed in one session.
+
+**(1) Desk eval of write-like-me via background `general-purpose` agent.**
+Read-only WebFetch/GitHub-API pass; report at
+`notes/prior-art-runs/write-like-me-evaluation-2026-05-22.md` (committed
+`891facc` earlier in the day). Verdict: compose, do not fork — the
+`scripts/stylometry.py` module is a clean importable Python feature
+extractor (~50 features, JSON output, stdlib-only, no LLM calls); the
+user-facing templates carry no per-claim counts or locator placeholders,
+so attestation discipline would need to be layered on top.
+
+**(2) End-to-end comparator pass.** Cloned `~/Code/write-like-me/` (6
+commits, last `3878d9d` 2026-05-10); set up a venv with textstat 0.7.13
++ spaCy 3.8.14 + en_core_web_sm 3.8.0; symlinked the 18 included papers
+from `/tmp/style-corpus-extract/` into a clean comparator directory; ran
+`stylometry.py --register academic --output … --report …`. Three real
+failure modes surfaced that the desk eval missed: (i) academic
+reference-list contamination — "sobotkova" (56) and "ross" (52) leaked
+into top-20 sentence-initial words, "doi/https/org" into top content
+words; (ii) silent textstat compatibility break — `textstat.word_count`
+removed in 0.7.13, `compute_readability`'s bare `except Exception:` swallows
+the AttributeError and drops the entire readability dict with no warning;
+(iii) universal-baseline em-dash zero-tolerance ban that conflicts with
+Shawn's attested 0.46/1k em-dash usage concentrated in 7 of 18 papers
+(TRAP chapters at 2.12/1k). Comparator report
+(`notes/style-guides/academic/write-like-me-comparator-2026-05-22/comparison-report.md`)
+refined the desk-eval verdict to "compose with minimised scope" —
+re-implement the additive measurements under run-1's evidence discipline
+rather than vendoring.
+
+**(3) Prior-art rescan via `prior-art-scout` background agent.** Shawn
+explicitly requested re-scanning the 7 GitHub queries that failed in run
+1. Report at `notes/prior-art-runs/llm-style-alignment-rescan-2026-05-22.md`.
+Surface coverage: HF Spaces (7 queries, only relevant Spaces at 0–1 likes
+inaccessible unauthenticated), GitLab (effectively null — 9 stylometry
+repos all 0–1 stars, irrelevant), GitHub via `gh api` + topic pages. Null
+hypothesis partially falsified — `ngpepin/stylometric-transfer` (10 stars,
+Python, pushed 2026-02-27) is the most technically complete tool found
+across both passes (versioned JSON fingerprints with raw distribution
+histograms, per-component validators, structured deviation reports, CLI +
+HTTP API + dashboard + regression suites). But licensed PolyForm
+Noncommercial 1.0.0. Shawn endorsed "inspiration only" given commercial
+Fieldmark/FAIMS context.
+
+**(4) v2 implementation plan via `Plan` background agent.** Shawn agreed
+to incorporate four lifts (Biber MDA dimension labels for §§1–6;
+reduced Catch-Me-If-You-Can 2-metric CC-only evaluation suite — paper's
+4-metric ensemble is multi-author-benchmark-shaped, only style-matcher
+applies; Kumar et al. Author Writing Sheet aggregation as deterministic
+merge rules with new `attested-concentrated` 5th status for bimodal
+patterns; Panickssery reverse-prompt 5-exemplar block at Opus 4.7,
+~$0.50/run) plus the write-like-me measurement extensions
+(MATTR/hapax/passive ratio/nominalisation/dependency depth/POS
+bigrams/paragraph stats + 8-metric verification gate + reference-list
+stripping pre-pass). Step-Back Profiling Gist preamble deferred to
+memory + inbox. Plan saved to `planning/style-guide-agent-v2-implementation-plan.md`.
+Walked through all 10 design questions in three AskUserQuestion batches;
+recommended default taken on every item. Plan front-matter promoted from
+DRAFT to DECIDED.
+
+**(5) Workspace state.** Phase 1 (4–6 h, deterministic, no API spend) is
+the next executable unit when v2 work resumes. Total envelope 12–18 h
+focused work + ~$0.50 API spend per generation run (Phase 4 only).
+
+- Commits this session (5 logical chunks):
+  - data submodule: `d3fa75d` (comparator pass artefacts),
+    `8ec1f3c` (prior-art rescan), `33f7efa` (Step-Back memory + tag
+    vocab + inbox row)
+  - PA repo: `244668b` (v2 plan), `dbaab9a` (submodule pointer bump)
+  - All pushed to `origin/main` on both repos
+- New artefacts:
+  - `notes/style-guides/academic/write-like-me-comparator-2026-05-22/` —
+    3 files: `academic-profile.json`, `academic-profile-report.md`,
+    `comparison-report.md`
+  - `notes/prior-art-runs/llm-style-alignment-rescan-2026-05-22.md`
+  - `planning/style-guide-agent-v2-implementation-plan.md`
+- New memory: `decision` memory `2026-05-22-bad057fbe9e9` (Step-Back
+  deferred), 4 new tags appended to `memories/tag-vocabulary.txt`
+- Inbox additions: Step-Back follow-up row; existing reconciliation row
+  updated with concrete prior-guide paths
+- Local-only clone: `~/Code/write-like-me/` with `.venv` and
+  en_core_web_sm — not committed; can be deleted between sessions or
+  kept for Phase 1 cross-reference
 
 ### 2026-05-22 (Fri, evening) — Data-profile closed-loop smoke test + documentation_defect calibration
 
