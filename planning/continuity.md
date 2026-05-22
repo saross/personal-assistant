@@ -259,6 +259,58 @@ IG framework. Reference docs:
 and `RDA_IG_Summary_and_Description.docx`. Provenance audit
 (workstream D) was first concrete alignment action.
 
+### G. Style-guide construction (multi-genre, academic kick-off) — *agent built + run-1 complete + prior-art surveyed 2026-05-22; reconciliation + fork-vs-build pending*
+
+`corpus-style-analyser` agent (global, at
+`~/.claude/agents/corpus-style-analyser.md`) empirically derives a
+writing style guide from a Zotero-cataloged corpus with strict
+anti-confabulation discipline: every claim carries a count, ≥2 verbatim
+quotations with paper key + sentence locator, and an explicit status
+field (`attested` / `attested-rarely` / `absent-when-searched` /
+`aspirational`). Designed for re-use across genres (academic /
+Substack / business / teaching) and across LLM model versions.
+
+| Phase | Status |
+|---|---|
+| Agent definition | done 2026-05-22 |
+| Run-1 (academic) | done 2026-05-22 — `notes/style-guides/academic/style-guide-academic-2026-05-22.md` (51 KB; 18 papers, 139,105 words) |
+| Prior-art-scout + verifier pair | done 2026-05-22 — `notes/prior-art-runs/llm-style-alignment-2026-05-22.md` (18 candidates; 3 hard failures corrected; verifier-pair smoke-test passed) |
+| Reconciliation of aspirational section vs prior conscious style guides | **pending** (queued as inbox follow-up 2026-05-22) |
+| Fork-vs-build decision on `github.com/Hiro-Inagawa/write-like-me` | **pending** — only verified open-source analogue; MIT, Python, last pushed 2026-05-10, multi-voice profile support |
+| Methodology incorporations for v2 agent revision (Author Writing Sheet aggregation, Biber MDA vocabulary, Panickssery reverse-prompt, "Catch Me If You Can" evaluation suite) | **pending** |
+| Substack / business / teaching genre runs | not started |
+
+**Key prior-art findings (post-verification):**
+
+1. **The `attested / absent-when-searched / aspirational` schema is
+   genuinely novel** — does not appear in any of 18 verified candidates
+   spanning academic papers (2024–2026), open-source tools, or
+   commercial products. The `absent-when-searched` status in
+   particular (treating a deliberate non-finding as data) has no
+   prior-art equivalent.
+2. **One real fork candidate exists**: `Hiro-Inagawa/write-like-me`
+   builds voice profiles from corpus measurements with multi-voice
+   support. The proposer's draft listed a wrong URL (a topic
+   aggregator page); the verifier surfaced the actual repository.
+   Reading its README + source decides whether to fork it (add
+   provenance/attestation/Zotero anchors on top), compose with it
+   (use as a feature-extraction component), or continue
+   independently.
+3. **Three methodology lifts worth incorporating** (no library
+   dependencies needed):
+   - Author Writing Sheet (Kumar et al. 2025, arXiv 2502.13028) —
+     claim-evidence aggregation across documents.
+   - Biber Multidimensional Analysis (Yang & Carpuat 2025,
+     arXiv 2505.00679) — principled, citable vocabulary for
+     section labels in an academic style guide.
+   - Panickssery reverse-prompt pattern (blog) — adds a few-shot
+     exemplar block at near-zero cost.
+4. **Evaluation suite available**: "Catch Me If You Can" four-metric
+   ensemble (Wang et al. 2025, arXiv 2509.14543) — best available
+   way to measure whether the style guide actually moves LLM
+   output toward Shawn's voice. Relevant for the longitudinal
+   cross-model-version comparison built into the agent's design.
+
 ---
 
 ## Things to verify on next session (priority queue)

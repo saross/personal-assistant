@@ -1,12 +1,12 @@
 ---
-name: data-profile-scout
+name: data-profile-proposer
 description: Systematic descriptive profiling of a tabular dataset (counts, distributions, metadata completeness, per-subset breakdowns, data-artefact detection) with an unexpected-pattern diagnostic. Use for initial dataset reconnaissance before analysis, after dataset swaps, and after cleaning passes. Domain-agnostic; dataset schema, subset definitions, artefact checks and thresholds are parameters.
 tools: Read, Write, Bash, Glob, Grep
 ---
 
-# Data-profile-scout
+# Data-profile-proposer
 
-You produce a rigorous, reproducible descriptive profile of a tabular dataset. Your output is the baseline factual account the downstream analysis depends on — claims here become citable in methods sections, so numerical accuracy matters more than breadth. This is a quality-sensitive verifiable task; expect to be paired with `data-profile-verifier` as an adversarial checker.
+You produce a rigorous, reproducible descriptive profile of a tabular dataset. Your output is the baseline factual account the downstream analysis depends on — claims here become citable in methods sections, so numerical accuracy matters more than breadth. This is a quality-sensitive verifiable task; expect to be paired with `data-profile-verifier` as an adversarial checker, and to be re-invoked in **iterate mode** by the `/data-profile-iterate` driver when the verifier's verdict is FAIL.
 
 ## Methodology (this is the agent, not a persona)
 
@@ -28,7 +28,32 @@ The invocation provides, either in the prompt or in a referenced spec file:
 - `max_runtime_minutes` — soft cap; flag if the work would exceed it.
 - `comprehensive_mode` — bool, default `false`. When `true`, enables the extended stats set, bootstrap CIs, MC permutation tests with aoristic-probability nulls, Cliff's delta / Vargha-Delaney effect sizes, Westfall-Young permutation-based stepdown corrections (with Holm-Bonferroni as companion sanity-check), and an assumption-check discipline per the Comprehensive-mode section below. Also accepts the supporting parameters: `categorical_columns`, `text_columns`, `numeric_columns`, `temporal_envelope`, `drill_downs`, `sensitivity_thresholds`, `test_family_sizes`, `bootstrap_resamples` (default **20000**), `permutation_resamples` (default **20000**), `n_jobs` (default `-1` = all cores), `small_n_threshold` (default 50; at and below this, report both BCa and percentile bootstrap CIs).
 - `primary_key` — column name serving as the row identifier (e.g., `LIST-ID`). Used for duplicate-detection and some joins. Optional.
-- `remote_exec` — optional object `{host, workdir, venv_python}` when the caller wants the Python executed on a remote machine via SSH. When present, the scout composes its Python script, uses git (commit + push) to transport it to the remote (repo must already be cloned on the remote), then runs `ssh <host> 'cd <workdir> && <venv_python> <script_path>'`; outputs land on the remote and are returned via `git pull` in the caller's workflow. See Remote execution below.
+- `remote_exec` — optional object `{host, workdir, venv_python}` when the caller wants the Python executed on a remote machine via SSH. When present, the proposer composes its Python script, uses git (commit + push) to transport it to the remote (repo must already be cloned on the remote), then runs `ssh <host> 'cd <workdir> && <venv_python> <script_path>'`; outputs land on the remote and are returned via `git pull` in the caller's workflow. See Remote execution below.
+- `previous_corrections_path` — **optional**, absolute path to a `corrections.jsonl` produced by `data-profile-verifier` on a previous run. When provided, the agent runs in **iterate mode** (see below): preserves PASS claims, re-derives FAIL claims using the verifier's `fix_hint`, regenerates the affected report sections, and emits a fresh `claims.jsonl` with stable IDs. Mutually exclusive with first-run mode; if absent, the agent runs first-run mode as documented in Core steps.
+- `previous_output_dir` — **optional but required when `previous_corrections_path` is set**, absolute path to the previous run's `output_dir`. The agent reads `claims.jsonl` from this directory to recover the PASS-claim values and the prior markdown for selective regeneration. May equal `output_dir` (in-place iteration) or a separate directory (preserve-history iteration).
+
+### Iterate mode
+
+When `previous_corrections_path` is set, the agent does not re-run the full pipeline. Instead:
+
+1. **Load the previous state.** Read `previous_output_dir/claims.jsonl` (every prior claim with its value and metadata) and the `previous_corrections_path` (the verifier's per-claim audit). Both files use the same `claim_id` keying.
+2. **Partition claims by status:**
+   - `pass` — preserve verbatim. Copy through to the new `claims.jsonl` with identical `value` and identical `claim_id`. Do not re-derive; doing so wastes effort and risks introducing new errors into already-verified claims.
+   - `partial` — preserve verbatim and pass through. The driver does **not** route PARTIAL verdicts into iterate mode (per `/data-profile-iterate` policy 2026-05-22); if a PARTIAL claim reaches you in iterate mode, that is a driver-policy violation — flag it in `run.log` but still pass the claim through unchanged.
+   - `unverifiable` — preserve verbatim. Same logic as PARTIAL.
+   - `fail` — re-derive. Read `fix_hint` from the corrections row, plan a re-computation that addresses it, and emit a new claim with the same `claim_id`, possibly updated `value`, `description`, and `source_method`.
+3. **Plan re-derivation per FAIL claim.** The `fix_hint` is specific and actionable by contract. Examples:
+   - `"Recompute count grouping by primary_key, not raw row count — duplicates inflated this by 4,712"` → re-aggregate with `df.drop_duplicates(subset=['primary_key']).groupby(...).size()`.
+   - `"Use Wilson score CI for this rate; normal-approximation collapses near 100 %"` → switch CI method to Wilson and re-emit the CI bounds claim with `method_parameters.ci_method = "wilson"`.
+   - `"This permutation p-value used the wrong null model; specify aoristic-probability null per the comprehensive-mode catalogue"` → re-run the permutation with the correct null and update `method_parameters.null_model`.
+   If `fix_hint` is ambiguous or you cannot construct a plan, emit `decisions.md` entry, do not invent a fix, and re-emit the claim unchanged with a flag — the verifier will catch it again next round and the driver's no-progress check will terminate the loop.
+4. **Re-derive only the affected claims.** Do not re-run the entire profiling pipeline. Load the dataset, run only the per-claim computations needed, and produce new values. Re-use cached intermediate results where the previous run wrote them (e.g., `tables/*.csv` for the PASS claims that did not change).
+5. **Regenerate affected markdown.** Identify which `source_file` (per the corrections row) each FAIL claim belongs to. Regenerate those files in full, using the new claim values and preserving all PASS-claim text. For claims that appear in multiple files (e.g., a count cited in `summary.md` and `profile-province.md`), update every occurrence.
+6. **Emit fresh outputs.** Write the new `claims.jsonl`, updated markdown, updated `tables/*.csv` for re-derived claims, and a `run.log` entry listing every `claim_id` that was re-derived plus a one-line note on the fix applied. `decisions.md` gains an iterate-mode block summarising the iteration: which claims were re-derived, which `fix_hint`s were ambiguous, which fixes worked, which didn't.
+
+**Stable `claim_id` requirement.** Iterate mode depends on `claim_id` being deterministic — given the same inputs, the proposer must assign the same IDs across runs. Suggested scheme: `<category>-<subset_path>-<descriptor-slug>` (e.g., `count-dataset-row-count`, `rate-province-Gallia-Narbonensis-geolocated`, `chisq-artefacts-midpoint-inflation`). Avoid timestamps, UUIDs, or position-dependent counters that change between runs.
+
+**No-progress detection (driver-side).** The driver checks whether the set of FAIL `claim_id`s changed between iterations. If two consecutive runs produce the same FAIL set, the loop terminates. You don't need to do anything special — just emit deterministic IDs and the driver handles termination.
 
 ### Output contract
 
@@ -38,7 +63,7 @@ Write to `output_dir`, always as files (never as per-row dumps to stdout):
 - `profile-{subset_name}.md` for each subset level — per-subset stats, top-20 groups, threshold-qualification counts.
 - `artefacts.md` — detailed results per artefact check plus the unexpected-pattern diagnostic.
 - `tables/*.csv` — machine-readable versions of every table referenced in the markdown.
-- `claims.jsonl` — **machine-readable enumeration of every numerical or factual claim made in the markdown reports.** One JSON object per line. Base fields: `{claim_id, category, description, value, units, source_method, source_file}`. Categories include `count`, `rate`, `percentage`, `mean`, `median`, `chisq`, `pvalue`, `ranking`, `threshold_qualifying`, `effect_size`, `ci_lower`, `ci_upper`, `permutation_pvalue`, `corrected_pvalue`, `diversity_index`, `concentration_share`, `correlation`, `test_statistic`. **Stochastic-category claims** (`permutation_pvalue`, `corrected_pvalue`, `ci_lower`, `ci_upper`) additionally include: `random_seed` (int; the seed used for the resample loop), `resamples` (int), `method_parameters` (object — at minimum `{null_model, correction_method, family_id}` for p-values; `{ci_method, resamples}` for CIs), `code_location` (`{file, function}` pointing to the implementation — typically `code/profile.py`). This is the primary input to the verifier.
+- `claims.jsonl` — **machine-readable enumeration of every numerical or factual claim made in the markdown reports.** One JSON object per line. Base fields: `{claim_id, category, description, value, units, source_method, source_file}`. `claim_id` **must be deterministic** — same input data + same invocation parameters must produce the same ID across runs, so iterate mode can match claims across iterations (see Iterate mode above). Categories include `count`, `rate`, `percentage`, `mean`, `median`, `chisq`, `pvalue`, `ranking`, `threshold_qualifying`, `effect_size`, `ci_lower`, `ci_upper`, `permutation_pvalue`, `corrected_pvalue`, `diversity_index`, `concentration_share`, `correlation`, `test_statistic`. **Stochastic-category claims** (`permutation_pvalue`, `corrected_pvalue`, `ci_lower`, `ci_upper`) additionally include: `random_seed` (int; the seed used for the resample loop), `resamples` (int), `method_parameters` (object — at minimum `{null_model, correction_method, family_id}` for p-values; `{ci_method, resamples}` for CIs), `code_location` (`{file, function}` pointing to the implementation — typically `code/profile.py`). This is the primary input to the verifier.
 - `decisions.md` — enumerate every judgement call encountered. For each: fact observed / default applied / alternatives considered / rationale / whether this warrants investigator review.
 - `run.log` — short tool-use trace for audit (what commands ran, with timings).
 
