@@ -384,7 +384,56 @@ These survive across sessions. Mark `[x]` with date when done.
     consolidated archive.
 - [ ] **Phase 0 — focused session**: archive layout consolidation.
   Sub-items (revised 2026-05-20 — rpi-server is now mount-only, NOT
-  install-target; see architectural-decision below):
+  install-target; see architectural-decision below).
+
+  **Progress as of 2026-05-22** (consolidation arc complete):
+
+  - [x] 2026-05-22 **Step 1** — LFS pull on map-reader-llm +
+    LLM-History-Paper; 535 MB / 184 LFS objects resolved; SHA-verified.
+  - [x] 2026-05-21 **Step 3** — Mount rpi-server SSD share via existing
+    `mount-rpi-shares` alias.
+  - [x] 2026-05-22 **Step 4a** — amd-tower → rpi-shares rsync; 1.4 GB
+    consolidated; 4/4 SHA spot-checks match.
+  - [x] 2026-05-22 **Step 4b** — zbook → rpi-shares rsync; +1.7 GB
+    (Pass 1: zbook's `~/cc-archives/`, 2,073 files / 1.89 GB;
+    Pass 2: per-project cc-sessions, 0 new files; Pass 3: per-project
+    `cc-interactions/` → `manual-exports/`, 185 files / 10.8 MB).
+    Sapphire inventoried, found clean (worktree stubs only).
+  - [x] 2026-05-22 **Step 5** — Manual exports parked under
+    `manual-exports/<project>/` (183 .txt files / ~15 MB across
+    blue-mountains, fieldmark-docs-staging, llm-reproducibility).
+  - [x] 2026-05-22 **Step 4.5 (added) — Layout cleanup** —
+    sub-categories nested under parent projects (`theseus-ship/` under
+    `LLM-History-Paper/`; `vlm-burial-mound-detection/` under
+    `map-reader-llm/`); non-session artefacts quarantined to
+    `_legacy-archive/`; cwd-derived buckets quarantined to `_misc-cwd/`;
+    3 new READMEs published on the mount; b80b94c6 SHA-divergence
+    triaged (not divergence — `/export`-vs-auto-archive content-equiv
+    pattern instance).
+
+  **Consolidation arc complete** — total 3.1 GB at the destination,
+  594 `session.jsonl*` files across 16 project_ids, 297 GB mount
+  headroom. Still pending in Phase 0:
+
+  - [ ] **Step 2** — Gemini Flex sweep of unarchived live JSONLs
+    (was scoped to amd-tower's 61 per the 2026-05-20 inventory; the
+    2026-05-22 cross-machine verifier surfaced a much larger pool:
+    1,024 + 2,043 + 17 = 3,084 live JSONLs across amd-tower + zbook +
+    sapphire). **API gate to be re-presented with the revised scope
+    + cost envelope.**
+  - [ ] **Steps 6-10** — `git lfs untrack`, `git rm --cached
+    archive/cc-sessions/` + gitignore in every project repo,
+    daily-sync.sh rsync step, `scripts/resolve_session_id.py`,
+    indexing pattern.
+  - [ ] **Content-equivalence dedup pass** (new follow-up 2026-05-22) —
+    `/export`-era duplicates inside `~/cc-archives/` ancestry now living
+    in the consolidated store. SHA dedup misses these; tractable via
+    file-extension-and-co-presence-within-session-dir as a marker.
+    Lower priority; cautious approach to avoid losing content that
+    only exists in the `/export` framing.
+
+  Original step definitions below (Steps 1, 3, 4, 5 retained for
+  historical context — execution details captured above):
 
   **Step 1 — Resolve Git LFS contents.** Two projects currently store
   transcripts via Git LFS, which means the per-project archive layer
@@ -775,6 +824,57 @@ reopen settled questions:
   existing pre-v2 backups at `~/cc-archives/pre-v2/` on rpi-server
   are legacy bootstrap artefacts and do NOT imply ongoing toolkit
   installation there.
+- **Consolidation is comprehensive across all working machines**, not
+  amd-tower-only (2026-05-22, scope expansion). The 2026-05-20 inventory
+  was explicitly amd-tower-scoped (zbook + rpi-server out of scope);
+  Phase 0 Step 4 as originally written rsynced only amd-tower sources.
+  Mid-Phase-0 on 2026-05-22, Shawn confirmed that the *earlier* intent
+  was always comprehensive consolidation across all working machines
+  (amd-tower + zbook + sapphire) — the scope-narrowing in the inventory
+  artefact hadn't carried that decision forward into continuity.md.
+  The 2026-05-22 cross-machine verifier + Step 4b zbook rsync close
+  this gap. sapphire is mount-only / rsync-only — its only CC content
+  was worktree stubs, byte-redundant with the consolidated store, so
+  no separate rsync from sapphire was needed. Going forward, any new
+  working machine added to Shawn's setup must also feed this single
+  source-of-truth.
+- **`/export`-vs-auto-archive content-equivalence dedup pattern**
+  (2026-05-22, surfaced + deferred). During an estimated ~30-day overlap
+  window (Nov-Dec 2025 era), Shawn was using the built-in `/export`
+  slash-command to manually export transcripts into `~/cc-archives/`
+  AT THE SAME TIME as auto-archive (via the toolkit hook) was capturing
+  live JSONLs into the same `~/cc-archives/` layout. The same session
+  may therefore exist twice: as `/export` output (likely `.md` or
+  `.txt`, different framing) and as `session.jsonl(.gz)`. SHA-based
+  dedup misses these because the framing differs. Existence proof: the
+  b80b94c6 triage on 2026-05-22 — 3 of 4 SHAs agreed on the auto-archive
+  version; one lone zbook outlier in `~/cc-archives/` was the `/export`
+  variant. Cleanup approach (deferred to post-Phase-0): file-extension-
+  and-co-presence-within-session-dir as a marker. **Caution**: `/export`
+  versions may carry framing or notes the auto-archive lacks — don't
+  blindly discard.
+- **Cwd-derived buckets live under `_misc-cwd/`, not at top level**
+  (2026-05-22). The consolidated store surfaced 11 sessions from zbook
+  where the toolkit's `project_id` had collapsed to the working
+  directory name because CC was launched outside any project repo
+  (8 from `~/Code/`, 3 from `~/`). Quarantined under `_misc-cwd/` rather
+  than left at top level as if they were project_ids — preserves the
+  data but signals it's an anti-pattern not a project.
+- **Future system/network troubleshooting under `personal-assistant/`**
+  (2026-05-22, working-practice decision). When CC needs to be launched
+  to investigate system / network / infrastructure issues outside any
+  specific project, the correct project repo is `personal-assistant/`
+  (which is broadly scoped for cross-project infrastructure work) —
+  NOT a bare home dir or a generic `~/Code/` invocation. Avoids
+  producing more `_misc-cwd/` entries and keeps project_ids semantically
+  informative.
+- **`HUMN8031-2026-S1` and `ANU-HUMN8031-2026` are distinct repos, not
+  duplicates** (2026-05-22 clarification). Both appear as top-level
+  project_ids in the consolidated archive; both relate to the same ANU
+  course but back two different repos — `HUMN8031-2026-S1` is Shawn's
+  private course-development workspace; `ANU-HUMN8031-2026` is the
+  shared student-facing materials repo. Naming-similar but semantically
+  distinct; do not merge.
 - **Consolidation destination: `~/mnt/rpi-shares/cc-archives-consolidated/`**
   (2026-05-21). The canonical cc transcript store lives on the
   rpi-server encrypted SSD share at
@@ -976,6 +1076,126 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-22 (Fri) — Phase 0 LFS pull + comprehensive consolidation + layout cleanup
+
+Long PA-infrastructure background session executing most of Phase 0 in
+one arc. Started with the two background-agent passes Shawn authorised
+(LFS pull + 61-live-onlys sweep) but the latter never fired — early in
+the session Shawn paused to confirm consolidation was actually done
+before any new API spend. That pivoted the sequence: rsync the existing
+corpus to rpi-shares first, verify across all working machines, then
+revisit the Gemini Flex sweep with full picture.
+
+**(1) Step 1 — LFS pull on map-reader-llm + LLM-History-Paper.**
+Dispatched as background agent. 535 MB / 184 LFS objects resolved in
+~28 s combined. Per-project archive contents now byte-identical to
+canonical worktree (5 SHA-256 spot-checks match on map-reader-llm;
+5 file-type confirms — `gzip compressed data`, magic bytes `1f 8b` — on
+LLM-History-Paper). Read-only on remotes; no history changes.
+
+**(2) map-reader-llm fetch + commit + push.** map-reader-llm was 35
+commits behind origin/main with pre-existing dirty state. Stashed the
+modified `logs/phase3a-recovery-overnight/launch-summary.md`,
+fast-forwarded (no rebase needed), unstashed, added `.claude/worktrees/`
+to `.gitignore` with a rationale comment, and pushed two focused
+commits: `0efda174 chore(gitignore): ignore .claude/worktrees/` and
+`b740da63 docs(logs): record phase3a-recovery campaign-halt postmortem`.
+Working tree clean post-push.
+
+**(3) Step 4a — amd-tower rsync to rpi-shares.** Dispatched as
+background agent. 4 rsync passes (3 per-project + 1 legacy global;
+worktree skipped as byte-redundant per 2026-05-21 SHA verification);
+plus Step 5 (3 `archive/cc-interactions/` → `manual-exports/<project>/`).
+1.4 GB consolidated. 4/4 SHA spot-checks match. Surfaced layout
+anomalies the inventory hadn't flagged: pre-toolkit hand-rolled archive
+scaffolding (CATALOG.json files, query templates, `queries/`,
+`examples/`) inside source `archive/cc-sessions/` trees rsynced into
+the dest root, plus sub-category dirs (`theseus-ship/`,
+`vlm-burial-mound-detection/`) as siblings of project_ids. Pass 1 also
+clobbered the dest README I wrote 2026-05-21 (no `--ignore-existing` on
+Pass 1).
+
+**(4) Cross-machine verifier.** Shawn flagged that consolidation needed
+to be comprehensive across amd-tower + zbook + sapphire, not just
+amd-tower — and that continuity.md hadn't captured this earlier
+intent. Dispatched read-only verifier agent SSH'ing to zbook + sapphire
++ amd-tower, inventorying all CC transcript locations, comparing
+SHA-256 against the rpi-shares destination. Findings: amd-tower clean
+(0 gaps), zbook has 363 actionable real-content files / 1.83 GB not in
+dest (mostly in zbook's `~/cc-archives/` legacy global which doesn't
+exist on amd-tower), sapphire effectively clean (only worktree stubs).
+Plus 62 zbook + 86 sapphire "conflicts" all in the worktree-stub
+byte-redundancy pattern (ignorable). One size-match SHA-diff at
+`b80b94c6/session.jsonl.gz` flagged for triage.
+
+**(5) Step 4b — zbook rsync.** Dispatched background agent. 3 passes,
+all `--ignore-existing` so amd-tower content stays authoritative.
+Pass 1 (zbook `~/cc-archives/`): 2,073 files / 1.89 GB. Pass 2
+(per-project `archive/cc-sessions/`): 0 new files (all redundant).
+Pass 3 (per-project `archive/cc-interactions/` → `manual-exports/`):
+185 files / 10.8 MB. 4/4 SHA spot-checks match. Surfaced 12 new
+top-level dirs + 1 file at root (CATALOG.json) — most legitimate
+zbook-only project archives (FAIMS3, vivienne, absence-judgement,
+TRAP-WD-2020-04, trap-extraction); a few needed disposition (Code,
+shawn, lowercase `llm-history-paper`, HUMN8031-2026-S1).
+
+**(6) Layout cleanup.** Direct Bash + Write ops on the SSHFS mount
+(metadata-only renames, instant). Three groups:
+
+- **Sub-categories under their parent projects**: `theseus-ship/`
+  (50 sessions, pre-toolkit era) → `LLM-History-Paper/theseus-ship/`;
+  `vlm-burial-mound-detection/` (100 sessions, pre-toolkit era) →
+  `map-reader-llm/vlm-burial-mound-detection/` (map-reader-llm/ already
+  at top level from zbook's legacy archive).
+- **Non-session artefacts quarantined to `_legacy-archive/`**: 2 dirs
+  (`queries/`, `examples/`) + 5 root-level files (`archive-defaults.yaml`,
+  `catalog.json`, `CATALOG.json`, `CATALOG.md`, `metadata-todo.md`).
+  Likely to be discarded after triage; consolidated here for inspection.
+- **Cwd-derived buckets to `_misc-cwd/`**: `Code/` (8 sessions launched
+  from `~/Code/` directly) and `shawn/` (3 sessions launched from `~/`).
+  System/network troubleshooting work; new working-practice decision
+  recorded (see architectural decisions below).
+
+Plus: deleted 5 empty subdirs (4 in `manual-exports/` + lowercase
+`llm-history-paper/`); wrote 3 new READMEs (consolidated root,
+`_legacy-archive/`, `_misc-cwd/`) replacing the source-clobbered one.
+
+**(7) b80b94c6 triage.** Verifier had flagged this as possible real
+divergence; triage proved otherwise. SHAs across 4 known copies: 3 of
+4 agree on `d0938f2d...` (the auto-archive JSONL output across dest +
+2 zbook per-project paths); only zbook's `~/cc-archives/theseus-ship/`
+holds the lone outlier `c4cc2504...`. Exactly the
+`/export`-vs-auto-archive content-equivalent-but-byte-different pattern
+Shawn outlined mid-session. Resolved as instance of deferred dedup
+work, not a real divergence.
+
+**Phase 0 consolidation final state**: 3.1 GB total at
+`~/mnt/rpi-shares/cc-archives-consolidated/`, 594 `session.jsonl*`
+files across 16 project_ids + 4 reserved namespaces (`_indexes/`,
+`_legacy-archive/`, `_misc-cwd/`, `manual-exports/`) + 183 manual `.txt`
+exports. 297 GB headroom remaining on the rpi-shares mount.
+
+**Step 2 scope re-framing**: the multi-machine verifier revealed
+1,024 + 2,043 + 17 = 3,084 live JSONLs across all three machines (the
+"61 unarchived" from the 2026-05-20 inventory was specifically the
+amd-tower-archived-and-needing-F3 subset). Materially expands the
+eventual Gemini Flex sweep envelope. To be re-presented to the API
+gate after this continuity commit lands.
+
+- Background agents dispatched: 4 (Step 1 LFS pull; Step 4a amd-tower
+  rsync; cross-machine verifier; Step 4b zbook rsync)
+- New rpi-shares files (on the mount): `cc-archives-consolidated/README.md`
+  (rewritten post-cleanup), `cc-archives-consolidated/_legacy-archive/README.md`,
+  `cc-archives-consolidated/_misc-cwd/README.md`,
+  `cc-archives-consolidated/manual-exports/README.md`
+- New commits in map-reader-llm: `0efda174` (gitignore), `b740da63`
+  (logs/launch-summary postmortem)
+- Architectural decisions added below: 5 new ones (comprehensive
+  consolidation scope; `/export`-vs-auto-archive dedup pattern;
+  `_misc-cwd/` for cwd-derived buckets; future system-troubleshooting
+  under `personal-assistant/`; HUMN8031-2026-S1 ≠ ANU-HUMN8031-2026)
+- Commits pending — to be made after this continuity update lands
 
 ### 2026-05-21 (Thu) — Phase 0 destination resolved; rpi-shares layout published
 
