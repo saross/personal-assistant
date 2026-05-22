@@ -331,7 +331,7 @@ until first non-CC API spend.
 
 | Pair | Status | Closed loop? |
 |---|---|---|
-| `lit-scout` + `lit-scout-verifier` | single-round shipped 2026-04-19; closed-loop wired 2026-05-22 — both sides emit machine-readable blocks via HTML-comment markers (sub-agent Write of report files is blocked, so the driver extracts inline); `/lit-scout-iterate` driver added | **yes** — closed; smoke-test pending |
+| `lit-scout` + `lit-scout-verifier` | single-round shipped 2026-04-19; closed-loop wired 2026-05-22 — both sides emit machine-readable blocks via HTML-comment markers (sub-agent Write of report files is blocked, so the driver extracts inline); `/lit-scout-iterate` driver added; **smoke-tested on Bayesian-archaeology query 2026-05-22 — PASS in 2 iterations**; **Zotero staging-import wired 2026-05-22** (driver now auto-imports the corrected Findings table into a dated subcollection under `My Library → staging` after termination, closing the BibTeX-correction-propagation gap) | **yes** — closed; smoke-tested; Zotero-integrated |
 | `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver; **smoke-tested on LIRE v3.0 2026-05-22** — PARTIAL verdict on iter-0 (81/83 PASS, 2 PARTIAL, 0 FAIL), loop terminated per policy without entering iterate mode; `documentation_defect` status added to the contract from the smoke-test calibration (commit `2e89bd1`) | **yes** — closed; plumbing confirmed; iterate-mode behaviour still unexercised |
 | `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22; closed-loop wired same day after lit-scout smoke-test confirmed the pattern — proposer emits claims block (per source-type catalogue); verifier emits corrections block with `severity` × `failure_type` two-axis classification and `documentation_defect` status; `/prior-art-scout-iterate` driver added | **yes** — closed; smoke-test pending |
 
@@ -433,15 +433,75 @@ until first non-CC API spend.
   calibration responses. `failure_type` is now in
   `prior-art-scout-verifier`; small spec edits will land it in
   `lit-scout-verifier` and `data-profile-verifier` for symmetry.
-- [ ] **BibTeX correction-propagation gap** (lit-scout-specific).
-  The iterate-mode correction lives in the markdown / JSONL
-  output but `lit-search.py bibtex` re-queries CrossRef and
-  recovers the raw (uncorrected) value, so the user-facing .bib
-  is still wrong on rows the loop corrected. Two fix paths
-  (driver-side post-processing of the .bib, or a
-  `lit-search.py bibtex --corrections` flag that overlays the
-  verified values); defer until rubric calibration is further
-  along per the smoke-test note 2026-05-22.
+- [x] 2026-05-22 **BibTeX correction-propagation gap closed by
+  Zotero staging-import path** (lit-scout-specific). The
+  iterate-mode correction now reaches the user's Zotero library
+  directly via `scripts/lit-scout-zotero-import.py` (author field
+  populated from the corrected `claims.jsonl`, journal-article
+  fields from a fresh CrossRef fetch). The standalone `.bib`
+  file is now a backup deliverable rather than the primary
+  destination, and remains uncorrected on iterate-mode rows
+  pending the deferred `lit-search.py bibtex --corrections`
+  flag. Real-world validation: row 16 Lanos/Philippe arrived in
+  Zotero with `lastName='Lanos'` (correct) where the .bib
+  version still has `author={Philippe, Lanos and Anne, Philippe}`
+  (wrong) — concrete demonstration of the gap and its closure.
+- [x] 2026-05-22 **Zotero staging-import for `/lit-scout-iterate`
+  shipped.** New script `scripts/lit-scout-zotero-import.py`
+  (~430 lines, dry-run default, `--limit N` for smoke-testing,
+  manifest-based idempotency). Driver spec
+  `commands/lit-scout-iterate.md` now invokes it on every
+  terminal verdict except LEGACY_PROPOSER; imports go to a
+  dated subcollection `YYYY-MM-DD-<query-slug>` under
+  `My Library → staging` (key `IX8XR97K`). Dedups against all
+  16 local Zotero libraries by DOI via sqlite. Tags every
+  imported item with `lit-scout-staging`, `lit-scout-run:TS`,
+  `lit-scout-fit:<level>`, `lit-scout-cluster:<slug>`, plus
+  `lit-scout-unverified:<field>` for any FAIL / PARTIAL /
+  UNVERIFIABLE claim. Validated end-to-end on the smoke-test
+  workspace: 30 items created in subcollection `3C7UZ5AC`, 5
+  group-library duplicates correctly skipped, manifest at
+  `/tmp/lit-scout-iterate-20260522-190212/zotero-import-manifest.json`.
+  Required env vars (`ZOTERO_LIBRARY_ID`,
+  `ZOTERO_API_KEY_PERSONAL`, `ZOTERO_STAGING_COLLECTION`) live
+  in `~/personal-assistant/.env`. Operational note: pyzotero
+  embeds the API key as a URL path segment in `GET /keys/<key>`
+  and dumps it into traceback strings on 403 — exception output
+  is not safe to forward into shared logs.
+- [ ] **Fix manifest `items_skipped` dedup on re-runs.** Cosmetic
+  bug in `scripts/lit-scout-zotero-import.py` (~line 460):
+  on re-invocation, the merge logic appends the new run's
+  skipped-DOI list to the prior run's without deduping by DOI,
+  so a workspace re-imported twice ends up with each
+  group-library duplicate counted twice in
+  `items_skipped`. Zotero state remains correct (the actual
+  Zotero items aren't re-created); only the manifest count
+  inflates. Fix: dedupe by `doi` (case-insensitive) when
+  merging `prior_skipped + plan_skip`. Same pattern applies
+  to `prior_failed + failed_live`.
+- [ ] **Promote proposer Zotero dedup to DOI-based.** The
+  lit-scout proposer's `[IN ZOTERO]` flag in the Findings table
+  is title/creator-based (via `scripts/zotero.py:search_items`).
+  Smoke test 2026-05-22 surfaced the gap: proposer flagged 2 of
+  5 actual duplicates; the staging-import script's DOI-based
+  sqlite query caught all 5. Fix: add a `find_by_doi(doi)`
+  function to `scripts/zotero.py` and have the proposer call it
+  first, falling back to text search only when DOI is absent.
+  Reduces wasted CrossRef fetches and clarifies the table for
+  the user before staging-import even runs.
+- [ ] **Update `global-claude-md/zotero-reference.md`** to
+  document the new env vars introduced 2026-05-22:
+  `ZOTERO_API_KEY_PERSONAL` (personal write + all-groups read)
+  and `ZOTERO_STAGING_COLLECTION` (the top-level staging
+  collection key under My Library). Convention: when a workflow
+  needs writes to a specific library, use a target-suffixed
+  variable name like `ZOTERO_API_KEY_<TARGET>` rather than
+  the bare `ZOTERO_API_KEY` (which `sync-to-zotero.py` still
+  reads and which is now a separate Paper-B-scoped key under
+  `ZOTERO_API_KEY_PAPER_B`). Also document the bash-hyphen
+  trap (`ZOTERO_API_KEY_PAPER-B=...` parses as a command and
+  leaks the value in the error message — happened once
+  2026-05-22; key was revoked and reissued).
 
 **Reference docs for the closed-loop pairs:**
 
@@ -451,6 +511,9 @@ until first non-CC API spend.
 - `/lit-scout-iterate` driver: `~/personal-assistant/commands/lit-scout-iterate.md`
 - lit-scout proposer: `~/personal-assistant/agents/lit-scout.md`
 - lit-scout verifier: `~/personal-assistant/agents/lit-scout-verifier.md`
+- lit-scout Zotero staging-import: `~/personal-assistant/scripts/lit-scout-zotero-import.py`
+  (run after `/lit-scout-iterate` terminates; auto-invoked by the driver
+  on any terminal verdict except `LEGACY_PROPOSER`)
 - `/prior-art-scout-iterate` driver: `~/personal-assistant/commands/prior-art-scout-iterate.md`
 - prior-art-scout proposer: `~/personal-assistant/agents/prior-art-scout.md`
 - prior-art-scout verifier: `~/personal-assistant/agents/prior-art-scout-verifier.md`
