@@ -322,3 +322,46 @@ were designed for the *between-class* problem or the *within-class
 match-to-target* problem. The frames look identical until you try to
 run them on a single-author corpus and three of four metrics become
 undefined.
+
+
+## 2026-05-22 (late evening): Severity-only classification can't calibrate proposer trust — verifier output needs a typed `failure_type` axis
+
+Smoke-tested `/lit-scout-iterate` on a Bayesian-dating bibliography
+query: 175 claims across 35 rows × 5 verifiable fields; iter-0
+returned 1 FAIL (row 16 authors — CrossRef family/given encoding
+swap on "Lanos & Philippe"), iter-1 converged PASS by substituting
+the verified value. Convergence rate 1/175 = 0.57 % — much lower
+than the prior-art smoke test (3/18 = 17 %) on the same day. Two
+clean data points: well-indexed academic corpora (CrossRef + S2
+coverage) produce few confabulations; LLM-tooling prior-art (recent
+repos, mixed registries, blog posts) produces many.
+
+The architectural finding that matters more: the single FAIL was
+classified `severity: high`, but it was *mechanically* an
+`encoding_artefact` (CrossRef returned `family="Philippe"` for an
+author widely known as Lanos), not a `confabulation` (proposer
+inventing from memory). Both deserve high severity for the iterate
+loop's prioritisation, but they call for very different calibration
+responses over time — "the source API is noisy" is *not* a signal
+to distrust the proposer; "the proposer invented this" *is*.
+
+Generalises: any verification system that emits a single
+"wrongness" axis can't separate proposer-failure from
+source-failure, which undermines the closed loop's ability to
+calibrate trust. The fix is a typed second axis. We landed
+`failure_type ∈ {confabulation, encoding_artefact, metadata_drift,
+stale_count}` in `prior-art-scout-verifier`; the lit-scout and
+data-profile verifiers need the same backport for symmetry, and
+the driver gains a per-iteration `failure_type` distribution table
+as the calibration log that the rubric needs to evolve. Spec
+in `agents/prior-art-scout-verifier.md` "Severity rubric and
+failure_type axis" section; commit `c4e8139` for the
+prior-art-scout retrofit that introduced it.
+
+Bonus from the same smoke test: iterate-mode corrections do **not**
+propagate to BibTeX. `lit-search.py bibtex` re-queries CrossRef and
+recovers the raw (uncorrected) value, so the user-facing .bib is
+still wrong on rows the loop corrected. Two fix paths (driver-side
+post-processing or a `lit-search.py bibtex --corrections` flag);
+deferred until rubric calibration is further along. Captured as
+a follow-up item in workstream H.

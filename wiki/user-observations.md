@@ -434,3 +434,79 @@ at first mention, with the trade-off framed against Shawn's
 commercial-Fieldmark context.
 
 [x] accept   [ ] edit   [ ] discard
+
+### Candidate 22: PM-mode steering — short, high-leverage corrections rather than design debate
+
+The agent-orchestration upskilling session ran on Shawn driving at
+milestone boundaries (cost discipline deferred; rename for symmetry;
+smoke-test before next pair; calibration findings folded forward) while
+I implemented between them. Pushbacks were typically one or two
+sentences — not extended dialogue, just specific corrections. Examples:
+"let's put #4 on the back burner for now (but /remember it)";
+"agent pair called 'data-profile-proposer' / 'data-profile-verifier'"
+(reframing rename request); "we can stop here". The session closed
+three closed-loop pairs in one arc without any extended design debate.
+
+Pattern: Shawn explicitly articulated this as "PM rather than
+pair-programmer" mode in the opening message. He reserves attention
+for the high-leverage steering moments and trusts implementation to be
+roughly right between them. Heuristic for me: in PM-mode sessions,
+keep implementation moving without volunteering uncertainty unless the
+choice is load-bearing; surface design questions only when the trade-off
+is real and the user's call materially changes downstream work. The
+short-pushback cadence is the signal that the mode is working — if I
+start getting longer corrections, the implementation is drifting.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 23: Cross-session smoke-test → spec-edit loop as a deliberate workflow
+
+Shawn ran the `/lit-scout-iterate` smoke test in a fresh session, brought
+the results back to this session as a structured post-run note (per the
+test prompt I'd drafted earlier), and the findings drove two concrete
+spec edits: the `failure_type` axis added to `prior-art-scout-verifier`,
+and the BibTeX correction-propagation gap captured as a deferred item.
+The pattern repeated twice across the session — first with the
+data-profile smoke test (which surfaced `documentation_defect`), then
+with lit-scout. The test prompts I'd drafted ("Read in this order, then
+await direction... Surprises are the data.") were the explicit enabler:
+they captured the resumption context cleanly enough that the fresh
+session ran without me, and the post-run note format meant findings
+came back in a directly-actionable shape.
+
+Pattern: the loop separates *design attention* (in the original session)
+from *execution attention* (in the fresh smoke-test session) without
+losing context across the boundary. Heuristic for me: when handing off
+to a fresh session for smoke-testing or substantive work, always
+provide a paste-able test prompt that includes (a) reading order with
+file paths, (b) await-direction discipline, (c) explicit reporting
+shape for findings. The drafted post-run-note structure (verdict +
+trajectory + calibration recommendation framed as concrete spec edit)
+is the key — vague "tell me what happened" doesn't produce
+spec-editable feedback.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 24: Deferral with explicit anchor — operational pragmatism, not avoidance
+
+When I proposed cost/capacity discipline as #4 of the upskilling
+next-steps, Shawn deferred immediately: "let's put #4 on the back burner
+for now (but /remember it), since I am so far using only my CC Max
+plan. When I start making API calls to Anthropic, we'll pursue #4."
+This isn't avoidance — it's deferral with an explicit trigger condition
+(first non-CC API spend), an explicit memory-write so the deferred item
+can't be lost, and an explicit reason (current ground truth is CC Max
+plan, where prompt caching and Batch API don't apply). The same
+discipline showed up later when accepting the V1/V2 framing on iterate
+mode's "DOI doesn't resolve" handling (remove row in V1; defer
+replacement-paper search to V2).
+
+Pattern: real-but-not-yet-load-bearing concerns get deferred with
+anchors, not half-implemented or repeatedly debated. Heuristic for me:
+when proposing a next-step the user defers, capture (a) what would
+trigger picking it back up, (b) why it doesn't apply now, (c) a memory
+or workstream entry that survives the conversation. Don't shortcut to
+"maybe later" without these — the anchor is what makes deferral
+honest.
+
+[ ] accept   [ ] edit   [ ] discard

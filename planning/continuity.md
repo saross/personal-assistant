@@ -1487,6 +1487,129 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-22 (Fri, late evening) — Agent-orchestration upskilling: three closed-loop pairs landed
+
+Long meta / agent-design session running parallel to the Phase 0 and
+style-guide work. The arc: discuss next steps in the upskilling
+roadmap, then close all three remaining proposer-verifier loops in
+one session (data-profile, lit-scout, prior-art-scout), incorporating
+two calibration findings from real smoke tests (one mine, one a
+concurrent session's). Workstream H ("Agent-orchestration upskilling
+— closed-loop proposer-verifier pairs") now covers the discipline
+as an explicit meta-workstream.
+
+**(1) Roadmap recall + #1 build.** Recalled the 2026-04-18 craft
+notebook entries on agent orchestration, identified four next
+steps (verifier for prior-art, close data-profile loop, retrofit
+lit-scout, cost discipline). User chose to defer #4 (cost
+discipline) until non-CC API spend begins — captured as a
+`commitment` memory. Built `prior-art-scout-verifier` (~250 lines,
+source-type dispatch for GitHub / PyPI / npm / HF / DOI / generic
+URL); updated `prior-art-scout` to emit the
+`⚠ VERIFICATION PENDING` marker (explicit pair contract).
+Commit `36721a7`.
+
+**(2) Smoke-tested the new pair on a real query.** Prior-art for
+"corpus-grounded LLM author-voice style guides" — proposer
+returned 18 candidates; verifier (run via general-purpose
+fallback because the new agent only registers at next session
+start) caught 3 hard failures in 17 % of rows, including a URL
+that pointed at a topic-aggregator page rather than the real
+repo (`github.com/Hiro-Inagawa/write-like-me`, MIT). The
+correction materially changed the build-vs-adopt verdict from
+"build from scratch" to "read the README first, fork-vs-build
+is now a live decision". Report saved at
+`notes/prior-art-runs/llm-style-alignment-2026-05-22.md`. Commit
+`fe625ee` in data submodule.
+
+**(3) Closed the data-profile loop.** Renamed
+`data-profile-scout` → `data-profile-proposer` for naming
+symmetry. Added `corrections.jsonl` emission (machine-readable
+per-claim audit with stable claim_id, status, severity,
+fix_hint). Added iterate-mode (preserve PASS, re-derive FAIL via
+fix_hint, regenerate affected markdown). Built
+`/data-profile-iterate` driver — cap N=5, FAIL-only iteration,
+PARTIAL flag-without-iterate, no-progress termination. Commit
+`fab2e0e`. Continuity workstream H added in `dfe13c0`.
+
+**(4) Closed the lit-scout loop.** Same retrofit pattern as
+data-profile but with one architectural quirk: sub-agents are
+blocked from Write on `.md` files (2026-04-19 v4.x evaluation),
+so the closed-loop transport uses **inline fenced jsonl blocks
+with HTML-comment markers** that the driver extracts via
+`awk | sed`. Proposer emits 5 claims per DOI-bearing row
+(authors / year / title / citation_count / doi_resolves);
+verifier emits per-field corrections with severity + tolerance
+bands. `/lit-scout-iterate` driver added. Commit `a1d9ede`.
+
+**(5) Real smoke test of `/lit-scout-iterate`.** User ran on
+"Bayesian methods for archaeological dating and chronological
+modelling": 35 rows × 5 categories = 175 claims; iter-0 returned
+1 FAIL (row 16 authors, CrossRef family/given swap, severity:
+high); iter-1 converged PASS. The FAIL was a textbook
+encoding artefact, not a confabulation — but the single-axis
+severity rubric couldn't distinguish those. **User
+recommendation**: split the severity field into severity ×
+`failure_type` axes where `failure_type ∈ {confabulation,
+encoding_artefact, metadata_drift, stale_count}`. Two bonus
+findings: doi_resolves removal path NOT exercised (clean corpus
+— follow-up test should target a confabulation-prone domain);
+and the iterate-mode correction does NOT propagate to BibTeX
+(`lit-search.py bibtex` re-queries CrossRef and gets the raw
+swap back).
+
+**(6) Retrofitted prior-art-scout (last unconverted pair) with
+calibrations folded in from the start.** Incorporated:
+(a) `failure_type` axis (from #5 above) as a typed second axis on
+every FAIL / `documentation_defect` claim; (b)
+`documentation_defect` status (from the concurrent data-profile
+smoke-test session 2026-05-22 evening — landed there as commit
+`2e89bd1` — non-iterating status for source_method-string defects
+where the numeric value reproduces). Per-source-type claim
+catalogue (GitHub: url_resolves/name/stars/last_active/language/
+license; PyPI: url_resolves/name/latest_version/last_upload/
+license; etc.). `/prior-art-scout-iterate` driver mirrors
+`/lit-scout-iterate` with one new feature: the final report
+includes a per-iteration `failure_type` distribution table for
+calibration over time. Commit `c4e8139`.
+
+**(7) Workstream H updated throughout** as each pair landed. By
+session-close all three pairs are marked **closed-loop wired**;
+remaining items in workstream H are smoke-test
+`/prior-art-scout-iterate`, synthetic-FAIL test for
+data-profile iterate-mode, backport `failure_type` to lit-scout
+and data-profile verifiers for symmetry, and the deferred BibTeX
+correction-propagation gap.
+
+- Files added (agents): `agents/prior-art-scout-verifier.md` (`36721a7`);
+  `agents/data-profile-proposer.md` (renamed from
+  `data-profile-scout.md`, `fab2e0e`).
+- Files modified (agents): `agents/prior-art-scout.md` (verification
+  marker + iterate-mode + claims block);
+  `agents/data-profile-verifier.md` (corrections.jsonl + tolerance
+  bands + severity rubric — user added `documentation_defect`
+  status in `2e89bd1` from concurrent session);
+  `agents/lit-scout.md` (iterate-mode + per-row claims block);
+  `agents/lit-scout-verifier.md` (per-field tolerance bands +
+  severity + corrections block);
+  `agents/prior-art-scout-verifier.md` (tolerance bands +
+  severity × failure_type + documentation_defect + corrections
+  block).
+- Files added (commands): `commands/data-profile-iterate.md`,
+  `commands/lit-scout-iterate.md`,
+  `commands/prior-art-scout-iterate.md` (symlinked into
+  `~/.claude/commands/`).
+- Files modified (planning): `planning/continuity.md` —
+  workstream G addition (style-guide construction, line ~262);
+  workstream H addition (closed-loop pairs, line ~314); session
+  log entry above.
+- Files added (notes): `notes/prior-art-runs/llm-style-alignment-2026-05-22.md`
+  (in data submodule).
+- Memories: one manual `/remember` (deferred cost discipline) +
+  auto-extracted memories from session activity.
+- Commits this session (main repo): `36721a7`, `fab2e0e`,
+  `dfe13c0`, `a1d9ede`, `c4e8139`. Data submodule: `fe625ee`.
+
 ### 2026-05-22 (Fri, afternoon→evening) — Step 2 sweep + toolkit audit-cycle + Gemini 3.5 Flash migration + Phase C-D-E
 
 Long PA-infrastructure session continuing the morning's Phase 0 work.
