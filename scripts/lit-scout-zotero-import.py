@@ -50,6 +50,7 @@ import re
 import sqlite3
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -96,7 +97,7 @@ def load_env(path: Path = ENV_PATH) -> None:
     """Source key=value pairs from .env into os.environ if not already set."""
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -130,7 +131,7 @@ def find_final_iteration(workspace: Path) -> Path:
 def load_claims(path: Path) -> list[dict]:
     """Load a JSONL file of claim or correction records."""
     out = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -221,9 +222,7 @@ def parse_findings_table(report_md: Path) -> dict[str, dict[str, str]]:
 
 def fetch_crossref(doi: str, client: httpx.Client) -> dict | None:
     """Return the raw `message` block of a CrossRef works/<doi> record."""
-    url = f"{CROSSREF_BASE}/works/{httpx.URL(doi).path or doi}"
     # CrossRef wants the DOI as a path segment with `/` URL-encoded.
-    import urllib.parse
     url = f"{CROSSREF_BASE}/works/{urllib.parse.quote(doi, safe='')}"
     try:
         r = client.get(url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT)
@@ -340,9 +339,17 @@ def build_zotero_item(
     cr_type = crossref_msg.get("type", "")
     item_type = CROSSREF_TO_ZOTERO_TYPE.get(cr_type, "journalArticle")
 
-    # Title: prefer the claims value (corrected), else CrossRef.
-    title = (claims_for_doi.get("title") or {}).get("value") \
-        or (crossref_msg.get("title") or [""])[0]
+    # Title: prefer the claims value (corrected, even if it is the
+    # empty string) over CrossRef; only fall back to CrossRef when the
+    # claims-side value is absent or None. Direct `or` would skip a
+    # legitimately empty correction and silently restore the CrossRef
+    # title, drifting away from the verifier's output.
+    title_claim = (claims_for_doi.get("title") or {}).get("value")
+    title = (
+        title_claim
+        if title_claim is not None
+        else (crossref_msg.get("title") or [""])[0]
+    )
 
     # Year/date: claims has integer year; CrossRef date is richer.
     year = (claims_for_doi.get("year") or {}).get("value")
@@ -360,7 +367,10 @@ def build_zotero_item(
         date_str = str(year)
 
     # Authors: corrected value from claims, parsed back to creators.
-    authors_str = (claims_for_doi.get("authors") or {}).get("value", "")
+    # Use `is None` so a verifier-corrected empty string (no authors
+    # asserted) is preserved verbatim instead of silently falling back.
+    authors_claim = (claims_for_doi.get("authors") or {}).get("value")
+    authors_str = "" if authors_claim is None else authors_claim
     creators = parse_author_string(authors_str) if authors_str else []
 
     # Container fields from CrossRef.
@@ -474,6 +484,50 @@ def ensure_subcollection(zot, parent_key: str, name: str) -> str:
 
 
 # ----------------------------------------------------------------------------
+# Manifest merge helpers
+# ----------------------------------------------------------------------------
+
+
+def merge_manifest_entries_by_doi(
+    prior: list[dict],
+    current: list[dict],
+) -> list[dict]:
+    """
+    Merge two manifest entry lists, deduping by case-insensitive DOI.
+
+    Manifest entries (items_skipped, items_failed) carry a ``doi`` key
+    plus payload fields (``existing``, ``reason``, ``error``) whose
+    shape varies by source. The merge keeps insertion order — prior
+    entries first, then current entries — and on collision keeps the
+    *current* entry (the fresh run is canonical for whichever fields
+    the source last produced). Entries missing a ``doi`` are kept
+    verbatim and not deduped against each other.
+
+    Why: pre-2026-05-23 the manifest was rewritten as ``prior + current``
+    with no deduplication, so re-importing the same workspace inflated
+    the counts (each group-library duplicate counted once per re-run).
+    Zotero state was always correct — only the manifest count drifted.
+    """
+    seen: dict[str, int] = {}
+    merged: list[dict] = []
+    for entry in list(prior) + list(current):
+        doi = entry.get("doi")
+        # Treat None, non-string, empty, or whitespace-only DOIs as
+        # "no key for deduplication" — keep verbatim, do not collide.
+        if not isinstance(doi, str) or not doi.strip():
+            merged.append(entry)
+            continue
+        key = doi.strip().lower()
+        if key in seen:
+            # Current entry overwrites prior at the same index.
+            merged[seen[key]] = entry
+        else:
+            seen[key] = len(merged)
+            merged.append(entry)
+    return merged
+
+
+# ----------------------------------------------------------------------------
 # Main flow
 # ----------------------------------------------------------------------------
 
@@ -517,19 +571,6 @@ def run_import(args: argparse.Namespace) -> int:
     # Parse the Findings table from the corrected (verifier) report
     table = parse_findings_table(final_iter / "report.md")
 
-    # Derive run timestamp from the workspace name
-    ws_name = workspace.name
-    m = re.search(r"(\d{8}-\d{6})", ws_name)
-    run_ts = m.group(1) if m else datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    run_date = datetime.strptime(run_ts[:8], "%Y%m%d").strftime("%Y-%m-%d")
-
-    # Subcollection name
-    query = args.query or "untitled-query"
-    subcoll_name = f"{run_date}-{slugify_query(query)}"
-
-    # Open sqlite for dedup
-    conn = sqlite3.connect(f"file://{ZOTERO_SQLITE}?immutable=1", uri=True)
-
     # Manifest-based idempotency: skip DOIs already imported by a prior
     # invocation against this workspace. Useful for the 1-item-smoke-test
     # → finish-the-rest workflow, where the Zotero desktop sync may not
@@ -538,17 +579,62 @@ def run_import(args: argparse.Namespace) -> int:
     previous_manifest = None
     already_imported: set[str] = set()
     if manifest_path.exists():
-        previous_manifest = json.loads(manifest_path.read_text())
-        already_imported = {
-            entry["doi"].lower()
-            for entry in previous_manifest.get("items_created", [])
-        }
-        if already_imported:
+        try:
+            previous_manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (json.JSONDecodeError, OSError) as exc:
             print(
-                f"# Previous manifest at {manifest_path.name} — "
-                f"skipping {len(already_imported)} already-imported DOIs",
+                f"WARNING: prior manifest at {manifest_path} could not "
+                f"be parsed ({exc.__class__.__name__}: {exc}); treating "
+                f"this run as a fresh import. The corrupt manifest will "
+                f"be overwritten.",
                 file=sys.stderr,
             )
+            previous_manifest = None
+        if previous_manifest:
+            already_imported = {
+                entry["doi"].lower()
+                for entry in previous_manifest.get("items_created", [])
+            }
+
+    # Derive run timestamp from the workspace name. Prefer the prior
+    # manifest's stable run_ts on re-runs (so re-imports stay grouped
+    # under one `lit-scout-run:TS` tag) and only fall back to the
+    # current time when the workspace name has no embedded timestamp
+    # AND there is no prior manifest to anchor the run.
+    ws_name = workspace.name
+    m = re.search(r"(\d{8}-\d{6})", ws_name)
+    if m:
+        run_ts = m.group(1)
+    elif previous_manifest:
+        prior_imported_at = previous_manifest.get("imported_at", "")
+        # imported_at is an ISO-8601 string like "2026-05-22T19:02:12+00:00".
+        # Strip non-digits to recover a YYYYMMDDHHMMSS-style stem; fall back
+        # to current time if the field is missing or malformed.
+        digits = re.sub(r"\D", "", prior_imported_at)[:14]
+        run_ts = (
+            f"{digits[:8]}-{digits[8:14]}"
+            if len(digits) == 14
+            else datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        )
+    else:
+        run_ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_date = datetime.strptime(run_ts[:8], "%Y%m%d").strftime("%Y-%m-%d")
+
+    # Subcollection name
+    query = args.query or "untitled-query"
+    subcoll_name = f"{run_date}-{slugify_query(query)}"
+
+    if already_imported:
+        print(
+            f"# Previous manifest at {manifest_path.name} — "
+            f"skipping {len(already_imported)} already-imported DOIs",
+            file=sys.stderr,
+        )
+
+    # Open sqlite for dedup
+    conn = sqlite3.connect(f"file://{ZOTERO_SQLITE}?immutable=1", uri=True)
 
     # CrossRef client
     cr_client = httpx.Client(headers={"User-Agent": USER_AGENT})
@@ -679,14 +765,20 @@ def run_import(args: argparse.Namespace) -> int:
         "subcollection_name": subcoll_name,
         "query": query,
         "items_created": prior_created + created,
-        "items_skipped": prior_skipped + [
-            {"doi": doi, "existing": hits} for doi, hits in plan_skip
-        ],
-        "items_failed": prior_failed + [
-            {"doi": doi, "reason": reason} for doi, reason in plan_failed
-        ] + failed_live,
+        "items_skipped": merge_manifest_entries_by_doi(
+            prior_skipped,
+            [{"doi": doi, "existing": hits} for doi, hits in plan_skip],
+        ),
+        "items_failed": merge_manifest_entries_by_doi(
+            prior_failed,
+            [
+                {"doi": doi, "reason": reason}
+                for doi, reason in plan_failed
+            ]
+            + failed_live,
+        ),
         "previous_invocations": (previous_manifest or {}).get("previous_invocations", []) + (
-            [{"imported_at": previous_manifest["imported_at"]}]
+            [{"imported_at": previous_manifest.get("imported_at", "")}]
             if previous_manifest else []
         ),
     }
