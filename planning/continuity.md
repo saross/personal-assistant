@@ -1550,6 +1550,54 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-23 (Sat) — Zotero collection writer: workstream-H follow-ups + /audit closure
+
+Close-out session for the lit-scout Zotero staging-import workstream H.
+Landed the three follow-ups carried over from 2026-05-22 (sync-to-zotero
+env-var rename to `ZOTERO_API_KEY_PAPER_B`, manifest `items_skipped`
+dedup-on-merge, DOI-first proposer dedup via new `find_by_doi` in
+`scripts/zotero.py` with `agents/lit-scout.md` Phase 5 wired to use it).
+Then ran `/audit` on the session diffs per Shawn's request — surfaced
+3 Mediums and 4 Lows on workstream-H code, all addressed in-session.
+Most consequential finding: `find_by_doi`'s SQL did `LOWER(doi) = LOWER(?)`
+exact match, which would have silently missed Zotero items stored with
+`https://doi.org/…` or `doi:…` prefixes — partially undermining the 5/5
+catch advantage the function was added for. Fix: chained SQL `REPLACE`
+on both sides plus a Python `_normalise_doi()` helper covering the five
+common URL/scheme prefixes (`https://`, `http://`, `https://dx.`,
+`http://dx.`, `doi:`). Closed with a reference-doc update covering the
+full target-suffixed env-var convention, all three env vars in a single
+table, and the bash hyphen-trap warning that cost a key revocation
+2026-05-22. **Zotero collection writer is now closed.**
+
+- Commits (5):
+  - `e2d12ac` fix(scripts): rename sync-to-zotero key to PAPER_B
+  - `4f50ce9` feat(zotero): DOI-first dedup in lit-scout proposer
+  - `ae3c141` fix(zotero-import): manifest dedup + audit fixes
+  - `af3209a` docs(wiki): accept user-observation candidates 28-31
+  - `190daf5` docs: close workstream-H Zotero writer TODOs
+- Workstream H ticks: items at continuity.md L471 (`items_skipped`
+  dedup), L482 (DOI-based proposer dedup), L492 (zotero-reference.md
+  update) all `[x] 2026-05-23`. Session-log summary block updated to
+  reflect (c)/(d)/(e)/(f) closure.
+- Scripts touched: `scripts/zotero.py` (+109 lines, `find_by_doi` +
+  `_normalise_doi`), `scripts/lit-scout-zotero-import.py` (+128/-36,
+  `merge_manifest_entries_by_doi` + 7 audit fixes), `scripts/sync-to-zotero.py`
+  (env-var rename, 14 lines).
+- Docs touched: `global-claude-md/zotero-reference.md` (+99 lines —
+  new API Credentials section, target-suffixed convention,
+  bash-hyphen-trap, Lit-scout Staging Import section);
+  `agents/lit-scout.md` (Phase 5 + Zotero dedup tool section updated
+  for DOI-first); `wiki/user-observations.md` (candidates 28-31 accepted).
+- Verification: all fixes smoke-tested against live Zotero DB before
+  commit. `find_by_doi('10.1017/RDC.2020.59')`, URL-form variant,
+  lowercased variant all return same key `BP7KAMA3`; whitespace +
+  empty + unknown all return `[]`. `merge_manifest_entries_by_doi`
+  self-merge idempotency + whitespace-strip dedup confirmed.
+- Out of scope: 4 Lows in `scripts/sync-to-zotero.py` predate
+  workstream H (only the env-var rename touched that file this
+  workstream) — captured as deferrable follow-ups; not blocking.
+
 ### 2026-05-22 (Fri night → Sat early) — /lit-scout-iterate smoke test + Zotero staging-import shipped
 
 Follow-on session immediately after the three-closed-loop-pairs work

@@ -691,3 +691,111 @@ real. Reserve dry-runs for the moment immediately before the live
 write, not for the design phase.
 
 [x] accept   [ ] edit   [ ] discard
+
+### Candidate 32: Verification gate inserted exactly at "ready to commit"
+
+When I said "Not committed. Want me to commit … or hold for now?",
+the response was not "go ahead" — it was *"before you commit, can you
+run /audit over any new or modified code?"*. The /audit pass turned up
+real findings (3 Mediums + 4 Lows including the DOI URL-form gap that
+partially undermined `find_by_doi`'s own raison d'être). The verification
+gate was inserted at the natural decision point — not earlier (would
+have audited speculative code) and not later (would have audited a
+committed-and-pushed diff that's harder to amend cleanly).
+
+Pattern: ready-to-commit is a high-value gate where adversarial review
+is cheap and amendable. Don't conflate "tests pass + smoke test green"
+with "audit-clean"; the second is a different failure surface.
+
+Heuristic for me: when I've added non-trivial new code in a session,
+proactively offer `/audit` (or an equivalent line-by-line review pass)
+*before* asking about commit — not after. Frame it as part of the
+shipping cycle, not as an optional extra. Especially when the new code
+makes a verifiable claim (here: "5/5 DOI catch") that an audit can
+falsify against assumptions.
+
+[ ] accept   [ ] edit   [x] discard
+
+### Candidate 33: Audit scope chosen narrow, then expanded twice based on findings
+
+When I offered three scope options for the `/audit` pass (my session
+diffs / all code since last audit / new files only), Shawn picked
+narrow ("My session diffs only — Recommended"). Then after the audit
+returned, Shawn expanded scope twice: first to "my new code + the
+zotero-reference.md doc fix" (one Medium I'd surfaced as cross-file
+follow-on), then again — explicitly correcting my framing — to
+"all workstream-H code", noting that `lit-scout-zotero-import.py` was
+shipped in this same workstream and so its pre-existing Mediums *were*
+in scope.
+
+Pattern: start narrow, expand based on what the findings actually
+warrant. Asking for broad scope upfront would have either over-audited
+(spending subagent budget on out-of-scope code) or under-committed
+(picking a scope before knowing what's in it). The narrow-then-expand
+trajectory is information-efficient.
+
+The correction-on-scope-framing is also notable: I'd treated
+`lit-scout-zotero-import.py`'s pre-existing Mediums as "separable
+follow-ups", and Shawn pulled them back into scope by pointing out the
+workstream membership. I'd drawn a temporal line (today vs. before
+today) where the right line was workstream-based (workstream-H code
+vs. legacy). Worth holding onto: "this workstream" is often the right
+scope unit, not "this session".
+
+[ ] accept   [ ] edit   [x] discard
+
+### Candidate 34: "Can we call this done?" answered with "code yes, docs half-open" instead of "yes"
+
+When Shawn asked *"ok, can we call the work on the zotero collection
+writer done?"*, the lowest-friction answer was "yes — all your asks
+are landed". The honest answer was "code yes, but the doc TODO from
+continuity.md asked for four things and my commit only covered one of
+them". I went with honest, including a small table breaking down what
+was done vs. still half-open. Shawn picked "close it now" without
+hesitation.
+
+Pattern: when "are we done?" arrives, satisficing is the failure
+mode. The cost of surfacing a half-finished item is 10 minutes of
+session time; the cost of letting it pass under "done" is that it
+becomes invisible until the next audit (or never). Specifically,
+the bash-hyphen-trap warning — explicitly captured as a follow-up
+because it had already cost a key revocation — was the most
+operationally important of the four sub-items, and would have been
+silently dropped under a satisfied "yes".
+
+Heuristic for me: when answering a "are we done?" question, decompose
+the artefact (code / docs / tests / continuity) and answer per
+component, even when the user's framing is monolithic. If any
+component is partial, name it. Make the partial state legible rather
+than rolling it into a defensible-but-incomplete "yes".
+
+[x] accept   [ ] edit   [ ] discard
+
+### Candidate 35: Five logical commits accepted without pushback — keep splitting
+
+The "please commit and push" instruction was followed by a 5-commit
+logical split (env-var rename / DOI-first dedup / writer audit-fixes /
+user-observation acceptance / doc closure) rather than one bundled
+commit. Each commit had a clean subject under 50 chars, a body
+explaining the why, and a reviewable diff. Shawn didn't push back on
+the split, and (per the CLAUDE.md preference *"Break large changes
+into logical, focused commits — one thing per commit"*) it was the
+right call.
+
+The 5-commit handoff for a single session is on the upper end of what
+makes sense, but each commit was independently meaningful — the writer
+audit-fixes commit (`ae3c141`) bundles eight related fixes because they
+form one logical "address audit findings" unit, while the env-var
+rename (`e2d12ac`) stays separate because it's a different concern.
+
+Pattern: "one thing per commit" doesn't mean "one file per commit" or
+"one line per commit" — it means one *logical concern* per commit.
+Multiple related fixes can bundle if they're answers to the same
+question. Multiple unrelated fixes in the same file should still
+split, even if the diff is small.
+
+Heuristic confirmed: when committing at the end of a session, draft
+the commit boundaries before staging. Group by *why*, not by *where*
+in the tree.
+
+[x] accept   [ ] edit   [ ] discard

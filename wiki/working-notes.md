@@ -545,6 +545,86 @@ Anchors: `scripts/zotero.py:search_items` (current text-based impl);
 SQL query); the dry-run output in this session's transcript showing
 the 5-vs-2 split with named DOIs.
 
+## 2026-05-23: `/audit` on workstream-H code (post-ship) found 3 Mediums + 4 Lows the e2e validation missed
+
+Empirical baseline for the "ship working code, then audit before
+committing follow-ups" workflow. The lit-scout Zotero staging-import
+(`scripts/lit-scout-zotero-import.py`) shipped 2026-05-22 with full
+end-to-end validation: 30 items created in Zotero, manifest dedup
+correct, iterate-mode correction round-tripped to the row-16 author
+field. By the standard "does it work?" gate, the script was done.
+
+Today's session added three small follow-ups (env-var rename, manifest
+dedup helper, `find_by_doi` + proposer wiring), then ran `/audit` on
+the diffs before commit. The audit pass spawned three parallel
+subagents (one per touched `.py` file) per `commands/audit.md`.
+Findings on workstream-H code (excluding the `sync-to-zotero.py`
+Lows which predate the workstream): **3 Mediums + 4 Lows in
+`lit-scout-zotero-import.py`** that the smoke test couldn't have
+surfaced. They were patterns, not bugs visible on a single run:
+
+- Title/authors precedence used `X or fallback` so a verifier-corrected
+  empty string would silently fall back to CrossRef.
+- Dead-code line (`url = …` overwritten by the next line) hiding a
+  buried `import urllib.parse` inside the function body.
+- `previous_manifest["imported_at"]` direct subscript (KeyError mid-write
+  on a hand-edited manifest → orphan items with no manifest record).
+- `read_text()` without `encoding="utf-8"` on `.env` + JSONL.
+- `json.loads(prior_manifest)` no try/except — corrupt manifest aborts.
+- `run_ts` drift on re-runs of workspaces without an embedded timestamp.
+
+Most consequential finding came from auditing the new code I'd just
+written: `find_by_doi`'s `LOWER(doi) = LOWER(?)` SQL would have silently
+missed Zotero items stored with `https://doi.org/…` or `doi:…` prefixes
+— partially undermining the 5/5 catch advantage the function was being
+added for. Fixed with chained SQL `REPLACE` on both sides + a
+`_normalise_doi()` helper.
+
+**Principle:** "passes end-to-end on one workspace" and "audit-clean
+under adversarial line-by-line read" are different gates with
+different failure surfaces. The first catches behaviour on the happy
+path; the second catches edge-case patterns that may never fire in a
+single smoke test. Workstream-H code that ships under deadline
+pressure should get an `/audit` pass before the *next* commit batch,
+not deferred to the next session — context is loaded, fixes are
+cheap, follow-ups bundle naturally with the new work.
+
+Anchors: today's commits `ae3c141`, `4f50ce9` (audit-driven fixes
+folded in); `/audit` subagent reports captured in chat transcript;
+session log entry 2026-05-23 in `planning/continuity.md`.
+
+## 2026-05-23: DOI dedup must normalise URL/scheme prefixes on both sides — bare-DOI match alone undercaught
+
+Calibration measurement extending the 2026-05-22 "DOI dedup catches
+2.5× more" entry above. Initial `find_by_doi` in `scripts/zotero.py`
+used `LOWER(idv.value) = LOWER(?)` — exact match after lowercasing.
+On the Zotero corpus, that would have silently missed any item the
+user pasted as `https://doi.org/10.x/y` (browser-bookmarklet form)
+or `doi:10.x/y` (some citation-manager exports), and matched only
+bare-DOI entries. The 5/5 catch claim was tested on a corpus that
+happened to have bare DOIs everywhere — empirically right but
+not robust.
+
+Fixed by normalising both sides:
+
+- Python side: `_normalise_doi()` strips whitespace, lowercases, and
+  strips the five common URL/scheme prefixes (`https://doi.org/`,
+  `http://doi.org/`, `https://dx.doi.org/`, `http://dx.doi.org/`,
+  `doi:`) before passing the bare DOI as the SQL parameter.
+- SQL side: chained `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(idv.value),
+  …))))) = ?` to strip the same five prefixes from the stored value
+  before comparison. Verified across bare, URL-wrapped, lowercased,
+  and unknown forms.
+
+Principle: when a function's correctness depends on string equality
+across user-curated data, the input space is wider than the test
+corpus shows. Normalise canonical forms on both sides; don't assume
+the corpus is the input space.
+
+Anchors: `scripts/zotero.py:_normalise_doi` + `find_by_doi`
+(commit `4f50ce9`); /audit subagent finding at the same line range;
+session-log 2026-05-23 in `planning/continuity.md`.
+
 ## 2026-05-22 (night): Anti-confabulation discipline failure — misread a Python dict literal
 
 Recorded as a concrete instance of the failure mode the global
