@@ -468,7 +468,7 @@ until first non-CC API spend.
   embeds the API key as a URL path segment in `GET /keys/<key>`
   and dumps it into traceback strings on 403 — exception output
   is not safe to forward into shared logs.
-- [ ] **Fix manifest `items_skipped` dedup on re-runs.** Cosmetic
+- [x] 2026-05-23 **Fix manifest `items_skipped` dedup on re-runs.** Cosmetic
   bug in `scripts/lit-scout-zotero-import.py` (~line 460):
   on re-invocation, the merge logic appends the new run's
   skipped-DOI list to the prior run's without deduping by DOI,
@@ -479,7 +479,7 @@ until first non-CC API spend.
   inflates. Fix: dedupe by `doi` (case-insensitive) when
   merging `prior_skipped + plan_skip`. Same pattern applies
   to `prior_failed + failed_live`.
-- [ ] **Promote proposer Zotero dedup to DOI-based.** The
+- [x] 2026-05-23 **Promote proposer Zotero dedup to DOI-based.** The
   lit-scout proposer's `[IN ZOTERO]` flag in the Findings table
   is title/creator-based (via `scripts/zotero.py:search_items`).
   Smoke test 2026-05-22 surfaced the gap: proposer flagged 2 of
@@ -489,7 +489,7 @@ until first non-CC API spend.
   first, falling back to text search only when DOI is absent.
   Reduces wasted CrossRef fetches and clarifies the table for
   the user before staging-import even runs.
-- [ ] **Update `global-claude-md/zotero-reference.md`** to
+- [x] 2026-05-23 **Update `global-claude-md/zotero-reference.md`** to
   document the new env vars introduced 2026-05-22:
   `ZOTERO_API_KEY_PERSONAL` (personal write + all-groups read)
   and `ZOTERO_STAGING_COLLECTION` (the top-level staging
@@ -1640,9 +1640,16 @@ Zotero is now the primary deliverable; BibTeX is backup.
 this session): (a) BibTeX correction-propagation gap closed
 [x] 2026-05-22 (Zotero-import path replaces it); (b) Zotero
 staging-import shipped [x] 2026-05-22; (c) manifest `items_skipped`
-dedup-on-merge bug [ ]; (d) promote proposer Zotero dedup to
-DOI-based [ ]; (e) update `global-claude-md/zotero-reference.md`
-with the new env-var convention and bash-hyphen-trap warning [ ].
+dedup-on-merge bug [x] 2026-05-23; (d) promote proposer Zotero dedup
+to DOI-based [x] 2026-05-23; (e) update
+`global-claude-md/zotero-reference.md` with the new env-var convention
+and bash-hyphen-trap warning [x] 2026-05-23. Plus
+(f) `sync-to-zotero.py` rename to `ZOTERO_API_KEY_PAPER_B` [x]
+2026-05-23 (the bare `ZOTERO_API_KEY` consumer is now retired).
+A post-fix `/audit` pass against the workstream-H code surfaced 3
+Mediums and 4 Lows in `scripts/lit-scout-zotero-import.py` plus DOI
+URL-normalisation in `scripts/zotero.py`; all addressed in the same
+session. Zotero collection writer is now closed.
 
 - Files added (scripts): `scripts/lit-scout-zotero-import.py`
   (~430 lines; dry-run default; `--limit` smoke-test mode;
