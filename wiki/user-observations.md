@@ -605,7 +605,7 @@ into empirical territory rather than memory territory, which is where
 my errors disproportionately live (per the anti-confabulation rule
 and Candidate 27's lineage).
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
 
 ### Candidate 29: My "defer until later" logic gets overridden by adjacent design moves
 
@@ -630,7 +630,7 @@ design question comes up, I can ask: "does this change the
 assumption that made X a defer?" Often it will, and the deferral can
 be retired with the move.
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
 
 ### Candidate 30: AskUserQuestion as decision-scaffolding, not satisficing
 
@@ -657,7 +657,7 @@ Heuristic: use the tool when I can write a credible Recommended
 label AND ≥2 alternatives that a reasonable user might pick. Skip
 otherwise.
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
 
 ### Candidate 31: Real-empirical-testing as the design-mode default
 
@@ -690,4 +690,4 @@ Heuristic: in design mode, when a real run is technically possible
 real. Reserve dry-runs for the moment immediately before the live
 write, not for the design phase.
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
