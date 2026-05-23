@@ -172,7 +172,12 @@ venv/bin/python3 scripts/sync-to-zotero.py [--dry-run] [--limit N] [--verbose]
 **Key requirements:**
 
 - `pyzotero` library (install: `venv/bin/pip install pyzotero`)
-- `ZOTERO_LIBRARY_ID` and `ZOTERO_API_KEY` env vars (in `.env`)
+- `ZOTERO_LIBRARY_ID` and `ZOTERO_API_KEY_PAPER_B` env vars (in `.env`).
+  The bare `ZOTERO_API_KEY` name was retired 2026-05-22 in favour of the
+  target-suffixed `ZOTERO_API_KEY_<TARGET>` convention; this script reads
+  the Paper-B-scoped key. See workstream H in `planning/continuity.md`
+  for the full convention and the related `ZOTERO_API_KEY_PERSONAL` key
+  used by `scripts/lit-scout-zotero-import.py`.
 - The memory's `zotero_key` field must contain a valid 8-character
   alphanumeric Zotero item key (pattern `^[A-Z0-9]{8}$`). Memories with
   legacy keys (citation slugs, DOIs, arXiv IDs) are skipped with a warning

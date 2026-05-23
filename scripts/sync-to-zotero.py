@@ -14,8 +14,12 @@ Usage:
     venv/bin/python3 scripts/sync-to-zotero.py [--dry-run] [--limit N] [--verbose]
 
 Environment variables:
-    ZOTERO_LIBRARY_ID — Your Zotero user or group library ID
-    ZOTERO_API_KEY    — API token with write access to notes
+    ZOTERO_LIBRARY_ID      — Your Zotero user or group library ID
+    ZOTERO_API_KEY_PAPER_B — API token with write access to notes
+                             (Paper-B-scoped under the target-suffixed
+                             naming convention adopted 2026-05-22; see
+                             workstream H in planning/continuity.md and
+                             global-claude-md/zotero-reference.md).
 """
 
 from __future__ import annotations
@@ -297,11 +301,11 @@ def build_zotero_client() -> Any:
     Raises if credentials are missing or pyzotero is not installed.
     """
     library_id = os.environ.get("ZOTERO_LIBRARY_ID")
-    api_key = os.environ.get("ZOTERO_API_KEY")
+    api_key = os.environ.get("ZOTERO_API_KEY_PAPER_B")
     if not library_id or not api_key:
         raise RuntimeError(
-            "ZOTERO_LIBRARY_ID and ZOTERO_API_KEY must be set in the "
-            "environment (see ~/personal-assistant/.env)."
+            "ZOTERO_LIBRARY_ID and ZOTERO_API_KEY_PAPER_B must be set "
+            "in the environment (see ~/personal-assistant/.env)."
         )
 
     try:
