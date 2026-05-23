@@ -107,15 +107,30 @@ Check what the user already has. The Zotero database is at
 ```bash
 /home/shawn/personal-assistant/venv/bin/python3 -c "
 import sys; sys.path.insert(0, '/home/shawn/personal-assistant/scripts')
-from zotero import search_items
-results = search_items('search_term', limit=5)
-for r in results:
-    print(f'{r[\"key\"]}: {r[\"title\"][:80]}')
+from zotero import find_by_doi, search_items
+# DOI-first (exact, cross-library, case-insensitive). Falls back to
+# text search only for DOI-less candidates.
+hits = find_by_doi('10.1234/example')
+if not hits:
+    hits = search_items('title or author terms', limit=5)
+for h in hits:
+    lib = h.get('library_name', '?')
+    print(f'{h[\"key\"]}: [{lib}] {h[\"title\"][:80]}')
 "
 ```
 
-Queries are case-insensitive via LIKE. Flag papers the user already
-has as [IN ZOTERO].
+`find_by_doi` matches the DOI field across every local library
+(case-insensitive). `search_items` is title/abstract/creator LIKE-based
+and is the fallback for candidates with no DOI. Flag papers the user
+already has as [IN ZOTERO].
+
+**Why DOI-first:** the 2026-05-22 smoke test caught 2/5 actual
+duplicates via text search vs 5/5 via DOI-based query (n=35). Text
+search misses items the user added with truncated or differently
+capitalised titles; the DOI field is canonical. The staging-import
+script (`scripts/lit-scout-zotero-import.py`) already dedups by DOI
+post-hoc, but flagging at proposer time clarifies the Findings table
+for the user before the import even runs.
 
 ## Mandatory metadata verification (Guard A)
 
@@ -218,6 +233,15 @@ Report both.
 ### Phase 5: Zotero deduplication
 
 Check all candidates against Zotero. Flag as [IN ZOTERO] or NEW.
+
+**DOI-first, text-fallback.** For each candidate, call
+`find_by_doi(doi)` from `scripts/zotero.py`; only fall back to
+`search_items` for candidates with no DOI. Exact DOI match is
+canonical across all local libraries (personal + groups); text search
+is approximate and misses items with truncated or differently
+capitalised titles. See "Zotero deduplication" under
+**Available tools** for the call signature and the rationale (2026-05-22
+smoke test: 2/5 vs 5/5 catch on n=35).
 
 ### Phase 6: Metadata verification
 

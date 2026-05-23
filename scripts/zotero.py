@@ -380,6 +380,115 @@ def search_items(
         conn.close()
 
 
+# Common URL/scheme prefixes that Zotero users sometimes paste in front
+# of a bare DOI. Stripped on both sides of the comparison in find_by_doi
+# so that e.g. "10.1/abc", "https://doi.org/10.1/abc", and "doi:10.1/abc"
+# all match each other. Lowercase form only — comparison is done after
+# LOWER() on both sides.
+_DOI_URL_PREFIXES = (
+    "https://doi.org/",
+    "http://doi.org/",
+    "https://dx.doi.org/",
+    "http://dx.doi.org/",
+    "doi:",
+)
+
+
+def _normalise_doi(doi: str) -> str:
+    """Strip URL/scheme prefixes and whitespace; return bare lowercase DOI."""
+    s = doi.strip().lower()
+    for prefix in _DOI_URL_PREFIXES:
+        if s.startswith(prefix):
+            return s[len(prefix):]
+    return s
+
+
+def find_by_doi(doi: str) -> list[dict[str, Any]]:
+    """
+    Return all items across every local library whose DOI field matches.
+
+    Matching is case-insensitive on the canonical Digital Object
+    Identifier (DOI) string and tolerant of common URL/scheme wrappers
+    (``https://doi.org/``, ``http://dx.doi.org/``, ``doi:``) on either
+    side of the comparison. Designed for proposer-side deduplication
+    (lit-scout Phase 5): given a candidate's DOI, return any existing
+    Zotero entries so the proposer can flag them as [IN ZOTERO] without
+    relying on title/creator text matching.
+
+    Falsy or whitespace-only ``doi`` returns an empty list — callers
+    should fall back to ``search_items`` for DOI-less candidates.
+
+    Returns:
+        List of item dicts from ``_build_item_dict``, augmented with a
+        ``library_name`` field whose value is either the literal string
+        ``"My Library"`` (for items in the user's personal library) or
+        the Zotero group name (for items in a group library). Empty
+        list if no match (item is NEW).
+
+    Comparison with proposer's pre-2026-05-23 ``search_items`` flow:
+    a 2026-05-22 smoke test (n=35) caught 2/5 actual duplicates via
+    text search vs 5/5 via this DOI-based query. See workstream H in
+    planning/continuity.md.
+    """
+    if not doi or not doi.strip():
+        return []
+
+    bare_doi = _normalise_doi(doi)
+
+    conn = _connect()
+    cur = conn.cursor()
+
+    try:
+        # The DOI field can be stored as a bare DOI or wrapped in any
+        # of the URL/scheme prefixes in _DOI_URL_PREFIXES. Strip those
+        # from the stored value via chained REPLACE before comparing
+        # against the already-normalised bare_doi parameter.
+        cur.execute(
+            """
+            SELECT DISTINCT
+                i.itemID, i.key, it.typeName,
+                COALESCE(g.name, 'My Library') AS library_name
+            FROM items i
+            JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+            JOIN itemData id ON i.itemID = id.itemID
+            JOIN fields f ON id.fieldID = f.fieldID
+            JOIN itemDataValues idv ON id.valueID = idv.valueID
+            JOIN libraries l ON i.libraryID = l.libraryID
+            LEFT JOIN groups g ON l.libraryID = g.libraryID
+            WHERE f.fieldName = 'DOI'
+              AND REPLACE(
+                    REPLACE(
+                      REPLACE(
+                        REPLACE(
+                          REPLACE(LOWER(idv.value),
+                            'https://doi.org/', ''),
+                          'http://doi.org/', ''),
+                        'https://dx.doi.org/', ''),
+                      'http://dx.doi.org/', ''),
+                    'doi:', ''
+                  ) = ?
+              AND it.typeName NOT IN ('attachment', 'note')
+              AND i.itemID NOT IN (
+                  SELECT itemID FROM deletedItems
+              )
+            """,
+            (bare_doi,),
+        )
+
+        results = []
+        for row in cur.fetchall():
+            item = _build_item_dict(
+                cur, row["itemID"], row["key"], row["typeName"]
+            )
+            item["library_name"] = row["library_name"]
+            results.append(item)
+
+        return results
+
+    finally:
+        conn.close()
+
+
 def get_item(item_id_or_key: str | int) -> dict[str, Any] | None:
     """
     Retrieve full metadata for a single Zotero item.
