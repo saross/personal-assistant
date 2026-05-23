@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 Bake-off runner: side-by-side quality comparison of Anthropic Claude Haiku 4.5
-(Batch API) vs Google Gemini 3 Flash Preview (Flex tier) for auto-generating
+(Batch API) vs Google Gemini 3.5 Flash (Flex tier) for auto-generating
 session metadata in Shawn Ross's personal-assistant system.
+
+Originally landed for the 2026-05-18 Haiku-vs-Gemini-3-Flash-Preview
+bake-off; updated 2026-05-23 to default to Gemini 3.5 Flash (the
+current production extractor per the 2026-05-22 toolkit migration).
 
 The runner has two provider adapters that share an identical user prompt (the
 contents of ``prompt.md``). The same N session transcripts are sent to each
@@ -58,7 +62,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
-GEMINI_MODEL = "gemini-3-flash-preview"
+GEMINI_MODEL = "gemini-3.5-flash"
 MAX_OUTPUT_TOKENS = 1024  # JSON object — well under any provider ceiling.
 
 # Anthropic Haiku 4.5 list price (USD per million tokens). Batch is -50%.
@@ -66,8 +70,13 @@ HAIKU_INPUT_PRICE_PER_MTOK = 1.00
 HAIKU_OUTPUT_PRICE_PER_MTOK = 5.00
 HAIKU_BATCH_DISCOUNT = 0.50
 
-# Gemini 3 Flash Preview Flex list price (USD per million tokens) as per
-# https://ai.google.dev/gemini-api/docs/pricing#flex (verified 2026-05-17).
+# Gemini Flex list price (USD per million tokens). Values below are the
+# 2026-05-17-verified Gemini 3 Flash Preview numbers; Shawn confirmed
+# 2026-05-23 that Gemini 3.5 Flash is ~3× the Preview rate (so input
+# ~0.75, output ~4.50). **Re-verify against
+# https://ai.google.dev/gemini-api/docs/pricing#flex before any live
+# bake-off run** — preview-tier prices have shifted on short notice in
+# the past, and these constants drive every cost estimate in this file.
 GEMINI_FLEX_INPUT_PRICE_PER_MTOK = 0.25
 GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK = 1.50
 

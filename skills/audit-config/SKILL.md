@@ -76,7 +76,7 @@ Report as a table:
 
 | Field | Identical? | Value(s) | Classification |
 |-------|-----------|----------|---------------|
-| model | YES | gemini-3-flash | Controlled |
+| model | YES | gemini-3.5-flash | Controlled |
 | examples | NO | [differs per pool] | MANIPULATED — expected |
 | temperature | YES | 0.7 | Controlled |
 | ... | ... | ... | ... |

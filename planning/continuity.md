@@ -186,16 +186,36 @@ the bundled prompt with env var `CC_AUTO_METADATA_PROMPT_PATH`.
   uses `_ensure_gemini_api_key`; cost line shows ~$0.027/session;
   `update_metadata` now writes Three Ps natively (was preserving empty
   defaults from prior Haiku schema).
-- [ ] **F3: Backfill 307 historic sessions** — **BLOCKED on Shawn's
-  approval after live-output review.** Est. ~$8.30 (Gemini Flex
-  one-shot, ~$0.027/session). Requires explicit gate approval per the
-  API Call Review Gate in `~/.claude/CLAUDE.md`.
+- [ ] **F3: Backfill 32 historic sessions** — **BLOCKED on Shawn's
+  approval after live-output review.** Revised estimate post-2026-05-22
+  Gemini 3.5 Flash migration (3× the 3-Flash-Preview rate) and
+  2026-05-19 sampler refinement: **~$3.78 mean / ~$8.37 p90** on
+  amd-tower's 32 sessions needing backfill. Requires explicit gate
+  approval per the API Call Review Gate in `~/.claude/CLAUDE.md`. The
+  earlier ~$8.30 / 307-session figure conflated total sessions with
+  needing-F3 subset — see 2026-05-20 inventory.
 - [ ] **F4: QA pass on ~20 sampled backfill outputs** — gates declaring
   workstream F done. Compare against bake-off rubrics
   (`review-rubric-populated-final.md`).
-- [ ] **Re-verify Gemini model ID at GA** — currently "Preview"; expect
-  rename (`gemini-3-flash`?). Set a calendar nudge for next major
-  release.
+- [x] 2026-05-22 **Migrate extractor from Gemini 3 Flash Preview to
+  Gemini 3.5 Flash** — 3× price accepted for zero JSON defects + better
+  named-entity preservation (toolkit commit `cdc7c65`).
+- [x] 2026-05-23 **Close char/4 heuristic calibration gap** — toolkit
+  commit `917ac13`. `cc_session_toolkit.transcript_text` gains
+  `extract_transcript_text_for_gemini` (two-pass: heuristic first cut,
+  then real-tokeniser verify; re-truncate at observed chars/token × 0.92
+  margin if first pass over-budget). `archive.generate_auto_metadata`
+  wires `client.models.count_tokens` as the calibration callback (free
+  per Google's docs). Smoke-tested on b089991e: 1.17M Gemini tokens
+  (over 1M ceiling) → 730K (under 850K budget); 318K headroom under
+  ceiling. 8 new tests; 257 total passing. PA venv reinstalled via
+  `pip install -e ~/Code/cc-session-toolkit`. Closes the
+  1-in-111-output (0.9 %) graceful-degrade failure mode surfaced by
+  the 2026-05-23 F3 quality-assessment agent.
+- [ ] **Re-verify Gemini model ID at GA** — `gemini-3.5-flash` is the
+  current shipping ID and behaves as GA on the API (no -preview suffix
+  required; ID accepted by both `generate_content` and `count_tokens`).
+  Watch is now for any future rename of the 3.5 family.
 
 **What Shawn does after a few SessionEnds fire:**
 
@@ -1044,7 +1064,7 @@ Five categories:
 
 - [x] 2026-05-18 **SessionStart-hook sidecar for `commit_at_start`** — `hooks/session-start-code-state.py` writes `data/code-state/<session_id>.json`; `cc_session_toolkit/archive.py:capture_code_state()` now takes `session_id` + `sidecar_dir` kwargs and reads the sidecar best-effort. Hook wired into `settings.json` SessionStart array. Tests: 6 new in `test_subagent_archive.py`; full toolkit 220 passing.
 - [x] 2026-05-18 **Hook hardening (`~/.claude/settings.json:91,112`)** — replaced `export $(grep -v '^#' ... | xargs)` with `set -a && . ~/personal-assistant/.env && set +a` on both PreCompact + SessionEnd archive commands. The Python `.env`-fallback pattern (`_ensure_anthropic_api_key` → `_ensure_gemini_api_key` post-F1) is retained inside `cc_session_toolkit.archive` as belt-and-braces.
-- [ ] **`pg_trgm` extension missing on `claude_memories` DB** — `idx_memories_content_trgm` (`scripts/schema.sql:79`) has been silently failing to create. Non-critical (full-text search uses a different index). Either run `sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION pg_trgm;"` or drop the index from schema.sql.
+- [x] 2026-05-23 **`pg_trgm` extension missing on `claude_memories` DB** — re-verified live: extension is loaded (`pg_trgm` in `pg_extension`) and `idx_memories_content_trgm` exists on `memories` (`schema.sql:83-84`; L79 in earlier notes was off-by-four). No action needed; the continuity entry was stale. Date of original landing unknown — both already present at pickup. See also duplicate entry below (audit-deferred list) closed same date.
 - [x] 2026-05-18 **`scripts/bake-off-metadata.py` tidy-up**: (a) `--yes` flag added (bypasses interactive `input()` for non-interactive runs); (b) `haiku_apply` path now navigates to `<root>/haiku/` to match where `haiku_submit` persists `batch-state.json`; print hint in submit updated to print `out_dir.parent` so the copy-paste is correct.
 
 **Audit follow-ups (from 2026-05-19 code audit across 21 files / ~10,800 lines):**
@@ -1156,10 +1176,12 @@ Deferred (with reason):
   (`scripts/sync-to-postgres.py:798`): loads entire JSONL (~10MB) into
   memory. Fine at current scale; could become a problem at 100k+
   records. Defer.
-- [ ] **`pg_trgm` extension missing** (carry-over from 2026-05-18):
-  `idx_memories_content_trgm` (`scripts/schema.sql:79`) silently fails
-  to create. Either run `sudo -u postgres psql -d claude_memories -c "CREATE EXTENSION pg_trgm;"`
-  or drop the index from schema.sql.
+- [x] 2026-05-23 **`pg_trgm` extension missing** (carry-over from
+  2026-05-18) — re-verified live on `claude_memories`: extension
+  loaded, `idx_memories_content_trgm` present at `schema.sql:83-84`.
+  Stale entry; closed without action. Duplicate of the entry in
+  "Small open follow-ups (new 2026-05-18)" above, also closed
+  2026-05-23.
 - [ ] **Three Ps `*_summary` fields backfill** for pre-2026-05-18
   sessions (carry-over from 2026-05-17). F3 backfill will populate
   these natively going forward; the older sessions remain empty until
@@ -1549,6 +1571,92 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-23 (Sat, afternoon) — Tokeniser-aware session budget + workstream-F char/4 calibration fix
+
+Background PA-infra session sandwiched between this morning's workstream
+H Zotero closeout and ongoing workstreams G + H sessions elsewhere.
+Goal: pick up two "quick" items from the post-Phase-0 cleanup register
+— `pg_trgm` extension closure and Gemini list-price re-verification —
+then a "mid" item. Both quick items closed in single touches (`pg_trgm`
+re-verified live: extension + index already present, continuity entries
+at L1047 + L1159 stale, marked `[x] 2026-05-23` with off-by-four
+line-number correction; Gemini 3.5 Flash pricing confirmed by Shawn at
+3× the 3-Flash-Preview rate). The mid item — pre-v2 backup cleanup C —
+got pre-empted when the F3 quality-assessment agent surfaced a
+1-in-111-output failure mode that turned out to have a fixable root
+cause: the `SESSION_TOKEN_BUDGET = 850_000` cap in
+`cc_session_toolkit.transcript_text` is enforced via a
+`SESSION_CHAR_BUDGET = SESSION_TOKEN_BUDGET * 4` (chars/4 heuristic),
+but real Gemini tokenisation on code-heavy / tool-output-heavy content
+averages ~2.79 chars/token, eating the 15 % safety margin between the
+budget and Gemini's 1 M hard ceiling. Empirically on session b089991e:
+3,273,001 chars distilled, toolkit-reported 818,250 tokens, Gemini's
+real `count_tokens` reported 1,174,153 — a 1.43× undercount that
+produced the observed 400 INVALID_ARGUMENT.
+
+Fix shape: tokeniser-as-authority with self-calibrating fallback.
+Method 1 (`client.models.count_tokens`) preferred over Method 2
+(`LocalTokenizer`) — same authoritative tokeniser, no sentencepiece +
+protobuf chain, no offline vocab-drift risk, latency irrelevant against
+the ~5 s `generate_content` call. New helper
+`extract_transcript_text_for_gemini` does a two-pass dance: heuristic
+first cut, then real-tokeniser verify, re-truncate with observed
+chars-per-token × 0.92 if over budget. `_apply_session_budget`
+refactored to accept both `budget_tokens` and `char_budget` so the
+second pass can apply the calibrated char ceiling without re-reading
+the transcript. None-default resolution preserves existing
+monkey-patching test-pattern. 8 new tests cover under/over-budget paths,
+empty-session short-circuit, exception graceful degrade, non-int
+return, custom budget narrowing, observed-ratio calibration formula.
+Toolkit suite 249 → 257 passing.
+
+Production wiring in `archive.generate_auto_metadata`: Gemini client
+constructed up-front, `_count_tokens` closure passed to the helper, log
+header now reports Gemini's authoritative count (not the heuristic) for
+every session. `int()` coercion + try/except in both helper and
+archive.py make the path resilient to count_tokens network blips or
+non-int returns — failure modes fall back to the first-pass text, no
+worse than the pre-tokeniser-aware code.
+
+Smoke-test on b089991e: 1,174,153 → 729,971 tokens (under 850 K budget,
++318 K headroom under 1 M ceiling). Middle-truncation marker correctly
+present in second-pass output. Opportunistic sweep: docstrings +
+comments in toolkit (`pyproject.toml`, `transcript_text.py`,
+`archive.py`, `backfill-session-metadata.py`, `tests/...`) and PA
+(`scripts/bake-off-metadata.py`, `skills/audit-config/SKILL.md`,
+`data/notes/grimoire/pre-launch-experiment-audit.md`) updated from
+"Gemini 3 Flash Preview" to "Gemini 3.5 Flash" where they describe the
+current production model. Historical / provenance content
+(experiment artefacts, prior session-log entries) preserved unchanged.
+
+- Toolkit commit (cc-session-toolkit): `917ac13`
+  `feat(transcript): tokeniser-aware session budget` (5 files, +439 / -41)
+- Data submodule commit (pa-data): `a0363c3`
+  `docs(grimoire): update model name to gemini-3.5-flash`
+- PA commit: this entry + closure ticks
+- Toolkit files: `src/cc_session_toolkit/transcript_text.py` (new
+  helper, `_load_fragments` extraction, parameterised
+  `_apply_session_budget`, `TOKENISER_SECOND_PASS_MARGIN` constant),
+  `src/cc_session_toolkit/archive.py` (client-up-front, `_count_tokens`
+  closure, int-coerced log header, graceful degrade),
+  `tests/test_transcript_text.py` (`TestExtractTranscriptTextForGemini`
+  class, 8 tests), `pyproject.toml` + `scripts/backfill-session-metadata.py`
+  (model-name comment sweep).
+- PA files: `planning/continuity.md` (this entry + F3 cost revision +
+  workstream-F calibration-fix tick + GA-rename watch note + pg_trgm
+  closures earlier in session), `scripts/bake-off-metadata.py`
+  (`GEMINI_MODEL = "gemini-3.5-flash"` + price comment with re-verify
+  caveat), `skills/audit-config/SKILL.md` (model example update).
+- Verification: full toolkit test suite 257 passing (249 baseline + 8
+  new). PA venv reinstalled with editable toolkit. Live smoke-test
+  against `~/cc-archives/map-reader-llm/vlm-burial-mound-detection/
+  2026-04-16T05-56_b089991e/session.jsonl.gz` confirms calibrated
+  truncation behaves as designed.
+- Out of scope: backport `failure_type` axis to `lit-scout-verifier` +
+  `data-profile-verifier` (workstream H, running elsewhere); style-guide
+  v2 phase 1 (workstream G, running elsewhere); pre-v2 backup cleanup C
+  (deferred — gate opened today but pre-empted by calibration work).
 
 ### 2026-05-23 (Sat) — Zotero collection writer: workstream-H follow-ups + /audit closure
 
