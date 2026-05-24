@@ -60,13 +60,15 @@ For every claim with `category in {permutation_pvalue, corrected_pvalue, ci_lowe
     "true_value": <number or string from your re-derivation, null if unverifiable>,
     "units": "rows|percent|years|...",
     "severity": "high|medium|low|null",
+    "failure_type": "confabulation|encoding_artefact|metadata_drift|stale_count|null",
     "fix_hint": "short, actionable string describing what the proposer should re-derive and how — null when status is pass",
     "source_method": "the proposer's reported method, copied through",
     "source_file": "where the claim appears in the proposer's markdown"
   }
   ```
-  - Emit one row per claim in `claims.jsonl`, in the same order. PASS claims carry `fix_hint: null` and `severity: null`.
+  - Emit one row per claim in `claims.jsonl`, in the same order. PASS claims carry `fix_hint: null`, `severity: null`, and `failure_type: null`.
   - `severity` ranking (FAIL only): **high** = order-of-magnitude wrong, fundamental category error, or a claim that materially drives downstream decisions (e.g., a count miscalculated by 30 %, a chi-square that flips a flag); **medium** = tolerance exceeded but same order of magnitude (e.g., 5 % off when tolerance is 1 %); **low** = small drift that crossed tolerance but is unlikely to affect any decision.
+  - `failure_type` (FAIL and `documentation_defect` only) — see "Severity + failure_type axes" section below for the rubric. Both axes are required on every FAIL claim and every `documentation_defect` claim; together they let the driver distinguish "proposer cheated" from "source-encoding artefact" even when both can be `severity: high`.
   - `fix_hint` (FAIL only) must be specific and actionable, not "value is wrong". Good: `"Recompute count grouping by primary_key, not raw row count — duplicates inflated this by 4,712"`. Bad: `"This number is wrong; check it"`. The proposer reads this in iterate mode and uses it to re-derive the claim.
   - PARTIAL claims (tolerance exceeded but within the tolerance multiplier — see Tolerances below) carry the same fields as FAIL claims but with `severity: low|medium` only. Whether to iterate on PARTIAL is the driver's decision; per current driver policy (2026-05-22), PARTIAL is **flagged but not iterated** — the proposer is only re-invoked on FAIL.
   - `documentation_defect` claims (introduced 2026-05-22 from the LIRE smoke test) — the proposer's numeric value reproduces the report's own tables, narrative, and downstream cross-references consistently, but the `source_method` string in `claims.jsonl` describes a procedure that would yield a different value than was actually used (e.g., omits a non-default kwarg like `dropna=False`, or names the wrong function). Treat as **non-iterating** (like PARTIAL) but classified separately so the verdict surfaces the defect as audit-trail rather than numeric drift. `fix_hint` is the corrected `source_method` string verbatim, ready for the user (or the proposer in iterate mode) to drop in. `severity` is `low` by default; raise to `medium` only when the misdescription would route a downstream re-derivation to the wrong code path. Use this status instead of bending the numeric tolerance bands to absorb description-only defects.
@@ -78,15 +80,28 @@ For every claim with `category in {permutation_pvalue, corrected_pvalue, ci_lowe
 
 Your response to caller is a structured summary under 300 words: verdict, count of corrections by `status` and `severity`, paths to `corrections.md`, `corrections.jsonl`, and `verdict.md`.
 
-## Severity assignment guidance (FAIL claims)
+## Severity + failure_type axes (FAIL and documentation_defect claims)
 
-Severity is a separate axis from tolerance. Tolerance decides PASS/PARTIAL/FAIL; severity ranks FAIL claims for prioritisation in the iterate loop. Calibrate as follows:
+Severity and failure_type are two independent axes from tolerance. Tolerance decides PASS/PARTIAL/FAIL; severity ranks FAIL claims for prioritisation in the iterate loop; failure_type classifies the mechanism behind the divergence. Both axes together give the driver calibration data: "proposer cheated" looks different from "the pandas default kwarg changed the result" but both can be `severity: high`. (Calibration finding from the 2026-05-22 LIRE smoke test: the two group-count claims that triggered the `documentation_defect` status were `severity: low` but mechanically `failure_type: encoding_artefact` — the values reproduced but the `source_method` strings described a different procedure.)
+
+**Severity (FAIL claims; also `low` / `medium` on `documentation_defect`):**
 
 - **high** — the divergence would change a downstream conclusion. Examples: a row count off by ≥10 %, a p-value that crosses an α threshold, a top-N ranking that swaps positions, a categorical share that changes a "majority" claim.
 - **medium** — the divergence exceeds tolerance materially (≥5× the tolerance band) but is unlikely to flip a decision on its own. Examples: a rate off by 1 pp when tolerance is 0.1 pp; a chi-square statistic off by 5 %.
 - **low** — the divergence just crossed the tolerance band. Examples: 0.15 pp off when tolerance is 0.1 pp.
 
-Quantifying severity precisely is deliberately deferred — the framework is currently rule-of-thumb; calibrate against real iteration outcomes and tighten the rubric when patterns emerge.
+**failure_type (FAIL and `documentation_defect` claims; mechanism — record for every such claim):**
+
+- **confabulation** — the proposer asserted a value that has no basis in the dataset. Example: a count it filled in from memory rather than computing; a top-N ranking that doesn't appear when the groupby is actually run; a chi-square reported without the underlying contingency table existing in the artefacts. Indicates the proposer hallucinated rather than queried.
+- **encoding_artefact** — the value is real but produced by a different procedure than the `source_method` string describes, typically because of pandas default-kwarg behaviour (`dropna=True` vs `False`, `numeric_only` defaults, dtype coercion at read-time, NaN-vs-zero handling in counts). The proposer recorded the raw output of one procedure but described a different one. Canonical 2026-05-22 LIRE example: group-count source_method strings that omitted the implicit `dropna=True`, so the documented method would yield a different count than the value reported. Mechanically resolvable, not proposer dishonesty.
+- **metadata_drift** — the value was correct at proposing time but the dataset changed between proposing and verifying. Rare for a frozen parquet file but possible when the dataset path was overwritten or the source CSV was regenerated. Always flag explicitly so the user can decide whether to re-pin the dataset.
+- **stale_count** — proposer reused a value from a different filtered view of the dataset, or from a previous run. Example: a per-province count computed before a `dropna` step on a different column, carried through to a later report section.
+
+A FAIL claim **must** carry both `severity` and `failure_type` so the iterate-mode driver can calibrate. Severity drives prioritisation; failure_type drives proposer-trust calibration. Do not default `failure_type: confabulation` for FAILs that are mechanically a pandas-kwarg-encoding issue — over-classifying as confabulation pollutes the calibration signal that distinguishes the two patterns.
+
+For `documentation_defect` claims, `failure_type` is typically `encoding_artefact` (the canonical 2026-05-22 LIRE case: source_method describes one procedure but the value matches a different default-kwarg behaviour); use other failure_types only when warranted.
+
+Severity + failure_type combinations are rule-of-thumb pending real iteration outcomes. Calibrate against real runs and tighten the rubric when patterns emerge.
 
 ## Tolerance bands: PASS / PARTIAL / FAIL boundary
 

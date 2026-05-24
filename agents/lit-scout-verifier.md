@@ -120,8 +120,9 @@ PASS and FAIL and is defined per field as follows:
 | `citation_count` | Within 10 % or ±20 absolute (whichever is larger) | Within 25 % or ±50 absolute, but exceeds PASS | Beyond — different paper, stale fetch, or count from a different API |
 | `doi_resolves` | DOI resolves to the expected paper | (no PARTIAL — binary check) | DOI does not resolve, or resolves to a different paper |
 
-**Severity (FAIL claims only)** — a separate axis for prioritisation
-in the iterate loop, not for the verdict itself:
+**Severity (FAIL claims only)** — a separate axis from tolerance.
+Tolerance decides PASS/PARTIAL/FAIL; severity ranks FAIL claims for
+prioritisation in the iterate loop, not for the verdict itself.
 
 - **high** — driving the wrong adoption decision: wrong first
   author (changes citation attribution), DOI doesn't resolve (the
@@ -133,8 +134,43 @@ in the iterate loop, not for the verdict itself:
 - **low** — borderline citation count drift just over the PARTIAL
   band; minor title variation that is still recognisable.
 
-Severity is rule-of-thumb pending real iteration outcomes. Calibrate
-when patterns emerge.
+**failure_type (FAIL claims only)** — classifies the mechanism
+behind the divergence. Severity drives which claims to fix first;
+failure_type drives whether to trust the proposer more or less on
+future runs. Both axes are needed for the driver to calibrate —
+"proposer cheated" looks different from "source API encoded the
+field oddly" but both can be `severity: high`. (Calibration finding
+from the 2026-05-22 lit-scout smoke test: row 16's CrossRef
+`family`/`given` swap was `severity: high` but mechanically an
+encoding artefact, not confabulation.)
+
+- **confabulation** — the proposer asserted a value with no basis
+  in the source. Examples: a DOI that 404s, an invented first
+  author, a fabricated citation count. The proposer hallucinated
+  rather than queried.
+- **encoding_artefact** — the value is real but encoded wrong by
+  the source API, and the proposer recorded the raw shape rather
+  than the corrected shape. Canonical example: CrossRef's
+  `family`/`given` ambiguity on author names — the underlying
+  attribution is correct but the field labels are swapped.
+  Mechanically resolvable, not proposer dishonesty.
+- **metadata_drift** — the value was correct at proposing time but
+  the source updated between proposing and verifying. Example: a
+  citation count that drifted from 806 to 814 over a few days.
+  Routine, low-signal.
+- **stale_count** — proposer used cached or old data when fresher
+  was available. Example: a citation count quoted from a stale
+  Semantic Scholar lookup.
+
+A FAIL claim **must** carry both `severity` and `failure_type` so
+the iterate-mode driver can calibrate. Severity drives prioritisation;
+failure_type drives proposer-trust calibration. Do not default
+`failure_type: confabulation` for FAILs that are mechanically a
+source-encoding issue — over-classifying as confabulation pollutes
+the calibration signal.
+
+Severity + failure_type combinations are rule-of-thumb pending real
+iteration outcomes. Calibrate when patterns emerge across runs.
 
 **Aggregate verdict from per-claim status:**
 
@@ -280,9 +316,9 @@ appends the BibTeX file path separately.)
 
 <!-- BEGIN corrections.jsonl -->
 ```jsonl
-{"claim_id":"10.xxxx-yyyy-authors","status":"fail","category":"authors","description":"Authors for row N","proposer_value":"Smith et al. (2024)","true_value":"Jones, Wei & Park (2024)","severity":"high","fix_hint":"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column.","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-year","status":"pass","category":"year","description":"Publication year for row N","proposer_value":2024,"true_value":2024,"severity":null,"fix_hint":null,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-doi_resolves","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","fix_hint":"DOI returned HTTP 404; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata (HTTP 404)","source_file":"Findings table row M"}
+{"claim_id":"10.xxxx-yyyy-authors","status":"fail","category":"authors","description":"Authors for row N","proposer_value":"Smith et al. (2024)","true_value":"Jones, Wei & Park (2024)","severity":"high","failure_type":"encoding_artefact","fix_hint":"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. CrossRef family/given was swapped at the source.","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-year","status":"pass","category":"year","description":"Publication year for row N","proposer_value":2024,"true_value":2024,"severity":null,"failure_type":null,"fix_hint":null,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-doi_resolves","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","failure_type":"confabulation","fix_hint":"DOI returned HTTP 404; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata (HTTP 404)","source_file":"Findings table row M"}
 ```
 <!-- END corrections.jsonl -->
 ````
@@ -302,6 +338,7 @@ Schema:
 | `proposer_value` | The proposer's asserted value (copy from `claims.jsonl` verbatim). |
 | `true_value` | Your re-derived value from `lit-search.py metadata`. `null` when `status: unverifiable`. |
 | `severity` | `high`, `medium`, `low`, or `null` — only set for FAIL claims; PASS / PARTIAL / UNVERIFIABLE have `null`. |
+| `failure_type` | `confabulation` / `encoding_artefact` / `metadata_drift` / `stale_count` / `null` — only set for FAIL claims. See Severity + failure_type axes above. |
 | `fix_hint` | **Specific and actionable** — tells the proposer's iterate mode what to substitute. Example: `"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. DOI itself is correct; only authorship was confabulated."` For `doi_resolves` FAILs: `"DOI returned HTTP 404; remove row N from the Findings table in iterate mode."` `null` for PASS / PARTIAL / UNVERIFIABLE claims. |
 | `source_method` | What you used (`lit-search.py metadata`, plus any fallback noted). |
 | `source_file` | Echo the proposer's `source_file`. |
@@ -312,6 +349,7 @@ Schema:
 - If the proposer's draft contains no `<!-- BEGIN claims.jsonl --> ... <!-- END claims.jsonl -->` block (legacy single-round mode), still emit your integrated markdown report but write a single sentinel claim: `{"claim_id":"_legacy","status":"unverifiable","fix_hint":"Proposer did not emit claims.jsonl block; closed-loop iteration not possible. Re-run proposer with claims emission to enable iterate-mode."}`. The driver will not iterate and will surface the message to the user.
 - Maintain claim ordering identical to the proposer's emission. This lets the driver compute the set-of-FAIL-claim-ids cheaply for the no-progress check.
 - Do not invent severity to give FAIL claims a higher urgency than the rubric warrants. Severity drives prioritisation, not classification — over-classifying `medium` as `high` pollutes the calibration signal.
+- For each FAIL claim, set both `severity` and `failure_type`. Do not default `failure_type: confabulation` for FAILs that are mechanically a source-encoding issue (e.g., CrossRef family/given swap) — the failure_type axis is the calibration signal that distinguishes "proposer cheated" from "source data noisy", and over-classifying as confabulation pollutes the calibration.
 
 ## Adversarial posture
 
