@@ -1658,6 +1658,86 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-24 (Sun, evening) — Workstream G Phase 1: legacy run → user-mandated clean rebuild → QA agent → Stream A code hygiene
+
+Heavy ~12 h workstream-G session arc spanning v2 Phase 1 of the
+corpus-style-analyser plan. Started with the deterministic measurement
+extensions per plan §2 (six new metrics, three TBD gate targets,
+regression-anchor framework, `attested-concentrated` fifth status), all
+landed cleanly against the legacy `pdftotext -layout` corpus.
+Regression vs run-1 anchors showed 5 of 13 passing — most failures
+explainable by intentional aggressive ref-stripping per plan §2.1, but
+the framing was over-confident. Shawn's "I'm having a little trouble
+interpreting your regressions" was a polite "I don't believe you fully";
+the redraft re-decomposed into solid / hypothesised-but-unverified / not
+known, and listed four diagnostic checks. Shawn asked for all four in
+parallel and pushed back further with *"I think it goes deeper than
+[bibliography]"*.
+
+Four parallel diagnostic agents (boundary-check, `Center` grep, passive
+spaCy validation, announcement-colon precision) confirmed the deeper
+read. Three of four found new failure modes the audit hadn't covered:
+PyMuPDF / pdfplumber over-promoting title-case lines to `## H2` (562
+H2s on ENPYIZQF, 556 on 592YDKFM; mastheads + author surnames + place
+names treated as section headings); page-header bands (`5/22/25, 3:13
+PM   Traces in a Lost Landscape:`) surviving as 26 % of 5INAFTVT's
+announcement-colon hits; spaCy parse hallucinations on
+column-interleaved sentences (one sample literally tagged a full-stop
+as `nsubjpass`); CI2Q7VXD's 338-word body-prose loss to the
+author-year-density fallback hitting the right column of a two-column
+PDF and lopping off the body left column. The "affiliations in page
+headers" hypothesis for the `centre/center` US-spelling deficit was
+mechanistically wrong but directionally right (the 7 discarded US
+tokens were all in reference-list publisher names + cited titles, not
+body prose; v2 was correctly removing non-body content).
+
+Shawn's call: "let's first spend some effort" on real PDF extraction.
+Built `scripts/style-analyser/extract_corpus.py` reusing PyMuPDF +
+pdfplumber from `~/Code/llm-reproducibility/extraction-system/scripts/
+pdf_processing/` (imported in place — no vendoring per the scoping
+decision). First clean extraction had 13/18 needs-review; iterated four
+times — adding paragraph-prefix detector for `References Akata,` style,
+bracketed-numbered detector for `[1] McNutt …` style, chapter-slicing
+for SP2R6FF9 (chapter 8 of an edited volume), and a tighter tail-
+position guard — until 5/18 needs-review. Spawned a QA agent over the
+clean extractions; it found 5 material issues that drove five
+post-extraction passes (running-header strip, fragment-H2 drop,
+author-affiliation tail strip, end-marker + author-year density
+fallback, per-key body/refs split override for JFA-style bare-year
+refs). Final: 16/18 PASS, 2/18 cosmetic flags.
+
+Re-ran Phase 1 on the clean corpus. Mean SL dropped from 23.93 to
+**21.45** because PyMuPDF preserves paragraph boundaries that
+pdftotext dissolved (more, shorter, real sentences). Paragraph stats
+went from obvious garbage (mean 162 words) to plausible (median 17,
+mean 30). Announcement colons dropped 31 % (1.884 → 1.605/1k) because
+page-header artefacts gone. Body word count dropped 5 % vs v1-dirty
+and 10 % vs run-1 — the lost tokens were mastheads, affiliations, and
+reference fragments, not body prose. **Run-1 anchors retired as a
+regression target.**
+
+Two `feedback` memories saved (whilst/amongst deliberate avoidance;
+em-dash post-2023 reduction). Both now load on session-start and
+should shape the eventual v2 style guide (whilst published as
+`absent-when-searched` with deliberate-authorial-preference editor's
+note; em-dash density should be date-binned, not aggregated).
+
+`/audit` over the two new scripts found 5 critical + 10 medium issues.
+Stream A patched all of them, including a silent zip-pair logic bug
+in `strip_references` author-year-density fallback (`zip(ay_matches[-2::-1],
+ay_matches[::-1][1:])` paired each match with itself; pre-fix in legacy
+mode, CI2Q7VXD recovered 148 body words after the fix). The Unicode
+tokeniser switch (`[^\W\d_]` instead of `[A-Za-z]`) added 1,867 corpus
+words — `Sobotková`, `Çatalhöyük`, `Müller` no longer mis-tokenised.
+The v2.1 agent file's Appendix E gate values were patched to the
+post-Stream-A clean-corpus targets.
+
+- PA commits: `834a5c3` `feat(style-analyser): add v2 Phase 1 pipeline + clean-corpus extractor` (1,474 lines: `extract_corpus.py` + `phase1_pipeline.py` with all Stream A fixes); `ad32534` `feat(style-analyser): add Phase 1 validation scripts` (375 lines: `validate_passive_detection.py` + `validate_announce_colon.py`)
+- Data submodule artefacts (auto-synced during session): `notes/style-guides/academic/v2-phase1-audit-2026-05-23.md` (legacy audit); `notes/style-guides/academic/v2-phase1-audit-clean-2026-05-24.md` (clean-corpus + Stream A audit, 11 sections); `style-corpus/extracted/<key>/` for 18 papers; `style-corpus/corpus-manifest.json`; `style-corpus/phase1-results-clean.json` (the new ground-truth measurement file); `memories/memories.jsonl` (+2 feedback entries on whilst/amongst + em-dash); `memories/tag-vocabulary.txt` (+2 tags `lexical-preference`, `llm-prose-tics`)
+- Outside-repo artefact: `~/.claude/agents/corpus-style-analyser-v2.md` patched (Appendix E refreshed, Phase 2 instructions pointed at clean corpus, deps list expanded, cross-version-diff section now documents v1 → v2.0 → v2.1 trajectory)
+- Out of scope (deferred per Shawn): Phase 2 Biber relayout; Phase 3 Kumar CV re-derivation on clean corpus; Phase 4 Panickssery exemplars (API-gated); Phase 5 Mahalanobis evaluator; reconciliation with prior conscious style guides (already tracked in workstream G as separate human-in-the-loop session)
+- Verification: clean extraction 18/18 OK + 2 cosmetic flags; Phase 1 clean re-run n_words 127,720 / n_sentences 5,832 / mean SL 21.45; legacy mode CI2Q7VXD body recovers 148 words after zip-bug fix
+
 ### 2026-05-23 (Sat, afternoon) — Tokeniser-aware session budget + workstream-F char/4 calibration fix
 
 Background PA-infra session sandwiched between this morning's workstream
