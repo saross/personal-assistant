@@ -208,17 +208,27 @@ the bundled prompt with env var `CC_AUTO_METADATA_PROMPT_PATH`.
   RAC-TRAC) inspected and found good. Remaining: Shawn's own
   ad-hoc inspection of the 33 newly-backfilled sessions against
   the bake-off rubrics (`review-rubric-populated-final.md`).
-- [ ] **F5 (new 2026-05-24): investigate the 1-in-25 subagent
-  summary failure on b089991e**. The session backfilled cleanly
-  but one of its 25 subagents got no narrative summary —
-  `generate_subagent_summaries` is designed to skip per-subagent
-  failures and log them, so the cause lives in
-  `~/personal-assistant/data/logs/auto-metadata.log`. Lookup target:
-  log entries near the b089991e backfill time (~12:24-12:40 UTC
-  2026-05-24) for `subagent_summaries` warnings. Not blocking — the
-  parent's narrative still references all 25 subagents structurally
-  via the `subagents[]` array; only the lightweight narrative for
-  one of them is missing.
+- [x] **F5 (2026-05-25): 1-in-25 subagent summary failure on b089991e —
+  RESOLVED.** Diagnosis: log line `auto-metadata.log:835` (12:37:43
+  on 2026-05-24) showed subagent `ab92875bababd2549` failed with
+  "Expecting ',' delimiter: line 3 col 1 char 1144" — Gemini's
+  stochastic JSON-format glitch even under `response_mime_type=
+  application/json` (which instructs JSON mode but does NOT enforce
+  a schema). Confirmed reproducible-as-stochastic: re-ran the v3
+  subagent prompt on the same transcript (~$0.05), got a clean
+  1,199-char narrative. Fix landed: (a) `_call_gemini_once` /
+  `_call_gemini_with_retry` gain optional `response_schema=`
+  parameter; subagent path passes the new
+  `SUBAGENT_NARRATIVE_SCHEMA` constant so Gemini's structured-output
+  mode validates JSON before emitting — closes the failure class at
+  source for the subagent path. (b) Parse-failure log lines bumped
+  from `raw[:200]`/`raw[:300]` to `raw[:8192]` with `raw_len=`
+  prefix on both parent and subagent paths, so future parse
+  failures are fully diagnosable post-hoc. 4 new tests; 268 total
+  passing. Parent-path `response_schema` deferred as separate
+  decision (v3 parent's optional arrays need a richer schema spec).
+  Smoke-tested end-to-end: schema-enforced output is compact (no
+  pretty-print whitespace) and parses cleanly.
 - [x] 2026-05-22 **Migrate extractor from Gemini 3 Flash Preview to
   Gemini 3.5 Flash** — 3× price accepted for zero JSON defects + better
   named-entity preservation (toolkit commit `cdc7c65`).
@@ -301,7 +311,7 @@ IG framework. Reference docs:
 and `RDA_IG_Summary_and_Description.docx`. Provenance audit
 (workstream D) was first concrete alignment action.
 
-### G. Style-guide construction (multi-genre, academic kick-off) — *agent + run-1 + prior-art + comparator pass + v2 plan complete 2026-05-22; Phase 1 implementation ready*
+### G. Style-guide construction (multi-genre, academic kick-off) — *v2 Phase 1 done 2026-05-24 (legacy + clean-corpus + Stream A hygiene); v2.1 agent ready; Phases 2–5 scoped*
 
 `corpus-style-analyser` agent (global, at
 `~/.claude/agents/corpus-style-analyser.md`) empirically derives a
@@ -324,9 +334,17 @@ Substack / business / teaching) and across LLM model versions.
 | `ngpepin/stylometric-transfer` (most-complete tool found across both passes, PolyForm Noncommercial 1.0.0) | **DECIDED 2026-05-22: inspiration only** (read for fingerprint schema + deviation-report shape; lift no code; licence becomes a problem the moment commercial use surfaces) |
 | v2 agent implementation plan | **DECIDED 2026-05-22** — `planning/style-guide-agent-v2-implementation-plan.md`; all 10 design questions resolved with recommended defaults; total envelope 12–18 h focused work + ~$0.50 API spend per generation run (Phase 4 only) |
 | Step-Back Profiling Gist preamble (Tang et al. 2024) | deferred 2026-05-22 — memory captured (`decision` category), inbox follow-up added; revisit when downstream LLM consumer needs a compact context-card |
-| Phase 1 — measurement-layer extensions (reference-list stripping pre-pass, MATTR, hapax, passive ratio, nominalisation, dependency depth, POS bigrams, paragraph stats, 8-metric verification gate doc) | **ready to execute** (deterministic, no API, 4–6 h focused work) |
+| Phase 1 v2.0 — measurement-layer extensions on legacy `pdftotext -layout` corpus | **done 2026-05-23** — `notes/style-guides/academic/v2-phase1-audit-2026-05-23.md` (six new metrics per-paper-and-aggregate, three previously-TBD gate targets filled in, regression-anchor framework, `attested-concentrated` fifth status added to schema); commits `834a5c3` (core pipeline `phase1_pipeline.py`) |
+| Phase 1 v2.1 — clean-corpus rebuild (PyMuPDF + pdfplumber via `~/Code/llm-reproducibility/extraction-system/scripts/pdf_processing/`) | **done 2026-05-24** — `notes/style-guides/academic/v2-phase1-audit-clean-2026-05-24.md`; commits `834a5c3` (`extract_corpus.py` wrapper); corpus archive at `data/style-corpus/extracted/<key>/{body.md,references.md,full.md,metadata.json,qa.json}` (18 papers); 16/18 PASS all QA-agent checks (2 cosmetic abstract-not-promoted flags); `data/style-corpus/phase1-results-clean.json` is the new ground-truth measurement file |
+| Run-1 anchors retired as regression target | **done 2026-05-24** — empirically verified contaminated by author affiliations, journal mastheads, page headers, and reference fragments that survived legacy extraction. Clean-corpus values (mean SL 21.45, em-dash 0.572/1k, semicolon 6.538/1k, announcement colons 1.605/1k, hedge 0.721/100w, concession 0.1327) are the new baseline. See clean audit §4 for the three-way trajectory (run-1 → v1-dirty → v2-clean) |
+| Stream A code hygiene (post-`/audit` fixes) | **done 2026-05-24** — 5 critical + 10 medium audit findings fixed: `strip_references` zip bug (recovers 148 legacy-mode body words for CI2Q7VXD), Unicode-aware tokeniser (`Sobotková`, `Çatalhöyük`, `Müller` now single tokens), `--keys` whitespace parsing, `_REF_BRACKETED_RE` window 400→1500 chars, manifest-key access guards both files, announcement-colon paragraph-crossing constraint, hedge-phrase boundary safety, multi-token concession phrases, spaCy `disable_pipes`→`select_pipes` deprecation, `_END_OF_BODY_MARKERS_RE` heading-prefix requirement, `_REF_PARAGRAPH_RE` `[A-Z][A-Z]→[A-Z][A-Z][a-z]` tightening, chapter-slice end-not-found fail-open; included in commit `834a5c3` |
+| v2.1 agent file patch | **done 2026-05-24** — `~/.claude/agents/corpus-style-analyser-v2.md` (outside repo, user-global): Appendix E gate values refreshed to post-Stream-A clean-corpus targets; Phase 2 instructions point at clean-corpus pipeline; pinned-deps section adds `pymupdf 1.27.2.3`, `pdfplumber 0.11.9`, `python-slugify 8.0.4`, `pyyaml 6.0.3`; cross-version-diff section documents v1 → v2.0 → v2.1 trajectory |
+| Phase 2 — Biber MDA section relayout | **unblocked, not started** — D5 (passive ratio, nominalisation) and D6 (dep depth, sentence length) now have trustworthy numbers from clean corpus; 2-3 h estimated |
+| Phase 3 — Kumar aggregation rule formalisation | **unblocked, not started** — `attested-concentrated` status already in v2.1 schema; per-paper CV calculations need re-derivation on clean corpus before any status promotion (some legacy outliers, e.g. announcement-colon `5INAFTVT 10.62/1k`, were extraction artefacts) |
+| Phase 4 — Panickssery exemplar block | **scoped, awaits API approval** (~$0.50 estimated, 5 Opus 4.7 inversion calls) |
+| Phase 5 — Mahalanobis evaluator | **scoped, separate downstream tool** |
 | Reconciliation of aspirational section vs prior conscious style guides | pending — prior guides located at `~/Code/prompts/System-setup/` (committed `e17a2f5`: `claude40-writing-style-guide.md` 320L, `claude40-writing-style-guide-short.md` 187L, `chatGPT45-writing-style-guide.md` 113L); deliberate separate human-in-the-loop session per agent definition |
-| Substack / business / teaching genre runs | not started; v2 agent should drive these after academic register is settled |
+| Substack / business / teaching genre runs | not started; v2.1 agent should drive these after academic register is settled |
 
 **Key prior-art findings (post-verification):**
 
