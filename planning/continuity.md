@@ -1704,7 +1704,134 @@ current production model. Historical / provenance content
   v2 phase 1 (workstream G, running elsewhere); pre-v2 backup cleanup C
   (deferred — gate opened today but pre-empted by calibration work).
 
-### 2026-05-24 (Sun) — Workstream-H closeout: failure_type backport + /prior-art-scout-iterate smoke + calibration-deferral decision
+### 2026-05-24 (Sun, afternoon) — Session-summary v3 wire-up: schema 1.2 → 1.3 with phases, decisions, key_exchanges, subagent summaries
+
+PA-infrastructure session that delivered the v3 session-summary schema
+all the way from co-design to production-deployed + backfilled. Builds
+on yesterday's tokeniser-aware session budget (workstream F, commit
+`917ac13`) by re-framing the session archive's purpose: not a memory-
+feed primitive, but an open-science / RDA-IG transparency artefact for
+methodology audit and practice-sharing. Memory operational layer
+(continuity + scratchpad + memories.jsonl + recall hook) is already
+doing the daily-driver retrieval work; session archives' job is now to
+make a thoughtful external reader (Brian, a P26 audience member, a
+paper-replication reader, or future-Claude looking up a named past
+session) able to reconstruct methodology from the JSON alone.
+
+**Schema delta (1.2 → 1.3, additive / backwards-compatible).**
+``auto_generated`` gains optional ``phases[]``, ``decisions[]``,
+``key_exchanges[]`` arrays. Top-level ``subagent_summaries[]`` added
+for lightweight per-subagent narratives. Length scales with input
+transcript size via a √(input_tokens) curve with density-driven
+±30% adjustment instead of v2's fixed 40-80-word ceilings. LLM-first
+audience framing in the v3 parent prompt: tokens are cheap,
+reconstructability is expensive — capture more, not less.
+
+**Co-design + empirical-validation arc.** Three rounds before
+production wire-up: (1) initial bake-off on the b93ed93b RAC-TRAC
+session (6 h / 273 tool calls / 4 subagents) confirmed v3 produces
+~6× more summary text at ~1.7× the cost of v2, with cost-per-word
+3.4× cheaper — and surfaced an unexpected win where v3 captured a
+slide-split decision (B1a/B1b, B3a/B3b, B13a/B13b) that v2 had
+entirely missed. (2) Mini bake-off across short / medium-single-
+thread / no-subagent sessions confirmed v3 behaves correctly at the
+floor (67-word output for a 7-turn micro-session, no padding) and on
+simple shapes (phases stays empty when warranted), and surfaced TWO
+critical bugs: a 1-in-3 trailing-brace JSON parse failure under v3
+prompts, and an 80-word floor breached on all three sessions.
+(3) Production-path validation on two specific sessions via the
+post-wire-up archive.py code path surfaced two MORE defects masked
+by the bake-off runner's richer config: production was missing
+``response_mime_type=application/json`` and capped at
+``max_output_tokens=1024`` (too tight for v3 output).
+
+**Wire-up.** ``cc_session_toolkit/prompts/auto_metadata.md`` replaced
+with v3 parent prompt (38 KB, was 26 KB v2); new
+``auto_metadata_subagent.md`` (7 KB) for lightweight per-subagent
+narratives. New function ``generate_subagent_summaries`` (~163 lines)
+in ``archive.py`` iterates a session's subagents, distils each via the
+tokeniser-calibrated extractor, calls Gemini Flex, parses with the
+robust JSON parser. ``archive_session`` calls it after subagent
+archival when auto-metadata is on; result threads into
+``create_session_metadata`` as new ``subagent_summaries`` parameter.
+``generate_auto_metadata`` normalises the new v3 fields to ``[]``
+when absent. ``_parse_metadata_response_json`` refactored to use
+``json.JSONDecoder().raw_decode()`` plus leading-prose skip; tolerates
+trailing brace artefacts. ``response_mime_type=application/json``
+added to ``_call_gemini_once`` to eliminate the failure class at
+source. ``AUTO_METADATA_MAX_OUTPUT_TOKENS`` raised 1024 → 8192.
+``backfill-session-metadata.py`` extended to write the v3 fields +
+subagent_summaries + bump schema_version (from
+``SCHEMA_VERSION`` constant, not a hardcoded literal).
+
+**Audit + fixes.** ``/audit`` across 4 parallel subagents over all
+new + modified code surfaced ~25 findings. Production-correctness
+criticals fixed inline before commit: duration_seconds None-trap in
+subagent header formatting, ``decisions[].chosen`` synthesis-vs-strict-
+match schema contradiction, subagent prompt 60-word floor (contradicted
+the parent's no-floor philosophy adopted yesterday), ``.env`` parser
+quote-strip in experiment scripts, auto_generated fallback dict
+missing v3 fields, dead-code constant removed, ``SCHEMA_VERSION``
+imported in backfill not hardcoded, stale ``$0.027/session`` cost
+figures updated to ``$0.10/session``. ~12 deferred follow-ups tracked
+at ``data/experiments/session-summary-v3-bakeoff-2026-05-24/audit-followups-2026-05-24.md``
+(cost-control hardening, prompt refinements, test-coverage gaps;
+all non-blocking).
+
+**Production validation + backfill.** Production-path validator
+re-summarised the b93ed93b RAC-TRAC session + a 30-turn personal-
+assistant recap session via the post-wire-up code path; both
+produced clean v3 output (RAC-TRAC: 4 phases, 3 decisions, 2
+key_exchanges, 4/4 subagent summaries 112-169 words each; recap: 0
+phases, 2 decisions, 2 key_exchanges, 0 subagent_summaries — single-
+thread session correctly skipped phases). Both promoted from v2 to
+v3 canonical with v2 backed up to ``session.meta.v2-backup.json``
+side-by-side for comparison. Backfill run on 33 historical sessions
+that had never had auto-metadata (``purpose == "Auto-metadata
+unavailable"``); **33/33 succeeded, 0 failures**. Most sessions
+emit 3-5 phases + 2-4 decisions + 2-5 key_exchanges; the handful of
+single-thread sessions correctly emit 0 phases. Notable: session
+b089991e (map-reader 1.83M-output-token session that previously hit
+Gemini's 1M input ceiling under v2's chars/4 heuristic) **archived
+cleanly + generated 24/25 subagent summaries** — tokeniser-calibrated
+truncation shipped yesterday did its job in production. Dry-run
+estimate was ~$5.61 mean / ~$9.53 p90; real spend not surfaced by
+the script but within budget.
+
+**Tests:** 264 passing (257 baseline + 7 new). New tests cover the
+robust JSON parser (trailing-brace tolerance, leading-prose skip, v3
+schema shape, non-object root rejection), schema-version 1.3 bump,
+and ``subagent_summaries`` field plumbing through
+``create_session_metadata``.
+
+- Toolkit commit (cc-session-toolkit): ``902b2eb``
+  ``feat(archive): v1.3 schema — phases, decisions, key_exchanges, subagent summaries``
+  (7 files, +1264 / -303)
+- Data submodule commit (pa-data): ``90e87d1``
+  ``experiments: v3 session-summary bake-off (2026-05-24)``
+  (20 new files; v3 prompts, runners, outputs, comparison notes,
+  audit-follow-ups doc)
+- PA commit: this entry + the submodule pointer move
+- PA-side experiments dir: in the data submodule at
+  ``data/experiments/session-summary-v3-bakeoff-2026-05-24/``.
+- Out of scope (deliberately deferred):
+  - Cost-control cap on subagent fan-out
+  - Prompt refinement: "verbatim or near-verbatim" loophole on
+    user_quote, anti-satisficing rule 9 vs worked-example tension,
+    surviving 60-word floor on phases[].summary + 25-word floor on
+    purpose, slash-command skill-injection guidance, phases emission
+    threshold tension
+  - Test-coverage gaps: ``generate_subagent_summaries`` has no unit
+    tests (covered indirectly by the production-path validator);
+    ``test_parse_response_handles_v3_schema_shape`` doesn't assert
+    nested three_ps content; non-object-root test only covers list
+    case
+  - F3 follow-up: ``--upgrade-to-v13`` flag for backfill so existing
+    v2-schema sessions can be re-summarised on v3 schema. Deferred
+    pending user inspection of the 33 fresh-backfilled sessions and
+    the 2 promoted production-path validation sessions.
+
+
 
 Closed out two remaining workstream-H items and recorded the calibration
 decision for the closed-loop pairs going forward. Backported the
