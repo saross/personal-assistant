@@ -34,9 +34,9 @@ Read these sources and extract data for the review period:
 
 | Source | What to extract |
 |--------|----------------|
-| `~/personal-assistant/tasks/done/YYYY-MM.md` | Completions in period (count, items, days in focus) |
-| `~/personal-assistant/tasks/FOCUS.md` | Current state, days in focus, approaching deadlines |
-| `~/personal-assistant/standups/YYYY-MM-DD.md` | Hard questions asked, patterns detected this week |
+| `~/personal-assistant/standups/YYYY-MM-DD.md` | Hard questions asked, patterns detected this week, **and "Committed vs Actual" tables (the canonical closure source — `[x] DONE` / `Exceeded` rows are this week's closures)** |
+| `~/personal-assistant/tasks/inbox.md` | `[x]` rows where disposition is `→ Done` and the Done date falls in the period — these are inbox-direct closures (small tasks done without ever entering a focus slot) |
+| `~/personal-assistant/tasks/FOCUS.md` + data-submodule git log on `tasks/FOCUS.md` | Current state, days in focus, approaching deadlines, **and slot rotations within the period — a rotation implies the previous task closed** |
 | `~/personal-assistant/memories/memories.jsonl` | Memories created in period, by category |
 | `~/personal-assistant/tasks/inbox.md` | Items currently unprocessed |
 | `~/personal-assistant/tasks/waiting-for.md` | Items waiting, any overdue follow-ups |
@@ -52,18 +52,59 @@ to get commit counts and summaries. Common repo locations:
 
 If a repo cannot be found, note it and move on — git data is supplementary.
 
-**Counting completions:** Parse `done/YYYY-MM.md` tables. Each row has
-`| YYYY-MM-DD | Item | Project | Days in Focus | Notes |`. Filter rows where the
-date falls within the review period.
+**Counting completions (canonical closure reconciliation):** Closures land in
+multiple primary sources; the weekly review is where they are *consolidated* into
+the canonical Completions section. Scan all four sources for the period:
 
-**Counting focus changes:** Use `git log --oneline --all -- tasks/FOCUS.md` for commits
-in the review period that touched FOCUS.md. Each commit represents a focus change.
+1. **Standup recaps** — every `~/personal-assistant/standups/YYYY-MM-DD.md` in
+   the period. In each, parse the "End-of-Day Recap" → "Committed vs Actual"
+   table. Rows marked `Done`, `Exceeded`, or with a `[x] DONE` prefix are
+   closures. Capture the commitment text + the result narrative.
+2. **Inbox-direct closures** — under the post-2026-05-24 inbox-as-tray flow,
+   inbox-direct closures are removed from `inbox.md` at closure time and
+   surfaced into that day's recap. So they are already captured by source (1)
+   above; do not double-count. For the period 2026-02-08 → 2026-05-24, inbox
+   `[x] → **Done` rows DID stay in the file — that historical record now lives
+   in `~/personal-assistant/tasks/inbox-archive.md`. For weekly reviews
+   covering pre-2026-05-24 weeks, grep `inbox-archive.md` for `^- \[x\]` rows
+   where disposition is `→ **Done` and the Done date falls in the period. For
+   weekly reviews covering 2026-W22 onward, this source is redundant with (1).
+3. **FOCUS.md slot rotations** — `cd ~/personal-assistant/data && git log
+   --since=... --until=... --oneline -- tasks/FOCUS.md`. Each commit that
+   changes a slot's `Started:` date implies the previous task in that slot
+   closed. Cross-reference with the standup recap from that day for the task
+   name.
+4. **Time-log** — `~/personal-assistant/reports/time-log.csv`. Descriptions
+   like "Finalised and submitted X" or "Delivered Y" are corroborating
+   evidence; do not count standalone, use to disambiguate.
 
-**Counting inbox flow:** The inbox file shows items with timestamps. Count items with
-dates in the review period (added). Processed items are marked `[x]` — count those too.
+Deduplicate (the same closure may appear in two sources). The reconciled
+list IS the Completions section — it is the canonical weekly closure
+record. There is no separate `tasks/done/` file to maintain (retired
+2026-05-24; see CLAUDE.md).
 
-**Counting memories:** Read `memories.jsonl`, filter by `created_at` in the review period.
-Group by category.
+**Counting focus changes:** Use `cd ~/personal-assistant/data && git log
+--oneline -- tasks/FOCUS.md` for commits in the review period. Each commit
+that touches FOCUS.md represents a focus change.
+
+**Counting inbox flow** (post-2026-05-24 inbox-as-tray flow):
+
+- **Added in period:** items currently in `inbox.md` with a date-prefix in
+  the review period, PLUS rows in `inbox-archive.md` with the same date-prefix
+  that were dispositioned within the period (these were added in-period and
+  also dispositioned in-period).
+- **Processed in period:** for tray-resident items, the date-prefix
+  filtering above gives adds; dispositioned-in-period count comes from
+  `inbox-archive.md` Killed/Superseded/Consolidated entries dated in the
+  period + counts from each downstream destination (new backlog rows
+  carrying `(captured ... from inbox)` provenance, new focus-slot
+  populations, recap closures). Pragmatic shortcut: count net change in
+  `inbox.md` line count, plus rows added to `inbox-archive.md` in the
+  period, plus the recap-captured inbox-direct closures from source (1)
+  of the closure reconciliation.
+
+**Counting memories:** Read `memories.jsonl`, filter by `created_at` in the
+review period. Group by category.
 
 ### 3. Load Previous Review (for trends)
 
@@ -92,8 +133,19 @@ Use this template. Match the `standup_tone` from SYSTEM.md.
 
 ## Completions
 
-[List what was completed, with days in focus and project.
-If nothing was completed: "Nothing completed this week." — don't soften it.]
+**This section is the canonical weekly closure record.** Output the reconciled
+closure list from step 2. Group by:
+
+- **Slot tasks closed** (from FOCUS.md slot rotations + matching recap row) —
+  the high-leverage closes
+- **Commitments met** (from recap "Committed vs Actual" — rows not already
+  surfaced as slot-task closes)
+- **Inbox-direct closures** (small tasks done without ever entering focus)
+
+For each item: item name, project tag, source (which standup/recap or inbox
+row), and a one-line outcome. Days-in-focus only applies to slot-task closes.
+
+If nothing was completed: "Nothing completed this week." — don't soften it.
 
 ## Focus State
 

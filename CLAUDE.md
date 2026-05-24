@@ -27,7 +27,40 @@ Public repo at `~/personal-assistant/` plus a private `data/` submodule (`saross
 
 - `tasks/FOCUS.md` — Current focus (THE critical file)
 - `tasks/SYSTEM.md` — System configuration (tune the parameters)
-- `tasks/inbox.md`, `tasks/backlog.md`, `tasks/waiting-for.md`, `tasks/collaborators.md`, `tasks/done/`
+- `tasks/inbox.md` (working in-tray — pending items only), `tasks/inbox-archive.md` (killed / superseded captures + pre-2026-05-24 historical dispositions), `tasks/backlog.md`, `tasks/waiting-for.md`, `tasks/collaborators.md`
+
+### Closure record
+
+**The weekly review's Completions section is the canonical weekly closure
+record** (since 2026-05-24). `/recap` captures closures in the day's
+"Committed vs Actual" table; `/weekly-review` reconciles those + FOCUS.md
+slot rotations into the canonical Completions section. `/retro` then
+aggregates the month's Completions sections into a "Closures Roll-Up" — the
+multi-week index.
+
+`tasks/done/YYYY-MM.md` is **retired** as a canonical source. Historical
+files (Feb–early May 2026) remain in place as audit trail; no new rows are
+appended. `/done` still rotates focus slots and prompts for refocus, but no
+longer writes to `tasks/done/`.
+
+### Inbox as working in-tray
+
+**`tasks/inbox.md` is a working in-tray, not an audit log** (since
+2026-05-24). When an inbox row is dispositioned, the row is removed from
+inbox; the canonical record lives in the destination:
+
+| Disposition | Destination |
+|---|---|
+| `Done` (small task) | Today's `/recap` → weekly-review Completions |
+| `Moved to backlog` | New row in `tasks/backlog.md` (with `(captured YYYY-MM-DD from inbox)` if useful) |
+| `Promoted to focus` | Populated FOCUS.md slot |
+| `Consolidated into existing backlog row` | Addendum on existing row |
+| `Killed` / `Superseded` / `Resolved without action` | `tasks/inbox-archive.md` (audit trail; no downstream destination) |
+
+Inbox isn't comprehensive — some items get captured directly to backlog (the
+common case for items with a clear destination on first sight) or directly
+to FOCUS.md (rare; only for unexpected crises). Inbox handles the
+items-needing-decision case, nothing more.
 
 ### Accountability Agreement
 

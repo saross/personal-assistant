@@ -29,22 +29,27 @@ Read these sources:
 
 | Source | What to extract |
 |--------|----------------|
-| `~/personal-assistant/reports/weekly/` | All weekly reviews from the month — scorecards, patterns, hard questions |
-| `~/personal-assistant/tasks/done/YYYY-MM.md` | All completions for the month |
+| `~/personal-assistant/reports/weekly/` | All weekly reviews from the month — scorecards, patterns, hard questions, **and Completions sections (the canonical closure record per week — aggregate these for the month-level closure roll-up)** |
 | `~/personal-assistant/tasks/FOCUS.md` | Current state (for context) |
 | `~/personal-assistant/tasks/SYSTEM.md` | Current parameters + adjustment history |
 | `~/personal-assistant/memories/memories.jsonl` | Memories in period, especially: `system_evolution`, `system_friction`, `system_success`, `slip`, `completion`, `blocker_real`, `blocker_excuse` |
-| `~/personal-assistant/standups/` | All standups from the month |
+| `~/personal-assistant/standups/` | All standups from the month (for back-fill if a weekly review is missing — same closure-source-of-truth as weekly reviews use) |
 | `~/personal-assistant/data/scratchpad.md` | Global scratchpad entries |
 | `~/personal-assistant/data/scratchpads/*.md` | Per-project scratchpads (all files in this directory) |
+
+**Note:** `tasks/done/YYYY-MM.md` retired 2026-05-24 as a data source. Closures
+now live in weekly-review Completions sections. If a weekly review for any
+ISO-week of the retro period is missing, fall back to scanning that week's
+standup recaps directly (same reconciliation logic the weekly review uses —
+see `/weekly-review` step 2).
 
 ### 3. Calculate System Metrics
 
 | Metric | Calculation |
 |--------|-------------|
-| **Completion rate** | Items completed / items that entered focus during the month. Track "entered focus" from git log of FOCUS.md or from weekly reviews. |
+| **Completion rate** | Items completed / items that entered focus during the month. Track "entered focus" from git log of FOCUS.md and weekly-review Completions sections. |
 | **Focus churn** | Number of add/remove/swap operations on FOCUS.md (from git log). |
-| **Avg days in focus** | Mean of "Days in Focus" column from done/YYYY-MM.md for completed items. |
+| **Avg days in focus** | Mean days-in-focus across slot-task closes in the month, drawn from weekly-review Completions sections. |
 | **Longest-running focus item** | Max days in focus across completed AND current items. |
 | **Inbox throughput** | Items added to inbox vs items processed (marked [x] or moved to focus). |
 | **Commitment accuracy** | Count commitment memories with deadlines. How many were met vs missed? Cross-reference with completions and slip memories. |
@@ -78,8 +83,41 @@ For each of these, cite specific evidence:
 
 ### 5. Generate Retrospective
 
+The retro is **the canonical multi-week closure roll-up.** It aggregates the
+month's weekly-review Completions sections into a single index — answering
+"what did I get done last month?" without needing to open four weekly review
+files. Closures roll-up sits between Metrics and What Worked.
+
 ```text
 # System Retrospective — [Month] [Year]
+
+## Closures Roll-Up
+
+Aggregated from the month's weekly-review Completions sections.
+
+### By project
+
+| Project | Slot-task closes | Commitments met | Inbox-direct | Total |
+|---------|-----------------:|----------------:|-------------:|------:|
+| [project-a] | N | N | N | N |
+| [project-b] | N | N | N | N |
+| **Total** | **N** | **N** | **N** | **N** |
+
+### Notable closures (slot-task level)
+
+[One line per closure, week-tagged. E.g.,
+"W20: Inscriptions preregistration lodged (research/inscriptions, 6 days in focus)"
+"W21: RAC-TRAC talk delivered via Adela (research/inscriptions, 4 days)"
+"W21: Final HUMN8031 class delivered (anu-digital-humanities, rotation slot)"
+Sort by week, then by significance.]
+
+### Weekly trajectory
+
+| Week | Slot closes | Commitments | Inbox-direct | Hours |
+|------|-----------:|------------:|------------:|------:|
+| W20 | N | N | N | N.NN |
+| W21 | N | N | N | N.NN |
+| ... | | | | |
 
 ## Metrics
 
