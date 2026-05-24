@@ -961,3 +961,93 @@ granularity — there it's whether to write at all; here it's how much
 to write before checking.
 
 [ ] accept   [ ] edit   [ ] discard
+
+---
+
+## 2026-05-24 — Drafted candidates (pending review)
+
+Drafted at the 2026-05-24 `/handoff` after the heavy workstream-G
+Phase 1 → clean-corpus rebuild → Stream A arc. Mark with ✓ (accept) /
+✏ (edit, with revised text) / ✗ (discard) / replace inline.
+
+### Candidate 1: "I'm having a little trouble interpreting" was the load-bearing pushback
+
+After landing v2 Phase 1 against the legacy corpus with 5/13 regression
+anchors passing and the other 8 framed as "explained by aggressive
+ref-stripping + token-boundary noise", Shawn replied *"I'm having a
+little trouble interpreting your regressions - can you discuss the
+quality of the output with me?"*. Polite phrasing, but the substance
+was "I don't believe the framing fully." The forced redraft decomposed
+the 8 failures into solid / hypothesised-but-unverified / not-known
+and listed four diagnostic checks to discriminate. Three of four
+diagnostics then found new failure modes that the original "explained"
+framing had missed entirely (H2-promotion explosion, page-header
+artefacts, parse hallucinations).
+
+**What this means in practice:** when Shawn says "trouble interpreting"
+about a defensive-leaning analytical framing, respond by re-decomposing
+under uncertainty (what I verified vs hypothesised vs don't know), not
+by re-explaining the same framing more verbosely. The polite phrasing
+is calibrated against the same scepticism direct disagreement would
+carry; treat it equivalently.
+
+### Candidate 2: Domain intuition ("it goes deeper than bibliography exclusion") was empirically correct against my partial framing
+
+After the redraft, Shawn read the four-diagnostic plan and added *"I
+think it goes deeper than that"* before authorising the parallel run.
+That single sentence shifted the agent prompts from "verify my four
+hypotheses" to "find what I missed." The diagnostics confirmed: the
+v1-dirty corpus had at least four distinct failure classes (over-
+aggressive ref-stripping on 2-col PDFs, mastheads-as-body, H2-fragment
+explosion, parse failures from column interleaving) — my "two patterns"
+framing had compressed them to one. Shawn's domain familiarity with
+his own corpus (he knew his papers had author affiliations in page
+headers, knew most were 2-col journals, knew the older papers had
+different ref-list conventions) generated a hypothesis the LLM's
+surface read could not.
+
+**What this means in practice:** when Shawn says "it goes deeper" about
+a corpus he authored or curated, the prior is that he is right. Treat
+the diagnostic prompts as open-search ("find anomalies") not
+confirmation-search ("verify these candidates").
+
+### Candidate 3: Rebuild rather than patch — the right call when the foundation is broken
+
+Faced with four diagnostics surfacing extraction-layer issues, the
+choice was "patch the regex chain" (Stream A-style hygiene fixes) or
+"rebuild on a better extractor" (PyMuPDF + pdfplumber replacing
+`pdftotext -layout`). Shawn picked rebuild — *"I agree that we need to
+do 'real' PDF extraction here — I believe we've done that before in
+other contexts — it would be valuable to have a 'clean' archive of the
+text of all of my writing"*. The rebuild produced a re-usable corpus
+artefact (a clean text archive at `data/style-corpus/extracted/`) as a
+durable side-output, not just a one-shot pipeline fix. The patches I'd
+been about to propose would have left the underlying noisy extractor
+in place; downstream consumers would have hit the same noise on
+different metrics. Rebuild was strictly better.
+
+**What this means in practice:** when the symptom is "multiple
+unrelated-looking metrics are off", the root cause is often
+upstream-shared, and "fix the foundation" is cheaper than "patch every
+downstream symptom". Shawn applies this instinct earlier than I do
+(probably because he's been burnt by patch-on-patch before). When the
+choice surfaces, mention rebuild as an option — don't just propose the
+patch.
+
+### Candidate 4: Scoping the cleanup before next session — "do Stream A, then we'll touch base again" — bounded a heavy session cleanly
+
+After the clean-corpus build + QA agent + audit pass produced an
+orientation with three streams (A: code hygiene, B: Biber relayout,
+C: generate the actual guide), Shawn picked Stream A only and
+explicitly bounded the session: *"do stream A, then we'll touch base
+again"*. Without that explicit scoping, the Stream A fixes could
+easily have rolled into Stream B (Phase 2 work) or Stream C (running
+the agent), spending another two hours and arriving at a less-clean
+session boundary. The explicit "then we'll touch base" was the
+session-end signal — and matched the natural completion of the
+hygiene work.
+
+**What this means in practice:** when orientation surfaces multiple
+streams of work, Shawn often picks one and bounds the session. The
+"touch base again" phrasing is the explicit handoff signal; treat it
+as "end this session here, don't expand scope after this stream".

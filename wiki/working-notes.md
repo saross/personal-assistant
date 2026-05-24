@@ -775,3 +775,143 @@ Anchors: `data/experiments/session-summary-v3-bakeoff-2026-05-24/comparison-note
 chars-per-token undercount that broke v2's 850K budget); commit
 `902b2eb` (toolkit wire-up with the v3 prompt that encodes this
 framing explicitly).
+
+## 2026-05-24: Run-1 anchors were corpus-contaminated; "regression against prior run" must be retired as a verification target when the prior run was extraction-noisy
+
+The v2 Phase 1 pipeline failed 8 of 13 regression anchors when measured
+against `corpus-style-analyser` run-1 values (the academic style guide
+published 2026-05-22). The initial framing was "aggressive ref-stripping
+explains the deviation; deviations are intentional per plan §2.5." Half
+right. After Shawn pushed back on the interpretation and four parallel
+diagnostic agents ran, the actual decomposition was:
+
+- Run-1's body text was contaminated by author affiliations
+  ("Center for Humanities Computing"), journal mastheads ("ScienceDirect",
+  "Eftimoski", "Macquarie", "Australia"), running headers
+  ("Sobotkova and Ross: The Tundzha Regional Archaeology Project"
+  appearing ~10× per paper), web-PDF page-header bands
+  ("5/22/25, 3:13 PM    Traces in a Lost Landscape:" 26 % of
+  5INAFTVT's announcement-colon hits), and reference-fragment titles
+  ("CIELab color space" inflating US-orthography counts).
+- Run-1's sentence segmentation was inflated by column-interleaved
+  Frankenstein sentences from `pdftotext -layout` on two-column PDFs;
+  the published mean sentence length of 23.9 was high. The true
+  body-only value on a clean PyMuPDF + pdfplumber extraction is
+  **21.45**.
+- Run-1 had internal numerical inconsistency: "892 semicolons across
+  the corpus (5.57/1k)" implies a 160 870-word denominator, but the
+  same run reports 139 105 total words. One of those two numbers was
+  derived against a different sentence/word universe.
+
+After all of that surfaced, the verdict had to be that run-1 cannot be
+the regression target — the new (clean-corpus) values are the new
+ground truth, and the legacy anchors get retired with their derivation
+artefacts documented.
+
+**Generalises:** any "regression against prior published numbers" check
+silently assumes the prior numbers were on a noise-free input. For PDF
+corpora processed through layout-sensitive extractors, that assumption
+fails. Two pre-conditions worth checking before treating prior numbers
+as regression anchors: (a) was the prior extraction's input verified to
+exclude non-body content (mastheads, affiliations, running headers,
+page-header artefacts)? (b) does the prior report's published derived
+metrics (X / Y per 1k) reconcile against its own stated totals? Failing
+either, treat the prior values as a *starting estimate* and document
+the deviation, not as a target.
+
+Anchors: `notes/style-guides/academic/v2-phase1-audit-clean-2026-05-24.md`
+§4 (three-way trajectory: run-1 → v1-dirty → v2-clean); §10 Stream A
+section; commit `834a5c3` (clean-corpus pipeline);
+`style-corpus/phase1-results-clean.json`.
+
+## 2026-05-24: PyMuPDF section detector aggressively over-promotes title-case lines to `## H2`; needs a constraint filter to be usable for downstream metrics
+
+PyMuPDF + pdfplumber (via the canonical extractor at
+`~/Code/llm-reproducibility/extraction-system/scripts/pdf_processing/`)
+uses a heuristic that promotes any short title-case or all-caps line
+into a Markdown level-2 heading. On academic PDFs with rich masthead
+typography or chapter running titles, this produces hundreds of
+fragmentary `## H2` lines per paper:
+
+- ENPYIZQF: 562 H2s, 515 of which are short fragments (journal masthead
+  "ScienceDirect", surnames "Eftimoski / Sobotkova / Ross", affiliations
+  "School / University / Macquarie / Australia / Department")
+- 592YDKFM: 556 H2s, 429 fragments
+- 9B2FJ6SL: `## JD` × 8 (a journal running header), `## Validating ML
+  / predictions of burial mounds` × 7
+
+These wreck downstream metrics that use `## ` as a section boundary
+(paragraph-aware splitters, section-mapped tables of contents). They
+also pollute body-text token counts if not stripped before the
+body/refs split runs.
+
+Fix shape (now in `extract_corpus.py:drop_fragment_headings`): drop
+H1-H6 lines whose text is a 1-2 word fragment. Keep numbered section
+headings (`1.`, `3.2`, `A.1 Methods`), whitelisted single-word section
+names (`Abstract`, `References`, `Methods` …), and 2-word all-caps
+labels (`AUTHOR AFFILIATIONS`). Drop everything else with ≤ 2 words.
+Plus a `strip_running_headers` pass for any line ≥ 15 chars appearing
+≥ 4 times verbatim. On ENPYIZQF: 36 running-header lines stripped + 960
+fragment H2s dropped → 562 H2s reduced to a usable count.
+
+**Generalises:** any PDF-to-Markdown pipeline that promotes layout cues
+to structural markup will over-fire on cover pages, mastheads, and
+running headers. The corpus-curation discipline this enforces is
+*structural reads come from typography but typography is noisy; require
+domain constraints to recover trustworthy structure*.
+
+Anchors: `scripts/style-analyser/extract_corpus.py` (post-extraction
+cleanup passes); `notes/style-guides/academic/v2-phase1-audit-clean-2026-05-24.md`
+§2.2 (the five cleanup passes); commit `834a5c3`.
+
+## 2026-05-24: A silent zip-pair bug can survive a year of "working" output if the surrounding heuristic happens to fail-safe
+
+`phase1_pipeline.py`'s `strip_references` author-year-density fallback
+contained:
+
+```python
+for prev, cur in zip(ay_matches[-2::-1], ay_matches[::-1][1:]):
+    if cur.start() - prev.end() < 1500:
+        run_start = prev.start()
+```
+
+The two reversed slices produce **the same items in the same order**:
+`ay_matches[-2::-1]` and `ay_matches[::-1][1:]` are both
+`[m_{n-2}, m_{n-3}, …, m_0]`. So at each iteration `prev == cur` and
+the gap test `cur.start - prev.end` evaluates to negative-match-length —
+always < 1500, always extends `run_start` back, walks the entire list to
+`ay_matches[0].start()`. The function ALWAYS truncates at the first
+author-year-shaped string in the document, regardless of true tail-run
+density.
+
+**Why this wasn't caught earlier:**
+1. The 3 000-character span guard on the following line partially masks
+   the damage — papers without a long author-year-shaped tail span
+   silently fall through to "no strip" and look correct.
+2. The regex requires the rare `Surname, F.M. … (YYYY)` body pattern;
+   typical in-body citations are `(Smith 2020)`, which don't match. So
+   on most papers the buggy fallback path never even fires.
+3. CI2Q7VXD was the only paper in the corpus where the path *did* fire,
+   and its outcome (truncation at char 79 129 of 107 561) coincidentally
+   happened to land at a reasonable boundary because the first
+   author-year-shaped match in the document was already in the
+   reference list.
+
+The bug was caught by an `/audit` sub-agent that read the loop expression
+literally and pattern-matched on `zip(seq[::-1], seq[::-1][1:])` as a
+known anti-pattern. Fix: `for prev, cur in
+reversed(list(zip(ay_matches[:-1], ay_matches[1:])))`. Post-fix legacy
+run on CI2Q7VXD: body word count rises from 8 421 to 8 569 (recovered
+148 words of body prose that the buggy truncation had eaten).
+
+**Generalises:** when a heuristic has multiple guard conditions
+(tail-position + span-size + match-density), each guard masks bugs in
+the others. The combined system can produce reasonable-looking output
+even when one component is silently broken. Code review or
+human-readable line-by-line audit catches these where unit tests pass
+(every test exercises the function on a fixed input where the buggy
+loop returns the same answer the correct loop would).
+
+Anchors: `scripts/style-analyser/phase1_pipeline.py:158` (post-fix);
+`notes/style-guides/academic/v2-phase1-audit-clean-2026-05-24.md` §10
+(Stream A fix list); commit `834a5c3`.
