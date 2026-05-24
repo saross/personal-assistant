@@ -457,7 +457,7 @@ is real and the user's call materially changes downstream work. The
 short-pushback cadence is the signal that the mode is working — if I
 start getting longer corrections, the implementation is drifting.
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
 
 ### Candidate 23: Cross-session smoke-test → spec-edit loop as a deliberate workflow
 
@@ -485,7 +485,7 @@ trajectory + calibration recommendation framed as concrete spec edit)
 is the key — vague "tell me what happened" doesn't produce
 spec-editable feedback.
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
 
 ### Candidate 24: Deferral with explicit anchor — operational pragmatism, not avoidance
 
@@ -509,7 +509,7 @@ or workstream entry that survives the conversation. Don't shortcut to
 "maybe later" without these — the anchor is what makes deferral
 honest.
 
-[ ] accept   [ ] edit   [ ] discard
+[x] accept   [ ] edit   [ ] discard
 
 ---
 

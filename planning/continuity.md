@@ -353,7 +353,7 @@ until first non-CC API spend.
 |---|---|---|
 | `lit-scout` + `lit-scout-verifier` | single-round shipped 2026-04-19; closed-loop wired 2026-05-22 — both sides emit machine-readable blocks via HTML-comment markers (sub-agent Write of report files is blocked, so the driver extracts inline); `/lit-scout-iterate` driver added; **smoke-tested on Bayesian-archaeology query 2026-05-22 — PASS in 2 iterations**; **Zotero staging-import wired 2026-05-22** (driver now auto-imports the corrected Findings table into a dated subcollection under `My Library → staging` after termination, closing the BibTeX-correction-propagation gap) | **yes** — closed; smoke-tested; Zotero-integrated |
 | `data-profile-proposer` + `data-profile-verifier` | renamed + closed-loop wired 2026-05-22 (was `data-profile-scout`); `corrections.jsonl` emission added; iterate-mode on proposer; `/data-profile-iterate` driver; **smoke-tested on LIRE v3.0 2026-05-22** — PARTIAL verdict on iter-0 (81/83 PASS, 2 PARTIAL, 0 FAIL), loop terminated per policy without entering iterate mode; `documentation_defect` status added to the contract from the smoke-test calibration (commit `2e89bd1`) | **yes** — closed; plumbing confirmed; iterate-mode behaviour still unexercised |
-| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22; closed-loop wired same day after lit-scout smoke-test confirmed the pattern — proposer emits claims block (per source-type catalogue); verifier emits corrections block with `severity` × `failure_type` two-axis classification and `documentation_defect` status; `/prior-art-scout-iterate` driver added | **yes** — closed; smoke-test pending |
+| `prior-art-scout` + `prior-art-scout-verifier` | pair built + smoke-tested on style-guide query 2026-05-22; closed-loop wired same day after lit-scout smoke-test confirmed the pattern — proposer emits claims block (per source-type catalogue); verifier emits corrections block with `severity` × `failure_type` two-axis classification and `documentation_defect` status; `/prior-art-scout-iterate` driver added; **smoke-tested on RDA-aligned provenance toolkits 2026-05-23** — PASS in 1 iteration (63 PASS / 1 UNVERIFIABLE / 0 FAIL); workspace archived at `data/experiments/prior-art-scout-iterate-smoke-2026-05-23/` | **yes** — closed; smoke-tested; row-removal path still unexercised |
 
 **Live next-steps across the closed-loop pairs:**
 
@@ -374,19 +374,27 @@ until first non-CC API spend.
   with the report's tables. This judgement call exposed a real
   spec gap which we closed in-session by adding a
   `documentation_defect` status (see next bullet).
-- [ ] **Synthetic-FAIL test to exercise iterate mode.** The
-  bigger gap exposed by 2026-05-22's smoke test: the closed loop's
-  actual *raison d'être* — iterate mode handling FAIL with
-  `fix_hint` re-derivation — has not been tested on real data. The
-  LIRE corpus produced 0 FAIL claims (it is in fact clean), so the
-  proposer was never re-invoked with `previous_corrections_path`.
-  Options for a follow-up test: (a) deliberately inject a buggy
-  proposer prompt that under-counts on purpose, (b) use a known-
-  noisy dataset where genuine FAIL is likely, (c) write a unit-
-  level test that hands the proposer a synthetic `corrections.jsonl`
-  with FAIL rows and confirms iterate mode rewires correctly. Do
-  this *before* generalising the closed-loop pattern to any other
-  pair (`lit-scout` retrofit, `prior-art-scout` lift).
+- [~] 2026-05-24 **Synthetic-FAIL test to exercise iterate mode —
+  DEFERRED indefinitely per the 2026-05-24 conversation.** Two
+  consecutive iterate-loop runs have now terminated PASS in 1
+  iteration without exercising the row-removal path
+  (2026-05-22 lit-scout on Bayesian archaeology, FAIL=0 after
+  iter-1 converged; 2026-05-23 prior-art-scout on RDA-aligned
+  provenance toolkits, FAIL=0 throughout). Rather than
+  manufacturing synthetic FAILs to validate iterate-mode plumbing
+  — which would optimise for imagined errors rather than learning
+  from real ones — use the iterate loops self-consciously in real
+  work and let calibration data accumulate from genuine failures.
+  After ~6 months of real usage, revisit the verifier evals:
+  if no real errors have surfaced, consider a QA → QI shift
+  (improvement signals over confabulation catches); if real
+  errors have surfaced, calibrate against them; if the rubrics
+  are right and these queries simply didn't trigger failure,
+  accept that too. Scratchpad entry 2026-05-24 captures the bias
+  to resist. **Trigger for un-deferring:** accumulated real-run
+  trajectory data sufficient to make rubric revision empirical
+  rather than speculative (~6 mo + a handful of genuine FAILs
+  across the three pairs).
 - [x] 2026-05-22 **Added `documentation_defect` status to the
   verifier/proposer contract.** Carved out of the PARTIAL band for
   source_method-string defects where the numeric value reproduces
@@ -412,16 +420,20 @@ until first non-CC API spend.
   corpus). Surfaced two follow-up items: typed `failure_type`
   axis (now in the spec) and BibTeX correction-propagation gap
   (deferred).
-- [ ] **Calibrate the severity rubric across both pairs.** Current
-  bands are rule-of-thumb (data-profile: high ≥10 % drift /
-  decision-changing; medium ≥5× tolerance; low at the boundary.
+- [~] 2026-05-24 **Calibrate the severity rubric across all
+  three pairs — DEFERRED, tied to real-error accumulation.**
+  Current bands are rule-of-thumb (data-profile: high ≥10 % drift
+  / decision-changing; medium ≥5× tolerance; low at the boundary.
   lit-scout: high = wrong first author / DOI fabricated / wrong
   paper at DOI; medium = >25 % citation drift / material title
-  difference; low = borderline drift). Tighten against real
-  iteration outcomes. **Note 2026-05-22:** the data-profile smoke
-  test exercised only `severity: low` (and only via the new
-  `documentation_defect` path) — high/medium calibration is still
-  entirely on paper. Tied to the synthetic-FAIL test above.
+  difference; low = borderline drift). Three smoke tests so far
+  have exercised only `severity: low` (data-profile LIRE via
+  `documentation_defect`) and `severity: high` once (lit-scout
+  row 16 CrossRef family/given swap, `failure_type:
+  encoding_artefact`). Medium and the high band on data-profile
+  and prior-art are still entirely on paper. Tied to the deferred
+  synthetic-FAIL item above — same calibration arc, same
+  six-month re-evaluation gate.
 - [ ] **Decide whether to quantify "how partial" precisely.** Both
   pairs currently use rule-of-thumb PARTIAL bands. A finer metric
   (continuous "how-partial" score) could let the driver
@@ -437,22 +449,56 @@ until first non-CC API spend.
   (mirroring data-profile), and the Machine-readable corrections
   block. `/prior-art-scout-iterate` driver mirrors
   `/lit-scout-iterate`. Smoke-test pending.
-- [ ] **Smoke-test `/prior-art-scout-iterate`.** Now the last
-  unconverted pair has closed-loop wiring; same shape as the
-  lit-scout smoke test (real query, capture trajectory,
-  failure_type distribution, calibration recommendations).
-  Suggested query: a domain prone to invented repos / DOIs so
-  the `url_resolves` / `doi_resolves` row-removal path is
-  exercised (it was NOT exercised in the lit-scout smoke test).
-- [ ] **Backport `failure_type` axis to `lit-scout-verifier`** (and
-  the data-profile pair). The lit-scout smoke test 2026-05-22
-  surfaced a real gap: the single severity axis can't distinguish
-  `confabulation` (proposer cheated) from `encoding_artefact`
-  (source-API quirk like CrossRef family/given swap) — both
-  warrant `severity: high` but they call for very different
-  calibration responses. `failure_type` is now in
-  `prior-art-scout-verifier`; small spec edits will land it in
-  `lit-scout-verifier` and `data-profile-verifier` for symmetry.
+- [x] 2026-05-23 **Smoke-test `/prior-art-scout-iterate` —
+  PASS in 1 iteration.** Ran on "Open-source LLM provenance
+  toolkits (RDA-aligned)"; workspace originally at
+  `/tmp/prior-art-scout-iterate-20260523-222940/`, archived at
+  `data/experiments/prior-art-scout-iterate-smoke-2026-05-23/`.
+  12 candidates × 5–6 claims/row = 64 claims; iter-0 returned
+  63 PASS / 1 UNVERIFIABLE (row 5 SSRN URL behind Cloudflare
+  anti-bot; paper itself confirmed via OpenAlex DOI lookup) /
+  0 FAIL / 0 PARTIAL / 0 documentation_defect. Loop terminated
+  per driver case G.1. Closed-loop plumbing confirmed end-to-end;
+  `failure_type` field wire-correct on all 64 verifier rows
+  (null on PASS, as designed). **`url_resolves` / `doi_resolves`
+  row-removal path NOT exercised** (no FAILs — the
+  RDA-provenance domain produced clean discovery; the proposer
+  queried live APIs at scout-time rather than guessing from
+  memory). Two substantive RDA-adoption findings surfaced as
+  inbox follow-ups 2026-05-24: Flowcept + PROV-AGENT (ORNL,
+  MIT, IEEE e-Science 2025) and the rocrate Python library
+  (Apache-2.0). Calibration decision: see deferred synthetic-FAIL
+  item above. (Original suggested query was "a domain prone to
+  invented repos / DOIs"; we chose RDA-provenance instead so the
+  run would produce reusable substantive findings alongside the
+  smoke-test value — that trade-off cost us row-removal-path
+  exercise but bought us two real adoption candidates.)
+
+  *(Note on the original "speculative-domain" smoke-test
+  suggestion — that we should pick a query "prone to invented
+  repos / DOIs" so the row-removal path was exercised: superseded
+  by the 2026-05-24 calibration deferral. If a domain prone to
+  confabulation is wanted for future exercise of the
+  `url_resolves` / `doi_resolves` row-removal path, surface it
+  organically through real research questions rather than
+  manufactured ones.)
+- [x] 2026-05-24 **Backport `failure_type` axis to
+  `lit-scout-verifier` and `data-profile-verifier`.** Spec edits
+  landed in both files: severity paragraph promoted to dual-axis
+  "Severity + failure_type" rubric; JSONL schema gains
+  `failure_type` row / field; example claims updated to show the
+  canonical 2026-05-22 calibration cases (CrossRef family/given
+  swap → `encoding_artefact` in lit-scout; DOI 404 →
+  `confabulation` in lit-scout; pandas default-kwarg mismatch →
+  `encoding_artefact` with `documentation_defect` status in
+  data-profile); emission rule added warning against defaulting
+  to `confabulation` for source-encoding issues. Drivers and
+  proposers gracefully ignore the new field (verified by grep on
+  both `/lit-scout-iterate` and `/data-profile-iterate`
+  driver specs + both proposer agents). Wire-correctness
+  confirmed on the `/prior-art-scout-iterate` smoke
+  (2026-05-23): all 64 verifier rows carried the field with null
+  on PASS.
 - [x] 2026-05-22 **BibTeX correction-propagation gap closed by
   Zotero staging-import path** (lit-scout-specific). The
   iterate-mode correction now reaches the user's Zotero library
@@ -1657,6 +1703,86 @@ current production model. Historical / provenance content
   `data-profile-verifier` (workstream H, running elsewhere); style-guide
   v2 phase 1 (workstream G, running elsewhere); pre-v2 backup cleanup C
   (deferred — gate opened today but pre-empted by calibration work).
+
+### 2026-05-24 (Sun) — Workstream-H closeout: failure_type backport + /prior-art-scout-iterate smoke + calibration-deferral decision
+
+Closed out two remaining workstream-H items and recorded the calibration
+decision for the closed-loop pairs going forward. Backported the
+`severity × failure_type` two-axis rubric (originating in
+`prior-art-scout-verifier` 2026-05-22) to both `lit-scout-verifier`
+and `data-profile-verifier`: severity paragraphs promoted to dual-axis
+sections, JSONL schema gains `failure_type` field, example claims
+updated to show the canonical 2026-05-22 calibration cases (CrossRef
+family/given swap → `encoding_artefact`; DOI 404 → `confabulation`;
+pandas default-kwarg mismatch → `encoding_artefact` with
+`documentation_defect` status). Drivers and proposers gracefully
+ignore the new field (verified by grep before launching). Then smoke-
+tested `/prior-art-scout-iterate` on "Open-source LLM provenance
+toolkits (RDA-aligned)" — the last unconverted pair's first real run:
+12 candidates, 64 claims, PASS in 1 iteration (63 PASS / 1
+UNVERIFIABLE — SSRN URL behind Cloudflare anti-bot, paper itself
+confirmed via OpenAlex DOI lookup / 0 FAIL / 0 PARTIAL / 0
+documentation_defect). Closed-loop plumbing confirmed end-to-end;
+`failure_type` field wire-correct on all 64 verifier rows.
+**`url_resolves` / `doi_resolves` row-removal path NOT exercised**
+(the RDA-provenance domain produced clean discovery; the proposer
+queried live APIs at scout-time rather than guessing from memory —
+same pattern as the 2026-05-22 lit-scout smoke on Bayesian
+archaeology).
+
+**Calibration decision (2026-05-24):** two consecutive iterate-loop
+runs have now terminated PASS in 1 iteration without exercising the
+row-removal path. Rather than spinning up synthetic-FAIL tests to
+validate iterate-mode plumbing — which would optimise for imagined
+errors over real ones — the new discipline is to use the iterate
+loops self-consciously in real work and accumulate calibration data
+from genuine failures. After ~6 months of real usage, revisit the
+verifier evals: if no real errors, consider QA → QI shift; if real
+errors, calibrate against them; if rubrics are right and these
+queries just didn't trigger failure, accept that. Synthetic-FAIL
+test, severity-rubric calibration, and the original "speculative-
+domain" smoke-test suggestion all marked `[~]` deferred with a
+six-month-and-a-handful-of-real-FAILs un-defer trigger. Scratchpad
+entry 2026-05-24 captures the bias to resist.
+
+Two substantive RDA-adoption findings surfaced from the prior-art
+smoke (independent of test value): **Flowcept + PROV-AGENT** (ORNL,
+MIT, IEEE e-Science 2025; arXiv 2508.02866) as the closest published
+peer to the Three Ps framework with a directly-reusable PROV-O
+extension; and the **rocrate Python library** (Apache-2.0, v0.15.0)
+as the mature RO-Crate serialisation layer with native ORCID / DOI
+/ DataCite support. Both captured as 2026-05-24 inbox follow-ups
+with cross-references to the experiment archive. Third inbox item
+added: systematic-archiving discipline for personal-assistant +
+related infra repos, with a proposal to build a generalised P-V
+agent loop for the archiving task (same architecture as the three
+iterate loops — proposer scans for archiveable artefacts, verifier
+checks references / convention / README anchors). Deferred until
+≥1 more concrete archive event makes the heuristics easier to
+pattern-match.
+
+- `agents/lit-scout-verifier.md`: 4 edits — severity section
+  expanded to dual-axis, schema row added, example claims updated,
+  emission rule added.
+- `agents/data-profile-verifier.md`: 2 edits — severity section
+  retitled and expanded to "Severity + failure_type axes", JSONL
+  schema gains `failure_type` field.
+- `data/experiments/prior-art-scout-iterate-smoke-2026-05-23/` —
+  new experiment archive (4 files: draft.md, claims.jsonl,
+  report.md, corrections.jsonl) plus README documenting
+  trajectory, findings, calibration decision, and substantive
+  follow-ups.
+- `tasks/inbox.md`: 3 new items (Flowcept+PROV-AGENT
+  RDA-adoption; rocrate RDA-adoption; systematic-archiving +
+  P-V agent loop proposal).
+- `data/scratchpad.md`: 1 new entry (use iterate loops self-
+  consciously; calibrate from real errors, not synthetic ones).
+- `wiki/user-observations.md`: candidates 22, 23, 24 from
+  2026-05-22 late-evening session accepted.
+- Workspace originally at
+  `/tmp/prior-art-scout-iterate-20260523-222940/` (archived in
+  full to `data/experiments/`); will be cleared with normal /tmp
+  reaping.
 
 ### 2026-05-23 (Sat) — Zotero collection writer: workstream-H follow-ups + /audit closure
 
