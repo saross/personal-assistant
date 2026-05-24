@@ -703,3 +703,75 @@ Anchors: `data/experiments/prior-art-scout-iterate-smoke-2026-05-23/`
 2026-05-24 session log entries; `data/scratchpad.md` 2026-05-24 entry
 captures the bias to resist (manufacturing FAILs to validate
 architecture).
+
+
+## 2026-05-24: Production-vs-experiment config drift only surfaces when validation calls the production code path
+
+The v3 session-summary bake-off (initial RAC-TRAC + 3-session mini round)
+ran cleanly using its own runner script which set
+`response_mime_type=application/json` and `max_output_tokens=8192`
+explicitly in the Gemini call config. When the production code path
+(`archive.py:_call_gemini_once` via `generate_auto_metadata`) was wired
+up using the same v3 prompts on the same transcripts, **both calls
+failed with JSON parse errors** — production was missing the
+`response_mime_type` setting and was capped at the old v2-era
+`max_output_tokens=1024` which truncated v3's richer output mid-JSON.
+
+The bake-off success had masked these production-side defects entirely.
+The validation step (`validate-production-path.py`) caught them only
+because it called the actual production functions rather than
+re-implementing the call in the experimental runner. Two ~5-minute fixes
+to production after that, and the same transcripts succeeded.
+
+Empirical implication: when shipping LLM call sites, the experimental
+prototype and the production caller diverge on configuration in ways
+the prototype's success doesn't reveal. A validation step that exercises
+the **actual production function** with **real archive data** is the
+load-bearing check — not the bake-off itself. The pattern: design in
+experiment, ship via production path, validate the production path
+end-to-end before declaring ready.
+
+Anchors: 2026-05-24 commits `902b2eb` (toolkit fix adding
+`response_mime_type` + raising cap) + `5e4266a` (PA continuity);
+`data/experiments/session-summary-v3-bakeoff-2026-05-24/validate-production-path.py`;
+audit follow-ups doc same dir.
+
+## 2026-05-24: LLM-first audience design inverts archive optimisations human-first would mandate
+
+The v3 session-summary schema rebuild flipped on a single Shawn-prompted
+strategic question: "are session archives memory primitives, or
+open-science / RDA-aligned transparency artefacts?". The original v2
+design implicitly assumed human-first reading (terse fixed-word ceilings,
+narrative prose). When we made explicit that the primary reader is
+another LLM (future-Claude consulting the archive on demand, or
+external researchers reading via LLM tooling), the design implications
+inverted:
+
+- **Density > brevity.** Tokens are cheap (Gemini Flex output costs
+  ~$0.022 per 5K tokens); reconstructability is expensive. Capture
+  more, not less. A human asks for a synopsis on demand; they cannot
+  expand from a summary back to detail you did not write down.
+- **Structure > prose.** Arrays of typed records (phases, decisions,
+  key_exchanges) are easier for downstream LLMs to navigate than
+  monolithic paragraphs. The schema additions reflect this directly.
+- **Length scales with input.** Fixed 40-80-word ceilings were a
+  human-page-fit constraint; for LLM readers, target ≈ √(input_tokens)
+  with density-driven ±30% adjustment respects information content
+  rather than reading comfort.
+- **"Empty arrays beat invented arrays."** An honest empty `phases[]`
+  on a single-thread session is strictly better than a confabulated
+  populated one for downstream querying — the field's absence carries
+  retrieval-useful information.
+
+Cost-side check: v3 produces ~6× more summary text than v2 on the same
+RAC-TRAC session at ~1.7× the cost — i.e., **3.4× cheaper per word of
+summary produced**. Even though absolute spend per session rose, the
+information density per dollar rose substantially. The audience
+question wasn't just a framing exercise; it directly justified the
+cost expansion.
+
+Anchors: `data/experiments/session-summary-v3-bakeoff-2026-05-24/comparison-notes.md`
+(numbers); `wiki/working-notes.md` 2026-05-23 calibration entry (the
+chars-per-token undercount that broke v2's 850K budget); commit
+`902b2eb` (toolkit wire-up with the v3 prompt that encodes this
+framing explicitly).

@@ -186,17 +186,39 @@ the bundled prompt with env var `CC_AUTO_METADATA_PROMPT_PATH`.
   uses `_ensure_gemini_api_key`; cost line shows ~$0.027/session;
   `update_metadata` now writes Three Ps natively (was preserving empty
   defaults from prior Haiku schema).
-- [ ] **F3: Backfill 32 historic sessions** — **BLOCKED on Shawn's
-  approval after live-output review.** Revised estimate post-2026-05-22
-  Gemini 3.5 Flash migration (3× the 3-Flash-Preview rate) and
-  2026-05-19 sampler refinement: **~$3.78 mean / ~$8.37 p90** on
-  amd-tower's 32 sessions needing backfill. Requires explicit gate
-  approval per the API Call Review Gate in `~/.claude/CLAUDE.md`. The
-  earlier ~$8.30 / 307-session figure conflated total sessions with
-  needing-F3 subset — see 2026-05-20 inventory.
-- [ ] **F4: QA pass on ~20 sampled backfill outputs** — gates declaring
-  workstream F done. Compare against bake-off rubrics
-  (`review-rubric-populated-final.md`).
+- [x] 2026-05-24 **F3: Backfill 33 historic sessions** — **DONE**.
+  Ran on 2026-05-24 after Shawn's explicit approval (post-v3 wire-up,
+  same session). Dry-run estimate ~$5.61 mean / ~$9.53 p90 against
+  the 33 sessions whose `auto_generated.purpose ==
+  "Auto-metadata unavailable"`. Backfill produced v1.3 schema records
+  (parent Three Ps + phases/decisions/key_exchanges plus
+  subagent_summaries for sessions with subagents) — **33/33 succeeded,
+  0 failures**. Density discipline observed empirically: most
+  sessions emit 3-5 phases, 2-4 decisions, 2-5 key_exchanges; 5
+  short single-thread sessions correctly emit 0 phases. Notable
+  recovery: the b089991e map-reader 1.83M-token session that
+  previously hit Gemini's 1M ceiling under the chars/4 heuristic
+  archived cleanly with 24/25 subagent summaries. The 33 figure
+  reflects sessions found across the full `~/cc-archives/` tree at
+  backfill time (was 32 in the 2026-05-20 inventory; one additional
+  session surfaced since).
+- [ ] **F4: QA pass on ~20 sampled backfill outputs** — partial
+  coverage 2026-05-24: 2 production-path validation sessions + 3
+  mini bake-off sessions + 1 initial bake-off session (b93ed93b
+  RAC-TRAC) inspected and found good. Remaining: Shawn's own
+  ad-hoc inspection of the 33 newly-backfilled sessions against
+  the bake-off rubrics (`review-rubric-populated-final.md`).
+- [ ] **F5 (new 2026-05-24): investigate the 1-in-25 subagent
+  summary failure on b089991e**. The session backfilled cleanly
+  but one of its 25 subagents got no narrative summary —
+  `generate_subagent_summaries` is designed to skip per-subagent
+  failures and log them, so the cause lives in
+  `~/personal-assistant/data/logs/auto-metadata.log`. Lookup target:
+  log entries near the b089991e backfill time (~12:24-12:40 UTC
+  2026-05-24) for `subagent_summaries` warnings. Not blocking — the
+  parent's narrative still references all 25 subagents structurally
+  via the `subagents[]` array; only the lightweight narrative for
+  one of them is missing.
 - [x] 2026-05-22 **Migrate extractor from Gemini 3 Flash Preview to
   Gemini 3.5 Flash** — 3× price accepted for zero JSON defects + better
   named-entity preservation (toolkit commit `cdc7c65`).

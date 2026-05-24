@@ -864,3 +864,100 @@ design alignment when scope exceeds briefing) but at a smaller
 granularity.
 
 [x] accept   [ ] edit   [ ] discard
+
+### Candidate 39: The strategic re-framing came from Shawn, not from me
+
+The v3 session-summary design pivoted on a single Shawn-prompted
+strategic question: *"are session archives memory primitives, or are
+they open-science / RDA-aligned transparency artefacts?"*. Before that
+question, I had been building v3 inside the v2 frame — Three Ps as a
+memory-bridge schema, terse fixed-word ceilings, dense narrative prose.
+When Shawn made the audience question explicit, the entire design
+inverted (LLM-first, density > brevity, structured arrays, gradient
+length). The v3 prompts and schema additions all derive from the
+re-framed audience.
+
+The relevant heuristic: when proposing a non-trivial design, I should
+explicitly surface the implicit audience assumption *before* iterating
+on internal mechanics. Not all sessions need this — short fixes don't
+warrant it — but for anything schema-shaped, multi-file, or with
+durable downstream consumers, the audience question is a high-leverage
+checkpoint.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 40: The audit's highest-value findings landed in the prompts, not the code
+
+`/audit` over the v3 wire-up surfaced ~25 findings across 4 parallel
+subagents. The 6 critical fixes I applied before commit were:
+
+1. duration_seconds None-trap in subagent header (code)
+2. `decisions[].chosen` schema contradiction (**prompt**)
+3. Subagent prompt 60-word floor surviving the no-floor pivot (**prompt**)
+4. `auto_generated` fallback missing v3 fields (code)
+5. `.env` parser quote-strip (code, experiment scripts)
+6. Dead-code `AUTO_METADATA_SUBAGENT_MAX_OUTPUT_TOKENS` constant (code)
+
+Three of six (50%) were in the **prompt files**, not in Python.
+Prompts configure LLM behaviour, and prompt-level bugs — internal
+contradictions between sections, surviving constraints from an earlier
+draft, schema mismatches between worked example and field contract —
+are at least as dangerous as code bugs but invisible to the Python test
+suite. The test suite caught zero of those three.
+
+The heuristic for me: when running `/audit` on changes that include
+prompts, scope the prompts in by default rather than treating them as
+documentation. The audit subagent I sent specifically at the prompt
+files found the contradictions that the code-focused subagent didn't
+flag.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 41: Three rounds of empirical validation each caught what the prior round missed
+
+Cost breakdown for the v3 wire-up validation:
+
+- **Initial bake-off** (RAC-TRAC, $0.33): validated v3 design produces
+  rich structured output on a complex session.
+- **Mini bake-off** (3 shapes, $0.22): caught **80-word floor pinning**
+  + **trailing-brace JSON parse failure**. Both prompt + parser bugs.
+- **Production-path validation** (2 sessions, ~$0.31): caught **missing
+  `response_mime_type=application/json`** + **too-tight
+  `max_output_tokens=1024`**. Both production-call-site bugs that the
+  bake-off runner had masked by setting those config options explicitly.
+
+Total spend: $0.86. Without round (3), two production-day defects would
+have landed and the SessionEnd hook would have started silently failing
+JSON parses on real archive writes. Each round had a distinct failure
+surface and caught defects the prior round was structurally unable to
+catch.
+
+The heuristic: when shipping anything LLM-call-site-shaped, three
+rounds with deliberately different scopes (design-validation,
+shape-coverage, production-path) is the cheap insurance. A single
+round, even a thorough one, will systematically miss some failure
+class.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 42: "Do 1-2 first" was the right gate even though full-backfill was authorised
+
+Shawn explicitly authorised the full v3 backfill ("I am inclined to
+backfill all existing sessions") but in the same message gated it:
+*"please do 1-2 first and decide if we need any additional testing
+before doing a full backfill pass"*. The 1-2 session round (the
+production-path validator) caught the two production-call-site defects
+above. If I had taken the "full backfill" authorisation literally and
+skipped the gate, the backfill would have started silently failing
+JSON parses across 33 sessions.
+
+The pattern: even with explicit broad authorisation, the user's
+in-message gate ("do 1-2 first") is the actual operating instruction,
+and overriding it because "we're approved anyway" would have been a
+real failure. Authorisation scope + verification scope are separate
+things, and the smaller of the two is the binding one. Sibling to
+Candidate 38 (default to ask for durable artefacts) but at a different
+granularity — there it's whether to write at all; here it's how much
+to write before checking.
+
+[ ] accept   [ ] edit   [ ] discard
