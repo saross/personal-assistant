@@ -1752,14 +1752,18 @@ peer to the Three Ps framework with a directly-reusable PROV-O
 extension; and the **rocrate Python library** (Apache-2.0, v0.15.0)
 as the mature RO-Crate serialisation layer with native ORCID / DOI
 / DataCite support. Both captured as 2026-05-24 inbox follow-ups
-with cross-references to the experiment archive. Third inbox item
-added: systematic-archiving discipline for personal-assistant +
-related infra repos, with a proposal to build a generalised P-V
-agent loop for the archiving task (same architecture as the three
-iterate loops — proposer scans for archiveable artefacts, verifier
-checks references / convention / README anchors). Deferred until
-≥1 more concrete archive event makes the heuristics easier to
-pattern-match.
+with cross-references to the experiment archive. **Three further
+P-V-pair scoping items** added to the inbox over the session as
+ideas surfaced: (a) `file-organiser` pair (expanded from the
+initial archive-only framing to cover broader crufty-repo cleanup
+across all infra + research repos), (b) FAIR4RS uplift pair (repo
++ code documentation + research-software metadata for legibility
+/ reusability), and (c) `corpus-style-analyser` verifier (slop
+detection grounded in published literature + style-match
+confirmation against the target voice — companion to the
+workstream-G v2 build). All three deferred to dedicated scoping
+sessions; all three architectured to mirror the three existing
+iterate loops.
 
 - `agents/lit-scout-verifier.md`: 4 edits — severity section
   expanded to dual-axis, schema row added, example claims updated,
@@ -1772,9 +1776,10 @@ pattern-match.
   report.md, corrections.jsonl) plus README documenting
   trajectory, findings, calibration decision, and substantive
   follow-ups.
-- `tasks/inbox.md`: 3 new items (Flowcept+PROV-AGENT
-  RDA-adoption; rocrate RDA-adoption; systematic-archiving +
-  P-V agent loop proposal).
+- `tasks/inbox.md`: **5 new items** — two RDA-adoption follow-ups
+  (Flowcept+PROV-AGENT; rocrate Python library) and three P-V
+  pair scoping items (file-organiser; FAIR4RS uplift; corpus-style-
+  analyser verifier).
 - `data/scratchpad.md`: 1 new entry (use iterate loops self-
   consciously; calibrate from real errors, not synthetic ones).
 - `wiki/user-observations.md`: candidates 22, 23, 24 from
@@ -1783,6 +1788,14 @@ pattern-match.
   `/tmp/prior-art-scout-iterate-20260523-222940/` (archived in
   full to `data/experiments/`); will be cleared with normal /tmp
   reaping.
+- Commits: `pa-data` `1530389` (smoke-test archive + scratchpad +
+  initial RDA + archive inbox items), `ef54026` (expand archive
+  item → file-organiser + add FAIR4RS), `75b3afd` (add corpus-
+  style-analyser verifier scoping); `personal-assistant`
+  `08b725b` (verifier failure_type backport), `1516b63`
+  (continuity + wiki + submodule bump), `0830bcc` and `998d9dd`
+  (subsequent submodule bumps for the second + third inbox-item
+  rounds).
 
 ### 2026-05-23 (Sat) — Zotero collection writer: workstream-H follow-ups + /audit closure
 

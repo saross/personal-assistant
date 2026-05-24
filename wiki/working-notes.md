@@ -668,3 +668,38 @@ Anchors: this session's transcript; the exact pyzotero response is
 preserved in the bash output around the key-info probe; the apology
 turn followed by a character-by-character re-read confirms the
 correction.
+
+## 2026-05-24: Iterate-loop smoke tests on real briefs produce clean PASS-in-1 results; the row-removal path is hard to exercise without a manufactured failure
+
+Two consecutive closed-loop iterate-driver smoke tests — `/lit-scout-iterate`
+on "Bayesian methods for archaeological dating and chronological modelling"
+(2026-05-22) and `/prior-art-scout-iterate` on "Open-source LLM provenance
+toolkits (RDA-aligned)" (2026-05-23) — both terminated PASS in 1 iteration
+(lit-scout converged at iter-1 after one CrossRef family/given correction;
+prior-art was clean on iter-0). In both cases the `url_resolves` /
+`doi_resolves` row-removal path was **not exercised**: zero fabricated URLs
+or DOIs.
+
+Empirical inference: when given a real specific-domain brief (rather than
+a speculative or over-broad one), the proposer agents query live source
+APIs at scout-time rather than guessing from memory. The fabrication
+failure mode the verifiers were built to catch doesn't fire on clean
+briefs from research-relevant domains. The verifier still does productive
+work on these runs — diligent re-querying caught one author-attribution
+error in lit-scout and surfaced one Cloudflare-blocked URL as `unverifiable`
+in prior-art (with the verifier going one step further and confirming the
+paper via OpenAlex DOI fallback rather than just marking unverifiable).
+
+Implication for the rubric-calibration question (synthetic-FAIL test
+vs accumulate-real-errors): the row-removal path appears genuinely rare
+on real briefs, not just unlucky in two trials. Calibration data from
+synthetic FAILs would optimise for an imagined failure distribution
+that may not match real usage. Decision 2026-05-24: defer synthetic
+testing indefinitely; let real errors accumulate over ~6 months; revisit
+the verifier evals then.
+
+Anchors: `data/experiments/prior-art-scout-iterate-smoke-2026-05-23/`
+(full smoke trajectory + README); continuity 2026-05-22 / 2026-05-23 /
+2026-05-24 session log entries; `data/scratchpad.md` 2026-05-24 entry
+captures the bias to resist (manufacturing FAILs to validate
+architecture).
