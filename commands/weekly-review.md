@@ -250,9 +250,20 @@ Use ISO week numbering (`date +%V` or Python `isocalendar()`).
 
 1. **Display** the full internal review
 2. **List** collaborator reports generated with their file paths
-3. **Ask:** "Any learnings worth capturing this week?"
+3. **Retro cadence check:** Read `~/personal-assistant/reports/retros/` and find
+   the most recent file by filename (YYYY-MM.md format). Compute weeks since
+   that retro covers the calendar month with name `YYYY-MM`:
+   - **0–3 weeks since end of that month**: no notice.
+   - **4–5 weeks since end of that month**: `📋 Retro due — last retro
+     covered [Month YYYY]. Run /retro at end of this month.`
+   - **6+ weeks (i.e., a calendar month was skipped)**: `⚠ Retro overdue —
+     last covered [Month YYYY]; [N] full months have ended since. Run
+     /retro this week; cadence target is monthly.`
+   If no retros exist at all: `📋 No retros on file. First /retro establishes
+   the baseline — run when you have ~30 min.`
+4. **Ask:** "Any learnings worth capturing this week?"
    - If yes, offer to route to `/craft` (practical learnings) or `/remember` (context/decisions)
-4. **Ask** the user to fill in the "Next Week" section with 1-3 concrete deliverables
+5. **Ask** the user to fill in the "Next Week" section with 1-3 concrete deliverables
 
 ## Notes
 
