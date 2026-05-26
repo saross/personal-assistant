@@ -1658,6 +1658,146 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-25 (Mon, afternoon) — Session-summary v3 tooling finalisation: F5 closed, 15 audit follow-ups landed, --upgrade-to-v13 flag, parent-path schema
+
+PA-infrastructure session that closed out the v3 session-summary
+tooling end-to-end. Built on yesterday's wire-up (commit `5e4266a`)
+by resolving the residual follow-up backlog. Five workstreams
+delivered + smoke-tested + pushed to ``main`` on both
+``cc-session-toolkit`` and ``pa-data``.
+
+**F5 resolved (commit `8e44f1a`, pushed earlier).** The 1-in-25
+subagent-summary failure on b089991e (subagent `ab92875bababd2549`,
+log line ``data/logs/auto-metadata.log:835`` at 12:37:43 on
+2026-05-24, "Expecting ',' delimiter line 3 col 1 char 1144") was
+diagnosed as stochastic JSON-format glitch under
+``response_mime_type=application/json`` (which instructs JSON output
+but does NOT enforce a schema). Reproduced once (~$0.05) — same
+input, clean output — confirming non-determinism at the model layer.
+Fix: ``_call_gemini_once`` / ``_call_gemini_with_retry`` gain
+optional ``response_schema=`` parameter; new
+``SUBAGENT_NARRATIVE_SCHEMA`` constant (single-field
+``{"narrative": str}``) passed by ``generate_subagent_summaries`` on
+every call. Parse-failure log lines on both parent and subagent
+paths widened ``raw[:200]`` / ``raw[:300]`` → ``raw[:8192]`` with
+``raw_len=`` prefix so future failures are fully diagnosable.
+
+**Audit follow-ups (15 items, 4 background agents in parallel).**
+The deferred follow-up list at
+``data/experiments/session-summary-v3-bakeoff-2026-05-24/audit-followups-2026-05-24.md``
+was cleared in a single afternoon via 4 parallel agents working in
+independent worktrees:
+
+- **A — archive.py + scripts (5 items):** ``MAX_SUBAGENT_SUMMARIES``
+  cost-control cap on subagent fan-out (default 20, in
+  ``config.py``); subagent-aware ``_estimate_total_cost`` reporting
+  parent + subagent costs separately; silent-all-failures print path
+  (``0 / N succeeded`` message when ``subagent_summaries`` is empty);
+  redundant ``except (TypeError, ValueError, Exception)`` cleanup;
+  atomic session.meta.json overwrite via ``.json.tmp`` + ``os.replace``
+  in backfill. Commits ``e85fe9b`` + ``f7c52dc``.
+- **B — prompts (5 items):** ``user_quote`` "verbatim or near-verbatim"
+  loophole closed (ellipsis-only trimming permitted); anti-satisficing
+  rule 9 softened to "no equal-grain duplication" (pointer-style
+  ``see phases[i]`` cross-references now licensed); surviving 60-word
+  / 25-word floors dropped (gradient philosophy now consistent
+  parent-wide); phases-emission threshold tension resolved
+  (qualitative test dominates; size threshold becomes heuristic
+  only); slash-command skill-markdown injection guidance added.
+  Commit ``c0247e1``.
+- **C — tests (4 items):** new ``TestGenerateSubagentSummaries``
+  class (5 sub-cases: empty / missing-transcript / Gemini-fail /
+  non-string-narrative / multi-subagent accumulation); v3 schema
+  parser test gains nested ``three_ps`` content assertions;
+  non-object-root parser test parametrised over list / string /
+  number / boolean; ``test_subagent_archive.py`` module docstring
+  bumped to "v1.3 schema". Commit ``75c7ee3``. +8 tests.
+- **D — experiments scripts (2 items, in pa-data):**
+  ``validate-production-path.py`` gains module-level cost-trail
+  accumulator + instrumented wrapper around ``_call_gemini_once``;
+  per-target ``_cost_audit`` blocks persisted into v3 overlays plus
+  an aggregate ``validate-production-path-cost-log.json`` next to
+  the script. ``run-bakeoff.py`` no longer silently records $0 when
+  ``usage_metadata`` is missing — WARN + null cost + final-summary
+  lower-bound annotation. Commit ``bbe2a7b`` on pa-data.
+
+**``--upgrade-to-v13`` backfill flag (commit `d030a45`).** Extends
+``scripts/backfill-session-metadata.py`` with a second finder
+(``find_sessions_needing_v13_upgrade``) that partitions the archive
+into disjoint populations: empty-marker sessions → default backfill
+(unchanged); pre-v1.3 populated sessions → upgrade path; already-v1.3
+sessions → skipped. Before each upgrade, the original
+``session.meta.json`` is preserved side-by-side at
+``session.meta.v2-backup.json`` via idempotent ``backup_pre_v13_meta``
+(never overwrites a prior backup). 8 new unit tests covering finder
+partition + backup idempotency. Smoke-tested on the live archive:
+637 candidate sessions across 12 project trees; dry-run cost
+estimate (sample-of-20 distillation) reports mean ~$0.11/session
+parent, plus 2,269 subagent calls across 303 sessions × $0.05 =
+~$113.45 subagent cost, total ~$216 mean / ~$347 worst-case
+envelope.
+
+**Parent-path ``PARENT_METADATA_SCHEMA`` (commit `e30ad98`).**
+Complement to today's subagent-side fix at `8e44f1a`. The v3 parent
+schema encodes the prompt's documented field structure: top-level
+``title`` / ``purpose`` / ``tags`` / ``three_ps`` / ``phases`` /
+``decisions`` / ``key_exchanges`` all required (lenient on content —
+no ``minItems`` so empty arrays satisfy — strict on presence so
+downstream can iterate without isinstance guards). Nested
+required-field sets per the prompt's per-section field contracts:
+``three_ps`` requires all three Three Ps sub-fields; ``phases[]``
+items require ``title``, ``summary``, ``approx_start``;
+``decisions[]`` items require ``question``, ``options_considered``
+(array of strings, not nested objects per L587 of the prompt),
+``chosen``, ``rationale``; ``key_exchanges[]`` items require
+``context``, ``user_quote``, ``assistant_response_paraphrase``.
+``chosen`` deliberately a plain string (not enum over
+``options_considered``) — the prompt explicitly licenses synthesis
+("both A and B"). 5 new schema tests. Smoke-tested end-to-end (1
+Gemini Flex call, ~$0.10) against the 2026-04-28 EOD recap session:
+clean output, all 7 required top-level fields + all three Three Ps
+sub-fields present, content quality preserved (2 phases, 2
+decisions, 2 key_exchanges; phases-threshold prompt fix from
+Workstream B now correctly identifies the multi-thread Tue/Wed
+content where yesterday's pre-fix run had emitted 0 phases).
+
+**Tests:** 264 → 289 (+25 across all workstreams: 4 F5 + 8 audit-C
++ 8 upgrade-to-v13 + 5 parent-schema).
+
+**Pushed:**
+- ``cc-session-toolkit`` origin/main = ``c615f13`` (12 commits this
+  session: F5, prompts, archive+scripts audit, tests audit,
+  upgrade-to-v13 feature, parent-schema feature, + 5 merge commits)
+- ``pa-data`` origin/main includes the audit-experiments merge
+  ``b43c158`` (via the auto-sync process)
+
+**Out of scope (deliberately deferred to future sessions):**
+- The 637-session v1.3 upgrade run itself (~$216 mean spend; flag
+  is shipped; running is a separate decision). 2026-05-26 update:
+  approved and launched in a background process — see the F-block
+  for status.
+- Smoke-testing the new ``MAX_SUBAGENT_SUMMARIES`` cap path
+  (intentionally never triggered in normal operation; only fires
+  when a session has >20 subagents).
+- Parent-path ``response_schema`` interaction with the v3 prompt's
+  ``approx_start`` field — Gemini will reject if the model omits it
+  on a phase item; existing exception handler collapses to None
+  graceful-degradation (auto-metadata becomes "Auto-metadata
+  unavailable" and the session can be re-backfilled). No production
+  failures observed yet; monitor on the upgrade run.
+
+- Toolkit commit `c615f13` (merge of feat/parent-response-schema)
+- Toolkit feature: `e30ad98` (parent schema), `d030a45` (upgrade
+  flag), `f7c52dc` + `e85fe9b` (archive audit-followups),
+  `c0247e1` (prompts), `75c7ee3` (tests), `8e44f1a` (F5 fix)
+- Data submodule commit (pa-data): `b43c158`
+  (audit-experiments merge); also the v3 wire-up's bake-off
+  experiments dir lives at
+  ``data/experiments/session-summary-v3-bakeoff-2026-05-24/`` as
+  before.
+
+
+
 ### 2026-05-24 (Sun, evening) — Workstream G Phase 1: legacy run → user-mandated clean rebuild → QA agent → Stream A code hygiene
 
 Heavy ~12 h workstream-G session arc spanning v2 Phase 1 of the
