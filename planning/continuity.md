@@ -1715,10 +1715,18 @@ sessions had their ``schema_version`` flipped 1.3 → 1.2 so the
 finder picks them up. Combined queue: 17 capped + 11 known-empty
 re-tries = 28 sessions. Started 2026-05-28 01:08 UTC. Dry-run
 estimate ~$36 mean / ~$38 worst-case envelope. At time of writing
-~10/28 done; on-pace for ~100 min total wall-clock. The 11 empty
-sessions will still re-fail in this run (the python process loaded
-its code before the preflight landed); permanent markers will
-prevent them from re-appearing on future runs.
+**COMPLETE.** 17 succeeded, 11 failed (the empty stubs, as predicted),
+0 cap truncation — all 17 formerly-capped sessions now at full
+subagent fan-out (68/68, 59/59, 58/58, … 21/21). Real spend
+**$23.73** (under the ~$36 estimate) across 608 calls: parent 17
+calls $5.44, subagent 591 calls $18.29 — captured by the new
+cost-audit log at
+``data/logs/backfill-cost-log-20260528T020248Z.json``. The 11 empty
+sessions re-failed in this run as expected (python loaded its code
+before the preflight landed); they now carry permanent-skip markers
+so future runs auto-skip them. Net archive state: 643 sessions on
+v1.3 (626 from the 2026-05-26 run + 17 here), 11 permanently-skipped
+empty stubs, 0 remaining on v1.2.
 
 **Tests:** 289 → 301 (+12 across permanent-marker helper, finder
 marker-honouring, instrumented-wrapper cost recording on
@@ -1726,27 +1734,41 @@ full/missing/partial usage_metadata, schema forwarding, raise-
 after-record on response.text=None, ``_summarise_cost_records``
 phase aggregation + lower-bound flagging).
 
-**Branch state (not yet merged to main):** all today's work sits on
-``feat/backfill-cost-tracking`` with 3 commits:
+**Merged + pushed.** All today's work landed on ``main`` via merge
+commit ``63aaa95`` (toolkit), squashing the three feature commits:
 - `5660265` feat(backfill): preflight skip on empty transcripts + permanent-skip marker
 - `f80094b` fix(config): bump MAX_SUBAGENT_SUMMARIES 20 → 70
 - `172a1a7` feat(backfill): per-call cost-audit log (backport from validator)
 
-Will merge + push once the reupgrade finishes and cost log validates
-end-to-end.
+**R2 / Phase 0e diagnosis (2026-05-28).** Investigated the offsite-
+backup blocker. Credentials present + correct on amd-tower + zbook
+(``RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID`` + ``_SECRET_ACCESS_KEY``);
+``rclone.conf`` remote ``[r2archives]`` fully configured (type=s3,
+provider=Cloudflare, env_auth=true, endpoint
+``059b3362f2a505d81c10b3d7b1800f86.r2.cloudflarestorage.com``).
+Bucket is ``pa-cc-archives`` (three Object-Read&Write tokens, one per
+machine). Initial write 403 was the **rclone+R2 bucket-preflight
+gotcha** — scoped tokens reject HEAD/CreateBucket; ``--s3-no-check-
+bucket`` fixes it (write smoke-test then succeeded; a transient
+``501 NotImplemented`` on first attempt suggests also adding
+``--s3-disable-checksum``). Phase 0e remaining: build
+``scripts/push-archives-to-r2.sh`` (rclone sync
+``~/mnt/rpi-shares/cc-archives-consolidated/`` →
+``r2archives:pa-cc-archives/`` with the two R2 flags), wire into
+``daily-sync.sh``, run first 3.4 GB push. Storage ~$0.05/mo, zero
+egress.
 
 **Out of scope (deferred / non-issues):**
-- The 17 capped sessions in this run incur ~$28-30 marginal API
-  spend, plus ~$1 wasted on the 11 re-failing empty sessions.
 - The 11 known-empty sessions could be **deleted** from the archive
   entirely rather than marked — they have no salvageable content.
   Left in place for now because preserving them is the safer default
   (a future archaeologist of the archive can confirm "these were
   empty all along" via the meta).
 - Per-subagent flat cost constant (``PER_SUBAGENT_COST_USD = 0.05``)
-  is now known to over-estimate by ~20%. Updating to 0.04 would
-  improve dry-run accuracy but the 20% buffer is also a reasonable
-  safety margin against future model-price changes. Leave at 0.05.
+  is now known to over-estimate by ~20% (measured ~$0.04 actual on
+  the 2026-05-28 run). Updating to 0.04 would improve dry-run
+  accuracy but the 20% buffer is also a reasonable safety margin
+  against future model-price changes. Leave at 0.05.
 
 
 
