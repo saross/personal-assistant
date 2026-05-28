@@ -1658,6 +1658,98 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-28 (Thu, midday) — v1.3 archive upgrade results + cost-tracking backport + preflight skip + cap calibration
+
+Follow-on session reviewing the 2026-05-26 archive-wide v1.3 upgrade
+run and closing two remaining loose ends in the backfill script.
+
+**Archive-wide upgrade run (launched 2026-05-26 15:24 local, ran
+~6h 45m).** 626 / 637 parent successes (98.3%). 11 failures, all
+content-empty: 4 theseus-ship stubs (200–650 bytes compressed), 6
+``*empty-abandoned-session*`` map-reader archives, 1 with no JSONL
+at all. **0 JSON parse failures across 2,018 subagent calls** —
+today's ``SUBAGENT_NARRATIVE_SCHEMA`` enforcement (commit `8e44f1a`)
+fully closed the failure class it was designed to close. Real
+spend ~$163 actual vs ~$216 dry-run estimate (under by ~$53).
+Per-subagent cost came in at ~$0.04, not the flat $0.05 budgeted —
+worth carrying into future estimates. Schema enforcement also
+appears to improve content quality on edge cases (e.g., the
+2026-04-28 EOD recap session that previously emitted 0 phases now
+correctly emits 2 phases for its multi-thread Tue/Wed content;
+phases-threshold prompt fix from 2026-05-25 Workstream B working
+as designed).
+
+**Cap calibration (`MAX_SUBAGENT_SUMMARIES` 20 → 70).** 17 of 637
+sessions exceeded the original 20-cap, heaviest at 68 subagents.
+591 subagents total were truncated by the cap, costing those
+sessions ~25-65% of their structural narrative coverage. 70 covers
+the empirical worst-case distribution; per-session blast radius
+still bounded (~$3 worst-case at cap, vs ~$1 at 20). Toolkit commit
+`f80094b`.
+
+**Cost-tracking backport (Item #2).** Backports Agent D's
+instrumented-wrapper pattern from ``validate-production-path.py``
+(pa-data commit `bbe2a7b`) into the production backfill script.
+Monkey-patches ``cc_session_toolkit.archive._call_gemini_once`` at
+runtime, captures input/output tokens + Flex-tier cost + wall time
++ phase (parent/subagent) into ``_CALL_RECORDS``. Writes JSON cost
+log to ``data/logs/backfill-cost-log-<UTC>.json`` on exit (including
+SIGINT — written from the ``finally`` block); brief per-phase
+summary prints to stdout. Toolkit commit `172a1a7`.
+
+**Preflight skip + permanent marker (Items #1, #3 — combined design).**
+New ``EMPTY_TRANSCRIPT_TOKEN_THRESHOLD = 50`` and helper
+``mark_session_permanently_skipped(meta_path, reason)`` that writes
+``auto_metadata_skip_permanent: true`` + reason atomically. Both
+finders (``find_sessions_needing_backfill``,
+``find_sessions_needing_v13_upgrade``) honour the marker.
+``main()`` now runs a preflight before ``generate_auto_metadata``:
+distils the transcript, counts tokens, if below threshold marks the
+session + skips. Counts surface as a new ``skipped_empty`` tally in
+the final summary. Item #1 done as a one-off: the 11 known-empty
+sessions from the 2026-05-26 run are manually marked. Toolkit
+commit `5660265`. +12 tests (289 → 301 passing).
+
+**Reupgrade in flight (Item #1 — the actual rerun).** 17 capped
+sessions had their ``schema_version`` flipped 1.3 → 1.2 so the
+finder picks them up. Combined queue: 17 capped + 11 known-empty
+re-tries = 28 sessions. Started 2026-05-28 01:08 UTC. Dry-run
+estimate ~$36 mean / ~$38 worst-case envelope. At time of writing
+~10/28 done; on-pace for ~100 min total wall-clock. The 11 empty
+sessions will still re-fail in this run (the python process loaded
+its code before the preflight landed); permanent markers will
+prevent them from re-appearing on future runs.
+
+**Tests:** 289 → 301 (+12 across permanent-marker helper, finder
+marker-honouring, instrumented-wrapper cost recording on
+full/missing/partial usage_metadata, schema forwarding, raise-
+after-record on response.text=None, ``_summarise_cost_records``
+phase aggregation + lower-bound flagging).
+
+**Branch state (not yet merged to main):** all today's work sits on
+``feat/backfill-cost-tracking`` with 3 commits:
+- `5660265` feat(backfill): preflight skip on empty transcripts + permanent-skip marker
+- `f80094b` fix(config): bump MAX_SUBAGENT_SUMMARIES 20 → 70
+- `172a1a7` feat(backfill): per-call cost-audit log (backport from validator)
+
+Will merge + push once the reupgrade finishes and cost log validates
+end-to-end.
+
+**Out of scope (deferred / non-issues):**
+- The 17 capped sessions in this run incur ~$28-30 marginal API
+  spend, plus ~$1 wasted on the 11 re-failing empty sessions.
+- The 11 known-empty sessions could be **deleted** from the archive
+  entirely rather than marked — they have no salvageable content.
+  Left in place for now because preserving them is the safer default
+  (a future archaeologist of the archive can confirm "these were
+  empty all along" via the meta).
+- Per-subagent flat cost constant (``PER_SUBAGENT_COST_USD = 0.05``)
+  is now known to over-estimate by ~20%. Updating to 0.04 would
+  improve dry-run accuracy but the 20% buffer is also a reasonable
+  safety margin against future model-price changes. Leave at 0.05.
+
+
+
 ### 2026-05-25 (Mon, afternoon) — Session-summary v3 tooling finalisation: F5 closed, 15 audit follow-ups landed, --upgrade-to-v13 flag, parent-path schema
 
 PA-infrastructure session that closed out the v3 session-summary
