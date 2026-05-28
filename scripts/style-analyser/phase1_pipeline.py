@@ -2,7 +2,7 @@
 """
 phase1_pipeline.py — corpus-style-analyser v2 Phase 1 measurement extensions.
 
-Per ~/personal-assistant/planning/style-guide-agent-v2-implementation-plan.md §2:
+Per ~/personal-assistant/wiki/planning/style-guide-agent-v2-implementation-plan.md §2:
 
   * Reference-list stripping pre-pass (regex header + author-year-density fallback).
   * Six new metrics (per-paper AND aggregate): MATTR-100, hapax ratio, passive

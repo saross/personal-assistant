@@ -26,7 +26,7 @@ every other repo.
 ## Migration status (2026-05-28)
 
 The four-artefact reorg is **in progress**. Authoritative plan:
-[`../planning/wiki-index-draft.md`](../planning/wiki-index-draft.md);
+[`planning/wiki-index-draft.md`](planning/wiki-index-draft.md);
 state tracked in [continuity.md](continuity.md) workstream D.
 
 | Artefact | Target | Where it is now |
@@ -35,9 +35,9 @@ state tracked in [continuity.md](continuity.md) workstream D.
 | `working-notes.md` | `wiki/working-notes.md` | **here** (since 2026-05-18) |
 | `user-observations.md` | `wiki/user-observations.md` | **here** (since 2026-05-18) |
 | `index.md` (this file) | `wiki/index.md` | **here** (2026-05-28) |
-| `reflections/` | `wiki/reflections/` | still at `../docs/notes/reflections/` |
-| Planning | `wiki/planning/` | still at `../planning/` |
-| Documentation | `wiki/docs/` | still at `../docs/` |
+| `reflections/` | `wiki/reflections/` | still at `docs/notes/reflections/` (repo root) — pending `/reflect` layout-aware prep |
+| Planning | `wiki/planning/` | **moved here 2026-05-28** |
+| Documentation | `wiki/docs/` | **moved here 2026-05-28** (`wiki/docs/open-science/`) |
 | Cross-project `notes/`, `grimoire/` | stays private in `data/` (by design — see below) | `../notes/`, `../notes/grimoire/` — **private** (`data` submodule) |
 
 **The cross-project layer stays private — by design, not indecision.** The
@@ -77,8 +77,8 @@ should look like (minus the cross-project layer below).
 | Working notes | [working-notes.md](working-notes.md) | Research notes — empirical, chronological lab notebook (`/observe`, `/handoff`) |
 | Reflections | [`../docs/notes/reflections/`](../docs/notes/reflections/) | Meta-research — session reflection, abductive-reasoning, session log (`/reflect`; research repos only) |
 | User observations | [user-observations.md](user-observations.md) | Curated meta-observations about how we work together |
-| Planning | [`../planning/`](../planning/) | Design docs, implementation plans, audits |
-| Documentation | [`../docs/`](../docs/) | System and infrastructure documentation |
+| Planning | [`planning/`](planning/) | Design docs, implementation plans, audits |
+| Documentation | [`docs/`](docs/) | System and infrastructure documentation |
 
 `working-notes.md` (research record) and `reflections/` (meta-research on
 how the work and the collaboration unfold) are **separate layers with

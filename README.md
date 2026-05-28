@@ -17,7 +17,7 @@ personal-assistant/                      PUBLIC (this repo)
 ├── hooks/             Session hooks (extraction, retrieval, accountability)
 ├── scripts/           PostgreSQL sync, memory decay, schema
 ├── skills/            Custom Claude Code skills
-├── planning/          System design documents
+├── wiki/              Project wiki: continuity, working-notes, planning/, docs/
 ├── published/         Selectively published prompts
 │
 ├── data/              PRIVATE submodule (pa-data)
@@ -104,7 +104,7 @@ PostgreSQL schema).
 
 ## Design Documents
 
-The `planning/` directory contains the system design thinking:
+The `wiki/planning/` directory contains the system design thinking:
 
 - Memory system architecture and implementation plan
 - Task system design with accountability model

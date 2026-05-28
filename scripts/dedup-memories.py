@@ -14,7 +14,7 @@ accident where amd-tower's uncommitted memories.jsonl was merged into
 zbook's already-backfilled canonical (commit df9639e), producing the
 summary-backfill duplicates. The reprocess collisions are a separate
 bug in scripts/reprocess-sessions.py line 453 (no per-chunk salt in
-the id hash). Full diagnosis in planning/memory-store-dedup-and-rebuild.md
+the id hash). Full diagnosis in wiki/planning/memory-store-dedup-and-rebuild.md
 and the approved plan at /home/shawn/.claude/plans/gentle-roaming-meadow.md.
 
 Usage:

@@ -6,7 +6,7 @@ audience: open-science / research-transparency / agentic-tooling community
 related:
   - ./RDA_IG_Statement_of_Work.docx
   - ./RDA_IG_Summary_and_Description.docx
-  - ../../wiki/continuity.md (workstream E)
+  - ../../continuity.md (workstream E)
 tags: [open-science, rda-ig, three-ps, reasoning-traces, claude-code, agent-observability, fair, ro-crate]
 status: complete
 ---
@@ -287,7 +287,7 @@ mutually exclusive:
   `data/experiments/transcript-cap-analysis-2026-05-19/findings.md`
 - **RDA IG framing documents**: `./RDA_IG_Statement_of_Work.docx`,
   `./RDA_IG_Summary_and_Description.docx`
-- **Memory-system rethink (workstream D)**: `../../wiki/continuity.md`
+- **Memory-system rethink (workstream D)**: `../../continuity.md`
   workstream D — the `notes/<topic>.md` wiki structure aligns with the
   "Research Grimoires Framework" candidate IG output.
 - **Three Ps already in `session.meta.json` schema**: see

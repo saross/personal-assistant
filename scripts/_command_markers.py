@@ -69,7 +69,7 @@ COMMAND_MARKERS: tuple[str, ...] = (
     # extraction hook skips them so the announce turn isn't re-extracted
     # as a fresh memory. The leading "# " plus specific phrasing makes
     # prose false-positives negligible. See:
-    # planning/memory-system-v2-design.md change D (announce-and-save).
+    # wiki/planning/memory-system-v2-design.md change D (announce-and-save).
     "# Saved to memory:",
     "# Forgot memory:",
     "# Updated memory:",

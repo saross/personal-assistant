@@ -105,7 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
 -- Source anchors, verification status, typed links between memories,
 -- structured rationale (why/how_to_apply), and supersession tracking
 -- (for /forget /update commands and cross-session supersession).
--- See planning/memory-system-v2-design.md and -implementation-plan.md.
+-- See wiki/planning/memory-system-v2-design.md and -implementation-plan.md.
 
 -- anchors: array of {type, ref, line?} for re-verifying claimed specifics.
 -- type ∈ {file, commit, zotero, url}.
