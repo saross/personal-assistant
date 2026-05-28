@@ -133,18 +133,33 @@ underlying record (Phase 0 unlocks topic-search).
 - [x] 2026-05-17 `planning/vector-2-design.md` landed (now reshaped under workstream D, see workstream B)
 - [x] 2026-05-17 Craft entry on session-wind-down trigger
   (`notes/working-practices.md`)
-- [ ] **Implement `/handoff` as actual skill** — currently just a
-  protocol doc; needs the skill file in `commands/` directory
+- [x] 2026-05-18 **Implement `/handoff` as actual skill** — shipped
+  (`commands/handoff.md`, available as the `/handoff` skill); verified
+  present 2026-05-28.
 - [ ] **Pilot wiki migration on personal-assistant** — move `planning/`
   + `docs/` under `wiki/`; add `wiki/index.md`; cleanest project to
-  pilot because it has the most planning artefacts
-- [ ] **Sketch `notes/index.md` + initial wiki-tag vocabulary** — based
-  on topics that actually appear in your projects (cluster the corpus
-  first); ~30 min design exercise
+  pilot because it has the most planning artefacts.
+  - [ ] **Relocate misplaced `working-notes.md` files** (added 2026-05-28;
+    per-project, not a shared file): 5 projects (inscriptions,
+    LLM-History-Paper, llm-reproducibility, map-reader-llm, paper-b) have
+    `working-notes.md` misplaced *inside* `docs/notes/reflections/`. Relocate
+    each to its own `wiki/working-notes.md` (a *sibling* of `reflections/`,
+    never inside it) and fix the cc-session-toolkit template that regenerates
+    the misplacement. Survey + steps in `planning/wiki-index-draft.md`
+    § "Relocating misplaced working-notes.md files". obs-writer / `/observe` /
+    `/reflect` already made layout-aware 2026-05-28 so writes keep working
+    meanwhile.
+- [x] 2026-05-18 **Sketch `notes/index.md` + initial wiki-tag vocabulary**
+  — `notes/index.md` + `notes/_tags.md` (24-tag vocabulary) landed;
+  verified 2026-05-28. Remaining: the empirical cluster-the-corpus
+  validation of the vocabulary (feeds the `/weekly-review` step below).
 - [ ] **Extend `/weekly-review` with cluster-and-carry curation step**
   — pull week's new memories, cluster by topic, surface candidates,
   draft wiki-page diffs for review
-- [ ] **Close 3 provenance audit gaps** — see pending tasks
+- [x] 2026-05-18 **Close 3 provenance audit gaps** — all three closed
+  (`source_message_uuid`, `code_state.*`, `licence` + `extractor_model_id`);
+  see the "Provenance audit gaps … all three closed 2026-05-18" block lower
+  in this doc. Verified 2026-05-28.
 
 ### F. Auto-metadata production switch — Gemini Flex + tuned prompt (new 2026-05-18; wire-up landed 2026-05-18, backfill gated on review)
 

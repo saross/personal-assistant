@@ -204,6 +204,39 @@ local.
   `map-reader-llm/wiki/` and `paper-b-working-notes.md` +
   `lit-scout-case-study.md` to the Paper B project wiki.
 
+## Relocating misplaced working-notes.md files (added 2026-05-28)
+
+A cleanup task spanning several repos (not a single shared file —
+`working-notes.md` is always **per project**). In each repo, `working-notes.md`
+is the **research-notes** layer and must sit at `wiki/working-notes.md` (new) or
+`docs/notes/working-notes.md` (legacy — a *sibling* of `reflections/`), never
+*inside* `reflections/` (that directory is the meta-research layer, owned by
+`/reflect`). A historical workaround put it inside `reflections/` as an
+end-of-session catch-all; `/handoff` now supersedes that role.
+
+Survey 2026-05-28 (`find` across `~/personal-assistant` + `~/Code/*`):
+
+| Location | Projects |
+|---|---|
+| `wiki/working-notes.md` (correct, new) | personal-assistant, Groundsite-EFN |
+| `docs/notes/reflections/working-notes.md` (**misplaced**) | inscriptions, LLM-History-Paper, llm-reproducibility, map-reader-llm, 2026-mq-…-paper-b |
+| `docs/notes/working-notes.md` (correct legacy) | none |
+
+Steps (later — do per project as each adopts the wiki layout, no rush):
+
+1. `git mv` each misplaced `docs/notes/reflections/working-notes.md` →
+   `wiki/working-notes.md` (or `docs/notes/working-notes.md` if the project
+   isn't on the wiki layout yet). Preserve history.
+2. **Fix the root cause:** cc-session-toolkit ships a `working-notes.md`
+   template at `src/cc_session_toolkit/data/reflections/working-notes.md`, so
+   newly-scaffolded projects keep landing it inside `reflections/`. Move the
+   template out of `reflections/` (or stop scaffolding it there) so the
+   misplacement stops regenerating.
+3. obs-writer / `/observe` / `/reflect` were made layout-aware 2026-05-28
+   (obs-writer + observe locate `wiki/` → `docs/notes/` → misplaced
+   `reflections/`; `/reflect` excludes working-notes.md from processing), so
+   reads/writes keep working throughout the transition.
+
 ## Open questions for the migration session
 
 - Order: do PA-project layer first (lower risk; doesn't touch

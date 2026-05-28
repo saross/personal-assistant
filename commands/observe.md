@@ -33,8 +33,11 @@ commits + pushes the change.
 
 ### With a seed text
 
-1. **Locate** `working-notes.md` (try `docs/notes/reflections/working-notes.md`
-   first; ask if not found).
+1. **Locate** `working-notes.md` (try `wiki/working-notes.md` first, then
+   `docs/notes/working-notes.md`, then the misplaced-legacy
+   `docs/notes/reflections/working-notes.md`; ask if none found). This is the
+   research-notes layer — never write Observations into the `reflections/`
+   meta-research documents.
 2. **Read** the most recent 2–3 Obs entries to establish the project's
    Obs format conventions (heading style, section structure, length).
 3. **Compose a draft** Obs entry from the seed text:

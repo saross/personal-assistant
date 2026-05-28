@@ -1,6 +1,6 @@
 ---
 name: reflect
-description: "End-of-session reflection protocol. Use when the user invokes /reflect or asks to reflect on the current session, do end-of-session reflections, or similar. Guides Claude through updating reflection documents in priority order, answering structured prompts, and maintaining research observation logs."
+description: "End-of-session reflection protocol. Use when the user invokes /reflect or asks to reflect on the current session, do end-of-session reflections, or similar. Guides Claude through updating reflection documents in priority order, answering structured prompts, and maintaining the reflection and investigation logs."
 ---
 
 # End-of-Session Reflection
@@ -90,20 +90,17 @@ Part of an ongoing cross-project research investigation into AI
 reasoning patterns. Only updated when the session produced genuinely
 surprising findings — the conditional trigger keeps entries sharp.
 
-**`working-notes.md`** (priority 4, scope: always):
-
-```yaml
----
-priority: 4
-scope: always
-title: "Working Notes"
-audience: "researchers and future instances"
----
-```
-
-Purpose: Running observations, methodological notes, and analytical
-findings that emerge during the project. More structured than session
-reflections, less formal than papers or reports.
+> **Not a reflection document:** `working-notes.md` (the *research-notes*
+> layer — empirical observations, methodological notes, and analytical
+> findings) is **not** part of the reflections set and is neither created
+> nor maintained here. It is owned by `/observe` + the obs-writer agent (and
+> by `/handoff` at session close). Its home is `wiki/working-notes.md` (new
+> layout) or `docs/notes/working-notes.md` (legacy — a *sibling* of
+> `reflections/`, never inside it). Some older projects still have a
+> working-notes.md misplaced inside `reflections/`; that is pending relocation
+> — exclude it from processing (see below) and leave it for obs-writer.
+> `/reflect` is meta-research — how the work and the human-AI collaboration
+> unfold; working-notes is the research record itself. Keep the layers separate.
 
 ### Never create automatically
 
@@ -123,6 +120,9 @@ plausible reconstructions from summaries.
 
 Process all `.md` files in the reflections directory (`docs/notes/reflections/`), sorted by
 the `priority` field in their YAML frontmatter (lowest number = highest priority).
+**Exclude `working-notes.md`** if it is present — in some legacy-layout projects it
+physically sits in this directory, but it is the research-notes layer owned by
+`/observe`, not a reflection document. Leave it for the obs-writer agent to maintain.
 
 For each document: **read it first** to understand numbering and context. Then
 append a new dated section that responds to what was distinctive about *this*

@@ -2,7 +2,8 @@
 name: obs-writer
 description: >
   Append a new "Observation" entry to a project's working-notes.md log
-  (typically `docs/notes/reflections/working-notes.md`). Auto-detects the
+  (`wiki/working-notes.md` on the four-artefact layout, or the legacy
+  `docs/notes/reflections/working-notes.md`). Auto-detects the
   project's existing Obs format from recent entries, picks the next free
   Obs number with collision check, cross-references related entries, and
   commits + pushes the change. Never modifies existing Obs entries —
@@ -46,15 +47,22 @@ commit + push.
 
 ## 1. Locate working-notes.md
 
-Try in order:
+working-notes.md is the **research-notes** layer — empirical, project-scoped
+observations and methodological findings. It is distinct from the
+`reflections/` meta-research layer (owned by `/reflect`); do not write
+Observations into reflection documents. Try in order:
 
-1. `docs/notes/reflections/working-notes.md` (Shawn's canonical layout)
-2. `docs/working-notes.md`
-3. `working-notes.md` at repo root
-4. `find . -name working-notes.md -not -path "*/node_modules/*"`
+1. `wiki/working-notes.md` (four-artefact layout — preferred)
+2. `docs/notes/working-notes.md` (correct legacy home — a *sibling* of `reflections/`)
+3. `docs/notes/reflections/working-notes.md` (misplaced legacy — present in some
+   older projects; pending relocation, never create a new one here)
+4. `docs/working-notes.md`
+5. `working-notes.md` at repo root
+6. `find . -name working-notes.md -not -path "*/node_modules/*"`
 
 If multiple candidates exist or none is found, ask the user which
-file. Do not guess.
+file. Do not guess. For a new project with no working-notes.md, the
+preferred home is `wiki/working-notes.md`.
 
 ## 2. Read recent Obs entries to learn the project's format
 
