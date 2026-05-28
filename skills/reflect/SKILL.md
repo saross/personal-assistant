@@ -17,8 +17,9 @@ working directory** — the project you have been working in during this session
 1. **Determine the project**: Use the current working directory to identify the
    project. State it explicitly at the start of the reflection (e.g., "Reflecting
    on session work in map-reader-llm").
-2. **Locate reflection docs**: Look for `docs/notes/reflections/` relative to
-   the project root. If this directory does not exist, create the initial
+2. **Locate reflection docs**: Look for `wiki/reflections/` (the four-artefact
+   layout — preferred), falling back to the legacy `docs/notes/reflections/`,
+   relative to the project root. If neither exists, create the initial
    structure using the starter templates below.
 3. **Tag output**: When writing reflection entries, include the project name and
    session date in the entry header so entries are unambiguous even if read out
@@ -26,7 +27,8 @@ working directory** — the project you have been working in during this session
 
 ## Initial Structure (new projects)
 
-When `docs/notes/reflections/` does not exist, create it and populate it
+When neither `wiki/reflections/` nor the legacy `docs/notes/reflections/`
+exists, create `wiki/reflections/` (the four-artefact layout) and populate it
 in two tiers.
 
 ### Always create
@@ -118,8 +120,9 @@ plausible reconstructions from summaries.
 
 ## Protocol
 
-Process all `.md` files in the reflections directory (`docs/notes/reflections/`), sorted by
-the `priority` field in their YAML frontmatter (lowest number = highest priority).
+Process all `.md` files in the reflections directory (`wiki/reflections/`, or the
+legacy `docs/notes/reflections/`), sorted by the `priority` field in their YAML
+frontmatter (lowest number = highest priority).
 **Exclude `working-notes.md`** if it is present — in some legacy-layout projects it
 physically sits in this directory, but it is the research-notes layer owned by
 `/observe`, not a reflection document. Leave it for the obs-writer agent to maintain.

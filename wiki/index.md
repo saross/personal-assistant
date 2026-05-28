@@ -25,9 +25,13 @@ every other repo.
 
 ## Migration status (2026-05-28)
 
-The four-artefact reorg is **in progress**. Authoritative plan:
-[`planning/wiki-index-draft.md`](planning/wiki-index-draft.md);
-state tracked in [continuity.md](continuity.md) workstream D.
+The PA-project layer is **fully migrated** (2026-05-28): continuity,
+working-notes, user-observations, reflections, planning, and docs all live
+under `wiki/`; the old repo-root `planning/` and `docs/` are removed. The
+cross-project layer stays private in `data/` by design (see below).
+Authoritative plan:
+[`planning/wiki-index-draft.md`](planning/wiki-index-draft.md); state tracked
+in [continuity.md](continuity.md) workstream D.
 
 | Artefact | Target | Where it is now |
 |---|---|---|
@@ -35,7 +39,7 @@ state tracked in [continuity.md](continuity.md) workstream D.
 | `working-notes.md` | `wiki/working-notes.md` | **here** (since 2026-05-18) |
 | `user-observations.md` | `wiki/user-observations.md` | **here** (since 2026-05-18) |
 | `index.md` (this file) | `wiki/index.md` | **here** (2026-05-28) |
-| `reflections/` | `wiki/reflections/` | still at `docs/notes/reflections/` (repo root) — pending `/reflect` layout-aware prep |
+| `reflections/` | `wiki/reflections/` | **moved here 2026-05-28** (`/reflect` made layout-aware) |
 | Planning | `wiki/planning/` | **moved here 2026-05-28** |
 | Documentation | `wiki/docs/` | **moved here 2026-05-28** (`wiki/docs/open-science/`) |
 | Cross-project `notes/`, `grimoire/` | stays private in `data/` (by design — see below) | `../notes/`, `../notes/grimoire/` — **private** (`data` submodule) |
@@ -75,7 +79,7 @@ should look like (minus the cross-project layer below).
 |---|---|---|
 | Continuity | [continuity.md](continuity.md) | Cross-session state for *this* project; the load-bearing handoff document |
 | Working notes | [working-notes.md](working-notes.md) | Research notes — empirical, chronological lab notebook (`/observe`, `/handoff`) |
-| Reflections | [`../docs/notes/reflections/`](../docs/notes/reflections/) | Meta-research — session reflection, abductive-reasoning, session log (`/reflect`; research repos only) |
+| Reflections | [`reflections/`](reflections/) | Meta-research — session reflection, abductive-reasoning, session log (`/reflect`; research repos only) |
 | User observations | [user-observations.md](user-observations.md) | Curated meta-observations about how we work together |
 | Planning | [`planning/`](planning/) | Design docs, implementation plans, audits |
 | Documentation | [`docs/`](docs/) | System and infrastructure documentation |

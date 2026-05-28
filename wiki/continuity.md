@@ -136,9 +136,14 @@ underlying record (Phase 0 unlocks topic-search).
 - [x] 2026-05-18 **Implement `/handoff` as actual skill** — shipped
   (`commands/handoff.md`, available as the `/handoff` skill); verified
   present 2026-05-28.
-- [ ] **Pilot wiki migration on personal-assistant** — move `planning/`
-  + `docs/` under `wiki/`; add `wiki/index.md`; cleanest project to
-  pilot because it has the most planning artefacts.
+- [x] 2026-05-28 **Pilot wiki migration on personal-assistant** — PA-project
+  layer fully migrated under `wiki/`: continuity.md, working-notes.md,
+  user-observations.md, index.md, planning/, docs/open-science/, reflections/.
+  `/reflect` made layout-aware (prefers `wiki/reflections/`, falls back to the
+  legacy `docs/notes/reflections/`). Old repo-root `planning/` + `docs/`
+  removed. Cross-project `notes/` + `grimoire/` stay private in `data/` by
+  design (shared via `published/`). Commits 21a7e60, 6481838, fd8ec38 + this
+  session's reflections move. Remaining sub-task below.
   - [ ] **Relocate misplaced `working-notes.md` files** (added 2026-05-28;
     per-project, not a shared file): 5 projects (inscriptions,
     LLM-History-Paper, llm-reproducibility, map-reader-llm, paper-b) have
@@ -1336,7 +1341,7 @@ Deferred (with reason):
 
 - [x] 2026-05-18 **Implement `/handoff` as actual skill** in `commands/handoff.md` — thin invoker that points at `handoff-protocol.md`
 - [x] 2026-05-18 **Draft `global-claude-md/session-start-protocol.md`** — symmetric bookend to `/handoff`; silent fires at session-start; covers continuity.md read, things-to-verify spot-check, recall-dump de-weighting, future auto-loading of wiki/notes indexes
-- [ ] **Pilot wiki migration on personal-assistant** — move `planning/`, `docs/`, `continuity.md`, etc. under `wiki/`; add `wiki/index.md` (sketch landed at `planning/wiki-index-draft.md` 2026-05-18); split `notes/_tags.md` content into `wiki/index.md` at migration time
+- [x] 2026-05-28 **Pilot wiki migration on personal-assistant** — PA-project layer (continuity, working-notes, user-observations, planning/, docs/, reflections/) migrated under `wiki/`; `wiki/index.md` added; `/reflect` made layout-aware. `notes/_tags.md` lift into `wiki/index.md` deferred — cross-project layer stays private in `data/` by design. Sketch + steps: `wiki/planning/wiki-index-draft.md`
 - [x] 2026-05-18 **Sketch `notes/index.md` + initial wiki-tag vocabulary** — 24-tag set across four groupings (craft scaffolding 8, failure modes 5, domains 6, cross-cutting 5); pre-staged in `notes/_tags.md` ready to lift to `wiki/index.md` at pilot migration
 - [ ] **Extend `/weekly-review` with cluster-and-carry curation step** — produce candidate wiki-page diffs
 - [ ] **Phase 0 archive consolidation — priority promoted** (open-science topic-search depends on this)
