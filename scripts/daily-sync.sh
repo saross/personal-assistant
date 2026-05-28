@@ -570,11 +570,25 @@ if [[ $DRY_RUN -eq 0 ]]; then
         # self-contained (own .env load, mount + remote checks) and exits
         # non-zero on skip (1) or rclone error (2); wrap in `if` so a
         # backup hiccup never aborts the rest of daily-sync under set -e.
-        log "cc-archives → R2: starting offsite push"
-        if bash "$SCRIPT_DIR/push-archives-to-r2.sh" >>"$LOG_FILE" 2>&1; then
-            log "cc-archives → R2: complete"
+        #
+        # Single-owner gate: only the designated host pushes to R2. All
+        # working machines converge to the same canonical store, so every
+        # machine would otherwise push byte-identical content (idempotent
+        # under `copy`, but wasteful). The push also only works at home
+        # (needs the rpi-shares mount), and amd-tower is the always-on home
+        # desktop — the natural sole owner. This also means other machines'
+        # rclone version is irrelevant to the backup (only the owner needs
+        # rclone >= 1.64 for clean R2 uploads).
+        R2_PUSH_HOST="AMD-tower-ubuntu"
+        if [[ "$HOST" == "$R2_PUSH_HOST" ]]; then
+            log "cc-archives → R2: starting offsite push"
+            if bash "$SCRIPT_DIR/push-archives-to-r2.sh" >>"$LOG_FILE" 2>&1; then
+                log "cc-archives → R2: complete"
+            else
+                log "cc-archives → R2: push skipped or errored (rc=$?; see r2-push.log)"
+            fi
         else
-            log "cc-archives → R2: push skipped or errored (rc=$?; see r2-push.log)"
+            log "cc-archives → R2: skipped (push owner is $R2_PUSH_HOST, this is $HOST)"
         fi
     fi
 fi
