@@ -563,6 +563,19 @@ if [[ $DRY_RUN -eq 0 ]]; then
         else
             log "cc-archives sync [3/3]: rsync exited non-zero (see log)"
         fi
+
+        # cc-archives → Cloudflare R2 (Phase 0e offsite backup). Runs AFTER
+        # the local⇄canonical convergence above so R2 mirrors the
+        # up-to-date source of truth. push-archives-to-r2.sh is
+        # self-contained (own .env load, mount + remote checks) and exits
+        # non-zero on skip (1) or rclone error (2); wrap in `if` so a
+        # backup hiccup never aborts the rest of daily-sync under set -e.
+        log "cc-archives → R2: starting offsite push"
+        if bash "$SCRIPT_DIR/push-archives-to-r2.sh" >>"$LOG_FILE" 2>&1; then
+            log "cc-archives → R2: complete"
+        else
+            log "cc-archives → R2: push skipped or errored (rc=$?; see r2-push.log)"
+        fi
     fi
 fi
 
