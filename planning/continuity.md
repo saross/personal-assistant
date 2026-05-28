@@ -1134,13 +1134,20 @@ Five categories:
   LFS storage-quota cleanup or to keep clones lean. Orphaned pointers
   in old commits aren't actively harmful; defer this until both
   papers are submitted.
-- [ ] **Phase 0e — R2 wiring** (once Phase 0b stable): rclone push
-  from the working machine to R2 daily (rather than rpi→R2 — revised
-  2026-05-20, since rpi-server has no toolkit and cannot run rclone
-  on a schedule). Working machine pushes to R2 from the mounted
-  rpi-server NVMe contents; R2 acts as offsite + travel bridge.
-  Working-machine credentials in `~/personal-assistant/.env` on
-  amd-tower + zbook (`R2_*` keys).
+- [x] 2026-05-28 **Phase 0e — R2 wiring — DONE.** `scripts/push-archives-to-r2.sh`
+  (`rclone copy`, additive/never-deletes, `--s3-no-check-bucket` +
+  `--s3-disable-checksum`, `RCLONE_BIN` override, rclone-version guard)
+  wired into `daily-sync.sh` after the cc-archives convergence passes,
+  gated to a single push owner (`AMD-tower-ubuntu`) by hostname. Reads
+  the canonical mount, pushes to `r2archives:pa-cc-archives`. Initial
+  3.342 GiB / 4,654-object push completed + verified (`rclone check
+  --size-only --one-way` → 0 differences). Required upgrading rclone
+  1.60.1 → 1.74.2 on amd-tower (the distro version intermittently 501'd
+  on R2 PutObject). Credentials `RCLONE_CONFIG_R2ARCHIVES_*` in
+  `~/personal-assistant/.env`; rclone remote `[r2archives]` in
+  `~/.config/rclone/rclone.conf`. zbook + rpi-server need no rclone
+  upgrade (single-owner gate). **Goal (a) — comprehensive recording →
+  network-share source-of-truth → offsite backup — closed end-to-end.**
 - [x] 2026-05-17 **Vector 2 — open design doc** (`planning/vector-2-design.md`) — done; implementation parked under workstream D
 - [ ] **Phase 4 — typed links** — **superseded by workstream D**; the typed-links problem is now solved by wiki-page cross-references + working-notes references + frontmatter tags
 - [ ] **Phase 5 — migration sweep** — **demoted**; still useful as backfill for `verified` field but no longer gating anything
@@ -1749,14 +1756,21 @@ provider=Cloudflare, env_auth=true, endpoint
 Bucket is ``pa-cc-archives`` (three Object-Read&Write tokens, one per
 machine). Initial write 403 was the **rclone+R2 bucket-preflight
 gotcha** — scoped tokens reject HEAD/CreateBucket; ``--s3-no-check-
-bucket`` fixes it (write smoke-test then succeeded; a transient
-``501 NotImplemented`` on first attempt suggests also adding
-``--s3-disable-checksum``). Phase 0e remaining: build
-``scripts/push-archives-to-r2.sh`` (rclone sync
-``~/mnt/rpi-shares/cc-archives-consolidated/`` →
-``r2archives:pa-cc-archives/`` with the two R2 flags), wire into
-``daily-sync.sh``, run first 3.4 GB push. Storage ~$0.05/mo, zero
-egress.
+bucket`` fixes it. **Phase 0e then COMPLETED same session:**
+``scripts/push-archives-to-r2.sh`` built (``rclone copy``, additive /
+never-deletes, ``--s3-no-check-bucket`` + ``--s3-disable-checksum``,
+``RCLONE_BIN`` override, rclone-version guard), wired into
+``daily-sync.sh`` after the convergence passes and gated to a single
+push owner (``AMD-tower-ubuntu``). The ``501 NotImplemented`` turned
+out to be **rclone-version**, not flag-related: the distro rclone
+``v1.60.1`` 501s intermittently on R2 PutObject (a first push landed
+only ~964/4654 before exhausting retries). Upgrading to ``v1.74.2``
+(official installer, sudo) fixed it cleanly — the resumed push
+completed with **0 errors**; ``rclone check --size-only --one-way`` =
+**0 differences, 4,654/4,654 matching, 3.342 GiB**. Single-owner gate
+means zbook + rpi-server need no rclone upgrade. (Pre-existing
+``_legacy/`` dir in the bucket left untouched.) Storage ~$0.05/mo,
+zero egress. **Goal (a) closed end-to-end.**
 
 **Cross-machine sync reconciliation (2026-05-28).** Confirming "are we
 in sync across amd-tower / zbook / rpi-server" surfaced a real gap on

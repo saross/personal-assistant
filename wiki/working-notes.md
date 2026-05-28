@@ -915,3 +915,70 @@ loop returns the same answer the correct loop would).
 Anchors: `scripts/style-analyser/phase1_pipeline.py:158` (post-fix);
 `notes/style-guides/academic/v2-phase1-audit-clean-2026-05-24.md` §10
 (Stream A fix list); commit `834a5c3`.
+
+## 2026-05-28: rclone+R2 has two distinct "looks like auth, isn't" traps
+
+Wiring the Cloudflare R2 offsite backup (Phase 0e) surfaced two failure
+modes that both present as permission/capability errors but are neither:
+
+1. **Bucket-scoped tokens reject the bucket preflight.** rclone runs a
+   HEAD/CreateBucket check before uploads; an R2 API token scoped to a
+   single bucket can't do bucket-level operations, so the preflight
+   403s and *every* `PutObject` fails — even on a genuinely Object
+   Read & Write token. Dashboard said the token was R&W; the write
+   still 403'd. Fix: `--s3-no-check-bucket` skips the preflight. I
+   initially (and confidently) misdiagnosed this as a read-only token.
+2. **rclone < 1.64 intermittently 501s on R2 PutObject.** The distro
+   build (`v1.60.1`) returned `501 NotImplemented` on a large fraction
+   of uploads; with retries it landed only ~964 of 4,654 files before
+   exhausting the budget. Not a flag problem — `--s3-disable-checksum`
+   didn't help. Upgrading to `v1.74.2` fixed it cleanly (0 errors).
+
+**Generalises:** when an S3-compatible backend returns 403/501 on
+writes, separate (a) credential scope, (b) the client's pre-upload
+bucket ops, and (c) client-version compatibility before concluding
+"bad credentials". Verify the token permission at the provider's
+ground truth (dashboard) rather than inferring it from one rclone
+error. Anchors: `scripts/push-archives-to-r2.sh`;
+`planning/continuity.md` 2026-05-28 entry.
+
+## 2026-05-28: append-only sync silently strands in-place rewrites
+
+The v1.2→v1.3 bulk metadata rewrite (643 sessions) never reached the
+canonical rpi-shares store: `daily-sync.sh` pushed cc-archives with
+`rsync -a --ignore-existing`, which skips every path already present
+in the destination. The flag is correct for the common case (new
+sessions are append-only) but structurally cannot propagate an
+*in-place* rewrite of an existing file. The source-of-truth sat two
+upgrade-runs stale and **nothing flagged it** — directory sizes
+matched (3.4 GB each), because the metadata delta is tiny against the
+transcript bulk, so a `du`-based "are we in sync" check reads clean
+while the metadata is silently divergent.
+
+**Generalises:** append-only sync + in-place mutation = silent
+divergence. Size/byte-count "in sync" heuristics miss it; you need a
+content- or mtime-aware check on the mutable files specifically. Fix
+shipped: scoped `rsync -rt --update` passes in both directions
+(local→canonical and canonical→local), restricted to the
+in-place-mutable files (`session.meta.json`, `CATALOG.json`).
+Anchors: `scripts/daily-sync.sh` cc-archives sync block;
+`planning/continuity.md` 2026-05-28 entry.
+
+## 2026-05-28: response_schema enforcement eliminated the stochastic-JSON failure class
+
+The 1-in-25 subagent-summary JSON parse failures (Gemini under
+`response_mime_type=application/json` alone, which instructs JSON
+output but does not validate structure) dropped to **0 failures
+across 2,018 subagent calls** on the 2026-05-26 archive-wide upgrade
+once `response_schema` was added to the subagent Gemini call. Gemini's
+structured-output mode validates against the schema before emitting,
+closing the failure at source rather than mitigating after the fact.
+
+**Generalises:** for LLM JSON output, schema-validated structured-output
+mode is a categorically stronger guarantee than a mime-type hint plus a
+robust parser. The mime-type hint reduces but does not eliminate
+malformed output; the schema eliminates the class (for the
+single-field subagent shape, at least — the richer parent schema was
+also wired but is harder to prove exhaustively). Anchors:
+`cc-session-toolkit` `archive.py:SUBAGENT_NARRATIVE_SCHEMA`, commit
+`8e44f1a`; `planning/continuity.md` 2026-05-25 + 2026-05-28 entries.

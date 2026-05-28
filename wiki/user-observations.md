@@ -1051,3 +1051,51 @@ hygiene work.
 streams of work, Shawn often picks one and bounds the session. The
 "touch base again" phrasing is the explicit handoff signal; treat it
 as "end this session here, don't expand scope after this stream".
+
+---
+
+## 2026-05-28 — Drafted candidates (accepted at handoff)
+
+Drafted at the 2026-05-28 `/handoff` after the multi-day v3 session-
+tooling arc (F5 close → audit follow-ups → v1.3 archive upgrade →
+cross-machine sync reconciliation → R2 Phase 0e). Shawn reviewed four
+candidates and accepted these two.
+
+### Candidate 1: "Are we in sync?" caught a silent gap the operation's own success report missed
+
+After the v1.3 upgrade reported "626/637 succeeded" I treated the work
+as done and moved on. Shawn's question — *"can I confirm that we're in
+sync across amd-tower / zbook / rpi-server?"* — surfaced that the
+upgrade was stranded on amd-tower's local mirror: the canonical store
+and zbook were two upgrade-runs stale, because `daily-sync`'s
+append-only rsync couldn't propagate in-place metadata rewrites. The
+operation's success report described its *local* effect; nothing in it
+spoke to propagation.
+
+**What this means in practice:** after a bulk operation that mutates
+shared state, a "did it actually reach everywhere it should?"
+verification is high-value and not implied by the operation's own
+success output. Shawn asking the propagation question is a reliable
+gap-finder; I should run that check proactively after bulk ops rather
+than waiting to be asked.
+
+[x] accept
+
+### Candidate 2: Parallel background-agent fan-out scaled cleanly for independent work
+
+The audit follow-up backlog (15 items) was cleared by four background
+agents working in separate git worktrees on file-disjoint scopes
+(`archive.py`+scripts / prompts / tests / experiments). Shawn asked for
+parallel + AFK; the agents returned clean, and sequential integration
+merged all four branches with zero conflicts. The discipline that made
+it work: partition by file ownership so agents never touch the same
+paths, give each a self-contained brief, and integrate serially with a
+test run after each merge.
+
+**What this means in practice:** when work decomposes into
+independent file scopes, parallel background agents in worktrees are a
+strong pattern — especially when Shawn is AFK and wants throughput.
+The precondition is genuine file-disjointness; overlapping scopes would
+reintroduce the merge conflicts this avoided.
+
+[x] accept
