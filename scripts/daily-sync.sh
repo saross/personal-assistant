@@ -473,28 +473,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# cc-archives sync — push new local ~/cc-archives/ content to the
-# canonical store at ~/mnt/rpi-shares/cc-archives-consolidated/
-# (Phase 0 Step 8, landed 2026-05-22).
+# cc-archives sync — keep local ~/cc-archives/ and the canonical store at
+# ~/mnt/rpi-shares/cc-archives-consolidated/ convergent (Phase 0 Step 8,
+# landed 2026-05-22; metadata-convergence passes added 2026-05-28).
 #
 # Architecture: rpi-server's SSD share holds the canonical store;
 # working machines hold full local mirrors at ~/cc-archives/. The
-# production archive hook writes to the local mirror; this step
-# pushes new content UP to canonical.
+# production archive hook writes to the local mirror.
 #
-# Conservative semantics:
-# - --ignore-existing: never overwrite, never delete from canonical.
-#   The canonical store is authoritative for anything already there.
+# Three passes:
+#   1. Append-only UP (--ignore-existing): pushes NEW sessions, subagents,
+#      v2-backups, and metas for brand-new sessions up to canonical. Never
+#      overwrites, never deletes — canonical is authoritative for anything
+#      already present. This is the common-case daily path.
+#   2. Metadata UP (--update): propagates IN-PLACE metadata rewrites
+#      (e.g. a --upgrade-to-v13 re-summarisation run on this machine) up to
+#      canonical. The append-only pass cannot do this — --ignore-existing
+#      skips every path already present, so a rewritten session.meta.json
+#      would otherwise never reach the source of truth (the gap that
+#      stranded the 2026-05-26/28 v1.3 upgrade on amd-tower until fixed by
+#      hand). Newest-mtime-wins; scoped to the mutable-in-place files only.
+#   3. Metadata DOWN (--update): pulls canonical's newer metas back to the
+#      local mirror, so a re-summarisation run done on ANOTHER machine
+#      reaches this one. Keeps mirrors convergent without a manual
+#      cross-machine push.
+#
+# Transcripts/subagents are append-only and never change, so passes 2-3
+# deliberately exclude them — only session.meta.json and CATALOG.json get
+# rewritten in place. Newest-mtime-wins is acceptable here: each session is
+# effectively owned by its origin machine and bulk rewrites are rare and
+# run from a single machine, so cross-machine write collisions on the same
+# meta are not expected.
+#
+# Conservative semantics retained:
 # - Skip silently if rpi-shares isn't mounted (Shawn may be travelling,
 #   network may be down). Don't fail the whole daily-sync over this.
 # - Mount-presence check uses `df` grep to distinguish a live SSHFS
-#   mount from the silent-empty-dir failure mode where
-#   ~/mnt/rpi-shares/ exists locally but isn't backed by rpi-server.
+#   mount from the silent-empty-dir failure mode where ~/mnt/rpi-shares/
+#   exists locally but isn't backed by rpi-server. This guard also
+#   protects the DOWN pass from pulling an empty dir over the local mirror.
 # ---------------------------------------------------------------------------
 
 if [[ $DRY_RUN -eq 0 ]]; then
     CC_ARCHIVES_LOCAL="$HOME/cc-archives"
     CC_ARCHIVES_CANONICAL="$HOME/mnt/rpi-shares/cc-archives-consolidated"
+
+    # rsync filter for the metadata-convergence passes: descend into all
+    # directories, transfer only the in-place-mutable files, exclude
+    # everything else (transcripts, subagents — handled by the append-only
+    # pass). -rt (not -a) avoids needless group/owner/perm churn on the
+    # shared store.
+    CC_META_FILTER=(
+        --include='*/'
+        --include='session.meta.json'
+        --include='CATALOG.json'
+        --exclude='*'
+    )
 
     if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]]; then
         log "cc-archives sync: mount point missing ($CC_ARCHIVES_CANONICAL) — skipped"
@@ -503,13 +537,31 @@ if [[ $DRY_RUN -eq 0 ]]; then
     elif [[ ! -d "$CC_ARCHIVES_LOCAL" ]]; then
         log "cc-archives sync: $CC_ARCHIVES_LOCAL missing — nothing to push"
     else
-        log "cc-archives sync: pushing $CC_ARCHIVES_LOCAL/ → $CC_ARCHIVES_CANONICAL/"
+        log "cc-archives sync [1/3]: append-only push $CC_ARCHIVES_LOCAL/ → canonical"
         if rsync -a --ignore-existing --stats \
             "$CC_ARCHIVES_LOCAL/" "$CC_ARCHIVES_CANONICAL/" \
             >>"$LOG_FILE" 2>&1; then
-            log "cc-archives sync: complete"
+            log "cc-archives sync [1/3]: complete"
         else
-            log "cc-archives sync: rsync exited non-zero (see log)"
+            log "cc-archives sync [1/3]: rsync exited non-zero (see log)"
+        fi
+
+        log "cc-archives sync [2/3]: metadata --update push → canonical"
+        if rsync -rt --update --stats "${CC_META_FILTER[@]}" \
+            "$CC_ARCHIVES_LOCAL/" "$CC_ARCHIVES_CANONICAL/" \
+            >>"$LOG_FILE" 2>&1; then
+            log "cc-archives sync [2/3]: complete"
+        else
+            log "cc-archives sync [2/3]: rsync exited non-zero (see log)"
+        fi
+
+        log "cc-archives sync [3/3]: metadata --update pull canonical → local"
+        if rsync -rt --update --stats "${CC_META_FILTER[@]}" \
+            "$CC_ARCHIVES_CANONICAL/" "$CC_ARCHIVES_LOCAL/" \
+            >>"$LOG_FILE" 2>&1; then
+            log "cc-archives sync [3/3]: complete"
+        else
+            log "cc-archives sync [3/3]: rsync exited non-zero (see log)"
         fi
     fi
 fi
