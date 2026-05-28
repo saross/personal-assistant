@@ -90,7 +90,7 @@ fall back to listing the relevant directory.
 
 #### 5. Recognise PA-infrastructure background mode
 
-Per workstream C in `planning/continuity.md`, Shawn runs
+Per workstream C in `wiki/continuity.md`, Shawn runs
 personal-assistant infrastructure sessions as deliberate background
 work while his primary foreground is elsewhere (research, teaching,
 business). When the session is PA-infrastructure and Shawn signals as

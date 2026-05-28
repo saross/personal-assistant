@@ -428,7 +428,7 @@ def find_by_doi(doi: str) -> list[dict[str, Any]]:
     Comparison with proposer's pre-2026-05-23 ``search_items`` flow:
     a 2026-05-22 smoke test (n=35) caught 2/5 actual duplicates via
     text search vs 5/5 via this DOI-based query. See workstream H in
-    planning/continuity.md.
+    wiki/continuity.md.
     """
     if not doi or not doi.strip():
         return []

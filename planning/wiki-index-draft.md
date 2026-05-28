@@ -193,7 +193,8 @@ local.
      what-doesn't-live-here.
   7. Update `global-claude-md/handoff-protocol.md` references from
      `notes/_inbox.md` → `wiki/_inbox.md`.
-  8. Update `planning/continuity.md` workstream-D status and reference paths.
+  8. Update `wiki/continuity.md` workstream-D status and reference paths
+     (continuity.md itself moved planning/ → wiki/ on 2026-05-28).
   9. Update slash commands that reference `notes/` paths (audit needed:
      `/craft`, `/observe`, others).
   10. Run a repo-wide grep for `notes/` and `planning/` references; fix.

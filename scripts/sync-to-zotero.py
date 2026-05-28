@@ -18,7 +18,7 @@ Environment variables:
     ZOTERO_API_KEY_PAPER_B — API token with write access to notes
                              (Paper-B-scoped under the target-suffixed
                              naming convention adopted 2026-05-22; see
-                             workstream H in planning/continuity.md and
+                             workstream H in wiki/continuity.md and
                              global-claude-md/zotero-reference.md).
 """
 
