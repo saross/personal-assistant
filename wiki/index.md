@@ -38,13 +38,18 @@ state tracked in [continuity.md](continuity.md) workstream D.
 | `reflections/` | `wiki/reflections/` | still at `../docs/notes/reflections/` |
 | Planning | `wiki/planning/` | still at `../planning/` |
 | Documentation | `wiki/docs/` | still at `../docs/` |
-| Cross-project `notes/`, `grimoire/` | *(undecided)* | `../notes/`, `../notes/grimoire/` — **private** (`data` submodule) |
+| Cross-project `notes/`, `grimoire/` | stays private in `data/` (by design — see below) | `../notes/`, `../notes/grimoire/` — **private** (`data` submodule) |
 
-**Open decision blocking the cross-project move:** the PA-project layer is
-all public (main repo), but `notes/` + `grimoire/` are private (symlinked
-into the `data` submodule). Moving them into a public `wiki/` would expose
-private content. The cross-project layer therefore stays in `data/` until
-the public/private boundary is decided.
+**The cross-project layer stays private — by design, not indecision.** The
+PA-project layer is all public (main repo), but `notes/` + `grimoire/` are
+the **private working/scratch area** (symlinked into the `data` submodule),
+kept private so prompts and patterns can be curated and de-risked before
+sharing. Public sharing is a deliberate per-artefact promotion to
+[`../published/`](../published/) — symlinks for public-origin skills/agents
+(Pattern A), polished copies for grimoire prompts (Pattern B); see
+[`../published/README.md`](../published/README.md). So the cross-project
+layer is **not** moved into the public `wiki/`; it stays in `data/` and is
+linked from here.
 
 ## Ritual moments
 

@@ -184,20 +184,28 @@ local.
   1. Create `wiki/` directory.
   2. Move `planning/`, `docs/`, `continuity.md`, `working-notes.md`,
      `reflections/`, `user-observations.md` into `wiki/`.
-  3. Move `notes/` and `grimoire/` into `wiki/`.
-  4. Move `notes/_inbox.md` to `wiki/_inbox.md`.
-  5. Move `notes/_tags.md` content into `wiki/index.md` (the "Tag
-     vocabulary" section above), then delete `notes/_tags.md`.
-  6. Update `notes/index.md` to drop the "How this layer fits" section
+  3. **Do NOT move `notes/` or `grimoire/` into `wiki/`.** They are the
+     **private** working area (`data` submodule) and stay there so prompts
+     can be curated/de-risked before sharing. Public sharing is positive-
+     action promotion to `published/` (Pattern B copies for grimoire; see
+     `published/README.md`), never wholesale relocation into the public
+     `wiki/`. The public `wiki/index.md` links to them where they live.
+  4. `notes/_inbox.md` and `notes/_tags.md`: per-file privacy review needed.
+     `_inbox.md` holds in-progress project candidates → likely stays private
+     in `data/`. `_tags.md` (the curated tag vocabulary) is innocuous → may
+     lift into the public `wiki/index.md` "Tag vocabulary" section. Decide
+     at migration time; do not blanket-move.
+  5. Update `notes/index.md` to drop the "How this layer fits" section
      (covered by `wiki/index.md`), keep page list + conventions +
      what-doesn't-live-here.
-  7. Update `global-claude-md/handoff-protocol.md` references from
-     `notes/_inbox.md` → `wiki/_inbox.md`.
-  8. Update `wiki/continuity.md` workstream-D status and reference paths
+  6. Update `global-claude-md/handoff-protocol.md` `_inbox.md` references
+     only if `_inbox.md` actually moves (per step 4 it likely stays at
+     `notes/_inbox.md` in `data/`).
+  7. Update `wiki/continuity.md` workstream-D status and reference paths
      (continuity.md itself moved planning/ → wiki/ on 2026-05-28).
-  9. Update slash commands that reference `notes/` paths (audit needed:
+  8. Update slash commands that reference `notes/` paths (audit needed:
      `/craft`, `/observe`, others).
-  10. Run a repo-wide grep for `notes/` and `planning/` references; fix.
+  9. Run a repo-wide grep for `notes/` and `planning/` references; fix.
 - Resolve lit-scout file destinations per `continuity.md` (table
   recorded during 2026-05-18 session): bibs to projects, evaluations to
   `wiki/docs/lit-scout-evaluations/`, magnetometer (v4.3) archived.
