@@ -1758,6 +1758,28 @@ bucket`` fixes it (write smoke-test then succeeded; a transient
 ``daily-sync.sh``, run first 3.4 GB push. Storage ~$0.05/mo, zero
 egress.
 
+**Cross-machine sync reconciliation (2026-05-28).** Confirming "are we
+in sync across amd-tower / zbook / rpi-server" surfaced a real gap on
+two axes. (1) **Archives:** the v1.3 upgrade wrote to local
+``~/cc-archives`` (``DEFAULT_ARCHIVE_ROOT``), but the canonical
+rpi-shares store + zbook's mirror were stranded at v1.2 — root cause
+``daily-sync.sh``'s ``rsync -a --ignore-existing`` is append-only and
+cannot propagate in-place meta rewrites. Fixed by (a) a one-time
+scoped ``rsync -rt --update`` of metas amd-tower→canonical (675 files)
+and canonical→zbook (1307 files; zbook also lacked the v2-backups), and
+(b) **a permanent design fix** — ``daily-sync.sh`` cc-archives sync is
+now a 3-pass convergence: append-only UP (unchanged) + metadata UP
+``--update`` + metadata DOWN ``--update``, scoped to
+``session.meta.json`` + ``CATALOG.json``, newest-mtime-wins (commit
+``f6929d6``). Future re-summarisation runs now self-heal across
+machines via daily-sync; no manual cross-machine push needed. (2)
+**Git:** zbook was behind on all three repos (toolkit ~6 days stale at
+``cdc7c65``); rpi-server's PA had benign ``M data`` stale-submodule-
+pointer drift (0 local commits). Both pulled clean to PA ``f6929d6``,
+pa-data ``ec4dd42``, toolkit ``63aaa95`` (zbook; rpi-server has no
+toolkit repo by design). **All three machines now fully convergent on
+git + archives.**
+
 **Out of scope (deferred / non-issues):**
 - The 11 known-empty sessions could be **deleted** from the archive
   entirely rather than marked — they have no salvageable content.
