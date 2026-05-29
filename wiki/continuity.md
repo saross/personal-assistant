@@ -184,6 +184,15 @@ underlying record (Phase 0 unlocks topic-search).
   chicken-and-egg with item #1: the first run ratifies the
   2026-05-29 vocabulary-validation delta before clustering. **Not yet
   exercised on a real week** — first live run is its own validation.
+- [x] 2026-05-29 **Lift tag vocabulary to `wiki/index.md` + privacy
+  decision (item #4)** — done, per Shawn's call. The tag vocabulary
+  (innocuous) lifted from the private `notes/_tags.md` to the public
+  `wiki/index.md` "Tag vocabulary" section, now its **canonical home**
+  (full glosses + usage notes + History). `notes/_tags.md` reduced to a
+  redirect stub (`status: archive`); `notes/index.md` pointer and
+  `/weekly-review` step 5a both re-pointed at `wiki/index.md`. `_inbox.md`
+  and all `notes/`/`grimoire/` *content* stay private by design. The
+  pending vocabulary delta (item #1) now ratifies into `wiki/index.md`.
 - [x] 2026-05-18 **Close 3 provenance audit gaps** — all three closed
   (`source_message_uuid`, `code_state.*`, `licence` + `extractor_model_id`);
   see the "Provenance audit gaps … all three closed 2026-05-18" block lower

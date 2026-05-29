@@ -55,6 +55,11 @@ sharing. Public sharing is a deliberate per-artefact promotion to
 layer is **not** moved into the public `wiki/`; it stays in `data/` and is
 linked from here.
 
+**One exception, decided 2026-05-29:** the tag *vocabulary* itself is
+innocuous and now lives in this file (see [Tag vocabulary](#tag-vocabulary)
+below) as its canonical home. `_inbox.md` and all `notes/`/`grimoire/`
+*content* stay private.
+
 ## Ritual moments
 
 Three moments knit the wiki to the rest of the system:
@@ -91,9 +96,10 @@ never reflect into working-notes.
 
 ## Cross-project layer
 
-Curated knowledge that recurs across projects. **Currently private** — lives
-in the `data` submodule, reached via the repo-root symlinks. Stays there
-pending the public/private decision noted above.
+Curated knowledge that recurs across projects. **Private by decision
+(2026-05-29)** — the notes pages, grimoire, and `_inbox.md` live in the
+`data` submodule, reached via the repo-root symlinks, and stay there. Only
+the tag vocabulary was lifted out into this file (below).
 
 | Sub-collection | Path | Index | Job |
 |---|---|---|---|
@@ -102,17 +108,96 @@ pending the public/private decision noted above.
 
 ## Tag vocabulary
 
-A hand-curated, cross-collection tag vocabulary (24 tags in four groupings)
-applies to all wiki pages — apply 2–4 per page via frontmatter. The
-vocabulary currently lives at [`../notes/_tags.md`](../notes/_tags.md); it
-lifts up into this file as the top-level reference when the cross-project
-layer migrates.
+A hand-curated, cross-collection tag vocabulary applies to all wiki pages —
+apply **2–4 per page** via frontmatter. This file is its **canonical home**
+(lifted from the private `notes/_tags.md` on 2026-05-29; that file is now a
+redirect stub). Deliberately separate from the noisier auto-applied
+memory-tag vocabulary (~28k tags, mostly singletons); wiki tags are
+hand-curated and surface only on pages we have decided to keep.
 
 ```yaml
 ---
 tags: [llm-craft, anti-confabulation, audit-pattern]
 ---
 ```
+
+**24 tags in four groupings.** (A 2026-05-29 empirical validation —
+[`planning/wiki-vocabulary-validation-2026-05-29.md`](planning/wiki-vocabulary-validation-2026-05-29.md)
+— recommends ADD `agent-orchestration` + `infrastructure` and MERGE
+`memory-systems` → `memory-system`, `three-Ps` → `provenance`; **pending
+`/weekly-review` ratification**, so the list below is still the live 24.)
+
+### Craft scaffolding (artefact kinds — 8)
+
+What kind of craft artefact the page is about. Applies across notes,
+grimoire, and future scaffolding sub-collections.
+
+- `prompts` — prompt patterns, incantations (grimoire-style)
+- `agents` — subagent design, briefing, evaluation
+- `skills` — slash-command skills, when to invoke, format
+- `hooks` — session lifecycle hooks (session-start, pre-compact, etc.)
+- `claude-md` — `CLAUDE.md` design, conventions, what belongs in one
+- `scratchpad` — scratchpad protocols, decay, format
+- `memory-system` — memory architecture, retrieval, write strategy
+- `index` — index-page design, navigation patterns
+
+### Failure modes and mitigation patterns (5)
+
+Cross-cutting craft patterns that recur across artefact kinds.
+
+- `anti-confabulation` — Opus 4.7 fragment-welding, anchor verification, read-side scepticism
+- `anti-satisficing` — closing exits in prompts, precision over politeness
+- `audit-pattern` — adversarial review, claims inventories, bidirectional checks
+- `bidirectional-verification` — cross-checking source ↔ derived artefacts
+- `provenance` — RDA IG Three Ps (Prompt, Process, Provenance), RO-Crate
+
+### Domain / topic areas (6)
+
+The intellectual territory a page covers.
+
+- `llm-craft` — practical LLM working knowledge
+- `working-practices` — time, focus, session shape
+- `coding-practices` — engineering, tooling, debugging
+- `research-methodology` — research workflow patterns
+- `open-science` — FAIR, RO-Crate, data sharing, RDA work
+- `teaching` — pedagogy, class delivery, marking
+
+### Cross-cutting themes (5)
+
+Recurring threads that span domains and artefact kinds.
+
+- `session-shape` — pacing, wind-down, capacity, should-vs-must
+- `human-ai-collaboration` — interaction patterns at the relationship level
+- `three-Ps` — RDA IG framework (Prompt, Process, Provenance)
+- `memory-systems` — collaborative memory architecture and trade-offs
+- `paper-seed` — drafts and seeds for academic papers
+
+### Notes on use
+
+- **Multi-axis is fine.** A page can carry tags from any combination of the
+  four groupings. `llm-craft + anti-confabulation + audit-pattern` is normal.
+- **Descriptive, not categorical.** Tags surface what the page is *about*,
+  not which folder it lives in.
+- **Adding a tag.** Allowed when an existing tag would obscure rather than
+  describe. New tags happen at `/weekly-review` curation time (not in
+  arbitrary sessions); record the addition in the History below.
+- **Memory-tag overlap.** Some labels overlap with memory-system tags
+  (`anti-confabulation`, `memory-systems`). Fine — the vocabularies are
+  scoped separately even when they share words.
+- **Budget.** Aim for 20–30 total. Current count is 24. Past 30, the list
+  does less work; reach for refactor before reaching for more.
+
+### History
+
+- **2026-05-18** — Initial set of 24 tags, drafted during workstream D
+  design pass; pre-staged in `notes/_tags.md`.
+- **2026-05-29** — Empirical validation against the memory corpus +
+  `notes/_inbox.md`
+  ([`planning/wiki-vocabulary-validation-2026-05-29.md`](planning/wiki-vocabulary-validation-2026-05-29.md);
+  re-runnable via `scripts/analyse-wiki-vocabulary.py`). Recommended delta
+  pending `/weekly-review` ratification (see note above).
+- **2026-05-29** — Vocabulary lifted from the private `notes/_tags.md` to
+  this file as its canonical home; `_tags.md` reduced to a redirect stub.
 
 ## Conventions
 

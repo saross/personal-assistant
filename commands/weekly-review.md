@@ -213,19 +213,21 @@ curation happens deliberately, not reflexively.
 
 #### 5a. Ratify pending vocabulary changes (do this first)
 
-The clustering in 5c targets the wiki tag vocabulary (`notes/_tags.md`),
-so settle the vocabulary before clustering.
+The clustering in 5c targets the wiki tag vocabulary, whose canonical home
+is the "Tag vocabulary" section of `wiki/index.md` (lifted there from the
+now-stub `notes/_tags.md` on 2026-05-29). Settle the vocabulary before
+clustering.
 
 1. Look in `wiki/planning/` for a vocabulary-validation report
    (`wiki-vocabulary-validation-*.md`, `status: active`) whose recommended
-   delta is **newer than the latest `notes/_tags.md` "History" entry** —
-   i.e. recommended but not yet applied.
+   delta is **newer than the latest `wiki/index.md` Tag-vocabulary History
+   entry** — i.e. recommended but not yet applied.
 2. If one exists, present its recommended delta (ADD / MERGE / gloss
    changes) to the user for ratification, one decision at a time.
-3. On approval, apply to `notes/_tags.md`: add/merge the tags, update the
-   per-grouping counts and the "Budget" line, and append a dated "History"
-   entry citing the report as the evidence anchor. Apply any mechanical
-   real-page re-tags the report lists.
+3. On approval, apply to `wiki/index.md`'s Tag-vocabulary section:
+   add/merge the tags, update the per-grouping counts and the "Budget" line,
+   and append a dated "History" entry citing the report as the evidence
+   anchor. Apply any mechanical real-page re-tags the report lists.
 4. The resulting vocabulary (possibly unchanged) is the clustering target
    for 5c. If no report is pending, use the current 24-tag vocabulary as-is.
 
