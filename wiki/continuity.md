@@ -193,6 +193,15 @@ underlying record (Phase 0 unlocks topic-search).
   `/weekly-review` step 5a both re-pointed at `wiki/index.md`. `_inbox.md`
   and all `notes/`/`grimoire/` *content* stay private by design. The
   pending vocabulary delta (item #1) now ratifies into `wiki/index.md`.
+- [x] 2026-05-29 **Add grimoire→`published/` review to `/retro`** — done,
+  per Shawn's call that the publishing-review ritual belongs in `/retro`
+  (monthly), not `/weekly-review`. New **step 5c "Grimoire Publishing
+  Review"** in `commands/retro.md`, sibling to 5b scratchpad distillation:
+  surface matured private grimoire prompts not yet published, assess against
+  the `published/README.md` bar, present per-entry publish/defer/decline,
+  and on approval create the Pattern-B polished public copy in
+  `published/prompts/` (original stays private). Draft-only, human-ratified.
+  First run has a real backlog: 17 grimoire entries, 0 published.
 - [x] 2026-05-18 **Close 3 provenance audit gaps** — all three closed
   (`source_message_uuid`, `code_state.*`, `licence` + `extractor_model_id`);
   see the "Provenance audit gaps … all three closed 2026-05-18" block lower

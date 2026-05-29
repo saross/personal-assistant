@@ -222,6 +222,41 @@ per-project scratchpad file.
 6. **Present plan** to user for approval before making any edits.
 7. **Update** `Last distilled:` date in each reviewed file's header.
 
+### 5c. Grimoire Publishing Review
+
+Review which grimoire prompts have matured enough to publish for external
+reuse. Grimoire entries are **private-origin** (they live in the private
+`data/notes/grimoire/`); publishing is a deliberate **Pattern B** promotion
+— a polished public *copy* in `published/prompts/`, with the original
+staying private. See `published/README.md`. This is the grimoire analogue
+of the scratchpad distillation above and the `/weekly-review`
+cluster-and-carry: a periodic, draft-only, human-ratified curation.
+
+1. **Read** the grimoire: every `*.md` under
+   `~/personal-assistant/notes/grimoire/` plus its `README.md`; and list
+   the already-published copies in
+   `~/personal-assistant/published/prompts/`.
+2. **Identify candidates** — grimoire entries that are (a) NOT yet published
+   (no corresponding `published/prompts/<name>.md`), AND (b) have proven
+   useful or stabilised over the period (reused this month, referenced
+   across projects, or explicitly mature). New or still-churning entries are
+   not candidates.
+3. **Assess publish-readiness** for each candidate against the
+   `published/README.md` bar: generically reusable (not welded to one
+   project's specifics), free of private context (client names, unshipped
+   plans, credentials, identifiable third parties), and reads well
+   standalone.
+4. **Present the candidate list** to the user — for each: the grimoire path,
+   a one-line "why now", and any private context that would need stripping.
+   The user chooses **publish / defer / decline** per entry. Do not publish
+   anything without that per-entry approval.
+5. **On publish**, create the Pattern-B copy: copy the polished entry into
+   `published/prompts/<name>.md`, strip the flagged private context, verify
+   it reads standalone, and confirm the private original stays in place. Do
+   **not** symlink (Pattern A is for public-origin content only).
+6. **Empty is a valid outcome.** A month with nothing ripe publishes
+   nothing; deferred entries resurface next retro.
+
 ### 6. Apply Parameter Changes
 
 After displaying the retrospective:
@@ -253,3 +288,6 @@ After displaying the retrospective:
 - Don't propose changes for the sake of change. Stability is a feature.
 - The Hard Question should make the user uncomfortable if the data warrants it.
   A month of system working well gets a lighter question like "What would break this?"
+- Steps 5b (scratchpad distillation) and 5c (grimoire publishing review) are
+  both **draft-only and human-ratified** — propose, then act only on approval.
+  Both can validly produce no changes in a quiet month.
