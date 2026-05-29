@@ -1099,3 +1099,58 @@ The precondition is genuine file-disjointness; overlapping scopes would
 reintroduce the merge conflicts this avoided.
 
 [x] accept
+
+## 2026-05-29 — Drafted candidates (accepted at handoff)
+
+Drafted at the 2026-05-29 `/handoff` after the research-notes/reflections
+layer split + the PA wiki-migration pilot (continuity, planning, docs, and
+reflections moved under `wiki/`; the lifecycle tools made layout-aware). Shawn
+accepted all four.
+
+### Candidate 1: Conceptual course-corrections caught my errors before they propagated
+
+Three times this session Shawn corrected the design model from memory and was
+right each time: `working-notes.md` belongs *beside* `reflections/`, not inside
+it; "cross-project working notes" isn't a real thing (my section title implied
+a shared file when the task was per-project relocation); the grimoire is
+private-*by-curation*, not public-by-default. In each case I verified against
+source and corrected the docs in-session rather than Shawn having to re-explain.
+The steering was on his own system's *design intent* — a domain where he is the
+authority and the source docs can be stale.
+
+[x] accept
+
+### Candidate 2: Anti-confabulation held under a leading prompt
+
+When Shawn said "the memory's coming back… we'd want to curate/de-risk a prompt
+before making it public," I didn't just agree — I searched and found
+`published/README.md`'s Pattern A/B model, which confirmed his recollection
+precisely (private working area + positive-action promotion). A leading,
+confident prompt from a trusted collaborator is exactly the condition under
+which agreement-without-verification is tempting; verifying turned a half-memory
+into a cited mechanism.
+
+[x] accept
+
+### Candidate 3: Steering toward bounded increments over my big-menu instinct
+
+My opening move was a four-option `AskUserQuestion` laying out the whole
+decision space; Shawn declined it and instead drove the session as a sequence —
+fix the reconciliation snag → continuity + index → planning/docs → reflections —
+verifying each increment before continuing. For a high-blast-radius refactor
+across shared tooling, the bounded-increment rhythm contained risk better than
+deciding everything up front. Worth remembering: when the work is structurally
+risky, Shawn prefers one-thing-at-a-time with checkpoints over a comprehensive
+plan.
+
+[x] accept
+
+### Candidate 4: Self-caught mid-stream error
+
+A `git add` that aborted on a bad pathspec left a commit whose message described
+work the commit didn't contain (only the pre-staged rename landed). I caught it,
+used `reset --soft` to redo it as one accurate commit, and surfaced what had
+happened rather than papering over it. Process held under the pressure of a
+multi-step migration.
+
+[x] accept

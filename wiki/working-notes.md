@@ -982,3 +982,37 @@ single-field subagent shape, at least — the richer parent schema was
 also wired but is harder to prove exhaustively). Anchors:
 `cc-session-toolkit` `archive.py:SUBAGENT_NARRATIVE_SCHEMA`, commit
 `8e44f1a`; `planning/continuity.md` 2026-05-25 + 2026-05-28 entries.
+
+## 2026-05-29: A misplaced file regenerates until you fix the scaffolding template, not the instances
+
+`working-notes.md` was found misplaced *inside* `docs/notes/reflections/` in
+5 of 7 repos (inscriptions, LLM-History-Paper, llm-reproducibility,
+map-reader-llm, paper-b) rather than beside `reflections/`. The instinct is to
+read that as five independent slip-ups; it isn't. The single cause is a shared
+generator — `cc-session-toolkit` ships a `working-notes.md` template at
+`src/cc_session_toolkit/data/reflections/`, so every newly-scaffolded project
+inherits the misplacement.
+
+**Generalises:** when the same defect appears across many instances, find the
+shared generator (template, scaffold, codegen, snippet) before fixing
+instances one by one — otherwise the fix doesn't stick and the defect
+regenerates on the next scaffold. Anchors:
+`cc-session-toolkit/src/cc_session_toolkit/data/reflections/working-notes.md`;
+`wiki/planning/wiki-index-draft.md` § "Relocating misplaced working-notes.md files".
+
+## 2026-05-29: Prefer-new-fallback-legacy lets a multi-repo migration run without a flag day
+
+The PA wiki migration had to move artefacts whose locations are resolved by
+*global* tools (obs-writer, `/observe`, `/reflect`, the session-start and
+continuity protocols) serving 7 repos, of which only 2 are migrated. Instead
+of a synchronised cutover, each tool was made to **prefer the new path**
+(`wiki/…`) and **fall back to the legacy path** (`docs/notes/…`, `planning/…`).
+Migrated repos pick up the new layout; unmigrated repos keep working unchanged;
+each repo migrates on its own schedule.
+
+**Generalises:** for a migration across shared tooling, prefer-new /
+fallback-legacy beats a flag day. The session-start + continuity protocols
+already had this shape (`wiki/continuity.md` → `planning/continuity.md`
+fallback), which is exactly why moving PA's continuity broke nothing. Anchors:
+`skills/reflect/SKILL.md` locate section; `agents/obs-writer.md` §1;
+`global-claude-md/session-start-protocol.md`.

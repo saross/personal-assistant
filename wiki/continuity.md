@@ -1685,6 +1685,47 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-28 (Thu, evening) — Research-notes/reflections split + PA wiki migration (workstream D pilot complete)
+
+Background workstream-C session picking up goal (b) (the wiki/memory
+architecture) after goal (a) closed earlier today. Started by fixing a
+reconciliation snag Shawn flagged: `working-notes.md` (research notes) and
+`reflections/` (meta-research) had no clear ownership. Split them —
+obs-writer + `/observe` own `working-notes.md`; `/reflect` owns the
+reflections set (session-reflection, abductive-reasoning, session-log) and
+now excludes `working-notes.md`. A cross-repo survey surfaced a
+half-finished migration: 5 of 7 repos keep `working-notes.md` *misplaced*
+inside `docs/notes/reflections/`, root cause a cc-session-toolkit
+scaffolding template that ships the file in the wrong place — logged as a
+future per-project relocation task. Then ran the PA wiki-migration pilot to
+completion: `continuity.md`, `planning/`, `docs/open-science/`, and
+`reflections/` all moved under `wiki/`; `wiki/index.md` front door created;
+the cross-project `notes/` + `grimoire/` layer confirmed to **stay private**
+in `data/` by design (sharing is positive-action promotion to `published/`,
+Pattern A/B per the existing `published/README.md` — not an open decision).
+All three lifecycle tools made layout-aware (prefer `wiki/…`, fall back to
+legacy paths) so the 5 unmigrated repos keep working. Old repo-root
+`planning/` + `docs/` removed entirely.
+
+- Commits (all pushed to `origin/main`): `1479244` notes/reflections split;
+  `21a7e60` continuity→wiki + index; `6481838` privacy model resolved;
+  `fd8ec38` planning/+docs/ moved; `b69ef5c` reflections moved + /reflect
+  layout-aware.
+- Skills/agents: `agents/obs-writer.md`, `commands/observe.md`,
+  `skills/reflect/SKILL.md` (layout-aware locate + research/meta split).
+- Wiki: `wiki/index.md` (new), `wiki/continuity.md` (this file, moved from
+  `planning/`), `wiki/planning/` (44 files), `wiki/docs/open-science/`,
+  `wiki/reflections/` (3 files).
+- Refs updated: README structure diagram + design-docs section, cot-capture
+  relative links, 4 script doc-comments, 2 zotero-script comments,
+  `session-start-protocol.md`.
+- Plan doc: `wiki/planning/wiki-index-draft.md` (privacy resolution +
+  relocation steps + per-file `_inbox`/`_tags` privacy review).
+- Deferred (tracked in workstream D + wiki-index-draft): working-notes
+  relocation in the 5 legacy repos + toolkit-template fix;
+  `notes/_inbox.md`/`_tags.md` privacy review; `/weekly-review`
+  cluster-and-carry step.
+
 ### 2026-05-28 (Thu, midday) — v1.3 archive upgrade results + cost-tracking backport + preflight skip + cap calibration
 
 Follow-on session reviewing the 2026-05-26 archive-wide v1.3 upgrade
