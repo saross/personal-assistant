@@ -130,6 +130,7 @@ Use this template. Match the `standup_tone` from SYSTEM.md.
 | Inbox items (added/processed) | N/N | [trend] |
 | Waiting-for items | N | [trend] |
 | Memories extracted | N | [trend] |
+| Wiki pages curated (new/extended) | N/N | [trend] |
 
 ## Completions
 
@@ -196,7 +197,98 @@ What are the 1-3 concrete deliverables for next week?
 [Leave this section as a prompt — the user fills it in after reading the review.]
 ```
 
-### 5. Generate Collaborator Reports
+### 5. Cluster-and-Carry Wiki Curation
+
+This is the **synthesis half** of the wiki architecture: `/handoff` flags
+raw candidate material at session-close (one-line rows in
+`notes/_inbox.md`); `/weekly-review` curates it into wiki pages *with the
+full week's candidates in front of us*. This is the deliberate fix for the
+recap-too-late problem. Protocol context:
+`global-claude-md/handoff-protocol.md` ("Where this fits").
+
+**The whole step is draft-only and human-ratified.** Never write a wiki
+page, change the tag vocabulary, or remove an inbox row without the user
+accepting that specific action. The point of weekly cadence is that
+curation happens deliberately, not reflexively.
+
+#### 5a. Ratify pending vocabulary changes (do this first)
+
+The clustering in 5c targets the wiki tag vocabulary (`notes/_tags.md`),
+so settle the vocabulary before clustering.
+
+1. Look in `wiki/planning/` for a vocabulary-validation report
+   (`wiki-vocabulary-validation-*.md`, `status: active`) whose recommended
+   delta is **newer than the latest `notes/_tags.md` "History" entry** —
+   i.e. recommended but not yet applied.
+2. If one exists, present its recommended delta (ADD / MERGE / gloss
+   changes) to the user for ratification, one decision at a time.
+3. On approval, apply to `notes/_tags.md`: add/merge the tags, update the
+   per-grouping counts and the "Budget" line, and append a dated "History"
+   entry citing the report as the evidence anchor. Apply any mechanical
+   real-page re-tags the report lists.
+4. The resulting vocabulary (possibly unchanged) is the clustering target
+   for 5c. If no report is pending, use the current 24-tag vocabulary as-is.
+
+#### 5b. Gather the week's candidates
+
+Three candidate pools (the same pools `/handoff` feeds):
+
+- **`notes/_inbox.md`** — every pending candidate. This is the primary
+  source; rows were flagged at `/handoff` in the form
+  `- [topic-or-target-file] (session date) — one-line rationale`. (Note:
+  this is the *notes* inbox, distinct from the *tasks* `inbox.md` in
+  step 2.)
+- **Week's new memories** — reuse step 2's `created_at`-filtered set;
+  focus the craft/meta categories (`pattern`, `prompt_effectiveness`,
+  `methodology`, `system_evolution`, `self_reflection`, `source_insight`).
+  Run `python3 scripts/analyse-wiki-vocabulary.py --window-days 7
+  --as-of <period-end>` for the period's recurring corpus themes and
+  per-tag support — the recurring head is the "what recurred worth
+  carrying" signal.
+- **Working notes** — PA's own `wiki/working-notes.md` entries dated in
+  the period. Per-project working-notes live in each repo; weekly-review
+  is PA-centred, so default to PA + the notes inbox, and pull a specific
+  project's `wiki/working-notes.md` only if the user names it.
+
+#### 5c. Cluster by the wiki vocabulary
+
+- Group candidates under the (5a-settled) vocabulary tags. Many inbox rows
+  already name their target in `[topic: … — likely notes/<file>.md]` — use
+  that hint; it is the flagging author's own clustering.
+- A cluster is **ripe** when it has **≥2 related candidates**, OR a single
+  candidate that clearly extends an existing page, OR a corpus theme
+  recurring **≥~5×/week** that matches an inbox candidate. Thin singletons
+  with no existing-page home **stay in the inbox** — not every flag becomes
+  a page this week.
+- Report the clusters and which are ripe before drafting.
+
+#### 5d. Draft diffs (do NOT write yet)
+
+For each ripe cluster, draft one of:
+
+- **A new `notes/<topic>.md`** — with frontmatter (`title`, 2–4 vocabulary
+  tags, `created`/`updated` dates, `status: seed`) and dated entries.
+- **An addition to an existing page** — a dated entry appended under the
+  right section.
+
+Carry the strongest pre-formed cluster first. Apply the system's existing
+discipline: dated entries, links to source artefacts (commit hashes,
+working-notes Obs numbers, planning docs), `[[wiki-links]]` to related
+pages, UK/Australian spelling. Present each draft as a preview/diff.
+
+#### 5e. Review and carry
+
+- For each draft, the user chooses **accept / edit / defer / discard**.
+- On **accept**: write the page or append the addition; **remove the
+  carried rows from `notes/_inbox.md`** (the notes inbox is a working
+  tray, not an audit log — the carried knowledge now lives in the wiki
+  page). Note the carry date in the page if useful.
+- **defer** → the row stays in the inbox for a future review. **discard**
+  → remove the row (it was noise); say so explicitly.
+- Report a one-line summary: pages created, pages extended, rows carried,
+  rows left in the inbox.
+
+### 6. Generate Collaborator Reports
 
 1. **Read** `~/personal-assistant/tasks/collaborators.md`
 2. **For each collaborator entry**, extract their name, projects, context, and tone
@@ -240,13 +332,13 @@ If nothing: "Nothing right now."]
 5. **Save** each collaborator report to:
    `~/personal-assistant/reports/collaborators/[name-lowercase]-YYYY-WXX.md`
 
-### 6. Save Internal Review
+### 7. Save Internal Review
 
 Save to `~/personal-assistant/reports/weekly/YYYY-WXX.md`
 
 Use ISO week numbering (`date +%V` or Python `isocalendar()`).
 
-### 7. Display and Follow-up
+### 8. Display and Follow-up
 
 1. **Display** the full internal review
 2. **List** collaborator reports generated with their file paths
@@ -262,6 +354,8 @@ Use ISO week numbering (`date +%V` or Python `isocalendar()`).
    If no retros exist at all: `📋 No retros on file. First /retro establishes
    the baseline — run when you have ~30 min.`
 4. **Ask:** "Any learnings worth capturing this week?"
+   - Wiki-page curation was already handled in step 5; this prompt is for
+     anything *not* carried there.
    - If yes, offer to route to `/craft` (practical learnings) or `/remember` (context/decisions)
 5. **Ask** the user to fill in the "Next Week" section with 1-3 concrete deliverables
 
@@ -278,3 +372,7 @@ Use ISO week numbering (`date +%V` or Python `isocalendar()`).
 - Git activity is best-effort. If repos can't be found, skip that section.
 - Keep the review factual. Let the data speak. Add interpretation in Patterns
   and the Hard Question, not in the Scorecard.
+- **Cluster-and-carry (step 5) is draft-only and human-ratified.** No wiki
+  page is written, no tag added, and no inbox row removed without the user
+  accepting that action. A light week may carry nothing — that's a valid
+  outcome; thin candidates stay in `notes/_inbox.md` for a future review.

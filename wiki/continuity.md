@@ -156,11 +156,34 @@ underlying record (Phase 0 unlocks topic-search).
     meanwhile.
 - [x] 2026-05-18 **Sketch `notes/index.md` + initial wiki-tag vocabulary**
   — `notes/index.md` + `notes/_tags.md` (24-tag vocabulary) landed;
-  verified 2026-05-28. Remaining: the empirical cluster-the-corpus
-  validation of the vocabulary (feeds the `/weekly-review` step below).
-- [ ] **Extend `/weekly-review` with cluster-and-carry curation step**
-  — pull week's new memories, cluster by topic, surface candidates,
-  draft wiki-page diffs for review
+  verified 2026-05-28.
+  - [x] 2026-05-29 **Empirical cluster-the-corpus validation of the
+    vocabulary (item #1)** — done. `scripts/analyse-wiki-vocabulary.py`
+    (reproducible) + report at
+    `wiki/planning/wiki-vocabulary-validation-2026-05-29.md`. Measured
+    per-wiki-tag corpus support across 29,248 records + clustered the 33
+    `notes/_inbox.md` candidates. Findings: two well-attested themes have
+    no tag home — **agent-orchestration** (corpus cluster 913 usages /
+    327 tags; ~10 inbox candidates) and **infrastructure/ops** (1023 /
+    417; ~5 candidates); two genuine redundancies (`memory-systems` ≡
+    `memory-system`; `three-Ps` ⊂ `provenance`). Recommended delta (ADD 2,
+    MERGE 2; net 24 tags) is **pending `/weekly-review` ratification** —
+    `_tags.md` reserves vocabulary edits for curation time, so this pass
+    analysed and recommended only. `_tags.md` History carries the pointer.
+    Grounds item #2 below.
+- [x] 2026-05-29 **Extend `/weekly-review` with cluster-and-carry
+  curation step (item #2)** — done. New **step 5 "Cluster-and-Carry Wiki
+  Curation"** in `commands/weekly-review.md` (5a ratify pending vocab
+  delta → 5b gather from `notes/_inbox.md` + week's memories +
+  `wiki/working-notes.md`, reusing `scripts/analyse-wiki-vocabulary.py
+  --window-days 7` → 5c cluster by vocabulary with a ripeness rule →
+  5d draft page diffs → 5e review/accept and carry, removing carried rows
+  from the notes inbox). Draft-only and human-ratified throughout. Steps
+  6/7/8 renumbered; scorecard gains a "Wiki pages curated" row; the
+  step-8 "learnings" follow-up now cross-refs step 5. 5a closes the
+  chicken-and-egg with item #1: the first run ratifies the
+  2026-05-29 vocabulary-validation delta before clustering. **Not yet
+  exercised on a real week** — first live run is its own validation.
 - [x] 2026-05-18 **Close 3 provenance audit gaps** — all three closed
   (`source_message_uuid`, `code_state.*`, `licence` + `extractor_model_id`);
   see the "Provenance audit gaps … all three closed 2026-05-18" block lower
@@ -1343,7 +1366,7 @@ Deferred (with reason):
 - [x] 2026-05-18 **Draft `global-claude-md/session-start-protocol.md`** — symmetric bookend to `/handoff`; silent fires at session-start; covers continuity.md read, things-to-verify spot-check, recall-dump de-weighting, future auto-loading of wiki/notes indexes
 - [x] 2026-05-28 **Pilot wiki migration on personal-assistant** — PA-project layer (continuity, working-notes, user-observations, planning/, docs/, reflections/) migrated under `wiki/`; `wiki/index.md` added; `/reflect` made layout-aware. `notes/_tags.md` lift into `wiki/index.md` deferred — cross-project layer stays private in `data/` by design. Sketch + steps: `wiki/planning/wiki-index-draft.md`
 - [x] 2026-05-18 **Sketch `notes/index.md` + initial wiki-tag vocabulary** — 24-tag set across four groupings (craft scaffolding 8, failure modes 5, domains 6, cross-cutting 5); pre-staged in `notes/_tags.md` ready to lift to `wiki/index.md` at pilot migration
-- [ ] **Extend `/weekly-review` with cluster-and-carry curation step** — produce candidate wiki-page diffs
+- [x] 2026-05-29 **Extend `/weekly-review` with cluster-and-carry curation step** — done; new step 5 in `commands/weekly-review.md`. Vocabulary validated first (item #1, `wiki/planning/wiki-vocabulary-validation-2026-05-29.md` + `scripts/analyse-wiki-vocabulary.py`). See the top-of-doc workstream-D block for detail. Not yet exercised on a real week.
 - [ ] **Phase 0 archive consolidation — priority promoted** (open-science topic-search depends on this)
 - [ ] **Lit-scout file moves at pilot-migration time** — destinations decided 2026-05-18: `v3-bayesian-dating` → inscriptions; `v4` (maps) → map-reader-llm; `v4.1` (SPA Latin inscriptions) → inscriptions; `v4.2` (ABM Mediterranean economies) → inscriptions; `v4.3` (magnetometer) → `archive/lit-searches/magnetometer-2026-04-19/`; all `*-evaluation-*` / `*-verifier-*` → `wiki/docs/lit-scout-evaluations/`; `paper-b-working-notes.md` + `lit-scout-case-study.md` → Paper B project wiki; `general/2026-03-15-persona-affordance-design-paper-seed.md` → map-reader-llm
 
