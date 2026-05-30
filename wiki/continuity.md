@@ -41,7 +41,7 @@ confidence binding before they land in JSONL. See
 | Phase 5 — migration sweep + bulk-flag pass | **superseded by workstream D 2026-05-17** — migration sweep still valuable as backfill for `verified` field, but not gating anything |
 | Phase 6 — extractor bake-off | **deprioritised 2026-05-17** — prior-art survey found write strategy contributes ~3–8 retrieval-accuracy points vs ~20 for retrieval; wrong lever |
 
-### B. Session-start payload reduction (Vector 2 / injection issue) — *design landed 2026-05-17; PASS 1 (engine + proof, hook untouched) shipped 2026-05-30; PASS 2 (live cutover) pending*
+### B. Session-start payload reduction (Vector 2 / injection issue) — *design landed 2026-05-17; PASS 1 (engine + proof, hook untouched) shipped 2026-05-30; PASS 2 (live cutover) shipped + enabled on amd-tower 2026-05-30 — 2-week §8 observation window running*
 
 Distinct from the v2 corpus work. The session-start hook injects
 ~43 KB of recall memories plus harness-injected auto-memory plus
@@ -106,14 +106,45 @@ authoritatively can drive primacy-effect errors.
   what-changed line itemised all 27 categories (~900 B), crowding verified
   entries to 2-of-284; capped to top-6 + "+N more" (`MAX_CATEGORY_BREAKDOWN`
   in `digest.py`), now 3 shown.
-- [ ] **PASS 2 — live cutover (its own session; changes every session).**
-  Wire `digest.py` into `hooks/session-start-retrieval.py`'s digest section;
-  relocate the Retrieval Instructions footer to
-  `global-claude-md/tier-2-retrieval.md`; roll out amd-tower only behind a
-  flag with the 2-week §8 observation window (zbook + rpi-server keep the
-  current hook). `digest.log` already logs per-firing bytes so the
-  median ≤1,500 B / p95 ≤2 KB acceptance criterion can be confirmed across
-  firings during the window.
+- [x] 2026-05-30 **PASS 2 — live cutover shipped + enabled on amd-tower
+  (commit `68427cd`).** Shipped dark (flag default OFF → byte-identical
+  legacy path; the existing 83 retrieval-hook tests stayed green untouched),
+  then enabled on amd-tower via the go/no-go. Delivered: machine-local flag
+  in `hooks/session-start-retrieval.py` (`digest_mode_enabled()` precedence:
+  env `PA_DIGEST_STAGE1` truthy/falsy override → sentinel `~/.pa-digest-stage1`
+  → OFF; **deliberately NOT in the synced `data/` submodule** so amd-tower
+  enablement does not leak to zbook + rpi-server, which keep the legacy hook);
+  a digest branch in `main()` that skips the four `retrieve_*` passes and
+  emits `digest.build_digest(...)`; a per-firing `digest.log` write via
+  `build_session_digest()` (best-effort, never raises — proven by a test
+  that points the log at an unwritable path and asserts the session is still
+  served). Relocated the tier-2 protocol to
+  `global-claude-md/tier-2-retrieval.md` (design §7e); digest footer points
+  at it (byte-neutral — still 4 verified entries at 1,488 B live). Tests:
+  +19 (flag precedence/parsing + digest-mode `main()` output + best-effort-log
+  contract) with an autouse fixture pinning the flag OFF so the suite is
+  independent of operator machine state once the sentinel exists; **full
+  suite 753 passed, 0 regressions** (was 734). **Enabled 2026-05-30**:
+  sentinel `~/.pa-digest-stage1` created on amd-tower (this host;
+  `digest_mode_enabled()` verified True via the sentinel path with env
+  unset). Live smoke (inscriptions cwd): flag OFF → `# Memory Context`
+  48,083 B; flag ON → `# Session-start digest`, digest 1,488 B (≤1,500 cap,
+  log line `bytes=1488 shown=4 verified_available=305 fallback=False`), total
+  payload 32,078 B. **Honest aggregate:** recall dump −91%, but TOTAL
+  session-start payload only −33% (48→32 KB) because the ~30 KB scratchpad
+  is untouched (out-of-scope "Vector 2b"). Rollback: `rm ~/.pa-digest-stage1`
+  or `PA_DIGEST_STAGE1=0`.
+  - [ ] **§8 observation-window review (due ~2026-06-13, 2 weeks out).**
+    After the window, evaluate the four §8 measurements — (1) digest bytes
+    median ≤1,500 B / p95 ≤2 KB from `data/logs/digest.log`; (2) /recall +
+    fetch-memories invocation rates from `logs/fetch-memories.log` vs the
+    pre-ship baseline (hypothesis: lazy-depth *increases* them; if not, depth
+    isn't being fetched and the digest is starving rather than disciplining);
+    (3) verifier confabulation-flag rate pre- vs post-ship; (4) Shawn's
+    subjective too-thin/too-thick signal. Then decide go/no-go on the
+    zbook + rpi-server rollout (and the Stage 2 fallback removal once
+    verified-coverage is broad). If any of (1)–(4) flunks, `rm` the sentinel
+    to roll back amd-tower and revise the design.
 - [ ] **Finding (3) — digest density tuning, deferred (return to later
   per Shawn 2026-05-30).** At 1,500 B with ~8-tags-per-entry memories, only
   ~3 verified entries surface. Two levers, both judgment calls about digest
@@ -776,19 +807,19 @@ until first non-CC API spend.
 
 Read these *before* starting new work. Most should take <5 min each.
 
-- [ ] 2026-05-30 **Vector 2 PASS 1 shipped (engine + proof); PASS 2 is the
-  live cutover.** Before starting PASS 2, re-run the reproducible proof
-  `venv/bin/python3 scripts/digest-preview.py` (PA hub) and
-  `--cwd /home/shawn/Code/inscriptions` (project-scoped) to confirm the
-  before/after still holds (was 16,222 B → 1,484 B / 90.8 % on 2026-05-30),
-  and re-read `wiki/planning/vector-2-design.md` §8 (rollout plan) + §9
-  (sequencing). The digest is now ~1,484 B — close to the 1,500 B cap; if
-  it ever reports `<= budget: False`, that is the density-tuning lever
-  (finding (3), workstream B) biting. Also glance at `data/logs/digest.log`
-  and `logs/fetch-memories.log` to see the instrumentation accumulating.
-  See workstream B for the full PASS-1 record. Code: `scripts/digest.py`
-  (pure selector), `scripts/digest-preview.py` (harness),
-  `tests/test_digest.py` (35 tests). NOT yet wired into the live hook.
+- [x] 2026-05-30 **Vector 2 PASS 2 shipped + enabled on amd-tower — DONE
+  (commit `68427cd`).** Pre-flight proof re-run this session held (PA hub
+  17,068 B → 1,489 B / 91.3 %; inscriptions 17,493 B → 1,485 B / 91.5 %;
+  both ≤ budget, fallback off; corpus now 29,491 memories / 305 verified-in-7d).
+  The live cutover is wired behind a machine-local flag and ENABLED on
+  amd-tower (sentinel `~/.pa-digest-stage1`). See workstream B for the full
+  PASS-2 record + the §8 observation-window review sub-task (due ~2026-06-13).
+  **Next-session verify:** glance at `data/logs/digest.log` — every
+  session-start on amd-tower now appends a `bytes=… shown=… fallback=…` line;
+  confirm bytes stay ≤1,500 (if one ever reports `budget` exceeded that is
+  finding (3) density-tuning biting) and that the cadence looks like one line
+  per real session-start. zbook + rpi-server still emit the legacy dump
+  (sentinel absent there) — expected.
 - [x] 2026-05-30 **Review + push the workstream-D #3 repos — DONE.** All 6
   relocation/fix commits are now on `origin/main`: pushed at session close
   on 2026-05-30 (re-verified each was 1-ahead/0-behind with the relocation
