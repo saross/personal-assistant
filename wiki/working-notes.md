@@ -1262,3 +1262,32 @@ submodule `fe78db1` (validation report). Cross-ref 2026-05-30 bimodality
 entry (gap-test vs CV): the em-dash artefact here is a direct consequence
 of that bimodality — the bimodal distribution that gap-test detects is
 precisely what causes the band to sit in an uninhabited mid-range.
+
+## 2026-05-30: Memory-corpus anchor coverage is 3.5% — `verified` backfill can't carry verified-first surfacing
+
+Scoping the open workstream-B question "can we backfill `verified` across
+the ~29 K corpus to unblock Vector 2 Stage 2?" produced a measurement that
+settles it.
+
+**Measured at source** (`data/memories/memories.jsonl`, 2026-05-30, live):
+total **29,701** records; `verified` = true 629 / false 373 / pending 4 /
+absent 28,695; records carrying a non-empty `anchors` list = **1,034
+(3.5 %)**; legacy top-level `zotero_key` = 41.
+
+**`anchor_verify` resolves `file` (FS + git) and `commit` (git) anchors
+purely locally** (no network, no LLM); `zotero` / `url` are stubbed →
+`pending`. It returns `None` for the 96.5 % of records with no anchors, so a
+full re-resolution pass lifts verified-true only from 629 to ~653 (~24 net
+new) — it cannot manufacture coverage the write-path never recorded.
+
+**Consequence for Vector 2 Stage 2:** the promoted-recent fallback that
+Stage 2 planned to delete is the *permanent* handler for the 96.5 %
+anchorless majority, not a stopgap. Verified coverage grows forward (the
+anchored write-path is live since 2026-05-16), not via migration. Broad
+back-corpus coverage would need an API-gated retroactive anchor-generation
+pass (deferred, costed) — re-reading source with a model to mint anchors
+records never had.
+
+Source: `scripts/anchor_verify.py`, `scripts/project_id.py` (`repo_set`);
+continuity.md workstream B feasibility-scope entry (2026-05-30); commit
+`1fcfa5a`.

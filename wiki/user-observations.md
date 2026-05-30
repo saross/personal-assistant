@@ -1363,6 +1363,57 @@ treat them as permission to recommend against the current session.
 
 [x] accept
 
+## 2026-05-30 (Vector 2b — scratchpad byte budget + session follow-ups) — Accepted at handoff
+
+### Candidate 1: Product-manage mode held — brief, acceptance criteria, one scope-fork question, then autonomous
+
+The session was framed "product-manage, don't pair-program". It opened with
+a brief + acceptance criteria + a recommended scope fork (Fork A guard-rail
+vs Fork B active-cut), used a *single* decision question for the one genuine
+fork, and executed autonomously from there — no drift into line-by-line
+pairing, no mid-session "is this right?" check-ins on mechanical steps.
+
+**What this means in practice:** when Shawn sets a working mode explicitly,
+treat it as a hard constraint on interaction style, not just task content.
+Reserve decision-questions for genuine forks (where the answer changes the
+deliverable); otherwise execute and report.
+
+[x] accept
+
+### Candidate 2: Anti-confabulation was load-bearing, not ceremonial — re-checking source *avoided work*
+
+The clearest instance: continuity listed the working-notes.md relocation as
+`[ ]` open, but re-checking the filesystem showed it already done (5 repos
+relocated, template root-cause fixed). Trusting the stale checklist would
+have meant manufacturing redundant `git mv` commits across 5 research repos
+(two of them Paused). Re-verifying at source *deleted* work rather than
+merely preventing an error. The same discipline re-checked the live corpus
+counts before they went into continuity, and the scratchpad byte count /
+sentinel state at session start.
+
+**What this means in practice:** the "pointers, not authorities" rule cuts
+both ways — a stale "TODO" misleads as much as a stale fact, and
+verify-before-acting can remove work as well as prevent mistakes. Re-check
+the source even when the source is a checklist box.
+
+[x] accept
+
+### Candidate 3: Self-review caught what a green test suite didn't
+
+Dispatching an adversarial review agent on my own just-committed Vector 2b
+code surfaced a dormant contract bug (the `cap_markdown_to_budget` docstring
+promised "within budget" unconditionally, while the sub-floor case can
+exceed it) that 28 passing tests + a clean live smoke had missed. The fix
+was a docstring-honesty correction + 2 floor tests, not a behaviour change —
+but adversarially checking own work on a green suite is what found it.
+
+**What this means in practice:** a passing suite proves the cases you
+thought to write, not the contract you claimed. For non-trivial logic pushed
+direct-to-main, an independent adversarial pass is a cheap compensating
+control — and "the docstring over-promises" is a real finding worth a commit.
+
+[x] accept
+
 ## 2026-05-30 (Workstream G Phase 5 — Mahalanobis evaluator + 8-metric gate session) — Drafted candidates (recovered from transcript; reviewed 2026-05-30)
 
 *(Drafted at `/handoff` step 4 of the Phase 5 build session (transcript
