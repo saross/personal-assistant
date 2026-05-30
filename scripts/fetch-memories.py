@@ -664,6 +664,51 @@ def main() -> None:
 
     print(format_output(results))
 
+    # Tier-2 utilisation instrumentation (Vector 2 design §7c). The
+    # lazy-depth premise — that the recall dump can shrink because this
+    # script is invoked on demand — only holds if the script is actually
+    # called. Log each invocation (best-effort; never break retrieval on
+    # a logging failure) so utilisation can be measured over a fortnight.
+    _log_invocation(args, results)
+
+
+def _log_invocation(args: argparse.Namespace, results: Any) -> None:
+    """Append a one-line tier-2 retrieval record to fetch-memories.log.
+
+    Tab-separated: timestamp, the selectors used, limit, and result
+    count. Best-effort — any failure is swallowed so instrumentation can
+    never degrade the retrieval path itself.
+    """
+    log_path = PA_DIR / "logs" / "fetch-memories.log"
+    try:
+        # Use ``key:value`` (colon) for selectors that log a value, so the
+        # joined field reads ``selectors=tag:foo`` not ``selectors=tag=foo``
+        # (a double-``=`` complicates downstream parsing). query/semantic
+        # log only the selector name — never the search text (privacy).
+        selectors = []
+        if getattr(args, "tags", None):
+            selectors.append(f"tag:{','.join(args.tags)}")
+        if getattr(args, "query", None):
+            selectors.append("query")
+        if getattr(args, "semantic", None):
+            selectors.append("semantic")
+        if getattr(args, "category", None):
+            selectors.append(f"category:{args.category}")
+        if getattr(args, "memory_id", None):
+            selectors.append("id")
+        n = len(results) if isinstance(results, list) else 0
+        line = (
+            f"{datetime.now(timezone.utc).isoformat()}\t"
+            f"selectors={';'.join(selectors) or 'none'}\t"
+            f"limit={getattr(args, 'limit', '?')}\t"
+            f"results={n}\n"
+        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:  # noqa: BLE001 — instrumentation must never raise
+        pass
+
 
 if __name__ == "__main__":
     main()
