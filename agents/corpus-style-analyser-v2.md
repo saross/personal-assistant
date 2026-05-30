@@ -437,11 +437,26 @@ register) must still appear as a numbered section with the
    † Per `feedback_em-dash-usage-declining` memory (2026-05-24), Shawn
    has reduced em-dash usage post-2023 because of LLM-prose
    association. The 0.572/1k aggregate under-represents this trend
-   (em-dash density is concentrated in pre-2023 papers). For applied
-   verification on Shawn-voice generation, treat the em-dash target as
-   `≤ 0.20/1k` for new prose unless the explicit register is "older
-   academic 2015-2022". Date-binned rates should appear in the eventual
-   v2 guide's Appendix C.
+   (em-dash density is concentrated in pre-2023 papers). The downstream
+   `phase5_evaluator.py` now **defaults** to the modern `≤ 0.20/1k`
+   ceiling for new prose; the legacy two-sided band (0.572 ±0.20) is
+   reachable via `--corpus-em-dash` for an explicit "older academic
+   2015-2022" comparison. Date-binned rates should appear in the
+   eventual v2 guide's Appendix C.
+
+   **Status: aspirational by construction.** This gate is an
+   aspirational target, not a defect detector. When
+   `phase5_evaluator.py --validate` scored the gate against the corpus
+   that defined it, **0/18 corpus papers passed all 8 checks** (median
+   ~4–5/8), and the high-variance per-check pass-rates were low
+   (em-dash 1/18 under the legacy band, semicolon 3/18,
+   announcement-colon 3/18, hedge 5/18). This is expected: conjoining 8
+   tight bands around the corpus central tendency defines a consistency
+   no single real paper achieves — text passing all 8 would be *more
+   uniformly on-voice* than any actual paper. A FAIL is therefore a
+   **deviation flag, not a verdict**; cross-check the continuous
+   Mahalanobis distance. State this aspirational status at the top of
+   the generated guide's Appendix E.
 ```
 
 Within each numbered section (1–8), structure each claim as:
@@ -573,7 +588,8 @@ known dependencies (the script paths above).
 ~/Code/write-like-me/.venv/bin/python \
     ~/personal-assistant/scripts/style-analyser/phase5_evaluator.py \
     --text ~/path/to/generated-text.md            # or --passage "..."
-    # --modern-em-dash for 2026+ prose (≤0.20/1k em-dash ceiling)
+    # Em-dash check defaults to the 2026+ ≤0.20/1k ceiling.
+    # --corpus-em-dash scores the legacy two-sided band (0.572 ±0.20).
     # --format json for machine-readable output
 # Exit code is non-zero when the 8-metric gate FAILs.
 
@@ -808,11 +824,17 @@ on conversation history.
   by `--validate` (`data/style-corpus/phase5-validation-report.md`):
   off-register fixtures score 14.2 / 21.7 vs corpus LOO max 4.67, and a
   held-out real paper scores 3.15 (within range). Gate calibration
-  finding: 0/18 corpus papers pass all 8 checks (median 4/8) — the
-  Appendix E tolerances on em-dash, semicolon, announcement-colon and
-  hedge are tighter than between-paper variance, so a gate FAIL on those
-  is a deviation flag, not proof of off-voice text; cross-check the
-  Mahalanobis distance. Adds `scikit-learn` + `scipy` to the venv.
+  finding: 0/18 corpus papers pass all 8 checks — the Appendix E
+  tolerances on em-dash, semicolon, announcement-colon and hedge are
+  tighter than between-paper variance. **The gate is aspirational by
+  construction** (2026-05-30): conjoining 8 tight bands around the
+  central tendency defines a consistency no single real paper achieves,
+  so a gate FAIL is a deviation flag, not proof of off-voice text;
+  cross-check the Mahalanobis distance. The em-dash check now
+  **defaults to the modern ≤ 0.20/1k ceiling** (the legacy two-sided
+  band is reachable via `--corpus-em-dash`), which lifts that check's
+  corpus pass-rate from 1/18 to 12/18 and the median checks-passed from
+  4/8 to 5/8. Adds `scikit-learn` + `scipy` to the venv.
 
 **Workstream G (Phases 2–5) is complete.** Remaining future work is
 multi-genre re-invocation (Substack / business / teaching), which is

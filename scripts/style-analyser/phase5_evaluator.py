@@ -60,8 +60,9 @@ Usage
     # Score a literal passage
     python phase5_evaluator.py --passage "We analysed the assemblage; ..."
 
-    # 2026+ register (tighter em-dash ceiling per feedback_em-dash-usage-declining)
-    python phase5_evaluator.py --text gen.md --modern-em-dash
+    # Em-dash gate defaults to the modern 2026+ ceiling (≤0.20/1k). To score
+    # against the legacy two-sided corpus band (0.572 ±0.20) instead:
+    python phase5_evaluator.py --text gen.md --corpus-em-dash
 
     # JSON instead of markdown
     python phase5_evaluator.py --text gen.md --format json
@@ -493,30 +494,43 @@ def consecutive_short_runs(text: str, nlp, max_words: int = 5) -> tuple[int, lis
     return n_runs, examples
 
 
-def build_gate(phase1: dict, modern_em_dash: bool) -> list[GateCheck]:
+def build_gate(phase1: dict, corpus_em_dash: bool = False) -> list[GateCheck]:
     """Construct the 8 gate checks, sourcing data-backed targets live from the
-    phase1 aggregate (re-read source, per anti-confabulation discipline)."""
+    phase1 aggregate (re-read source, per anti-confabulation discipline).
+
+    The em-dash check defaults to the MODERN 2026+ ceiling (≤0.20/1k): the
+    0.572 aggregate is the mean of a bimodal split (12/18 papers at exactly 0,
+    six at 0.50–2.06/1k), so the two-sided band rejects both halves of the
+    corpus AND rejects the zero-em-dash modern prose that §6.3 calls correct
+    for 2026+. Pass `corpus_em_dash=True` to score against the legacy
+    two-sided corpus band (0.572 ±0.20) instead.
+    """
     agg = phase1["aggregate"]
     reg = agg["regression"]
 
-    em_dash = GateCheck(
-        key="em_dash_per_1k", label="Em dashes per 1 000 words",
-        target=float(reg["em_dash_per_1k"]), tol=0.20, mode="band",
-        unit="/1k", source="phase1 aggregate.regression.em_dash_per_1k (§6.3)",
-        # The metric is phase3-bimodal: 12/18 papers sit at exactly 0, outside
-        # this band, so the two-sided band fits the *aggregate* (older-academic)
-        # register, not new prose. Use --modern-em-dash for the 2026+ ceiling.
-        note="bimodal metric; see --modern-em-dash for 2026+ ceiling",
-    )
-    if modern_em_dash:
-        # feedback_em-dash-usage-declining (2026-05-24): the 0.572 aggregate
-        # over-represents pre-2023 prose; 2023+ papers carry zero. For new
-        # prose, treat as a ceiling of 0.20/1k.
-        em_dash.target = 0.0
-        em_dash.tol = 0.20
-        em_dash.mode = "max"
-        em_dash.source += " — MODERN (2026+) ceiling ≤0.20/1k"
-        em_dash.note = "2026+ ceiling per feedback_em-dash-usage-declining"
+    if corpus_em_dash:
+        # LEGACY two-sided corpus band. Fits the *aggregate* (older-academic)
+        # register, not new prose; retained for backward-comparison only.
+        em_dash = GateCheck(
+            key="em_dash_per_1k", label="Em dashes per 1 000 words",
+            target=float(reg["em_dash_per_1k"]), tol=0.20, mode="band",
+            unit="/1k",
+            source="phase1 aggregate.regression.em_dash_per_1k (§6.3) — LEGACY band",
+            note="legacy bimodal band (--corpus-em-dash); default is the 2026+ ceiling",
+        )
+    else:
+        # DEFAULT: feedback_em-dash-usage-declining (2026-05-24): the 0.572
+        # aggregate over-represents pre-2023 prose; 2023+ papers carry zero.
+        # For new prose, treat as a one-sided ceiling of 0.20/1k.
+        em_dash = GateCheck(
+            key="em_dash_per_1k", label="Em dashes per 1 000 words",
+            target=0.0, tol=0.20, mode="max",
+            unit="/1k",
+            source="phase1 aggregate.regression.em_dash_per_1k (§6.3) — "
+                   "MODERN (2026+) ceiling ≤0.20/1k",
+            note="2026+ ceiling per feedback_em-dash-usage-declining "
+                 "(default; --corpus-em-dash for legacy band)",
+        )
 
     checks = [
         em_dash,
@@ -627,7 +641,7 @@ class Evaluation:
 
 
 def evaluate_text(text: str, source_label: str, phase1: dict, phase3: dict,
-                  nlp, modern_em_dash: bool = False,
+                  nlp, corpus_em_dash: bool = False,
                   loo: list[float] | None = None,
                   X: np.ndarray | None = None,
                   fs: FeatureSpace | None = None) -> Evaluation:
@@ -677,7 +691,7 @@ def evaluate_text(text: str, source_label: str, phase1: dict, phase3: dict,
 
     advisory = advisory_report(phase1, fs, record)
 
-    gate = build_gate(phase1, modern_em_dash)
+    gate = build_gate(phase1, corpus_em_dash)
     evaluate_gate(gate, record, text, nlp)
 
     return Evaluation(
@@ -905,7 +919,9 @@ def gate_calibration(phase1: dict, phase3: dict, nlp, extracted_dir: Path,
             if c.passed:
                 per_check_pass[c.key] += 1
     # Labels for display (from a throwaway gate built off the same phase1).
-    labels = {c.key: c.label for c in build_gate(phase1, modern_em_dash=False)}
+    # The em-dash label is identical in both modes, so the mode is irrelevant
+    # here; the default (modern ceiling) is used.
+    labels = {c.key: c.label for c in build_gate(phase1)}
     return {
         "n_scored": n_scored,
         "per_check": [
@@ -1070,9 +1086,13 @@ def main() -> int:
     ap.add_argument("--format", choices=("markdown", "json"), default="markdown")
     ap.add_argument("--report", type=Path, default=None,
                     help="also write the report/verdict to this path")
-    ap.add_argument("--modern-em-dash", action="store_true",
-                    help="use the 2026+ em-dash ceiling (≤0.20/1k) per "
-                         "feedback_em-dash-usage-declining")
+    ap.add_argument("--corpus-em-dash", action="store_true",
+                    help="score the em-dash check against the LEGACY two-sided "
+                         "corpus band (0.572 ±0.20) instead of the default "
+                         "modern 2026+ ceiling (≤0.20/1k). The default ceiling "
+                         "follows feedback_em-dash-usage-declining; the legacy "
+                         "band is bimodal and retained for backward comparison "
+                         "only")
     ap.add_argument("--spacy-model", default="en_core_web_sm")
     args = ap.parse_args()
 
@@ -1122,7 +1142,7 @@ def main() -> int:
 
     fs = resolve_feature_space(phase3)
     ev = evaluate_text(text, source_label, phase1, phase3, nlp,
-                       modern_em_dash=args.modern_em_dash, fs=fs)
+                       corpus_em_dash=args.corpus_em_dash, fs=fs)
 
     if args.format == "json":
         out = json.dumps(evaluation_to_dict(ev), indent=2, ensure_ascii=False)
