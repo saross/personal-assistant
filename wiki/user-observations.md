@@ -1262,7 +1262,7 @@ prompting the ritual is expected, not a failure.
 
 [x] accept (was drafted Candidate 4)
 
-## 2026-05-30 (Vector 2 PASS 2 + scratchpad distillation session) — Drafted candidates (pending review)
+## 2026-05-30 (Vector 2 PASS 2 + scratchpad distillation session) — Drafted candidates (reviewed at handoff)
 
 ### Candidate 1: Redirected the tool, not just the task, when the tool was wrong
 
@@ -1279,37 +1279,8 @@ wrong fit, surface the mismatch with the evidence and propose the right tool —
 don't produce a compliant-but-useless artefact. Verifying the blocking
 constraint at source is what makes the redirect trustworthy rather than a guess.
 
-[ ] candidate — accept / edit / discard
+[x] accept
 
-### Candidate 2: Built the every-session change dark, reserved the flip as Shawn's call
-
-The PASS 2 cutover "changes every session," so Claude shipped it default-OFF
-(byte-identical legacy path, safe to commit and push with zero behavioural
-change) and surfaced enabling-on-amd-tower as an explicit go/no-go rather than
-flipping it unilaterally. Shawn said GO. Same shape recurred at the commit gate
-for the scratchpad distillation (staged, presented, committed only on approval).
-
-**What this means in practice:** for hard-to-reverse or every-session-affecting
-actions, the pattern that worked was build-dark-then-ask — get the engine fully
-landed and verified behind an OFF flag (so it costs nothing to sit there), then
-reserve the single enabling decision for Shawn. He keeps the trigger without the
-work being blocked on him.
-
-[ ] candidate — accept / edit / discard
-
-### Candidate 3: Scope grew by one-line additive steers at context-shared moments
-
-The session extended PASS 2 → "the scratchpad needs attention" → "both, distill
-first" → "Vector 2b as a focused session", each a single-line decision riding on
-work already loaded in context. Claude delivered + proposed-next; Shawn picked.
-This is the "opportunistic micro-tasks during context-shared moments" feedback
-pattern in action — the bundling was cheap because each extension attached to
-the live context rather than starting cold.
-
-**What this means in practice:** when the context is already warm, offering the
-adjacent next step (with a recommendation) lets Shawn extend scope in one move.
-Keep proposing the next bounded step at each delivery rather than waiting to be
-asked — but keep each a real fork he can decline, not a slide into open-ended
-work.
-
-[ ] candidate — accept / edit / discard
+*(Candidates 2 "build-dark-then-ask" and 3 "scope via one-line steers" drafted
+and discarded by Shawn at handoff — both judged redundant with already-accepted
+2026-05-30 PASS 1 observations on product-managing and bounded increments.)*
