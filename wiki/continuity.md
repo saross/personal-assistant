@@ -169,6 +169,34 @@ authoritatively can drive primacy-effect errors.
   depends on broad coverage — so this gates the design's own endgame.
   Reference: `scripts/anchor_verify.py`, `planning/memory-system-v2-design.md`
   Phase 2.
+- [x] 2026-05-30 **Scratchpad distilled — clean baseline for Vector 2b
+  (submodule `d840239`, superproject bump `f98bf2a`).** With the recall dump
+  now digested to ~1.5 KB, the ~29 KB scratchpad became the dominant
+  session-start payload term. First-ever distillation of `data/scratchpad.md`
+  (header was `Last distilled: —`): **29,268 B → 15,484 B (47 % cut, zero
+  principle loss)**. The `## Patterns` section had bloated to ~40 entries,
+  ~half duplicates — removed 28 (project-specific ones already held verbatim
+  in `data/scratchpads/{map-reader-llm,voice-assistant}.md` which load only
+  on cwd match; exact dups of canonical Constraints/Preferences/What-Doesn't
+  above). Moved "critical-friend on statistics" to Preferences; dropped two
+  map-reader config-audit war-stories (per "record the principle, not the
+  mistake"; principle held at the "audit new config against the original"
+  Constraint) — Shawn approved as-is. Verified via diff: only 2 added lines
+  (header + moved entry), so no kept principle altered. NB the hook's
+  `SCRATCHPAD_WARN_LINES = 150` is LINE-based and never fired (99 lines) even
+  at 29 KB — the bloat was bytes-in-long-lines; fix the warn to be byte-based
+  as part of Vector 2b.
+- [ ] **Vector 2b — scratchpad load-path byte budget (next design pass; Shawn
+  chose "both, distill first" 2026-05-30).** The distillation is the "content"
+  half; this is the "mechanism" half. Even at 15.5 KB the scratchpad is
+  injected in full every session with no budget/relevance filter — still the
+  dominant payload term (15.5 KB vs digest 1.5 KB). Apply the Vector 2
+  byte-budget primitive (design §7f says Vector 2b should SHARE it, not
+  re-invent) to `load_scratchpad()` in `hooks/session-start-retrieval.py`,
+  plus flip `SCRATCHPAD_WARN_LINES` to a byte threshold. Its own design +
+  PASS, like Vector 2 was; out of scope per design §1a so it needs a short
+  design doc first. Clean 15.5 KB baseline now exists to size the budget
+  against.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):
