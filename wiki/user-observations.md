@@ -1154,3 +1154,57 @@ happened rather than papering over it. Process held under the pressure of a
 multi-step migration.
 
 [x] accept
+
+---
+
+## 2026-05-29 (workstream-D items #1–#4 session) — Drafted candidates (reviewed at handoff)
+
+Candidates drafted at the items-#1–#4 `/handoff`. Shawn accepted 1 and 2,
+discarded a candidate about an anti-confabulation re-verify catch, and
+**replaced** the fourth with his own reframe (Candidate 3 below).
+
+### Candidate 1: Delegated the mechanical, reserved the judgment
+
+Shawn split the remaining work by *type*: the multi-repo working-notes
+relocation (#3) went to a background agent — *"have a background agent
+undertake #3 while we work on other items here"* — while the
+publishing/privacy decision (#4: what becomes public) he made himself.
+
+**What this means in practice:** offload bounded, mechanical, reversible work
+to an agent; keep the irreversible, outward-facing judgment (publishing
+private material) in-house. A generalisable delegation heuristic.
+
+[x] accept
+
+### Candidate 2: Extended Claude's framing with a cadence argument
+
+Claude scoped #4 as just the privacy review; Shawn added the grimoire-publishing
+review *and* specified it belongs in `/retro`, not `/weekly-review`, "because
+publishing-readiness matures monthly." He assigned the concern to the ritual
+whose cadence matches its natural rate of change — a design improvement beyond
+what Claude proposed.
+
+**What this means in practice:** match a recurring concern to the ritual whose
+cadence fits it. Also a reminder that Shawn's steering operates at the
+system-design level even when Claude is driving execution.
+
+[x] accept
+
+### Candidate 3: Incremental driving is a regression to catch, not a preference to honour (Shawn's reframe)
+
+Claude's drafted candidate read this session's lack of an upfront options-menu
+as "matching Shawn's demonstrated preference for incremental driving." Shawn
+rejected the framing: *"I actually need to get better at more upfront planning
+and less incremental driving… upskilling me in facilitating your autonomy; this
+is a good signal that I'm slipping back into pair programming rather than
+product managing."*
+
+**What this means in practice:** the target is **product-managing** (set
+direction + acceptance criteria, delegate execution, review outputs), not
+**pair-programming** (in the loop on each increment). Incremental driving is a
+slip Shawn is actively working against — and he wants Claude to help catch it:
+flag it (gently) when a session is running as turn-by-turn pairing where an
+upfront brief + autonomous execution + review would serve better. Cross-project;
+part of the explicit "facilitating Claude's autonomy" upskilling thread.
+
+[x] accept (Shawn's own observation; replaces Claude's candidate 4)

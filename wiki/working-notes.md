@@ -1016,3 +1016,32 @@ already had this shape (`wiki/continuity.md` → `planning/continuity.md`
 fallback), which is exactly why moving PA's continuity broke nothing. Anchors:
 `skills/reflect/SKILL.md` locate section; `agents/obs-writer.md` §1;
 `global-claude-md/session-start-protocol.md`.
+
+## 2026-05-29: The 24-tag wiki vocabulary, measured against the corpus
+
+Validated the hand-curated 24-tag wiki vocabulary empirically rather than by
+intuition (`scripts/analyse-wiki-vocabulary.py` over the ~29k-record memory
+corpus + the 33 `notes/_inbox.md` candidates). Measurements: the corpus
+auto-tag vocabulary is 28,282 tags, **68.2 % singletons**, only ~1,049 used
+11+ times — radically long-tailed, which is the empirical justification for
+keeping a separate small hand-curated wiki set. Per-wiki-tag corpus support
+spans `coding-practices` 13.0 % down to `three-Ps`/`claude-md`/`scratchpad`
+≈0.0 %. Two recurring themes have **no tag home**: agent-orchestration
+(explicit `agent-orchestration` tag 52×, `proposer-verifier` 67×, cluster sum
+913 usages / 327 tags; ~10 inbox candidates already naming
+`notes/agent-orchestration.md`) and infrastructure/ops (`infrastructure`
+124×, `deployment` 73×, cluster sum 1023 / 417; ~5 inbox candidates). Two
+genuine redundancies fell out of the four-grouping split: `memory-systems`≡
+`memory-system`, `three-Ps`⊂`provenance`. The corpus *head* (`data-pipeline`
+1410, `reproducibility` 1128, `validation` 1008, `preregistration` 368) is
+project-execution substance that correctly has **no** wiki tag — empirical
+confirmation that the candidate-pool layer ≠ the surfacing layer.
+
+**Generalises:** validate a controlled vocabulary / taxonomy against the
+corpus it indexes before building tooling that depends on it — counts reveal
+both dead tags and blind spots that intuition misses. Note the measurement
+caveat: keyword-support % is a *conservative floor* because corpus auto-tags
+are finer-grained than the coarse wiki tags, so read the numbers as relative
+signal, not absolute coverage. Anchors:
+`wiki/planning/wiki-vocabulary-validation-2026-05-29.md`;
+`scripts/analyse-wiki-vocabulary.py` (`WIKI_TAG_EXPANSIONS` map).

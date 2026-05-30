@@ -708,7 +708,18 @@ until first non-CC API spend.
 
 Read these *before* starting new work. Most should take <5 min each.
 
-- [x] 2026-05-17 **First-firing of v2 extraction hook.** Phase 1–3 landed
+- [ ] 2026-05-29 **Review + push 5 workstream-D #3 repos.** The
+  working-notes relocation + cc-session-toolkit scaffold fix were committed
+  **locally only, not pushed**, so Shawn can review first. Each is 1 commit
+  ahead of `origin/main`, unpushed: inscriptions `89cad01`,
+  LLM-History-Paper `73f9876`, llm-reproducibility `dc40d8e`,
+  2026-mq-…-paper-b `99cab2b`, cc-session-toolkit `9129e8a`. The toolkit one
+  changes `init.py` scaffolding (301/301 tests pass); the moves are
+  history-preserving `git mv`s. Push each after a glance.
+  **map-reader-llm needs nothing** — its relocation (`3a17575`) was already
+  pushed (a concurrent gs/h11 session committed on top and pushed; repo HEAD
+  is now `c8f92781`).
+- [ ] 2026-05-17 **First-firing of v2 extraction hook.** Phase 1–3 landed
   2026-05-16; the next `SessionEnd` / `PreCompact` is the first live
   test of `anchor_verify` + confidence binding in the hook chain.
   Check `~/personal-assistant/logs/extraction.log` for traceback
@@ -1725,6 +1736,42 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-05-29 (Fri) — Workstream D items #1–#4: vocabulary validation, /weekly-review cluster-and-carry, working-notes relocation, vocab lift + /retro grimoire review
+
+Background workstream-C session continuing goal (b). Cleared four of the
+five remaining workstream-D items. **#1** — wrote a reusable analysis script
+(`scripts/analyse-wiki-vocabulary.py`) and validated the 24-tag wiki
+vocabulary empirically against the ~29k-record memory corpus + the 33
+`notes/_inbox.md` candidates; the report finds two well-attested themes with
+no tag home (`agent-orchestration`: corpus cluster 913 usages/327 tags, ~10
+inbox candidates; `infrastructure`/ops: 1023/417, ~5) and two genuine
+redundancies (`memory-systems`≡`memory-system`; `three-Ps`⊂`provenance`),
+net delta ADD 2/MERGE 2 → still 24, deferred to `/weekly-review` ratification
+per the curation rule. **#2** — extended `/weekly-review` with a new step 5
+"Cluster-and-Carry Wiki Curation" (5a ratify pending vocab delta → 5b gather
+→ 5c cluster → 5d draft diffs → 5e carry), draft-only and human-ratified;
+5a closes the chicken-and-egg with #1. **#3** — dispatched a background
+agent that relocated misplaced `working-notes.md` in 5 repos (→
+`docs/notes/working-notes.md`, history preserved via `git mv`) and fixed the
+cc-session-toolkit scaffold root cause (template moved out of
+`data/reflections/`, `init.py` updated, 301/301 tests pass); relocation
+commits landed in 6 repos, **5 still local-only/unpushed, awaiting Shawn's
+review** (map-reader-llm's relocation was already pushed — a concurrent
+gs/h11 session on that repo committed on top and pushed the lot). **#4** —
+lifted the tag vocabulary from the private `notes/_tags.md` to its canonical
+public home (`wiki/index.md` "Tag vocabulary"); `_tags.md` is now a redirect
+stub; `_inbox.md` + notes/grimoire content stay private; and added a step 5c
+"Grimoire Publishing Review" to `/retro` (Shawn's call: monthly cadence, not
+weekly). #5 (Vector 2) deferred to its own session. PA #1/#2/#4 work
+committed and pushed; #3 repos left for Shawn.
+
+Artefacts touched:
+- New: `scripts/analyse-wiki-vocabulary.py`, `wiki/planning/wiki-vocabulary-validation-2026-05-29.md`
+- Edited: `commands/weekly-review.md` (step 5), `commands/retro.md` (step 5c), `wiki/index.md` (vocabulary lifted in), `wiki/continuity.md`
+- Data submodule: `notes/_tags.md` (→ stub), `notes/index.md` (pointer)
+- PA commits: `60ef989` (#1+#2), `cc1a93b` (#4a lift), `3a13b15` (#4b retro); submodule `d0e4311`, `769f448`
+- #3 relocation commits (in `~/Code/*`): inscriptions `89cad01`, LLM-History-Paper `73f9876`, llm-reproducibility `dc40d8e`, 2026-mq-…-paper-b `99cab2b`, cc-session-toolkit `9129e8a` — **unpushed**; map-reader-llm `3a17575` — **already pushed** (rode a concurrent gs/h11 push; repo HEAD now `c8f92781`)
 
 ### 2026-05-28 (Thu, evening) — Research-notes/reflections split + PA wiki migration (workstream D pilot complete)
 
