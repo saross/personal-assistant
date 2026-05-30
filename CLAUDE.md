@@ -24,9 +24,15 @@ session must **label its workstream** so the audit trail stays legible:
 - **`wiki/continuity.md` session-log headers:** suffix the date with the
   workstream tag — `### 2026-05-30 (Sat, latest G) — …` (G = style-guide)
   vs `(Sat, latest PA) — …` (PA = memory/scratchpad system).
-- **Edits:** confine each session to its own sections/rows; stage with
-  explicit pathspecs (`git add <path>`, never `git add -A`); `git fetch`
-  and confirm `0 behind` before committing.
+- **Edits & commits:** confine each session to its own sections/rows.
+  `git add <path>` is **not enough** — a concurrent session may have
+  *already staged* its files in the shared index, and a plain
+  `git commit` then sweeps them into your commit (this has happened: a
+  style-guide fix commit once absorbed another session's Vector-2c
+  work). Commit with an explicit pathspec — `git commit -- <path> …` —
+  which commits only those paths and ignores anything else staged.
+  Confirm `git diff --cached --name-only` shows only your files, and
+  `git fetch` + `0 behind`, before committing.
 
 This convention is **specific to this repo** — it exists only because one
 repo covers many unrelated things. It does not apply to single-purpose
