@@ -453,9 +453,9 @@ def _assemble(
         ),
         "",
         (
-            "**Depth on demand:** `/recall <query>`, or "
-            "`scripts/fetch-memories.py --tag <t>` / `--query \"…\"` for "
-            "autonomous tier-2 retrieval."
+            "**Depth on demand:** `/recall <query>` or "
+            "`scripts/fetch-memories.py --tag <t>` / `--query \"…\"` "
+            "(full protocol: `global-claude-md/tier-2-retrieval.md`)."
         ),
     ]
     return "\n".join(lines)

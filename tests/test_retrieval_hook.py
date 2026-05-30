@@ -15,6 +15,21 @@ import pytest
 retrieval = importlib.import_module("session-start-retrieval")
 
 
+@pytest.fixture(autouse=True)
+def _digest_flag_off(tmp_path, monkeypatch):
+    """Force Vector 2 digest mode OFF by default for every test here.
+
+    The live gate (``digest_mode_enabled``) reads env ``PA_DIGEST_STAGE1``
+    then the machine-local sentinel ``~/.pa-digest-stage1``. Once amd-tower
+    is enabled that sentinel exists, which would otherwise silently flip
+    every ``main()``-driving legacy-path test in this module into digest
+    mode and break it. Neutralise both signals so the suite is independent
+    of operator machine state. Digest-mode tests opt back in explicitly.
+    """
+    monkeypatch.delenv(retrieval.DIGEST_FLAG_ENV, raising=False)
+    monkeypatch.setattr(retrieval, "DIGEST_SENTINEL", tmp_path / "absent-sentinel")
+
+
 # ============================================================================
 # Tag Relevance Scoring
 # ============================================================================
@@ -1617,3 +1632,144 @@ class TestContentFallbackTruncation:
         result = retrieval.format_memory(mem)
         assert long_summary in result
         assert "truncated" not in result
+
+
+# ============================================================================
+# Vector 2 — session-start digest flag (Stage 1, machine-local gate)
+# ============================================================================
+
+
+class TestDigestModeFlag:
+    """Unit tests for digest_mode_enabled() precedence and parsing.
+
+    The autouse _digest_flag_off fixture clears the env var and points the
+    sentinel at an absent path, so each test below sets only the signal it
+    means to exercise.
+    """
+
+    def test_off_by_default(self):
+        # env cleared + sentinel absent (autouse fixture) → legacy hook.
+        assert retrieval.digest_mode_enabled() is False
+
+    def test_sentinel_present_enables(self, tmp_path, monkeypatch):
+        sentinel = tmp_path / "pa-digest-stage1"
+        sentinel.write_text("")  # presence is the signal; contents ignored
+        monkeypatch.setattr(retrieval, "DIGEST_SENTINEL", sentinel)
+        assert retrieval.digest_mode_enabled() is True
+
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "on", "Yes", " on "])
+    def test_env_truthy_enables(self, val, monkeypatch):
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, val)
+        assert retrieval.digest_mode_enabled() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "off", "no", ""])
+    def test_env_falsy_disables(self, val, monkeypatch):
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, val)
+        assert retrieval.digest_mode_enabled() is False
+
+    def test_env_falsy_overrides_present_sentinel(self, tmp_path, monkeypatch):
+        # Env wins in BOTH directions: explicit OFF beats an enabled host.
+        sentinel = tmp_path / "pa-digest-stage1"
+        sentinel.write_text("")
+        monkeypatch.setattr(retrieval, "DIGEST_SENTINEL", sentinel)
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "0")
+        assert retrieval.digest_mode_enabled() is False
+
+    def test_env_truthy_overrides_absent_sentinel(self, monkeypatch):
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
+        assert retrieval.digest_mode_enabled() is True
+
+    def test_unrecognised_env_fails_safe_to_off(self, monkeypatch, capsys):
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "maybe")
+        assert retrieval.digest_mode_enabled() is False
+        assert "not a recognised on/off value" in capsys.readouterr().err
+
+
+class TestDigestModeOutput:
+    """End-to-end main() behaviour when the digest flag is ON."""
+
+    def test_emits_digest_not_buckets(self, tmp_path, monkeypatch, capsys):
+        memories_file = tmp_path / "memories.jsonl"
+        memories_file.write_text(
+            '{"id":"v1","category":"decision","summary":"Cutover wired.",'
+            '"content":"Cutover wired.","verified":true,"research_tags":["vector-2"],'
+            '"created_at":"2026-05-29T10:00:00+00:00"}\n'
+        )
+        monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        monkeypatch.setattr(retrieval, "DIGEST_LOG", tmp_path / "digest.log")
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
+
+        import io
+        monkeypatch.setattr(
+            sys, "stdin", io.StringIO('{"cwd": "/home/shawn/Code/inscriptions"}')
+        )
+        try:
+            retrieval.main()
+        except SystemExit:
+            pass
+
+        out = capsys.readouterr().out
+        # Digest scaffolding present; legacy bucket headers absent.
+        assert "# Session-start digest" in out
+        assert "# Memory Context" not in out
+        assert "## Retrieval Instructions" not in out
+        assert "## Key Decisions & Knowledge" not in out
+
+    def test_writes_digest_log_line(self, tmp_path, monkeypatch, capsys):
+        memories_file = tmp_path / "memories.jsonl"
+        memories_file.write_text(
+            '{"id":"v1","category":"decision","summary":"Cutover wired.",'
+            '"content":"Cutover wired.","verified":true,"research_tags":["vector-2"],'
+            '"created_at":"2026-05-29T10:00:00+00:00"}\n'
+        )
+        log_path = tmp_path / "logs" / "digest.log"
+        monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        monkeypatch.setattr(retrieval, "DIGEST_LOG", log_path)
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
+
+        import io
+        monkeypatch.setattr(
+            sys, "stdin", io.StringIO('{"cwd": "/home/shawn/Code/inscriptions"}')
+        )
+        try:
+            retrieval.main()
+        except SystemExit:
+            pass
+
+        # One tab-separated line written (parent dir auto-created).
+        assert log_path.exists()
+        line = log_path.read_text().strip()
+        assert line.count("\n") == 0
+        assert "bytes=" in line and "fallback=" in line
+
+    def test_log_failure_does_not_break_session(self, tmp_path, monkeypatch, capsys):
+        # digest.log points at an unwritable location; the hook must still
+        # emit the digest to stdout (best-effort instrumentation contract).
+        memories_file = tmp_path / "memories.jsonl"
+        memories_file.write_text(
+            '{"id":"v1","category":"decision","summary":"Cutover wired.",'
+            '"content":"Cutover wired.","verified":true,"research_tags":["vector-2"],'
+            '"created_at":"2026-05-29T10:00:00+00:00"}\n'
+        )
+        # A file standing where a directory is needed → mkdir/open raises OSError.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a dir")
+        monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        monkeypatch.setattr(retrieval, "DIGEST_LOG", blocker / "sub" / "digest.log")
+        monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
+
+        import io
+        monkeypatch.setattr(
+            sys, "stdin", io.StringIO('{"cwd": "/home/shawn/Code/inscriptions"}')
+        )
+        try:
+            retrieval.main()
+        except SystemExit:
+            pass
+
+        captured = capsys.readouterr()
+        assert "# Session-start digest" in captured.out  # session still served
+        assert "could not write" in captured.err          # warned, not raised

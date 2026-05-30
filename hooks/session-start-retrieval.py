@@ -41,6 +41,7 @@ the Task Status banner from the accountability hook.
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +53,7 @@ from pathlib import Path
 # C-C4, C-X3).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from project_id import encode_project_id  # noqa: E402
+import digest as digest_selector  # noqa: E402  (pure Vector 2 selector)
 
 # ============================================================================
 # Configuration
@@ -61,6 +63,26 @@ PA_DIR = Path.home() / "personal-assistant"
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 SCRATCHPAD_FILE = PA_DIR / "data" / "scratchpad.md"
 SCRATCHPADS_DIR = PA_DIR / "data" / "scratchpads"
+
+# ----------------------------------------------------------------------------
+# Vector 2 — session-start digest (Stage 1) flag, default OFF.
+#
+# When enabled, main() emits the compact ≤1,500 B digest (scripts/digest.py)
+# in place of the four-bucket recall dump. Gating is MACHINE-LOCAL by
+# design: the rollout is amd-tower only (design §8), and `data/` is a
+# submodule synced to zbook + rpi-server, so the signal must NOT live in
+# the repo or it would propagate. Precedence:
+#   1. env var PA_DIGEST_STAGE1 (truthy → on, falsy → off; overrides both
+#      directions — used for testing / per-session override),
+#   2. else the machine-local sentinel file ~/.pa-digest-stage1 exists → on,
+#   3. else OFF (legacy four-bucket hook).
+# Rollback is `rm ~/.pa-digest-stage1` or `PA_DIGEST_STAGE1=0`.
+DIGEST_FLAG_ENV = "PA_DIGEST_STAGE1"
+DIGEST_SENTINEL = Path.home() / ".pa-digest-stage1"
+DIGEST_LOG = PA_DIR / "data" / "logs" / "digest.log"
+# Truthy / falsy spellings accepted from the env override (case-insensitive).
+_TRUTHY = {"1", "true", "on", "yes"}
+_FALSY = {"0", "false", "off", "no", ""}
 
 # Scratchpad size threshold — warn when distillation is needed
 SCRATCHPAD_WARN_LINES = 150
@@ -971,6 +993,56 @@ def _emit_load_diagnostics() -> None:
     )
 
 
+def digest_mode_enabled() -> bool:
+    """Return whether the Vector 2 Stage 1 digest replaces the recall dump.
+
+    Machine-local gate (design §8, amd-tower-only rollout). Precedence:
+    env override ``PA_DIGEST_STAGE1`` first (either direction), then the
+    sentinel file ``~/.pa-digest-stage1``, else OFF. Neither signal lives
+    in the synced ``data/`` submodule, so enabling on amd-tower does not
+    leak to zbook / rpi-server.
+
+    An env value that is neither clearly truthy nor clearly falsy is
+    treated as OFF (fail-safe to the legacy hook) and warned to stderr.
+    """
+    raw = os.environ.get(DIGEST_FLAG_ENV)
+    if raw is not None:
+        val = raw.strip().lower()
+        if val in _TRUTHY:
+            return True
+        if val in _FALSY:
+            return False
+        print(
+            f"[retrieval] WARN: {DIGEST_FLAG_ENV}={raw!r} is not a "
+            f"recognised on/off value — treating as OFF (legacy hook)",
+            file=sys.stderr,
+        )
+        return False
+    return DIGEST_SENTINEL.exists()
+
+
+def build_session_digest(memories: list[dict], project_tags: set[str]) -> str:
+    """Build the Stage 1 digest text and append one ``digest.log`` line.
+
+    Thin wrapper over the pure :func:`digest_selector.build_digest` so
+    ``main()`` stays readable. The log write is best-effort and never
+    raises — a logging failure must not break session start. Returns the
+    rendered digest text (already ≤ byte budget).
+    """
+    now = datetime.now(timezone.utc)
+    result = digest_selector.build_digest(
+        memories, now=now, project_tags=project_tags
+    )
+    try:
+        DIGEST_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with DIGEST_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(digest_selector.digest_log_line(result, now=now) + "\n")
+    except OSError as exc:  # best-effort instrumentation; never fail the hook
+        print(f"[retrieval] WARN: could not write {DIGEST_LOG}: {exc}",
+              file=sys.stderr)
+    return result.text
+
+
 def main() -> None:
     """
     SessionStart hook entry point.
@@ -1038,6 +1110,21 @@ def main() -> None:
 
     # Build tag profile from same-project memories for cross-project relevance
     project_tags = collect_project_tags(memories, current_project)
+
+    # Vector 2 Stage 1 (machine-local flag): emit the compact digest in
+    # place of the four-bucket recall dump. The four retrieve_* passes are
+    # skipped entirely — the digest does its own verified-true selection
+    # against the loaded corpus and project tag profile.
+    if digest_mode_enabled():
+        context = build_session_digest(memories, project_tags)
+        parts = [context] if context else []
+        parts.extend(scratchpad_sections)
+        if not parts:
+            _emit_load_diagnostics()
+            sys.exit(0)
+        print("\n\n".join(parts))
+        _emit_load_diagnostics()
+        return
 
     # Retrieve relevant memories with project-aware, tag-relevance bucketing
     cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_DAYS)
