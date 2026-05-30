@@ -305,8 +305,9 @@ Sources: (a) general academic-writing best practices, (b) what an
 ESL-editor would want their co-authors to produce, (c) genre
 conventions for the named `genre_label`. Mark every item in this
 section as `aspirational — generated independent of corpus` so it is
-distinguishable from the empirical claims. After generating, reconcile each aspirational item against the *live
-empirical assessment* (§§1–10), **not** against any prior conscious
+distinguishable from the empirical claims. After generating,
+reconcile each aspirational item against the *live empirical
+assessment* (§§1–10), **not** against any prior conscious
 style guide — those are superseded; do not cite them. Where a measured
 metric bears on an item, add a `Live cross-ref: §X`. The **academic
 register was reconciled 2026-05-30** (see that guide's §11): beyond the
