@@ -153,22 +153,40 @@ authoritatively can drive primacy-effect errors.
   (`DEFAULT_BYTE_BUDGET` in `digest.py`, design §7b); (b) cap tags-per-entry,
   e.g. first 4 (design §7d). Decide alongside PASS 2 or after the
   observation window gives real density data.
-- [ ] **Review how to verify MORE memories (feasibility pass, new
-  2026-05-30 per Shawn).** Vector 2's verified-true bucket is only as good
-  as `verified` coverage. Today verification is incidental (write-path
-  anchor_verify on new memories at extraction time → 284 true in 7 d). The
-  question: can we deliberately backfill `verified` across the existing
-  corpus (~29 K records, mostly `verified IS NULL`)? This is the
-  workstream-A **Phase 5 "migration sweep + bulk-flag pass"** idea, marked
-  *superseded by workstream D* but explicitly noted there as "still valuable
-  as backfill for the `verified` field." Scope the feasibility: which
-  records have re-resolvable anchors (file paths / commit hashes / Zotero
-  keys still valid); cost/throughput of running `scripts/anchor_verify.py`
-  in bulk; whether it needs an API call (review gate) or is purely local
-  re-resolution. Stage 2 of the design (verified-first, drop the fallback)
-  depends on broad coverage — so this gates the design's own endgame.
-  Reference: `scripts/anchor_verify.py`, `planning/memory-system-v2-design.md`
-  Phase 2.
+- [x] 2026-05-30 **Review how to verify MORE memories — FEASIBILITY
+  SCOPED (no code shipped; recommendation below).** Question: can we
+  backfill `verified` across the ~29 K corpus to unblock Vector 2 Stage 2?
+  **Answer: re-resolution backfill is local/free/~2 min and needs NO API
+  gate — but it is nearly worthless for Stage 2, because the corpus carries
+  almost no anchors to re-resolve.** `scripts/anchor_verify.py` resolves
+  `file` (FS + `git cat-file`/`git log`) and `commit` (`git rev-parse`)
+  anchors purely locally; `zotero` and `url` are stubbed → `pending`; no
+  network/LLM in the path. **Verified at source 2026-05-30
+  (`data/memories/memories.jsonl`, live/growing):** total **29,701**
+  records; `verified` = true **629** / false **373** / pending **4** /
+  absent **28,695**; records with non-empty `anchors` = **1,034 (3.5 %)**;
+  legacy top-level `zotero_key` = 41. Anchoring is a *forward write-path*
+  feature live only since 2026-05-16, so a full re-resolution pass would
+  lift verified-true from ~629 to **~653 (2.2 % of corpus)** — `anchor_verify`
+  returns `None` (not `true`) for the 96.5 % with no anchors, so net new is
+  ~two dozen. **Design consequence (the real finding):** the promoted-recent
+  fallback that Stage 2 was meant to *delete* is NOT a stopgap — it is the
+  permanent handler for the 96.5 % that will never carry anchors. Reframe
+  Stage 2 "verified-first" → "anchored-and-verified-first among records that
+  *have* anchors, recent-promoted otherwise." Verified coverage grows
+  forward (as the anchored write-path runs), not via backfill.
+  - [ ] **Optional, ungated:** run the local re-resolution pass as a
+    standing `scripts/drift-sweep.py` (design §8.2) — free, ~2 min,
+    correctly stamps the 1,034 anchored records + re-checks them over time.
+    Worth having as a quarterly job; needs no approval. Not urgent.
+  - [ ] **API-gated, deferred:** the ONLY path to broad back-corpus
+    coverage is a *retroactive anchor-generation* pass (design §4 step 5 /
+    Phase 6) — re-reading transcripts with an extractor model to mint
+    anchors records never had. ~thousands of calls; needs Shawn's API
+    review gate (model + count + cost) as a separate costed decision. Do
+    NOT fold into "backfill". Refs: `scripts/anchor_verify.py`,
+    `scripts/project_id.py` (`repo_set`), `wiki/planning/memory-system-v2-design.md`
+    §4, `wiki/planning/vector-2-design.md` §6b (Stage 2).
 - [x] 2026-05-30 **Scratchpad distilled — clean baseline for Vector 2b
   (submodule `d840239`, superproject bump `f98bf2a`).** With the recall dump
   now digested to ~1.5 KB, the ~29 KB scratchpad became the dominant
