@@ -671,5 +671,12 @@ on conversation history.
   document.
 - Phase 3 (Kumar aggregation rules) — `attested-concentrated` status
   added to schema; full rule formalisation pending
-- Phase 4 (Panickssery exemplar block) — scoped, awaits API approval
+- Phase 4 ✅ (Panickssery exemplar block) — added 2026-05-30 as
+  Appendix F of `style-guide-academic-2026-05-30.md`. Candidate
+  scorer at `scripts/style-analyser/phase4_exemplar_scorer.py`
+  (18-category sentence-level feature detector; outputs
+  `data/style-corpus/phase4-exemplar-candidates.json`). Five
+  exemplars chosen with role balance (2 first + 2 last + 1 middle),
+  date spread 2018–2024, total 191 / 600 words. Inversions run
+  in-session by Opus 4.7 per plan §5.3 — no separate SDK calls.
 - Phase 5 (Mahalanobis evaluator) — scoped, separate downstream tool
