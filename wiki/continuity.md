@@ -187,6 +187,16 @@ authoritatively can drive primacy-effect errors.
     NOT fold into "backfill". Refs: `scripts/anchor_verify.py`,
     `scripts/project_id.py` (`repo_set`), `wiki/planning/memory-system-v2-design.md`
     §4, `wiki/planning/vector-2-design.md` §6b (Stage 2).
+  - [x] 2026-05-30 **Design-doc reframe applied (commit `6bbb418`).**
+    `wiki/planning/vector-2-design.md` §6b rewritten from "verified-first,
+    delete the fallback" → "anchored-and-verified-first among anchored
+    records, recent-promoted otherwise"; promoted-recent fallback now stated
+    as permanent. Coherence edits also in §6a item 3, §9 step 5, §10 R2/R5,
+    and a forward-pointer on the §1 sequencing premise. Counts re-verified
+    at source this session (`data/memories/memories.jsonl`, 2026-05-30):
+    **29,807** records, **1,076 (3.6 %)** anchored, **659** `verified=true`
+    — the corpus grew ~106 records since the feasibility snapshot but the
+    ~3.6 % structural finding holds. Open item (2) closed.
 - [x] 2026-05-30 **Scratchpad distilled — clean baseline for Vector 2b
   (submodule `d840239`, superproject bump `f98bf2a`).** With the recall dump
   now digested to ~1.5 KB, the ~29 KB scratchpad became the dominant
