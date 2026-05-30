@@ -613,7 +613,15 @@ def _split_markdown_sections(text: str) -> tuple[str, list[str]]:
     ``# `` title plus any intro). Each section runs from one ``## `` line
     up to (but not including) the next. The partition is exact and
     gap-free: ``"\\n".join([preamble, *sections])`` reconstructs the input
-    verbatim, so dropping a section just omits its line range.
+    verbatim whenever the preamble is non-empty, so dropping a section just
+    omits its line range.
+
+    Caveat — empty preamble: when ``text`` begins with ``## `` on its first
+    line the preamble is ``""`` and the verbatim-join would prepend a
+    spurious ``\\n``. The sole caller (:func:`cap_markdown_to_budget`)
+    filters empty pieces before joining, so its output is unaffected; any
+    other caller that needs verbatim reconstruction must drop the empty
+    preamble itself (``[preamble, *sections] if preamble else sections``).
 
     Note: a ``## `` at the start of a line inside a fenced code block
     would be mis-read as a heading. The scratchpad is plain principle
@@ -657,9 +665,21 @@ def cap_markdown_to_budget(
          ALWAYS kept, even if it alone exceeds the budget — fail-soft, the
          header is never lost and a section is never split mid-principle.
 
+    Scaffolding-floor contract (mirrors :class:`DigestResult`): the result
+    is ``<= byte_budget`` *provided the budget is at least the floor* —
+    here ``len(preamble) + len(trim_marker) + 2`` bytes, the smallest
+    trimmed render (preamble + blank line + marker, with every section
+    dropped). Below that floor the preamble-plus-marker is returned intact
+    and MAY exceed the budget — the sections are the only variable the cap
+    can squeeze, exactly as ``build_digest`` cannot shrink its own
+    scaffolding. The live budgets (18 KB / 8 KB) sit far above any real
+    scratchpad's floor (preamble ~hundreds of bytes, marker ~100 B), so the
+    sub-floor branch is not reachable in production.
+
     Returns ``(capped_text, was_trimmed)``. ``was_trimmed`` is True iff at
     least one section was dropped (in which case ``trim_marker`` is
-    present in the output).
+    present in the output — though, below the floor, the output may still
+    exceed the budget per the contract above).
     """
     if len(text.encode("utf-8")) <= byte_budget:
         return text, False

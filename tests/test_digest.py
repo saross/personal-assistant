@@ -494,6 +494,33 @@ class TestCapMarkdownToBudget:
         text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, 10)
         assert "# Scratchpad" in text
 
+    def test_sub_floor_budget_may_exceed_but_keeps_preamble_and_marker(self):
+        """Documented scaffolding-floor contract: below the
+        preamble+marker floor every section is dropped and the result MAY
+        exceed the budget (the sections are the only squeezable variable).
+        We assert the contract, not an impossible cap."""
+        preamble, _ = digest._split_markdown_sections(_SCRATCHPAD)
+        marker = digest.SCRATCHPAD_TRIM_MARKER
+        floor = len(preamble.encode("utf-8")) + len(marker.encode("utf-8")) + 2
+        # A budget below the floor: result keeps preamble + marker, all
+        # sections gone, was_trimmed True — and is allowed to exceed budget.
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, floor - 50)
+        assert trimmed is True
+        assert "# Scratchpad" in text
+        assert marker in text
+        assert "## Constraints" not in text  # every section dropped
+        assert len(text.encode("utf-8")) > floor - 50  # exceeds, per contract
+
+    def test_at_floor_budget_is_within_budget(self):
+        """At/above the floor the cap holds exactly (the boundary of the
+        contract): preamble + marker fit, all sections dropped."""
+        preamble, _ = digest._split_markdown_sections(_SCRATCHPAD)
+        marker = digest.SCRATCHPAD_TRIM_MARKER
+        floor = len(preamble.encode("utf-8")) + len(marker.encode("utf-8")) + 2
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, floor)
+        assert trimmed is True
+        assert len(text.encode("utf-8")) <= floor
+
     def test_no_sections_passthrough(self):
         """Text with no `## ` headings is unsplittable → returned intact,
         not trimmed, even when over budget."""
