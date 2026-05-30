@@ -41,7 +41,7 @@ confidence binding before they land in JSONL. See
 | Phase 5 — migration sweep + bulk-flag pass | **superseded by workstream D 2026-05-17** — migration sweep still valuable as backfill for `verified` field, but not gating anything |
 | Phase 6 — extractor bake-off | **deprioritised 2026-05-17** — prior-art survey found write strategy contributes ~3–8 retrieval-accuracy points vs ~20 for retrieval; wrong lever |
 
-### B. Session-start payload reduction (Vector 2 / injection issue) — *design landed 2026-05-17; PASS 1 (engine + proof, hook untouched) shipped 2026-05-30; PASS 2 (live cutover) shipped + enabled on amd-tower 2026-05-30 — 2-week §8 observation window running; Vector 2b (scratchpad byte budget) shipped DARK 2026-05-30 — enable after §8 review*
+### B. Session-start payload reduction (Vector 2 / injection issue) — *design landed 2026-05-17; PASS 1 (engine + proof, hook untouched) shipped 2026-05-30; PASS 2 (live cutover) shipped + enabled on amd-tower 2026-05-30 — 2-week §8 observation window running; Vector 2b (scratchpad byte budget) shipped DARK 2026-05-30 — enable after §8 review; Vector 2c (focus-aware + project-scoped digest) shipped DARK 2026-05-30 — enable after §8 review*
 
 Distinct from the v2 corpus work. The session-start hook injects
 ~43 KB of recall memories plus harness-injected auto-memory plus
@@ -246,6 +246,48 @@ authoritatively can drive primacy-effect errors.
     (active-cut, tighter budget with an explicit section-drop order) only
     if the scratchpad is still the bottleneck after Vector 2b's own
     observation window. Reference: `wiki/planning/vector-2b-design.md` §7.
+- [x] 2026-05-30 **Vector 2c — focus-aware + project-scoped digest selection:
+  DESIGN + IMPLEMENTATION shipped DARK.** Operationalises the relevance
+  dimension of the 2026-05-30 Stage 2 reframe (vector-2-design §6b). Two
+  changes to the digest's verified-entry selection, behind ONE machine-local
+  flag (`PA_DIGEST_FOCUS` / `~/.pa-digest-focus`, default OFF, byte-identical
+  → §8 window unconfounded): (1) **focus-aware ranking** — the active FOCUS.md
+  slot projects become the primary ranking key (Option 3: ranking + a thin
+  one-line legibility label, NOT a redundant focus block — `# Task Status`
+  already prints the slots); (2) **hard project scope** — in a project repo
+  the verified/fallback pools are filtered to that project (`matches_project`,
+  mirroring `is_same_project`); the PA hub is exempt (already nulls
+  `current_project`). **Coarse by design** (Shawn's choice): the focus key is
+  the last path segment of each slot's `- **Project:**` line
+  (`research/inscriptions` → `inscriptions`), substring-matched against the
+  memory's encoded `project` + tags — bridges to differently-named repos
+  (`efn` matches `…-Groundsite-EFN-Planning`). Empirically validated at source
+  (2026-05-30, `data/memories/memories.jsonl`): of 377 verified-true in-window
+  records, `{inscriptions, efn}` matches 127 (34 %). Rank key has two regimes:
+  focus-on → `(focus_score, recency)` (drops the degenerate whole-corpus
+  overlap term that biases toward verbose projects); flag-off →
+  `(overlap_score, recency)`, byte-for-byte the pre-2c key. Tests +37 (digest
+  + retrieval-hook); **full suite 818 passed**, 0 regressions. Live smoke
+  (PA-hub): OFF byte-identical to today's digest; ON renders the focus label +
+  focus-ranked entries. Design: `wiki/planning/vector-2c-design.md`. **Sentinel
+  NOT created — dark.** Known limitation (documented, deferred): focus slots
+  with little recent verified activity (EFN this week) don't surface — a
+  per-slot round-robin is the future lever, not v1.
+  - [ ] **Enable Vector 2c on amd-tower AFTER the §8 review (2026-06-13)** —
+    `touch ~/.pa-digest-focus` (or accept the §8 confound). Same gate timing
+    as Vector 2b.
+  - ⚠️ **Provenance note (concurrent-session race):** the 2c code physically
+    landed in commit **`cfa9152`** — a *workstream-G* commit
+    (`fix(style-analyser): scope prose-paragraph filter…`), NOT a 2c-labelled
+    one. A concurrent style-guide session ran a bare `git commit` that swept my
+    `git add`-staged 2c index (5 files: `scripts/digest.py`,
+    `hooks/session-start-retrieval.py`, both test files,
+    `wiki/planning/vector-2c-design.md`) into theirs. No data loss; already
+    pushed, so not rewritten. Anyone auditing 2c history: look at `cfa9152`,
+    not a 2c-named commit. This is the exact hazard the convention added in
+    `87205b0` (one commit earlier) warns about — bare `git commit` over a
+    shared index. Mitigation going forward: stage AND commit in one tight
+    step, never leave files staged across turns in this repo.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):
