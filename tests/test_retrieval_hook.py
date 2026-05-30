@@ -17,17 +17,23 @@ retrieval = importlib.import_module("session-start-retrieval")
 
 @pytest.fixture(autouse=True)
 def _digest_flag_off(tmp_path, monkeypatch):
-    """Force Vector 2 digest mode OFF by default for every test here.
+    """Force both Vector flags OFF by default for every test here.
 
-    The live gate (``digest_mode_enabled``) reads env ``PA_DIGEST_STAGE1``
-    then the machine-local sentinel ``~/.pa-digest-stage1``. Once amd-tower
-    is enabled that sentinel exists, which would otherwise silently flip
-    every ``main()``-driving legacy-path test in this module into digest
-    mode and break it. Neutralise both signals so the suite is independent
-    of operator machine state. Digest-mode tests opt back in explicitly.
+    The live gates read an env var then a machine-local sentinel
+    (``digest_mode_enabled`` → ``PA_DIGEST_STAGE1`` / ``~/.pa-digest-stage1``;
+    ``scratchpad_budget_enabled`` → ``PA_SCRATCHPAD_BUDGET`` /
+    ``~/.pa-scratchpad-budget``). Once amd-tower enables either, that sentinel
+    exists, which would otherwise silently flip the corresponding code path in
+    every ``main()``-driving test and break it. Neutralise all four signals so
+    the suite is independent of operator machine state. Flag-on tests opt back
+    in explicitly.
     """
     monkeypatch.delenv(retrieval.DIGEST_FLAG_ENV, raising=False)
     monkeypatch.setattr(retrieval, "DIGEST_SENTINEL", tmp_path / "absent-sentinel")
+    monkeypatch.delenv(retrieval.SCRATCHPAD_FLAG_ENV, raising=False)
+    monkeypatch.setattr(
+        retrieval, "SCRATCHPAD_SENTINEL", tmp_path / "absent-scratchpad-sentinel"
+    )
 
 
 # ============================================================================
@@ -467,37 +473,47 @@ class TestLoadScratchpad:
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", scratchpad)
         assert retrieval.load_scratchpad() == ""
 
-    def test_warns_when_over_line_limit(
+    def test_warns_when_over_byte_limit(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Warns to stderr when scratchpad exceeds SCRATCHPAD_WARN_LINES."""
+        """Warns to stderr when scratchpad exceeds SCRATCHPAD_WARN_BYTES.
+
+        Vector 2b: the warn is byte-based. The regression it guards against
+        is the real-world failure mode — a few long lines totalling ~29 KB
+        that the old 150-LINE threshold never caught (the live file was 99
+        lines). A handful of long lines must trip the byte warn.
+        """
         scratchpad = tmp_path / "scratchpad.md"
-        # Write 160 lines — above the 150-line threshold
-        lines = [f"- Line {i}" for i in range(160)]
+        # 10 lines but ~30 KB of bytes — exactly the shape that defeated the
+        # old line-based warn.
+        lines = [f"- {'principle ' * 300}" for _ in range(10)]
         scratchpad.write_text("\n".join(lines))
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", scratchpad)
-        monkeypatch.setattr(retrieval, "SCRATCHPAD_WARN_LINES", 150)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_WARN_BYTES", 12_000)
 
         result = retrieval.load_scratchpad()
 
-        # Content should still be returned
-        assert "Line 0" in result
-        assert "Line 159" in result
+        # Content should still be returned in full (warn does not trim).
+        assert "principle" in result
 
-        # Warning should appear on stderr
+        # Warning should appear on stderr, citing bytes and /retro.
         captured = capsys.readouterr()
-        assert "160 lines" in captured.err
+        assert "bytes" in captured.err
         assert "/retro" in captured.err
 
-    def test_no_warning_when_under_limit(
+    def test_no_warning_when_under_byte_limit(
         self, tmp_path, monkeypatch, capsys
     ):
-        """No warning when scratchpad is within the line limit."""
+        """No warning when scratchpad is within the byte limit.
+
+        Many SHORT lines that would have tripped the old line threshold must
+        NOT trip the byte warn — the inverse of the regression above.
+        """
         scratchpad = tmp_path / "scratchpad.md"
-        lines = [f"- Line {i}" for i in range(50)]
+        lines = [f"- Line {i}" for i in range(160)]  # 160 lines, tiny bytes
         scratchpad.write_text("\n".join(lines))
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", scratchpad)
-        monkeypatch.setattr(retrieval, "SCRATCHPAD_WARN_LINES", 150)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_WARN_BYTES", 12_000)
 
         retrieval.load_scratchpad()
 
@@ -1773,3 +1789,146 @@ class TestDigestModeOutput:
         captured = capsys.readouterr()
         assert "# Session-start digest" in captured.out  # session still served
         assert "could not write" in captured.err          # warned, not raised
+
+
+# ============================================================================
+# Vector 2b — scratchpad byte budget flag + load-path cap
+# ============================================================================
+
+
+class TestScratchpadBudgetFlag:
+    """Unit tests for scratchpad_budget_enabled() precedence and parsing.
+
+    Mirrors TestDigestModeFlag. The autouse _digest_flag_off fixture clears
+    the env var and points the sentinel at an absent path, so the default is
+    OFF unless a test opts in.
+    """
+
+    def test_default_off(self):
+        assert retrieval.scratchpad_budget_enabled() is False
+
+    def test_sentinel_present_enables(self, tmp_path, monkeypatch):
+        sentinel = tmp_path / "sp-sentinel"
+        sentinel.write_text("")
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_SENTINEL", sentinel)
+        assert retrieval.scratchpad_budget_enabled() is True
+
+    @pytest.mark.parametrize("val", ["1", "true", "on", "YES", " True "])
+    def test_env_truthy_enables(self, val, monkeypatch):
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, val)
+        assert retrieval.scratchpad_budget_enabled() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "off", "no", ""])
+    def test_env_falsy_disables(self, val, monkeypatch):
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, val)
+        assert retrieval.scratchpad_budget_enabled() is False
+
+    def test_env_overrides_sentinel_both_directions(self, tmp_path, monkeypatch):
+        sentinel = tmp_path / "sp-sentinel"
+        sentinel.write_text("")
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_SENTINEL", sentinel)
+        # Env OFF beats sentinel ON.
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, "0")
+        assert retrieval.scratchpad_budget_enabled() is False
+        # Env ON stands on its own.
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, "1")
+        assert retrieval.scratchpad_budget_enabled() is True
+
+    def test_unrecognised_env_fails_safe_to_off(self, monkeypatch, capsys):
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, "maybe")
+        assert retrieval.scratchpad_budget_enabled() is False
+        err = capsys.readouterr().err
+        assert "PA_SCRATCHPAD_BUDGET" in err
+        assert "treating as OFF" in err
+
+
+class TestScratchpadByteCap:
+    """The flag-gated cap applied in load_scratchpad / load_project_scratchpad.
+
+    Default OFF → content returned in full (byte-identical to file). ON →
+    capped via the shared digest.cap_markdown_to_budget primitive.
+    """
+
+    # A scratchpad with five `## ` sections, each ~150 B, so a mid-range
+    # budget keeps the preamble + marker + the earliest sections and drops
+    # the tail cleanly within budget (the marker itself is ~100 B).
+    _pad = " — extra detail to give the section real byte weight here."
+    _SP = (
+        "# Scratchpad\n\n"
+        "Learning log.\n\n"
+        f"## Constraints\n\n- UK spelling.{_pad}\n- Re-read sources.{_pad}\n\n"
+        f"## Preferences\n\n- Critical-friend tone.{_pad}\n\n"
+        f"## What Works\n\n- Product-manage.{_pad}\n\n"
+        f"## What Doesn't\n\n- Do not lecture.{_pad}\n\n"
+        f"## Patterns\n\n- State aggregate cost.{_pad}\n"
+    )
+
+    def test_flag_off_returns_full_content(self, tmp_path, monkeypatch):
+        """OFF (default) → full content even when far over any budget."""
+        sp = tmp_path / "scratchpad.md"
+        sp.write_text(self._SP)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", sp)
+        # Force a tiny budget; it must be ignored while the flag is OFF.
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_BUDGET_BYTES", 50)
+        result = retrieval.load_scratchpad()
+        assert result == self._SP.strip()
+        assert retrieval.digest_selector.SCRATCHPAD_TRIM_MARKER not in result
+
+    def test_flag_on_under_budget_is_byte_identical(self, tmp_path, monkeypatch):
+        """ON but under budget → byte-identical to file (no trim marker)."""
+        sp = tmp_path / "scratchpad.md"
+        sp.write_text(self._SP)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", sp)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_BUDGET_BYTES", 100_000)
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, "1")
+        result = retrieval.load_scratchpad()
+        assert result == self._SP.strip()
+        assert retrieval.digest_selector.SCRATCHPAD_TRIM_MARKER not in result
+
+    def test_flag_on_over_budget_trims_and_warns(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """ON and over budget → capped within budget, marker present, warned."""
+        sp = tmp_path / "scratchpad.md"
+        sp.write_text(self._SP)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", sp)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_BUDGET_BYTES", 450)
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_WARN_BYTES", 10_000_000)  # mute warn
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, "1")
+        result = retrieval.load_scratchpad()
+        assert len(result.encode("utf-8")) <= 450
+        assert retrieval.digest_selector.SCRATCHPAD_TRIM_MARKER in result
+        assert "# Scratchpad" in result  # preamble survives
+        assert "## Constraints" in result  # earliest section survives
+        assert "## Patterns" not in result  # tail section dropped
+        assert "trimmed to byte budget" in capsys.readouterr().err
+
+    def test_project_scratchpad_flag_off_full(self, tmp_path, monkeypatch):
+        """Per-project: OFF → full content."""
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        (scratchpads / "map-reader-llm.md").write_text(self._SP)
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+        monkeypatch.setattr(retrieval, "PROJECT_SCRATCHPAD_BUDGET_BYTES", 50)
+        content, path = retrieval.load_project_scratchpad(
+            "/home/shawn/Code/map-reader-llm"
+        )
+        assert content == self._SP.strip()
+        assert path is not None
+
+    def test_project_scratchpad_flag_on_over_budget_trims(
+        self, tmp_path, monkeypatch
+    ):
+        """Per-project: ON + over its own budget → capped, marker present."""
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        (scratchpads / "map-reader-llm.md").write_text(self._SP)
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+        monkeypatch.setattr(retrieval, "PROJECT_SCRATCHPAD_BUDGET_BYTES", 450)
+        monkeypatch.setattr(retrieval, "PROJECT_SCRATCHPAD_WARN_BYTES", 10_000_000)
+        monkeypatch.setenv(retrieval.SCRATCHPAD_FLAG_ENV, "1")
+        content, path = retrieval.load_project_scratchpad(
+            "/home/shawn/Code/map-reader-llm"
+        )
+        assert len(content.encode("utf-8")) <= 450
+        assert retrieval.digest_selector.SCRATCHPAD_TRIM_MARKER in content

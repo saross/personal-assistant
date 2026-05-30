@@ -84,8 +84,40 @@ DIGEST_LOG = PA_DIR / "data" / "logs" / "digest.log"
 _TRUTHY = {"1", "true", "on", "yes"}
 _FALSY = {"0", "false", "off", "no", ""}
 
-# Scratchpad size threshold — warn when distillation is needed
-SCRATCHPAD_WARN_LINES = 150
+# ----------------------------------------------------------------------------
+# Vector 2b — scratchpad load-path byte budget (design wiki/planning/
+# vector-2b-design.md). After Vector 2 digested the recall dump to ~1.5 KB,
+# the ~15.5 KB scratchpad became the dominant session-start payload term.
+#
+# Two independent mechanisms, both byte-based:
+#   1. A byte WARN (always on) — nudges `/retro` distillation, the human,
+#      principle-preserving lever. Replaces the old line-based warn, which
+#      never fired (the 29 KB bloat lived in ~99 long lines, not >150 lines).
+#   2. A byte BUDGET (flag-gated) — a regrowth guard-rail. When the Vector 2b
+#      flag is ON, the scratchpad content is passed through
+#      digest.cap_markdown_to_budget() (whole `##` sections only, never split,
+#      visible trim marker). Under Fork A (guard-rail) the budgets sit ABOVE
+#      the current sizes, so nothing is trimmed today — the cap only bites on
+#      silent regrowth.
+#
+# Flag gating mirrors the Vector 2 PASS 2 pattern EXACTLY and for the same
+# reason: the scratchpad is injected in BOTH hook modes, and the Vector 2 §8
+# observation window is live on amd-tower (review booked 2026-06-13). A
+# separate machine-local flag (default OFF → byte-identical output) keeps that
+# window unconfounded and earns Vector 2b its own observation window.
+# Precedence: env PA_SCRATCHPAD_BUDGET (truthy/falsy) → sentinel
+# ~/.pa-scratchpad-budget → OFF. Neither lives in the synced `data/` submodule.
+# Warn thresholds sit ABOVE the clean post-distillation floor and BELOW the
+# trim budget, so the warn is a "approaching the cap, distil soon" nudge that
+# fires only on genuine REGROWTH — not a perpetual nag for a distillation that
+# was already done at zero principle loss (global floor 15,484 B on 2026-05-30;
+# largest per-project map-reader 5,134 B). See vector-2b-design.md §8b.
+SCRATCHPAD_WARN_BYTES = 17_000  # 15.5 KB floor < warn < 18 KB budget
+PROJECT_SCRATCHPAD_WARN_BYTES = 7_000  # 5.1 KB floor < warn < 8 KB budget
+SCRATCHPAD_BUDGET_BYTES = 18_000  # Fork A guard-rail — above today's 15,484 B
+PROJECT_SCRATCHPAD_BUDGET_BYTES = 8_000  # above the largest (map-reader 5,134 B)
+SCRATCHPAD_FLAG_ENV = "PA_SCRATCHPAD_BUDGET"
+SCRATCHPAD_SENTINEL = Path.home() / ".pa-scratchpad-budget"
 
 # How many days of recent memories to include
 RECENT_DAYS = 14
@@ -909,8 +941,15 @@ def load_scratchpad() -> str:
     Load the global scratchpad file for context injection.
 
     Returns the file contents as a string, or empty string if the file
-    does not exist or is empty. Warns to stderr if the file exceeds
-    SCRATCHPAD_WARN_LINES, recommending distillation via /retro.
+    does not exist or is empty.
+
+    Vector 2b: warns to stderr when the file exceeds SCRATCHPAD_WARN_BYTES
+    (byte-based — the old line-based warn never fired at 29 KB / 99 lines),
+    and, when the Vector 2b flag is enabled, caps the content to
+    SCRATCHPAD_BUDGET_BYTES via the shared section-aware primitive. Under
+    Fork A the budget sits above the current size, so the cap is a regrowth
+    backstop and does not trim today; the returned content is byte-identical
+    to the file whenever nothing is dropped.
     """
     if not SCRATCHPAD_FILE.exists():
         return ""
@@ -919,13 +958,24 @@ def load_scratchpad() -> str:
     if not content:
         return ""
 
-    line_count = len(content.splitlines())
-    if line_count > SCRATCHPAD_WARN_LINES:
+    byte_count = len(content.encode("utf-8"))
+    if byte_count > SCRATCHPAD_WARN_BYTES:
         print(
-            f"[scratchpad] {line_count} lines — consider running /retro "
-            f"to distil (threshold: {SCRATCHPAD_WARN_LINES})",
+            f"[scratchpad] {byte_count} bytes — consider running /retro "
+            f"to distil (threshold: {SCRATCHPAD_WARN_BYTES})",
             file=sys.stderr,
         )
+
+    if scratchpad_budget_enabled():
+        content, trimmed = digest_selector.cap_markdown_to_budget(
+            content, SCRATCHPAD_BUDGET_BYTES
+        )
+        if trimmed:
+            print(
+                f"[scratchpad] trimmed to byte budget "
+                f"({SCRATCHPAD_BUDGET_BYTES} B) — run /retro to distil",
+                file=sys.stderr,
+            )
 
     return content
 
@@ -955,6 +1005,29 @@ def load_project_scratchpad(cwd: str) -> tuple[str, Path | None]:
     content = path.read_text().strip()
     if not content:
         return "", None
+
+    # Vector 2b: byte-warn + flag-gated cap on its own (smaller) budget.
+    # Per-project files are already relevance-gated by cwd, so their budget
+    # is generous; the cap is purely a regrowth backstop.
+    byte_count = len(content.encode("utf-8"))
+    if byte_count > PROJECT_SCRATCHPAD_WARN_BYTES:
+        print(
+            f"[scratchpad:{name}] {byte_count} bytes — consider running "
+            f"/retro to distil (threshold: {PROJECT_SCRATCHPAD_WARN_BYTES})",
+            file=sys.stderr,
+        )
+
+    if scratchpad_budget_enabled():
+        content, trimmed = digest_selector.cap_markdown_to_budget(
+            content, PROJECT_SCRATCHPAD_BUDGET_BYTES
+        )
+        if trimmed:
+            print(
+                f"[scratchpad:{name}] trimmed to byte budget "
+                f"({PROJECT_SCRATCHPAD_BUDGET_BYTES} B) — run /retro to distil",
+                file=sys.stderr,
+            )
+
     return content, path
 
 
@@ -1019,6 +1092,37 @@ def digest_mode_enabled() -> bool:
         )
         return False
     return DIGEST_SENTINEL.exists()
+
+
+def scratchpad_budget_enabled() -> bool:
+    """Return whether the Vector 2b scratchpad byte budget is active.
+
+    Independent machine-local gate, mirroring :func:`digest_mode_enabled`
+    so the two Vector passes roll out (and roll back) the same way without
+    coupling. Precedence: env override ``PA_SCRATCHPAD_BUDGET`` first
+    (either direction), then the sentinel ``~/.pa-scratchpad-budget``, else
+    OFF. Neither signal lives in the synced ``data/`` submodule, so enabling
+    on amd-tower does not leak to zbook / rpi-server — and OFF means the
+    scratchpad is injected exactly as before (byte-identical), leaving the
+    live Vector 2 §8 observation window unconfounded.
+
+    An env value that is neither clearly truthy nor clearly falsy is treated
+    as OFF (fail-safe to today's behaviour) and warned to stderr.
+    """
+    raw = os.environ.get(SCRATCHPAD_FLAG_ENV)
+    if raw is not None:
+        val = raw.strip().lower()
+        if val in _TRUTHY:
+            return True
+        if val in _FALSY:
+            return False
+        print(
+            f"[retrieval] WARN: {SCRATCHPAD_FLAG_ENV}={raw!r} is not a "
+            f"recognised on/off value — treating as OFF (no scratchpad cap)",
+            file=sys.stderr,
+        )
+        return False
+    return SCRATCHPAD_SENTINEL.exists()
 
 
 def build_session_digest(memories: list[dict], project_tags: set[str]) -> str:

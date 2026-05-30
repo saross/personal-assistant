@@ -424,5 +424,111 @@ class TestRendering:
         assert "bytes=" in line and "fallback=" in line
 
 
+# ============================================================================
+# Vector 2b — cap_markdown_to_budget (the shared scratchpad capper)
+# ============================================================================
+
+
+# A realistic mini-scratchpad: a `# ` preamble plus several `## ` sections.
+_SCRATCHPAD = (
+    "# Scratchpad\n\n"
+    "Claude's running learning log.\n\n"
+    "## Constraints\n\n"
+    "- Always use UK spelling.\n"
+    "- Re-read sources before citing specifics.\n\n"
+    "## Preferences\n\n"
+    "- Critical-friend tone on statistics.\n\n"
+    "## What Works\n\n"
+    "- Product-manage, do not pair-program.\n\n"
+    "## What Doesn't\n\n"
+    "- Do not lecture about focus during PA-infra sessions.\n\n"
+    "## Patterns\n\n"
+    "- Compute aggregate implications of per-unit costs.\n"
+)
+
+
+class TestCapMarkdownToBudget:
+    """Unit tests for the section-aware byte capper (design §5a)."""
+
+    def test_under_budget_returns_input_unchanged(self):
+        """Fast path: under budget → byte-identical passthrough, no trim.
+
+        This is the property that makes flag-OFF / under-budget output
+        indistinguishable from today's behaviour.
+        """
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, 10_000)
+        assert text == _SCRATCHPAD
+        assert trimmed is False
+
+    def test_exact_budget_boundary_not_trimmed(self):
+        n = len(_SCRATCHPAD.encode("utf-8"))
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, n)
+        assert text == _SCRATCHPAD
+        assert trimmed is False
+
+    def test_over_budget_drops_whole_sections_from_tail(self):
+        """A tight budget keeps the preamble + earliest sections, drops the
+        rest WHOLE, and marks the trim."""
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, 200)
+        assert trimmed is True
+        # Preamble always survives.
+        assert "# Scratchpad" in text
+        # Result is within budget.
+        assert len(text.encode("utf-8")) <= 200
+        # Trim marker present.
+        assert digest.SCRATCHPAD_TRIM_MARKER in text
+
+    def test_never_splits_a_section(self):
+        """Every `## ` heading that survives must keep its full body — no
+        half-sections."""
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, 260)
+        assert trimmed is True
+        # If 'Constraints' heading survived, both its bullets must too.
+        if "## Constraints" in text:
+            assert "UK spelling" in text
+            assert "Re-read sources" in text
+
+    def test_preamble_always_kept_even_if_over_budget(self):
+        """Fail-soft: a budget below even the preamble still returns the
+        preamble intact (we have no whole unit to drop below it)."""
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, 10)
+        assert "# Scratchpad" in text
+
+    def test_no_sections_passthrough(self):
+        """Text with no `## ` headings is unsplittable → returned intact,
+        not trimmed, even when over budget."""
+        plain = "# Title\n\n" + ("x " * 500)
+        text, trimmed = digest.cap_markdown_to_budget(plain, 50)
+        assert text == plain
+        assert trimmed is False
+
+    def test_multibyte_budget_is_byte_not_char(self):
+        """The cap counts UTF-8 bytes, not characters — a section of
+        multibyte glyphs costs its byte weight."""
+        mb = (
+            "# Scratchpad\n\n"
+            "## A\n\n" + ("é" * 400) + "\n\n"  # ~800 bytes
+            "## B\n\n- short\n"
+        )
+        text, trimmed = digest.cap_markdown_to_budget(mb, 120)
+        assert trimmed is True
+        assert len(text.encode("utf-8")) <= 120
+
+    def test_kept_sections_stay_in_document_order(self):
+        """Surviving sections appear in their original order."""
+        text, _ = digest.cap_markdown_to_budget(_SCRATCHPAD, 400)
+        # Of whatever survives, Constraints (if present) precedes Preferences.
+        if "## Constraints" in text and "## Preferences" in text:
+            assert text.index("## Constraints") < text.index("## Preferences")
+
+    def test_trim_marker_within_budget(self):
+        """When trimmed, the rendered whole INCLUDING the marker is within
+        budget — the marker is not allowed to push it over."""
+        budget = 300
+        text, trimmed = digest.cap_markdown_to_budget(_SCRATCHPAD, budget)
+        assert trimmed is True
+        assert len(text.encode("utf-8")) <= budget
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

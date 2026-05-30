@@ -579,3 +579,107 @@ def digest_log_line(result: DigestResult, *, now: datetime) -> str:
         f"new={c['new']}\tupdated={c['updated']}\tforgotten={c['forgotten']}\t"
         f"fallback={result.used_fallback}"
     )
+
+
+# ============================================================================
+# Vector 2b — scratchpad section capper (shared byte-budget primitive)
+# ============================================================================
+#
+# Vector 2 caps the *recall dump* by ranking-and-dropping noisy memory
+# records (build_digest above). Vector 2b caps the *scratchpad* — a
+# curated principle log with no ``verified`` field, no decay, and no
+# per-entry score, so the ranker is the wrong shape (see
+# ``wiki/planning/vector-2b-design.md`` §3). What the two SHOULD share,
+# per the parent design §7f, is the byte-budget *discipline*: greedy-keep
+# whole units in document order while the rendered whole stays under a
+# hard UTF-8 byte cap. That discipline lived only inside ``build_digest``'s
+# ``fits()`` closure; this function lifts it into a reusable primitive for
+# markdown, so Vector 2b does not re-invent it.
+
+# Visible marker appended when the capper drops one or more sections, so a
+# trim is never silent (design §4 "fail soft, never silent"). The marker
+# nudges the human, principle-preserving lever (``/retro`` distillation),
+# which is primary; the byte cap is only a regrowth backstop.
+SCRATCHPAD_TRIM_MARKER = (
+    "_[scratchpad trimmed to byte budget — run `/retro` to distil; "
+    "use `/recall` for anything dropped]_"
+)
+
+
+def _split_markdown_sections(text: str) -> tuple[str, list[str]]:
+    """Partition ``text`` into (preamble, level-2 sections).
+
+    The preamble is every line before the first ``## `` heading (the
+    ``# `` title plus any intro). Each section runs from one ``## `` line
+    up to (but not including) the next. The partition is exact and
+    gap-free: ``"\\n".join([preamble, *sections])`` reconstructs the input
+    verbatim, so dropping a section just omits its line range.
+
+    Note: a ``## `` at the start of a line inside a fenced code block
+    would be mis-read as a heading. The scratchpad is plain principle
+    bullets with no such fences, so this is an accepted limitation rather
+    than a handled case.
+    """
+    lines = text.split("\n")
+    heading_idxs = [i for i, ln in enumerate(lines) if ln.startswith("## ")]
+    if not heading_idxs:
+        return text, []
+    preamble = "\n".join(lines[: heading_idxs[0]])
+    sections: list[str] = []
+    for j, start in enumerate(heading_idxs):
+        end = heading_idxs[j + 1] if j + 1 < len(heading_idxs) else len(lines)
+        sections.append("\n".join(lines[start:end]))
+    return preamble, sections
+
+
+def cap_markdown_to_budget(
+    text: str,
+    byte_budget: int,
+    *,
+    trim_marker: str = SCRATCHPAD_TRIM_MARKER,
+) -> tuple[str, bool]:
+    """Keep whole ``## `` sections in document order under a hard byte cap.
+
+    Mirrors :func:`build_digest`'s byte discipline for markdown instead of
+    memory records:
+
+      1. If ``text`` is already ``<= byte_budget`` UTF-8 bytes, return it
+         **unchanged** (fast path → byte-identical output when nothing is
+         dropped; this is what keeps the flag-OFF / under-budget cases
+         indistinguishable from today).
+      2. Otherwise greedily keep whole sections, in document order, while
+         the rendered whole (preamble + kept sections + trim marker) stays
+         within budget. Byte size is not monotonic across sections, so a
+         non-fitting section is **skipped, not break** — a later, smaller
+         section may still fit (same rationale as the ``continue`` in
+         ``build_digest``).
+      3. The preamble (``# `` title + intro before the first ``## ``) is
+         ALWAYS kept, even if it alone exceeds the budget — fail-soft, the
+         header is never lost and a section is never split mid-principle.
+
+    Returns ``(capped_text, was_trimmed)``. ``was_trimmed`` is True iff at
+    least one section was dropped (in which case ``trim_marker`` is
+    present in the output).
+    """
+    if len(text.encode("utf-8")) <= byte_budget:
+        return text, False
+
+    preamble, sections = _split_markdown_sections(text)
+    if not sections:
+        # Nothing splittable (the whole text is preamble). Keep it intact
+        # — fail-soft per the contract; we have no whole unit to drop.
+        return text, False
+
+    def render(kept: list[str]) -> str:
+        # We only reach here when the full text is over budget AND there is
+        # at least one section, so at least one section will be dropped —
+        # the marker is always part of the rendered size we test against.
+        pieces = [p for p in ([preamble] + kept) if p != ""]
+        body = "\n".join(pieces).rstrip()
+        return f"{body}\n\n{trim_marker}" if body else trim_marker
+
+    kept: list[str] = []
+    for sec in sections:
+        if len(render(kept + [sec]).encode("utf-8")) <= byte_budget:
+            kept.append(sec)
+    return render(kept), True
