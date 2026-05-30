@@ -487,7 +487,7 @@ note that it awaits reconciliation with the user's prior guide.
 
 ## Pipeline — how to compute the metrics
 
-Four scripts live in `~/personal-assistant/scripts/style-analyser/`:
+Five scripts live in `~/personal-assistant/scripts/style-analyser/`:
 
 1. `extract_corpus.py` — clean-corpus extractor (PyMuPDF + pdfplumber
    via llm-reproducibility). Produces the `extracted/<key>/` bundles.
@@ -515,11 +515,28 @@ Four scripts live in `~/personal-assistant/scripts/style-analyser/`:
    against `phase1-results-clean.json` + `phase3-promotion-clean.json`.
    Emits a PASS/FAIL/WARN report. Run on every generated guide before
    committing. Exit code non-zero on any FAIL.
+5. `phase5_evaluator.py` — Phase 5 downstream evaluator (plan §6.3).
+   Scores arbitrary text *claiming to apply the guide* and reports
+   (a) the Mahalanobis distance to the corpus centroid in a 12-feature,
+   length-normalised, Ledoit-Wolf-shrunk feature space (the three
+   phase3-bimodal metrics — `em_dash_per_1k`, `mean_dep_depth`,
+   `pace_count` — are excluded from the centroid and reported in an
+   advisory block with their cluster split, per plan §6.3 option (a)),
+   with an empirical leave-one-paper-out envelope classification and a
+   secondary χ² parametric cross-check; and (b) a pass/fail verdict
+   against the 8-metric tolerance gate (Appendix E). Input is measured
+   by importing `process_paper` from `phase1_pipeline.py`, so features
+   are computed identically to the corpus. Deterministic; no LLM calls;
+   pure CPU + scikit-learn + spaCy. `--validate` emits the LOO
+   distribution, off-register sanity fixtures, and gate calibration
+   against the 18 corpus papers. Exit code non-zero when the gate FAILs.
+   This is the only script that depends on `scikit-learn` + `scipy`
+   (added to the venv 2026-05-30).
 
 Per plan D2 the original intent was to inline the measurement pipeline
-in this agent. The four scripts together exceed the 400-line threshold
+in this agent. The five scripts together exceed the 400-line threshold
 (D2's escape clause), so they are kept in `scripts/style-analyser/`
-and called via Bash. The agent remains self-recreatable with four
+and called via Bash. The agent remains self-recreatable with five
 known dependencies (the script paths above).
 
 **Canonical invocation (clean corpus — use this from 2026-05-24):**
@@ -550,6 +567,21 @@ known dependencies (the script paths above).
     --guide ~/personal-assistant/notes/style-guides/{genre}/style-guide-{genre}-{date}.md \
     --report ~/personal-assistant/data/style-corpus/phase3-guide-verifier-report.md
 # Exit code is non-zero on any FAIL.
+
+# Step 5 (downstream, separate from guide generation): score text that
+# claims to apply the guide — Mahalanobis distance + 8-metric gate.
+~/Code/write-like-me/.venv/bin/python \
+    ~/personal-assistant/scripts/style-analyser/phase5_evaluator.py \
+    --text ~/path/to/generated-text.md            # or --passage "..."
+    # --modern-em-dash for 2026+ prose (≤0.20/1k em-dash ceiling)
+    # --format json for machine-readable output
+# Exit code is non-zero when the 8-metric gate FAILs.
+
+# Step 5 (validation): regenerate the LOO + sanity + calibration report.
+~/Code/write-like-me/.venv/bin/python \
+    ~/personal-assistant/scripts/style-analyser/phase5_evaluator.py \
+    --validate \
+    --report ~/personal-assistant/data/style-corpus/phase5-validation-report.md
 ```
 
 **Legacy invocation (pdftotext -layout — for cross-version comparison only):**
@@ -767,4 +799,21 @@ on conversation history.
   exemplars chosen with role balance (2 first + 2 last + 1 middle),
   date spread 2018–2024, total 191 / 600 words. Inversions run
   in-session by Opus 4.7 per plan §5.3 — no separate SDK calls.
-- Phase 5 (Mahalanobis evaluator) — scoped, separate downstream tool
+- Phase 5 ✅ (Mahalanobis evaluator) — built 2026-05-30 as
+  `scripts/style-analyser/phase5_evaluator.py`, the downstream
+  generation-time gate (separate from guide generation, per plan §6.5).
+  Reports Mahalanobis distance to the corpus centroid in a 12-feature
+  Ledoit-Wolf-shrunk space (the three phase3-bimodal metrics excluded
+  per plan §6.3 option (a)) plus the 8-metric Appendix E gate. Validated
+  by `--validate` (`data/style-corpus/phase5-validation-report.md`):
+  off-register fixtures score 14.2 / 21.7 vs corpus LOO max 4.67, and a
+  held-out real paper scores 3.15 (within range). Gate calibration
+  finding: 0/18 corpus papers pass all 8 checks (median 4/8) — the
+  Appendix E tolerances on em-dash, semicolon, announcement-colon and
+  hedge are tighter than between-paper variance, so a gate FAIL on those
+  is a deviation flag, not proof of off-voice text; cross-check the
+  Mahalanobis distance. Adds `scikit-learn` + `scipy` to the venv.
+
+**Workstream G (Phases 2–5) is complete.** Remaining future work is
+multi-genre re-invocation (Substack / business / teaching), which is
+agent re-runs against new corpora, not phase development.
