@@ -1,7 +1,11 @@
 # Vector 2b — Scratchpad load-path byte budget (DESIGN)
 
-**Status:** Design — drafted 2026-05-30; implementation pending scope-fork
-decision (see §7).
+**Status:** Design + implementation shipped DARK 2026-05-30. Fork A
+(guard-rail) chosen by Shawn. Mechanism + byte-warn + flag landed; flag
+default OFF everywhere (sentinel `~/.pa-scratchpad-budget` not created), so
+output is byte-identical to today and the Vector 2 §8 window is
+unconfounded. Enable on amd-tower **after** the §8 review (2026-06-13).
+See §11 for the implementation record.
 **Created:** 2026-05-30
 **Author:** Claude (Opus 4.8) + Shawn
 **Related:**
@@ -217,10 +221,17 @@ the warn fire, not second-guessing a human's curation.
 - **8a. Budget values.** §7 fork. Fork A defaults proposed above are
   round numbers, not tuned — adjust once the mechanism is in and real
   density data exists.
-- **8b. Warn threshold.** Independent of the cap budget — the warn
-  should fire *below* the cap so distillation happens before trimming.
-  Suggest warn at ~12 KB global (nudge while still under any Fork-A cap)
-  / ~4 KB per-project. Tune after first observation.
+- **8b. Warn threshold — RESOLVED in implementation (2026-05-30).** The
+  first draft suggested ~12 KB global. The live smoke test exposed that
+  as miscalibrated: at the clean 15,484 B floor a 12 KB warn fires *every
+  session*, nagging for a distillation that was already done at zero
+  principle loss and cannot go lower without dropping a principle. The
+  warn must sit **above the post-distillation floor and below the trim
+  budget** so it is an "approaching the cap, distil soon" nudge that only
+  fires on genuine regrowth. Shipped values:
+  `SCRATCHPAD_WARN_BYTES = 17_000` (15.5 KB floor < 17 KB warn < 18 KB
+  budget); `PROJECT_SCRATCHPAD_WARN_BYTES = 7_000` (5.1 KB floor < 7 KB
+  warn < 8 KB budget). Verified: live hook stderr is silent at 15,483 B.
 - **8c. Per-project budget — needed at all?** The largest per-project
   file is 5.1 KB and cwd-gated. A per-project cap may be pure
   future-proofing. Cheap to add via the shared primitive; decide whether
@@ -267,6 +278,44 @@ the warn fire, not second-guessing a human's curation.
   byte-warn *is* needed now (the line-warn is genuinely broken), and the
   cap is cheap insurance built on a shared primitive. If Shawn judges
   the cap not worth it, Vector 2b reduces to just the byte-warn fix.
+
+## 11. Implementation record (2026-05-30, shipped dark)
+
+Fork A chosen by Shawn. Delivered:
+
+- **Shared primitive** — `scripts/digest.py`:
+  `cap_markdown_to_budget(text, byte_budget)` + `_split_markdown_sections`
+  + `SCRATCHPAD_TRIM_MARKER`. Pure; greedy-keep whole `## ` sections in
+  document order under a hard UTF-8 byte cap, `continue`-not-`break` on a
+  non-fitting section (byte size non-monotonic), preamble always kept,
+  visible trim marker, fast-path passthrough when already under budget.
+- **Byte-warn** — `hooks/session-start-retrieval.py`:
+  `SCRATCHPAD_WARN_LINES` (line-based, never fired) replaced by
+  `SCRATCHPAD_WARN_BYTES = 17_000` / `PROJECT_SCRATCHPAD_WARN_BYTES =
+  7_000` (calibrated above the clean floor — see §8b). `load_scratchpad`
+  and `load_project_scratchpad` both warn byte-based.
+- **Flag** — `scratchpad_budget_enabled()` mirroring
+  `digest_mode_enabled()`: env `PA_SCRATCHPAD_BUDGET` → sentinel
+  `~/.pa-scratchpad-budget` → OFF. Machine-local; not in the synced
+  `data/` submodule.
+- **Cap wired** in both loaders under the flag, with budgets
+  `SCRATCHPAD_BUDGET_BYTES = 18_000` / `PROJECT_SCRATCHPAD_BUDGET_BYTES =
+  8_000` (Fork A — above current sizes; no trim today).
+- **Tests** — +28 (digest: 9 capper cases incl. multibyte, never-split,
+  preamble-floor, order, marker-within-budget; retrieval: 7 flag
+  precedence/parsing + 5 load-path cap + 2 rewritten byte-warn). Autouse
+  fixture extended to pin BOTH Vector flags OFF. **Full suite 781 passed**
+  (was 753), 0 regressions.
+- **Live smoke (amd-tower, PA-hub cwd):** flag OFF and flag ON
+  (`PA_SCRATCHPAD_BUDGET=1`) both emit a **byte-identical** 17,150 B
+  stdout — the live 15,483 B scratchpad is under the 18 KB budget, so
+  enabling Vector 2b today changes nothing (Fork A guard-rail confirmed).
+  Warn is silent at 15,483 B (< 17 KB). Digest sentinel left untouched;
+  scratchpad sentinel deliberately NOT created.
+
+**Not done (deliberate):** the sentinel is not created, so Vector 2b is
+dark. Enable after the §8 review (2026-06-13) — or accept the confound
+explicitly. Commits: see the session's git log.
 
 ---
 
