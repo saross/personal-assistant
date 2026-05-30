@@ -1098,3 +1098,33 @@ surfaces the non-monotonic edge cases intuition smooths over. Worth telling
 audit agents explicitly to execute, not just inspect. Anchors: session
 2026-05-30 `/audit` run; `tests/test_digest.py`
 (`test_oversized_top_entry_does_not_starve_digest`).
+
+## 2026-05-30: Digesting one channel doesn't shrink the payload proportionally
+
+Vector 2 PASS 2 cut the session-start *recall dump* 91 % (17.5 KB → 1.49 KB),
+but the *total* session-start payload dropped only ~33 % (48,083 B → 32,078 B
+measured live on amd-tower, inscriptions cwd) because the ~30 KB scratchpad —
+out of scope ("Vector 2b") — was untouched. The headline component reduction
+overstates the felt change.
+
+**Generalises:** when you reduce one component of a composite payload, report
+the aggregate, not the component. A 91 % cut on one channel can be a 33 % cut
+overall; the global "compute aggregate implications" rule applies to byte
+budgets, not just cost/time. State both numbers so the real lever (here: the
+scratchpad, now Vector 2b) is visible. Anchors: `scripts/digest-preview.py`
+(honest-aggregate note); session 2026-05-30 PASS 2 live smoke.
+
+## 2026-05-30: A line-based threshold misses byte-based bloat
+
+The hook's `SCRATCHPAD_WARN_LINES = 150` guard never fired even though
+`data/scratchpad.md` had reached 29,268 B — because the bloat was bytes packed
+into 99 long lines, not line count. The file injected ~29 KB into every session
+with no warning. The guard measured the wrong dimension.
+
+**Generalises:** a size guard should measure the dimension that actually
+constrains the system. The cost here is *bytes injected into context*, so the
+threshold should be byte-based; a line count is a proxy that breaks the moment
+entries are long. Folded into the Vector 2b scope (flip the threshold to bytes).
+Anchors: `hooks/session-start-retrieval.py` (`SCRATCHPAD_WARN_LINES`,
+`load_scratchpad`); session 2026-05-30 scratchpad distillation
+(29,268 → 15,484 B).

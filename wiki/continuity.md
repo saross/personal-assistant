@@ -1874,6 +1874,51 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-30 (Sat, later) — Vector 2 PASS 2 (live cutover, enabled on amd-tower) + scratchpad distillation
+
+Background workstream-C PA session, continuing from the PASS 1 entry below.
+Three threads. **Thread 1 — Vector 2 PASS 2 (workstream B).** Wired
+`digest.py` into the live `hooks/session-start-retrieval.py` behind a
+machine-local flag (`digest_mode_enabled()`: env `PA_DIGEST_STAGE1` → sentinel
+`~/.pa-digest-stage1` → OFF), deliberately NOT in the synced `data/` submodule
+so amd-tower can't leak to zbook/rpi-server. Shipped dark (default-OFF proven
+byte-identical; the 83 existing retrieval-hook tests stayed green untouched),
+then enabled on amd-tower via the go/no-go — sentinel created, verified
+`digest_mode_enabled()` True; live smoke (inscriptions cwd): flag ON →
+`# Session-start digest` 1,488 B (≤1,500 cap) vs flag OFF → `# Memory Context`
+48,083 B. +19 tests; full suite 753 green, 0 regressions (commit `68427cd`).
+Relocated the tier-2 protocol to `global-claude-md/tier-2-retrieval.md`
+(design §7e); digest footer points at it. The 2-week §8 observation window is
+running; review booked as a Google Calendar event for Sat 2026-06-13 (the
+§8 logs are gitignored/local-only so a remote `/schedule` agent couldn't read
+them — calendar fits the local review). **Thread 2 — scratchpad distillation
+(the Vector 2b "content" half).** With the recall dump now digested to ~1.5 KB,
+the ~29 KB scratchpad became the dominant session-start term. First-ever
+distillation of `data/scratchpad.md` (header was `Last distilled: —`):
+29,268 → 15,484 B (47 % cut, zero principle loss) — removed 28 duplicate/
+misfiled `## Patterns` entries (project-specific ones already held verbatim in
+`data/scratchpads/{map-reader-llm,voice-assistant}.md`; exact dups of canonical
+Constraints/Preferences entries above). Verified via diff (only 2 added lines:
+header + moved entry). Submodule `d840239`, superproject bump `f98bf2a`.
+**Thread 3 — Vector 2b teed up** as the next focused design pass (byte budget
+on `load_scratchpad()` + flip the line-based `SCRATCHPAD_WARN_LINES` to bytes;
+needs a short design doc first per §1a). Concurrent style-guide session
+interleaved pushes throughout; explicit pathspecs kept the two sessions' work
+cleanly separated — nothing lost on either side.
+
+- Commits on `origin/main`: `68427cd` (hook digest branch + machine-local flag
+  + tier-2 doc + 19 tests), `09d2e74` (continuity PASS 2), `f98bf2a` (data
+  submodule bump), `e7b2c40` (continuity scratchpad + Vector 2b). Data
+  submodule: `d840239` (scratchpad distillation, pushed to pa-data).
+- Live change: `~/.pa-digest-stage1` created on amd-tower — digest mode ON for
+  all future session-starts here; rollback `rm ~/.pa-digest-stage1` or
+  `PA_DIGEST_STAGE1=0`.
+- New file: `global-claude-md/tier-2-retrieval.md`. Touched:
+  `hooks/session-start-retrieval.py`, `scripts/digest.py` (footer → doc
+  pointer), `tests/test_retrieval_hook.py` (+19 tests).
+- Calendar: Google Calendar event Sat 2026-06-13 09:00 AEST — §8 review +
+  go/no-go on zbook/rpi-server rollout.
+
 ### 2026-05-30 (Sat) — Vector 2 PASS 1 (digest engine + proof, hook untouched) + git-cadence correction
 
 Background workstream-C PA session; two threads. **Thread 1 — Vector 2 PASS 1
