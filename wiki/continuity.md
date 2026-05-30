@@ -708,17 +708,14 @@ until first non-CC API spend.
 
 Read these *before* starting new work. Most should take <5 min each.
 
-- [ ] 2026-05-29 **Review + push 5 workstream-D #3 repos.** The
-  working-notes relocation + cc-session-toolkit scaffold fix were committed
-  **locally only, not pushed**, so Shawn can review first. Each is 1 commit
-  ahead of `origin/main`, unpushed: inscriptions `89cad01`,
-  LLM-History-Paper `73f9876`, llm-reproducibility `dc40d8e`,
-  2026-mq-…-paper-b `99cab2b`, cc-session-toolkit `9129e8a`. The toolkit one
-  changes `init.py` scaffolding (301/301 tests pass); the moves are
-  history-preserving `git mv`s. Push each after a glance.
-  **map-reader-llm needs nothing** — its relocation (`3a17575`) was already
-  pushed (a concurrent gs/h11 session committed on top and pushed; repo HEAD
-  is now `c8f92781`).
+- [x] 2026-05-30 **Review + push the workstream-D #3 repos — DONE.** All 6
+  relocation/fix commits are now on `origin/main`: pushed at session close
+  on 2026-05-30 (re-verified each was 1-ahead/0-behind with the relocation
+  commit as HEAD before pushing) — inscriptions `89cad01`, LLM-History-Paper
+  `73f9876`, llm-reproducibility `dc40d8e`, 2026-mq-…-paper-b `99cab2b`,
+  cc-session-toolkit `9129e8a` (`init.py` scaffold fix, 301/301 tests pass);
+  map-reader-llm `3a17575` had already gone up earlier on a concurrent gs/h11
+  push. The moves are history-preserving `git mv`s. Nothing outstanding.
 - [ ] 2026-05-17 **First-firing of v2 extraction hook.** Phase 1–3 landed
   2026-05-16; the next `SessionEnd` / `PreCompact` is the first live
   test of `anchor_verify` + confidence binding in the hook chain.
@@ -1756,9 +1753,9 @@ agent that relocated misplaced `working-notes.md` in 5 repos (→
 `docs/notes/working-notes.md`, history preserved via `git mv`) and fixed the
 cc-session-toolkit scaffold root cause (template moved out of
 `data/reflections/`, `init.py` updated, 301/301 tests pass); relocation
-commits landed in 6 repos, **5 still local-only/unpushed, awaiting Shawn's
-review** (map-reader-llm's relocation was already pushed — a concurrent
-gs/h11 session on that repo committed on top and pushed the lot). **#4** —
+commits landed in 6 repos and were **all pushed to `origin/main`** (5 at
+session close on 2026-05-30 after a re-verify; map-reader-llm's earlier, on
+a concurrent gs/h11 push). **#4** —
 lifted the tag vocabulary from the private `notes/_tags.md` to its canonical
 public home (`wiki/index.md` "Tag vocabulary"); `_tags.md` is now a redirect
 stub; `_inbox.md` + notes/grimoire content stay private; and added a step 5c
@@ -1771,7 +1768,7 @@ Artefacts touched:
 - Edited: `commands/weekly-review.md` (step 5), `commands/retro.md` (step 5c), `wiki/index.md` (vocabulary lifted in), `wiki/continuity.md`
 - Data submodule: `notes/_tags.md` (→ stub), `notes/index.md` (pointer)
 - PA commits: `60ef989` (#1+#2), `cc1a93b` (#4a lift), `3a13b15` (#4b retro); submodule `d0e4311`, `769f448`
-- #3 relocation commits (in `~/Code/*`): inscriptions `89cad01`, LLM-History-Paper `73f9876`, llm-reproducibility `dc40d8e`, 2026-mq-…-paper-b `99cab2b`, cc-session-toolkit `9129e8a` — **unpushed**; map-reader-llm `3a17575` — **already pushed** (rode a concurrent gs/h11 push; repo HEAD now `c8f92781`)
+- #3 relocation commits (in `~/Code/*`), **all pushed to `origin/main`**: inscriptions `89cad01`, LLM-History-Paper `73f9876`, llm-reproducibility `dc40d8e`, 2026-mq-…-paper-b `99cab2b`, cc-session-toolkit `9129e8a` (pushed 2026-05-30); map-reader-llm `3a17575` (pushed earlier on a concurrent gs/h11 push; repo HEAD now `c8f92781`)
 
 ### 2026-05-28 (Thu, evening) — Research-notes/reflections split + PA wiki migration (workstream D pilot complete)
 
