@@ -52,7 +52,12 @@ Recorded here so future sessions don't re-litigate them:
   while the framing is fresh; defer implementation so the migration
   sweep can backfill `verified` across the corpus, making
   `verified=true` viable as the dominant filter (today only 8 / 24,702
-  memories have `verified=true`).
+  memories have `verified=true`). *[2026-05-30: the "a migration sweep
+  backfills `verified` across the corpus" premise proved false — see the
+  §6b reframe. Verified coverage grows forward, not via a sweep, so
+  `verified=true` is the dominant filter only among the ~3.6 % anchored
+  records. The sequencing decision itself (ship after Phase 5) is
+  unaffected and has since shipped — PASS 1 + PASS 2, 2026-05-30.]*
 
 ## 2. Empirical baseline (2026-05-16)
 
@@ -206,7 +211,9 @@ the eventual behaviour:
    the last 7 days that have ≥1 tag overlap with the current project's
    tag profile. Cap: byte budget (not item count) — the cap is the
    binding constraint.
-3. **Promoted-recent fallback** *(temporary, removed in Stage 2)*.
+3. **Promoted-recent fallback** *(permanent — originally labelled
+   "temporary, removed in Stage 2"; that label withdrawn 2026-05-30, see
+   §6b)*.
    If the verified-true bucket fills <50% of the budget, top up with
    the K most-recent memories from the current project that have
    non-empty `anchors` (i.e. went through verification even if the
@@ -215,15 +222,44 @@ the eventual behaviour:
 4. **Strict byte cap.** The selector enforces the byte budget by
    trimming the lowest-rank entries first; no spill, no overflow.
 
-### 6b. Stage 2 — post-Phase-5 (verified-first)
+### 6b. Stage 2 — anchored-and-verified-first (the fallback is permanent)
 
-Once the migration sweep has backfilled `verified` across the corpus:
+> **Reframed 2026-05-30 (feasibility finding — supersedes the original
+> "verified-first, delete the fallback" plan).** The original premise was
+> that a one-off migration sweep would backfill `verified` across the whole
+> corpus, after which the promoted-recent fallback could be deleted. That
+> premise is false. Anchoring is a *forward* write-path feature, live only
+> since 2026-05-16; the back-corpus was never anchored. Re-verified at source
+> (`data/memories/memories.jsonl`, 2026-05-30): of **29,807** records, only
+> **1,076 (3.6 %)** carry non-empty `anchors`, and `scripts/anchor_verify.py`
+> returns `None` — not `true` — for the **96.4 %** with no anchors. A free,
+> local re-resolution pass over the anchored 3.6 % lifts `verified=true` only
+> marginally (the finding estimated net new ≈ two dozen, from ≈659 today).
+> **Conclusion: the promoted-recent fallback is not a migration stopgap — it
+> is the permanent handler for the anchor-less majority.** Broad back-corpus
+> `verified` coverage would require a *retroactive anchor-generation* pass
+> (re-reading transcripts with an extractor model: thousands of API calls,
+> separate costed decision — see `wiki/planning/memory-system-v2-design.md`
+> §4), not a backfill. Verified coverage therefore grows *forward* as the
+> anchored write-path runs, not via a one-off sweep. Refs: continuity
+> workstream B (2026-05-30), `scripts/anchor_verify.py`.
+
+Stage 2 is therefore a *rebalancing* of Stage 1's selectors as
+forward-anchored coverage accumulates, not a teardown of the fallback:
 
 1. **What-changed counter.** Unchanged.
-2. **Verified-true bucket.** Same as Stage 1, but the corpus pool is
-   now large enough that the promoted-recent fallback becomes
-   unnecessary. Remove the fallback.
-3. **Optional: verified-true preserved-stale annotation.** For the
+2. **Anchored-and-verified-first bucket.** Among records that *have*
+   anchors, rank `verified=true` ahead of the rest, exactly as Stage 1
+   does. As the anchored pool grows (forward write-path), this bucket
+   fills more of the budget on its own and the fallback contributes
+   proportionally less — but it is never removed, because the ~96 % of
+   records that carry no anchors can only ever be surfaced by recency.
+3. **Promoted-recent fallback — retained, permanently.** Top up from the
+   most-recent current-project memories whenever the anchored-and-verified
+   bucket underfills the budget. This is now a standing selector, not a
+   migration-window crutch. (It was §6a item 3 "temporary"; that label is
+   withdrawn.)
+4. **Optional: verified-true preserved-stale annotation.** For the
    `inscriptions` revitalisation case (memories that are technically
    stale but deliberately preserved), the digest can surface them
    under a clearly-labelled section so Claude can distinguish them
@@ -327,18 +363,23 @@ phase 4.5 or 5b):
 3. **Roll out to amd-tower only.** Two-week observation window.
 4. **Review.** Evaluate the 4 measurements from §8. Decide go/no-go on
    zbook + rpi-server rollout.
-5. **Stage 2 trigger.** After Phase 5 completes the verification
-   backfill, remove the promoted-recent fallback (§6a item 3) and
-   re-validate.
+5. **Stage 2 (rebalance, not teardown).** Per the 2026-05-30 feasibility
+   finding (§6b) there is no corpus-wide `verified` backfill and the
+   promoted-recent fallback is permanent. "Stage 2" is the ongoing
+   rebalancing of the anchored-and-verified bucket against the fallback as
+   forward-anchored coverage accumulates — not a one-off removal step.
 
 ## 10. Risks and mitigations
 
 - **R1: Lazy depth isn't fetched.** Mitigation: §8 measurement (2).
   Rollback path: bring back a bounded permanent slot (≤2 KB) ahead of
   the digest.
-- **R2: Verified-true corpus too sparse to surface anything useful
-  pre-Phase-5.** Mitigation: promoted-recent fallback (§6a item 3).
-  The fallback is explicit, time-limited, and removed in Stage 2.
+- **R2: Verified-true corpus too sparse to surface anything useful.**
+  Mitigation: promoted-recent fallback (§6a item 3). Per the 2026-05-30
+  finding (§6b) this sparsity is structural, not a migration-window
+  transient (~96% of records carry no anchors and never will via backfill),
+  so the fallback is a permanent, explicit selector rather than a
+  time-limited crutch.
 - **R3: Cross-project signal lost.** Today's hook gives 8 / 28
   permanent slots to other-project memories under tag-relevance
   ranking. Stage 1's verified-true filter has no cross-project quota.
@@ -353,8 +394,9 @@ phase 4.5 or 5b):
   This is a softer mitigation than the byte cap and may need
   revisiting.
 - **R5: Phase 5 slips.** Stage 1 is designed to work without Phase 5;
-  the fallback covers it. Slipping Phase 5 only delays the cleanup
-  win, not the primary reduction.
+  the fallback covers it. Per the 2026-05-30 finding (§6b) the fallback is
+  permanent regardless of Phase 5 timing, so a slip costs nothing here —
+  there is no fallback-removal "cleanup win" gated on Phase 5.
 
 ---
 
