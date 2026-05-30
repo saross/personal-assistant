@@ -10,6 +10,28 @@ This is the personal assistant system — a cross-project hub for memory, task m
 
 Public repo at `~/personal-assistant/` plus a private `data/` submodule (`saross/pa-data`) containing memories, tasks, notes, reports, standups, scratchpads, and logs. Symlinks at repo root (`memories → data/memories`, etc.) preserve path compatibility. Hooks, commands, skills, scripts, and planning live in the public repo.
 
+### Concurrent sessions — label your workstream
+
+This repo is a hub for **several independent workstreams** (memory /
+scratchpad system, style-guide construction, task-system tooling, …) that
+are often edited by **concurrent Claude sessions sharing one working
+tree**. Because `git add <shared-file>` (e.g. `wiki/continuity.md`) sweeps
+*all* pending edits to that file — including another session's — every
+session must **label its workstream** so the audit trail stays legible:
+
+- **Commit subjects/bodies:** name the workstream, e.g.
+  `docs(style-guide): …`, or a `Workstream G (style-guide)` line in the body.
+- **`wiki/continuity.md` session-log headers:** suffix the date with the
+  workstream tag — `### 2026-05-30 (Sat, latest G) — …` (G = style-guide)
+  vs `(Sat, latest PA) — …` (PA = memory/scratchpad system).
+- **Edits:** confine each session to its own sections/rows; stage with
+  explicit pathspecs (`git add <path>`, never `git add -A`); `git fetch`
+  and confirm `0 behind` before committing.
+
+This convention is **specific to this repo** — it exists only because one
+repo covers many unrelated things. It does not apply to single-purpose
+repos.
+
 ## Task System
 
 ### Philosophy
