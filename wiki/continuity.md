@@ -41,7 +41,7 @@ confidence binding before they land in JSONL. See
 | Phase 5 — migration sweep + bulk-flag pass | **superseded by workstream D 2026-05-17** — migration sweep still valuable as backfill for `verified` field, but not gating anything |
 | Phase 6 — extractor bake-off | **deprioritised 2026-05-17** — prior-art survey found write strategy contributes ~3–8 retrieval-accuracy points vs ~20 for retrieval; wrong lever |
 
-### B. Session-start payload reduction (Vector 2 / injection issue) — *design landed 2026-05-17; implementation parked pending memory-system rethink (workstream D)*
+### B. Session-start payload reduction (Vector 2 / injection issue) — *design landed 2026-05-17; PASS 1 (engine + proof, hook untouched) shipped 2026-05-30; PASS 2 (live cutover) pending*
 
 Distinct from the v2 corpus work. The session-start hook injects
 ~43 KB of recall memories plus harness-injected auto-memory plus
@@ -66,10 +66,78 @@ authoritatively can drive primacy-effect errors.
 - [x] 2026-05-17 `planning/vector-2-design.md` landed. Hybrid digest +
   lazy depth, two-stage rollout (pre-/post-Phase-5), strict byte cap,
   six open questions captured.
-- [ ] **Implementation parked** — Vector 2's hybrid direction is
-  preserved but reshaped under the memory-system rethink (workstream D).
-  Cross-project surfacing now via `notes/<topic>.md` wiki rather than
-  pure semantic search.
+- [x] 2026-05-30 **PASS 1 — Stage 1 engine + before/after proof, live
+  hook untouched.** Greenfield (no prior scaffolding). Delivered:
+  `scripts/digest.py` (pure selector: what-changed counter + verified-true
+  ranking + promoted-recent fallback + hard byte cap + log primitive; no
+  I/O, no hook import), `tests/test_digest.py` (28 tests pass),
+  `scripts/digest-preview.py` (dry-run harness — reproduces the live recall
+  dump via the hook's own `retrieve_*`/`format_context`, then prints
+  before/after), plus best-effort `fetch-memories.log` instrumentation in
+  `scripts/fetch-memories.py:main()` (design §7c tier-2 utilisation; the
+  on-demand script, NOT the session-start hook) and a `digest.log`
+  primitive. **`/audit` run on all four files (4 parallel subagents,
+  execution-verified):** found 1 real Critical + 3 Medium + Lows, all
+  fixed in-session — (Critical) the byte-cap docstring over-claimed an
+  unconditional guarantee but ~550 B of scaffolding is irreducible
+  (`build_digest([], byte_budget=50)` → 522 B); reworded to state the
+  scaffolding-floor contract + added sub-floor/tight-budget/multibyte cap
+  tests; (Medium) greedy `break` abandoned the whole tail when the
+  top-ranked entry was oversized → empty digest, switched to `continue`
+  (better packing — live digest went 3→4 entries shown); (Medium)
+  `count_changes` double-counted a created-and-revised-in-window record as
+  both new and updated, fixed to count updated/forgotten only for
+  pre-window-created records; (Medium) the preview harness printed the
+  uncapped 27-category list, diverging from the digest text — now calls
+  `digest._format_categories`; (Lows) `render_entry` non-string-summary
+  guard, `fetch-memories.log` `tag:` colon format. Test count 28→35 for
+  digest; **full suite 734 passed, 0 regressions.**
+  **Re-measured baseline (reproducible via `scripts/digest-preview.py`):**
+  recall dump 16,222 B (PA hub) / 17,480 B (inscriptions) → digest 1,370 B
+  → **~91–92 % cut on the recall dump** (≤1,500 B hard cap, proven by test
+  + live). The design's 2026-05-16 table (recall 16,554 B, total 43,958 B)
+  still holds within noise; scratchpad has grown to ~29 KB.
+  **Key finding — design premise obsolete:** the design assumed only 8
+  `verified=true` corpus-wide so the fallback would carry Stage 1; reality
+  is **284 verified-true in the last 7 days alone** (dry-run output
+  2026-05-30) — two weeks of v2-hook firings populated `verified` far
+  faster than anticipated. Fallback never fired; it is already
+  near-vestigial. Also fixed a starvation bug the dry-run exposed: the
+  what-changed line itemised all 27 categories (~900 B), crowding verified
+  entries to 2-of-284; capped to top-6 + "+N more" (`MAX_CATEGORY_BREAKDOWN`
+  in `digest.py`), now 3 shown.
+- [ ] **PASS 2 — live cutover (its own session; changes every session).**
+  Wire `digest.py` into `hooks/session-start-retrieval.py`'s digest section;
+  relocate the Retrieval Instructions footer to
+  `global-claude-md/tier-2-retrieval.md`; roll out amd-tower only behind a
+  flag with the 2-week §8 observation window (zbook + rpi-server keep the
+  current hook). `digest.log` already logs per-firing bytes so the
+  median ≤1,500 B / p95 ≤2 KB acceptance criterion can be confirmed across
+  firings during the window.
+- [ ] **Finding (3) — digest density tuning, deferred (return to later
+  per Shawn 2026-05-30).** At 1,500 B with ~8-tags-per-entry memories, only
+  ~3 verified entries surface. Two levers, both judgment calls about digest
+  information density (left at design defaults rather than decided
+  unilaterally): (a) raise the byte budget toward the 2 KB p95 ceiling
+  (`DEFAULT_BYTE_BUDGET` in `digest.py`, design §7b); (b) cap tags-per-entry,
+  e.g. first 4 (design §7d). Decide alongside PASS 2 or after the
+  observation window gives real density data.
+- [ ] **Review how to verify MORE memories (feasibility pass, new
+  2026-05-30 per Shawn).** Vector 2's verified-true bucket is only as good
+  as `verified` coverage. Today verification is incidental (write-path
+  anchor_verify on new memories at extraction time → 284 true in 7 d). The
+  question: can we deliberately backfill `verified` across the existing
+  corpus (~29 K records, mostly `verified IS NULL`)? This is the
+  workstream-A **Phase 5 "migration sweep + bulk-flag pass"** idea, marked
+  *superseded by workstream D* but explicitly noted there as "still valuable
+  as backfill for the `verified` field." Scope the feasibility: which
+  records have re-resolvable anchors (file paths / commit hashes / Zotero
+  keys still valid); cost/throughput of running `scripts/anchor_verify.py`
+  in bulk; whether it needs an API call (review gate) or is purely local
+  re-resolution. Stage 2 of the design (verified-first, drop the fallback)
+  depends on broad coverage — so this gates the design's own endgame.
+  Reference: `scripts/anchor_verify.py`, `planning/memory-system-v2-design.md`
+  Phase 2.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):
@@ -708,6 +776,19 @@ until first non-CC API spend.
 
 Read these *before* starting new work. Most should take <5 min each.
 
+- [ ] 2026-05-30 **Vector 2 PASS 1 shipped (engine + proof); PASS 2 is the
+  live cutover.** Before starting PASS 2, re-run the reproducible proof
+  `venv/bin/python3 scripts/digest-preview.py` (PA hub) and
+  `--cwd /home/shawn/Code/inscriptions` (project-scoped) to confirm the
+  before/after still holds (was 16,222 B → 1,484 B / 90.8 % on 2026-05-30),
+  and re-read `wiki/planning/vector-2-design.md` §8 (rollout plan) + §9
+  (sequencing). The digest is now ~1,484 B — close to the 1,500 B cap; if
+  it ever reports `<= budget: False`, that is the density-tuning lever
+  (finding (3), workstream B) biting. Also glance at `data/logs/digest.log`
+  and `logs/fetch-memories.log` to see the instrumentation accumulating.
+  See workstream B for the full PASS-1 record. Code: `scripts/digest.py`
+  (pure selector), `scripts/digest-preview.py` (harness),
+  `tests/test_digest.py` (35 tests). NOT yet wired into the live hook.
 - [x] 2026-05-30 **Review + push the workstream-D #3 repos — DONE.** All 6
   relocation/fix commits are now on `origin/main`: pushed at session close
   on 2026-05-30 (re-verified each was 1-ahead/0-behind with the relocation
