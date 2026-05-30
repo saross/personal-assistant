@@ -1815,6 +1815,52 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-05-30 (Sat) — Vector 2 PASS 1 (digest engine + proof, hook untouched) + git-cadence correction
+
+Background workstream-C PA session; two threads. **Thread 1 — Vector 2 PASS 1
+(workstream B).** Built the Stage 1 session-start digest as an engine + proof
+with the live hook deliberately untouched (Shawn picked the low-blast-radius
+option over a full live cutover). `scripts/digest.py` is a pure, I/O-free
+selector (what-changed counter, verified-true ranking, promoted-recent
+fallback, hard byte cap); `scripts/digest-preview.py` reproduces the live
+recall dump via the hook's own functions and prints before/after;
+`tests/test_digest.py` has 35 tests. Re-measured baseline (reproducible via the
+harness, 2026-05-16 design table still holds within noise): recall dump
+16,222 B (PA hub) / 17,480 B (inscriptions) → digest ~1,484 B, ~91 % cut, cap
+intact. Key finding — the design premise is obsolete: it assumed 8 verified-true
+corpus-wide, but there are now 289 verified-true in the last 7 days, so the
+fallback is near-vestigial. `/audit` (4 parallel execution-verifying subagents)
+found 1 real Critical (byte-cap docstring over-claimed an *unconditional*
+guarantee; ~550 B of scaffolding is irreducible) + 3 Medium (greedy `break`
+emptied the digest on an oversized top entry; `count_changes` new+updated
+double-count; preview category-line divergence) + Lows — all fixed in-session;
+full suite 734 passed. Also instrumented `fetch-memories.py` (best-effort
+`fetch-memories.log`, tier-2 utilisation, design §7c) and a `digest.log`
+primitive. PASS 2 (live cutover) is queued in workstream B + the verify-queue;
+finding (3) digest-density tuning and the "verify MORE memories" feasibility
+pass are both logged in workstream B. **Thread 2 — git-cadence correction.**
+Shawn flagged that I'd grown reticent about committing and especially pushing
+over ~2 weeks. Traced it at source: not his preference (scratchpad 2026-04-23
+line 44 — "Default is direct-push to main") but the harness per-session default
+("commit or push only when the user asks / branch off main first") winning over
+his recorded norm. Fix: a standing-authorisation block in the Git section of
+`global-claude-md/shared.md` (composed into `~/.claude/CLAUDE.md`) makes liberal
+commit + push-after-every-commit + direct-push-to-main the default for
+sole-authored repos, with collaborative repos (FAIMS3) gating in their own
+project CLAUDE.md. Captured as a `feedback` memory + a FAIMS3 inbox follow-up.
+
+- PA commits (all pushed to `origin/main`): `be4bcf8` (digest.py + tests +
+  harness), `809a89f` (fetch-memories instrumentation), `1c9ffd5` (continuity
+  workstream B + audit + verify-queue), `4673735` (shared.md git-cadence default)
+- pa-data commit (pushed): `925d070` (FAIMS3 inbox capture); memory
+  `2026-05-30-51525074863e` (feedback, 3 anchors) written to memories.jsonl
+  (daily-sync commits it)
+- Files: `scripts/digest.py`, `scripts/digest-preview.py`,
+  `tests/test_digest.py` (new); `scripts/fetch-memories.py`,
+  `global-claude-md/shared.md` (edited)
+- Design ref: `wiki/planning/vector-2-design.md` §6a (selector), §8 (rollout),
+  §7b/§7d (density-tuning levers, deferred as finding 3)
+
 ### 2026-05-29 (Fri) — Workstream D items #1–#4: vocabulary validation, /weekly-review cluster-and-carry, working-notes relocation, vocab lift + /retro grimoire review
 
 Background workstream-C session continuing goal (b). Cleared four of the
