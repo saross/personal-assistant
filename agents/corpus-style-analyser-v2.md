@@ -305,8 +305,16 @@ Sources: (a) general academic-writing best practices, (b) what an
 ESL-editor would want their co-authors to produce, (c) genre
 conventions for the named `genre_label`. Mark every item in this
 section as `aspirational — generated independent of corpus` so it is
-distinguishable from the empirical claims. The user will reconcile
-these against his prior conscious style guide in a follow-up session.
+distinguishable from the empirical claims. After generating, reconcile each aspirational item against the *live
+empirical assessment* (§§1–10), **not** against any prior conscious
+style guide — those are superseded; do not cite them. Where a measured
+metric bears on an item, add a `Live cross-ref: §X`. The **academic
+register was reconciled 2026-05-30** (see that guide's §11): beyond the
+generic items it carries a standalone-demonstrative ban, an impersonal-
+opener minimiser, attribution-verb tiering, connective variation, and a
+voice-calibration item (prefer first person for crispness, third person
+where it avoids convolution; baseline first-person-plural per §1.1). For
+a new genre, reconcile likewise.
 
 ### Phase 5 — Output assembly
 
@@ -372,8 +380,10 @@ register) must still appear as a numbered section with the
     redundant intensifiers — derived from absences with plausible
     editorial-removal explanations)
 ## §11. Aspirational — generated independent of corpus
-   [Explicit flag: every item here is corpus-independent; to be
-    reconciled with the user's prior conscious style guide.]
+   [Explicit flag: every item here is corpus-independent. Reconcile
+    against the live empirical assessment (§§1–10), NOT against prior
+    conscious style guides (superseded — do not cite). Academic
+    register reconciled 2026-05-30; see Phase 4 for the standing items.]
 
 ## Appendix A — Corpus inventory
    Table: paper key, year, role, n_words, extraction quality, included Y/N
