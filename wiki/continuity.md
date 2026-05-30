@@ -310,16 +310,21 @@ underlying record (Phase 0 unlocks topic-search).
   removed. Cross-project `notes/` + `grimoire/` stay private in `data/` by
   design (shared via `published/`). Commits 21a7e60, 6481838, fd8ec38 + this
   session's reflections move. Remaining sub-task below.
-  - [ ] **Relocate misplaced `working-notes.md` files** (added 2026-05-28;
-    per-project, not a shared file): 5 projects (inscriptions,
-    LLM-History-Paper, llm-reproducibility, map-reader-llm, paper-b) have
-    `working-notes.md` misplaced *inside* `docs/notes/reflections/`. Relocate
-    each to its own `wiki/working-notes.md` (a *sibling* of `reflections/`,
-    never inside it) and fix the cc-session-toolkit template that regenerates
-    the misplacement. Survey + steps in `planning/wiki-index-draft.md`
-    § "Relocating misplaced working-notes.md files". obs-writer / `/observe` /
-    `/reflect` already made layout-aware 2026-05-28 so writes keep working
-    meanwhile.
+  - [x] 2026-05-30 **Relocate misplaced `working-notes.md` files — DONE
+    (done by a background agent earlier 2026-05-30; box flipped + independently
+    re-verified at source 2026-05-30).** All 5 research repos (inscriptions,
+    LLM-History-Paper, llm-reproducibility, map-reader-llm, paper-b) had
+    `working-notes.md` relocated OUT of `docs/notes/reflections/` to the
+    legacy-correct sibling `docs/notes/working-notes.md` (not `wiki/` — these
+    repos aren't on the wiki layout yet; matches the survey's
+    "or `docs/notes/working-notes.md` if not on the wiki layout"). Root cause
+    fixed in cc-session-toolkit: template moved out of `data/reflections/` to
+    `data/working-notes.md`, `init.py` updated, 301/301 tests. Commits landed
+    + pushed in 6 repos (see session-log 2026-05-30). **Re-verification this
+    session:** `find` confirms ZERO `*/reflections/working-notes.md` remain;
+    `git ls-files` shows each of the 5 repos tracking `docs/notes/working-notes.md`
+    with a clean working tree; toolkit template tracked at the new path, old
+    path gone. Nothing left to do.
 - [x] 2026-05-18 **Sketch `notes/index.md` + initial wiki-tag vocabulary**
   — `notes/index.md` + `notes/_tags.md` (24-tag vocabulary) landed;
   verified 2026-05-28.
