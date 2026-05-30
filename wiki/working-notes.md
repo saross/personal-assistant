@@ -1207,3 +1207,58 @@ much of the output needs to be re-derived vs preserved. Anchors:
 session 2026-05-30 v2.2 vs v2.3 generation contrast;
 `style-guide-academic-2026-05-30.md` (v2.2, subagent) vs `-2.md`
 (v2.3, in-session).
+
+## 2026-05-30: The style-guide 8-metric gate is aspirational by construction — 0/18 corpus papers pass all 8
+
+Gate-calibration block in `data/style-corpus/phase5-validation-report.md`
+(run via `phase5_evaluator.py --validate`) shows that 0/18 corpus papers
+pass all 8 Appendix E checks. Median checks passed per paper: 4.0/8
+(distribution: [2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 6]).
+
+Per-check corpus pass-rates:
+
+| Check | Papers passing |
+|---|---:|
+| Mean sentence length | 18/18 (100%) |
+| Boosters per 100 words | 18/18 (100%) |
+| Concession rate | 17/18 (94%) |
+| Consecutive ≤5-word sentence runs | 9/18 (50%) |
+| Hedge density per 100 words | 5/18 (28%) |
+| Semicolons per 1 000 words | 3/18 (17%) |
+| Announcement colons per 1 000 words | 3/18 (17%) |
+| Em dashes per 1 000 words | 1/18 (6%) |
+
+**This is not a mis-calibration.** The 8 targets are corpus *aggregates*;
+each tolerance band sits around the central tendency. Conjoining 8 tight
+bands defines a consistency that no single paper achieves — each paper
+drifts off-aggregate on a few axes, so the joint pass-rate collapses to
+zero. Text that passed all 8 would be MORE uniformly on-voice than any
+individual paper (per-paper idiosyncrasy averaged out). That is the right
+bar for a synthesised voice target rather than a forgery-detector.
+The gate is therefore an intentional quantitative aspirational layer,
+sitting alongside the prose aspirational guides in
+`~/Code/prompts/System-setup/` and the empirical guide's explicitly-marked
+aspirational §11.
+
+**One genuine exception — averaging artefact, not aspiration:** the em-dash
+band (target 0.572 ±0.20 → [0.372, 0.772]) is the mean of a bimodal
+split: 12/18 papers have zero em-dashes; 6/18 (all pre-2023) range from
+0.50 to 2.06/1k. The band therefore rejects both halves of the corpus
+(only 1/18 lands inside it) AND rejects zero-em-dash prose — which §6.3
+says is correct for 2026+ writing. The check points the wrong way.
+The `--modern-em-dash` flag in `phase5_evaluator.py` (ceiling ≤0.20/1k)
+already sidesteps this; the deferred continuity.md workstream G
+"tolerance review" is mostly about LABELLING the gate aspirational,
+not loosening it — with the em-dash bimodal band the one substantive
+structural wrinkle.
+
+Anchors: `data/style-corpus/phase5-validation-report.md` §"8-metric gate
+calibration"; `scripts/style-analyser/phase5_evaluator.py` (`build_gate`,
+`gate_calibration`); v2.3 guide Appendix E at
+`data/notes/style-guides/academic/style-guide-academic-2026-05-30-2.md`;
+continuity.md workstream G Phase 5 future-refinement row; commits
+`80b2694` (evaluator + agent flip), `fc1eb32` (submodule bump);
+submodule `fe78db1` (validation report). Cross-ref 2026-05-30 bimodality
+entry (gap-test vs CV): the em-dash artefact here is a direct consequence
+of that bimodality — the bimodal distribution that gap-test detects is
+precisely what causes the band to sit in an uninhabited mid-range.
