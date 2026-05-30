@@ -175,21 +175,35 @@ itemKey) + section locator. Where a claim is *not* attested in a
 deliberate search, label it `absent-when-searched` — that is data, not
 silence.
 
-**Status-assignment rules (v2):**
+**Status-assignment rules (v2.3 — read from phase3 artefact):**
 
-| Status | Condition |
-|--------|-----------|
-| `attested` | `n_papers ≥ 3` AND `n_occ ≥ 5` |
+For every §-claim that maps to a Phase 1 metric (see the §-to-metric
+table in `phase3_guide_verifier.py`), READ the status verdict, CV,
+`papers_present`, and `papers_absent` directly from
+`data/style-corpus/phase3-promotion-clean.json`. Do NOT recompute them
+in-run; the deterministic algorithm in `phase3_promotion.py` is the
+single source of truth. Per plan §4.5: "the merge rule is
+deterministic".
+
+| Status | Condition (applied deterministically by phase3_promotion.py) |
+|--------|--------------------------------------------------------------|
+| `attested` | `n_papers ≥ 3` AND `n_occ ≥ 5` AND `CV ≤ 1.5` |
 | `attested-rarely` | `1 ≤ n_papers ≤ 2`, OR (`n_papers ≥ 3` AND `n_occ < 5`) |
-| `attested-concentrated` | `n_papers ≥ 3` AND `coefficient_of_variation > 1.5` of the per-paper rate |
-| `absent-when-searched` | `n_occ ≤ 2` AND `n_papers ≤ 1`, AND the absence was deliberately searched (P is on your search list) |
-| `derived-by-inference` | absence + plausible editorial-removal explanation (anti-patterns) |
+| `attested-concentrated` | `n_papers ≥ 3` AND `CV > 1.5` of the per-paper rate |
+| `absent-when-searched` | `n_papers = 0` AND the absence was deliberately searched (the deterministic algorithm emits `absent-when-searched-candidate`; the agent promotes to `absent-when-searched` only when search was deliberate) |
+| `derived-by-inference` | absence + plausible editorial-removal explanation (anti-patterns) — agent-assigned only, not algorithmic |
 
-`attested-concentrated` is the new fifth status. For these patterns,
-preserve both the where-it-appears and where-it-does-not paper lists
-in the Editor's note, so downstream LLMs can choose whether to apply
-based on venue/co-author/genre context (do **not** resolve to a single
-status — the bimodality *is* the data).
+**Semantic overrides (agent-assigned only).** If the deterministic
+algorithm produces a verdict that is wrong because token counts cannot
+distinguish word-sense (e.g. `pace` as Latin citation hedge vs noun
+`pace`), the agent MAY override but MUST document the override in the
+claim body with both the algorithmic verdict and the reason. Listed
+in `STATUS_OVERRIDE_ALLOWLIST` of `phase3_guide_verifier.py`.
+
+**`attested-concentrated` claims.** For these, the "Where it appears"
+and "Where it does not" lists in the Editor's note MUST be the verbatim
+contents of `papers_present` and `papers_absent` from the phase3
+artefact. See Anti-confabulation safeguard 8.
 
 **Dimensions to analyse (v2.2 — Biber 1988 MDA + hybrid sections):**
 
@@ -445,9 +459,23 @@ Within each numbered section (1–8), structure each claim as:
 > "{quote}" — {Zotero key}, {section locator}
 **Editor's note (for application to writing):**
 {1–3 sentences on how to apply this when drafting / editing}
-{For attested-concentrated only: list the where-it-appears papers and
- the where-it-does-not papers explicitly so a downstream consumer can
- choose whether to apply based on context.}
+{For attested-concentrated and attested-rarely ONLY (HARD RULE per
+ anti-confabulation safeguard 8):
+
+ **Where it appears (N/M papers):** {EXACT verbatim copy of
+   `papers_present` from phase3-promotion-clean.json for this metric,
+   in order, with rates}.
+ **Where it does not (K/M papers):** {EXACT verbatim copy of
+   `papers_absent` from phase3-promotion-clean.json for this metric}.
+
+ N must equal `n_papers_present`. K must equal
+ `n_papers_total - n_papers_present`. Do NOT add papers. Do NOT add
+ hedges like "plus N more", "and possibly others", "and approximately X
+ additional papers". The papers_present array in the JSON is the
+ complete enumeration. If the JSON has no entry for this metric (i.e.
+ the §-claim does not map to a Phase 1 measurement), write
+ "papers not enumerated by Phase 1 — see Appendix C ledger" instead
+ of guessing.}
 ```
 
 For `absent-when-searched` items: state what you searched for and what
@@ -459,7 +487,7 @@ note that it awaits reconciliation with the user's prior guide.
 
 ## Pipeline — how to compute the metrics
 
-Two scripts live in `~/personal-assistant/scripts/style-analyser/`:
+Four scripts live in `~/personal-assistant/scripts/style-analyser/`:
 
 1. `extract_corpus.py` — clean-corpus extractor (PyMuPDF + pdfplumber
    via llm-reproducibility). Produces the `extracted/<key>/` bundles.
@@ -469,11 +497,29 @@ Two scripts live in `~/personal-assistant/scripts/style-analyser/`:
    paragraph stats, gate metrics, regression check). Run against either
    the clean corpus (`--clean-corpus`) or the legacy text cache
    (without the flag).
+3. `phase3_promotion.py` — Kumar aggregation rule applied per plan
+   §4.2. Consumes `phase1-results-clean.json` and emits
+   `phase3-promotion-clean.json`. For every promotable metric the
+   output carries: `n_papers_present`, `n_occ`, `mean_rate`,
+   `stdev_rate`, `cv`, `min_rate`, `max_rate`, `promotion` (verdict),
+   `promotion_rationale`, `papers_present` (verbatim list of
+   `{key, rate}` for the "Where it appears" mandate), and
+   `papers_absent` (verbatim list of keys for "Where it does not").
+   Deterministic; no LLM calls. Re-run cheaply when the corpus or the
+   thresholds change.
+4. `phase3_guide_verifier.py` — deterministic post-generation regression
+   gate. Walks every `### N.N` claim block in a generated style guide
+   and cross-checks every mechanically-checkable numeric claim
+   (`N/M papers`, CV values, `count / words` ratios, named papers in
+   "Where it appears" / "Where it does not", unanchored hedge phrases)
+   against `phase1-results-clean.json` + `phase3-promotion-clean.json`.
+   Emits a PASS/FAIL/WARN report. Run on every generated guide before
+   committing. Exit code non-zero on any FAIL.
 
 Per plan D2 the original intent was to inline the measurement pipeline
-in this agent. Both scripts together exceed the 400-line threshold
+in this agent. The four scripts together exceed the 400-line threshold
 (D2's escape clause), so they are kept in `scripts/style-analyser/`
-and called via Bash. The agent remains self-recreatable with two
+and called via Bash. The agent remains self-recreatable with four
 known dependencies (the script paths above).
 
 **Canonical invocation (clean corpus — use this from 2026-05-24):**
@@ -492,6 +538,18 @@ known dependencies (the script paths above).
     --manifest  /tmp/style-corpus-extract/manifest.json \
     --clean-corpus \
     --output    ~/personal-assistant/data/style-corpus/phase1-results-clean.json
+
+# Step 3: Phase 3 promotion (deterministic status assignment, papers lists)
+~/Code/write-like-me/.venv/bin/python \
+    ~/personal-assistant/scripts/style-analyser/phase3_promotion.py
+# (reads phase1-results-clean.json; emits phase3-promotion-clean.json)
+
+# Step 4 (post-guide-generation): verifier regression gate
+~/Code/write-like-me/.venv/bin/python \
+    ~/personal-assistant/scripts/style-analyser/phase3_guide_verifier.py \
+    --guide ~/personal-assistant/notes/style-guides/{genre}/style-guide-{genre}-{date}.md \
+    --report ~/personal-assistant/data/style-corpus/phase3-guide-verifier-report.md
+# Exit code is non-zero on any FAIL.
 ```
 
 **Legacy invocation (pdftotext -layout — for cross-version comparison only):**
@@ -547,6 +605,26 @@ same rigour as factual claims.
    carry a per-paper distribution in Appendix C. The promotion rules
    above are computed from per-paper rates; an aggregate-only summary
    forfeits the ability to assign a status.
+8. **NEW in v2.3 — verbatim paper-list copy for concentrated/rare
+   claims.** For every claim with status `attested-concentrated` or
+   `attested-rarely`, the "Where it appears" list MUST be the EXACT
+   verbatim contents of `papers_present` from
+   `data/style-corpus/phase3-promotion-clean.json` for the corresponding
+   metric, and "Where it does not" MUST be the EXACT verbatim contents
+   of `papers_absent`. Do NOT add papers beyond the JSON. Do NOT add
+   hedging phrases like "plus N more", "plus N papers with single-digit
+   counts", "and possibly others", or "and approximately X additional
+   papers". The JSON enumeration is COMPLETE — there are no implicit
+   additional papers. If the JSON has no `papers_present` for this
+   metric (because the §-claim does not map to a Phase 1 measurement),
+   write "papers not enumerated by Phase 1 — see Appendix C ledger"
+   rather than guessing.
+
+   **Rationale**: a 2026-05-30 v2.2 run produced the §6.3 em-dash claim
+   "Where it appears (8/18 papers, all pre-2023): [6 papers named] +
+   plus two papers with single-digit counts" when the actual count was
+   6/18 — a confabulation surfaced by `phase3_guide_verifier.py`.
+   Verbatim copy is the structural fix.
 
 ## Reconciliation with prior style guides — NOT YOUR JOB
 
@@ -669,8 +747,18 @@ on conversation history.
 - Phase 2 ✅ (Biber relayout) — agent file v2.2, 2026-05-24
   (this edit). Validated by first v2.2 run output; no separate audit
   document.
-- Phase 3 (Kumar aggregation rules) — `attested-concentrated` status
-  added to schema; full rule formalisation pending
+- Phase 3 ✅ (Kumar aggregation rules) — formalised 2026-05-30 in
+  `scripts/style-analyser/phase3_promotion.py` (deterministic CV +
+  bimodality gap-test promotion) and
+  `scripts/style-analyser/phase3_guide_verifier.py` (post-generation
+  regression gate). Bimodality detector caught a new
+  `attested-concentrated` finding at §5.3 mean_dep_depth that the
+  CV-only v2.2 algorithm missed. The verifier surfaced a §6.3
+  confabulation ("8/18 papers" + "plus two papers with single-digit
+  counts") in the v2.2 guide; v2.3 guide
+  (`style-guide-academic-2026-05-30-2.md`) was regenerated
+  in-session with the confabulation guard (Anti-confabulation rule 8)
+  and passes the verifier 35/35 (vs v2.2's 29/37 with 5 FAILs).
 - Phase 4 ✅ (Panickssery exemplar block) — added 2026-05-30 as
   Appendix F of `style-guide-academic-2026-05-30.md`. Candidate
   scorer at `scripts/style-analyser/phase4_exemplar_scorer.py`
