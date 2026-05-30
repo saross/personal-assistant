@@ -423,6 +423,153 @@ class TestRendering:
         assert "\n" not in line
         assert "bytes=" in line and "fallback=" in line
 
+    def test_digest_log_line_carries_focus_and_scoped_flags(self):
+        res = digest.build_digest(
+            [], now=NOW, project_tags=set(), byte_budget=1500,
+            focus_keywords={"inscriptions"}, focus_label="inscriptions",
+            project_id="-home-shawn-Code-inscriptions",
+        )
+        line = digest.digest_log_line(res, now=NOW)
+        assert "focus=True" in line and "scoped=True" in line
+
+
+# ============================================================================
+# Vector 2c — focus-aware ranking + hard project scope
+# ============================================================================
+
+
+class TestMatchesProject:
+    def test_none_project_id_is_no_scope(self):
+        # The personal-assistant hub case: everything is in scope.
+        assert digest.matches_project(_mem(project="-home-x"), None)
+
+    def test_legacy_no_project_field_is_in_scope(self):
+        # Pre-project-tagging records must not be penalised.
+        assert digest.matches_project({"verified": "true"}, "-home-shawn-Code-x")
+
+    def test_exact_match_in_scope(self):
+        assert digest.matches_project(
+            _mem(project="-home-shawn-Code-inscriptions"),
+            "-home-shawn-Code-inscriptions",
+        )
+
+    def test_other_project_out_of_scope(self):
+        assert not digest.matches_project(
+            _mem(project="-home-shawn-Code-map-reader-llm"),
+            "-home-shawn-Code-inscriptions",
+        )
+
+
+class TestFocusScore:
+    def test_empty_keywords_is_zero(self):
+        assert digest.focus_score(_mem(project="-home-shawn-Code-inscriptions"), set()) == 0
+
+    def test_matches_project_substring(self):
+        assert digest.focus_score(
+            _mem(project="-home-shawn-Code-inscriptions", research_tags=[]),
+            {"inscriptions"},
+        ) == 1
+
+    def test_matches_tag_substring(self):
+        # The differently-named repo case: keyword hits a tag, not the project.
+        assert digest.focus_score(
+            _mem(project="-home-shawn-Code-Groundsite-EFN-Planning", research_tags=["efn-bizdev"]),
+            {"efn"},
+        ) == 1
+
+    def test_counts_distinct_keywords(self):
+        mem = _mem(project="-home-shawn-Code-inscriptions", research_tags=["efn"])
+        assert digest.focus_score(mem, {"inscriptions", "efn"}) == 2
+
+    def test_case_insensitive(self):
+        assert digest.focus_score(
+            _mem(project="-HOME-INSCRIPTIONS", research_tags=[]),
+            {"inscriptions"},
+        ) == 1
+
+    def test_short_keywords_ignored(self):
+        # <3 chars are dropped to avoid pathological substring hits.
+        assert digest.focus_score(_mem(project="-home-ab-x", research_tags=[]), {"ab"}) == 0
+
+
+class TestRankVerifiedScopeAndFocus:
+    def test_focus_relevant_outranks_more_recent_offfocus(self):
+        on_focus = _mem(id="f", project="-home-shawn-Code-inscriptions", created_at=_iso(3))
+        off_focus = _mem(id="o", project="-home-shawn-Code-map-reader-llm", created_at=_iso(0.1))
+        ranked = digest.rank_verified(
+            [off_focus, on_focus], now=NOW, project_tags=set(),
+            focus_keywords={"inscriptions"},
+        )
+        assert [m["id"] for m in ranked] == ["f", "o"]
+
+    def test_project_id_hard_scopes_pool(self):
+        ins = _mem(id="i", project="-home-shawn-Code-inscriptions")
+        mr = _mem(id="m", project="-home-shawn-Code-map-reader-llm")
+        ranked = digest.rank_verified(
+            [ins, mr], now=NOW, project_tags=set(),
+            project_id="-home-shawn-Code-inscriptions",
+        )
+        assert [m["id"] for m in ranked] == ["i"]
+
+    def test_no_focus_no_scope_is_recency_order(self):
+        # Defaults reproduce the pre-2c behaviour: pure recency here.
+        a = _mem(id="a", created_at=_iso(2))
+        b = _mem(id="b", created_at=_iso(1))
+        ranked = digest.rank_verified([a, b], now=NOW, project_tags=set())
+        assert [m["id"] for m in ranked] == ["b", "a"]
+
+
+class TestRankFallbackScope:
+    def test_fallback_respects_project_scope(self):
+        # Anchored, not-verified-true → fallback pool; off-project excluded.
+        ins = _mem(id="i", verified="false", anchors=[{"type": "commit", "ref": "x"}],
+                   project="-home-shawn-Code-inscriptions")
+        mr = _mem(id="m", verified="false", anchors=[{"type": "commit", "ref": "y"}],
+                  project="-home-shawn-Code-map-reader-llm")
+        pool = digest.rank_fallback(
+            [ins, mr], now=NOW, exclude_ids=set(),
+            project_id="-home-shawn-Code-inscriptions",
+        )
+        assert [m["id"] for m in pool] == ["i"]
+
+
+class TestBuildDigestVector2c:
+    def test_flag_off_defaults_are_byte_identical(self):
+        mems = [
+            _mem(id="a", project="-home-shawn-Code-inscriptions", created_at=_iso(1)),
+            _mem(id="b", project="-home-shawn-Code-map-reader-llm", created_at=_iso(2)),
+        ]
+        base = digest.build_digest(mems, now=NOW, project_tags=set())
+        explicit = digest.build_digest(
+            mems, now=NOW, project_tags=set(),
+            project_id=None, focus_keywords=set(), focus_label="",
+        )
+        assert base.text == explicit.text
+        assert base.focus_active is False and base.scoped is False
+
+    def test_focus_label_renders_one_line(self):
+        res = digest.build_digest(
+            [_mem(project="-home-shawn-Code-inscriptions")],
+            now=NOW, project_tags=set(),
+            focus_keywords={"inscriptions"}, focus_label="inscriptions, efn",
+        )
+        assert "ranked for current focus: inscriptions, efn" in res.text
+        assert res.focus_active is True
+
+    def test_scope_shrinks_verified_available(self):
+        mems = [
+            _mem(id="a", project="-home-shawn-Code-inscriptions"),
+            _mem(id="b", project="-home-shawn-Code-map-reader-llm"),
+        ]
+        unscoped = digest.build_digest(mems, now=NOW, project_tags=set())
+        scoped = digest.build_digest(
+            mems, now=NOW, project_tags=set(),
+            project_id="-home-shawn-Code-inscriptions",
+        )
+        assert unscoped.verified_available == 2
+        assert scoped.verified_available == 1
+        assert scoped.scoped is True
+
 
 # ============================================================================
 # Vector 2b — cap_markdown_to_budget (the shared scratchpad capper)

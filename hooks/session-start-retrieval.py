@@ -42,6 +42,7 @@ the Task Status banner from the accountability hook.
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -118,6 +119,28 @@ SCRATCHPAD_BUDGET_BYTES = 18_000  # Fork A guard-rail — above today's 15,484 B
 PROJECT_SCRATCHPAD_BUDGET_BYTES = 8_000  # above the largest (map-reader 5,134 B)
 SCRATCHPAD_FLAG_ENV = "PA_SCRATCHPAD_BUDGET"
 SCRATCHPAD_SENTINEL = Path.home() / ".pa-scratchpad-budget"
+
+# ----------------------------------------------------------------------------
+# Vector 2c — focus-aware + project-scoped digest selection (design wiki/
+# planning/vector-2c-design.md). Two changes to the digest's verified-entry
+# selection, behind ONE machine-local flag (default OFF → byte-identical to
+# the Vector 2 digest, so the live §8 window — review 2026-06-13 — stays
+# unconfounded; enable after that review by `touch ~/.pa-digest-focus`):
+#   1. Focus-aware ranking — the active FOCUS.md slot projects become the
+#      primary ranking key, so the digest surfaces focus-relevant verified
+#      entries rather than recency-random ones (Option 3: ranking + a thin
+#      legibility label, NOT a redundant focus block — the `# Task Status`
+#      hook already prints the slots).
+#   2. Hard project scope — in a project repo the verified/fallback pools are
+#      filtered to that project; the personal-assistant hub is exempt (the
+#      hub nulls current_project for cross-project visibility, so scope is
+#      None there and focus ranking does the cross-project prioritisation).
+# Precedence mirrors the other two flags exactly: env PA_DIGEST_FOCUS
+# (truthy/falsy) → sentinel ~/.pa-digest-focus → OFF. Neither lives in the
+# synced `data/` submodule.
+FOCUS_FLAG_ENV = "PA_DIGEST_FOCUS"
+FOCUS_SENTINEL = Path.home() / ".pa-digest-focus"
+FOCUS_FILE = PA_DIR / "tasks" / "FOCUS.md"
 
 # How many days of recent memories to include
 RECENT_DAYS = 14
@@ -1125,17 +1148,102 @@ def scratchpad_budget_enabled() -> bool:
     return SCRATCHPAD_SENTINEL.exists()
 
 
-def build_session_digest(memories: list[dict], project_tags: set[str]) -> str:
+def focus_digest_enabled() -> bool:
+    """Return whether Vector 2c focus-aware + scoped selection is active.
+
+    Independent machine-local gate, mirroring :func:`digest_mode_enabled`
+    and :func:`scratchpad_budget_enabled` so all three Vector passes roll
+    out (and back) identically without coupling. Precedence: env override
+    ``PA_DIGEST_FOCUS`` first (either direction), then the sentinel
+    ``~/.pa-digest-focus``, else OFF. Neither signal lives in the synced
+    ``data/`` submodule, and OFF means the digest selects exactly as the
+    Vector 2 digest does (byte-identical), leaving the live §8 window
+    unconfounded.
+
+    An env value that is neither clearly truthy nor clearly falsy is
+    treated as OFF (fail-safe to the Vector 2 digest) and warned to stderr.
+    """
+    raw = os.environ.get(FOCUS_FLAG_ENV)
+    if raw is not None:
+        val = raw.strip().lower()
+        if val in _TRUTHY:
+            return True
+        if val in _FALSY:
+            return False
+        print(
+            f"[retrieval] WARN: {FOCUS_FLAG_ENV}={raw!r} is not a "
+            f"recognised on/off value — treating as OFF (Vector 2 digest)",
+            file=sys.stderr,
+        )
+        return False
+    return FOCUS_SENTINEL.exists()
+
+
+def load_focus_profile() -> tuple[set[str], str]:
+    """Parse the active FOCUS.md slot projects into a coarse focus profile.
+
+    Returns ``(keywords, label)``:
+      - ``keywords`` — lowercased last-path-segments of each active slot's
+        ``- **Project:** …`` line (``research/inscriptions`` → ``inscriptions``,
+        ``business/efn`` → ``efn``), for coarse matching in
+        :func:`digest_selector.focus_score`.
+      - ``label`` — the same segments, deduped and order-preserved, joined
+        for the digest's one-line legibility cue.
+
+    Only the bulleted ``**Project:**`` lines are read; the Paused table uses
+    pipe-delimited cells (not ``**Project:**`` bullets), so paused projects
+    are excluded by construction. Fail-soft: any read/parse problem returns
+    ``(set(), "")`` so the digest degrades to its prior ranking rather than
+    breaking session start.
+    """
+    try:
+        text = FOCUS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return set(), ""
+    keywords: set[str] = set()
+    label_tokens: list[str] = []
+    for raw_line in text.splitlines():
+        m = re.match(r"\s*-\s*\*\*Project:\*\*\s*(.+?)\s*$", raw_line)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if not value:
+            continue
+        segment = value.rsplit("/", 1)[-1].strip()
+        if not segment:
+            continue
+        kw = segment.lower()
+        keywords.add(kw)
+        if segment not in label_tokens:
+            label_tokens.append(segment)
+    return keywords, ", ".join(label_tokens)
+
+
+def build_session_digest(
+    memories: list[dict],
+    project_tags: set[str],
+    *,
+    project_id: str | None = None,
+    focus_keywords: set[str] | None = None,
+    focus_label: str | None = None,
+) -> str:
     """Build the Stage 1 digest text and append one ``digest.log`` line.
 
     Thin wrapper over the pure :func:`digest_selector.build_digest` so
     ``main()`` stays readable. The log write is best-effort and never
     raises — a logging failure must not break session start. Returns the
-    rendered digest text (already ≤ byte budget).
+    rendered digest text (already ≤ byte budget). The Vector 2c arguments
+    (``project_id`` / ``focus_keywords`` / ``focus_label``) default to the
+    pre-2c behaviour, so the flag-OFF call site is byte-identical.
     """
     now = datetime.now(timezone.utc)
     result = digest_selector.build_digest(
-        memories, now=now, project_tags=project_tags
+        memories,
+        now=now,
+        project_tags=project_tags,
+        project_id=project_id,
+        focus_keywords=focus_keywords,
+        focus_label=focus_label,
     )
     try:
         DIGEST_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -1220,7 +1328,23 @@ def main() -> None:
     # skipped entirely — the digest does its own verified-true selection
     # against the loaded corpus and project tag profile.
     if digest_mode_enabled():
-        context = build_session_digest(memories, project_tags)
+        # Vector 2c (independent machine-local flag): when ON, rank by the
+        # active FOCUS.md slots and hard-scope to the current project (the
+        # hub case is current_project=None → no scope, cross-project focus
+        # ranking). When OFF, the params stay at their pre-2c defaults so
+        # the digest is byte-identical to today's.
+        if focus_digest_enabled():
+            focus_keywords, focus_label = load_focus_profile()
+            digest_project_id = current_project
+        else:
+            focus_keywords, focus_label, digest_project_id = set(), "", None
+        context = build_session_digest(
+            memories,
+            project_tags,
+            project_id=digest_project_id,
+            focus_keywords=focus_keywords,
+            focus_label=focus_label,
+        )
         parts = [context] if context else []
         parts.extend(scratchpad_sections)
         if not parts:

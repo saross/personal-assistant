@@ -231,6 +231,54 @@ def split_sentences(text: str) -> list[str]:
     return sentences
 
 
+# ---------------------------------------------------------------------------
+# Prose-paragraph filter (added 2026-05-30)
+# ---------------------------------------------------------------------------
+# `split_paragraphs` returns every blank-line-separated block. In the
+# PyMuPDF/pdfplumber markdown that includes non-prose: markdown headings,
+# surviving front-matter (author lines, mastheads, "Pages:"/"Edited by"), and
+# line-break/reflow fragments. Counting those as "paragraphs" depresses the
+# paragraph-length median below the mean sentence length — impossible for real
+# prose — and manufactures a spurious short-paragraph register (investigation
+# 2026-05-30: non-prose ~41% of blocks but only ~4.4% of words). To keep the
+# §6.5 paragraph metric honest WITHOUT disturbing any other metric, this filter
+# is applied ONLY on the paragraph-stats path (process_paper / aggregate), never
+# inside `split_paragraphs` itself — so sentence splitting and every word-level
+# metric (and the 8-metric gate) are unchanged.
+_HEADING_RE = re.compile(r"^\s*#")
+_FRONTMATTER_RE = re.compile(
+    r"(published by|emerald publishing|oxbow books|©|creative commons|"
+    r"\bISBN\b|\bdoi\.org|https?://|www\.|sciencedirect|all rights reserved|"
+    r"copyright|licen[cs]e|offprints|\bReceived\b|\bRevised\b|\bAccepted\b)",
+    re.IGNORECASE,
+)
+_LABEL_RE = re.compile(
+    r"^\s*(\*?\*?(Pages?|Authors?)\*?\*?:|Edited by\b)", re.IGNORECASE
+)
+PARA_WORD_FLOOR = 5  # blocks with <= this many word tokens are reflow fragments
+
+
+def _is_prose_block(block: str) -> bool:
+    """True if a blank-line block is an authorial paragraph.
+
+    Rejects markdown headings, labelled/masthead front-matter, and
+    sub-sentence reflow fragments. The 5-word floor matches the existing
+    5–200-word sentence filter in ``split_sentences`` — the same threshold the
+    pipeline already trusts for "too short to be a real sentence". Front-matter
+    markers disqualify only a *short* (<= 40-word) block, so a genuine paragraph
+    that happens to cite a DOI mid-sentence is retained.
+    """
+    first = next((ln for ln in block.splitlines() if ln.strip()), "")
+    if _HEADING_RE.match(first):
+        return False
+    if _LABEL_RE.match(block.lstrip()):
+        return False
+    n_words = len(tokenize_words(block))
+    if _FRONTMATTER_RE.search(block) and n_words <= 40:
+        return False
+    return n_words > PARA_WORD_FLOOR
+
+
 def split_paragraphs(text: str) -> list[str]:
     """Split on blank lines; drop paragraphs that contain no word tokens."""
     chunks = re.split(r"\n\s*\n+", text)
@@ -471,7 +519,7 @@ def process_paper(key: str, raw_text: str, nlp) -> dict:
     lower = stripped.lower()
     words = tokenize_words(stripped)
     sentences = split_sentences(stripped)
-    paragraphs = split_paragraphs(stripped)
+    paragraphs = [p for p in split_paragraphs(stripped) if _is_prose_block(p)]
 
     sp_feats = spacy_features(stripped, nlp)
     pos_bigrams = sp_feats.pop("pos_bigrams")
@@ -513,7 +561,7 @@ def aggregate(per_paper: list[dict], full_text: str) -> dict:
     """
     words = tokenize_words(full_text)
     sentences = split_sentences(full_text)
-    paragraphs = split_paragraphs(full_text)
+    paragraphs = [p for p in split_paragraphs(full_text) if _is_prose_block(p)]
 
     # Sum POS bigrams across papers.
     bigrams: collections.Counter = collections.Counter()

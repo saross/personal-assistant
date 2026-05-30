@@ -120,6 +120,11 @@ class DigestResult:
     verified_available: int
     window_days: int
     byte_budget: int
+    # Vector 2c observability (defaulted so existing construction sites and
+    # the flag-OFF path are unaffected): whether focus-aware ranking was
+    # active this build, and whether a hard project scope was applied.
+    focus_active: bool = False
+    scoped: bool = False
 
 
 # ============================================================================
@@ -167,6 +172,53 @@ def overlap_score(mem: dict, project_tags: set[str]) -> int:
     if not project_tags:
         return 0
     return len(tags_of(mem) & project_tags)
+
+
+def matches_project(mem: dict, project_id: str | None) -> bool:
+    """True iff the memory is in scope for a hard project filter (Vector 2c).
+
+    Mirrors the hook's ``is_same_project`` so the two cannot drift:
+      - ``project_id`` is ``None`` → no scoping; everything is in scope
+        (the personal-assistant hub case, where the hook deliberately
+        nulls the current project for cross-project visibility).
+      - a memory with no ``project`` field → legacy, pre-project-tagging
+        record → treated as in scope rather than penalised.
+      - otherwise exact match on the encoded project id.
+    """
+    if project_id is None:
+        return True
+    mem_project = mem.get("project")
+    if not mem_project:
+        return True
+    return mem_project == project_id
+
+
+def focus_score(mem: dict, focus_keywords: set[str]) -> int:
+    """Count how many focus keywords a memory matches (Vector 2c, coarse).
+
+    A keyword matches when it is a substring of the memory's lowercased
+    ``project`` id OR of any of its lowercased tags. This is *coarse by
+    design* (the keyword is the last path segment of a FOCUS.md slot's
+    ``**Project:**`` line, e.g. ``research/inscriptions`` → ``inscriptions``):
+    it bridges the logical focus label to both the encoded cwd project
+    (``-home-shawn-Code-inscriptions``) and differently-named sibling repos
+    (``efn`` matches ``…-Groundsite-EFN-Planning``), at the cost of an
+    occasional loose match. Returns 0 when ``focus_keywords`` is empty, so
+    the ranking collapses to the prior tag-overlap-then-recency behaviour
+    (the flag-OFF guarantee). Keywords shorter than three characters are
+    ignored to avoid pathological substring hits.
+    """
+    if not focus_keywords:
+        return 0
+    proj = str(mem.get("project") or "").lower()
+    tags = tags_of(mem)
+    matched = 0
+    for kw in focus_keywords:
+        if len(kw) < 3:
+            continue
+        if kw in proj or any(kw in t for t in tags):
+            matched += 1
+    return matched
 
 
 def is_verified_true(mem: dict) -> bool:
@@ -291,11 +343,32 @@ def _in_window(mem: dict, *, now: datetime, window_days: int) -> bool:
     return created.timestamp() >= now.timestamp() - window_days * 86400
 
 
-def _rank_key(mem: dict, project_tags: set[str]):
-    """Sort key: tag overlap (desc), then recency (desc)."""
+def _rank_key(
+    mem: dict,
+    project_tags: set[str],
+    focus_keywords: set[str] = frozenset(),
+):
+    """Sort key for the verified pool. Two regimes, by focus mode.
+
+    - **Focus mode (``focus_keywords`` non-empty, Vector 2c on):**
+      ``(focus_score, recency)``. Focus match dominates; recency breaks
+      ties. The tag-overlap term is deliberately dropped here: in the
+      personal-assistant hub the hook collects *all* corpus tags as the
+      profile, so ``overlap_score`` degenerates to "how many tags does
+      this memory carry" and biases toward the most verbose project,
+      crowding out the other focus slots. Recency gives balanced,
+      intent-faithful ordering across slots.
+    - **Flag-OFF (``focus_keywords`` empty):** ``(overlap_score, recency)``
+      — byte-for-byte the pre-2c key, so the digest is unchanged.
+
+    Both branches return same-shape tuples within any one sort call
+    (``focus_keywords`` is fixed per call), so the keys are comparable.
+    """
     created = parse_iso(mem.get("created_at")) or datetime.min.replace(
         tzinfo=timezone.utc
     )
+    if focus_keywords:
+        return (focus_score(mem, focus_keywords), created)
     return (overlap_score(mem, project_tags), created)
 
 
@@ -305,21 +378,30 @@ def rank_verified(
     now: datetime,
     project_tags: set[str],
     window_days: int = DEFAULT_WINDOW_DAYS,
+    project_id: str | None = None,
+    focus_keywords: set[str] | None = None,
 ) -> list[dict]:
     """Verified-true, active, in-window memories ranked best-first.
 
-    Ranking is tag overlap with the project profile (descending), then
-    recency (descending). When ``project_tags`` is empty, overlap is 0
-    for all and ranking collapses to pure recency.
+    Ranking is focus match (descending), then tag overlap with the project
+    profile (descending), then recency (descending). When ``focus_keywords``
+    and ``project_tags`` are both empty, ranking collapses to pure recency.
+
+    ``project_id`` (Vector 2c) applies a hard project scope via
+    :func:`matches_project`: when set, only same-project (and legacy
+    no-project) memories are eligible. ``None`` means no scoping — the
+    personal-assistant hub case.
     """
+    focus_keywords = focus_keywords or set()
     pool = [
         m
         for m in memories
         if is_verified_true(m)
         and is_active(m)
         and _in_window(m, now=now, window_days=window_days)
+        and matches_project(m, project_id)
     ]
-    pool.sort(key=lambda m: _rank_key(m, project_tags), reverse=True)
+    pool.sort(key=lambda m: _rank_key(m, project_tags, focus_keywords), reverse=True)
     return pool
 
 
@@ -329,13 +411,17 @@ def rank_fallback(
     now: datetime,
     exclude_ids: set,
     window_days: int = DEFAULT_WINDOW_DAYS,
+    project_id: str | None = None,
 ) -> list[dict]:
     """Promoted-recent fallback pool (design §6a item 3).
 
     Active, in-window memories that carry non-empty ``anchors`` (i.e.
     went through verification even if not yet ``true``), excluding
-    anything already chosen, ranked by recency. Temporary scaffolding
-    removed in Stage 2.
+    anything already chosen, ranked by recency. ``project_id`` (Vector 2c)
+    applies the same hard project scope as :func:`rank_verified`, so a
+    scoped digest never tops up with off-project records. The 2026-05-30
+    feasibility reframe (design §6b) establishes this fallback as the
+    permanent handler for anchor-less records, not a migration stopgap.
     """
     pool = [
         m
@@ -345,6 +431,7 @@ def rank_fallback(
         and has_anchors(m)
         and not is_verified_true(m)
         and _in_window(m, now=now, window_days=window_days)
+        and matches_project(m, project_id)
     ]
     pool.sort(
         key=lambda m: parse_iso(m.get("created_at"))
@@ -417,11 +504,18 @@ def _assemble(
     window_days: int,
     verified_available: int,
     since_label: str | None,
+    focus_label: str | None = None,
 ) -> str:
     """Assemble the full digest text for a given entry set.
 
     Pure string builder — called repeatedly by :func:`build_digest`
     during the greedy byte-cap walk, then once more for the final text.
+
+    ``focus_label`` (Vector 2c), when non-empty, adds one italic line
+    naming what the verified entries were ranked for — the cheap
+    legibility cue that makes the otherwise-invisible focus ranking
+    explicit (Option 3). Absent/empty → no line → byte-identical to the
+    pre-2c digest (the flag-OFF guarantee).
     """
     since = f" since {since_label}" if since_label else f" in the last {window_days} days"
     cat_break = _format_categories(counter.get("categories", {}))
@@ -435,11 +529,13 @@ def _assemble(
         "",
         f"**What changed{since}:** {changed}.",
         "",
-        (
-            f"**Verified-true entries from the last {window_days} days "
-            f"({len(entries)} shown of {verified_available} available):**"
-        ),
     ]
+    if focus_label:
+        lines += [f"_Verified entries ranked for current focus: {focus_label}._", ""]
+    lines.append(
+        f"**Verified-true entries from the last {window_days} days "
+        f"({len(entries)} shown of {verified_available} available):**"
+    )
     if entries:
         lines += [f"- {render_entry(m)}" for m in entries]
     else:
@@ -470,6 +566,9 @@ def build_digest(
     window_days: int = DEFAULT_WINDOW_DAYS,
     fallback_min_fill: float = FALLBACK_MIN_FILL,
     since_label: str | None = None,
+    project_id: str | None = None,
+    focus_keywords: set[str] | None = None,
+    focus_label: str | None = None,
 ) -> DigestResult:
     """Build the byte-capped session-start digest (the Stage 1 entry point).
 
@@ -485,15 +584,30 @@ def build_digest(
          the budget, top up from the promoted-recent fallback pool
          (design §6a item 3), under the same hard cap.
 
+    Vector 2c parameters (all default to the pre-2c behaviour, so omitting
+    them is byte-identical to the flag-OFF digest):
+      - ``project_id`` applies a hard project scope to both the verified
+        and fallback pools (:func:`matches_project`); ``None`` = no scope.
+      - ``focus_keywords`` makes focus match the primary ranking term
+        (:func:`focus_score`); empty = ranking unchanged.
+      - ``focus_label`` adds the one-line legibility cue naming the focus;
+        empty = no line.
+
     The returned ``text`` is ``<= byte_budget`` UTF-8 bytes provided the
     budget is at least the fixed scaffolding floor (~550 B); below that
     floor the minimal scaffolding is returned intact (see
     :class:`DigestResult`). The live hook runs at 1,500 B, well above
     the floor.
     """
+    focus_keywords = focus_keywords or set()
     counter = count_changes(memories, now=now, window_days=window_days)
     verified = rank_verified(
-        memories, now=now, project_tags=project_tags, window_days=window_days
+        memories,
+        now=now,
+        project_tags=project_tags,
+        window_days=window_days,
+        project_id=project_id,
+        focus_keywords=focus_keywords,
     )
     verified_available = len(verified)
 
@@ -504,6 +618,7 @@ def build_digest(
             window_days=window_days,
             verified_available=verified_available,
             since_label=since_label,
+            focus_label=focus_label,
         )
         return len(text.encode("utf-8")) <= byte_budget, text
 
@@ -528,7 +643,11 @@ def build_digest(
     if len(current_text.encode("utf-8")) < fallback_min_fill * byte_budget:
         exclude = {id(m) for m in chosen}
         for cand in rank_fallback(
-            memories, now=now, exclude_ids=exclude, window_days=window_days
+            memories,
+            now=now,
+            exclude_ids=exclude,
+            window_days=window_days,
+            project_id=project_id,
         ):
             ok, _ = fits(chosen + [cand])
             if ok:
@@ -541,6 +660,7 @@ def build_digest(
         window_days=window_days,
         verified_available=verified_available,
         since_label=since_label,
+        focus_label=focus_label,
     )
     return DigestResult(
         text=text,
@@ -551,6 +671,8 @@ def build_digest(
         verified_available=verified_available,
         window_days=window_days,
         byte_budget=byte_budget,
+        focus_active=bool(focus_keywords),
+        scoped=project_id is not None,
     )
 
 
@@ -564,10 +686,11 @@ def digest_log_line(result: DigestResult, *, now: datetime) -> str:
     """Format a one-line ``digest.log`` record for a built digest.
 
     Tab-separated: timestamp, rendered_bytes, byte_budget, entries shown,
-    verified available, new/updated/forgotten counts, fallback flag.
-    The caller appends this to ``data/logs/digest.log``; keeping the
-    formatting here (pure) means the live hook and the dry-run harness
-    log identically.
+    verified available, new/updated/forgotten counts, fallback flag, and
+    the Vector 2c ``focus``/``scoped`` flags (appended last so existing
+    positional parsers of the earlier fields are unaffected). The caller
+    appends this to ``data/logs/digest.log``; keeping the formatting here
+    (pure) means the live hook and the dry-run harness log identically.
     """
     c = result.counter
     return (
@@ -577,7 +700,8 @@ def digest_log_line(result: DigestResult, *, now: datetime) -> str:
         f"shown={len(result.entries)}\t"
         f"verified_available={result.verified_available}\t"
         f"new={c['new']}\tupdated={c['updated']}\tforgotten={c['forgotten']}\t"
-        f"fallback={result.used_fallback}"
+        f"fallback={result.used_fallback}\t"
+        f"focus={result.focus_active}\tscoped={result.scoped}"
     )
 
 

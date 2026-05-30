@@ -34,6 +34,8 @@ def _digest_flag_off(tmp_path, monkeypatch):
     monkeypatch.setattr(
         retrieval, "SCRATCHPAD_SENTINEL", tmp_path / "absent-scratchpad-sentinel"
     )
+    monkeypatch.delenv(retrieval.FOCUS_FLAG_ENV, raising=False)
+    monkeypatch.setattr(retrieval, "FOCUS_SENTINEL", tmp_path / "absent-focus-sentinel")
 
 
 # ============================================================================
@@ -1932,3 +1934,101 @@ class TestScratchpadByteCap:
         )
         assert len(content.encode("utf-8")) <= 450
         assert retrieval.digest_selector.SCRATCHPAD_TRIM_MARKER in content
+
+
+# ============================================================================
+# Vector 2c — focus flag + FOCUS.md profile parsing
+# ============================================================================
+
+
+class TestFocusDigestFlag:
+    """focus_digest_enabled() precedence — mirrors TestDigestModeFlag.
+
+    The autouse _digest_flag_off fixture clears PA_DIGEST_FOCUS and points
+    FOCUS_SENTINEL at an absent path.
+    """
+
+    def test_off_by_default(self):
+        assert retrieval.focus_digest_enabled() is False
+
+    def test_sentinel_present_enables(self, tmp_path, monkeypatch):
+        sentinel = tmp_path / "pa-digest-focus"
+        sentinel.write_text("")
+        monkeypatch.setattr(retrieval, "FOCUS_SENTINEL", sentinel)
+        assert retrieval.focus_digest_enabled() is True
+
+    @pytest.mark.parametrize("val", ["1", "true", "On", " yes "])
+    def test_env_truthy_enables(self, val, monkeypatch):
+        monkeypatch.setenv(retrieval.FOCUS_FLAG_ENV, val)
+        assert retrieval.focus_digest_enabled() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "off", ""])
+    def test_env_falsy_disables(self, val, monkeypatch):
+        monkeypatch.setenv(retrieval.FOCUS_FLAG_ENV, val)
+        assert retrieval.focus_digest_enabled() is False
+
+    def test_env_falsy_overrides_present_sentinel(self, tmp_path, monkeypatch):
+        sentinel = tmp_path / "pa-digest-focus"
+        sentinel.write_text("")
+        monkeypatch.setattr(retrieval, "FOCUS_SENTINEL", sentinel)
+        monkeypatch.setenv(retrieval.FOCUS_FLAG_ENV, "0")
+        assert retrieval.focus_digest_enabled() is False
+
+    def test_unrecognised_env_fails_safe_to_off(self, monkeypatch, capsys):
+        monkeypatch.setenv(retrieval.FOCUS_FLAG_ENV, "perhaps")
+        assert retrieval.focus_digest_enabled() is False
+        assert "not a recognised on/off value" in capsys.readouterr().err
+
+
+class TestLoadFocusProfile:
+    """load_focus_profile() — coarse parse of FOCUS.md active slots."""
+
+    _FOCUS = (
+        "# Current Focus\n\n"
+        "## Slot 1: Inscriptions JAMT\n\n"
+        "- **Project:** research/inscriptions\n"
+        "- **Started:** 2026-05-26\n\n"
+        "## Slot 2: EFN arc\n\n"
+        "- **Project:** business/efn\n\n"
+        "## Slot 3: EFN outreach\n\n"
+        "- **Project:** business/efn\n\n"
+        "## Paused\n\n"
+        "| Item | Project | Paused Since |\n"
+        "|------|---------|--------------|\n"
+        "| Paper B | paper-b | 2026-05-21 |\n"
+        "| Map-reader | research/map-reader-llm | 2026-04-27 |\n"
+    )
+
+    def test_parses_active_slot_projects(self, tmp_path, monkeypatch):
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(self._FOCUS)
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", focus)
+        keywords, label = retrieval.load_focus_profile()
+        assert keywords == {"inscriptions", "efn"}
+        assert label == "inscriptions, efn"
+
+    def test_excludes_paused_pipe_table_projects(self, tmp_path, monkeypatch):
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(self._FOCUS)
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", focus)
+        keywords, _ = retrieval.load_focus_profile()
+        # paused projects live in the pipe table, not **Project:** bullets
+        assert "paper-b" not in keywords
+        assert "map-reader-llm" not in keywords
+
+    def test_label_dedups_preserving_order(self, tmp_path, monkeypatch):
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(self._FOCUS)
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", focus)
+        _, label = retrieval.load_focus_profile()
+        assert label.count("efn") == 1  # two efn slots → one label token
+
+    def test_missing_file_is_fail_soft(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", tmp_path / "absent.md")
+        assert retrieval.load_focus_profile() == (set(), "")
+
+    def test_empty_file_returns_empty_profile(self, tmp_path, monkeypatch):
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text("# Current Focus\n\nNo slots populated.\n")
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", focus)
+        assert retrieval.load_focus_profile() == (set(), "")
