@@ -1362,3 +1362,45 @@ isn't the criterion. Shawn's metacognitive prompts ("valuable context?",
 treat them as permission to recommend against the current session.
 
 [x] accept
+
+## 2026-05-30 (Workstream G Phase 5 — Mahalanobis evaluator + 8-metric gate session) — Drafted candidates (recovered from transcript; reviewed 2026-05-30)
+
+*(Drafted at `/handoff` step 4 of the Phase 5 build session (transcript
+`08256a58-0d82-4619-9a87-f7467a53ff43`) but left undispositioned. Recovered
+and reviewed 2026-05-30 in the follow-on Workstream G session.)*
+
+### Candidate 1: Reframed a "finding" as aspirational, not a defect to fix
+
+Claude surfaced the calibration result (0/18 corpus papers pass all 8 gate
+checks) framed as a possible mis-calibration warranting a tolerance-loosening
+"refinement". Shawn reframed it in one move — *existing writing not passing
+the filters means the filters are already aspirational, which is fine; I
+already keep aspirational guidelines* — dissolving the implied work and
+connecting the result to existing practice.
+
+**What this means in practice:** when a corpus fails its own derived target,
+check whether the target is aspirational *by construction* before proposing
+to re-calibrate. Shawn already thinks in empirical-vs-aspirational layers;
+offer that lens first.
+
+[x] accept
+
+### Candidate 2: Recording an insight ≠ committing to act on it
+
+Shawn opened with "I don't think this necessarily implies we redo
+anything... but it strikes me that —", explicitly separating *capturing* an
+observation from *acting* on it. Claude had bundled the finding with a
+proposed work-item; Shawn unbundled them, then dispositioned the insight as
+a bare `/observe` with no follow-on task.
+
+**What this means in practice:** surface findings without an attached
+work-item. A logged observation is a complete outcome, not a trigger to
+convert every insight into a backlog row.
+
+[x] accept
+
+*(Candidate 3 — "anti-confabulation held in a low-stakes build session", a
+self-observation about Claude sourcing gate targets from the canonical data
+files rather than the dispatch prompt — reviewed and discarded by Shawn:
+Claude-about-Claude conduct, which belongs in working-with-claude territory,
+not user observations.)*
