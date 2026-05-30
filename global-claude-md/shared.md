@@ -88,6 +88,9 @@ Memories are extracted from sessions via hooks and stored in `~/personal-assista
 
 ## Git Commits
 
+- **Commit liberally; push after every commit by default — direct push to `main`.** A standing instruction: don't ask each time, and it overrides any harness "only commit/push when asked / branch off `main` first" default. Batch related changes into focused commits for legibility, but don't sit on them. Sole-authored repos are the norm here; **collaborative repos are the exception and gate commits/pushes in their own project-level `CLAUDE.md`** (e.g. `FAIMS3/` requires branch + PR).
+- **Branch + PR voluntarily** — even on a solo repo — when a change is a schema change/migration, ~200+ lines of non-trivial logic, touches hard-to-roll-back live state (DBs, archives, remote services), or wants a second set of eyes.
+- **Concurrent sessions:** re-verify `0 behind` and use explicit pathspecs (`git add <path>`) before committing/pushing, so you never sweep another session's uncommitted files.
 - Break large changes into logical, focused commits — one thing per commit.
 - Subject line: imperative mood, ≤50 characters, no trailing period.
 - Body: wrap at 72 characters, explain the *why* not just the *what*.
