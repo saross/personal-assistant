@@ -186,17 +186,38 @@ authoritatively can drive primacy-effect errors.
   `SCRATCHPAD_WARN_LINES = 150` is LINE-based and never fired (99 lines) even
   at 29 KB — the bloat was bytes-in-long-lines; fix the warn to be byte-based
   as part of Vector 2b.
-- [ ] **Vector 2b — scratchpad load-path byte budget (next design pass; Shawn
-  chose "both, distill first" 2026-05-30).** The distillation is the "content"
-  half; this is the "mechanism" half. Even at 15.5 KB the scratchpad is
-  injected in full every session with no budget/relevance filter — still the
-  dominant payload term (15.5 KB vs digest 1.5 KB). Apply the Vector 2
-  byte-budget primitive (design §7f says Vector 2b should SHARE it, not
-  re-invent) to `load_scratchpad()` in `hooks/session-start-retrieval.py`,
-  plus flip `SCRATCHPAD_WARN_LINES` to a byte threshold. Its own design +
-  PASS, like Vector 2 was; out of scope per design §1a so it needs a short
-  design doc first. Clean 15.5 KB baseline now exists to size the budget
-  against.
+- [x] 2026-05-30 **Vector 2b — scratchpad load-path byte budget: DESIGN +
+  IMPLEMENTATION shipped DARK (commits `db4da15` design, `da5790f` code,
+  `422905f` doc-update).** Design doc `wiki/planning/vector-2b-design.md`
+  (the "design FIRST" deliverable, like vector-2-design.md was). **Crux
+  finding:** a curated principle log is NOT a recall dump (no `verified`,
+  no decay, deliberately global, already distilled zero-loss), so Vector
+  2's rank-and-drop selector is the wrong shape. Mechanism is narrower:
+  (1) a byte-warn that actually fires — `SCRATCHPAD_WARN_LINES`
+  (line-based, never fired at 29 KB / 99 lines) → `SCRATCHPAD_WARN_BYTES`;
+  (2) a section-aware regrowth guard-rail — `digest.cap_markdown_to_budget`
+  keeps whole `## ` sections under a hard UTF-8 cap, never splits a
+  principle, visible trim marker. **Shared primitive per §7f**: lifted the
+  byte-cap discipline out of `build_digest`'s `fits()` closure into a
+  reusable markdown capper in `scripts/digest.py` (not re-invented).
+  **Shawn chose Fork A (guard-rail)**: budgets sit ABOVE current sizes
+  (global 18 KB > 15,484 B; per-project 8 KB > map-reader 5,134 B) → nothing
+  trims today; the cap is regrowth insurance. **Flag-gated on its own
+  sentinel** `~/.pa-scratchpad-budget` + env `PA_SCRATCHPAD_BUDGET`
+  (mirrors `digest_mode_enabled()`), machine-local, NOT in synced `data/`.
+  Default OFF → output byte-identical → the live Vector 2 §8 window
+  (review 2026-06-13) is unconfounded. Warn recalibrated 12 KB → 17 KB
+  after live smoke showed a sub-floor warn nags every session post-distill.
+  Tests +28; **full suite 781 passed** (was 753), 0 regressions. Live
+  smoke (PA-hub): flag OFF and flag ON both emit byte-identical 17,150 B
+  (15,483 B scratchpad < 18 KB budget). **Sentinel NOT created — dark.**
+  - [ ] **Enable Vector 2b on amd-tower AFTER the Vector 2 §8 review
+    (2026-06-13)** — `touch ~/.pa-scratchpad-budget` (or accept the §8
+    confound explicitly). At today's 15.5 KB nothing trims; the live win
+    is the byte-warn firing on future regrowth. Revisit **Fork B**
+    (active-cut, tighter budget with an explicit section-drop order) only
+    if the scratchpad is still the bottleneck after Vector 2b's own
+    observation window. Reference: `wiki/planning/vector-2b-design.md` §7.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):
