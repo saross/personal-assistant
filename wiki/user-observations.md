@@ -1208,3 +1208,56 @@ upfront brief + autonomous execution + review would serve better. Cross-project;
 part of the explicit "facilitating Claude's autonomy" upskilling thread.
 
 [x] accept (Shawn's own observation; replaces Claude's candidate 4)
+
+## 2026-05-30 (Vector 2 PASS 1 + git-cadence session) — Drafted candidates (reviewed at handoff)
+
+### Candidate 1: Trace the drift, don't just patch the symptom
+
+When Shawn noticed Claude had grown reticent about committing and especially
+pushing over ~2 weeks, he did not just say "push more" — he asked Claude to
+*trace why it changed and how to liberalise*. That forced a root-cause fix
+(the harness per-session default "commit or push only when asked / branch first"
+quietly overriding Shawn's recorded scratchpad-2026-04-23 preference for
+direct-push-to-main → encode the override in CLAUDE.md, which the harness obeys)
+instead of a one-off nudge that would have drifted back within sessions.
+
+**What this means in practice:** when a behavioural drift shows up, Shawn wants
+it diagnosed at the mechanism level (what instruction is winning, and why), not
+patched at the symptom level. The durable fixes live where the mechanism lives
+(CLAUDE.md, hooks, settings), not in a single corrected turn.
+
+[x] accept
+
+### Candidate 2: Product-managing held this session — a clean counter to the 2026-05-29 pairing slip
+
+The 2026-05-29 observation (Candidate 3 above) flagged Shawn slipping into
+pair-programming. This session ran the opposite way: Claude opened with a brief
++ acceptance criteria + an explicit scope-fork question *carrying a
+recommendation*, Shawn picked the recommended low-blast-radius option, and Claude
+executed autonomously through PASS 1 + `/audit` + fixes + commits, reporting
+against the criteria. The scope-fork-with-recommendation up front was the
+concrete mechanism that kept the session product-managed rather than turn-by-turn.
+
+**What this means in practice:** the antidote to the incremental-driving slip is
+a structural one — front-load the decision (a recommended fork), then delegate
+execution. When Claude offers the fork-with-recommendation early, Shawn can
+steer in one move and hand off the rest; that pattern is worth repeating.
+
+[x] accept
+
+### Candidate 3: With parallel sessions, Shawn is the integration point
+
+Shawn caught that this session had not run `/handoff` ("I'm running four
+sessions :)") — Claude had made piecemeal continuity edits but never the ritual.
+Across concurrent sessions, the human is the one tracking which session did what;
+a single session's view cannot see the others' state (only their committed or
+uncommitted files).
+
+**What this means in practice:** in multi-session work Claude should (a) be
+explicit about what *this* session has and hasn't done (e.g. "we have not run
+/handoff here"), (b) default to concurrent-safe git hygiene (explicit pathspecs,
+re-verify 0-behind, leave other sessions' dirty files alone), and (c) not assume
+a ritual ran elsewhere — surface the uncertainty rather than infer. Shawn
+prompting the ritual is expected, not a failure.
+
+[x] accept (was drafted Candidate 4)

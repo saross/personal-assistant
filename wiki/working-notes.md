@@ -1045,3 +1045,56 @@ are finer-grained than the coarse wiki tags, so read the numbers as relative
 signal, not absolute coverage. Anchors:
 `wiki/planning/wiki-vocabulary-validation-2026-05-29.md`;
 `scripts/analyse-wiki-vocabulary.py` (`WIKI_TAG_EXPANSIONS` map).
+
+## 2026-05-30: A design's quantitative premise can silently expire — re-measure before building on it
+
+The Vector 2 design (2026-05-16) was built on the measured fact that only **8**
+memories were `verified=true` corpus-wide, so its Stage 1 selector leaned on a
+"promoted-recent fallback" to avoid an empty digest. Two weeks later, the first
+dry-run against the live corpus measured **289 verified-true in the last 7 days
+alone** — the v2 write-path hook had been populating `verified` far faster than
+the design assumed. The fallback the design treated as load-bearing is now
+near-vestigial. The design doc itself flagged the trip-wire ("re-measure if the
+gap to current is >2 weeks") and it was exactly right.
+
+**Generalises:** a design grounded in a corpus measurement carries an implicit
+expiry. Before implementing against a months-old quantitative premise, re-run
+the measurement — the cheapest possible step, and it can invert which code path
+matters. Anchors: `wiki/planning/vector-2-design.md` §2, §6a item 3;
+`scripts/digest-preview.py` (live before/after harness); session 2026-05-30.
+
+## 2026-05-30: A "byte cap" on templated output is not unconditional — the fixed scaffolding is an irreducible floor
+
+`digest.py`'s docstring promised the rendered digest is "guaranteed
+`<= byte_budget`". The `/audit` (execution-verifying subagent) disproved it by
+construction: `build_digest([], byte_budget=50)` returns 522 B, because the
+fixed scaffolding (title, what-changed line, anti-confabulation reminder, depth
+footer) is load-bearing and never trimmed. The cap only governs the *variable*
+part (the entries). Latent at the 1,500 B default (scaffolding ≈ 1/3 of it),
+but the *contract* was false. Fixed by stating the floor honestly rather than
+over-claiming, plus sub-floor / tight-budget / multibyte cap tests.
+
+**Generalises:** when a generator templates fixed framing around variable
+content, any "hard cap" applies to the variable content above a fixed floor, not
+to the whole output. State the floor; don't claim an unconditional bound a
+fixed preamble makes impossible. Anchors: `scripts/digest.py`
+(`DigestResult` / `build_digest` docstrings, `_assemble`); `tests/test_digest.py`
+(`test_sub_floor_budget_returns_minimal_scaffolding`); session 2026-05-30.
+
+## 2026-05-30: Audit subagents that *execute* catch contract bugs inspection misses
+
+Running `/audit` on the new digest code with subagents instructed to
+*adversarially execute* (construct inputs, run the code, observe) rather than
+read found two real bugs that line-by-line reading would likely have rated
+"looks fine": the scaffolding-floor cap violation (proven by running
+`build_digest` at tiny budgets) and a greedy `break` that emptied the digest
+when the highest-ranked entry was oversized (proven by a big-top-entry +
+small-tail corpus). Both were size-vs-rank non-monotonicities that read as
+correct.
+
+**Generalises:** for invariants about sizes, ordering, or boundaries, an audit
+that runs adversarial inputs beats one that reasons about the code — execution
+surfaces the non-monotonic edge cases intuition smooths over. Worth telling
+audit agents explicitly to execute, not just inspect. Anchors: session
+2026-05-30 `/audit` run; `tests/test_digest.py`
+(`test_oversized_top_entry_does_not_starve_digest`).
