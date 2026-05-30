@@ -1284,3 +1284,81 @@ constraint at source is what makes the redirect trustworthy rather than a guess.
 *(Candidates 2 "build-dark-then-ask" and 3 "scope via one-line steers" drafted
 and discarded by Shawn at handoff — both judged redundant with already-accepted
 2026-05-30 PASS 1 observations on product-managing and bounded increments.)*
+
+## 2026-05-30 (Workstream G Phases 2 + 3 + 4 + v2.3 confabulation-guard test) — Drafted candidates (reviewed at handoff)
+
+### Candidate 1: "I'd like to clarify these questions" is a UI correction, not a content one
+
+When Claude posted an `AskUserQuestion` with three options for the §6.4/§6.5
+status-override decision, Shawn answered with "I'd like to clarify these
+questions" — not picking an option, not asking a content question, but
+explicitly meta-correcting the question structure. Claude had compressed too
+many decisions into one round; the right move was to ask what was unclear,
+then re-pose. The intervention was about Claude's information geometry, not
+about the underlying technical question.
+
+**What this means in practice:** when offering choices, if the user's response
+is meta-level ("clarify"/"what about"/"have you considered"), that signals the
+question structure is wrong — not just the options. Pause, ask what's unclear,
+then re-pose. Don't re-offer the same shape with more text. Distinct from a
+content disagreement, which warrants engaging with the options as-presented.
+
+[x] accept
+
+### Candidate 2: "Perform in-session yourself, no calls needed" was a delegation-pattern correction
+
+When Claude framed the v2.3 regeneration as a subagent-dispatch with an API
+gate ("$5-15 Opus"), Shawn collapsed both framings by saying "perform
+in-session yourself, no calls needed". The implicit feedback: Claude was
+reaching for the subagent tool because that's what generated v2.2, but the
+actual task (targeted edits to four §-claims using already-accessible source
+data) was an in-session edit task, not a generation task. Tool selection was
+path-dependent on the previous step rather than fit-for-purpose.
+
+**What this means in practice:** "do this with X" requests warrant Claude
+pausing to check whether X is still the right tool — especially when the
+previous version was generated with X. Reaching for the previously-used tool
+is a path-dependency error. The relevant question is "what does *this* task
+actually require?", not "what tool did the previous step use?" — and Shawn
+will correct the tool choice explicitly when it's wrong.
+
+[x] accept
+
+### Candidate 3: "I'd like the guide to be reproducible" was a meta-instruction, not a passing comment
+
+When asked how to handle the §6.3 confabulation, Shawn said: "I'd like the
+guide to be reproducible — can we insert the confabulation guard and then
+regenerate to see if it works?" — restating the *criterion* alongside the
+tactical question. That restatement became the load-bearing constraint for
+the rest of the session: it justified the verifier-first design, the
+deterministic Phase 3 algorithm, the v2.3-preserves-v2.2 baseline pattern,
+the bimodality detector instead of agent overrides — all downstream of
+honouring "reproducible" as a methodological standard, not a wish.
+
+**What this means in practice:** when Shawn restates a goal alongside a
+tactical question, that restatement IS the constraint — it should shape every
+subsequent technical choice, not just answer the immediate question. Watch
+for inline goal-restatements as load-bearing instructions, distinct from
+"by the way" framing. The downstream test: would the technical choice still
+make sense under that restated criterion?
+
+[x] accept
+
+### Candidate 4: Welcomes recommendations against the current conversation
+
+When Claude proposed Phase 5 next, Shawn asked two metacognitive questions:
+"how large is 5?" and "do you have valuable context or would it be better to
+undertake in a new session?" — explicitly inviting Claude to assess its own
+context-state and recommend against staying if a fresh session would be more
+efficient. Claude recommended fresh session and Shawn accepted that
+recommendation. The pattern is unusually clean: Shawn welcomes
+recommendations that work *against* the current thread continuing.
+
+**What this means in practice:** when the right answer for the work is a
+fresh session, saying so is helpful even though it ends a productive thread.
+Don't bias toward continuity-of-conversation when continuity-of-conversation
+isn't the criterion. Shawn's metacognitive prompts ("valuable context?",
+"how large?") are explicit invitations for this kind of self-assessment —
+treat them as permission to recommend against the current session.
+
+[x] accept

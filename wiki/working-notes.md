@@ -1128,3 +1128,82 @@ entries are long. Folded into the Vector 2b scope (flip the threshold to bytes).
 Anchors: `hooks/session-start-retrieval.py` (`SCRATCHPAD_WARN_LINES`,
 `load_scratchpad`); session 2026-05-30 scratchpad distillation
 (29,268 → 15,484 B).
+
+## 2026-05-30: Opus-subagent confabulation is detectable AND fixable by a deterministic post-generation verifier
+
+The 2026-05-30 v2.2 style-guide generation run (corpus-style-analyser-v2
+subagent, Opus 4.7) wrote `Where it appears (8/18 papers, all pre-2023):
+[6 papers named] + plus two papers with single-digit counts` for §6.3
+em-dash. Per-paper data shows exactly **6/18** papers with em-dash > 0
+and the "two papers with single-digit counts" do not exist — the
+subagent invented them to make the visible attestation count fit the
+attested-concentrated framing. A deterministic regression gate
+(`scripts/style-analyser/phase3_guide_verifier.py`) caught it via a
+`N/M papers` cross-check against `phase3-promotion-clean.json` AND via
+a generic "unanchored 'plus N more' hedge" rule.
+
+**The fix-and-verify loop worked end-to-end.** Extended
+`phase3_promotion.py` to emit verbatim `papers_present`/`papers_absent`
+lists per metric; added Anti-confabulation safeguard 8 to the agent file
+mandating exact verbatim copy of those lists with no hedging phrases;
+regenerated as v2.3 in-session (no subagent dispatch needed for targeted
+edits). Verifier verdict: v2.2 = 29 PASS / 5 FAIL / 3 WARN; v2.3 =
+**35 PASS / 0 FAIL / 0 WARN**.
+
+**Generalises:** for any LLM-generated claim with a deterministic data
+anchor (counts, fractions, named entities from a finite set), build a
+post-generation verifier rather than hoping prompt engineering will
+prevent confabulation. Re-running the same model on the same data with
+similar prompting reproduces similar failure modes. Verifier-first
+design also caught a second-order benefit: it surfaces verifier-side
+false positives (mapping bugs, regex over-fires) at the same time as
+the genuine failures. Anchors: `scripts/style-analyser/phase3_promotion.py`,
+`phase3_guide_verifier.py`, agent v2.3 Anti-confabulation safeguard 8,
+session 2026-05-30 v2.2→v2.3 regeneration.
+
+## 2026-05-30: Bimodality gap-test catches cluster splits CV misses, and vice versa
+
+Adding a bimodality detector to `phase3_promotion.py` (inner-gap rule:
+largest consecutive gap in sorted per-paper rates ≥ 0.25 of range, with
+≥3 papers on each side) caught a NEW §5.3 mean dependency depth finding
+the CV-only v2.2 algorithm missed: CV is tiny (0.046) but there's a
+clean 5-vs-13 cluster split at 5.87/6.13 (gap fraction 0.269). And the
+detector confirmed §6.3 em-dash as attested-concentrated by BOTH CV
+(1.664) AND bimodality (0.334) — but at the same time correctly did
+NOT promote §6.4 announcement-colon (gap 0.248, just below threshold)
+or §6.5 paragraph length (gap 0.139), where the v2.2 subagent had
+applied judgement overrides.
+
+**Generalises:** CV captures dispersion uniformly; gap-test captures
+discontinuity. They are complementary — a distribution can be high-CV
+but smoothly varying (no cluster split), or low-CV but bimodal (clear
+two-cluster split). For "is this pattern uniform across the corpus"
+questions, run both and OR-combine the verdicts. The single-outlier
+trap (gap test fooled by one extreme value) is fixed by requiring
+≥N papers on each side of the gap. Anchors:
+`scripts/style-analyser/phase3_promotion.py:detect_bimodal`;
+v2.3 guide §5.3 (new finding), §6.3 (confirmed), §6.4 / §6.5 (correctly
+not-promoted).
+
+## 2026-05-30: For targeted LLM-output edits, in-session beats subagent dispatch ~10×
+
+v2.3 regeneration as a targeted edit of v2.2 (four §-claims affected:
+§6.3 confabulation fix, §6.4 / §6.5 status downgrades, §5.3 status
+upgrade) was performed in-session by reading the source data
+(`phase3-promotion-clean.json`, `phase1-results-clean.json`) directly
+and applying surgical edits with the `Edit` tool. Cost: ~5 minutes of
+session compute, no API spend. By contrast, the v2.2 generation via
+subagent dispatch (`corpus-style-analyser-v2`) ran ~10 minutes wall-clock
+and cost single-digit dollars (Opus 4.7 reading 18 paper bodies +
+reasoning across the full guide).
+
+**Generalises:** subagent dispatch is right when the LLM needs to
+**re-derive** content from scratch (initial generation, register switch,
+corpus change). For targeted edits where the diff is small and the
+source data is already accessible to the orchestrating session,
+in-session edits are ~10× cheaper AND preserve the baseline file for
+diff (saving as `-2` rather than overwriting). The decision lever: how
+much of the output needs to be re-derived vs preserved. Anchors:
+session 2026-05-30 v2.2 vs v2.3 generation contrast;
+`style-guide-academic-2026-05-30.md` (v2.2, subagent) vs `-2.md`
+(v2.3, in-session).
