@@ -28,7 +28,9 @@ EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
 JUDGE = EXP / "judge-tasks"
 STRATUM = {"A1": "on-domain", "A2": "on-domain",
            "B1": "off-domain", "B3": "off-domain"}
-CONTRASTS = ["C2vC0", "C3vC0"]
+# Contrasts present in the judge run. C3vC0 was dropped in the 2026-05-31
+# citation-corrected re-run (rejected condition).
+CONTRASTS = ["C2vC0"]
 
 
 def winrate(rows: list[dict]) -> str:

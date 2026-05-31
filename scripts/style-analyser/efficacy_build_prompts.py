@@ -35,7 +35,42 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Citation stripping (2026-05-31). Citation format is venue-determined, NOT
+# authorial voice (Shawn), so the injected guide must not prescribe or
+# demonstrate citations. The canonical guide's §3/§9.4 now carry exclusion
+# notes and the Appendix F reverse-prompts have had their citation directives
+# removed, but the verbatim exemplar SENTENCES still contain citation tokens —
+# this strips any parenthetical containing a 4-digit year (e.g. "(Niven 2011a;
+# Whitmore and Dennis 2019)", "(cf. Fish and Kowalewski 1990)", integrated
+# "(2012)") from the injected context. Year-free parentheticals such as
+# "(FAIR)" or "(12 articles)" are left untouched.
+# --------------------------------------------------------------------------
+_CITATION_PAREN_RE = re.compile(
+    r"\s*\([^()]*\b[A-Z][a-z]{2,}\b[^()]*\b(?:18|19|20)\d{2}[a-z]?\b[^()]*\)")
+_FIX_SPACE_PUNCT_RE = re.compile(r"\s+([,.;:])")
+_FIX_DOUBLE_SPACE_RE = re.compile(r"  +")
+
+
+def strip_citations(text: str) -> str:
+    """Remove year-bearing parenthetical citations and tidy the residue."""
+    text = _CITATION_PAREN_RE.sub("", text)
+    text = _FIX_SPACE_PUNCT_RE.sub(r"\1", text)
+    text = _FIX_DOUBLE_SPACE_RE.sub(" ", text)
+    return text
+
+
+# Prepended to the C2 task wrapper: an explicit, belt-and-braces no-citation
+# instruction (the guide §3 exclusion note already says this, but state it at
+# the point of the task too).
+CITATION_DIRECTIVE = (
+    "Do NOT include any citations or references — citation format is determined "
+    "by the publication venue, not by this author's voice, so write the prose "
+    "with no parenthetical citations and no author-year references."
+)
 
 # --------------------------------------------------------------------------
 # Paths (run from the repository / worktree root)
@@ -49,19 +84,18 @@ EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
 C2_CONTEXT_PATH = EXPERIMENT_DIR / "prompt-c2-context.md"
 MANIFEST_PATH = EXPERIMENT_DIR / "prompts.json"
 
-# Guide line boundaries (1-indexed, inclusive) for the C2 context block.
-# Verified 2026-05-31 against style-guide-academic-2026-05-30-2.md (1631 lines):
-#   line   23 = "## How to read this guide"
-#   line   49 = "## 1. Dimension 1 ..."
-#   line 1062 = end of section 11 (line 1063 = "## Appendix A")
-#   line 1450 = "## Appendix F ..."  (exemplar block, runs to EOF 1631)
-# The evidence/reference appendices A-E (corpus inventory, evidence ledger,
-# version diff, the 8-metric gate protocol) are deliberately EXCLUDED: a
-# realistic /write-like-me consumer injects the prescriptive guide plus the
-# exemplars, not the evidence tables. The target numbers still appear in the
-# section prose (e.g. sec 6.1 mean sentence length 21.45), so this does not
-# fully remove the teaching-to-the-test exposure; see the pre-registration doc.
-GUIDE_BLOCKS: list[tuple[int, int]] = [(23, 1062), (1450, 1631)]
+# C2 context = the prescriptive guide ("How to read" through the end of §11)
+# plus the Appendix F exemplar block. Located by SECTION MARKERS rather than
+# line numbers, so guide edits that shift line numbers do not silently break
+# the extraction (a line-number scheme did exactly that after the 2026-05-31
+# citation edits). The evidence/reference appendices A-E (corpus inventory,
+# evidence ledger, version diff, 8-metric gate) are deliberately EXCLUDED — a
+# realistic /write-like-me consumer injects the prescriptive guide + exemplars,
+# not the evidence tables.
+GUIDE_BLOCK_MARKERS: list[tuple[str, str | None]] = [
+    ("## How to read this guide", "## Appendix A"),   # How-to-read + §§1-11
+    ("## Appendix F", None),                           # exemplars → EOF
+]
 
 # --------------------------------------------------------------------------
 # Condition templates. {topic} and {c2_context} are filled per record.
@@ -93,7 +127,7 @@ C2_TEMPLATE = (
     "voice (sections 1-11), followed by few-shot exemplars of that voice "
     "(Appendix F). Write approximately 400 words of continuous prose on the "
     "topic specified below, applying this style guide as faithfully as you "
-    "can. " + SCAFFOLD_FORMAT + "\n\nTopic: {topic}"
+    "can. " + CITATION_DIRECTIVE + " " + SCAFFOLD_FORMAT + "\n\nTopic: {topic}"
 )
 
 # --------------------------------------------------------------------------
@@ -149,25 +183,29 @@ TOPICS: list[dict] = [
 CONDITIONS = ["C0", "C1", "C2"]
 
 
-def extract_guide_block() -> str:
-    """Return the concatenated C2 context block from the guide file.
+def _marker_line(lines: list[str], prefix: str) -> int:
+    """Return the index of the first line starting with `prefix` (else raise)."""
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            return i
+    raise ValueError(f"guide section marker not found: {prefix!r}")
 
-    Joins the 1-indexed inclusive line ranges in GUIDE_BLOCKS with a blank-line
-    separator. Raises if the guide is shorter than the highest requested line,
-    so a guide edit that shifts boundaries fails loudly rather than silently
-    truncating the injected context.
+
+def extract_guide_block() -> str:
+    """Return the concatenated, citation-stripped C2 context block.
+
+    Sections are located by header markers (GUIDE_BLOCK_MARKERS), robust to
+    line-number shifts. Citation tokens are then stripped, because citation
+    format is venue-determined and excluded from voice (see module header and
+    guide §3).
     """
     lines = GUIDE_PATH.read_text(encoding="utf-8").splitlines()
-    highest = max(end for _, end in GUIDE_BLOCKS)
-    if len(lines) < highest:
-        raise ValueError(
-            f"Guide {GUIDE_PATH} has {len(lines)} lines but block boundaries "
-            f"require >= {highest}; re-verify GUIDE_BLOCKS after a guide edit."
-        )
     chunks: list[str] = []
-    for start, end in GUIDE_BLOCKS:
-        chunks.append("\n".join(lines[start - 1:end]))
-    return "\n\n".join(chunks).strip() + "\n"
+    for start_marker, end_marker in GUIDE_BLOCK_MARKERS:
+        start = _marker_line(lines, start_marker)
+        end = _marker_line(lines, end_marker) if end_marker else len(lines)
+        chunks.append("\n".join(lines[start:end]).strip())
+    return strip_citations("\n\n".join(chunks).strip()) + "\n"
 
 
 def build_manifest(c2_context: str) -> dict:
@@ -194,7 +232,8 @@ def build_manifest(c2_context: str) -> dict:
     return {
         "experiment": "style-efficacy-2026-05-31",
         "guide": str(GUIDE_PATH.relative_to(REPO_ROOT)),
-        "guide_blocks_1indexed_inclusive": GUIDE_BLOCKS,
+        "guide_block_markers": GUIDE_BLOCK_MARKERS,
+        "citations_stripped": True,
         "conditions": {
             "C0": "plain — format/length scaffold + topic only",
             "C1": "generic academic — scaffold + formal-scholarly register",

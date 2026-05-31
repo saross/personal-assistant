@@ -665,36 +665,39 @@ runtime `phase5_evaluator.py` (Mahalanobis distance-to-corpus + the
 whether the guide actually moves LLM output toward the corpus. Open
 items, ranked:
 
-1. **Efficacy experiment — DONE 2026-05-31. Verdict: the guide WORKS for
-   generation, but the stylometric distance is the wrong gate.** Pre-reg +
-   harness + pilot at `wiki/planning/style-guide-efficacy-experiment-design.md`
-   and `data/experiments/style-efficacy-2026-05-31/` (synthesis:
+1. **Efficacy experiment — DONE 2026-05-31. Verdict (citation-corrected): the
+   guide WORKS — it moves output toward the corpus on intrinsic voice, and
+   BOTH the distance and a blind judge now agree.** Pre-reg + harness + pilot at
+   `wiki/planning/style-guide-efficacy-experiment-design.md` and
+   `data/experiments/style-efficacy-2026-05-31/` (authoritative synthesis:
    `efficacy-synthesis.md`). 3-condition paired design (C0 plain / C1
    generic-academic / C2 full guide + Appendix F), Opus 4.8 in-CC
    fresh-context subagents (no API), 4 pilot topics (2 on- + 2 off-domain) ×
-   2 reps. **Two evaluations, one conclusion:** (a) length-matched stylometric
-   distance (319 ~400-word corpus excerpts — fixed a hapax length artefact
-   that dominated whole-paper scoring) found guide ≈ plain (Δ≈0), C3 revision
-   worse, generic-academic *harmful* (−0.92 LOO-SD vs plain); (b) **blind,
-   order-counterbalanced pairwise judge preferred the guide 13/16 (81%);
-   original guide C2 = 7/8.** Resolution: the 12-feature distance is blind to
-   the discourse markers judges key on (author-date citations — not even a
-   phase1 feature; first-plural stance; concession-then-rebuttal) and
-   over-weights the guide's one real flaw (sentence-length overshoot). **The
-   guide measurably moves output toward the corpus; phase5 distance must NOT
-   gate short-passage generation.** Tried + rejected: a C3 "operative preamble"
-   revision (loud active-voice/crisp-sentence imperatives) — overshot on both
-   metrics (use the guide as written). Caveat: pilot scale; final validation =
+   2 reps; length-matched scoring (319 ~400-word corpus excerpts — fixed a
+   hapax/Heaps'-law length artefact that had dominated whole-paper scoring).
+   **The decisive correction (Shawn):** citation format is venue-determined,
+   NOT voice — it had leaked in three ways (guide §3 prescribed it, Appendix F
+   demonstrated it, the judge prompt *rewarded* it). Removed surgically (guide
+   §3/§9.4 → exclusion notes; injection citation-strip + no-citation directive;
+   judge prompt + reference de-citationed) and both tests re-run. **Corrected
+   result: C0 plain → C2 guide = +0.44 LOO-SD, 4/4 on the distance (was a null
+   +0.007 when citation-confounded), and the blind judge prefers the guide 6/8
+   (was 7/8 — citations had been part of the cue).** Removing citations also
+   *improved* the prose: citation clauses had inflated C2 sentence length
+   (|z| 1.66→0.995) and passive (0.91→0.21). Generic-academic stays *harmful*
+   (−0.92 LOO-SD vs plain, 0/4). So the distance is a usable diagnostic for
+   citation-free generation (it still omits discourse features — not a sole
+   gate). Tried + rejected: a C3 "operative preamble" revision (overshot;
+   dropped from the corrected run). Caveat: pilot scale; final validation =
    Shawn reading the C2-vs-C0 pairs in `passages/`.
 2. **Package a generation workflow — JUSTIFIED by (1); build next.** A
-   `/write-like-me` command/agent: task → prompt with the **original guide +
-   Appendix F exemplars** (the C2 recipe; do NOT bolt on the C3 imperative
-   preamble) → generate. **Do NOT gate on the phase5 distance** (it's blind to
-   voice markers at passage scale); an acceptance gate, if wanted, should be
-   judge-based or citation/discourse-aware (cf. Catch-Me-If-You-Can ensemble,
-   prior-art finding #4). **Generation caveat:** the guide induces citation
-   *form* but the model *fabricates* citations — output is a stylistic draft
-   whose references must be replaced with real ones.
+   `/write-like-me` command/agent: task → prompt with the **citation-stripped
+   original guide + Appendix F exemplars** (the corrected C2 recipe; do NOT
+   bolt on the C3 imperative preamble) → generate. **Output must contain NO
+   citations** — citation format is venue-determined and excluded from voice
+   (§3); the author adds real references for the target venue. The phase5
+   distance is a usable diagnostic for citation-free generation, though a
+   judge-based gate (roadmap #8) is more voice-faithful.
 3. **Multi-genre assessors** (Substack / business / teaching) — deferred
    indefinitely; each needs a Zotero corpus + Phase 4 API approval.
 4. **(minor) phase1 manifest reproducibility gap** —
@@ -2068,13 +2071,13 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
-### 2026-05-31 (Sun, latest G) — Workstream G efficacy experiment: the guide WORKS (judge 81%), but the stylometric distance is the wrong gate
+### 2026-05-31 (Sun, latest G) — Workstream G efficacy experiment: the guide WORKS (citation-corrected — distance 4/4 + judge 6/8 now agree)
 
-Ran roadmap item #1 end-to-end in an isolated git worktree (`worktree-workstream-g-efficacy`; data submodule on branch `workstream-g-efficacy`) per Shawn's instruction, given the concurrent memory/scratchpad session sharing the tree. Designed *with* Shawn (3 structured decisions): in-CC fresh-context subagents (Opus 4.8, **no API gate**), 3-condition paired design (C0 plain / C1 generic-academic / C2 full guide + Appendix F), pilot-first. Pre-registration + harness committed before generating. **The experiment turned on two reversals.** (1) The whole-paper Phase 5 feature space mis-scores ~400-word passages — **hapax ratio is a length artefact** (Heaps' law; ~58% of the squared Mahalanobis distance), so I built a **length-matched reference** (319 ~400-word corpus excerpts) and re-scored. Corrected result: **guide ≈ plain (Δ≈0)**, the C3 "operative-preamble" revision *worse* (over-direction overshoot), and **generic-academic actively harmful** (−0.92 LOO-SD vs plain — "write like a journal" overshoots Shawn's crisp register). That looked like a null. (2) But a **blind, order-counterbalanced pairwise judge test** (16 judgments, real corpus excerpts as reference) **preferred the guide 13/16 (81%); original guide C2 = 7/8**, robust to a mild position bias, all high-confidence picks favouring it. **Resolution: the 12-feature distance is blind to the markers judges actually use** — author-date citations (not even a phase1 feature), first-person-plural stance, concession-then-rebuttal — and over-weights the guide's sentence-length overshoot. **The guide works for generation; the phase5 distance is the wrong acceptance gate for short passages.**
+Ran roadmap item #1 end-to-end in an isolated git worktree (`worktree-workstream-g-efficacy`; data submodule on branch `workstream-g-efficacy`) per Shawn's instruction, given the concurrent memory/scratchpad session sharing the tree. Designed *with* Shawn (3 structured decisions): in-CC fresh-context subagents (Opus 4.8, **no API gate**), 3-condition paired design (C0 plain / C1 generic-academic / C2 full guide + Appendix F), pilot-first. Pre-registration + harness committed before generating. **The experiment turned on two reversals.** (1) The whole-paper Phase 5 feature space mis-scores ~400-word passages — **hapax ratio is a length artefact** (Heaps' law; ~58% of the squared Mahalanobis distance), so I built a **length-matched reference** (319 ~400-word corpus excerpts) and re-scored. Corrected result: **guide ≈ plain (Δ≈0)**, the C3 "operative-preamble" revision *worse* (over-direction overshoot), and **generic-academic actively harmful** (−0.92 LOO-SD vs plain — "write like a journal" overshoots Shawn's crisp register). That looked like a null. (2) But a **blind, order-counterbalanced pairwise judge test** (16 judgments, real corpus excerpts as reference) **preferred the guide 13/16 (81%); original guide C2 = 7/8**, robust to a mild position bias, all high-confidence picks favouring it. **Resolution: the 12-feature distance is blind to the markers judges actually use** — author-date citations (not even a phase1 feature), first-person-plural stance, concession-then-rebuttal — and over-weights the guide's sentence-length overshoot. The guide looked like it worked only on the judge, with the distance blind. **(3) Citation correction (Shawn, same day) overturned that.** Citation format is venue-determined, NOT voice — and it had leaked three ways: the guide §3 prescribed it, the Appendix F exemplars demonstrated it, and the judge prompt *rewarded* it ("citation habits" was a listed criterion). Removed surgically (guide §3/§9.4 → exclusion notes; injection citation-strip + no-citation directive; judge prompt + reference de-citationed), C2 regenerated citation-free, C3 dropped, both tests re-run. **Corrected: C0 plain → C2 guide = +0.44 LOO-SD, 4/4 on the distance — the earlier "null" was itself a citation artefact (citation clauses had inflated C2 sentence length |z| 1.66→0.995 and passive 0.91→0.21) — and the blind judge still prefers the guide 6/8 (down from 7/8: citations had been part of the cue).** So **both** metrics now agree the guide moves output toward the corpus on *intrinsic* voice; the "distance is the wrong gate" framing was overturned once generation is citation-free. `efficacy-synthesis.md` is the authoritative capstone.
 
-- **Verdict + roadmap:** item #1 DONE (see updated roadmap block above); item #2 (`/write-like-me`) **justified** — build on the **original guide + Appendix F** (NOT the rejected C3 preamble), and **do not gate on phase5 distance**. Generation caveat: the guide induces citation *form* but the model *fabricates* citations (replace before use). Queued #7 (2×2 ablation — does Appendix F contribute?) and #8 (judge-based/discourse-aware efficacy gate).
-- **Artefacts:** pre-reg `wiki/planning/style-guide-efficacy-experiment-design.md`; harness `scripts/style-analyser/efficacy_{build_prompts,build_reference,score,analyse,build_judge_tasks,score_judges}.py`; data `data/experiments/style-efficacy-2026-05-31/` (prompts, 32 passages, scores, `pilot-findings.md`, `retest-analysis.md`, `judge-analysis.md`, `efficacy-synthesis.md`). Submodule `e51e998`; parent branch commits `d66ef37`/`4f05231`/`ba7ae9a` + this doc update.
-- **Caveats:** pilot scale (4 topics, 16 judgments, one judge/pair); Claude judged Claude-written text (blind, vs real excerpts). **Final validation = Shawn reading the C2-vs-C0 pairs in `passages/`.**
+- **Verdict + roadmap:** item #1 DONE; item #2 (`/write-like-me`) **justified** — build on the **citation-stripped original guide + Appendix F** (NOT the rejected C3 preamble); output carries **no citations** (venue-determined, §3). Guide §3/§9.4 now mark citation format excluded — the standing correction Shawn flagged. Queued #7 (2×2 ablation — does Appendix F contribute?) and #8 (judge-based/discourse-aware efficacy gate).
+- **Artefacts:** pre-reg `wiki/planning/style-guide-efficacy-experiment-design.md`; harness `scripts/style-analyser/efficacy_{build_prompts,build_reference,score,analyse,build_judge_tasks,score_judges}.py`; data `data/experiments/style-efficacy-2026-05-31/` (prompts, 24 citation-corrected passages C0/C1/C2, scores, `efficacy-synthesis.md` [authoritative], plus original-run records `pilot-findings.md`/`retest-analysis.md`/`judge-analysis.md` marked superseded). Original citation-confounded run preserved at submodule `e51e998` / parent `ab471c5`.
+- **Caveats:** pilot scale (4 topics; deterministic n=4 paired; judge 8 judgments, one/pair, mild B-position-bias — corrected 6/8 leans on it); Claude judged Claude-written text (blind, vs citation-stripped real excerpts). **Final validation = Shawn reading the C2-vs-C0 pairs in `passages/`.**
 - **Not yet merged to main** (held for Shawn's review + concurrent-session coordination); memory capture deferred (concurrent session is editing `memories.jsonl`).
 
 ### 2026-05-31 (Sun, latest PA) — Vector 2 Stage 2 reframe + Vector 2c (dark) + git guardrails + write-path pivot (items 11 & 12)

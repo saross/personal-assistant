@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase1_pipeline as p1  # noqa: E402
+from efficacy_build_prompts import strip_citations  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
@@ -50,8 +51,10 @@ REFERENCE_WINDOW_INDEX = 2          # mid-document (skips abstract/intro)
 REFERENCE_TARGET_WORDS = 400
 
 TOPICS = ["A1", "A2", "B1", "B3"]
-# (contrast label, guide condition) — both compared against C0 (plain).
-CONTRASTS = [("C2vC0", "C2"), ("C3vC0", "C3")]
+# (contrast label, guide condition) — compared against C0 (plain). C3 was
+# dropped in the 2026-05-31 citation-corrected re-run (rejected condition;
+# its overshoot issues are citation-independent).
+CONTRASTS = [("C2vC0", "C2")]
 REP = "rep1"                          # one representative passage per cell
 
 
@@ -94,6 +97,9 @@ def main() -> int:
         stripped, _ = p1.strip_references(body)
         excerpt = mid_window(stripped, nlp, REFERENCE_WINDOW_INDEX,
                              REFERENCE_TARGET_WORDS)
+        # Strip citations from the reference too: citation format is
+        # venue-determined and excluded from the voice being judged.
+        excerpt = strip_citations(excerpt)
         ref_parts.append(f"## Reference sample {i}\n\n{excerpt}\n")
     (JUDGE_DIR / "reference.md").write_text("\n".join(ref_parts),
                                             encoding="utf-8")
