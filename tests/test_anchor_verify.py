@@ -58,6 +58,61 @@ class TestLooksLikeHash:
 
 
 # ============================================================================
+# wellformed_anchor — write-time structural gate (item 11)
+# ============================================================================
+
+
+class TestWellformedAnchor:
+    """Pure, I/O-free shape gate applied before persisting anchors."""
+
+    def test_valid_commit_hash_ok(self):
+        ok, reason = av.wellformed_anchor({"type": "commit", "ref": "7078d39"})
+        assert ok is True and reason == "ok"
+
+    @pytest.mark.parametrize("ref", [
+        "rome-verification-script",            # descriptive slug
+        "audit-corrections-applied",           # descriptive slug
+        "bb5r1pr54",                           # non-hex chars
+        "feat(hooks): SessionStart sidecar",   # a commit *message*, not a ref
+    ])
+    def test_malformed_commit_refs_rejected(self, ref):
+        ok, reason = av.wellformed_anchor({"type": "commit", "ref": ref})
+        assert ok is False and reason == "malformed-commit-ref"
+
+    def test_file_ref_shape_ok_even_if_nonexistent(self):
+        # A path that doesn't exist *here* may resolve elsewhere — that's the
+        # resolver's call, not the write-time gate's.
+        ok, _ = av.wellformed_anchor({"type": "file", "ref": "scripts/nope.py"})
+        assert ok is True
+
+    def test_file_ref_with_newline_rejected(self):
+        ok, reason = av.wellformed_anchor({"type": "file", "ref": "a\nb"})
+        assert ok is False and reason == "malformed-file-ref"
+
+    def test_zotero_key_ok_and_prose_rejected(self):
+        assert av.wellformed_anchor({"type": "zotero", "ref": "ABCD1234"})[0] is True
+        assert av.wellformed_anchor({"type": "zotero", "ref": "not a key!"})[0] is False
+
+    def test_url_scheme_required(self):
+        assert av.wellformed_anchor({"type": "url", "ref": "https://x.org"})[0] is True
+        assert av.wellformed_anchor({"type": "url", "ref": "x.org"})[0] is False
+
+    def test_unknown_type_passes_through(self):
+        # Forward-compat: a future anchor type is never silently dropped.
+        ok, reason = av.wellformed_anchor({"type": "dataset", "ref": "anything"})
+        assert ok is True and reason == "unknown-type"
+
+    @pytest.mark.parametrize("bad", [
+        "not-a-dict",
+        {"type": "commit"},                    # missing ref
+        {"type": 5, "ref": "abc1234"},         # non-str type
+        {"type": "commit", "ref": "   "},      # whitespace-only ref
+    ])
+    def test_structurally_invalid_rejected(self, bad):
+        assert av.wellformed_anchor(bad)[0] is False
+
+
+# ============================================================================
 # bind_confidence — the rubric that Phase 2 uses to override Haiku
 # ============================================================================
 

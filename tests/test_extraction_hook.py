@@ -375,6 +375,55 @@ class TestFormatMemories:
         result = eh.format_memories(extracted, "test-session")
         assert result[0]["category"] == "context"
 
+    # --- Item 11: write-time anchor quality gate ---------------------------
+
+    def test_malformed_commit_anchor_dropped_good_one_kept(self):
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Rome count verified.",
+                "confidence": "high",
+                "research_tags": [],
+                "anchors": [
+                    {"type": "commit", "ref": "rome-verification-script"},  # malformed
+                    {"type": "commit", "ref": "7078d39"},                   # good
+                ],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert result[0]["anchors"] == [{"type": "commit", "ref": "7078d39"}]
+
+    def test_memory_with_only_malformed_anchor_kept_unanchored(self):
+        # A bad anchor must not force-drop the memory itself; it just loses
+        # the anchor (better than a memory stuck at verified=false).
+        extracted = [
+            {
+                "category": "decision",
+                "content": "Some fine content.",
+                "confidence": "high",
+                "research_tags": [],
+                "anchors": [{"type": "commit", "ref": "audit-corrections-applied"}],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert len(result) == 1
+        assert "anchors" not in result[0]
+
+    def test_wellformed_anchors_pass_through_with_line(self):
+        extracted = [
+            {
+                "category": "decision",
+                "content": "x",
+                "confidence": "high",
+                "research_tags": [],
+                "anchors": [{"type": "file", "ref": "scripts/anchor_verify.py", "line": 42}],
+            }
+        ]
+        result = eh.format_memories(extracted, "test-session")
+        assert result[0]["anchors"] == [
+            {"type": "file", "ref": "scripts/anchor_verify.py", "line": 42}
+        ]
+
     def test_invalid_confidence_defaults_to_medium(self):
         extracted = [
             {
