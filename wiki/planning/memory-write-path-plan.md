@@ -148,16 +148,27 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
       read-only on purpose: `unique_suffix_match` is **not** wired into the live
       `verify_file` (fuzzy matching would erode the `verified` signal), and no
       ref is rewritten.
-    - **(b-next, GATED) Act on the 118 recoverable** — rewriting those refs in
-      `memories.jsonl` is a corpus mutation: needs Shawn's sign-off + a quiet
-      window (daily-sync owns the file). Decision pending. The 90 absent + 17
-      ambiguous + **9 commit-refs-nowhere** are the genuine residual.
+    - ✅ **(b-act) Applied the corpus fix** *(shipped 2026-05-31, data
+      `a792240`, parent `6cd6666`)* — `scripts/recover_anchors.py` (dry-run
+      default; `--apply` guarded by `_bulk_rewrite_guard` + `lock_jsonl_for_rewrite`,
+      verbatim-passthrough minimal diff, `revisions` audit entry, surgical
+      postgres `UPDATE`). Re-verified each modified record via the **exact
+      production path** (`verify_memory` over `repo_set()`; `bind_confidence`).
+      **Applied to 218 records:** 155 flipped `false → true`, 41 → unanchored
+      (`None`, all-junk-stripped), 21 refs corrected but a hard anchor keeps
+      false, 1 → pending. Daily-sync flushed first (the "quiet window"); 218 PG
+      rows updated in lockstep; corpus integrity verified (30,235 records, 0
+      unparseable).
 
-    **(a) + (b) together — not item 20 — are what make `verified=false`
-    trustworthy as a prune signal. Confirmed: the genuinely-suspect set is now
-    tiny (≈9 commit-refs + a slice of the 90 absent); the bulk of
-    `verified=false` is recoverable (118) or already strippable (48) or
-    cross-repo (50), i.e. not wrong memories.**
+    **Net result (post-apply triage):** `verified=false` anchored **404 → 224**;
+    **`clean-after-strip` 48 → 0** and **prefix-recovery `recoverable` 118 → 0**
+    — the corpus is now clean of all *mechanically-fixable* `verified=false`
+    noise. The irreducible residual is **7** commit-refs-nowhere + **93** absent
+    + **17** ambiguous (basename collision) + 10 absolute + 7 tilde — no cheap
+    fix remains. **`verified=false` is now a trustworthy (small, genuine)
+    signal.** Items 20 + 21 (a+b+act) together delivered it; **item 13 pruning
+    must still target retention/archival, not deletion-by-`verified=false`** (the
+    residual is mostly genuinely-gone files, not wrong memories).
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
@@ -177,10 +188,14 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    118/225 still-false relative refs (52 %) are safely recoverable. **Net:**
    `verified=false` is now legible — genuinely-suspect set ≈ 9 commit-refs +
    a slice of 90 absent; the rest is recoverable/strippable/cross-repo, not
-   wrong memories. **Gated follow-up:** rewriting the 118 recoverable refs
-   needs Shawn's sign-off + a quiet window.
+   wrong memories. **(act)** corpus fix applied 2026-05-31 (`recover_anchors.py`;
+   data `a792240`, parent `6cd6666`): 218 records (155 false→true), PG in
+   lockstep. Post-apply: `verified=false` 404 → 224; `clean-after-strip` and
+   `recoverable` both → 0. `verified=false` is now a trustworthy small signal.
 5. **Item 13 design (category retention policy)** — design + per-bucket
    numbers; execute archival only with explicit sign-off, in a quiet window.
+   **NB:** the residual `verified=false` (224, mostly genuinely-gone files) is
+   NOT a prune signal — item 13 targets retention/archival, not verified-status.
 6. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
 
 Items 5, 6, 14, 15 (anything LLM/embedding-driven) are **API-gated** — present
