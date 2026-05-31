@@ -111,12 +111,31 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 18. **Memory-health standing report** — periodic counts / anchor-rate /
     malformed-rate / age / growth (extends item 9).
 19. **Anchor-type expansion** — dataset-id, PR/issue, memory-to-memory refs.
-20. **`verify_file` path/history hardening** *(NEW, surfaced by item 12, no-API)*
-    — expand `~`, accept absolute paths, and check the memory's own commit (or
-    git history) not just `HEAD`. The verify-side companion to item 11: these
-    gaps inflate `verified=false` with ~90+ fine memories (tilde/absolute) plus
-    a large "deleted-since" slice. **Until this lands, `verified=false` cannot
-    be trusted as a prune signal** — so it precedes any item-13 cleanup.
+20. ✅ **`verify_file` path/history hardening** *(no-API, shipped 2026-05-31)*
+    — `verify_file` now `expanduser()`s a leading `~`, and absolute (incl.
+    expanded-tilde) paths that miss on disk fall back to git history for any
+    repo that contains them (`_git_knows_path`: `HEAD` + `git log --all`). Two
+    pre-existing realities corrected the original framing: absolute-path stat
+    and relative `git log --all` history were **already** present (unchanged
+    since `50e663b`), so the only genuine resolver gaps were tilde expansion
+    and the absolute→git fallback. **Result (triage re-run):** tilde broad-false
+    file anchors **75 → 7**; ~40 records moved unresolvable → cross-repo
+    (`cross-repo` 8 → 50, `unresolvable` 383 → 343). **But `verified=false` is
+    STILL not a clean prune signal** — the residual is dominated by **write-side**
+    anchor junk, not verifier gaps (see item 21). Genuine wrongness signal stays
+    tiny: **7** commit refs resolve nowhere.
+21. **Write-side anchor hygiene** *(NEW, surfaced by item 20, no-API)* — the
+    272 unique relative refs still false after item 20 decompose as: **143
+    (53 %) prefix-mismatch** (real file, anchor dropped its dir prefix —
+    `continuity.md` vs `wiki/continuity.md`); **68 genuinely-absent** (incl.
+    batch IDs / hex fragments mis-typed as `file`); **48 prose-as-file-anchor**
+    (`scoring table (7 sessions, 42 cells)`); **13 directory** refs. Two cheap
+    fixes: **(a)** tighten the item-11 `file` gate to reject obvious non-paths
+    (refs containing spaces, bare hex/IDs, slash-command names); **(b)** a
+    prefix-recovery resolver pass that accepts a basename suffix-match **only on
+    a unique hit** (collision-guarded, to avoid mis-resolving to the wrong
+    file). (a) is the safer first step. **This — not item 20 — is what would
+    make `verified=false` trustworthy as a prune signal.**
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
@@ -126,12 +145,17 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 2. ✅ **Item 12 (verified=false triage)** — DONE 2026-05-31 (`5edbdd4`).
    Read-only; found `verified=false` is dominated by verifier artefacts, not
    wrong memories (see §5 item 12).
-3. **Item 20 (`verify_file` path/history hardening)** — NEXT, no-API. Make
-   `verified=false` trustworthy as a prune signal; re-run item-12 triage after.
-   **Precedes any pruning.**
-4. **Item 13 design (category retention policy)** — design + per-bucket
+3. ✅ **Item 20 (`verify_file` path/history hardening)** — DONE 2026-05-31.
+   No-API; tilde expansion + absolute→git fallback. Re-ran the item-12 triage:
+   tilde false-anchors 75 → 7, but `verified=false` is **still** not a clean
+   prune signal — the residual is write-side junk (item 21), not verifier gaps.
+4. **Item 21 (write-side anchor hygiene)** — NEXT, no-API. The actual blocker
+   on trusting `verified=false`: tighten the `file` gate (reject prose / IDs /
+   slash-commands), then collision-guarded prefix-recovery. **Precedes any
+   item-13 pruning** (item 20 was necessary but not sufficient).
+5. **Item 13 design (category retention policy)** — design + per-bucket
    numbers; execute archival only with explicit sign-off, in a quiet window.
-5. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
+6. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
 
 Items 5, 6, 14, 15 (anything LLM/embedding-driven) are **API-gated** — present
 model + batch + count + cost for approval before any run.
