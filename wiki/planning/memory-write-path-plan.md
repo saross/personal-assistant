@@ -124,18 +124,40 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     STILL not a clean prune signal** — the residual is dominated by **write-side**
     anchor junk, not verifier gaps (see item 21). Genuine wrongness signal stays
     tiny: **7** commit refs resolve nowhere.
-21. **Write-side anchor hygiene** *(NEW, surfaced by item 20, no-API)* — the
-    272 unique relative refs still false after item 20 decompose as: **143
-    (53 %) prefix-mismatch** (real file, anchor dropped its dir prefix —
-    `continuity.md` vs `wiki/continuity.md`); **68 genuinely-absent** (incl.
-    batch IDs / hex fragments mis-typed as `file`); **48 prose-as-file-anchor**
-    (`scoring table (7 sessions, 42 cells)`); **13 directory** refs. Two cheap
-    fixes: **(a)** tighten the item-11 `file` gate to reject obvious non-paths
-    (refs containing spaces, bare hex/IDs, slash-command names); **(b)** a
-    prefix-recovery resolver pass that accepts a basename suffix-match **only on
-    a unique hit** (collision-guarded, to avoid mis-resolving to the wrong
-    file). (a) is the safer first step. **This — not item 20 — is what would
-    make `verified=false` trustworthy as a prune signal.**
+21. **Write-side anchor hygiene** *(surfaced by item 20, no-API)* — the 272
+    unique relative refs still false after item 20 decompose as: **143 (53 %)
+    prefix-mismatch** (real file, anchor dropped its dir prefix — `continuity.md`
+    vs `wiki/continuity.md`); **68 genuinely-absent** (incl. batch IDs / hex
+    fragments mis-typed as `file`); **48 prose-as-file-anchor** (`scoring table
+    (7 sessions, 42 cells)`); **13 directory** refs. Two fixes:
+    - ✅ **(a) Tighten the `file` gate** *(shipped 2026-05-31, `c27d6a4`)* —
+      `wellformed_anchor` → `_looks_like_file_ref` rejects prose, slash-command
+      names, and bare object ids, keying on path structure (separator/extension)
+      not on spaces (so Zotero PDFs and extensionless real files still pass).
+      Forward gate; also reclassifies existing junk in the triage:
+      `clean-after-strip` **13 → 48**, `unresolvable` **343 → 311**, relative
+      broad-false file anchors **452 → 405**.
+    - ✅ **(b) Collision-guarded prefix recovery — diagnostic** *(shipped
+      2026-05-31, `7dbee3f`)* — `anchor_verify.unique_suffix_match` (pure,
+      collision-guarded: recovers a prefix-dropped ref **only on a unique
+      path-suffix hit**) + a read-only `recovery_status` breakdown in
+      `triage_anchors.py`. **Measured:** of **225** unique relative refs that
+      resolve nowhere, **118 (52 %) recoverable** (real file at a unique suffix
+      — `preregistration-draft.md` → `planning/preregistration-draft.md`), **17
+      (8 %) ambiguous** (basename collision), **90 (40 %) absent**. Kept
+      read-only on purpose: `unique_suffix_match` is **not** wired into the live
+      `verify_file` (fuzzy matching would erode the `verified` signal), and no
+      ref is rewritten.
+    - **(b-next, GATED) Act on the 118 recoverable** — rewriting those refs in
+      `memories.jsonl` is a corpus mutation: needs Shawn's sign-off + a quiet
+      window (daily-sync owns the file). Decision pending. The 90 absent + 17
+      ambiguous + **9 commit-refs-nowhere** are the genuine residual.
+
+    **(a) + (b) together — not item 20 — are what make `verified=false`
+    trustworthy as a prune signal. Confirmed: the genuinely-suspect set is now
+    tiny (≈9 commit-refs + a slice of the 90 absent); the bulk of
+    `verified=false` is recoverable (118) or already strippable (48) or
+    cross-repo (50), i.e. not wrong memories.**
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
@@ -149,10 +171,14 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    No-API; tilde expansion + absolute→git fallback. Re-ran the item-12 triage:
    tilde false-anchors 75 → 7, but `verified=false` is **still** not a clean
    prune signal — the residual is write-side junk (item 21), not verifier gaps.
-4. **Item 21 (write-side anchor hygiene)** — NEXT, no-API. The actual blocker
-   on trusting `verified=false`: tighten the `file` gate (reject prose / IDs /
-   slash-commands), then collision-guarded prefix-recovery. **Precedes any
-   item-13 pruning** (item 20 was necessary but not sufficient).
+4. ✅ **Item 21 (write-side anchor hygiene)** — DONE 2026-05-31 (no-API).
+   **(a)** file-gate tightening (`c27d6a4`; `clean-after-strip` 13 → 48,
+   `unresolvable` 343 → 311). **(b)** prefix-recovery diagnostic (`7dbee3f`):
+   118/225 still-false relative refs (52 %) are safely recoverable. **Net:**
+   `verified=false` is now legible — genuinely-suspect set ≈ 9 commit-refs +
+   a slice of 90 absent; the rest is recoverable/strippable/cross-repo, not
+   wrong memories. **Gated follow-up:** rewriting the 118 recoverable refs
+   needs Shawn's sign-off + a quiet window.
 5. **Item 13 design (category retention policy)** — design + per-bucket
    numbers; execute archival only with explicit sign-off, in a quiet window.
 6. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.

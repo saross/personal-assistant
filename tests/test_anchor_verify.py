@@ -111,6 +111,75 @@ class TestWellformedAnchor:
     def test_structurally_invalid_rejected(self, bad):
         assert av.wellformed_anchor(bad)[0] is False
 
+    def test_tightened_file_gate_rejects_prose(self):
+        # item 21a: prose mis-typed as a file anchor now fails the gate.
+        ok, reason = av.wellformed_anchor(
+            {"type": "file", "ref": "scoring table (7 sessions, 42 cells)"})
+        assert ok is False and reason == "malformed-file-ref"
+
+    def test_tightened_file_gate_passes_real_path(self):
+        ok, reason = av.wellformed_anchor(
+            {"type": "file", "ref": "wiki/continuity.md"})
+        assert ok is True and reason == "ok"
+
+
+# ============================================================================
+# _looks_like_file_ref — tightened file-anchor shape gate (item 21a)
+# ============================================================================
+
+
+class TestLooksLikeFileRef:
+    """Shape gate that separates genuine paths from prose / ids / commands.
+
+    Every ref here is drawn from the item-20 triage's residual broad-false
+    ``file`` anchors (the junk we must now reject) or its legitimate-looking
+    paths (which must still pass).
+    """
+
+    @pytest.mark.parametrize("ref", [
+        # genuine paths — keyed on separator or extension, not on spaces
+        "scripts/nope.py",
+        "wiki/continuity.md",
+        "continuity.md",                       # bare basename (resolver/21b's job)
+        "decision-log.md",
+        "session.meta.json",
+        "~/.bash_aliases",
+        "~/Zotero/storage/FGM4PVSX/Hanson - 2016 - urban geography.pdf",  # space+sep
+        "/home/shawn/personal-assistant/scripts/x.py",  # multi-segment absolute
+        "responses-round-1/",                  # directory ref
+        "LICENSE",                             # extensionless real file
+        "Makefile",
+    ])
+    def test_genuine_paths_pass(self, ref):
+        assert av._looks_like_file_ref(ref) is True
+
+    @pytest.mark.parametrize("ref", [
+        # prose
+        "scoring table (7 sessions, 42 cells)",
+        "preregistration draft",
+        "Round 4 tally table: H=7 (17%), G=17 (40%), T=18 (43%)",
+        "Run-sheet Block B2",
+        # slash-command names (single-segment absolute, prose tolerated)
+        "/weekly-review",
+        "/reflect",
+        "/lit-scout-iterate — Iteration policy (settled 2026-05-22)",
+        # bare object ids mis-typed as files
+        "3825319a",
+        "932f8ad0",
+        "a6ba54fa",
+        "msgbatch_016RZjdHMfWAtKcW2uBxkbgJ",
+        # control chars / over-length
+        "a\nb",
+        "a\tb",
+        "x" * 257,
+    ])
+    def test_junk_rejected(self, ref):
+        assert av._looks_like_file_ref(ref) is False
+
+    def test_short_hex_word_not_rejected(self):
+        # <6 hex chars is an ordinary short token, not an object id.
+        assert av._looks_like_file_ref("cafe") is True
+
 
 # ============================================================================
 # bind_confidence — the rubric that Phase 2 uses to override Haiku
@@ -412,3 +481,51 @@ class TestGitKnowsPath:
         ]
         with patch("subprocess.run", side_effect=results):
             assert av.verify_file(abspath, [repo]) == "true"
+
+
+# ============================================================================
+# unique_suffix_match — collision-guarded prefix recovery (item 21b)
+# ============================================================================
+
+
+class TestUniqueSuffixMatch:
+    """Pure suffix matcher: recovers a prefix-dropped ref only on a unique hit."""
+
+    TRACKED = [
+        "wiki/continuity.md",
+        "src/cc_session_toolkit/extraction.py",
+        "hooks/extraction.py",
+        "scripts/anchor_verify.py",
+    ]
+
+    def test_unique_basename_recovers(self):
+        assert av.unique_suffix_match("continuity.md", self.TRACKED) == \
+            "wiki/continuity.md"
+
+    def test_ambiguous_basename_returns_none(self):
+        # Two tracked extraction.py → can't safely pick one.
+        assert av.unique_suffix_match("extraction.py", self.TRACKED) is None
+
+    def test_dir_qualified_ref_disambiguates(self):
+        # The directory context narrows the ambiguous basename to one file.
+        assert av.unique_suffix_match(
+            "cc_session_toolkit/extraction.py", self.TRACKED
+        ) == "src/cc_session_toolkit/extraction.py"
+
+    def test_absent_basename_returns_none(self):
+        assert av.unique_suffix_match("ghost.md", self.TRACKED) is None
+
+    def test_exact_path_matches(self):
+        assert av.unique_suffix_match("scripts/anchor_verify.py", self.TRACKED) == \
+            "scripts/anchor_verify.py"
+
+    def test_partial_name_does_not_match_across_boundary(self):
+        # "tion.py" must NOT match "extraction.py" — only whole path segments.
+        assert av.unique_suffix_match("tion.py", self.TRACKED) is None
+
+    def test_trailing_slash_normalised(self):
+        # A directory-shaped ref recovers nothing (ls-files lists files).
+        assert av.unique_suffix_match("wiki/", self.TRACKED) is None
+
+    def test_empty_ref_returns_none(self):
+        assert av.unique_suffix_match("", self.TRACKED) is None
