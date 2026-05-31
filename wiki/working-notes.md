@@ -1323,3 +1323,46 @@ reveal structure, not just shift a number.
 Source: `scripts/style-analyser/phase1_pipeline.py` (`_is_prose_block`);
 `data/style-corpus/phase1-results-clean.json`; guide §6.5; commits
 `0f85a3c` (submodule), `cfa9152` (parent); session 2026-05-31.
+
+## 2026-05-31: `verified=false` is a verifier-quality signal, not a memory-quality signal
+
+Item-12 triage (`scripts/triage_anchors.py`, read-only) classified all 402
+`verified=false` anchored records by *fixability* against a broad repo set
+(personal-assistant + data submodule + every `~/Code/*` repo): 13
+clean-after-strip (malformed anchor), 8 cross-repo (re-verifiable under a
+broader set), 381 unresolvable.
+
+**The 95 % "unresolvable" is overwhelmingly a verifier artefact.** Of its
+broad-false anchors: 446 relative + 75 tilde (`~`) + 15 absolute file anchors
+that `verify_file` structurally cannot resolve (no `~` expansion, treats
+absolute paths as repo-relative, checks `HEAD:<path>` only — so a file valid
+when the memory was written but deleted since reads false), and only **7**
+commit refs that genuinely resolve nowhere. So `verified=false` measures
+verifier coverage, not memory correctness.
+
+**Implication for pruning.** Never prune on `verified=false` until the
+verifier is hardened (item 20: expand `~`/absolute paths, check the memory's
+own commit not just HEAD). The genuinely-suspect set is single-digit commits
+plus a small slice of never-valid relative paths — tiny.
+
+Source: `scripts/triage_anchors.py`; `wiki/planning/memory-write-path-plan.md`
+§5 item 12; commit `5edbdd4`; session 2026-05-31.
+
+## 2026-05-31: the memory store is append-only in practice
+
+Read-only corpus profile (`data/memories/memories.jsonl`): 29,944 records,
+growing ~260/day, but exactly **1 `is_active=false` (forget) and 1 record
+with a `revisions` entry (update) in the entire history**. Exact duplicates
+negligible (2 by summary, 1 by content-hash). 86.5 % of records predate the
+2026-05-16 anchoring epoch and are unanchorable by construction.
+
+**Implications.** (1) The "<4 % verified" figure is not "96 % wrong" — it is
+mostly "older than the anchoring feature". (2) Accretion is genuinely-distinct
+low-value atoms, not duplication, so dedup reclaims nothing; the levers are a
+category retention *policy* (archive ephemeral categories) and extraction
+selectivity at source, not a one-time purge. (3) The correction loop
+(`/forget`, `/update`) is effectively unused — a wrong memory is currently
+immortal.
+
+Source: read-only profile, session 2026-05-31;
+`wiki/planning/memory-write-path-plan.md` §1; commit `8cc8275`.

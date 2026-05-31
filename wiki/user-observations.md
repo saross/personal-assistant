@@ -1511,3 +1511,50 @@ excess.
 skip the methodology discipline; bring it by default.
 
 [x] accept
+
+## 2026-05-31 (PA / memory-system session) — Accepted candidates
+
+### Candidate 1: Strong risk-tolerant instinct, expects it pressure-tested against data, updates fast
+
+Shawn proposed aggressively pruning the <4 %-verified corpus, explicitly
+willing to sacrifice some genuine memories to root out bad ones. Rather than
+executing, I profiled first; the evidence (86.5 % of the corpus predates the
+anchoring epoch, so "unverified" ≠ "wrong") reframed the plan, and Shawn
+agreed at once.
+
+**What this means in practice:** when Shawn states a strong, risk-tolerant
+instinct on a destructive action, treat it as a hypothesis to pressure-test
+with cheap read-only evidence *before* acting — he expects that and updates
+fast when the data reframes it. Profiling-before-deleting is the right
+default.
+
+[x] accept
+
+### Candidate 2: Treats incidents as systems-design questions, and picks the lower-friction fix
+
+When a concurrent-session `git commit` swept my staged work into another
+commit, Shawn didn't just want it fixed — he asked what guardrails would
+prevent recurrence, and weighed routine branches vs behavioural guardrails.
+Given the trade-off (branches add merge friction on the shared docs that are
+meant to be co-edited), he chose guardrails + a worktree escape-hatch.
+
+**What this means in practice:** surface the systems-level fix and its
+trade-offs, not just the immediate patch; Shawn optimises for low standing
+friction and will reject heavier machinery when a lighter discipline covers
+the real failure mode.
+
+[x] accept
+
+### Candidate 3: Anti-confabulation discipline did real work, not ceremony
+
+Re-reading corpus counts at source across the session caught genuine drift
+(29,701 → 29,944 records over hours) and corrected a biased inference (the
+malformed-anchor rate was 3 % corpus-wide, not the ~90 % the `verified=false`
+*subset* suggested). Conclusions changed *because* of re-verification.
+
+**What this means in practice:** the "re-read at source before citing" rule
+is load-bearing on a live-growing corpus — keep paying its cost; it is what
+separated the real finding (verifier artefact) from the alarming-but-wrong
+one (96 % bad memories).
+
+[x] accept
