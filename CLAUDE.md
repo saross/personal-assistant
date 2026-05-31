@@ -33,6 +33,17 @@ session must **label its workstream** so the audit trail stays legible:
   which commits only those paths and ignores anything else staged.
   Confirm `git diff --cached --name-only` shows only your files, and
   `git fetch` + `0 behind`, before committing.
+- **Genuinely simultaneous infra work → worktree, not branch.** If two
+  workstreams must run at once, give the second its own git worktree
+  (separate directory = separate index + HEAD, so the sweep above becomes
+  impossible). Routine per-session branches do **not** work here — one
+  checkout shares a single HEAD/index/working tree, so `git checkout` would
+  clobber the other session's files. Deliberate escape hatch, not the
+  default (it trades the index race for merge overhead on the shared docs):
+
+      git worktree add ../pa-<workstream> -b <workstream>
+      cd ../pa-<workstream>   # work + commit on the branch, then PR/merge to main
+      git worktree remove ../pa-<workstream>
 
 This convention is **specific to this repo** — it exists only because one
 repo covers many unrelated things. It does not apply to single-purpose
