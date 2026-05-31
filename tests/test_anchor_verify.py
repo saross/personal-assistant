@@ -111,6 +111,75 @@ class TestWellformedAnchor:
     def test_structurally_invalid_rejected(self, bad):
         assert av.wellformed_anchor(bad)[0] is False
 
+    def test_tightened_file_gate_rejects_prose(self):
+        # item 21a: prose mis-typed as a file anchor now fails the gate.
+        ok, reason = av.wellformed_anchor(
+            {"type": "file", "ref": "scoring table (7 sessions, 42 cells)"})
+        assert ok is False and reason == "malformed-file-ref"
+
+    def test_tightened_file_gate_passes_real_path(self):
+        ok, reason = av.wellformed_anchor(
+            {"type": "file", "ref": "wiki/continuity.md"})
+        assert ok is True and reason == "ok"
+
+
+# ============================================================================
+# _looks_like_file_ref — tightened file-anchor shape gate (item 21a)
+# ============================================================================
+
+
+class TestLooksLikeFileRef:
+    """Shape gate that separates genuine paths from prose / ids / commands.
+
+    Every ref here is drawn from the item-20 triage's residual broad-false
+    ``file`` anchors (the junk we must now reject) or its legitimate-looking
+    paths (which must still pass).
+    """
+
+    @pytest.mark.parametrize("ref", [
+        # genuine paths — keyed on separator or extension, not on spaces
+        "scripts/nope.py",
+        "wiki/continuity.md",
+        "continuity.md",                       # bare basename (resolver/21b's job)
+        "decision-log.md",
+        "session.meta.json",
+        "~/.bash_aliases",
+        "~/Zotero/storage/FGM4PVSX/Hanson - 2016 - urban geography.pdf",  # space+sep
+        "/home/shawn/personal-assistant/scripts/x.py",  # multi-segment absolute
+        "responses-round-1/",                  # directory ref
+        "LICENSE",                             # extensionless real file
+        "Makefile",
+    ])
+    def test_genuine_paths_pass(self, ref):
+        assert av._looks_like_file_ref(ref) is True
+
+    @pytest.mark.parametrize("ref", [
+        # prose
+        "scoring table (7 sessions, 42 cells)",
+        "preregistration draft",
+        "Round 4 tally table: H=7 (17%), G=17 (40%), T=18 (43%)",
+        "Run-sheet Block B2",
+        # slash-command names (single-segment absolute, prose tolerated)
+        "/weekly-review",
+        "/reflect",
+        "/lit-scout-iterate — Iteration policy (settled 2026-05-22)",
+        # bare object ids mis-typed as files
+        "3825319a",
+        "932f8ad0",
+        "a6ba54fa",
+        "msgbatch_016RZjdHMfWAtKcW2uBxkbgJ",
+        # control chars / over-length
+        "a\nb",
+        "a\tb",
+        "x" * 257,
+    ])
+    def test_junk_rejected(self, ref):
+        assert av._looks_like_file_ref(ref) is False
+
+    def test_short_hex_word_not_rejected(self):
+        # <6 hex chars is an ordinary short token, not an object id.
+        assert av._looks_like_file_ref("cafe") is True
+
 
 # ============================================================================
 # bind_confidence — the rubric that Phase 2 uses to override Haiku

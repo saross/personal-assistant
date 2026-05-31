@@ -245,6 +245,55 @@ def _looks_like_hash(s: str) -> bool:
 _ZOTERO_KEY = re.compile(r"[A-Za-z0-9]{6,12}")
 
 
+# Object-id prefixes seen mis-typed as ``file`` anchors (Anthropic batch /
+# message / request ids, run handles). A bare token starting with one of these
+# is an id, not a path.
+_ID_PREFIXES = ("msgbatch_", "msg_", "batch_", "req_", "run_")
+
+
+def _looks_like_file_ref(ref: str) -> bool:
+    """Cheap shape gate (item 21a): does *ref* plausibly denote a file path?
+
+    I/O-free, like the rest of :func:`wellformed_anchor`. Tightens the original
+    "any string without a newline/tab" rule, which let three empirically-observed
+    junk classes through to ``verified=false`` (item-20 triage):
+
+      * **prose** — ``"scoring table (7 sessions, 42 cells)"`` — whitespace but
+        no path separator. (Real space-bearing paths, e.g. a Zotero PDF, always
+        carry a ``/``, so keying on the separator — not on spaces — avoids
+        rejecting them.)
+      * **slash-command names** — ``/weekly-review``, ``/reflect`` — a leading
+        ``/`` whose first token holds no further ``/``. Every real absolute path
+        has ≥2 segments; trailing em-dash prose after the command is tolerated.
+      * **bare object ids** — ``3825319a``, ``msgbatch_016RZj…`` — no separator,
+        no extension, and either all-hex (≥6) or a known id prefix. A hash-shaped
+        ref belongs in a ``commit`` anchor, not a ``file`` one.
+
+    Deliberately *not* rejected (shape-valid; the resolver decides whether they
+    resolve): extensionless real files (``LICENSE``, ``Makefile``), bare
+    basenames missing a dir prefix (``continuity.md`` — a resolver/recovery
+    concern, item 21b), and directory refs (trailing ``/``).
+    """
+    if len(ref) > 256 or "\n" in ref or "\t" in ref:
+        return False
+    # Single-segment absolute → slash-command shape (/weekly-review, /reflect).
+    if ref.startswith("/"):
+        first = ref.split()[0]            # tolerate "/cmd — trailing prose"
+        if "/" not in first[1:]:
+            return False
+    has_sep = "/" in ref
+    # Prose: whitespace but no path separator.
+    if " " in ref and not has_sep:
+        return False
+    # Bare object id mis-typed as a file: no separator, no extension.
+    if not has_sep and "." not in ref:
+        if (_looks_like_hash(ref) and len(ref) >= 6) or any(
+            ref.startswith(p) for p in _ID_PREFIXES
+        ):
+            return False
+    return True
+
+
 def wellformed_anchor(anchor: object) -> tuple[bool, str]:
     """Write-time structural gate on an anchor's *shape* — NO I/O (item 11).
 
@@ -259,12 +308,13 @@ def wellformed_anchor(anchor: object) -> tuple[bool, str]:
     drop it at write time.
 
     Returns ``(ok, reason)``; ``reason`` is a short tag for logging when
-    ``ok`` is False. Validation is intentionally tight on ``commit`` (the
-    observed failure mode, ~3 % of commit anchors) and light elsewhere:
-    ``file`` refs are only shape-checked (a path that doesn't exist *here*
-    may resolve in another repo — that's the resolver's call, not ours).
-    Unknown anchor types pass through (``ok=True``, ``reason='unknown-type'``)
-    so a future type is never silently dropped — only known types are gated.
+    ``ok`` is False. Validation is tight on ``commit`` (the observed failure
+    mode, ~3 % of commit anchors) and, since item 21a, on ``file`` too —
+    :func:`_looks_like_file_ref` rejects prose, slash-command names, and bare
+    object ids mis-typed as paths, while still passing any genuine path
+    (existence is the resolver's call, not ours). Unknown anchor types pass
+    through (``ok=True``, ``reason='unknown-type'``) so a future type is never
+    silently dropped — only known types are gated.
     """
     if not isinstance(anchor, dict):
         return False, "not-a-dict"
@@ -278,7 +328,7 @@ def wellformed_anchor(anchor: object) -> tuple[bool, str]:
     if a_type == "commit":
         return (True, "ok") if _looks_like_hash(ref) else (False, "malformed-commit-ref")
     if a_type == "file":
-        ok = len(ref) <= 256 and "\n" not in ref and "\t" not in ref
+        ok = _looks_like_file_ref(ref)
         return (ok, "ok") if ok else (False, "malformed-file-ref")
     if a_type == "zotero":
         ok = bool(_ZOTERO_KEY.fullmatch(ref))
