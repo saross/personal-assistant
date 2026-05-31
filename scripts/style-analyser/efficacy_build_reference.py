@@ -41,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase5_evaluator as p5  # noqa: E402
 import phase1_pipeline as p1   # noqa: E402
+from efficacy_build_prompts import strip_citations  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
@@ -99,9 +100,17 @@ def main() -> int:
                     help="whole-corpus phase1 (for the list of paper keys)")
     ap.add_argument("--extracted-dir", type=Path, default=p5.EXTRACTED_DEFAULT)
     ap.add_argument("--spacy-model", default="en_core_web_sm")
+    ap.add_argument("--keep-citations", action="store_true",
+                    help="do NOT strip citations from the reference (legacy "
+                         "behaviour; default is citation-free to match "
+                         "citation-free generation)")
     ap.add_argument("--out", type=Path,
                     default=EXPERIMENT_DIR / "reference-excerpts-400.json")
     args = ap.parse_args()
+    # Aggregate semicolon density, citation-inclusive vs citation-free, so the
+    # guide's §6.2 voice-target can be corrected (the 6.54/1k figure is mostly
+    # citation-list separators — a venue artefact).
+    semi_incl = semi_free = words_incl = words_free = 0
 
     phase1 = p5.load_json(args.phase1)
     keys = [p["key"] for p in phase1["per_paper"]]
@@ -120,10 +129,21 @@ def main() -> int:
             continue
         text = body.read_text(encoding="utf-8", errors="replace")
         stripped, _method = p1.strip_references(text)
+        cite_free = strip_citations(stripped)
+        semi_incl += stripped.count(";")
+        words_incl += len(stripped.split())
+        semi_free += cite_free.count(";")
+        words_free += len(cite_free.split())
         windows = sentence_windows(stripped, nlp, args.target_words,
                                    args.min_words)
         per_paper_counts[key] = len(windows)
         for i, w in enumerate(windows):
+            # Strip citations so the reference matches the citation-free
+            # generation regime (citation format is venue-determined; see
+            # guide §3). Without this the reference's semicolon density is
+            # citation-inflated and unfairly penalises citation-free output.
+            if not args.keep_citations:
+                w = strip_citations(w)
             rec = json_safe(p1.process_paper(f"{key}#w{i}", w, nlp))
             rec["key"] = f"{key}#w{i}"
             rec["source_paper"] = key
@@ -131,8 +151,11 @@ def main() -> int:
 
     import statistics
     wcounts = [e["n_words"] for e in excerpts]
+    semi_density_incl = round(1000.0 * semi_incl / max(words_incl, 1), 3)
+    semi_density_free = round(1000.0 * semi_free / max(words_free, 1), 3)
     payload = {
         "reference_kind": "length-matched corpus excerpts",
+        "citations_stripped": not args.keep_citations,
         "target_words": args.target_words,
         "min_words": args.min_words,
         "n_excerpts": len(excerpts),
@@ -143,18 +166,25 @@ def main() -> int:
             "mean": round(statistics.mean(wcounts), 1),
             "median": statistics.median(wcounts),
         },
+        # Corpus semicolon density, citation-inclusive vs citation-free (for
+        # the §6.2 voice-target correction).
+        "semicolon_per_1k_citation_inclusive": semi_density_incl,
+        "semicolon_per_1k_citation_free": semi_density_free,
         # phase1-compatible: build_corpus_matrix reads per_paper[*][<dotted>].
         "per_paper": excerpts,
     }
     args.out.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
                         encoding="utf-8")
-    print(f"Wrote {args.out.relative_to(REPO_ROOT)}")
+    print(f"Wrote {args.out.relative_to(REPO_ROOT)} "
+          f"(citations_stripped={not args.keep_citations})")
     print(f"  {len(excerpts)} excerpts from {len(per_paper_counts)} papers; "
           f"word count min/median/mean/max = "
           f"{payload['excerpt_word_stats']['min']}/"
           f"{payload['excerpt_word_stats']['median']}/"
           f"{payload['excerpt_word_stats']['mean']}/"
           f"{payload['excerpt_word_stats']['max']}")
+    print(f"  corpus semicolon /1k: citation-inclusive {semi_density_incl} "
+          f"-> citation-free {semi_density_free}  (for guide §6.2)")
     return 0
 
 
