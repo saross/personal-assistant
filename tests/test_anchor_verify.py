@@ -293,3 +293,122 @@ class TestVerifyZoteroStub:
     def test_returns_pending_even_for_empty(self):
         # The stub doesn't try to validate the key shape.
         assert av.verify_zotero("") == "pending"
+
+
+# ============================================================================
+# verify_file — path/history hardening (item 20)
+# ============================================================================
+#
+# These exercise the filesystem (stat) path against a real tmp_path, which
+# needs no git and is fully deterministic. The git-history fallback is unit-
+# tested via a mocked subprocess (_git_knows_path); a full integration test
+# against a real git fixture remains deferred to Phase 0b per the module note.
+
+
+class TestRelpathInRepo:
+    """Lexical repo-prefix helper used for the absolute-path git fallback."""
+
+    def test_path_inside_repo(self):
+        assert av._relpath_in_repo(
+            "/home/u/repo/scripts/x.py", Path("/home/u/repo")
+        ) == "scripts/x.py"
+
+    def test_path_outside_repo_is_none(self):
+        assert av._relpath_in_repo(
+            "/home/u/other/x.py", Path("/home/u/repo")
+        ) is None
+
+    def test_repo_root_itself_is_none(self):
+        # The repo root is a directory, not a file anchor.
+        assert av._relpath_in_repo("/home/u/repo", Path("/home/u/repo")) is None
+
+    def test_sibling_prefix_not_matched(self):
+        # /home/u/repo must not match /home/u/repo-backup (no false prefix).
+        assert av._relpath_in_repo(
+            "/home/u/repo-backup/x.py", Path("/home/u/repo")
+        ) is None
+
+    def test_normalises_dot_segments(self):
+        assert av._relpath_in_repo(
+            "/home/u/repo/./a/../scripts/x.py", Path("/home/u/repo")
+        ) == "scripts/x.py"
+
+
+class TestVerifyFileFilesystem:
+    """Tilde expansion + absolute/relative stat resolution (no git needed)."""
+
+    def test_empty_path_false(self):
+        assert av.verify_file("", []) == "false"
+
+    def test_tilde_expands_to_existing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "notes.md").write_text("hi", encoding="utf-8")
+        # The repo_set is irrelevant: ~ expands to an absolute, existing path.
+        assert av.verify_file("~/notes.md", []) == "true"
+
+    def test_tilde_missing_file_false(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert av.verify_file("~/nope.md", []) == "false"
+
+    def test_absolute_existing_file_true(self, tmp_path):
+        f = tmp_path / "real.py"
+        f.write_text("x", encoding="utf-8")
+        assert av.verify_file(str(f), []) == "true"
+
+    def test_absolute_missing_file_outside_any_repo_false(self, tmp_path):
+        # Not under any repo in repo_set and not on disk → false (no git hit).
+        missing = tmp_path / "gone.py"
+        assert av.verify_file(str(missing), [tmp_path / "unrelated"]) == "false"
+
+    def test_relative_existing_under_repo_true(self, tmp_path):
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "a.py").write_text("x", encoding="utf-8")
+        assert av.verify_file("scripts/a.py", [tmp_path]) == "true"
+
+
+class TestGitKnowsPath:
+    """The HEAD + history probe, with subprocess mocked."""
+
+    def test_empty_relpath_false(self):
+        assert av._git_knows_path(Path("/repo"), "") == "false"
+
+    def test_head_hit_returns_true_without_log(self):
+        with patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            assert av._git_knows_path(Path("/repo"), "a.py") == "true"
+            # Only the cat-file probe should have fired.
+            assert run.call_count == 1
+
+    def test_history_hit_when_not_at_head(self):
+        # cat-file miss (rc=1), then git log finds a commit touching the path.
+        results = [
+            MagicMock(returncode=1),                       # cat-file -e HEAD
+            MagicMock(returncode=0, stdout="deadbee log"),  # git log --all
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "deleted.py") == "true"
+
+    def test_absent_everywhere_false(self):
+        results = [
+            MagicMock(returncode=1),               # cat-file miss
+            MagicMock(returncode=0, stdout=""),     # empty log → never existed
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "ghost.py") == "false"
+
+    def test_timeout_is_pending(self):
+        import subprocess as _sp
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
+            assert av._git_knows_path(Path("/repo"), "slow.py") == "pending"
+
+    def test_deleted_since_absolute_resolves_via_history(self, tmp_path):
+        # An absolute path under a repo, gone from disk, found in git history.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        abspath = str(repo / "deleted.py")  # never created on disk
+        results = [
+            MagicMock(returncode=1),                       # cat-file miss
+            MagicMock(returncode=0, stdout="abc123 log"),   # history hit
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av.verify_file(abspath, [repo]) == "true"

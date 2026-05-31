@@ -45,6 +45,7 @@ locked or a remote check is slow.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -61,70 +62,132 @@ _GIT_TIMEOUT_S = 3
 # ============================================================================
 
 
+def _git_knows_path(repo: Path, relpath: str) -> str:
+    """Does *relpath* exist at HEAD or anywhere in *repo*'s history?
+
+    Two probes, cheapest first:
+      1. ``git cat-file -e HEAD:<relpath>`` — present in the current tip.
+      2. ``git log --all --max-count=1 -- <relpath>`` — ever recorded on
+         *any* ref (covers files deleted-since, renamed, or only ever on a
+         side branch). This is the "git history, not just HEAD" check: a
+         memory whose file was deleted after the memory was written still
+         resolves ``"true"`` here, because the path exists in history.
+
+    Returns ``"true"`` / ``"false"`` / ``"pending"`` (the last only on a
+    subprocess timeout). A missing git binary or a vanished repo path
+    yields ``"false"`` for *this* repo — the caller tries the next one.
+    """
+    if not relpath:
+        return "false"
+    # 1. Present at the current tip?
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{relpath}"],
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_S,
+        )
+        if result.returncode == 0:
+            return "true"
+    except subprocess.TimeoutExpired:
+        return "pending"
+    except (FileNotFoundError, OSError):
+        # git not installed, or repo path vanished mid-check
+        return "false"
+    # 2. Ever in history (any ref)? Covers deleted-since + renames.
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--all",
+             "--max-count=1", "--", relpath],
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_S,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return "true"
+    except subprocess.TimeoutExpired:
+        return "pending"
+    except (FileNotFoundError, OSError):
+        return "false"
+    return "false"
+
+
+def _relpath_in_repo(abspath: str, repo: Path) -> str | None:
+    """If *abspath* lies inside *repo*, return its repo-relative path; else None.
+
+    Purely lexical (``normpath`` + prefix match) — deliberately avoids
+    ``Path.resolve``/``relative_to`` so it works for files that have since
+    been *deleted* (resolve would touch the filesystem and follow symlinks).
+    The repo root itself maps to ``None`` (a directory, not a file anchor).
+    """
+    repo_str = os.path.normpath(str(repo))
+    p = os.path.normpath(abspath)
+    if p == repo_str:
+        return None
+    prefix = repo_str + os.sep
+    return p[len(prefix):] if p.startswith(prefix) else None
+
+
 def verify_file(path: str, repo_set: Iterable[Path]) -> str:
     """Return whether *path* resolves to a real file in any provided repo.
 
+    A leading ``~`` / ``~user`` is expanded first (item 20), so anchors
+    recorded as ``~/personal-assistant/notes/_inbox.md`` resolve instead of
+    spuriously reading ``"false"``.
+
     Resolution order:
-      1. Direct filesystem ``stat`` against each repo as a prefix.
-         Fastest path; covers the common "the file still exists" case.
-      2. ``git cat-file -e HEAD:<path>`` against each repo. Catches
-         files that were committed but deleted from the working tree.
-      3. ``git log --all -- <path>`` to check whether the file ever
-         existed in history (renamed/branched cases).
+      * **Absolute** (incl. expanded-tilde) — ``stat`` it directly; on a
+        miss, fall back to git history for any repo that *contains* the
+        path. Previously absolute paths got no git fallback, so a
+        deleted-since absolute file read ``"false"``; now it resolves via
+        :func:`_git_knows_path` (HEAD + ``git log --all``).
+      * **Repo-relative** — ``stat`` against each repo as a prefix, then the
+        same HEAD + history probe per repo.
 
     Returns ``"true"`` on first hit, ``"false"`` if no path resolves,
     ``"pending"`` on subprocess timeout.
 
-    The path is allowed to be absolute or repo-relative. Absolute paths
-    are checked against the filesystem directly (the repo_set is
-    ignored for the stat check).
+    Note: a path-prefix *mismatch* (e.g. a bare ``continuity.md`` anchor for
+    a file that lives at ``wiki/continuity.md``) is NOT rescued here — the
+    fix for those is write-side anchor hygiene, not the resolver.
     """
     if not path:
         return "false"
 
-    # Absolute path: just stat it.
-    if path.startswith("/"):
-        return "true" if Path(path).exists() else "false"
+    # Expand a leading ~ / ~user. A no-op for already-absolute or
+    # genuinely-relative refs; rescues tilde-rooted anchors.
+    expanded = os.path.expanduser(path)
+    repos = list(repo_set)
+    pending_seen = False
 
-    # Repo-relative: try each repo.
-    for repo in repo_set:
-        candidate = repo / path
-        if candidate.exists():
+    if os.path.isabs(expanded):
+        # Absolute (or expanded-tilde): stat directly first.
+        if Path(expanded).exists():
+            return "true"
+        # Miss — the file may have been deleted since the memory was
+        # written. Fall back to git history for any repo containing it.
+        for repo in repos:
+            rel = _relpath_in_repo(expanded, repo)
+            if rel is None:
+                continue
+            status = _git_knows_path(repo, rel)
+            if status == "true":
+                return "true"
+            if status == "pending":
+                pending_seen = True
+        return "pending" if pending_seen else "false"
+
+    # Repo-relative: working-tree stat against each repo as a prefix.
+    for repo in repos:
+        if (repo / expanded).exists():
             return "true"
 
-    # Filesystem miss — try git history in each repo.
-    pending_seen = False
-    for repo in repo_set:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{path}"],
-                capture_output=True,
-                timeout=_GIT_TIMEOUT_S,
-            )
-            if result.returncode == 0:
-                return "true"
-        except subprocess.TimeoutExpired:
+    # Filesystem miss — try HEAD + history in each repo.
+    for repo in repos:
+        status = _git_knows_path(repo, expanded)
+        if status == "true":
+            return "true"
+        if status == "pending":
             pending_seen = True
-            continue
-        except (FileNotFoundError, OSError):
-            # git not installed, or repo path vanished mid-check
-            continue
-        # Try full history (covers renames + deleted-then-found cases).
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(repo), "log", "--all",
-                 "--max-count=1", "--", path],
-                capture_output=True,
-                timeout=_GIT_TIMEOUT_S,
-                text=True,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return "true"
-        except subprocess.TimeoutExpired:
-            pending_seen = True
-            continue
-        except (FileNotFoundError, OSError):
-            continue
 
     return "pending" if pending_seen else "false"
 
