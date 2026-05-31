@@ -1291,3 +1291,35 @@ records never had.
 Source: `scripts/anchor_verify.py`, `scripts/project_id.py` (`repo_set`);
 continuity.md workstream B feasibility-scope entry (2026-05-30); commit
 `1fcfa5a`.
+
+## 2026-05-31: A structurally-impossible statistic is an extraction tell, not a finding
+
+The clean-corpus paragraph-length median (17 words) sat *below* the mean
+sentence length (21.45 words, §6.1) — impossible for real prose, since a
+paragraph is one or more sentences. Cause: `split_paragraphs` counted every
+blank-line block, so markdown headings, surviving front-matter (author
+lines, mastheads, "Pages:"), and PDF reflow fragments all scored as
+"paragraphs" — ~41% of blocks but only ~4.4% of words.
+
+**Principle:** when a derived statistic is structurally impossible, suspect
+the segmentation/extraction, not the subject. The impossibility (median
+paragraph < mean sentence) was a sharper alarm than any plausibility check.
+
+**Scope the fix to protect the calibrated neighbours.** The investigation
+agent proposed filtering inside the shared `split_paragraphs`, which also
+feeds sentence splitting — that would have shifted *every* downstream metric
+a few percent and dragged in the 8-metric gate. Filtering at the
+paragraph-stats *call site* instead kept the blast radius to one metric: a
+full structural diff of the re-run confirmed 77 field changes, 0
+non-paragraph. Corrected corpus median 17→27, mean 30→41.
+
+**The noise had masked a real signal.** With contamination removed, a
+genuine bimodal split surfaced in per-paper paragraph *means* (short
+journal/methods ≤33 vs long book-chapter synthesis ≥50) that the
+contaminated median had mis-located — the most contaminated extraction
+(3R378BML) had even been wrongly classed short. Cleaning a metric can
+reveal structure, not just shift a number.
+
+Source: `scripts/style-analyser/phase1_pipeline.py` (`_is_prose_block`);
+`data/style-corpus/phase1-results-clean.json`; guide §6.5; commits
+`0f85a3c` (submodule), `cfa9152` (parent); session 2026-05-31.

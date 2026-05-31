@@ -1455,3 +1455,59 @@ self-observation about Claude sourcing gate targets from the canonical data
 files rather than the dispatch prompt — reviewed and discarded by Shawn:
 Claude-about-Claude conduct, which belongs in working-with-claude territory,
 not user observations.)*
+
+## 2026-05-31 (Workstream G big-picture review + §6.5 fix + handoff) — Drafted candidates (accepted at handoff)
+
+### Candidate 1: Verify agent claims at the source — it pays off twice
+
+When a background agent claimed my continuity edits had been swept into
+commit `a322527`, I doubted it and re-checked git directly. Verification
+both *exonerated* the agent (its claim was correct) and *surfaced* the
+shared-working-tree commit-sweep hazard that later shaped the workstream
+convention. The discipline held under a long, busy session.
+
+**What this means in practice:** re-verify an agent's specific claims at the
+source even when they seem plausible — the act of verifying often surfaces
+more than the claim itself did.
+
+[x] accept
+
+### Candidate 2: A sub-agent's recommendation is input, not instruction
+
+The §6.5 investigation agent recommended filtering inside `split_paragraphs`
+(broad blast radius). I scoped the fix to the paragraph-stats call site
+instead, to match Shawn's stated intent ("regenerate §6.5 + re-derive the
+Phase 5 envelope" — narrow), and flagged the deviation rather than following
+the advice literally.
+
+**What this means in practice:** map a delegated recommendation onto the
+user's actual scope; deviate when the literal advice over-reaches, and say
+so.
+
+[x] accept
+
+### Candidate 3: Shawn asks for altitude changes deliberately, and they pay off
+
+Mid-session Shawn stepped back to "look at the big picture" of the whole
+endeavour. That reframe (means = assessor, done; end = write-in-voice,
+unproven) identified the efficacy experiment as the highest-value next move
+far more usefully than continuing detail work would have.
+
+**What this means in practice:** offer the periodic step-back proactively at
+phase boundaries — Shawn welcomes and uses it. (Pairs with the recovered
+2026-05-30 observation that he welcomes recommendations against continuing
+the current thread.)
+
+[x] accept
+
+### Candidate 4: A "go" authorises the work, not a shortcut on verification
+
+Shawn green-lit "option 1 (full fix)". I still added the scoped-vs-broad
+design decision and a full-structural diff-gate (proving only paragraph
+fields changed) without being asked — and that rigour was expected, not
+excess.
+
+**What this means in practice:** an approval to proceed is not licence to
+skip the methodology discipline; bring it by default.
+
+[x] accept
