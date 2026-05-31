@@ -62,3 +62,30 @@ class TestDispose:
         # Stripping the malformed one still leaves a well-formed anchor that
         # resolves nowhere → genuinely suspect, not clean.
         assert ta.dispose(["malformed", "broad-false"]) == "unresolvable"
+
+
+class TestRecoveryStatus:
+    """item-21b three-way prefix-recovery classification (read-only)."""
+
+    INDEX = {
+        "continuity.md": ["wiki/continuity.md"],
+        "extraction.py": ["src/cc_session_toolkit/extraction.py", "hooks/extraction.py"],
+        "anchor_verify.py": ["scripts/anchor_verify.py"],
+    }
+
+    def test_unique_match_is_recoverable(self):
+        assert ta.recovery_status("continuity.md", self.INDEX) == (
+            "recoverable", "wiki/continuity.md")
+
+    def test_basename_collision_is_ambiguous(self):
+        assert ta.recovery_status("extraction.py", self.INDEX) == ("ambiguous", None)
+
+    def test_dir_context_disambiguates_to_recoverable(self):
+        assert ta.recovery_status("cc_session_toolkit/extraction.py", self.INDEX) == (
+            "recoverable", "src/cc_session_toolkit/extraction.py")
+
+    def test_unknown_basename_is_absent(self):
+        assert ta.recovery_status("ghost.md", self.INDEX) == ("absent", None)
+
+    def test_empty_ref_is_absent(self):
+        assert ta.recovery_status("", self.INDEX) == ("absent", None)

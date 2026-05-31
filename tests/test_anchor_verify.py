@@ -481,3 +481,51 @@ class TestGitKnowsPath:
         ]
         with patch("subprocess.run", side_effect=results):
             assert av.verify_file(abspath, [repo]) == "true"
+
+
+# ============================================================================
+# unique_suffix_match — collision-guarded prefix recovery (item 21b)
+# ============================================================================
+
+
+class TestUniqueSuffixMatch:
+    """Pure suffix matcher: recovers a prefix-dropped ref only on a unique hit."""
+
+    TRACKED = [
+        "wiki/continuity.md",
+        "src/cc_session_toolkit/extraction.py",
+        "hooks/extraction.py",
+        "scripts/anchor_verify.py",
+    ]
+
+    def test_unique_basename_recovers(self):
+        assert av.unique_suffix_match("continuity.md", self.TRACKED) == \
+            "wiki/continuity.md"
+
+    def test_ambiguous_basename_returns_none(self):
+        # Two tracked extraction.py → can't safely pick one.
+        assert av.unique_suffix_match("extraction.py", self.TRACKED) is None
+
+    def test_dir_qualified_ref_disambiguates(self):
+        # The directory context narrows the ambiguous basename to one file.
+        assert av.unique_suffix_match(
+            "cc_session_toolkit/extraction.py", self.TRACKED
+        ) == "src/cc_session_toolkit/extraction.py"
+
+    def test_absent_basename_returns_none(self):
+        assert av.unique_suffix_match("ghost.md", self.TRACKED) is None
+
+    def test_exact_path_matches(self):
+        assert av.unique_suffix_match("scripts/anchor_verify.py", self.TRACKED) == \
+            "scripts/anchor_verify.py"
+
+    def test_partial_name_does_not_match_across_boundary(self):
+        # "tion.py" must NOT match "extraction.py" — only whole path segments.
+        assert av.unique_suffix_match("tion.py", self.TRACKED) is None
+
+    def test_trailing_slash_normalised(self):
+        # A directory-shaped ref recovers nothing (ls-files lists files).
+        assert av.unique_suffix_match("wiki/", self.TRACKED) is None
+
+    def test_empty_ref_returns_none(self):
+        assert av.unique_suffix_match("", self.TRACKED) is None

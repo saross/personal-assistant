@@ -192,6 +192,36 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
     return "pending" if pending_seen else "false"
 
 
+def unique_suffix_match(ref: str, tracked_paths: Iterable[str]) -> str | None:
+    """Collision-guarded prefix recovery (item 21b core) — I/O-free.
+
+    Item-20 triage found ~53 % of the still-false relative `file` anchors are
+    *prefix-mismatches*: the file is real, but the anchor dropped a leading
+    directory (`continuity.md` for `wiki/continuity.md`). This finds the
+    intended file by path **suffix** — a tracked path *P* recovers *ref* when
+    ``P == ref`` or ``P`` ends with ``"/" + ref`` — but returns the match
+    **only when it is unique**. Zero matches → ``None`` (genuinely absent);
+    more than one → ``None`` (ambiguous: recovering would risk binding the
+    memory to the *wrong* file, which is worse than leaving it unresolved).
+
+    Suffix (not bare-basename) matching keeps whatever directory context the
+    ref carries: ``cc_session_toolkit/extraction.py`` recovers
+    ``src/cc_session_toolkit/extraction.py`` without colliding with an
+    unrelated ``hooks/extraction.py``.
+
+    *tracked_paths* are repo-relative POSIX paths (e.g. from ``git ls-files``).
+    This is a measurement/recovery helper, deliberately **not** wired into
+    :func:`verify_file`: loosening the live resolver to fuzzy matches would
+    erode the very ``verified`` signal we are trying to make trustworthy.
+    """
+    ref_norm = ref.rstrip("/")
+    if not ref_norm:
+        return None
+    suffix = "/" + ref_norm
+    matches = [p for p in tracked_paths if p == ref_norm or p.endswith(suffix)]
+    return matches[0] if len(matches) == 1 else None
+
+
 # ============================================================================
 # verify_commit — does this hash resolve to a real commit?
 # ============================================================================
