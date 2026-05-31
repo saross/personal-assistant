@@ -288,6 +288,29 @@ authoritatively can drive primacy-effect errors.
     `87205b0` (one commit earlier) warns about — bare `git commit` over a
     shared index. Mitigation going forward: stage AND commit in one tight
     step, never leave files staged across turns in this repo.
+- [ ] **Write-path / corpus-health thread (NEW, 2026-05-31).** Read path
+  (Vector 2/2b/2c) is now well-disciplined; focus shifts to corpus health
+  while the §8 review is pending. **Full plan + 19-item backlog + the
+  2026-05-31 read-only corpus profile live in
+  `wiki/planning/memory-write-path-plan.md`** (key finding: the <4 % verified
+  rate is NOT 96 % wrong — 86.5 % of the corpus predates the 2026-05-16
+  anchoring epoch and is unanchorable by construction; there is no cheap clean
+  "wrong memory" signal, so the strategy is structural, not a purge).
+  **Item 11 (write-time anchor quality gate) shipped 2026-05-31 (`b6f85c1`)** —
+  `anchor_verify.wellformed_anchor()` drops anchors malformed for their type
+  (chiefly commit refs written as slugs, ~3 %); forward fix, the ~22 already in
+  the corpus await a cleanup pass. +17 tests, full suite 835.
+  **Item 12 (verified=false triage) shipped 2026-05-31 (`5edbdd4`,
+  `scripts/triage_anchors.py`, read-only).** Of 402 false-anchored records:
+  13 clean-after-strip, 8 cross-repo, 381 unresolvable — **but unresolvable is
+  overwhelmingly a verifier artefact** (446 relative + 75 tilde + 15 absolute
+  file anchors `verify_file` can't resolve; only 7 commit refs resolve nowhere).
+  Genuinely-suspect set is tiny → `verified=false` is NOT a trustworthy prune
+  signal yet. Surfaced **item 20 (`verify_file` path/history hardening, no-API)**
+  — expand `~`, accept absolute paths, check the memory's commit not just HEAD —
+  which now **precedes any pruning**. Next no-API: item 20, then item 13 design
+  (retention), item 9 (§8 apparatus). API-gated: items 5/6/14/15. Full backlog
+  + sequence in `wiki/planning/memory-write-path-plan.md`.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):
@@ -2053,6 +2076,15 @@ Ran roadmap item #1 end-to-end in an isolated git worktree (`worktree-workstream
 - **Artefacts:** pre-reg `wiki/planning/style-guide-efficacy-experiment-design.md`; harness `scripts/style-analyser/efficacy_{build_prompts,build_reference,score,analyse,build_judge_tasks,score_judges}.py`; data `data/experiments/style-efficacy-2026-05-31/` (prompts, 32 passages, scores, `pilot-findings.md`, `retest-analysis.md`, `judge-analysis.md`, `efficacy-synthesis.md`). Submodule `e51e998`; parent branch commits `d66ef37`/`4f05231`/`ba7ae9a` + this doc update.
 - **Caveats:** pilot scale (4 topics, 16 judgments, one judge/pair); Claude judged Claude-written text (blind, vs real excerpts). **Final validation = Shawn reading the C2-vs-C0 pairs in `passages/`.**
 - **Not yet merged to main** (held for Shawn's review + concurrent-session coordination); memory capture deferred (concurrent session is editing `memories.jsonl`).
+
+### 2026-05-31 (Sun, latest PA) — Vector 2 Stage 2 reframe + Vector 2c (dark) + git guardrails + write-path pivot (items 11 & 12)
+
+A long memory-system session in two arcs. **Read-path arc:** reframed Vector 2 Stage 2 — the promoted-recent fallback is *permanent*, not a stopgap, because anchoring is forward-only and only ~3.6 % of the corpus carries anchors (`6bbb418`, `a4f6ba1`); then assessed the session-start injection's efficacy (read path strong, but the digest's verified entries were recency-random — 1-of-4 relevant in a hub session) and built **Vector 2c** — focus-aware + project-scoped digest selection, Option 3 (focus-ranking + a thin legibility label), shipped **DARK** behind `PA_DIGEST_FOCUS`, enable after the 2026-06-13 §8 review. The 2c code landed in workstream-G commit `cfa9152` via a concurrent-session bare-commit sweep (no loss; documented in `0d22dd7`), which prompted **git concurrency guardrails**: a scratchpad principle (`058cb0a`/`b2bdd41`) and a worktree escape-hatch in the CLAUDE.md convention (`88be212`). **Write-path arc:** pivoted to corpus health (read path well-disciplined; write path is an append-only firehose — 1 correction in 29.9 K records). A read-only corpus profile reframed the "<4 % verified" alarm: 86.5 % predates the 2026-05-16 anchoring epoch and is unanchorable by construction, so "cut the unverified" would be amnesia. Shipped **item 11** (write-time anchor quality gate, `b6f85c1`) and **item 12** (verified=false triage, `5edbdd4`), which found verified=false is overwhelmingly a *verifier artefact* (`verify_file` can't expand `~`/absolute paths, checks HEAD-only), not wrong memories — surfacing **item 20** (`verify_file` hardening) as the next no-API lever that must precede any pruning.
+
+- **Read path:** `6bbb418` (Stage 2 reframe), `0d22dd7` (Vector 2c dark + `cfa9152` provenance). 2c code swept into `cfa9152`. Designs: `wiki/planning/vector-2-design.md` §6b, `wiki/planning/vector-2c-design.md`.
+- **Git guardrails:** `058cb0a`/`b2bdd41` (scratchpad), `88be212` (worktree convention). Lesson: stage+commit atomically via `git commit -- <path>`; never leave files staged across turns in this shared-tree repo.
+- **Write path:** `8cc8275` (plan + 2026-05-31 corpus profile + 19-item backlog), `b6f85c1`+`c7824aa` (item 11), `5edbdd4`+`9a07c88` (item 12 + item 20). Full suite 844 passing.
+- **Next session (no-API):** item 20 (`verify_file` path/history hardening) → re-run item-12 triage → item 13 design (retention policy, needs per-bucket sign-off + quiet window). API-gated (costed): items 5/6/14/15. The 2026-06-13 §8 review now also gates enabling the 2b + 2c sentinels. Plan: `wiki/planning/memory-write-path-plan.md`.
 
 ### 2026-05-31 (Sun, G) — Workstream G big-picture review + handoff; next session = efficacy experiment
 

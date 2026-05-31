@@ -45,6 +45,7 @@ locked or a remote check is slow.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable
@@ -173,6 +174,56 @@ def _looks_like_hash(s: str) -> bool:
     if not s or len(s) < 4 or len(s) > 40:
         return False
     return all(c in "0123456789abcdefABCDEF" for c in s)
+
+
+# Zotero item keys are 8 uppercase alphanumerics; accept a slightly wider
+# 6–12 alphanumeric band to tolerate legacy/lowercase variants without
+# admitting prose.
+_ZOTERO_KEY = re.compile(r"[A-Za-z0-9]{6,12}")
+
+
+def wellformed_anchor(anchor: object) -> tuple[bool, str]:
+    """Write-time structural gate on an anchor's *shape* — NO I/O (item 11).
+
+    Distinct from the ``verify_*`` resolvers, which spawn git/FS lookups to
+    decide whether an anchor *resolves*. This is the cheaper upstream check
+    that the extraction hook applies before persisting: it rejects anchors
+    that can never resolve because the ``ref`` is malformed for its ``type``
+    — most importantly a ``commit`` whose ref is a descriptive slug
+    (``rome-verification-script``) or a non-hex string (``bb5r1pr54``) rather
+    than a hash. A malformed anchor is worse than no anchor: it forces the
+    whole memory to ``verified=false`` even when the content is fine, so we
+    drop it at write time.
+
+    Returns ``(ok, reason)``; ``reason`` is a short tag for logging when
+    ``ok`` is False. Validation is intentionally tight on ``commit`` (the
+    observed failure mode, ~3 % of commit anchors) and light elsewhere:
+    ``file`` refs are only shape-checked (a path that doesn't exist *here*
+    may resolve in another repo — that's the resolver's call, not ours).
+    Unknown anchor types pass through (``ok=True``, ``reason='unknown-type'``)
+    so a future type is never silently dropped — only known types are gated.
+    """
+    if not isinstance(anchor, dict):
+        return False, "not-a-dict"
+    a_type = anchor.get("type")
+    a_ref = anchor.get("ref")
+    if not isinstance(a_type, str) or not isinstance(a_ref, str):
+        return False, "type-or-ref-not-str"
+    ref = a_ref.strip()
+    if not ref:
+        return False, "empty-ref"
+    if a_type == "commit":
+        return (True, "ok") if _looks_like_hash(ref) else (False, "malformed-commit-ref")
+    if a_type == "file":
+        ok = len(ref) <= 256 and "\n" not in ref and "\t" not in ref
+        return (ok, "ok") if ok else (False, "malformed-file-ref")
+    if a_type == "zotero":
+        ok = bool(_ZOTERO_KEY.fullmatch(ref))
+        return (ok, "ok") if ok else (False, "malformed-zotero-key")
+    if a_type == "url":
+        ok = ref.startswith(("http://", "https://"))
+        return (ok, "ok") if ok else (False, "malformed-url")
+    return True, "unknown-type"
 
 
 # ============================================================================

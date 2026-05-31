@@ -768,6 +768,7 @@ def format_memories(
     date_prefix = timestamp[:10]
     memories = []
     all_tags = []
+    malformed_anchors_dropped = 0  # item 11 — write-time anchor quality gate
 
     for i, mem in enumerate(extracted):
         if not mem.get("content"):
@@ -837,16 +838,19 @@ def format_memories(
         # populates ``verified`` and overrides ``confidence``.
         anchors = mem.get("anchors")
         if isinstance(anchors, list) and anchors:
-            # Filter for well-formed entries: {type: str, ref: str, line?: int}
+            # Item 11 — write-time anchor quality gate. Keep only entries that
+            # are *well-formed for their type* (anchor_verify.wellformed_anchor:
+            # structural, no I/O). This drops anchors that can never resolve —
+            # chiefly ``commit`` refs the extractor wrote as descriptive slugs
+            # ('rome-verification-script') rather than hashes — so a single bad
+            # anchor no longer forces an otherwise-fine memory to verified=false.
             cleaned = []
             for a in anchors:
-                if not isinstance(a, dict):
+                ok, reason = anchor_verify.wellformed_anchor(a)
+                if not ok:
+                    malformed_anchors_dropped += 1
                     continue
-                a_type = a.get("type")
-                a_ref = a.get("ref")
-                if not isinstance(a_type, str) or not isinstance(a_ref, str):
-                    continue
-                entry = {"type": a_type, "ref": a_ref}
+                entry = {"type": a["type"], "ref": a["ref"]}
                 line = a.get("line")
                 if isinstance(line, int):
                     entry["line"] = line
@@ -863,6 +867,15 @@ def format_memories(
     # Update vocabulary with any new tags
     if all_tags:
         update_vocabulary(all_tags)
+
+    # Item 11 — surface dropped malformed anchors so the write-path bug is
+    # observable (e.g. the extractor writing slugs as commit refs) rather than
+    # silently swallowed.
+    if malformed_anchors_dropped:
+        logger.warning(
+            "Dropped %d malformed anchor(s) at write time (item 11 quality gate)",
+            malformed_anchors_dropped,
+        )
 
     return memories
 
