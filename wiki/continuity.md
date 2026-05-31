@@ -288,6 +288,20 @@ authoritatively can drive primacy-effect errors.
     `87205b0` (one commit earlier) warns about — bare `git commit` over a
     shared index. Mitigation going forward: stage AND commit in one tight
     step, never leave files staged across turns in this repo.
+- [ ] **Write-path / corpus-health thread (NEW, 2026-05-31).** Read path
+  (Vector 2/2b/2c) is now well-disciplined; focus shifts to corpus health
+  while the §8 review is pending. **Full plan + 19-item backlog + the
+  2026-05-31 read-only corpus profile live in
+  `wiki/planning/memory-write-path-plan.md`** (key finding: the <4 % verified
+  rate is NOT 96 % wrong — 86.5 % of the corpus predates the 2026-05-16
+  anchoring epoch and is unanchorable by construction; there is no cheap clean
+  "wrong memory" signal, so the strategy is structural, not a purge).
+  **Item 11 (write-time anchor quality gate) shipped 2026-05-31 (`b6f85c1`)** —
+  `anchor_verify.wellformed_anchor()` drops anchors malformed for their type
+  (chiefly commit refs written as slugs, ~3 %); forward fix, the ~22 already in
+  the corpus await an item-12 cleanup. +17 tests, full suite 835. Next no-API:
+  item 12 (verified=false triage), item 13 design (category retention policy),
+  item 9 (verify §8 apparatus). API-gated (costed decision): items 5/6/14/15.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):

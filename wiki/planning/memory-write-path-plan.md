@@ -88,7 +88,10 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 10. Identifier-welding mitigation in the digest.
 
 **Tier 4 — below the line (captured 2026-05-31)**
-11. **Anchor-gen quality gate** — write-time ref validation (3 % malformed).
+11. ✅ **Anchor-gen quality gate** — write-time ref validation, shipped
+    `b6f85c1` (2026-05-31). `anchor_verify.wellformed_anchor()` drops anchors
+    malformed for their type in the extraction hook. **Forward fix only** — the
+    ~22 malformed anchors already in the corpus await a cleanup pass (item 12).
 12. **Make `verified=false` actionable** — triage classifier
     (malformed / cross-repo / deleted-since / genuinely-wrong).
 13. **Category-specific retention policy** — populate `decay_days` per category
@@ -104,8 +107,9 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
-1. **Item 11 (anchor-gen quality gate)** — no-API code fix; foundational, makes
-   every downstream `verified` signal trustworthy. Start here.
+1. ✅ **Item 11 (anchor-gen quality gate)** — DONE 2026-05-31 (`b6f85c1`).
+   No-API code fix; foundational, makes every downstream `verified` signal
+   trustworthy going forward.
 2. **Item 12 (verified=false triage)** — turns the 397 into an actionable,
    classified set; read-only analysis, no deletion.
 3. **Item 13 design (category retention policy)** — design + per-bucket
