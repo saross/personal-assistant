@@ -299,9 +299,18 @@ authoritatively can drive primacy-effect errors.
   **Item 11 (write-time anchor quality gate) shipped 2026-05-31 (`b6f85c1`)** —
   `anchor_verify.wellformed_anchor()` drops anchors malformed for their type
   (chiefly commit refs written as slugs, ~3 %); forward fix, the ~22 already in
-  the corpus await an item-12 cleanup. +17 tests, full suite 835. Next no-API:
-  item 12 (verified=false triage), item 13 design (category retention policy),
-  item 9 (verify §8 apparatus). API-gated (costed decision): items 5/6/14/15.
+  the corpus await a cleanup pass. +17 tests, full suite 835.
+  **Item 12 (verified=false triage) shipped 2026-05-31 (`5edbdd4`,
+  `scripts/triage_anchors.py`, read-only).** Of 402 false-anchored records:
+  13 clean-after-strip, 8 cross-repo, 381 unresolvable — **but unresolvable is
+  overwhelmingly a verifier artefact** (446 relative + 75 tilde + 15 absolute
+  file anchors `verify_file` can't resolve; only 7 commit refs resolve nowhere).
+  Genuinely-suspect set is tiny → `verified=false` is NOT a trustworthy prune
+  signal yet. Surfaced **item 20 (`verify_file` path/history hardening, no-API)**
+  — expand `~`, accept absolute paths, check the memory's commit not just HEAD —
+  which now **precedes any pruning**. Next no-API: item 20, then item 13 design
+  (retention), item 9 (§8 apparatus). API-gated: items 5/6/14/15. Full backlog
+  + sequence in `wiki/planning/memory-write-path-plan.md`.
 
 **Open questions for the eventual design** (carried forward from
 future-extensions.md):

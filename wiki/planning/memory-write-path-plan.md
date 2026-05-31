@@ -92,8 +92,15 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     `b6f85c1` (2026-05-31). `anchor_verify.wellformed_anchor()` drops anchors
     malformed for their type in the extraction hook. **Forward fix only** — the
     ~22 malformed anchors already in the corpus await a cleanup pass (item 12).
-12. **Make `verified=false` actionable** — triage classifier
-    (malformed / cross-repo / deleted-since / genuinely-wrong).
+12. ✅ **Make `verified=false` actionable** — triage classifier, shipped
+    `5edbdd4` (2026-05-31, `scripts/triage_anchors.py`, read-only). Of 402
+    false-anchored records: 13 clean-after-strip (malformed), 8 cross-repo
+    (re-verifiable), 381 unresolvable. **But the unresolvable bucket is
+    overwhelmingly a verifier artefact, not wrong memories** — 446 relative +
+    75 tilde (`~`) + 15 absolute file anchors `verify_file` can't resolve
+    (no `~`/absolute support; HEAD-only, so deleted-since reads false), and
+    only **7** commit refs resolve nowhere. **The genuinely-suspect set is
+    tiny.** Surfaced item 20 (below).
 13. **Category-specific retention policy** — populate `decay_days` per category
     at write (set on 10 records today); archive past-decay.
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
@@ -104,17 +111,27 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 18. **Memory-health standing report** — periodic counts / anchor-rate /
     malformed-rate / age / growth (extends item 9).
 19. **Anchor-type expansion** — dataset-id, PR/issue, memory-to-memory refs.
+20. **`verify_file` path/history hardening** *(NEW, surfaced by item 12, no-API)*
+    — expand `~`, accept absolute paths, and check the memory's own commit (or
+    git history) not just `HEAD`. The verify-side companion to item 11: these
+    gaps inflate `verified=false` with ~90+ fine memories (tilde/absolute) plus
+    a large "deleted-since" slice. **Until this lands, `verified=false` cannot
+    be trusted as a prune signal** — so it precedes any item-13 cleanup.
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
 1. ✅ **Item 11 (anchor-gen quality gate)** — DONE 2026-05-31 (`b6f85c1`).
    No-API code fix; foundational, makes every downstream `verified` signal
    trustworthy going forward.
-2. **Item 12 (verified=false triage)** — turns the 397 into an actionable,
-   classified set; read-only analysis, no deletion.
-3. **Item 13 design (category retention policy)** — design + per-bucket
+2. ✅ **Item 12 (verified=false triage)** — DONE 2026-05-31 (`5edbdd4`).
+   Read-only; found `verified=false` is dominated by verifier artefacts, not
+   wrong memories (see §5 item 12).
+3. **Item 20 (`verify_file` path/history hardening)** — NEXT, no-API. Make
+   `verified=false` trustworthy as a prune signal; re-run item-12 triage after.
+   **Precedes any pruning.**
+4. **Item 13 design (category retention policy)** — design + per-bucket
    numbers; execute archival only with explicit sign-off, in a quiet window.
-4. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
+5. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
 
 Items 5, 6, 14, 15 (anything LLM/embedding-driven) are **API-gated** — present
 model + batch + count + cost for approval before any run.
