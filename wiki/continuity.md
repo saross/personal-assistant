@@ -631,6 +631,50 @@ Substack / business / teaching) and across LLM model versions.
 | Reconciliation of aspirational section vs prior conscious style guides | **done 2026-05-30** — reconciled in-session (Workstream G). Per Shawn's direction a **clean start**: the prior guides (`~/Code/prompts/System-setup/`, `e17a2f5`) were read to drive the reconciliation but are treated as superseded and are NOT cited in the guide; confirmed §11 items instead carry `Live cross-ref` pointers into the empirical §§1–10. Added §§11.9–11.13 (standalone-demonstrative ban, impersonal-opener minimiser, attribution-verb tiering, connective variation, voice calibration). The apparent paragraph-length conflict (prior target 100–180 words vs §6.5 median 17) is a **§6.5 segmentation artefact** (headings, front-matter and line fragments counted as paragraphs; median falls below mean sentence length) — recorded as a reconciliation note, no item; a background agent has diagnosed it (non-prose blocks are 41% of "paragraphs" but only 4.4% of words; corrected median ≈27, mean ≈42; the "two-register cluster" is contamination-driven, r = −0.78) and proposed a `phase1_pipeline.py` fix — **applied 2026-05-30** (scoped to the paragraph-stats path only; phase1→3→5 re-run): corrected median 27, mean 41, n 2 968 prose paragraphs, with only paragraph stats changed (gate + all word-level metrics byte-identical). phase3: median now `attested`, mean `attested-concentrated` (a genuine short-vs-long register split the contaminated median had mislocated); phase5 re-validated PASS (paragraph mean now excluded from the centroid as bimodal; LOO max 4.67→4.42). Guide §6.5 + Appendix A/C + the §11 note all updated. Submodule `0f85a3c`; parent commits below |
 | Substack / business / teaching genre runs | **deferred indefinitely (2026-05-30, Shawn)** — start only on an immediate need with an assembled Zotero corpus; each run needs a corpus + Phase 4 API approval. The v2.3 agent is ready to drive them |
 
+**Big-picture status & roadmap (2026-05-31 review).** Separate the
+*means* from the *end*. The style **assessor** (academic register) is
+**complete** — phases 1–5 built and validated: measurement
+(`phase1_pipeline.py`), the empirical guide v2.3, deterministic
+promotion + verifier (`phase3_*`), exemplars (`phase4_*`), and the
+runtime `phase5_evaluator.py` (Mahalanobis distance-to-corpus + the
+8-metric gate). The **end** — a capacity to write in Shawn's voice — is
+**under-built, and its efficacy is unproven**: nothing has yet tested
+whether the guide actually moves LLM output toward the corpus. Open
+items, ranked:
+
+1. **Efficacy experiment — NEXT, highest-value, CPU-only.** Generate
+   passages *with* the guide vs *without*, score both through
+   `phase5_evaluator.py`, and compare Mahalanobis distance + 8-metric
+   gate pass-rate. This gates everything downstream: if the guide
+   measurably helps → package generation (2); if not → the guide needs
+   different content before further investment. Methodology-sensitive
+   (control, paired vs unpaired, sample size, held-out vs novel topics)
+   — design per the global CLAUDE.md implementation-review gate. Scoring
+   is CPU-only / no-API; the generation step's model + cost needs the
+   usual API approval if it is not an in-CC call.
+2. **Package a generation workflow** — e.g. a `/write-like-me` command
+   or agent: task → prompt with the guide + Appendix F exemplars →
+   generate → `phase5` score → iterate/flag. Build only if (1) confirms
+   efficacy. Today the ingredients exist but are unassembled; generation
+   is manual (paste guide + exemplars into a prompt).
+3. **Multi-genre assessors** (Substack / business / teaching) — deferred
+   indefinitely; each needs a Zotero corpus + Phase 4 API approval.
+4. **(minor) phase1 manifest reproducibility gap** —
+   `data/style-corpus/corpus-manifest.json` is the extraction *output*
+   format, not the flat list `phase1_pipeline.py` expects, and the
+   agent's canonical invocation points at a non-persistent
+   `/tmp/style-corpus-extract/manifest.json`. The 2026-05-31 re-run
+   reconstructed a manifest from the committed json's 18 keys. Fix:
+   commit a phase1-format manifest, or derive keys from
+   `corpus-manifest.json["results"]` / the extracted dirs.
+5. **(minor) venv dependency manifest** — `~/Code/write-like-me/.venv`
+   has scikit-learn / scipy / spaCy added with no pinned manifest; a
+   fresh machine cannot reproduce it.
+6. **(minor) longitudinal cross-version tracking** — the agent is
+   designed to be re-run across Claude versions (Appendix D diff), but
+   there is only one data point; re-run on a future version to track
+   drift.
+
 **Key prior-art findings (post-verification):**
 
 1. **The `attested / absent-when-searched / aspirational` schema is
@@ -1971,7 +2015,15 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
-### 2026-05-30 (Sat, latest G) — Workstream G §11 reconciliation: aspirational section reconciled against the live empirical assessment; five items added; paragraph-length gap diagnosed as a §6.5 artefact
+### 2026-05-31 (Sun, latest G) — Workstream G big-picture review + handoff; next session = efficacy experiment
+
+Stepped back from the details to map the whole "style assessor + write-in-Shawn's-voice" endeavour (captured in the new "Big-picture status & roadmap (2026-05-31 review)" block in the workstream-G section above). Conclusion: the **assessor (academic) is done**; the **end — writing in his voice — is under-built and its efficacy is unproven**, which makes the with-guide-vs-without efficacy experiment the highest-value, lowest-cost next move (it gates generation-workflow packaging and any multi-genre work). Handed off to a fresh session for that experiment rather than continuing — this session's context was large and implementation-laden (the §6.5 plumbing + the commit-sweep incident), and the experiment is a distinct, methodology-sensitive design task that wants a clean head. Earlier in this same 2026-05-30→31 session: tolerance refinement verified; three Phase-5 user-observation candidates dispositioned (`a57bcb4`); §11 reconciled against Shawn's conscious-writing intent as a clean start (superseded guides not cited, live cross-refs instead); the §6.5 paragraph-length segmentation artefact fixed end-to-end; the workstream-labelling convention added and then strengthened after a real commit-sweep.
+
+- Roadmap + all six to-dos (3 major, 3 minor) captured in the workstream-G "Big-picture status & roadmap (2026-05-31 review)" block.
+- **Next session's task:** efficacy experiment — generate with/without guide, score via `phase5_evaluator.py`, compare Mahalanobis distance + 8-metric gate pass-rate. Scoring CPU-only/no-API; generation-step model + cost needs the usual API gate if non-CC.
+- Commit hygiene: a concurrent memory/scratchpad session shares the working tree — use `git commit -- <path>` (pathspec) per the strengthened convention in `CLAUDE.md` (`8e80ea8`); `wiki/continuity.md` is the one file both workstreams edit, so commits there will cross-sweep (benign, labelled).
+
+### 2026-05-30 (Sat, G) — Workstream G §11 reconciliation: aspirational section reconciled against the live empirical assessment; five items added; paragraph-length gap diagnosed as a §6.5 artefact
 
 Completed the §11 aspirational-section reconciliation (continuity row 589) — the last open Workstream-G item beyond the deferred multi-genre runs. Per Shawn's direction this was a **clean start**: the prior conscious style guides at `~/Code/prompts/System-setup/` were read to drive the reconciliation but are treated as superseded and are NOT cited in the guide; confirmed items instead carry `Live cross-ref` pointers into the empirical §§1–10. Four decisions resolved: (1) relabel confirmed items with live cross-refs (§§11.3/11.4/11.6/11.7); (2) add four editorial rules — standalone-demonstrative ban, impersonal-opener minimiser, attribution-verb tiering, connective variation; (3) add a voice-calibration item (prefer first person for crispness, third person where it avoids convolution; baseline first-person-plural per §1.1); (4) the prior-guide 100–180-word paragraph target seemed to conflict with §6.5's median of 17 words, but a background investigation confirmed that is a **segmentation artefact** — `split_paragraphs()` counts headings, surviving front-matter and line-break fragments as paragraphs (non-prose = 41% of blocks but only 4.4% of words), so the median sits below the mean sentence length (21.45 words), impossible for real prose. Corrected median ≈27, mean ≈42; the apparent two-register cluster is contamination-driven (r = −0.78) and was never a formal bimodality.
 
