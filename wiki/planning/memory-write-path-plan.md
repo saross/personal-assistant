@@ -101,8 +101,25 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     (no `~`/absolute support; HEAD-only, so deleted-since reads false), and
     only **7** commit refs resolve nowhere. **The genuinely-suspect set is
     tiny.** Surfaced item 20 (below).
-13. **Category-specific retention policy** — populate `decay_days` per category
-    at write (set on 10 records today); archive past-decay.
+13. ✅ **Category-specific retention policy — DESIGN DONE + signed off
+    2026-06-01** (`wiki/planning/memory-retention-policy-proposal.md`,
+    `bfaf0ab`). Re-derived counts at source (30,277 records). **Reframe:**
+    decay already exists (read-time `active_memories` view); archival does
+    not (physical eviction from the hot JSONL). Split into **Lever A**
+    (behaviour-preserving — archive the **7,370** records (5.62 MB, ~24 %)
+    already past their existing decay window; recall unchanged via the view)
+    and **Lever B** (per-bucket policy). **Signed off:** Lever A approved;
+    `gotcha`/`pattern` → **permanent** (guidance-bearing, NOT aggressive
+    decay — pushback on the brief sustained); `progress` keeps 30 d; tier
+    structure + cold store (`data/memories/archive/memories-archive-YYYY-MM.jsonl`)
+    + `--include-archive` retrieval all adopted. **Corrected stale pointer:**
+    `bulk-archive.py` archives *sessions*, not memories — no memory-archival
+    tool exists. **Execution (next, gated):** build `scripts/archive-memories.py`
+    on the `recover_anchors.py` template (dry-run default, `_bulk_rewrite_guard`
+    + `lock_jsonl_for_rewrite`, verbatim passthrough, surgical PG
+    `is_active=FALSE`); flip `gotcha`/`pattern` `decay_days 180→NULL` in
+    `category_config`; staged sweep (`progress` alone first). Quiet
+    (corpus-clean) window required; archive, never delete.
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
@@ -192,10 +209,15 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    data `a792240`, parent `6cd6666`): 218 records (155 false→true), PG in
    lockstep. Post-apply: `verified=false` 404 → 224; `clean-after-strip` and
    `recoverable` both → 0. `verified=false` is now a trustworthy small signal.
-5. **Item 13 design (category retention policy)** — design + per-bucket
-   numbers; execute archival only with explicit sign-off, in a quiet window.
-   **NB:** the residual `verified=false` (224, mostly genuinely-gone files) is
-   NOT a prune signal — item 13 targets retention/archival, not verified-status.
+5. ✅ **Item 13 design (category retention policy) — DONE + signed off
+   2026-06-01.** Proposal `wiki/planning/memory-retention-policy-proposal.md`
+   (`bfaf0ab`); per-bucket numbers re-derived at source. Lever A approved
+   (archive 7,370 past-decay records, behaviour-preserving);
+   `gotcha`/`pattern` kept permanent; cold store + retrieval adopted.
+   **Next = execution** (build `scripts/archive-memories.py`, gated, quiet
+   window). **NB:** the residual `verified=false` (224, mostly genuinely-gone
+   files) is NOT a prune signal — item 13 targets retention/archival, not
+   verified-status.
 6. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
 
 Items 5, 6, 14, 15 (anything LLM/embedding-driven) are **API-gated** — present

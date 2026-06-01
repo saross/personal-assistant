@@ -1,7 +1,9 @@
 # Memory retention policy — item 13 design proposal
 
 **Created:** 2026-06-01 (Workstream B, RETENTION thread).
-**Status:** DESIGN / PROPOSAL — awaiting Shawn's per-bucket sign-off.
+**Status:** ✅ **APPROVED 2026-06-01** — all six decisions signed off (see §9).
+Design phase complete; execution (build `scripts/archive-memories.py` →
+dry-run → gated `--apply` in a quiet window) is the next step.
 **No mutation in this phase.** No Application Programming Interface (API) calls.
 Execution (the archival sweep) is a separate, explicitly-gated step.
 **Plan parent:** `wiki/planning/memory-write-path-plan.md` (item 13).
@@ -303,16 +305,30 @@ quiet window, never as part of design.
 
 ---
 
-## 9. Open decisions for sign-off
+## 9. Decisions — ✅ signed off 2026-06-01
 
-| # | Decision | Recommendation |
-|---|---|---|
-| **D1** | Approve **Lever A** (archive the 7,370 already-past-decay records, behaviour-preserving)? | **Yes** — safe ~24 % reclaim, no recall change. |
-| **D2** | Adopt **Lever B** tier structure (§6) for `category_config`, going forward? | **Yes**, with D3 amendment. |
-| **D3** | `gotcha` + `pattern`: aggressive decay (per brief) **or** permanent/365 d (my pushback)? | **Permanent** (or 365 d) — they are guidance. |
-| **D4** | `progress` window: keep **30** or tighten to **14** (+442 records)? | **30** to start; revisit after watching one cycle. |
-| **D5** | Cold store = monthly partitions under `data/memories/archive/`? | **Yes** — git history is the durable offsite copy. |
-| **D6** | Retrievability via `fetch-memories.py --include-archive` (default off)? | **Yes.** |
+| # | Decision | Recommendation | **Resolution (2026-06-01)** |
+|---|---|---|---|
+| **D1** | Approve **Lever A** (archive the 7,370 already-past-decay records, behaviour-preserving)? | **Yes** — safe ~24 % reclaim, no recall change. | ✅ **Approved.** |
+| **D2** | Adopt **Lever B** tier structure (§6) for `category_config`, going forward? | **Yes**, with D3 amendment. | ✅ **Adopted as proposed.** |
+| **D3** | `gotcha` + `pattern`: aggressive decay (per brief) **or** permanent/365 d (my pushback)? | **Permanent** (or 365 d) — they are guidance. | ✅ **Permanent** — moved to Tier P. |
+| **D4** | `progress` window: keep **30** or tighten to **14** (+442 records)? | **30** to start; revisit after watching one cycle. | ✅ **Keep 30 d.** |
+| **D5** | Cold store = monthly partitions under `data/memories/archive/`? | **Yes** — git history is the durable offsite copy. | ✅ **Adopted.** |
+| **D6** | Retrievability via `fetch-memories.py --include-archive` (default off)? | **Yes.** | ✅ **Adopted.** |
+
+**Final policy (for the execution step):**
+
+- **Tier P (permanent, never archive):** all of today's `NULL` categories
+  **plus `gotcha` and `pattern`** (D3). `category_config.decay_days` for
+  `gotcha`/`pattern` changes `180 → NULL`.
+- **Tier E (aggressive):** `progress` 30 (D4), `context` 30, `waiting_for`
+  14, `blocker_real` 30 — windows unchanged; past-window records now evicted.
+- **Tier M (longer):** `commitment` 30 (from deadline), `completion` 90,
+  `system_friction` 60, `system_success` 90 — unchanged; evicted past window.
+- **Cold store:** `data/memories/archive/memories-archive-YYYY-MM.jsonl`.
+- **Retrieval:** `fetch-memories.py --include-archive` (default off).
+- **Staged rollout:** `progress` swept alone first; verify recall + digest
+  unchanged before the rest.
 
 Re-derive the live counts before executing (the corpus grows ~260/day):
 
