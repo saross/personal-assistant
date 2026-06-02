@@ -298,8 +298,15 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    final Bash side-effect. +10 tests, suite 971. **Limits:** forward-only
    (no pre-ship data → does not rescue 2026-06-13), verifier-deliverable-
    scoped (selection-biased), instruction-based, narrow kind (citation /
-   repo / dataset confab, not prose welding — deferred Tier B/C). Auto-
+   repo / dataset confab, not prose welding — deferred Tier C). Auto-
    feeds item 18 once a standing report exists. No-API.
+   **Tier B (`/confab` manual capture) — ✅ BUILT + shipped 2026-06-02
+   (`aa62095`):** `commands/confab.md` + a `--detail` field on the helper;
+   logs the prose path/identifier/count welding the verifiers don't see,
+   as `source=user-correction checked=0` (absolute-count-only, excluded
+   from the rate). Same log file. **Tier C still deferred** (write-time
+   fresh-anchor-fail rate — fully automatic, broader; needs a noise-filter
+   trace of the extraction hook before it's trustworthy per item 21).
 2. **P2 — recurring archival cadence (NEW, completes item 13).** The sweep was
    one-shot; without a periodic run the JSONL re-bloats (~260/day). Stand up a
    monthly `archive-memories.py --apply` after a `daily-sync.sh` flush (the
