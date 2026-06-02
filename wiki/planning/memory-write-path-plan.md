@@ -128,6 +128,18 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     (flush via `daily-sync.sh` first — a dry-run surfaced PG ~272 progress
     records behind the JSONL), plus the small `category_config` 180→NULL flip
     for `gotcha`/`pattern` and the `--include-archive` retrieval flag.
+    **✅ EXECUTED 2026-06-02 (Shawn-watched quiet window).** Flushed via
+    `daily-sync.sh`; `--apply --category progress` (4,094) then `--apply` rest
+    (3,579) = **7,673 records archived** (~25 % of corpus) to
+    `data/memories/archive/memories-archive-2026-06.jsonl` (data `034f1cc`,
+    `761caf5`). **Recall invariance proven:** `active_memories` total + every
+    per-category count IDENTICAL before/after the sweep (21,999). PG: 7,083
+    archived rows set `is_active=FALSE`, **0 resurrected, 0 leak into recall**.
+    Follow-ups done: `category_config` gotcha/pattern→NULL (live + `schema.sql`;
+    un-hid 34 gotcha + 22 pattern) and `fetch-memories.py --include-archive`
+    (parent `a5ac41b`, 4 tests). Surfaced **item 22** (sync-to-postgres shrink
+    guard) — the cursor stranded above EOF after the shrink; a reset-to-0 +
+    full re-scan reconciled it (and fixed 857 previously-unsynced live records).
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
@@ -194,6 +206,19 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     signal.** Items 20 + 21 (a+b+act) together delivered it; **item 13 pruning
     must still target retention/archival, not deletion-by-`verified=false`** (the
     residual is mostly genuinely-gone files, not wrong memories).
+22. **`sync-to-postgres.py` shrink guard not wired** *(surfaced by item-13
+    execution 2026-06-02, no-API)* — `_sync_cursor.detect_jsonl_shrink()`
+    EXISTS but `sync-to-postgres.py` never calls it. When `memories.jsonl`
+    shrinks below the saved `postgres_sync_line` cursor (as it does after every
+    archival sweep), `_sync_locked` hits `cursor_line >= total_lines`, logs "No
+    new memories", and **leaves the cursor stranded above EOF** — so subsequent
+    appends are silently skipped until the file regrows past the stale line
+    (the exact D-C3-class bug the helper was written to prevent). **Manually
+    worked around** during the item-13 sweep (reset cursor to 0 + full
+    re-scan). **Fix:** call `detect_jsonl_shrink` at the top of `_sync_locked`;
+    on shrink, log a WARN, reset the cursor to 0, and full-re-scan (it's
+    `ON CONFLICT DO NOTHING`, so a full re-scan is cheap and idempotent). Add a
+    regression test. **Do this before the next archival run.**
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 

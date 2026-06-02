@@ -276,11 +276,19 @@ exactly the contract ("excluded from recall but kept retrievable").
 
 ---
 
-## 8. Execution tool — ✅ BUILT + audited 2026-06-02 (`--apply` still gated)
+## 8. Execution tool — ✅ BUILT, audited, AND EXECUTED 2026-06-02
 
-`scripts/archive-memories.py` is **built, audited, and dry-run-validated**
-(commit `9a5345a`; 30 unit tests, built in worktree `workstream-b-item13`).
-What remains is only the **gated `--apply`** in a quiet window (see below).
+`scripts/archive-memories.py` was **built, audited, dry-run-validated, and
+run** (commit `9a5345a`; 30 unit tests). **Executed 2026-06-02 in a
+Shawn-watched quiet window: 7,673 records archived** (progress 4,094 + the
+rest 3,579; ~25 % of the corpus) to
+`data/memories/archive/memories-archive-2026-06.jsonl` (data `034f1cc`,
+`761caf5`). **Recall invariance proven** — `active_memories` total and every
+per-category count identical before/after (21,999); PG 7,083 rows set
+`is_active=FALSE`, 0 resurrected, 0 leaked into recall. Both follow-ups
+landed (gotcha/pattern→permanent; `fetch-memories.py --include-archive`,
+parent `a5ac41b`). The cursor-shrink workaround is logged as plan item 22
+(fix `sync-to-postgres.py` before the next sweep). Build details below.
 
 **Built behaviour** (modelled closely on `scripts/recover_anchors.py`):
 
