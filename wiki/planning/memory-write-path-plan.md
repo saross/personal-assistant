@@ -324,14 +324,26 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    the response-path prose welding Vector 2 targets, so it's a
    corpus-health metric (item 18), not a third efficacy tier. Build it
    when item 18 is built; see §5 item 18.
-2. **P2 — recurring archival cadence (NEW, completes item 13).** The sweep was
-   one-shot; without a periodic run the JSONL re-bloats (~260/day). Stand up a
-   monthly `archive-memories.py --apply` after a `daily-sync.sh` flush (the
-   item-22 fix self-heals the cursor). No-API.
+2. **P2 — recurring archival cadence — ✅ BUILT 2026-06-02 (`69e69f6`),
+   awaiting a Shawn-watched first `--apply`.** `scripts/monthly-archive.py`
+   wraps the proven item-13 sweep (flush → sanity-gate → apply →
+   invariance-gate → PG-drift-gate → verified push) as a safe-by-default
+   command (dry-run unless `--apply`); the invariance gate independently
+   re-verifies every archived record is past-decay at a pinned `as_of`
+   (immune to live-`NOW()` drift). Twice adversarially reviewed (CRITICAL
+   + 3 HIGH fixed pass 1; pass 2 clean, residuals fail safe); 22 tests,
+   suite 996; dry-run from main validated (would archive 47). **Remaining:
+   Shawn watches the first `--apply`, then adds the monthly cron line.**
+   Doc: `wiki/planning/archival-cadence-2026-06-02.md`. No-API.
 3. **P3 — item 14: extraction selectivity tuning** (fewer, higher-value
    memories at source — the upstream lever). No-API.
-4. **P4 — item 3: neutralise dead fixed-payload weight** (harness `MEMORY.md`
-   + CLAUDE.md redundancy audit; loaded every session). No-API.
+4. **P4 — item 3: neutralise dead fixed-payload weight — ✅ MOSTLY DONE
+   2026-06-02.** `MEMORY.md` (harness auto-memory) neutralised 589→262 B/session
+   (reversible; backup kept; content also in JSONL). CLAUDE.md redundancy
+   audit → proposal `data/notes/claude-md-redundancy-audit-2026-06-02.md`
+   (`data 0da8376`): ~610 B SAFE + ~1,505 B judgment trims, two stale claims;
+   **nothing applied — awaiting Shawn** (behaviour-governing; global file is
+   auto-generated from `shared.md` + `local.md`). No-API.
 5. **P5 — write-side dup-id hygiene (NEW, surfaced by the item-13 sweep).** 590
    archived ids were never in PG + 857 unsynced live records — PG was behind
    the JSONL for *non-lag* reasons (dup-id / quarantine). Diagnose the dup-id
