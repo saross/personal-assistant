@@ -161,7 +161,19 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     never-surfaced-in-N-months → archival candidate.
 17. **Confidence-field hygiene** — use the `confidence` field or drop it.
 18. **Memory-health standing report** — periodic counts / anchor-rate /
-    malformed-rate / age / growth (extends item 9).
+    malformed-rate / age / growth (extends item 9). **Now also houses
+    Tier C (decided 2026-06-02): the write-time fresh-anchor-fail rate** —
+    of the anchored memories written this period, the fraction whose
+    `file`/`commit` anchor resolves nowhere (working tree + git history),
+    auto-classified recoverable-prefix vs genuinely-absent via
+    `anchor_verify.unique_suffix_match`. **Reframed as a corpus-health
+    metric, NOT a Vector-2 efficacy signal** (it measures write-path
+    anchor confab, not response-path prose welding — that's Tier B). The
+    uncommitted-this-session confound is handled by `verify_file`'s
+    working-tree stat (`anchor_verify.py:181`); residual noise is
+    prefix-mismatch / cross-repo, both classifiable. Cheap when item 18
+    is built (reuses `verify_memory` + `unique_suffix_match`); only
+    legible aggregated over time, hence here not standalone.
 19. **Anchor-type expansion** — dataset-id, PR/issue, memory-to-memory refs.
 20. ✅ **`verify_file` path/history hardening** *(no-API, shipped 2026-05-31)*
     — `verify_file` now `expanduser()`s a leading `~`, and absolute (incl.
@@ -304,9 +316,14 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    (`aa62095`):** `commands/confab.md` + a `--detail` field on the helper;
    logs the prose path/identifier/count welding the verifiers don't see,
    as `source=user-correction checked=0` (absolute-count-only, excluded
-   from the rate). Same log file. **Tier C still deferred** (write-time
-   fresh-anchor-fail rate — fully automatic, broader; needs a noise-filter
-   trace of the extraction hook before it's trustworthy per item 21).
+   from the rate). Same log file. **Tier C — FOLDED INTO item 18
+   (decided 2026-06-02).** The `verify_file` trace confirmed the
+   uncommitted-this-session confound is already handled (working-tree stat,
+   `anchor_verify.py:181`), so the write-time fresh-anchor-fail rate is a
+   clean automatic signal — but it measures write-path anchor confab, not
+   the response-path prose welding Vector 2 targets, so it's a
+   corpus-health metric (item 18), not a third efficacy tier. Build it
+   when item 18 is built; see §5 item 18.
 2. **P2 — recurring archival cadence (NEW, completes item 13).** The sweep was
    one-shot; without a periodic run the JSONL re-bloats (~260/day). Stand up a
    monthly `archive-memories.py --apply` after a `daily-sync.sh` flush (the
