@@ -276,7 +276,53 @@ exactly the contract ("excluded from recall but kept retrievable").
 
 ---
 
-## 8. Execution design (for the gated step — NOT this phase)
+## 8. Execution tool — ✅ BUILT + audited 2026-06-02 (`--apply` still gated)
+
+`scripts/archive-memories.py` is **built, audited, and dry-run-validated**
+(commit `9a5345a`; 30 unit tests, built in worktree `workstream-b-item13`).
+What remains is only the **gated `--apply`** in a quiet window (see below).
+
+**Built behaviour** (modelled closely on `scripts/recover_anchors.py`):
+
+- **Dry-run default**; `--apply` required to mutate; `--category` (repeatable)
+  for staged rollout (e.g. `progress` first, alone).
+- **Guarded** by `_bulk_rewrite_guard.ensure_safe_to_rewrite` (origin==local
+  on the `data` submodule, clean protected files, daily-sync flock) and
+  wrapped in `lock_jsonl_for_rewrite` so concurrent appends drain and block
+  for the rewrite window; re-partitions **inside** the lock. Commit carries
+  the `Rewrite-Class: bulk` trailer.
+- **Minimal diff:** kept records written back **verbatim**; archived records
+  appended **verbatim** to the month partition (no re-serialisation).
+- **Boundary matches PG exactly:** archives iff `(now − ref) >
+  timedelta(days=decay_days)` — algebraically identical to the
+  `active_memories` view / `apply-decay.py` interval predicate
+  (`created_at < NOW() − dd`). (Audit caught an earlier `.days`-truncation
+  that would have left ~171 already-decayed records behind.)
+- **Crash-safe cold store:** idempotent append (dedup by id, so a
+  crash-then-retry can't duplicate the partition) + `fsync` on the partition
+  and `corpus.tmp` before the rename. `gotcha`/`pattern` forced **permanent**
+  via `PERMANENT_OVERRIDES` regardless of the `category_config` flip.
+- **Audit trail:** per-run summary appended to
+  `data/memories/archive/archive-runs.jsonl` + the git commit in `data`.
+- **PostgreSQL:** surgical `UPDATE memories SET is_active=FALSE,
+  decayed_at=NOW() WHERE id = ANY(...)`. Loud warnings if PG is unreachable
+  after the corpus mutation, if `rowcount != len(ids)` (JSONL/PG drift), or
+  if any archived record lacks an id.
+
+**Dry-run result (2026-06-02, `--category progress`):** **4,061** progress
+records past 30 days (3.09 MB) from the canonical JSONL (5,213 total). NB a
+dry-run also surfaced **PG ~272 progress records behind the JSONL** (sync
+lag) — which is exactly why the quiet window must **flush via
+`scripts/daily-sync.sh` first** (daily-sync runs the JSONL→PG sync, closing
+the drift); the rowcount-drift warning is the backstop.
+
+**Remaining gated step (`--apply`):** run `progress` alone first in a quiet
+window (corpus-clean — flush via `daily-sync.sh`; the guard blocks on a dirty
+corpus), verify recall + digest unchanged, then the rest. Separately, flip
+`category_config.decay_days` `gotcha`/`pattern` `180 → NULL` (and the
+`fetch-memories.py --include-archive` retrieval flag, D6) as small follow-ups.
+
+<details><summary>Original §8 design notes (pre-build)</summary>
 
 Build `scripts/archive-memories.py`, modelled **closely** on
 `scripts/recover_anchors.py` (the proven guarded-corpus-mutation template):
@@ -302,6 +348,8 @@ Build `scripts/archive-memories.py`, modelled **closely** on
 
 This is a corpus mutation → it runs **only after per-bucket sign-off**, in a
 quiet window, never as part of design.
+
+</details>
 
 ---
 

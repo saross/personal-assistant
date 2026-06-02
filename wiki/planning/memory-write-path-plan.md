@@ -120,6 +120,14 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     `is_active=FALSE`); flip `gotcha`/`pattern` `decay_days 180→NULL` in
     `category_config`; staged sweep (`progress` alone first). Quiet
     (corpus-clean) window required; archive, never delete.
+    **EXECUTION TOOL BUILT + audited 2026-06-02** (`9a5345a`,
+    `scripts/archive-memories.py` + 30 tests; built in worktree, /audit run,
+    boundary/crash-safety/PG-consistency fixes applied). Dry-run validated:
+    `progress` past-30d = **4,061** (canonical JSONL; matches the PG interval
+    predicate exactly). **Remaining = the gated `--apply`** in a quiet window
+    (flush via `daily-sync.sh` first — a dry-run surfaced PG ~272 progress
+    records behind the JSONL), plus the small `category_config` 180→NULL flip
+    for `gotcha`/`pattern` and the `--include-archive` retrieval flag.
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
