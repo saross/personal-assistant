@@ -288,13 +288,18 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 1. ✅ **P1 — item 9: verify the §8 measurement apparatus — DONE 2026-06-02**
    (`4db5a9d`). Only measurement (1) review-ready; instrumented the
    /recall blind spot in (2) (`source=recall`); baseline for (2) is dead;
-   (3) has no apparatus. **New P1.5 (surfaced by item 9, per Shawn's ask):
-   stand up automated confab-flag tracking for (3)** — log
-   checked/flagged counts from the existing verifier agents
-   (lit-scout-verifier / prior-art-scout-verifier / data-profile-verifier)
-   to a `confab-flags.log`; forward-only (no pre-ship data), folds into
-   item 18. No-API (the logging; verifier API calls stay under the
-   existing gate). *Design pending sign-off.*
+   (3) has no apparatus. **P1.5 (surfaced by item 9, per Shawn's ask): automated
+   confab-flag tracking for (3) — ✅ BUILT + shipped 2026-06-02
+   (`353a45a`).** `scripts/log-confab-flag.py` parses the per-claim
+   `corrections.jsonl` the three verifier agents already emit and tallies
+   `checked` / `flagged` (`status=fail`) / `confab`
+   (`failure_type=confabulation`) / `kinds` to `data/logs/confab-flags.log`
+   (best-effort); all three verifier agent defs self-log their tally as a
+   final Bash side-effect. +10 tests, suite 971. **Limits:** forward-only
+   (no pre-ship data → does not rescue 2026-06-13), verifier-deliverable-
+   scoped (selection-biased), instruction-based, narrow kind (citation /
+   repo / dataset confab, not prose welding — deferred Tier B/C). Auto-
+   feeds item 18 once a standing report exists. No-API.
 2. **P2 — recurring archival cadence (NEW, completes item 13).** The sweep was
    one-shot; without a periodic run the JSONL re-bloats (~260/day). Stand up a
    monthly `archive-memories.py --apply` after a `daily-sync.sh` flush (the
