@@ -100,7 +100,7 @@ def test_load_corrections_skips_blank_and_unparseable(tmp_path: Path) -> None:
 
 
 def test_format_line_shape() -> None:
-    """A formatted line is tab-separated with the seven expected fields."""
+    """A formatted line is tab-separated with the eight expected fields."""
     line = log_confab.format_line(
         "lit-scout-verifier", "topic-x", 42, 3, 2, ["confabulation", "stale_count"],
         now=FIXED_NOW,
@@ -115,14 +115,57 @@ def test_format_line_shape() -> None:
         "flagged=3",
         "confab=2",
         "kinds=confabulation,stale_count",
+        "detail=-",  # absent by default (verifier-tally rows)
     ]
 
 
-def test_format_line_defaults_for_blank_deliverable_and_kinds() -> None:
-    """Blank deliverable → '-'; empty kinds → 'none'."""
+def test_format_line_defaults_for_blank_deliverable_kinds_and_detail() -> None:
+    """Blank deliverable → '-'; empty kinds → 'none'; empty detail → '-'."""
     line = log_confab.format_line("data-profile-verifier", "", 10, 0, 0, [], now=FIXED_NOW)
     assert "\tdeliverable=-\t" in line
-    assert "\tkinds=none\n" in line
+    assert "\tkinds=none\t" in line
+    assert line.endswith("\tdetail=-\n")
+
+
+def test_format_line_detail_is_whitespace_collapsed_and_bounded() -> None:
+    """A detail note with tabs/newlines is collapsed so it never breaks the TSV."""
+    messy = "claimed\tscripts/foo.py\n  actually   scripts/bar/foo.py"
+    line = log_confab.format_line(
+        "user-correction", "inscriptions", 0, 1, 1, ["path"], now=FIXED_NOW, detail=messy,
+    )
+    # Still exactly eight tab-separated fields — the note added no stray tabs.
+    assert len(line.rstrip("\n").split("\t")) == 8
+    assert "detail=claimed scripts/foo.py actually scripts/bar/foo.py" in line
+
+
+def test_format_line_detail_truncated_to_200_chars() -> None:
+    """An over-long detail is truncated so the log cannot bloat."""
+    line = log_confab.format_line(
+        "user-correction", "x", 0, 1, 1, ["count"], now=FIXED_NOW, detail="z" * 500,
+    )
+    detail_field = line.rstrip("\n").split("\t")[-1]
+    assert detail_field == "detail=" + "z" * 200
+
+
+def test_manual_entry_round_trips_through_log_confab_flag(tmp_path: Path) -> None:
+    """A /confab-style manual entry writes source, checked=0, and the detail."""
+    log_path = tmp_path / "confab-flags.log"
+    ok = log_confab.log_confab_flag(
+        "user-correction",
+        checked=0,
+        flagged=1,
+        confab=1,
+        kinds=["identifier"],
+        deliverable="paper-b",
+        detail="said the variable was n_atoms, it is atom_count",
+        log_path=log_path,
+        now=FIXED_NOW,
+    )
+    assert ok is True
+    contents = log_path.read_text(encoding="utf-8")
+    assert "source=user-correction" in contents
+    assert "\tchecked=0\t" in contents
+    assert "detail=said the variable was n_atoms, it is atom_count" in contents
 
 
 # ============================================================================

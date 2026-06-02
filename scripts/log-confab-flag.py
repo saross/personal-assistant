@@ -37,12 +37,23 @@ never degrade a verifier run.
 PRIVACY: ``--deliverable`` is a short label only (a topic slug or run
 id), never claim contents or search text.
 
+Manual entries (Tier B — the ``/confab`` command, ``commands/confab.md``)
+share this log with a non-verifier ``source`` (``user-correction`` /
+``self-catch``), a ``--detail`` note, and ``--checked 0``. A manual catch
+has no denominator — you only ever log the catches, never the clean
+cases — so manual rows are **absolute-count-only**: a consumer computing
+the verifier *rate* (Σflagged / Σchecked) MUST restrict to verifier-agent
+sources (equivalently ``checked > 0``) and count manual rows separately.
+
 Usage:
     python3 scripts/log-confab-flag.py --source lit-scout-verifier \\
         --checked 42 --flagged 3 --confab 2 --kinds confabulation,stale_count \\
         --deliverable "llm-history-lit-2026-06"
     python3 scripts/log-confab-flag.py --source data-profile-verifier \\
         --corrections /path/to/corrections.jsonl --deliverable "lire-profile"
+    python3 scripts/log-confab-flag.py --source user-correction \\
+        --checked 0 --flagged 1 --confab 1 --kinds path \\
+        --deliverable "inscriptions" --detail "claimed scripts/foo.py, actually scripts/bar/foo.py"
 """
 
 from __future__ import annotations
@@ -115,10 +126,20 @@ def format_line(
     kinds: list[str],
     *,
     now: datetime,
+    detail: str = "",
 ) -> str:
-    """Format one tab-separated ``confab-flags.log`` line (pure; no I/O)."""
+    """Format one tab-separated ``confab-flags.log`` line (pure; no I/O).
+
+    ``detail`` is an optional short free-text note (used by manual
+    ``/confab`` entries, e.g. "claimed X, actually Y"). It is whitespace-
+    collapsed and truncated so it can never break the tab-separated
+    schema; empty for verifier-tally rows.
+    """
     deliverable = (deliverable or "").strip() or "-"
     kinds_field = ",".join(kinds) if kinds else "none"
+    # Collapse all whitespace (incl. tabs/newlines) and bound the length so
+    # a free-text note can never corrupt the TSV or bloat the log.
+    detail_field = " ".join(str(detail).split())[:200] or "-"
     return (
         f"{now.isoformat()}\t"
         f"source={source}\t"
@@ -126,7 +147,8 @@ def format_line(
         f"checked={int(checked)}\t"
         f"flagged={int(flagged)}\t"
         f"confab={int(confab)}\t"
-        f"kinds={kinds_field}\n"
+        f"kinds={kinds_field}\t"
+        f"detail={detail_field}\n"
     )
 
 
@@ -138,6 +160,7 @@ def log_confab_flag(
     confab: int,
     kinds: list[str] | None = None,
     deliverable: str = "",
+    detail: str = "",
     log_path: Path = DEFAULT_LOG_PATH,
     now: datetime | None = None,
 ) -> bool:
@@ -149,7 +172,8 @@ def log_confab_flag(
     try:
         stamp = now or datetime.now(timezone.utc)
         line = format_line(
-            source, deliverable, checked, flagged, confab, kinds or [], now=stamp
+            source, deliverable, checked, flagged, confab, kinds or [],
+            now=stamp, detail=detail,
         )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as fh:
@@ -194,6 +218,12 @@ def main() -> None:
         default="",
         help="Comma-separated failure_type values among fails (mode 2).",
     )
+    parser.add_argument(
+        "--detail",
+        default="",
+        help="Optional short note (manual /confab entries) — whitespace-collapsed "
+        "and truncated to 200 chars.",
+    )
     args = parser.parse_args()
 
     # Start from a parsed corrections file when supplied, then let any
@@ -220,6 +250,7 @@ def main() -> None:
         confab=confab,
         kinds=kinds,
         deliverable=args.deliverable,
+        detail=args.detail,
     )
 
 
