@@ -1366,3 +1366,51 @@ immortal.
 
 Source: read-only profile, session 2026-05-31;
 `wiki/planning/memory-write-path-plan.md` §1; commit `8cc8275`.
+
+---
+
+## 2026-06-02: archiving 25% of the corpus changed recall by *exactly zero* — decay ≠ archival, measured
+
+Executed the item-13 retention sweep: 7,673 records (~25 % of a 30,588-line
+corpus) moved from the live `memories.jsonl` to a cold monthly partition.
+**Measured invariant:** the PostgreSQL `active_memories` view's total count
+**and every per-category count were identical before and after each apply**
+(21,999 throughout). The reason is the reframe made concrete: the
+`active_memories` view already excludes past-decay records *at read time*
+(`created_at + decay_days < now`), so the archived records were never visible
+to recall in the first place — archival only stops carrying them as dead
+weight in the hot file. This is the empirical proof that "decay" (read-time
+filter) and "archival" (physical eviction) are different operations, and that
+a correctly-scoped archival is behaviour-preserving by construction. The
+invariance check (capture `active_memories` counts before/after, assert
+identical) is the right gate for any future retention run.
+
+Source: session 2026-06-02; `scripts/archive-memories.py`; data archival
+commits `034f1cc`+`761caf5`; `wiki/planning/memory-retention-policy-proposal.md`
+§4–5; baseline/after counts captured live at each apply.
+
+---
+
+## 2026-06-02: a line-number sync cursor must use the *same* line-count method everywhere
+
+`sync-to-postgres.py` tracks an incremental cursor as a **line number** into
+`memories.jsonl` and saves it as `len(read_text().splitlines())`. Two bugs
+fell out of this during the archival sweep. (1) **Strand-on-shrink:** when the
+file shrank below the saved cursor, `cursor >= total_lines` fired, the script
+logged "No new memories", and the cursor sat above EOF — silently skipping
+every subsequent append until the file regrew. The fix is a shrink guard that
+resets to 0 and full-re-scans (`ON CONFLICT DO NOTHING` makes that cheap). (2)
+**Count-method divergence:** the first fix called the existing
+`detect_jsonl_shrink` helper, which counts lines by *file-handle iteration* —
+which disagrees with `splitlines()` on embedded Unicode line separators
+(U+2028/U+2029/U+0085/…) that `splitlines()` splits on but file iteration does
+not. Since the cursor is *saved* with the `splitlines()` count, comparing it
+against a file-iter count can fire a spurious shrink every cycle once such a
+character survives an `ensure_ascii=False` rewrite (dedup/tag-gardening). The
+principle: **a position cursor and every check against it must use one
+consistent counting method.** Caught by the session-end `/audit`, not the
+first review.
+
+Source: session 2026-06-02; `scripts/sync-to-postgres.py` `_sync_locked`;
+`scripts/_sync_cursor.py` `detect_jsonl_shrink`; commits `b94d3b5` (guard),
+`2e709ec` (count-consistency fix); plan item 22.
