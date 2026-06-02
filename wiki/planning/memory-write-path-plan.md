@@ -84,7 +84,22 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 
 **Tier 3 — cheap safety/observability**
 8. Drift-sweep as a standing job (re-resolve the ~1,129 anchored).
-9. Verify the §8 measurement apparatus before 2026-06-13.
+9. ✅ **Verify the §8 measurement apparatus — DONE 2026-06-02** (`4db5a9d`).
+   Verdict: only measurement (1) (digest bytes) is review-ready —
+   `digest.log` clean/unconfounded, n=26, median 1491 B / p95 1499 B,
+   0 over budget (but the 1500-byte HARD cap makes the thresholds
+   self-fulfilling; (1) really measures how hard the cap binds).
+   (2) invocation rates broken three ways — **no pre-ship baseline**
+   (instrumentation `809a89f` shipped on enablement day; §2 baseline is
+   bytes-only, unrecoverable); **/recall was uninstrumented** (reads
+   `memories.jsonl` directly, never hit `fetch-memories.py` — fixed this
+   session, see below); sparse. (3) **no verifier apparatus exists**.
+   (4) subjective/qualitative. **Fix shipped:** `scripts/log-recall.py`
+   (best-effort) + `recall.md` mandatory log step + `tier-2-retrieval.md`
+   correction (`source=recall` tag; autonomous lines source-less). +8
+   tests, suite 961. **Review must reframe (2) → absolute post-ship
+   counts + R1 binary (both paths); (3) needs a new apparatus (below) and
+   is forward-only.**
 10. Identifier-welding mitigation in the digest.
 
 **Tier 4 — below the line (captured 2026-05-31)**
@@ -263,12 +278,23 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    surfaced (item 22) done; all session code re-audited. See §5 item 13 + the
    2026-06-02 continuity entries. **This also delivers Tier-1 item 2** (real
    pruning/TTL — an archival sweep, not just a read-window).
-7. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
+7. ✅ **Item 9 (verify §8 apparatus) — DONE 2026-06-02** (`4db5a9d`). Found
+   only measurement (1) review-ready; instrumented the /recall blind spot
+   in (2); flagged the dead baseline + the missing (3) apparatus. See §5
+   item 9 + the 2026-06-02 continuity entry.
 
 ## 6a. Prioritised next steps (post item-13, set 2026-06-02)
 
-1. **P1 — item 9: verify the §8 measurement apparatus before 2026-06-13**
-   (the only *dated* item; gates enabling the Vector 2b/2c sentinels). No-API.
+1. ✅ **P1 — item 9: verify the §8 measurement apparatus — DONE 2026-06-02**
+   (`4db5a9d`). Only measurement (1) review-ready; instrumented the
+   /recall blind spot in (2) (`source=recall`); baseline for (2) is dead;
+   (3) has no apparatus. **New P1.5 (surfaced by item 9, per Shawn's ask):
+   stand up automated confab-flag tracking for (3)** — log
+   checked/flagged counts from the existing verifier agents
+   (lit-scout-verifier / prior-art-scout-verifier / data-profile-verifier)
+   to a `confab-flags.log`; forward-only (no pre-ship data), folds into
+   item 18. No-API (the logging; verifier API calls stay under the
+   existing gate). *Design pending sign-off.*
 2. **P2 — recurring archival cadence (NEW, completes item 13).** The sweep was
    one-shot; without a periodic run the JSONL re-bloats (~260/day). Stand up a
    monthly `archive-memories.py --apply` after a `daily-sync.sh` flush (the
