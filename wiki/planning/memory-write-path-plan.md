@@ -257,7 +257,37 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    window). **NB:** the residual `verified=false` (224, mostly genuinely-gone
    files) is NOT a prune signal — item 13 targets retention/archival, not
    verified-status.
-6. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
+6. ✅ **Item 13 EXECUTED 2026-06-02** — 7,673 records archived (~25 % of
+   corpus), recall provably unchanged (`active_memories` invariant); both
+   follow-ups (`gotcha`/`pattern`→permanent, `--include-archive`) + the bug it
+   surfaced (item 22) done; all session code re-audited. See §5 item 13 + the
+   2026-06-02 continuity entries. **This also delivers Tier-1 item 2** (real
+   pruning/TTL — an archival sweep, not just a read-window).
+7. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
 
-Items 5, 6, 14, 15 (anything LLM/embedding-driven) are **API-gated** — present
-model + batch + count + cost for approval before any run.
+## 6a. Prioritised next steps (post item-13, set 2026-06-02)
+
+1. **P1 — item 9: verify the §8 measurement apparatus before 2026-06-13**
+   (the only *dated* item; gates enabling the Vector 2b/2c sentinels). No-API.
+2. **P2 — recurring archival cadence (NEW, completes item 13).** The sweep was
+   one-shot; without a periodic run the JSONL re-bloats (~260/day). Stand up a
+   monthly `archive-memories.py --apply` after a `daily-sync.sh` flush (the
+   item-22 fix self-heals the cursor). No-API.
+3. **P3 — item 14: extraction selectivity tuning** (fewer, higher-value
+   memories at source — the upstream lever). No-API.
+4. **P4 — item 3: neutralise dead fixed-payload weight** (harness `MEMORY.md`
+   + CLAUDE.md redundancy audit; loaded every session). No-API.
+5. **P5 — write-side dup-id hygiene (NEW, surfaced by the item-13 sweep).** 590
+   archived ids were never in PG + 857 unsynced live records — PG was behind
+   the JSONL for *non-lag* reasons (dup-id / quarantine). Diagnose the dup-id
+   source. No-API diagnostic first.
+6. **P6 — item 18: memory-health standing report** (counts / anchor-rate /
+   age / growth / archival-volume); folds in P2's recall-invariance check +
+   the P5 drift diagnostic. No-API.
+
+**Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
+10 (identifier-welding), 8 (drift-sweep job), 17, 19.
+
+Items 5, 6, 15 (anything LLM/embedding-driven — semantic dedup, the
+retroactive anchor-gen pass to verify the back-corpus) are **API-gated** —
+present model + batch + count + cost for approval before any run.
