@@ -909,6 +909,10 @@ class TestShrinkResetItem22:
         monkeypatch.setattr(sync_mod, "MEMORIES_FILE", corpus)
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor)
         monkeypatch.setattr(sync_mod, "HAS_EMBED", False)  # skip Ollama path
+        # Isolation: point quarantine at tmp so a future poison-line fixture
+        # can never write to the real data/memories quarantine file.
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl")
 
         ok = MagicMock()
         ok.db_available = True

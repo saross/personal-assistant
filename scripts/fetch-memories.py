@@ -611,6 +611,26 @@ def search_archive(
     return matched[:limit]
 
 
+def _merge_archive(
+    primary: list[dict[str, Any]],
+    archived: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Return the archived records that should be appended after the active
+    (primary) results, deduped by id.
+
+    A record is kept unless its id already appears in *primary*. Records
+    without an id are **never** collapsed via a shared ``None`` key — they
+    are distinct memories (``archive-memories.py`` warns-and-keeps id-less
+    records), so each one is retained.
+    """
+    primary_ids = {m.get("id") for m in primary if m.get("id")}
+    return [
+        m for m in archived
+        if not m.get("id") or m.get("id") not in primary_ids
+    ]
+
+
 # ============================================================================
 # Output formatting
 # ============================================================================
@@ -732,8 +752,10 @@ def main() -> None:
     # Cold archive (opt-in). Appended after the primary (active) results and
     # deduped by id, so normal recall is unchanged but --include-archive
     # surfaces matching cold history on demand (item 13 retention contract).
+    # The combined output may hold up to 2*limit records by design — up to
+    # `limit` active AND up to `limit` archived — so an explicit cold-history
+    # query is not crowded out by active hits.
     if args.include_archive:
-        primary_ids = {m.get("id") for m in (results or [])}
         archived = search_archive(
             tags=args.tags,
             query=effective_query,
@@ -741,7 +763,7 @@ def main() -> None:
             memory_id=args.memory_id,
             limit=args.limit,
         )
-        extra = [m for m in archived if m.get("id") not in primary_ids]
+        extra = _merge_archive(results or [], archived)
         if extra:
             print(
                 f"[fetch-memories] +{len(extra)} archived record(s) "

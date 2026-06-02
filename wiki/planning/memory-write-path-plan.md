@@ -213,12 +213,18 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     `_sync_locked` hit `cursor_line >= total_lines`, logged "No new memories",
     and **stranded the cursor above EOF** — silently skipping subsequent appends
     until the file regrew (the D-C3-class bug the helper was written to catch).
-    **Fixed:** `_sync_locked` now calls `detect_jsonl_shrink` right after
-    counting lines; on shrink it logs a WARN, resets the cursor to 0, and
-    full-re-scans (`ON CONFLICT DO NOTHING` → cheap + idempotent). 3 regression
-    tests (stranded→rescan, in-bounds→no reset, exact-EOF→clean no-op). Live:
-    clean no-op at EOF, no false trigger. No longer needs the manual workaround
-    on future sweeps.
+    **Fixed:** `_sync_locked` detects the shrink right after counting lines
+    (`cursor_line > total_lines`); on shrink it logs a WARN, resets the cursor
+    to 0, and full-re-scans (`ON CONFLICT DO NOTHING` → cheap + idempotent). 3
+    regression tests (stranded→rescan, in-bounds→no reset, exact-EOF→clean
+    no-op). Live: clean no-op at EOF, no false trigger. No longer needs the
+    manual workaround on future sweeps. **A follow-up /audit (same session)
+    found the first cut — calling `detect_jsonl_shrink` — counted lines by
+    file-handle iteration, which diverges from the `splitlines()` count the
+    cursor is saved with (on embedded Unicode separators surviving an
+    `ensure_ascii=False` rewrite), risking a spurious shrink WARN every cycle;
+    switched to the inline `cursor_line > total_lines` check (same count as the
+    saved cursor + the slice, and drops the redundant second file read).**
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 

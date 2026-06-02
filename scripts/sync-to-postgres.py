@@ -19,9 +19,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
 
-# Shared quarantine + shrink-detection helpers (audit IC2 / D-C3).
+# Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _sync_cursor import detect_jsonl_shrink, quarantine_record  # noqa: E402
+from _sync_cursor import quarantine_record  # noqa: E402
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
@@ -826,11 +826,19 @@ def _sync_locked(logger: logging.Logger) -> None:
     # sit past EOF. The ``cursor_line >= total_lines`` early-return below would
     # then fire on every cycle, the cursor would never move, and each
     # subsequent append would be silently skipped until the file regrew past
-    # the stale line (the D-C3-class bug detect_jsonl_shrink exists to catch).
-    # Reset to 0 and full-re-scan; the insert is ON CONFLICT DO NOTHING, so
-    # re-scanning already-synced rows is cheap and idempotent.
-    shrunk, _ = detect_jsonl_shrink(MEMORIES_FILE, cursor_line)
-    if shrunk:
+    # the stale line (the D-C3-class bug _sync_cursor.detect_jsonl_shrink
+    # documents). Reset to 0 and full-re-scan; the insert is ON CONFLICT DO
+    # NOTHING, so re-scanning already-synced rows is cheap and idempotent.
+    #
+    # Computed inline against ``total_lines`` (not via detect_jsonl_shrink) on
+    # purpose: the cursor is SAVED as the ``splitlines()`` count below
+    # (``save_cursor(total_lines)``) and the slice ``lines[cursor_line:]`` uses
+    # the same list, so the shrink test must use that same count. The helper
+    # counts lines by file-handle iteration, which diverges from ``splitlines()``
+    # on embedded Unicode line separators (U+2028/U+2029/U+0085/…) and would
+    # fire a spurious shrink every cycle once such a char survives an
+    # ``ensure_ascii=False`` rewrite.
+    if cursor_line > total_lines:
         logger.warning(
             "Canonical JSONL shrank below the sync cursor (cursor=%d, "
             "total=%d) — resetting cursor to 0 for a full re-scan "

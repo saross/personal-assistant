@@ -487,3 +487,33 @@ class TestArchiveRetrieval:
                                for i in range(5)])
         monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
         assert len(fetch_memories.search_archive(category="progress", limit=2)) == 2
+
+
+class TestMergeArchive:
+    """Tests for _merge_archive() — dedup of archived against active results."""
+
+    def test_dedups_by_id(self):
+        primary = [_make_memory(mem_id="a"), _make_memory(mem_id="b")]
+        archived = [_make_memory(mem_id="b"), _make_memory(mem_id="c")]
+        extra = fetch_memories._merge_archive(primary, archived)
+        assert [m["id"] for m in extra] == ["c"]  # "b" already active, dropped
+
+    def test_idless_archived_records_not_collapsed_by_active_idless(self):
+        # An active result with no id must NOT suppress id-less archived
+        # records (the shared-None-key bug). Both id-less archived records
+        # are distinct and must survive.
+        primary = [{"category": "progress", "content": "active no-id"}]
+        archived = [
+            {"category": "progress", "content": "cold no-id 1"},
+            {"category": "progress", "content": "cold no-id 2"},
+        ]
+        extra = fetch_memories._merge_archive(primary, archived)
+        assert len(extra) == 2
+
+    def test_empty_primary_keeps_all_archived(self):
+        archived = [_make_memory(mem_id="a"), _make_memory(mem_id="b")]
+        assert fetch_memories._merge_archive([], archived) == archived
+
+    def test_empty_archive_returns_empty(self):
+        primary = [_make_memory(mem_id="a")]
+        assert fetch_memories._merge_archive(primary, []) == []
