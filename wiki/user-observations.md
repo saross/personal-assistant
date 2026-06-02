@@ -1561,22 +1561,7 @@ one (96 % bad memories).
 
 ---
 
-## 2026-06-02 (PA / item-13 retention: design → sign-off → execute → audit) — Drafted candidates (pending review)
-
-Mark each ✓ (accept) / ✏ (edit, with revised text) / ✗ (discard) / replace
-inline. Empty is a valid outcome — these are jog-the-memory drafts.
-
-### Candidate 1: a defined "quiet window" was how Shawn green-lit a risky mutation
-
-Rather than a casual "go ahead", Shawn authorised the corpus mutation by
-*defining a window*: "it's going to be quiet for a while, no work in any
-session for the next 1.5 hours." That converted an open-ended risk
-(concurrent appends racing the bulk rewrite) into a bounded, safe one, and it
-matched the design's own gate (corpus-clean quiet window). The signal: when a
-risky operation is gated on environmental conditions, the productive
-authorisation is to *establish the conditions*, not just to consent.
-
-[ ] accept / edit / discard
+## 2026-06-02 (PA / item-13 retention: design → sign-off → execute → audit) — Drafted candidates (reviewed 2026-06-02)
 
 ### Candidate 2: the highest-value contribution was accepting a pushback *against the brief*
 
@@ -1588,7 +1573,7 @@ the steering that mattered most was a *correction to the task framing*, and it
 landed because it was backed by re-derived counts, not asserted. Trust in the
 recommendations was high *because* the pushback was evidence-led.
 
-[ ] accept / edit / discard
+[x] accept
 
 ### Candidate 3: "audit the output, not just the change" was a deliberate, separate ask
 
@@ -1599,16 +1584,10 @@ caught the two latent bugs the build-time tests passed over. The
 meta-pattern: a verification pass aimed at the artefact, run with fresh
 adversarial subagents, finds a different bug class than the one that wrote it.
 
-[ ] accept / edit / discard
+[x] accept
 
-### Candidate 4: anti-confabulation discipline held across a long, mutation-heavy session
-
-Across design, sign-off, a 7,673-record mutation, and two audit rounds,
-specifics were re-derived at source at each step (category counts, the
-`active_memories` invariant, commit hashes) rather than carried from earlier
-context — and a *stale brief pointer* ("`bulk-archive.py` is the archival
-tool") was caught and corrected rather than trusted. The cost was real
-(repeated re-queries) and it paid off twice (the stale pointer, the PG-drift
-surfacing). Worth noting that the discipline did not erode under length.
-
-[ ] accept / edit / discard
+*(Candidate 1 — "a defined quiet window was how Shawn green-lit a risky
+mutation" — reviewed and discarded by Shawn. Candidate 4 — "anti-confabulation
+discipline held across a long, mutation-heavy session", a Claude-about-Claude
+self-observation — discarded: belongs in working-with-claude territory, not
+user observations, per the 2026-05-30 precedent.)*
