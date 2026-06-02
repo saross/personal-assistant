@@ -19,9 +19,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
 
-# Shared quarantine helper (audit IC2 — quarantine-on-skip).
+# Shared quarantine + shrink-detection helpers (audit IC2 / D-C3).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _sync_cursor import quarantine_record  # noqa: E402
+from _sync_cursor import detect_jsonl_shrink, quarantine_record  # noqa: E402
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
@@ -819,6 +819,25 @@ def _sync_locked(logger: logging.Logger) -> None:
     # Read all lines and process from cursor position
     lines = MEMORIES_FILE.read_text(encoding="utf-8").splitlines()
     total_lines = len(lines)
+
+    # Shrink guard (item 22): if the canonical shrank below the saved cursor
+    # — an archival sweep evicting records (scripts/archive-memories.py), a
+    # dedup/compaction pass, or a submodule revert — the cursor would otherwise
+    # sit past EOF. The ``cursor_line >= total_lines`` early-return below would
+    # then fire on every cycle, the cursor would never move, and each
+    # subsequent append would be silently skipped until the file regrew past
+    # the stale line (the D-C3-class bug detect_jsonl_shrink exists to catch).
+    # Reset to 0 and full-re-scan; the insert is ON CONFLICT DO NOTHING, so
+    # re-scanning already-synced rows is cheap and idempotent.
+    shrunk, _ = detect_jsonl_shrink(MEMORIES_FILE, cursor_line)
+    if shrunk:
+        logger.warning(
+            "Canonical JSONL shrank below the sync cursor (cursor=%d, "
+            "total=%d) — resetting cursor to 0 for a full re-scan "
+            "(ON CONFLICT DO NOTHING).",
+            cursor_line, total_lines,
+        )
+        cursor_line = 0
 
     if cursor_line >= total_lines:
         logger.info("No new memories to sync (cursor=%d, total=%d)", cursor_line, total_lines)

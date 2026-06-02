@@ -206,19 +206,19 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     signal.** Items 20 + 21 (a+b+act) together delivered it; **item 13 pruning
     must still target retention/archival, not deletion-by-`verified=false`** (the
     residual is mostly genuinely-gone files, not wrong memories).
-22. **`sync-to-postgres.py` shrink guard not wired** *(surfaced by item-13
-    execution 2026-06-02, no-API)* — `_sync_cursor.detect_jsonl_shrink()`
-    EXISTS but `sync-to-postgres.py` never calls it. When `memories.jsonl`
-    shrinks below the saved `postgres_sync_line` cursor (as it does after every
-    archival sweep), `_sync_locked` hits `cursor_line >= total_lines`, logs "No
-    new memories", and **leaves the cursor stranded above EOF** — so subsequent
-    appends are silently skipped until the file regrows past the stale line
-    (the exact D-C3-class bug the helper was written to prevent). **Manually
-    worked around** during the item-13 sweep (reset cursor to 0 + full
-    re-scan). **Fix:** call `detect_jsonl_shrink` at the top of `_sync_locked`;
-    on shrink, log a WARN, reset the cursor to 0, and full-re-scan (it's
-    `ON CONFLICT DO NOTHING`, so a full re-scan is cheap and idempotent). Add a
-    regression test. **Do this before the next archival run.**
+22. ✅ **`sync-to-postgres.py` shrink guard — DONE 2026-06-02** *(surfaced by
+    item-13 execution, no-API)*. `_sync_cursor.detect_jsonl_shrink()` existed
+    but `sync-to-postgres.py` never called it, so when `memories.jsonl` shrank
+    below the saved `postgres_sync_line` cursor (as after every archival sweep),
+    `_sync_locked` hit `cursor_line >= total_lines`, logged "No new memories",
+    and **stranded the cursor above EOF** — silently skipping subsequent appends
+    until the file regrew (the D-C3-class bug the helper was written to catch).
+    **Fixed:** `_sync_locked` now calls `detect_jsonl_shrink` right after
+    counting lines; on shrink it logs a WARN, resets the cursor to 0, and
+    full-re-scans (`ON CONFLICT DO NOTHING` → cheap + idempotent). 3 regression
+    tests (stranded→rescan, in-bounds→no reset, exact-EOF→clean no-op). Live:
+    clean no-op at EOF, no false trigger. No longer needs the manual workaround
+    on future sweeps.
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
