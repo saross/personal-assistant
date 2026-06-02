@@ -423,3 +423,67 @@ class TestTryPostgres:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "test error" in captured.err
+
+
+# ============================================================================
+# Cold archive retrieval (item 13: --include-archive)
+# ============================================================================
+
+
+class TestArchiveRetrieval:
+    """Tests for load_archive_memories() and search_archive()."""
+
+    def _write_partition(self, archive_dir: Path, name: str,
+                         memories: list[dict[str, Any]]) -> None:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        (archive_dir / name).write_text(
+            "".join(json.dumps(m) + "\n" for m in memories),
+            encoding="utf-8",
+        )
+
+    def test_missing_archive_dir_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", tmp_path / "nope")
+        assert fetch_memories.load_archive_memories() == []
+
+    def test_loads_across_partitions_skipping_junk(self, tmp_path, monkeypatch):
+        archive = tmp_path / "archive"
+        self._write_partition(archive, "memories-archive-2026-05.jsonl",
+                              [_make_memory(mem_id="a")])
+        self._write_partition(archive, "memories-archive-2026-06.jsonl",
+                              [_make_memory(mem_id="b")])
+        # Blank + malformed lines must be skipped, not crash.
+        with (archive / "memories-archive-2026-06.jsonl").open(
+                "a", encoding="utf-8") as fh:
+            fh.write("\n")
+            fh.write("not json\n")
+        # A non-matching filename must be ignored.
+        (archive / "ignore-me.jsonl").write_text(
+            json.dumps(_make_memory(mem_id="z")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        ids = {m["id"] for m in fetch_memories.load_archive_memories()}
+        assert ids == {"a", "b"}
+
+    def test_search_archive_filters_and_sorts(self, tmp_path, monkeypatch):
+        archive = tmp_path / "archive"
+        self._write_partition(archive, "memories-archive-2026-06.jsonl", [
+            _make_memory(mem_id="old", category="progress",
+                         created_at="2026-02-01T00:00:00+00:00",
+                         content="alpha milestone"),
+            _make_memory(mem_id="new", category="progress",
+                         created_at="2026-04-01T00:00:00+00:00",
+                         content="alpha milestone"),
+            _make_memory(mem_id="other", category="progress",
+                         created_at="2026-03-01T00:00:00+00:00",
+                         content="beta thing"),
+        ])
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        hits = fetch_memories.search_archive(query="alpha")
+        assert [m["id"] for m in hits] == ["new", "old"]  # recency desc, beta excluded
+
+    def test_search_archive_respects_limit(self, tmp_path, monkeypatch):
+        archive = tmp_path / "archive"
+        self._write_partition(archive, "memories-archive-2026-06.jsonl",
+                              [_make_memory(mem_id=f"m{i}", category="progress")
+                               for i in range(5)])
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        assert len(fetch_memories.search_archive(category="progress", limit=2)) == 2

@@ -38,6 +38,9 @@ from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E
 
 PA_DIR = Path(__file__).resolve().parent.parent
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
+# Cold store: monthly partitions of records evicted from the live corpus by
+# scripts/archive-memories.py (item 13). Searched only on --include-archive.
+ARCHIVE_DIR = PA_DIR / "memories" / "archive"
 CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
 SYNC_CONFIG_FILE = PA_DIR / "data" / "config" / "sync.json"
 DB_NAME = "claude_memories"
@@ -165,6 +168,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=MAX_RESULTS,
         help=f"Maximum results (default: {MAX_RESULTS}).",
+    )
+    parser.add_argument(
+        "--include-archive",
+        action="store_true",
+        dest="include_archive",
+        help="Also search the cold archive partitions (item 13 retention). "
+             "Off by default — archived records are excluded from normal "
+             "recall but kept retrievable on demand.",
     )
 
     args = parser.parse_args()
@@ -544,6 +555,62 @@ def fallback_jsonl(
     return matched[:limit]
 
 
+def load_archive_memories() -> list[dict[str, Any]]:
+    """
+    Load all memories from the cold archive partitions
+    (``memories/archive/memories-archive-*.jsonl``, written by
+    ``scripts/archive-memories.py``).
+
+    Returns an empty list if the archive directory does not exist.
+    Skips blank lines and malformed JSON silently, like
+    :func:`load_jsonl_memories`.
+    """
+    if not ARCHIVE_DIR.exists():
+        return []
+
+    records: list[dict[str, Any]] = []
+    for partition in sorted(ARCHIVE_DIR.glob("memories-archive-*.jsonl")):
+        with open(partition, encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    records.append(json.loads(stripped))
+                except json.JSONDecodeError:
+                    continue
+
+    return records
+
+
+def search_archive(
+    tags: list[str] | None = None,
+    query: str | None = None,
+    category: str | None = None,
+    memory_id: str | None = None,
+    limit: int = MAX_RESULTS,
+) -> list[dict[str, Any]]:
+    """
+    Search the cold archive partitions (opt-in via ``--include-archive``).
+
+    Mirrors :func:`fallback_jsonl` but over the archive files rather than
+    the live corpus: loads every partition, applies the same filters, sorts
+    by ``created_at`` descending, and returns the top *limit* matches.
+    Archived records are never in PostgreSQL's ``active_memories`` view, so
+    this direct-read path is the only way to retrieve them.
+    """
+    memories = load_archive_memories()
+    matched = [
+        m for m in memories
+        if matches_filters(m, tags, query, category, memory_id)
+    ]
+    matched.sort(
+        key=lambda m: _parse_datetime(m.get("created_at", "")),
+        reverse=True,
+    )
+    return matched[:limit]
+
+
 # ============================================================================
 # Output formatting
 # ============================================================================
@@ -661,6 +728,27 @@ def main() -> None:
             memory_id=args.memory_id,
             limit=args.limit,
         )
+
+    # Cold archive (opt-in). Appended after the primary (active) results and
+    # deduped by id, so normal recall is unchanged but --include-archive
+    # surfaces matching cold history on demand (item 13 retention contract).
+    if args.include_archive:
+        primary_ids = {m.get("id") for m in (results or [])}
+        archived = search_archive(
+            tags=args.tags,
+            query=effective_query,
+            category=args.category,
+            memory_id=args.memory_id,
+            limit=args.limit,
+        )
+        extra = [m for m in archived if m.get("id") not in primary_ids]
+        if extra:
+            print(
+                f"[fetch-memories] +{len(extra)} archived record(s) "
+                "from the cold store",
+                file=sys.stderr,
+            )
+            results = (results or []) + extra
 
     print(format_output(results))
 

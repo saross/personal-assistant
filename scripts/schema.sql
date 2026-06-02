@@ -218,12 +218,19 @@ INSERT INTO category_config (category, decay_days, description) VALUES
 ON CONFLICT (category) DO NOTHING;
 
 -- Project categories (mixed)
+-- pattern + gotcha are PERMANENT (decay_days NULL) since the 2026-06-01
+-- item-13 retention sign-off: both are guidance-bearing (in the extraction
+-- hook's GUIDANCE_CATEGORIES), so their value outlives any decay window and
+-- they are never archived. The live DB was flipped 180 → NULL on 2026-06-02;
+-- this seed matches so a rebuild reproduces it. (Config-data change only —
+-- no schema_version bump: not a column-shape / view / meta-table change.)
+-- See wiki/planning/memory-retention-policy-proposal.md §6 (D3).
 INSERT INTO category_config (category, decay_days, description) VALUES
     ('decision', NULL, 'Explicit choices with rationale'),
     ('architecture', NULL, 'System design'),
     ('contact', NULL, 'People and relationships'),
-    ('pattern', 180, 'Recurring approaches'),
-    ('gotcha', 180, 'Pitfalls and edge cases')
+    ('pattern', NULL, 'Recurring approaches (permanent — guidance, item 13)'),
+    ('gotcha', NULL, 'Pitfalls and edge cases (permanent — guidance, item 13)')
 ON CONFLICT (category) DO NOTHING;
 
 -- GTD categories (transient)
