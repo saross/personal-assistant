@@ -700,14 +700,21 @@ items, ranked:
    high-confidence calls among them) — the author, the only non-proxy judge,
    confirms the guide works (`human-validation.md`). Remaining caveat is only
    pilot scale (4 topics).
-2. **Package a generation workflow — JUSTIFIED by (1); build next.** A
-   `/write-like-me` command/agent: task → prompt with the **citation-stripped
-   original guide + Appendix F exemplars** (the corrected C2 recipe; do NOT
-   bolt on the C3 imperative preamble) → generate. **Output must contain NO
-   citations** — citation format is venue-determined and excluded from voice
-   (§3); the author adds real references for the target venue. The phase5
-   distance is a usable diagnostic for citation-free generation, though a
-   judge-based gate (roadmap #8) is more voice-faithful.
+2. **Package a generation workflow — JUSTIFIED by (1).** **Workflow CODIFIED
+   2026-06-03: neutral-draft → voice-align** (full spec
+   `wiki/planning/write-like-me-workflow.md`). Five stages: (1) outline jointly
+   → (2) CC drafts in plain/neutral voice (content first) → (3) Shawn
+   content-edits author-hat (audits naked prose; naturally drifts toward his
+   voice) → (4) `/write-like-me` voice-aligns *conservatively* (citation-
+   stripped guide + Appendix F; preserve what Shawn already got right; meaning-
+   preserving + show-changes; **no citations**, §3; phase5 + per-feature deltas
+   as the diagnostic/iterate signal) → (5) Shawn editor-hat final pass (catches
+   meaning-drift). Architecture: `/write-like-me` is the stage-4 **skill**
+   driving a fresh-context generation **agent** for isolation. **Gate:** the
+   experiment validated the *fused* path; the neutral→voice-align path is
+   untested — **try the workflow manually first, validate stage 4 (blind-pair
+   vs fused + meaning-drift check), then build the skill.** Do NOT bolt on the
+   rejected C3 preamble.
 3. **Multi-genre assessors** (Substack / business / teaching) — deferred
    indefinitely; each needs a Zotero corpus + Phase 4 API approval.
 4. **(minor) phase1 manifest reproducibility gap** —
@@ -2080,6 +2087,13 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-06-03 (Wed, latest G) — Workstream G: `/write-like-me` drafting workflow codified (neutral-draft → voice-align)
+
+Roadmap #2 design decision (no code yet). Agreed with Shawn the drafting workflow: **separate content from voice.** (1) Outline jointly → (2) CC drafts in plain/neutral voice, content-first → (3) Shawn content-edits with his **author hat** (auditing naked prose is easier — on-voice prose masks flaws; the edit also naturally drifts the draft toward his voice, lightening stage 4) → (4) `/write-like-me` **voice-aligns conservatively** (citation-stripped guide + Appendix F; preserve what Shawn already got right; meaning-preserving + show-changes; **no citations**, §3; phase5 + per-feature deltas as the diagnostic) → (5) Shawn **editor-hat** final pass catches any meaning-drift. Two verification checkpoints, two hats (content on plain prose; voice + drift on the voiced version). Architecture: `/write-like-me` = the stage-4 **skill** driving a fresh-context generation **agent** for isolation.
+
+- **Gate before building:** the efficacy experiment validated the *fused* path (content+voice in one shot); the neutral→voice-align path is **untested**. Try the workflow manually first, validate stage 4 (blind-pair vs a fused in-voice draft + a meaning-drift check), then build the skill.
+- Spec: `wiki/planning/write-like-me-workflow.md`. Roadmap #2 updated with the codified workflow.
 
 ### 2026-06-02 (Tue, latest PA, OVERNIGHT autonomous) — P4 (dead payload) + P2 (archival cadence) built; both gated for Shawn's review
 
