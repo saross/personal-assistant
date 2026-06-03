@@ -820,6 +820,33 @@ def _sync_locked(logger: logging.Logger) -> None:
     lines = MEMORIES_FILE.read_text(encoding="utf-8").splitlines()
     total_lines = len(lines)
 
+    # Shrink guard (item 22): if the canonical shrank below the saved cursor
+    # — an archival sweep evicting records (scripts/archive-memories.py), a
+    # dedup/compaction pass, or a submodule revert — the cursor would otherwise
+    # sit past EOF. The ``cursor_line >= total_lines`` early-return below would
+    # then fire on every cycle, the cursor would never move, and each
+    # subsequent append would be silently skipped until the file regrew past
+    # the stale line (the D-C3-class bug _sync_cursor.detect_jsonl_shrink
+    # documents). Reset to 0 and full-re-scan; the insert is ON CONFLICT DO
+    # NOTHING, so re-scanning already-synced rows is cheap and idempotent.
+    #
+    # Computed inline against ``total_lines`` (not via detect_jsonl_shrink) on
+    # purpose: the cursor is SAVED as the ``splitlines()`` count below
+    # (``save_cursor(total_lines)``) and the slice ``lines[cursor_line:]`` uses
+    # the same list, so the shrink test must use that same count. The helper
+    # counts lines by file-handle iteration, which diverges from ``splitlines()``
+    # on embedded Unicode line separators (U+2028/U+2029/U+0085/…) and would
+    # fire a spurious shrink every cycle once such a char survives an
+    # ``ensure_ascii=False`` rewrite.
+    if cursor_line > total_lines:
+        logger.warning(
+            "Canonical JSONL shrank below the sync cursor (cursor=%d, "
+            "total=%d) — resetting cursor to 0 for a full re-scan "
+            "(ON CONFLICT DO NOTHING).",
+            cursor_line, total_lines,
+        )
+        cursor_line = 0
+
     if cursor_line >= total_lines:
         logger.info("No new memories to sync (cursor=%d, total=%d)", cursor_line, total_lines)
         # Freshness marker advances even on no-op — downstream /recall

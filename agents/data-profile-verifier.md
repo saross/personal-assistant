@@ -132,3 +132,16 @@ Do not modify the proposer's outputs. Write alongside. If the proposer's output 
 Same as the proposer: no per-row dumps, no unbounded iteration, no silent judgement, no environment assumptions, no installation. Plus a verifier-specific one:
 
 - **Rubber-stamping.** If your re-computation uses the same code path as the proposer, you've duplicated their mistakes. Re-compute from the source dataset using your own code path (read the parquet independently, don't consume the proposer's CSVs as the source of truth).
+
+## Instrumentation — log your confab-flag tally (final step, best-effort)
+
+Vector 2 §8 measurement (3) tracks the confabulation-flag rate across verified deliverables; it feeds the memory-health standing report. As your **final action**, after writing `corrections.jsonl`, append one tally line by running this via **Bash** (a side-effect — not part of your returned summary). Because you write `corrections.jsonl`, prefer the auto-tally mode that reads it:
+
+```bash
+python3 ~/personal-assistant/scripts/log-confab-flag.py \
+  --source data-profile-verifier \
+  --corrections <path to the corrections.jsonl you just wrote> \
+  --deliverable <short dataset/run label>
+```
+
+The helper counts `checked` (all claims), `flagged` (`status: fail`), and `confab` (`failure_type: confabulation` among the fails) for you. If `corrections.jsonl` is unavailable, pass explicit `--checked/--flagged/--confab/--kinds` instead. **Best-effort:** if the script is missing or errors, ignore it and proceed — logging must never affect your verdict. `--deliverable` is a short label only, never claim contents.

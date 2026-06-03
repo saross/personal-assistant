@@ -875,3 +875,71 @@ class TestInsertMemoriesAccounting:
             assert "quarantined_at" in entry
             assert "raw_line" in entry["record"]
             assert "line_number" in entry["record"]
+
+
+# ============================================================================
+# Shrink guard (item 22) — a cursor stranded past EOF after an archival
+# sweep (or any JSONL shrink) must trigger a full re-scan, not a silent
+# no-op that skips every subsequent append.
+# ============================================================================
+
+
+class TestShrinkResetItem22:
+    """_sync_locked must honour _sync_cursor.detect_jsonl_shrink."""
+
+    def _wire(self, tmp_path, monkeypatch, *, cursor_value, n_records):
+        """Build a tmp corpus + cursor and mock the DB insert; return the mock."""
+        corpus = tmp_path / "memories.jsonl"
+        recs = [
+            {
+                "id": f"id{i}",
+                "category": "progress",
+                "content": f"record {i}",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+            for i in range(n_records)
+        ]
+        corpus.write_text(
+            "".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(
+            json.dumps({"postgres_sync_line": cursor_value}) + "\n",
+            encoding="utf-8")
+
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", corpus)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)  # skip Ollama path
+        # Isolation: point quarantine at tmp so a future poison-line fixture
+        # can never write to the real data/memories quarantine file.
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl")
+
+        ok = MagicMock()
+        ok.db_available = True
+        ok.unexpected_drops = []
+        insert = MagicMock(return_value=ok)
+        monkeypatch.setattr(sync_mod, "insert_memories", insert)
+        return insert
+
+    def test_stranded_cursor_triggers_full_rescan(self, tmp_path, monkeypatch):
+        # cursor=100 but the file has only 3 lines → shrink → reset to 0 →
+        # re-scan all 3 (without the guard this hits the no-op early-return).
+        insert = self._wire(tmp_path, monkeypatch, cursor_value=100, n_records=3)
+        sync_mod._sync_locked(logging.getLogger("item22-test"))
+        assert insert.call_count == 1
+        assert len(insert.call_args[0][0]) == 3      # all records re-scanned
+        assert sync_mod.load_cursor() == 3           # cursor landed at new EOF
+
+    def test_in_bounds_cursor_not_reset(self, tmp_path, monkeypatch):
+        # cursor=2, file has 5 lines → no shrink → process only the 3 new.
+        insert = self._wire(tmp_path, monkeypatch, cursor_value=2, n_records=5)
+        sync_mod._sync_locked(logging.getLogger("item22-test"))
+        assert len(insert.call_args[0][0]) == 3      # lines 3,4,5 only
+        assert sync_mod.load_cursor() == 5
+
+    def test_exact_eof_is_not_a_shrink(self, tmp_path, monkeypatch):
+        # cursor == line count → no new work, no reset, clean no-op.
+        insert = self._wire(tmp_path, monkeypatch, cursor_value=3, n_records=3)
+        sync_mod._sync_locked(logging.getLogger("item22-test"))
+        insert.assert_not_called()
+        assert sync_mod.load_cursor() == 3

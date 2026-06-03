@@ -39,7 +39,8 @@ python3 ~/personal-assistant/scripts/fetch-memories.py \
 
 Each invocation is logged to `logs/fetch-memories.log` (Vector 2
 instrumentation, design §7c) so tier-2 utilisation can be measured over
-the observation window.
+the observation window. Lines from this autonomous path carry no
+`source=` field; manual `/recall` lines carry `source=recall`.
 
 ## Protocol — when and how
 
@@ -60,8 +61,11 @@ the observation window.
 
 ## Manual alternative
 
-The user can invoke `/recall [query]` directly at any time, which runs
-the same retrieval without waiting on an announcement.
+The user can invoke `/recall [query]` directly at any time, without
+waiting on an announcement. Note this runs a *separate* path — `/recall`
+reads `memories.jsonl` directly rather than calling this script — so it
+is instrumented independently: each `/recall` appends a `source=recall`
+line to the same `logs/fetch-memories.log` (see `commands/recall.md`).
 
 ## Why lazy depth
 
@@ -73,4 +77,5 @@ real topic match is detected, keeps the eager channel small and verified
 while preserving full access to the corpus. The risk this trades against
 is that depth is *never* fetched (lazy premise fails); that is exactly
 what the `logs/fetch-memories.log` instrumentation measures during the
-amd-tower observation window. See design §8 risk R1.
+amd-tower observation window — across both the autonomous path above and
+manual `/recall` (tagged `source=recall`). See design §8 risk R1.

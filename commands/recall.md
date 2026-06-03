@@ -91,6 +91,32 @@ Try:
 
 Do not return empty results silently.
 
+## Instrumentation — log every invocation (mandatory final step)
+
+`/recall` reads `memories.jsonl` directly, so — unlike the autonomous
+`fetch-memories.py` path — it is **not** captured by the tier-2 retrieval
+log unless logged explicitly. The Vector 2 §8 observation window
+(review **2026-06-13**) needs both paths recorded, or measurement (2)
+under-counts on-demand depth-fetches. **After serving any `/recall`
+(including the bare statistics view and zero-match cases), run this once:**
+
+```bash
+python3 ~/personal-assistant/scripts/log-recall.py \
+  --selectors "<names>" --results <N>
+```
+
+- `<names>` — selector **names only, never the search text** (privacy):
+  - bare `/recall` → `none`
+  - free-text query → `query`
+  - `category:X` → `category:X` (add `;query` if free text is also present, e.g. `category:decision;query`)
+  - `tag:Y` → `tag:Y`
+  - `recent` → `recent`
+- `<N>` — the number of memories actually returned (use `0` for zero matches).
+
+This is best-effort instrumentation: it never alters the recall output
+and silently no-ops on failure. Keep doing it until the 2026-06-13 review
+decides whether to retire the apparatus.
+
 ## Examples
 
 ```text

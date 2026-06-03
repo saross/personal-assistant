@@ -1558,3 +1558,36 @@ separated the real finding (verifier artefact) from the alarming-but-wrong
 one (96 % bad memories).
 
 [x] accept
+
+---
+
+## 2026-06-02 (PA / item-13 retention: design → sign-off → execute → audit) — Drafted candidates (reviewed 2026-06-02)
+
+### Candidate 2: the highest-value contribution was accepting a pushback *against the brief*
+
+The item-13 brief itself named `gotcha` as an aggressive-decay candidate; the
+analysis pushed back (it is guidance-bearing, and not where the bloat is) and
+recommended keeping it permanent. Shawn accepted that — and all four sign-off
+decisions — on the recommended options immediately. The dynamic worth noting:
+the steering that mattered most was a *correction to the task framing*, and it
+landed because it was backed by re-derived counts, not asserted. Trust in the
+recommendations was high *because* the pushback was evidence-led.
+
+[x] accept
+
+### Candidate 3: "audit the output, not just the change" was a deliberate, separate ask
+
+Shawn asked for `/audit` twice — once on the tool before running it, and
+again on *all code the session produced* after. Treating the audit of the
+output as a distinct step (not folded into "did the change work?") is what
+caught the two latent bugs the build-time tests passed over. The
+meta-pattern: a verification pass aimed at the artefact, run with fresh
+adversarial subagents, finds a different bug class than the one that wrote it.
+
+[x] accept
+
+*(Candidate 1 — "a defined quiet window was how Shawn green-lit a risky
+mutation" — reviewed and discarded by Shawn. Candidate 4 — "anti-confabulation
+discipline held across a long, mutation-heavy session", a Claude-about-Claude
+self-observation — discarded: belongs in working-with-claude territory, not
+user observations, per the 2026-05-30 precedent.)*

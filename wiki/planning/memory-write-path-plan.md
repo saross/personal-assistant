@@ -84,7 +84,22 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 
 **Tier 3 — cheap safety/observability**
 8. Drift-sweep as a standing job (re-resolve the ~1,129 anchored).
-9. Verify the §8 measurement apparatus before 2026-06-13.
+9. ✅ **Verify the §8 measurement apparatus — DONE 2026-06-02** (`4db5a9d`).
+   Verdict: only measurement (1) (digest bytes) is review-ready —
+   `digest.log` clean/unconfounded, n=26, median 1491 B / p95 1499 B,
+   0 over budget (but the 1500-byte HARD cap makes the thresholds
+   self-fulfilling; (1) really measures how hard the cap binds).
+   (2) invocation rates broken three ways — **no pre-ship baseline**
+   (instrumentation `809a89f` shipped on enablement day; §2 baseline is
+   bytes-only, unrecoverable); **/recall was uninstrumented** (reads
+   `memories.jsonl` directly, never hit `fetch-memories.py` — fixed this
+   session, see below); sparse. (3) **no verifier apparatus exists**.
+   (4) subjective/qualitative. **Fix shipped:** `scripts/log-recall.py`
+   (best-effort) + `recall.md` mandatory log step + `tier-2-retrieval.md`
+   correction (`source=recall` tag; autonomous lines source-less). +8
+   tests, suite 961. **Review must reframe (2) → absolute post-ship
+   counts + R1 binary (both paths); (3) needs a new apparatus (below) and
+   is forward-only.**
 10. Identifier-welding mitigation in the digest.
 
 **Tier 4 — below the line (captured 2026-05-31)**
@@ -101,15 +116,64 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     (no `~`/absolute support; HEAD-only, so deleted-since reads false), and
     only **7** commit refs resolve nowhere. **The genuinely-suspect set is
     tiny.** Surfaced item 20 (below).
-13. **Category-specific retention policy** — populate `decay_days` per category
-    at write (set on 10 records today); archive past-decay.
+13. ✅ **Category-specific retention policy — DESIGN DONE + signed off
+    2026-06-01** (`wiki/planning/memory-retention-policy-proposal.md`,
+    `bfaf0ab`). Re-derived counts at source (30,277 records). **Reframe:**
+    decay already exists (read-time `active_memories` view); archival does
+    not (physical eviction from the hot JSONL). Split into **Lever A**
+    (behaviour-preserving — archive the **7,370** records (5.62 MB, ~24 %)
+    already past their existing decay window; recall unchanged via the view)
+    and **Lever B** (per-bucket policy). **Signed off:** Lever A approved;
+    `gotcha`/`pattern` → **permanent** (guidance-bearing, NOT aggressive
+    decay — pushback on the brief sustained); `progress` keeps 30 d; tier
+    structure + cold store (`data/memories/archive/memories-archive-YYYY-MM.jsonl`)
+    + `--include-archive` retrieval all adopted. **Corrected stale pointer:**
+    `bulk-archive.py` archives *sessions*, not memories — no memory-archival
+    tool exists. **Execution (next, gated):** build `scripts/archive-memories.py`
+    on the `recover_anchors.py` template (dry-run default, `_bulk_rewrite_guard`
+    + `lock_jsonl_for_rewrite`, verbatim passthrough, surgical PG
+    `is_active=FALSE`); flip `gotcha`/`pattern` `decay_days 180→NULL` in
+    `category_config`; staged sweep (`progress` alone first). Quiet
+    (corpus-clean) window required; archive, never delete.
+    **EXECUTION TOOL BUILT + audited 2026-06-02** (`9a5345a`,
+    `scripts/archive-memories.py` + 30 tests; built in worktree, /audit run,
+    boundary/crash-safety/PG-consistency fixes applied). Dry-run validated:
+    `progress` past-30d = **4,061** (canonical JSONL; matches the PG interval
+    predicate exactly). **Remaining = the gated `--apply`** in a quiet window
+    (flush via `daily-sync.sh` first — a dry-run surfaced PG ~272 progress
+    records behind the JSONL), plus the small `category_config` 180→NULL flip
+    for `gotcha`/`pattern` and the `--include-archive` retrieval flag.
+    **✅ EXECUTED 2026-06-02 (Shawn-watched quiet window).** Flushed via
+    `daily-sync.sh`; `--apply --category progress` (4,094) then `--apply` rest
+    (3,579) = **7,673 records archived** (~25 % of corpus) to
+    `data/memories/archive/memories-archive-2026-06.jsonl` (data `034f1cc`,
+    `761caf5`). **Recall invariance proven:** `active_memories` total + every
+    per-category count IDENTICAL before/after the sweep (21,999). PG: 7,083
+    archived rows set `is_active=FALSE`, **0 resurrected, 0 leak into recall**.
+    Follow-ups done: `category_config` gotcha/pattern→NULL (live + `schema.sql`;
+    un-hid 34 gotcha + 22 pattern) and `fetch-memories.py --include-archive`
+    (parent `a5ac41b`, 4 tests). Surfaced **item 22** (sync-to-postgres shrink
+    guard) — the cursor stranded above EOF after the shrink; a reset-to-0 +
+    full re-scan reconciled it (and fixed 857 previously-unsynced live records).
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
     never-surfaced-in-N-months → archival candidate.
 17. **Confidence-field hygiene** — use the `confidence` field or drop it.
 18. **Memory-health standing report** — periodic counts / anchor-rate /
-    malformed-rate / age / growth (extends item 9).
+    malformed-rate / age / growth (extends item 9). **Now also houses
+    Tier C (decided 2026-06-02): the write-time fresh-anchor-fail rate** —
+    of the anchored memories written this period, the fraction whose
+    `file`/`commit` anchor resolves nowhere (working tree + git history),
+    auto-classified recoverable-prefix vs genuinely-absent via
+    `anchor_verify.unique_suffix_match`. **Reframed as a corpus-health
+    metric, NOT a Vector-2 efficacy signal** (it measures write-path
+    anchor confab, not response-path prose welding — that's Tier B). The
+    uncommitted-this-session confound is handled by `verify_file`'s
+    working-tree stat (`anchor_verify.py:181`); residual noise is
+    prefix-mismatch / cross-repo, both classifiable. Cheap when item 18
+    is built (reuses `verify_memory` + `unique_suffix_match`); only
+    legible aggregated over time, hence here not standalone.
 19. **Anchor-type expansion** — dataset-id, PR/issue, memory-to-memory refs.
 20. ✅ **`verify_file` path/history hardening** *(no-API, shipped 2026-05-31)*
     — `verify_file` now `expanduser()`s a leading `~`, and absolute (incl.
@@ -148,16 +212,46 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
       read-only on purpose: `unique_suffix_match` is **not** wired into the live
       `verify_file` (fuzzy matching would erode the `verified` signal), and no
       ref is rewritten.
-    - **(b-next, GATED) Act on the 118 recoverable** — rewriting those refs in
-      `memories.jsonl` is a corpus mutation: needs Shawn's sign-off + a quiet
-      window (daily-sync owns the file). Decision pending. The 90 absent + 17
-      ambiguous + **9 commit-refs-nowhere** are the genuine residual.
+    - ✅ **(b-act) Applied the corpus fix** *(shipped 2026-05-31, data
+      `a792240`, parent `6cd6666`)* — `scripts/recover_anchors.py` (dry-run
+      default; `--apply` guarded by `_bulk_rewrite_guard` + `lock_jsonl_for_rewrite`,
+      verbatim-passthrough minimal diff, `revisions` audit entry, surgical
+      postgres `UPDATE`). Re-verified each modified record via the **exact
+      production path** (`verify_memory` over `repo_set()`; `bind_confidence`).
+      **Applied to 218 records:** 155 flipped `false → true`, 41 → unanchored
+      (`None`, all-junk-stripped), 21 refs corrected but a hard anchor keeps
+      false, 1 → pending. Daily-sync flushed first (the "quiet window"); 218 PG
+      rows updated in lockstep; corpus integrity verified (30,235 records, 0
+      unparseable).
 
-    **(a) + (b) together — not item 20 — are what make `verified=false`
-    trustworthy as a prune signal. Confirmed: the genuinely-suspect set is now
-    tiny (≈9 commit-refs + a slice of the 90 absent); the bulk of
-    `verified=false` is recoverable (118) or already strippable (48) or
-    cross-repo (50), i.e. not wrong memories.**
+    **Net result (post-apply triage):** `verified=false` anchored **404 → 224**;
+    **`clean-after-strip` 48 → 0** and **prefix-recovery `recoverable` 118 → 0**
+    — the corpus is now clean of all *mechanically-fixable* `verified=false`
+    noise. The irreducible residual is **7** commit-refs-nowhere + **93** absent
+    + **17** ambiguous (basename collision) + 10 absolute + 7 tilde — no cheap
+    fix remains. **`verified=false` is now a trustworthy (small, genuine)
+    signal.** Items 20 + 21 (a+b+act) together delivered it; **item 13 pruning
+    must still target retention/archival, not deletion-by-`verified=false`** (the
+    residual is mostly genuinely-gone files, not wrong memories).
+22. ✅ **`sync-to-postgres.py` shrink guard — DONE 2026-06-02** *(surfaced by
+    item-13 execution, no-API)*. `_sync_cursor.detect_jsonl_shrink()` existed
+    but `sync-to-postgres.py` never called it, so when `memories.jsonl` shrank
+    below the saved `postgres_sync_line` cursor (as after every archival sweep),
+    `_sync_locked` hit `cursor_line >= total_lines`, logged "No new memories",
+    and **stranded the cursor above EOF** — silently skipping subsequent appends
+    until the file regrew (the D-C3-class bug the helper was written to catch).
+    **Fixed:** `_sync_locked` detects the shrink right after counting lines
+    (`cursor_line > total_lines`); on shrink it logs a WARN, resets the cursor
+    to 0, and full-re-scans (`ON CONFLICT DO NOTHING` → cheap + idempotent). 3
+    regression tests (stranded→rescan, in-bounds→no reset, exact-EOF→clean
+    no-op). Live: clean no-op at EOF, no false trigger. No longer needs the
+    manual workaround on future sweeps. **A follow-up /audit (same session)
+    found the first cut — calling `detect_jsonl_shrink` — counted lines by
+    file-handle iteration, which diverges from the `splitlines()` count the
+    cursor is saved with (on embedded Unicode separators surviving an
+    `ensure_ascii=False` rewrite), risking a spurious shrink WARN every cycle;
+    switched to the inline `cursor_line > total_lines` check (same count as the
+    saved cursor + the slice, and drops the redundant second file read).**
 
 ## 6. Recommended sequence for the 2026-05-31 → 2026-06-13 window
 
@@ -177,11 +271,90 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    118/225 still-false relative refs (52 %) are safely recoverable. **Net:**
    `verified=false` is now legible — genuinely-suspect set ≈ 9 commit-refs +
    a slice of 90 absent; the rest is recoverable/strippable/cross-repo, not
-   wrong memories. **Gated follow-up:** rewriting the 118 recoverable refs
-   needs Shawn's sign-off + a quiet window.
-5. **Item 13 design (category retention policy)** — design + per-bucket
-   numbers; execute archival only with explicit sign-off, in a quiet window.
-6. **Item 9 (verify §8 apparatus)** — cheap; de-risks the 2026-06-13 review.
+   wrong memories. **(act)** corpus fix applied 2026-05-31 (`recover_anchors.py`;
+   data `a792240`, parent `6cd6666`): 218 records (155 false→true), PG in
+   lockstep. Post-apply: `verified=false` 404 → 224; `clean-after-strip` and
+   `recoverable` both → 0. `verified=false` is now a trustworthy small signal.
+5. ✅ **Item 13 design (category retention policy) — DONE + signed off
+   2026-06-01.** Proposal `wiki/planning/memory-retention-policy-proposal.md`
+   (`bfaf0ab`); per-bucket numbers re-derived at source. Lever A approved
+   (archive 7,370 past-decay records, behaviour-preserving);
+   `gotcha`/`pattern` kept permanent; cold store + retrieval adopted.
+   **Next = execution** (build `scripts/archive-memories.py`, gated, quiet
+   window). **NB:** the residual `verified=false` (224, mostly genuinely-gone
+   files) is NOT a prune signal — item 13 targets retention/archival, not
+   verified-status.
+6. ✅ **Item 13 EXECUTED 2026-06-02** — 7,673 records archived (~25 % of
+   corpus), recall provably unchanged (`active_memories` invariant); both
+   follow-ups (`gotcha`/`pattern`→permanent, `--include-archive`) + the bug it
+   surfaced (item 22) done; all session code re-audited. See §5 item 13 + the
+   2026-06-02 continuity entries. **This also delivers Tier-1 item 2** (real
+   pruning/TTL — an archival sweep, not just a read-window).
+7. ✅ **Item 9 (verify §8 apparatus) — DONE 2026-06-02** (`4db5a9d`). Found
+   only measurement (1) review-ready; instrumented the /recall blind spot
+   in (2); flagged the dead baseline + the missing (3) apparatus. See §5
+   item 9 + the 2026-06-02 continuity entry.
 
-Items 5, 6, 14, 15 (anything LLM/embedding-driven) are **API-gated** — present
-model + batch + count + cost for approval before any run.
+## 6a. Prioritised next steps (post item-13, set 2026-06-02)
+
+1. ✅ **P1 — item 9: verify the §8 measurement apparatus — DONE 2026-06-02**
+   (`4db5a9d`). Only measurement (1) review-ready; instrumented the
+   /recall blind spot in (2) (`source=recall`); baseline for (2) is dead;
+   (3) has no apparatus. **P1.5 (surfaced by item 9, per Shawn's ask): automated
+   confab-flag tracking for (3) — ✅ BUILT + shipped 2026-06-02
+   (`353a45a`).** `scripts/log-confab-flag.py` parses the per-claim
+   `corrections.jsonl` the three verifier agents already emit and tallies
+   `checked` / `flagged` (`status=fail`) / `confab`
+   (`failure_type=confabulation`) / `kinds` to `data/logs/confab-flags.log`
+   (best-effort); all three verifier agent defs self-log their tally as a
+   final Bash side-effect. +10 tests, suite 971. **Limits:** forward-only
+   (no pre-ship data → does not rescue 2026-06-13), verifier-deliverable-
+   scoped (selection-biased), instruction-based, narrow kind (citation /
+   repo / dataset confab, not prose welding — deferred Tier C). Auto-
+   feeds item 18 once a standing report exists. No-API.
+   **Tier B (`/confab` manual capture) — ✅ BUILT + shipped 2026-06-02
+   (`aa62095`):** `commands/confab.md` + a `--detail` field on the helper;
+   logs the prose path/identifier/count welding the verifiers don't see,
+   as `source=user-correction checked=0` (absolute-count-only, excluded
+   from the rate). Same log file. **Tier C — FOLDED INTO item 18
+   (decided 2026-06-02).** The `verify_file` trace confirmed the
+   uncommitted-this-session confound is already handled (working-tree stat,
+   `anchor_verify.py:181`), so the write-time fresh-anchor-fail rate is a
+   clean automatic signal — but it measures write-path anchor confab, not
+   the response-path prose welding Vector 2 targets, so it's a
+   corpus-health metric (item 18), not a third efficacy tier. Build it
+   when item 18 is built; see §5 item 18.
+2. **P2 — recurring archival cadence — ✅ BUILT 2026-06-02 (`69e69f6`),
+   awaiting a Shawn-watched first `--apply`.** `scripts/monthly-archive.py`
+   wraps the proven item-13 sweep (flush → sanity-gate → apply →
+   invariance-gate → PG-drift-gate → verified push) as a safe-by-default
+   command (dry-run unless `--apply`); the invariance gate independently
+   re-verifies every archived record is past-decay at a pinned `as_of`
+   (immune to live-`NOW()` drift). Twice adversarially reviewed (CRITICAL
+   + 3 HIGH fixed pass 1; pass 2 clean, residuals fail safe); 22 tests,
+   suite 996; dry-run from main validated (would archive 47). **Remaining:
+   Shawn watches the first `--apply`, then adds the monthly cron line.**
+   Doc: `wiki/planning/archival-cadence-2026-06-02.md`. No-API.
+3. **P3 — item 14: extraction selectivity tuning** (fewer, higher-value
+   memories at source — the upstream lever). No-API.
+4. **P4 — item 3: neutralise dead fixed-payload weight — ✅ MOSTLY DONE
+   2026-06-02.** `MEMORY.md` (harness auto-memory) neutralised 589→262 B/session
+   (reversible; backup kept; content also in JSONL). CLAUDE.md redundancy
+   audit → proposal `data/notes/claude-md-redundancy-audit-2026-06-02.md`
+   (`data 0da8376`): ~610 B SAFE + ~1,505 B judgment trims, two stale claims;
+   **nothing applied — awaiting Shawn** (behaviour-governing; global file is
+   auto-generated from `shared.md` + `local.md`). No-API.
+5. **P5 — write-side dup-id hygiene (NEW, surfaced by the item-13 sweep).** 590
+   archived ids were never in PG + 857 unsynced live records — PG was behind
+   the JSONL for *non-lag* reasons (dup-id / quarantine). Diagnose the dup-id
+   source. No-API diagnostic first.
+6. **P6 — item 18: memory-health standing report** (counts / anchor-rate /
+   age / growth / archival-volume); folds in P2's recall-invariance check +
+   the P5 drift diagnostic. No-API.
+
+**Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
+10 (identifier-welding), 8 (drift-sweep job), 17, 19.
+
+Items 5, 6, 15 (anything LLM/embedding-driven — semantic dedup, the
+retroactive anchor-gen pass to verify the back-corpus) are **API-gated** —
+present model + batch + count + cost for approval before any run.

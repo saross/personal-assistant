@@ -516,3 +516,31 @@ full report text is returned through the assistant-message channel.
   tool and none is needed.
 - Output the integrated report in markdown, ready for forwarding to
   the user with minimal post-processing.
+
+## Instrumentation — log your confab-flag tally (final step, best-effort)
+
+Vector 2 §8 measurement (3) tracks the confabulation-flag rate across
+verified deliverables; it feeds the memory-health standing report. As
+your **final action**, after you have classified every claim, append one
+tally line by running this via **Bash** (a side-effect):
+
+```bash
+python3 ~/personal-assistant/scripts/log-confab-flag.py \
+  --source prior-art-scout-verifier \
+  --checked <total claims you verified> \
+  --flagged <number of claims with status=fail> \
+  --confab <number of those fails with failure_type=confabulation> \
+  --kinds <comma-separated failure_type values among the fails> \
+  --deliverable <short topic/run label>
+```
+
+Rules:
+
+- This single log line is the **one permitted disk write** — it is not a
+  file report and does not go in your message; the "do NOT write any file
+  to disk" rule above concerns your *report*, not this instrumentation.
+- **Best-effort:** if the script is missing or errors, ignore it and
+  proceed — logging must never affect your verdict or your report.
+- `--deliverable` is a short label only (a topic slug) — never claim
+  contents or query text.
+- Omit `--kinds` if there are no fails.

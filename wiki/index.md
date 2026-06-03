@@ -121,19 +121,21 @@ tags: [llm-craft, anti-confabulation, audit-pattern]
 ---
 ```
 
-**24 tags in four groupings.** (A 2026-05-29 empirical validation —
+**24 tags in four groupings.** (The 2026-05-29 empirical validation —
 [`planning/wiki-vocabulary-validation-2026-05-29.md`](planning/wiki-vocabulary-validation-2026-05-29.md)
-— recommends ADD `agent-orchestration` + `infrastructure` and MERGE
-`memory-systems` → `memory-system`, `three-Ps` → `provenance`; **pending
-`/weekly-review` ratification**, so the list below is still the live 24.)
+— was **ratified at the 2026-06-01 W22 `/weekly-review`**: ADDed
+`agent-orchestration` + `infrastructure`, MERGEd `memory-systems` →
+`memory-system` and `three-Ps` → `provenance`, and broadened the
+`audit-pattern` gloss. Net 24, unchanged. See History below.)
 
-### Craft scaffolding (artefact kinds — 8)
+### Craft scaffolding (artefact kinds — 9)
 
 What kind of craft artefact the page is about. Applies across notes,
 grimoire, and future scaffolding sub-collections.
 
 - `prompts` — prompt patterns, incantations (grimoire-style)
 - `agents` — subagent design, briefing, evaluation
+- `agent-orchestration` — coordinating agents: closed-loop proposer-verifier contracts, iterate drivers, fan-out, file-ownership splitting (distinct from `agents`, which is single-agent design)
 - `skills` — slash-command skills, when to invoke, format
 - `hooks` — session lifecycle hooks (session-start, pre-compact, etc.)
 - `claude-md` — `CLAUDE.md` design, conventions, what belongs in one
@@ -147,11 +149,11 @@ Cross-cutting craft patterns that recur across artefact kinds.
 
 - `anti-confabulation` — Opus 4.7 fragment-welding, anchor verification, read-side scepticism
 - `anti-satisficing` — closing exits in prompts, precision over politeness
-- `audit-pattern` — adversarial review, claims inventories, bidirectional checks
+- `audit-pattern` — adversarial review, claims inventories, bidirectional checks, pre-launch / quality gates
 - `bidirectional-verification` — cross-checking source ↔ derived artefacts
 - `provenance` — RDA IG Three Ps (Prompt, Process, Provenance), RO-Crate
 
-### Domain / topic areas (6)
+### Domain / topic areas (7)
 
 The intellectual territory a page covers.
 
@@ -161,15 +163,14 @@ The intellectual territory a page covers.
 - `research-methodology` — research workflow patterns
 - `open-science` — FAIR, RO-Crate, data sharing, RDA work
 - `teaching` — pedagogy, class delivery, marking
+- `infrastructure` — servers, mounts, archives, deployment topology, compute hosts (ops/infra, distinct from `coding-practices` engineering craft)
 
-### Cross-cutting themes (5)
+### Cross-cutting themes (3)
 
 Recurring threads that span domains and artefact kinds.
 
 - `session-shape` — pacing, wind-down, capacity, should-vs-must
 - `human-ai-collaboration` — interaction patterns at the relationship level
-- `three-Ps` — RDA IG framework (Prompt, Process, Provenance)
-- `memory-systems` — collaborative memory architecture and trade-offs
 - `paper-seed` — drafts and seeds for academic papers
 
 ### Notes on use
@@ -182,7 +183,7 @@ Recurring threads that span domains and artefact kinds.
   describe. New tags happen at `/weekly-review` curation time (not in
   arbitrary sessions); record the addition in the History below.
 - **Memory-tag overlap.** Some labels overlap with memory-system tags
-  (`anti-confabulation`, `memory-systems`). Fine — the vocabularies are
+  (`anti-confabulation`, `memory-system`). Fine — the vocabularies are
   scoped separately even when they share words.
 - **Budget.** Aim for 20–30 total. Current count is 24. Past 30, the list
   does less work; reach for refactor before reaching for more.
@@ -198,6 +199,15 @@ Recurring threads that span domains and artefact kinds.
   pending `/weekly-review` ratification (see note above).
 - **2026-05-29** — Vocabulary lifted from the private `notes/_tags.md` to
   this file as its canonical home; `_tags.md` reduced to a redirect stub.
+- **2026-06-01** — Recommended 2026-05-29 delta **ratified** at the W22
+  `/weekly-review`: ADD `agent-orchestration` (craft scaffolding) +
+  `infrastructure` (domain/topic); MERGE `memory-systems` →
+  `memory-system` and `three-Ps` → `provenance` (both removed from
+  cross-cutting); broaden `audit-pattern` gloss to include pre-launch /
+  quality gates. Net 24 → 24; groupings now 9 / 5 / 7 / 3. Two real-page
+  re-tags applied (persona-affordance-design `paper-idea`→`paper-seed`;
+  CoT-capture open-science page re-tagged to vocabulary terms). Evidence
+  anchor: [`planning/wiki-vocabulary-validation-2026-05-29.md`](planning/wiki-vocabulary-validation-2026-05-29.md).
 
 ## Conventions
 

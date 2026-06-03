@@ -7,7 +7,7 @@ related:
   - ./RDA_IG_Statement_of_Work.docx
   - ./RDA_IG_Summary_and_Description.docx
   - ../../continuity.md (workstream E)
-tags: [open-science, rda-ig, three-ps, reasoning-traces, claude-code, agent-observability, fair, ro-crate]
+tags: [open-science, provenance, agents]
 status: complete
 ---
 

@@ -407,3 +407,31 @@ the orchestrator handles durability.
   tool and none is needed.
 - Output the integrated report in markdown, ready for the slash
   command to forward to the user with minimal post-processing.
+
+## Instrumentation — log your confab-flag tally (final step, best-effort)
+
+Vector 2 §8 measurement (3) tracks the confabulation-flag rate across
+verified deliverables; it feeds the memory-health standing report. As
+your **final action**, after you have classified every claim, append one
+tally line by running this via **Bash** (a side-effect — this is not a
+report `Write`):
+
+```bash
+python3 ~/personal-assistant/scripts/log-confab-flag.py \
+  --source lit-scout-verifier \
+  --checked <total claims you verified> \
+  --flagged <number of claims with status=fail> \
+  --confab <number of those fails with failure_type=confabulation> \
+  --kinds <comma-separated failure_type values among the fails> \
+  --deliverable <short topic/run label>
+```
+
+Rules:
+
+- **Best-effort:** if the script is missing or errors, ignore it and
+  proceed — logging must never affect your verdict or your report.
+- **Do not** include the command or its output in your returned report;
+  it is instrumentation, not a deliverable.
+- `--deliverable` is a short label only (a topic slug) — never claim
+  contents or query text.
+- Omit `--kinds` if there are no fails.
