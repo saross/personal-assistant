@@ -695,8 +695,11 @@ items, ranked:
    LOO-SD, 4/4** (up from +0.44); first-plural now exact (5.03 vs 5.05),
    concession near-corpus (0.19 vs 0.14); judge stable 6/8. **Guide is in shape
    to proceed to /write-like-me.** Tried + rejected: a C3 "operative preamble"
-   revision (overshot; dropped). Caveat: pilot scale; final validation = Shawn
-   reading the C2-vs-C0 pairs in `passages/`.
+   revision (overshot; dropped). **Final validation RESOLVED 2026-06-03: Shawn
+   read the four C2-vs-C0 pairs blind and picked the guide 4/4** (both
+   high-confidence calls among them) — the author, the only non-proxy judge,
+   confirms the guide works (`human-validation.md`). Remaining caveat is only
+   pilot scale (4 topics).
 2. **Package a generation workflow — JUSTIFIED by (1); build next.** A
    `/write-like-me` command/agent: task → prompt with the **citation-stripped
    original guide + Appendix F exemplars** (the corrected C2 recipe; do NOT
@@ -2096,7 +2099,7 @@ Ran roadmap item #1 end-to-end in an isolated git worktree (`worktree-workstream
 
 - **Verdict + roadmap:** item #1 DONE; item #2 (`/write-like-me`) **justified** — build on the **citation-stripped original guide + Appendix F** (NOT the rejected C3 preamble); output carries **no citations** (venue-determined, §3). Guide §3/§9.4 now mark citation format excluded — the standing correction Shawn flagged. Queued #7 (2×2 ablation — does Appendix F contribute?) and #8 (judge-based/discourse-aware efficacy gate).
 - **Artefacts:** pre-reg `wiki/planning/style-guide-efficacy-experiment-design.md`; harness `scripts/style-analyser/efficacy_{build_prompts,build_reference,score,analyse,build_judge_tasks,score_judges}.py`; data `data/experiments/style-efficacy-2026-05-31/` (prompts, 24 citation-corrected passages C0/C1/C2, scores, `efficacy-synthesis.md` [authoritative], plus original-run records `pilot-findings.md`/`retest-analysis.md`/`judge-analysis.md` marked superseded). Original citation-confounded run preserved at submodule `e51e998` / parent `ab471c5`.
-- **Caveats:** pilot scale (4 topics; deterministic n=4 paired; judge 8 judgments, one/pair, mild B-position-bias — corrected 6/8 leans on it); Claude judged Claude-written text (blind, vs citation-stripped real excerpts). **Final validation = Shawn reading the C2-vs-C0 pairs in `passages/`.**
+- **Caveats:** pilot scale (4 topics; deterministic n=4 paired; judge 8 judgments, one/pair, mild B-position-bias — corrected 6/8 leans on it); Claude judged Claude-written text (blind, vs citation-stripped real excerpts). **Final validation RESOLVED 2026-06-03: Shawn read the four C2-vs-C0 pairs blind and picked the guide 4/4** (both high-confidence calls among them; `human-validation.md`). The author — the only non-proxy judge — confirms the guide works.
 - **Not yet merged to main** (held for Shawn's review + concurrent-session coordination); memory capture deferred (concurrent session is editing `memories.jsonl`).
 
 ### 2026-05-31 (Sun, PA) — Vector 2 Stage 2 reframe + Vector 2c (dark) + git guardrails + write-path pivot (items 11 & 12)
