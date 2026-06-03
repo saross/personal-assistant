@@ -2095,6 +2095,26 @@ Roadmap #2 design decision (no code yet). Agreed with Shawn the drafting workflo
 - **Gate before building:** the efficacy experiment validated the *fused* path (content+voice in one shot); the neutral→voice-align path is **untested**. Try the workflow manually first, validate stage 4 (blind-pair vs a fused in-voice draft + a meaning-drift check), then build the skill.
 - Spec: `wiki/planning/write-like-me-workflow.md`. Roadmap #2 updated with the codified workflow.
 
+### 2026-06-03 (Wed, latest PA) — CLAUDE.md SAFE redundancy set + D1/D2 correctness rewords applied (P4 cont.)
+
+Applied the SAFE-rated trims + the two correctness rewords from the CLAUDE.md audit proposal (`data/notes/claude-md-redundancy-audit-2026-06-02.md`), per Shawn's sign-off. Edits went to the **source** files (the global `~/.claude/CLAUDE.md` is auto-generated — never edited directly) and `scripts/compose-global-claude-md.sh` was re-run + verified:
+- **A1** (`CLAUDE.md` project Context): dropped the duplicated "archaeologist and ancient historian" bio (it lives in the global *About me*); kept the project-specific redundancy/finite-window framing.
+- **B1** (`global-claude-md/shared.md`): deleted the duplicate *File Reorganisation Safeguards* section; folded its one unique line ("create `archive/` if it doesn't exist") into *File Organisation*.
+- **C1-SAFE** (`data/global-claude-md/local.md`): dropped the redundant "Read that file when…" pointer in *Network Resources* (the Reference-Docs table row already carries it). **The four safety guardrails were KEPT inline** (that was C1-JUDGMENT — deliberately not touched; "Never reboot rpi-server/sapphire" etc. stay in every session's face).
+- **D1** (`shared.md`): reworded the FAIMS3 git example — it claimed collaborative repos "gate … in their own project-level `CLAUDE.md` (e.g. FAIMS3)", but FAIMS3 has no CLAUDE.md. Now "(e.g. the FAIMS3 monorepo is collaborative — branch + PR there)" — the *behaviour* (branch+PR in FAIMS3) is unchanged; only the false mechanism claim is gone.
+- **D2** (`shared.md` + `global-claude-md/scratchpad-reference.md`): "Opus 4.7" → "Opus-class models" (running model is now 4.8; the anti-confab rule is unchanged, just unpegged from a version).
+- **Verified:** composed `~/.claude/CLAUDE.md` 12,545 → 12,157 B; 0 "Opus 4.7", 0 "File Reorganisation Safeguards", 0 "Read that file when", guardrails intact.
+
+#### ⏳ DEFERRED FOR SHAWN — E1: tighten the project CLAUDE.md "Concurrent sessions" section (manual, your call)
+
+**What:** In `~/personal-assistant/CLAUDE.md`, the section headed **"Concurrent sessions — label your workstream"** (~1,900 bytes) is the single biggest *verbosity* trim available (~700–800 B). It currently repeats the "don't sweep another session's files / shared index" rationale ~four times and narrates a past incident at length (a style-guide commit once absorbed another session's Vector-2c work).
+
+**Why it's left to you, not auto-cut:** that section encodes a **hard-won, costly lesson — an actual mis-commit that really happened**. The vividness is *why* a fresh session takes the warning seriously; mechanically halving it risks gutting the thing that makes it land. So this is a judgment edit only you should make.
+
+**Suggested edit (when you get to it):** keep the four rules — (1) label your workstream in commit subjects + continuity headers, (2) `git add <path>` isn't enough, use `git commit -- <path>` because a concurrent session may have pre-staged, (3) genuinely-simultaneous infra work → worktree not branch, (4) this is repo-specific — plus the worktree command block. Drop the *repeated* rationale and shorten the Vector-2c anecdote to a parenthetical (e.g. "(this has bitten us)"). Target ~1,000 B. Full detail: audit proposal §E1. **Also still on the table (your call, NOT done): C1-JUDGMENT** — collapsing the four network guardrails to the table pointer (~670 B), deliberately left because it trades guardrail salience for payload.
+
+**Provenance:** parent commit (this entry's batch); proposal `data/notes/claude-md-redundancy-audit-2026-06-02.md`.
+
 ### 2026-06-02 (Tue, latest PA, OVERNIGHT autonomous) — P4 (dead payload) + P2 (archival cadence) built; both gated for Shawn's review
 
 Shawn authorised an autonomous overnight run on P4 + P2, going to bed. Scoped to **safe/reversible work only**; the one irreversible action (a live `archive-memories.py --apply`) was deliberately **left for a Shawn-watched window** per the item-13 protocol (overnight is not genuinely quiet — the sync cron + extraction hooks append continuously).

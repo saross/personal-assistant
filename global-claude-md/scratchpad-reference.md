@@ -11,7 +11,7 @@ Claude's running learning log. Two layers:
   `map-reader-llm.md` loads when cwd is `~/Code/map-reader-llm/`).
   Project-specific identifiers, config values, experiment-specific
   conventions, and the like. This keeps specifics out of every
-  session's context — critical for Opus 4.7, which confabulates by
+  session's context — critical for Opus-class models, which confabulate by
   welding together plausible fragments from pre-loaded context.
 
 ### Deciding which layer

@@ -130,7 +130,7 @@ All slash commands are loaded as skills at session start — descriptions are vi
 
 ## Context
 
-Shawn is an archaeologist and ancient historian with a long academic career who recently took a redundancy from university. This is a finite window for making progress on research and business goals before returning to "normal" work.
+Shawn recently took a redundancy from university — a finite window for making progress on research and business goals before returning to "normal" work.
 
 **Time-sensitive work:**
 

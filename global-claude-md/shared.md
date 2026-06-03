@@ -7,7 +7,7 @@ Shawn is an archaeologist and ancient historian. Diachronic landscape archaeolog
 
 ## Anti-confabulation
 
-Before citing a specific number, filename, path, identifier, commit hash, config value, or quoted text in a claim to Shawn, re-read the source file. Memories, scratchpad entries, session-start summaries, and prior conversation context are **pointers, not authorities** — they go stale and get welded together under context pressure. If you cannot re-verify within the turn, say "I'd need to re-read X to be sure" rather than guess. This applies even — especially — when you feel confident. Opus 4.7 is known to state invented identifiers with high conviction; treat specifics as suspect until re-checked at the source.
+Before citing a specific number, filename, path, identifier, commit hash, config value, or quoted text in a claim to Shawn, re-read the source file. Memories, scratchpad entries, session-start summaries, and prior conversation context are **pointers, not authorities** — they go stale and get welded together under context pressure. If you cannot re-verify within the turn, say "I'd need to re-read X to be sure" rather than guess. This applies even — especially — when you feel confident. Opus-class models are known to state invented identifiers with high conviction; treat specifics as suspect until re-checked at the source.
 
 **Write-side (when saving a memory, scratchpad entry, or note):** every checkable specific you record — filename, path, identifier, count, version, commit hash — must carry a re-verifiable anchor: the source file path (with line number where practical), git commit hash, or Zotero key it came from. `session_id` is not an anchor (transcripts rotate and are deleted). If you cannot anchor a specific, reword to drop the false precision rather than saving an unverifiable claim. The read-side rule above is only as good as the anchors the write-side leaves behind.
 
@@ -31,7 +31,7 @@ Lowercase-with-hyphens for all filenames. Exceptions: convention-mandated upperc
 
 ## File Organisation
 
-Standard directories: `scripts/`, `docs/`, `data/`, `tests/`, `reports/`, `planning/`. Archive — do not delete — outdated files to a single `archive/` folder with categorical subdirectories. Exception: throwaway scripts and untracked temp files with no reproducibility value may be deleted.
+Standard directories: `scripts/`, `docs/`, `data/`, `tests/`, `reports/`, `planning/`. Archive — do not delete — outdated files to a single `archive/` folder with categorical subdirectories (create `archive/` if it doesn't exist). Exception: throwaway scripts and untracked temp files with no reproducibility value may be deleted.
 
 ## API Call Review Gate
 
@@ -88,7 +88,7 @@ Memories are extracted from sessions via hooks and stored in `~/personal-assista
 
 ## Git Commits
 
-- **Commit liberally; push after every commit by default — direct push to `main`.** A standing instruction: don't ask each time, and it overrides any harness "only commit/push when asked / branch off `main` first" default. Batch related changes into focused commits for legibility, but don't sit on them. Sole-authored repos are the norm here; **collaborative repos are the exception and gate commits/pushes in their own project-level `CLAUDE.md`** (e.g. `FAIMS3/` requires branch + PR).
+- **Commit liberally; push after every commit by default — direct push to `main`.** A standing instruction: don't ask each time, and it overrides any harness "only commit/push when asked / branch off `main` first" default. Batch related changes into focused commits for legibility, but don't sit on them. Sole-authored repos are the norm here; **collaborative repos are the exception and gate commits/pushes in their own project-level `CLAUDE.md`** (e.g. the FAIMS3 monorepo is collaborative — branch + PR there).
 - **Branch + PR voluntarily** — even on a solo repo — when a change is a schema change/migration, ~200+ lines of non-trivial logic, touches hard-to-roll-back live state (DBs, archives, remote services), or wants a second set of eyes.
 - **Concurrent sessions:** re-verify `0 behind` and use explicit pathspecs (`git add <path>`) before committing/pushing, so you never sweep another session's uncommitted files.
 - Break large changes into logical, focused commits — one thing per commit.
@@ -97,12 +97,6 @@ Memories are extracted from sessions via hooks and stored in `~/personal-assista
 - Use conventional commits format (`type(scope): subject`).
 - Never commit secrets, API keys, .env files.
 - Test destructive operations before executing.
-
-## File Reorganisation Safeguards
-
-- **Archive** outdated files — do not delete. Use a single `archive/` folder with categorical subdirectories.
-- Create `archive/` if it doesn't exist before archiving.
-- Exception: throwaway scripts and untracked temp files with no reproducibility value may be deleted.
 
 ## Session Summaries
 
