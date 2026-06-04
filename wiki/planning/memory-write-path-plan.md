@@ -341,9 +341,13 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    2026-06-02.** `MEMORY.md` (harness auto-memory) neutralised 589→262 B/session
    (reversible; backup kept; content also in JSONL). CLAUDE.md redundancy
    audit → proposal `data/notes/claude-md-redundancy-audit-2026-06-02.md`
-   (`data 0da8376`): ~610 B SAFE + ~1,505 B judgment trims, two stale claims;
-   **nothing applied — awaiting Shawn** (behaviour-governing; global file is
-   auto-generated from `shared.md` + `local.md`). No-API.
+   (`data 0da8376`): ~610 B SAFE + ~1,505 B judgment trims, two stale claims.
+   **SAFE set (A1/B1/C1-SAFE) + D1/D2 rewords APPLIED 2026-06-03**
+   (`73932d4` + `data a43d5df`; composed + verified, 12,545→12,157 B).
+   **Deferred to Shawn:** E1 (tighten the project Concurrent-sessions
+   section, ~700 B — logged in continuity) + C1-JUDGMENT (collapse the
+   network guardrails). Global file is auto-generated from `shared.md` +
+   `local.md`. No-API.
 5. **P5 — write-side dup-id hygiene (NEW, surfaced by the item-13 sweep).** 590
    archived ids were never in PG + 857 unsynced live records — PG was behind
    the JSONL for *non-lag* reasons (dup-id / quarantine). Diagnose the dup-id
