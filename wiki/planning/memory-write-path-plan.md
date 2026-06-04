@@ -408,10 +408,15 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    suite 1019. **Live (2026-06-04, point-in-time):** corpus 23,701 / 0 dup-ids
    / integrity PASS / archive parity 7,831·7,241·590·0-leaked; anchored 6.4 %
    (verified t1136/f321/p50); Tier-C 275/1,507 = 18.2 % fail (absent 193 /
-   recoverable 76 / ambiguous 65). **Remaining = cadence:** manual on-demand
-   vs a `/memory-health` command vs a periodic cron (like P2) writing to
-   `reports/` vs a one-line digest summary — engine is identical across all,
-   only the wrapper differs. No-API.
+   recoverable 76 / ambiguous 65). **Cadence DONE 2026-06-04 (Shawn's pick —
+   "command like this, but also add to the weekly-review ritual"):**
+   (1) `/memory-health` slash command (`commands/memory-health.md`, symlinked
+   live; passes `--tier-c`/`--json` through), and (2) folded into
+   `/weekly-review` — a step-2 run instruction + a "Memory-System Health"
+   template section so corpus-health trends surface week-over-week. A periodic
+   cron was **deliberately NOT added** (Shawn chose command + weekly-review),
+   and the §8 digest window is left untouched (no session-start one-liner
+   during the measurement period). **P6 COMPLETE.** No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.
