@@ -160,7 +160,10 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
     never-surfaced-in-N-months → archival candidate.
 17. **Confidence-field hygiene** — use the `confidence` field or drop it.
-18. **Memory-health standing report** — periodic counts / anchor-rate /
+18. ✅ **Memory-health standing report — REPORT ENGINE BUILT 2026-06-04**
+    (`scripts/memory-health-report.py`, read-only, +14 tests, suite 1019;
+    cadence/delivery still Shawn's call — see §6a item 6 for the section map
+    and the live snapshot). — periodic counts / anchor-rate /
     malformed-rate / age / growth (extends item 9). **Now also houses
     Tier C (decided 2026-06-02): the write-time fresh-anchor-fail rate** —
     of the anchored memories written this period, the fraction whose
@@ -386,13 +389,29 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    - **Optional, NOT done (Shawn's call):** backfill the 590 into PG as
      `is_active=FALSE` for completeness — declined by default (zero value:
      past-decay + archived + already cold-readable; would add 590 inert rows).
-6. **P6 — item 18: memory-health standing report** (counts / anchor-rate /
-   age / growth / archival-volume); folds in P2's recall-invariance check +
-   the P5 drift diagnostic. **Building block ready:** P5 shipped
-   `audit-postgres-sync.py --archive-parity` (archive-vs-PG reconciliation,
-   read-only, exit 1 on a recall leak) — item 18 should call it (or its
-   `audit_archive_parity()` function) for the "live JSONL == active_memories
-   after a sweep" drift line rather than re-deriving it. No-API.
+6. **P6 — item 18: memory-health standing report — ✅ REPORT ENGINE BUILT
+   2026-06-04; cadence/delivery is the one remaining decision (Shawn's
+   call).** `scripts/memory-health-report.py` (read-only; mutates nothing —
+   no locks, no PG writes, no cursor changes; safe to run during concurrent
+   extraction). Six sections: **[A]** corpus size & composition (live JSONL +
+   PG counts, by-category/source, dup-id tripwire), **[B]** growth & churn
+   (`created_at` 1d/7d/30d windows + `archive-runs.jsonl` archival volume),
+   **[C]** anchor health (anchored %, verified true/false/pending, malformed
+   via `wellformed_anchor`), **[D]** sync & archive integrity (live↔PG tail,
+   the P5 `audit_archive_parity()`, dup-id + quarantine tripwires; PASS/FAIL,
+   exit 1 on a real leak), **[E]** confab-flag rate (§8 measurement 3 — parses
+   `confab-flags.log`, verifier rate Σflagged/Σchecked separate from the
+   absolute-only manual catches), **[F]** **Tier C** write-time fresh-anchor-
+   fail rate (opt-in `--tier-c`; `verify_memory` over `broad_repo_set`, with
+   the failing file-ref split classifying ONLY genuinely-failing anchors —
+   recoverable/ambiguous/absent). `--json` for machine output. +14 tests,
+   suite 1019. **Live (2026-06-04, point-in-time):** corpus 23,701 / 0 dup-ids
+   / integrity PASS / archive parity 7,831·7,241·590·0-leaked; anchored 6.4 %
+   (verified t1136/f321/p50); Tier-C 275/1,507 = 18.2 % fail (absent 193 /
+   recoverable 76 / ambiguous 65). **Remaining = cadence:** manual on-demand
+   vs a `/memory-health` command vs a periodic cron (like P2) writing to
+   `reports/` vs a one-line digest summary — engine is identical across all,
+   only the wrapper differs. No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.
