@@ -1,9 +1,11 @@
 # Archival cadence (write-path item 13 / P2)
 
-**Created:** 2026-06-02 (workstream B, latest PA). **Status:** wrapper built,
-tested, and adversarially reviewed twice. **First `--apply` is NOT yet run —
-it is reserved for a Shawn-watched window. Do not cron-enable until that run
-validates it.**
+**Created:** 2026-06-02 (workstream B, latest PA). **Status (updated
+2026-06-04): VALIDATED + CRON-READY.** The first `--apply` ran Shawn-watched
+on 2026-06-04 (158 records archived; invariance + PG-drift gates passed;
+recall invariant held). It surfaced one gap — daily-sync leaves the archival
+commit unpushed on a clean tree — now fixed: step 9 `git -C data push`es it
+directly and re-verifies. Safe to add the monthly cron line below.
 
 ## Why
 
@@ -81,7 +83,7 @@ Watch the log (`data/logs/monthly-archive.log`): confirm the sanity verdict,
 that the invariance + PG-drift gates pass, and that the push verifies. If
 anything halts (exit 4/5/6/7), investigate before trusting the cadence.
 
-## Cron (enable only AFTER a clean watched run)
+## Cron (ready to enable — the watched run completed 2026-06-04)
 
 Add to the user crontab (alongside the existing 5-min sync + weekly decay),
 monthly at 04:00 on the 1st (clear of the Sun 03:00 decay):

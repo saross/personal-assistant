@@ -36,8 +36,10 @@ Sequence (apply mode):
                  if PG was unreachable during the apply they would not, and the
                  tool exits 0 anyway — HALT rather than push on known drift.
   8. re-sync   — ``sync-to-postgres.py``.
-  9. push      — ``daily-sync.sh``, then VERIFY the data submodule is not still
-                 ahead of upstream (the archival commit must actually land).
+  9. push      — ``daily-sync.sh``; then VERIFY the data submodule is level with
+                 upstream and, if daily-sync left the archival commit unpushed
+                 (it skips the data push on a clean tree), ``git -C data push`` it
+                 directly so an unattended cron run is self-contained.
 
 Mutual exclusion: the corpus rewrite is serialised by the bulk-rewrite guard
 (``daily-sync.lock``) and a JSONL flock taken INSIDE ``archive-memories.py``;
@@ -518,9 +520,20 @@ def _apply(category: str | None, no_push: bool) -> int:
         if ahead is None:
             _log("WARN could not verify the data submodule push (no upstream?) — check manually")
         elif ahead > 0:
-            _log(f"WARN archival committed but data submodule is still {ahead} commit(s) "
-                 "AHEAD of upstream — not pushed yet. The next sync will push it; "
-                 "verify with `git -C data push` if needed.")
+            # daily-sync only pushes the data submodule after committing dirty
+            # changes; the archival commit is already clean-committed by the
+            # tool, so daily-sync leaves it unpushed (verified live 2026-06-04).
+            # Push it directly so an unattended cron run is self-contained.
+            _log(f"data submodule {ahead} commit(s) ahead after daily-sync — pushing directly")
+            _run(["git", "-C", str(DATA_DIR), "push"], label="push data submodule")
+            ahead = _data_submodule_ahead()
+            if ahead and ahead > 0:
+                _log(f"WARN data submodule STILL {ahead} ahead after a direct push — the "
+                     "archival is committed locally and durable, but the remote did not "
+                     "accept it (behind upstream / push rejected?); the next sync will retry. "
+                     "Investigate `git -C data status`.")
+            else:
+                _log("push verified: data submodule level with upstream (direct push)")
         else:
             _log("push verified: data submodule level with upstream")
     _log(f"DONE: archived {len(archived)} record(s); recall invariant held")
