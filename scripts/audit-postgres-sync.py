@@ -14,15 +14,26 @@ deploying the behavioural fix to confirm that (a) we can reproduce the
 bug's fingerprint (rows only in JSONL, not in PG) and (b) the fix
 eliminates it on new syncs.
 
+The optional ``--archive-parity`` mode reconciles the cold-store memory
+partitions (``memories/archive/memories-archive-*.jsonl``, written by
+``scripts/archive-memories.py``) against PostgreSQL ``is_active`` state. This
+surfaces — and bounds — the historical "archived id never reached PG" drift
+(590 records as of 2026-06-04, all 2026-04-14 onward, traced to the
+pre-item-22 stranded-cursor leak, not duplicate ids). It fails ONLY on a
+recall leak: an archived id still ``is_active=TRUE``. See the
+``ArchiveParityResult`` docstring for the asymmetric semantics.
+
 Exit codes:
-  0 — No rows are missing from PostgreSQL
-  1 — At least one canonical id is missing from PostgreSQL (the bug)
+  0 — No rows are missing from PostgreSQL (and no archived id leaked active)
+  1 — At least one canonical id is missing from PostgreSQL (the bug), OR an
+      archived id is still is_active=TRUE under --archive-parity
   2 — Audit could not run (e.g., DB unavailable, JSONL missing)
 
 Usage:
     venv/bin/python3 scripts/audit-postgres-sync.py
     venv/bin/python3 scripts/audit-postgres-sync.py --sessions
     venv/bin/python3 scripts/audit-postgres-sync.py --archive-root /path
+    venv/bin/python3 scripts/audit-postgres-sync.py --archive-parity
 """
 
 from __future__ import annotations
@@ -46,6 +57,17 @@ PA_DIR = Path(__file__).resolve().parent.parent
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
 DB_NAME = "claude_memories"
+
+# Cold-store memory partitions written by scripts/archive-memories.py
+# (one file per month, e.g. memories-archive-2026-06.jsonl). The
+# --archive-parity mode reconciles these archived ids against PostgreSQL.
+# Note the distinct semantics from the live audit: an archived id ABSENT
+# from PG is benign (the record was never synced before eviction, and it is
+# preserved verbatim in the cold partition); the only failure is an archived
+# id still flagged is_active=TRUE in PG, which would leak a past-decay record
+# back into /recall via the active_memories view.
+DEFAULT_MEMORY_ARCHIVE_DIR = PA_DIR / "memories" / "archive"
+MEMORY_ARCHIVE_GLOB = "memories-archive-*.jsonl"
 
 
 # ============================================================================
@@ -82,6 +104,32 @@ class AuditResult:
     def is_clean(self) -> bool:
         """True when no canonical ids are missing from PostgreSQL."""
         return len(self.only_in_canonical) == 0
+
+
+@dataclass
+class ArchiveParityResult:
+    """
+    Reconciliation between the cold-store archive partitions and PostgreSQL.
+
+    Unlike :class:`AuditResult`, an archived id missing from PostgreSQL is
+    NOT a failure: the record may have been appended during a window when
+    the line-cursor sync had stranded (the pre-2026-06-02 item-22 bug) and
+    then been evicted to the cold partition before any re-scan could
+    reconcile it. Such a record is preserved verbatim in the partition and,
+    being past-decay, has zero recall impact. The genuine failure is the
+    inverse: an archived id whose PostgreSQL row is still ``is_active=TRUE``,
+    which would leak an evicted record back into the ``active_memories`` view.
+    """
+
+    archive_count: int
+    archived_in_pg: int
+    archived_not_in_pg: int
+    leaked_active: list[str]
+
+    @property
+    def is_clean(self) -> bool:
+        """True when no archived id is still active in PostgreSQL."""
+        return len(self.leaked_active) == 0
 
 
 # ============================================================================
@@ -166,6 +214,57 @@ def _read_postgres_ids(
         conn.close()
 
 
+def _read_postgres_active_map(
+    ids: list[str],
+    logger: logging.Logger,
+) -> dict[str, bool | None] | None:
+    """
+    Return ``{id: is_active}`` for the subset of ``ids`` present in PG.
+
+    Ids absent from the result dict are absent from PostgreSQL entirely.
+    Returns ``None`` on any error (DB unavailable, schema mismatch handled
+    by exiting 2, as elsewhere). ``ANY(%s)`` sends the id list as a single
+    array parameter, so we are not bound by the per-statement parameter
+    ceiling even for tens of thousands of archived ids.
+    """
+    if not ids:
+        return {}
+    try:
+        import psycopg2
+    except ImportError:
+        logger.error(
+            "psycopg2 not installed. Run: venv/bin/pip install psycopg2-binary"
+        )
+        return None
+
+    try:
+        conn = psycopg2.connect(dbname=DB_NAME)
+    except psycopg2.OperationalError as exc:
+        logger.error("Cannot connect to PostgreSQL: %s", exc)
+        return None
+
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError:
+        conn.close()
+        sys.exit(2)
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, is_active FROM memories WHERE id = ANY(%s)",
+                    (ids,),
+                )
+                rows = cur.fetchall()
+        return {str(r[0]): r[1] for r in rows}
+    except Exception as exc:
+        logger.error("is_active query failed: %s", exc)
+        return None
+    finally:
+        conn.close()
+
+
 def audit_memories(
     jsonl_path: Path,
     logger: logging.Logger,
@@ -241,6 +340,68 @@ def audit_sessions(
 
 
 # ============================================================================
+# Archive-vs-PostgreSQL parity (cold-store reconciliation)
+# ============================================================================
+
+def _read_archive_partition_ids(
+    archive_dir: Path,
+    logger: logging.Logger,
+) -> set[str]:
+    """
+    Collect the union of memory ids across every cold-store partition.
+
+    Globs ``archive_dir`` for ``memories-archive-*.jsonl`` files and reuses
+    :func:`_read_jsonl_ids` per partition. A missing directory yields an
+    empty set (nothing has been archived yet).
+    """
+    ids: set[str] = set()
+    if not archive_dir.exists():
+        logger.warning("Archive directory does not exist: %s", archive_dir)
+        return ids
+    partitions = sorted(archive_dir.glob(MEMORY_ARCHIVE_GLOB))
+    if not partitions:
+        logger.warning(
+            "No archive partitions (%s) under %s",
+            MEMORY_ARCHIVE_GLOB, archive_dir,
+        )
+        return ids
+    for partition in partitions:
+        ids |= _read_jsonl_ids(partition, logger)
+    return ids
+
+
+def audit_archive_parity(
+    archive_dir: Path,
+    logger: logging.Logger,
+) -> ArchiveParityResult | None:
+    """
+    Reconcile archived (cold-store) ids against PostgreSQL is_active state.
+
+    Three quantities are reported: archived ids present in PG, archived ids
+    absent from PG (benign — never synced before eviction, preserved in the
+    partition), and the failure set of archived ids still ``is_active=TRUE``
+    (a recall leak). See :class:`ArchiveParityResult` for the semantics.
+    """
+    archive_ids = _read_archive_partition_ids(archive_dir, logger)
+    active_map = _read_postgres_active_map(sorted(archive_ids), logger)
+    if active_map is None:
+        return None
+
+    in_pg = set(active_map)
+    not_in_pg = archive_ids - in_pg
+    leaked_active = sorted(
+        mid for mid, is_active in active_map.items() if is_active is True
+    )
+
+    return ArchiveParityResult(
+        archive_count=len(archive_ids),
+        archived_in_pg=len(in_pg),
+        archived_not_in_pg=len(not_in_pg),
+        leaked_active=leaked_active,
+    )
+
+
+# ============================================================================
 # Reporting
 # ============================================================================
 
@@ -277,6 +438,30 @@ def print_report(result: AuditResult) -> None:
             print(f"    ... and {remaining} more")
 
 
+def print_archive_parity_report(result: ArchiveParityResult) -> None:
+    """Print a human-readable summary of an archive-parity result."""
+    print("=== archive-vs-postgres parity ===")
+    print(f"  archived ids            : {result.archive_count:>8}")
+    print(f"  archived & in postgres  : {result.archived_in_pg:>8}")
+    print(
+        f"  archived, NOT in postgres: {result.archived_not_in_pg:>7}  "
+        "(benign: never synced before eviction; preserved in cold store)"
+    )
+    print(f"  leaked (still is_active) : {len(result.leaked_active):>7}")
+
+    if result.leaked_active:
+        print()
+        print(
+            "  FAILURE — the following archived ids are still is_active=TRUE "
+            "in PostgreSQL (recall leak):"
+        )
+        for mid in result.leaked_active[:20]:
+            print(f"    - {mid}")
+        if len(result.leaked_active) > 20:
+            remaining = len(result.leaked_active) - 20
+            print(f"    ... and {remaining} more")
+
+
 # ============================================================================
 # CLI
 # ============================================================================
@@ -309,6 +494,25 @@ def main() -> int:
         default=DEFAULT_ARCHIVE_ROOT,
         help="Archive root for --sessions (default: ~/cc-archives).",
     )
+    parser.add_argument(
+        "--archive-parity",
+        action="store_true",
+        help=(
+            "Also reconcile cold-store memory partitions "
+            "(memories/archive/memories-archive-*.jsonl) against PostgreSQL "
+            "is_active state. Fails only on a recall leak (an archived id "
+            "still is_active=TRUE), not on archived-ids-absent-from-PG."
+        ),
+    )
+    parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        default=DEFAULT_MEMORY_ARCHIVE_DIR,
+        help=(
+            "Cold-store partition directory for --archive-parity "
+            "(default: memories/archive)."
+        ),
+    )
     args = parser.parse_args()
 
     logger = setup_logging()
@@ -329,8 +533,20 @@ def main() -> int:
         results.append(sess_result)
         print_report(sess_result)
 
-    # Exit 1 if any audit found canonical rows missing from PostgreSQL.
-    if any(not r.is_clean for r in results):
+    # Track parity cleanliness separately — ArchiveParityResult has its own
+    # is_clean semantics (a leak, not a missing id, is the failure).
+    archive_clean = True
+    if args.archive_parity:
+        print()
+        parity_result = audit_archive_parity(args.archive_dir, logger)
+        if parity_result is None:
+            return 2
+        print_archive_parity_report(parity_result)
+        archive_clean = parity_result.is_clean
+
+    # Exit 1 if any audit found canonical rows missing from PostgreSQL, or
+    # an archived id leaked back into the active set.
+    if any(not r.is_clean for r in results) or not archive_clean:
         return 1
     return 0
 

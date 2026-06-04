@@ -142,3 +142,76 @@ class TestAuditResult:
             only_in_postgres=["orphan"],
         )
         assert result.is_clean is True
+
+
+class TestReadArchivePartitionIds:
+    """Cold-store partition id extraction for --archive-parity."""
+
+    def test_unions_across_partitions(
+        self, tmp_path: Path, logger: logging.Logger
+    ) -> None:
+        """Ids from every memories-archive-*.jsonl partition are unioned."""
+        (tmp_path / "memories-archive-2026-05.jsonl").write_text(
+            json.dumps({"id": "a"}) + "\n" + json.dumps({"id": "b"}) + "\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "memories-archive-2026-06.jsonl").write_text(
+            json.dumps({"id": "b"}) + "\n" + json.dumps({"id": "c"}) + "\n",
+            encoding="utf-8",
+        )
+        ids = audit_mod._read_archive_partition_ids(tmp_path, logger)
+        assert ids == {"a", "b", "c"}
+
+    def test_ignores_non_partition_files(
+        self, tmp_path: Path, logger: logging.Logger
+    ) -> None:
+        """Only files matching the partition glob are read."""
+        (tmp_path / "memories-archive-2026-06.jsonl").write_text(
+            json.dumps({"id": "a"}) + "\n", encoding="utf-8"
+        )
+        # A decoy that must NOT be read (e.g. the live file or a run log).
+        (tmp_path / "archive-runs.jsonl").write_text(
+            json.dumps({"id": "should-be-ignored"}) + "\n", encoding="utf-8"
+        )
+        ids = audit_mod._read_archive_partition_ids(tmp_path, logger)
+        assert ids == {"a"}
+
+    def test_missing_dir_returns_empty(
+        self, tmp_path: Path, logger: logging.Logger
+    ) -> None:
+        """A nonexistent archive directory yields an empty set."""
+        ids = audit_mod._read_archive_partition_ids(
+            tmp_path / "nope", logger
+        )
+        assert ids == set()
+
+    def test_empty_dir_returns_empty(
+        self, tmp_path: Path, logger: logging.Logger
+    ) -> None:
+        """A directory with no partitions yields an empty set."""
+        ids = audit_mod._read_archive_partition_ids(tmp_path, logger)
+        assert ids == set()
+
+
+class TestArchiveParityResult:
+    """Asymmetric pass/fail semantics of ArchiveParityResult."""
+
+    def test_clean_when_no_leak(self) -> None:
+        """Archived ids absent from PG do NOT fail parity."""
+        result = audit_mod.ArchiveParityResult(
+            archive_count=100,
+            archived_in_pg=40,
+            archived_not_in_pg=60,
+            leaked_active=[],
+        )
+        assert result.is_clean is True
+
+    def test_dirty_when_archived_id_still_active(self) -> None:
+        """An archived id still is_active=TRUE is a recall leak (failure)."""
+        result = audit_mod.ArchiveParityResult(
+            archive_count=100,
+            archived_in_pg=100,
+            archived_not_in_pg=0,
+            leaked_active=["leaked-1"],
+        )
+        assert result.is_clean is False

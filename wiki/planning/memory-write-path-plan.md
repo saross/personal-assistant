@@ -348,13 +348,51 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    section, ~700 B — logged in continuity) + C1-JUDGMENT (collapse the
    network guardrails). Global file is auto-generated from `shared.md` +
    `local.md`. No-API.
-5. **P5 — write-side dup-id hygiene (NEW, surfaced by the item-13 sweep).** 590
-   archived ids were never in PG + 857 unsynced live records — PG was behind
-   the JSONL for *non-lag* reasons (dup-id / quarantine). Diagnose the dup-id
-   source. No-API diagnostic first.
+5. **P5 — write-side dup-id hygiene (NEW, surfaced by the item-13 sweep) —
+   ✅ DIAGNOSED 2026-06-04; dup-id hypothesis REFUTED, no remediation
+   required.** The framing ("PG behind the JSONL for *non-lag* reasons —
+   dup-id / quarantine") was wrong on both counts. Measured at source:
+   - **No dup ids.** Live JSONL (23,683) and the cold partition (7,831) each
+     have **zero** duplicate ids and zero overlap — the 2026-04-14
+     `dedup-memories.py` one-shot plus the item-13 sweep already cleared
+     them. `only_in_canonical` is 0–8 at any moment (the normal unsynced tail
+     that the 5-min cron drains).
+   - **No quarantine.** `data/memories/quarantine-postgres-drops.jsonl` was
+     **never created** — the quarantine-on-drop path has not fired in the
+     system's lifetime (0 poison drops).
+   - **The "590 archived ids never in PG" is real but inert.** Of a 40-record
+     sample, **40/40 have content genuinely absent from PG** (0 present under
+     a different id) → they are **true never-synced records, not dup-collapse**.
+     Date cluster: 540 in 2026-04 (from 2026-04-14 on), 50 in 2026-05;
+     source=extraction (582)+manual (8); **0 reprocessing**. Root cause: the
+     **pre-item-22 stranded-cursor leak** — the 2026-04-14 dedup shrank the
+     JSONL, the line-cursor stranded above EOF, and the incremental sync
+     silently skipped appends until reset (a second window in May). The
+     past-decay victims were swept to cold storage on 2026-06-02 before the
+     post-sweep full re-scan reconciled the *live* survivors (the documented
+     857). **Impact: zero** — the 590 are preserved verbatim in
+     `memories-archive-2026-06.jsonl` (no data loss) and are past-decay AND
+     archived, so excluded from `active_memories` regardless; cold-readable
+     via `fetch-memories.py --include-archive`.
+   - **Forward leak is closed:** item-22 shrink guard (resets cursor +
+     full re-scan on shrink, 2026-06-02), the #55 advisory lock (concurrent-
+     sync race), and quarantine-on-drop (never fired).
+   - **Deliverable:** `scripts/audit-postgres-sync.py --archive-parity` — a
+     read-only standing check reconciling cold-store partitions vs PG, which
+     reports the (benign) archived-not-in-PG count and **fails (exit 1) only
+     on a recall leak** (an archived id still `is_active=TRUE`; live run:
+     0 leaked, exit 0). +6 tests, suite 1005. This is the reproducible anchor
+     for the finding and the building block P6/item 18 folds in.
+   - **Optional, NOT done (Shawn's call):** backfill the 590 into PG as
+     `is_active=FALSE` for completeness — declined by default (zero value:
+     past-decay + archived + already cold-readable; would add 590 inert rows).
 6. **P6 — item 18: memory-health standing report** (counts / anchor-rate /
    age / growth / archival-volume); folds in P2's recall-invariance check +
-   the P5 drift diagnostic. No-API.
+   the P5 drift diagnostic. **Building block ready:** P5 shipped
+   `audit-postgres-sync.py --archive-parity` (archive-vs-PG reconciliation,
+   read-only, exit 1 on a recall leak) — item 18 should call it (or its
+   `audit_archive_parity()` function) for the "live JSONL == active_memories
+   after a sweep" drift line rather than re-deriving it. No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.
