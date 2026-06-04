@@ -1414,3 +1414,38 @@ first review.
 Source: session 2026-06-02; `scripts/sync-to-postgres.py` `_sync_locked`;
 `scripts/_sync_cursor.py` `detect_jsonl_shrink`; commits `b94d3b5` (guard),
 `2e709ec` (count-consistency fix); plan item 22.
+
+---
+
+## 2026-06-04: archival is not one-shot — past-decay memories re-accumulate continuously
+
+The item-13 sweep (2026-06-02) archived 7,673 records. A **dry-run hours later
+already found 46** fresh archival candidates; **a day later, 158**. Two
+mechanisms feed it: ~260 new records/day, and multi-machine sync reconciliation
+re-surfacing old records that were past-decay but previously unsynced. The
+practical consequence is that a one-shot sweep's benefit decays — hence P2's
+recurring monthly cadence (`scripts/monthly-archive.py`, now cron-live). The
+numbers also bound the risk: at ~150/month it would take *years* of consecutive
+missed runs to approach the wrapper's 10,000-record sanity cap, so an occasional
+skipped cron run is self-healing (the next run archives the backlog).
+
+Source: session 2026-06-04; `scripts/monthly-archive.py` dry-runs; plan item 13/P2.
+
+---
+
+## 2026-06-04: after a full archival sweep, the live JSONL equals active_memories exactly
+
+Immediately after the 158-record `--apply`, `wc -l memories.jsonl` == the
+`active_memories` PostgreSQL view count == **23,520** (the +3 over the pre-run
+23,517 was benign concurrent appends during the ~75 s run, never a decrease).
+The equality is the point: once *all* currently-past-decay records are evicted,
+the hot JSONL becomes a 1:1 image of the recall set. That gives item 18 (the
+memory-health report) a **cheap, exact drift detector** — right after a sweep,
+`len(memories.jsonl) != COUNT(active_memories)` means something is wrong
+(an is_active=FALSE record left in the hot file, or a decayed record not
+evicted). The recall-invariance gate verified the *converse* per-record (every
+archived record was genuinely past-decay at a pinned `as_of`); the count
+equality is the cheap aggregate cross-check.
+
+Source: session 2026-06-04; live `--apply` (158 records); `scripts/monthly-archive.py`
+INVARIANCE gate; commit `4d44ef8` (archival); plan item 13/P2 + item 18.
