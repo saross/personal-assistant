@@ -156,6 +156,10 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     guard) — the cursor stranded above EOF after the shrink; a reset-to-0 +
     full re-scan reconciled it (and fixed 857 previously-unsynced live records).
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
+    **DIAGNOSED + PROPOSAL 2026-06-04** (`wiki/planning/extraction-selectivity-
+    proposal.md`; see §6a item 3). Hook over-extracts ~4–7× (median 33/session
+    vs the prompt's 2–8 target); proposal = prompt fix (primary) + confidence
+    gate + high backstop cap. Awaiting sign-off; no live change made.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
     never-surfaced-in-N-months → archival candidate.
@@ -338,8 +342,24 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    suite 996; dry-run from main validated (would archive 47). **Remaining:
    Shawn watches the first `--apply`, then adds the monthly cron line.**
    Doc: `wiki/planning/archival-cadence-2026-06-02.md`. No-API.
-3. **P3 — item 14: extraction selectivity tuning** (fewer, higher-value
-   memories at source — the upstream lever). No-API.
+3. **P3 — item 14: extraction selectivity tuning — ✅ DIAGNOSED + PROPOSAL
+   WRITTEN 2026-06-04, awaiting Shawn's sign-off (no live change made).**
+   Measured the over-extraction at source: the hook produces a **median 33**
+   memories/session (mean 57, max 378) against the prompt's stated "2–8"
+   target — **86 % of sessions over-target, 99 % of memories from them.** A
+   volume problem, not terse junk (content median 286 chars). `decision` is
+   27 % of recent output (~60/day); **Haiku already self-flags the low-value
+   tail `confidence: low` (19 %)** but that signal is discarded. Proposal
+   (`wiki/planning/extraction-selectivity-proposal.md`): **(1)** strengthen the
+   prompt — prescriptive ~10 cap + sharper value bar + sharper `decision` def
+   — as the primary *at-source* lever (Haiku picks; effect API-gated to
+   validate, or observe forward via P6); **(2)** a no-API confidence-aware
+   persistence gate (drop `low` minus an anchor/self-correction carve-out;
+   cuts ~19 %, simulated); **(3)** a HIGH backstop cap (~30–40) for runaway
+   sessions only. **Rejected the blunt low cap** (simulated top-12 drops 81 %,
+   87 % of it permanent-category — it destroys durable signal from dense
+   research days). **Implementation no-API; the prompt validation is
+   API-gated** (Haiku re-run on a sample → needs cost approval).
 4. **P4 — item 3: neutralise dead fixed-payload weight — ✅ MOSTLY DONE
    2026-06-02.** `MEMORY.md` (harness auto-memory) neutralised 589→262 B/session
    (reversible; backup kept; content also in JSONL). CLAUDE.md redundancy
