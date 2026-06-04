@@ -20,13 +20,14 @@ No arguments. Adapts to session weight (light / heavy / verification-only).
 ## Behaviour
 
 1. **Read** `~/personal-assistant/global-claude-md/handoff-protocol.md` and
-   execute the five steps it defines. The protocol is authoritative — do not
+   execute the six steps it defines. The protocol is authoritative — do not
    improvise from this skill; read it fresh each invocation.
 
 2. **Honour the adaptation rules** in the protocol:
    - Light session → skip steps 2–4; update continuity only if needed.
-   - Heavy design session → all five steps; budget ~10 minutes.
+   - Heavy design session → all six steps; budget ~10 minutes.
    - Verification-only → often no continuity update at all.
+   - **Step 6 (resume prompt) always runs**, whatever the session weight.
 
 3. **Key refinements** (do not omit, even when the protocol summary is
    skimmed):
@@ -39,6 +40,10 @@ No arguments. Adapts to session weight (light / heavy / verification-only).
      continuity, notes — one commit per area). Bundle into a single commit
      only if all changes belong to one logical area. Surface push failures
      rather than working around them.
+   - **Step 6 (resume prompt):** *end the handoff with a brief, copy-paste-ready
+     prompt* for the next session — orientation to the continuity / planning
+     doc(s) plus any carry-forward context the docs don't capture. Display it
+     last, in a fenced block, after the commit/push. Runs every time.
 
 4. **Apply the anti-confabulation rule** when drafting the continuity diff:
    re-read any cited filenames, line numbers, commit hashes, or config values

@@ -26,7 +26,7 @@ state, mid-grained, serves continuity for the next session).
 ritual is doing too much — recalibrate by deferring some steps to
 `/weekly-review`.
 
-### The five steps
+### The six steps
 
 #### 1. Update `continuity.md`
 
@@ -112,6 +112,41 @@ for legibility — group changes by logical area, not by file.
 - Working tree should be clean at handoff-end, except for files
   deliberately left uncommitted.
 
+#### 6. Produce a resume prompt (always runs)
+
+End every `/handoff` with a short, **copy-paste-ready prompt the user can
+drop into the next session** to resume smoothly. The user was hand-authoring
+this every time; it is now a built-in closer. Display it **last**, in a fenced
+block, *after* the commit/push so it can reference the state just landed.
+
+Keep it brief — usually just an orientation plus any carry-forward that is
+not obvious from the docs:
+
+- **Orientation:** point at the authoritative continuity / planning doc(s) by
+  path, and name the project — e.g. "read `planning/paper-writeup-continuity.md`,
+  Session N START-HERE". If the continuity doc already uses a START-HERE beacon,
+  reference it so the two stay consistent.
+- **Immediate next action:** the one or two concrete things to pick up first.
+- **Carry-forward context:** *only* what the next session cannot reconstruct
+  from the docs — in-flight state (a running process + PID/ETA), an unresolved
+  decision, a gotcha, a "don't re-do X" note. Omit the line if there is nothing.
+- **Anti-confabulation:** re-read any path, commit hash, PID, or filename
+  before putting it in the prompt (same rule as step 1) — the prompt is only
+  useful if its pointers are correct.
+
+This step **always runs**, even for light or verification-only sessions: if
+nothing changed, the prompt is just a one-line pointer to the current
+continuity doc. The point is that the user never hand-writes the resume prompt
+again.
+
+Suggested shape (display in a fenced block so it copies cleanly):
+
+```text
+Resume <project>. Read <continuity/planning doc path> (<beacon / section>).
+Next: <immediate next action(s)>.
+Carry-forward: <key in-flight state / gotcha / decision — omit if none>.
+```
+
 ### What `/handoff` does NOT do
 
 - It does not curate wiki pages — that happens at `/weekly-review`.
@@ -129,6 +164,9 @@ for legibility — group changes by logical area, not by file.
   warranted; expect the full 10 minutes.
 - **Verification-only session** (read state, confirm something, leave):
   often no continuity update needed at all.
+- **Step 6 (resume prompt) always runs**, regardless of session weight — even
+  a light or verification-only session ends with at least a one-line pointer to
+  the current continuity doc.
 
 If you're tempted to skip continuity entirely after a heavy session,
 stop — that's the highest-cost failure mode. The whole architecture
