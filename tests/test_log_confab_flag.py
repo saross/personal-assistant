@@ -217,5 +217,36 @@ def test_log_confab_flag_best_effort_never_raises(tmp_path: Path) -> None:
     )
 
 
+def test_format_line_sanitises_all_fields_not_just_detail() -> None:
+    """Tabs/newlines in source, deliverable, or a kind can't break the TSV."""
+    line = log_confab.format_line(
+        "li\tne", "del\niv", 1, 1, 1, ["con\tfab", "stale\ncount"], now=FIXED_NOW,
+    )
+    assert line.count("\t") == 7  # exactly the seven field separators
+    assert line.count("\n") == 1  # only the trailing newline
+    assert "source=li ne" in line and "deliverable=del iv" in line
+    assert "kinds=con fab,stale count" in line
+
+
+def test_main_clamps_confab_to_flagged_and_overrides_parsed(tmp_path: Path, monkeypatch) -> None:
+    """main()'s per-field override keeps confab <= flagged (no impossible row)."""
+    captured = {}
+
+    def _capture(source, **kwargs):
+        captured["source"] = source
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(log_confab, "log_confab_flag", _capture)
+    corr = tmp_path / "corrections.jsonl"
+    # Parsed tally would be flagged=1, confab=1; explicit --flagged 0 overrides.
+    corr.write_text('{"status":"fail","failure_type":"confabulation"}\n', encoding="utf-8")
+    log_confab.main(
+        ["--source", "x", "--corrections", str(corr), "--checked", "0", "--flagged", "0"]
+    )
+    assert captured["flagged"] == 0  # explicit 0 overrode the parsed 1
+    assert captured["confab"] == 0  # clamped to <= flagged, not the parsed 1
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

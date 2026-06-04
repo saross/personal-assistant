@@ -141,7 +141,7 @@ Vector 2 §8 measurement (3) tracks the confabulation-flag rate across verified 
 python3 ~/personal-assistant/scripts/log-confab-flag.py \
   --source data-profile-verifier \
   --corrections <path to the corrections.jsonl you just wrote> \
-  --deliverable <short dataset/run label>
+  --deliverable '<short dataset/run label>'
 ```
 
 The helper counts `checked` (all claims), `flagged` (`status: fail`), and `confab` (`failure_type: confabulation` among the fails) for you. If `corrections.jsonl` is unavailable, pass explicit `--checked/--flagged/--confab/--kinds` instead. **Best-effort:** if the script is missing or errors, ignore it and proceed — logging must never affect your verdict. `--deliverable` is a short label only, never claim contents.

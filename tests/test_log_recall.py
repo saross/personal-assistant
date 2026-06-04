@@ -51,9 +51,20 @@ def test_format_line_blank_selectors_default_to_none() -> None:
 
 
 def test_format_line_coerces_results_to_int() -> None:
-    """The results field is always rendered as an integer."""
-    line = log_recall_mod.format_line("query", 10, 7, "recall", now=FIXED_NOW)
-    assert "\tresults=7\t" in line
+    """A non-int results value is coerced (not just rendered)."""
+    # Pass a float so the test fails if the int() coercion is removed.
+    line = log_recall_mod.format_line("query", 10, 3.9, "recall", now=FIXED_NOW)
+    assert "\tresults=3\t" in line
+
+
+def test_format_line_sanitises_tab_newline_in_fields() -> None:
+    """Tabs/newlines in selectors or source can't forge or split a record."""
+    line = log_recall_mod.format_line(
+        "tag:a\tb", 10, 0, "rec\nall", now=FIXED_NOW
+    )
+    assert line.count("\t") == 4  # exactly the four field separators
+    assert line.count("\n") == 1  # the single trailing newline
+    assert "selectors=tag:a b" in line and "source=rec all" in line
 
 
 # ============================================================================

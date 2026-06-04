@@ -135,11 +135,16 @@ def format_line(
     collapsed and truncated so it can never break the tab-separated
     schema; empty for verifier-tally rows.
     """
-    deliverable = (deliverable or "").strip() or "-"
-    kinds_field = ",".join(kinds) if kinds else "none"
-    # Collapse all whitespace (incl. tabs/newlines) and bound the length so
-    # a free-text note can never corrupt the TSV or bloat the log.
-    detail_field = " ".join(str(detail).split())[:200] or "-"
+    # Collapse all whitespace (incl. tabs/newlines) in EVERY field so no value
+    # — agent-supplied source, free-text deliverable/detail, or kind labels —
+    # can forge a column or split the record; detail is also length-bounded.
+    def _clean(value: object) -> str:
+        return " ".join(str(value).split())
+
+    source = _clean(source) or "-"
+    deliverable = _clean(deliverable) or "-"
+    kinds_field = ",".join(c for c in (_clean(k) for k in kinds) if c) or "none"
+    detail_field = _clean(detail)[:200] or "-"
     return (
         f"{now.isoformat()}\t"
         f"source={source}\t"
@@ -183,7 +188,7 @@ def log_confab_flag(
         return False
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Parse arguments (either input mode) and append one log line."""
     parser = argparse.ArgumentParser(
         description="Log a verifier confab-flag tally (Vector 2 §8 instrumentation).",
@@ -224,7 +229,7 @@ def main() -> None:
         help="Optional short note (manual /confab entries) — whitespace-collapsed "
         "and truncated to 200 chars.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Start from a parsed corrections file when supplied, then let any
     # explicit count override the corresponding parsed field.
@@ -242,6 +247,10 @@ def main() -> None:
         kinds = [k.strip().lower() for k in args.kinds.split(",") if k.strip()]
     else:
         kinds = list(tally["kinds"])  # type: ignore[arg-type]
+    # Per-field overrides can otherwise produce a logically impossible row
+    # (a confabulation is by definition a flagged failure): keep confab a
+    # subset of flagged so the item-18 rate consumer can never see confab>flagged.
+    confab = min(confab, flagged)
 
     log_confab_flag(
         args.source,

@@ -62,7 +62,10 @@ Exit codes:
     1  another monthly-archive instance holds the lock
     2  preflight or a prerequisite step (flush / sync / dry-run) failed
     3  the dry-run SANITY gate refused the sweep (aborted before mutating)
-    4  the INVARIANCE gate failed AFTER apply — recall regression; needs a human
+    4  a post-apply halt-before-push — the INVARIANCE gate failed (recall
+       regression), OR the partition the apply wrote could not be determined,
+       OR the real archived count failed the post-apply sanity re-check; the
+       archival is committed locally + revertable. Needs a human.
     5  the apply itself crashed — corpus may be partially mutated; needs a human
     6  PG drift after apply (is_active not flipped) — do not trust PG; needs a human
     7  uncaught exception (possibly after a committed apply) — verify state by hand

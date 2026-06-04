@@ -531,7 +531,7 @@ python3 ~/personal-assistant/scripts/log-confab-flag.py \
   --flagged <number of claims with status=fail> \
   --confab <number of those fails with failure_type=confabulation> \
   --kinds <comma-separated failure_type values among the fails> \
-  --deliverable <short topic/run label>
+  --deliverable '<short topic/run label>'
 ```
 
 Rules:

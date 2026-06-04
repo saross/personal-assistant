@@ -52,7 +52,7 @@ DEFAULT_LOG_PATH = PA_DIR / "logs" / "fetch-memories.log"
 def format_line(
     selectors: str,
     limit: object,
-    results: int,
+    results: object,
     source: str,
     *,
     now: datetime,
@@ -60,11 +60,15 @@ def format_line(
     """Format one tab-separated retrieval-log line (pure; no I/O).
 
     Mirrors ``fetch-memories.py:_log_invocation`` and appends a
-    ``source`` field. ``limit`` is accepted as ``object`` because the
-    autonomous path logs ``'?'`` when no limit applies; ``/recall``
-    passes its fixed top-10 default.
+    ``source`` field. ``limit`` and ``results`` are accepted as ``object``
+    because the autonomous path logs ``'?'`` for ``limit`` when none
+    applies and ``results`` is coerced to ``int`` here; ``/recall`` passes
+    its fixed top-10 default.
     """
-    selectors = selectors.strip() or "none"
+    # Collapse whitespace (incl. tabs/newlines) in the free-form fields so a
+    # selector or source value can never forge a column or split the record.
+    selectors = " ".join(str(selectors).split()) or "none"
+    source = " ".join(str(source).split()) or "-"
     return (
         f"{now.isoformat()}\t"
         f"selectors={selectors}\t"

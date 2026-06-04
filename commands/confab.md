@@ -44,9 +44,15 @@ python3 ~/personal-assistant/scripts/log-confab-flag.py \
   --source user-correction \
   --checked 0 --flagged 1 --confab 1 \
   --kinds <kind> \
-  --deliverable "<context>" \
-  --detail "<claimed X, actually Y>"
+  --deliverable '<context>' \
+  --detail '<claimed X, actually Y>'
 ```
+
+**Single-quote `--deliverable` and `--detail`** (not double quotes) so a
+confabulated value containing `$(…)`, backticks, or quotes is treated as
+literal text, never executed as shell. If the value itself contains a single
+quote, write it as `'\''` or drop it; if the line still errors, skip the log
+(best-effort — never let it block the response).
 
 6. **Confirm** briefly, then return to work:
 
