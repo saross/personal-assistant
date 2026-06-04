@@ -1591,3 +1591,30 @@ mutation" — reviewed and discarded by Shawn. Candidate 4 — "anti-confabulati
 discipline held across a long, mutation-heavy session", a Claude-about-Claude
 self-observation — discarded: belongs in working-with-claude territory, not
 user observations, per the 2026-05-30 precedent.)*
+
+---
+
+## 2026-06-04 (PA / memory-system write-path: item 9 + confab tiers + P4 + P2-to-cron + /audit) — Drafted candidates (reviewed 2026-06-04)
+
+### Candidate 1: autonomous delegation works best paired with an explicit "stop at the irreversible step"
+
+Shawn handed off P4 + P2 to run autonomously overnight. The value came from
+completing everything *reversible* — building, twice-reviewing, dry-run-validating
+the archival cadence, neutralising MEMORY.md, auditing CLAUDE.md — and
+deliberately **not** pulling the one irreversible trigger (the live
+corpus-mutating `--apply`) unattended, leaving it for a Shawn-watched window
+even though that left P2 "90 % done". The trust he extended was not "do
+everything"; it was trust that the agent would locate the human-in-the-loop
+boundary correctly — which here matched his own item-13 "Shawn-watched quiet
+window" protocol. The reusable shape: autonomous scope is set by *reversibility*,
+not by task completeness, and the agent earning that delegation means halting at
+the irreversible step and reporting, not pushing through it.
+
+[x] accept
+
+*(Candidates 2 ["delegates the judgment call but supplies its decision-relevant
+facts unprompted"], 3 ["decisive forks on well-framed choices, not open-ended
+exploration"], and 4 ["treats session-close as a first-class warm-context sweep"]
+— reviewed and discarded by Shawn. The "anti-confab held" self-observation was
+not drafted as a user observation — working-with-claude territory per the
+2026-05-30 precedent.)*
