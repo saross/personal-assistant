@@ -351,24 +351,53 @@ class TestFormatOutput:
         assert "No memories matched" in output
 
     def test_includes_all_fields(self) -> None:
-        """Output includes content, confidence, tags, source."""
+        """Output includes content, verification status, tags, source."""
         memories = [_make_memory(
             content="Test content here",
-            confidence="high",
             tags=["tag-one", "tag-two"],
             source_context="Test source",
         )]
         output = fetch_memories.format_output(memories)
         assert "Test content here" in output
-        assert "Confidence: high" in output
+        # confidence is no longer shown; verification status replaces it (P9)
+        assert "Confidence:" not in output
+        assert "Verification:" in output
         assert "tag-one, tag-two" in output
         assert "Source: Test source" in output
+
+    def test_verification_reflects_verified_not_confidence(self) -> None:
+        """The Verification line reflects `verified`, not `confidence` (P9)."""
+        mem = _make_memory(confidence="low")   # low confidence...
+        mem["verified"] = "true"                # ...but anchors resolved
+        output = fetch_memories.format_output([mem])
+        assert "Verification: verified (anchors resolved)" in output
+        assert "Confidence:" not in output
 
     def test_handles_empty_tags(self) -> None:
         """Memories with no tags show '(none)'."""
         memories = [_make_memory(tags=[])]
         output = fetch_memories.format_output(memories)
         assert "Tags: (none)" in output
+
+
+class TestVerifiedLabel:
+    """_verified_label maps `verified` state to an honest display string (P9)."""
+
+    def test_true(self) -> None:
+        assert "verified" in fetch_memories._verified_label("true")
+
+    def test_false(self) -> None:
+        assert "unverified" in fetch_memories._verified_label("false")
+
+    def test_pending_states(self) -> None:
+        assert "pending" in fetch_memories._verified_label("pending")
+        assert "pending" in fetch_memories._verified_label("tier3")
+
+    def test_none_is_unanchored_not_low_value(self) -> None:
+        """The most-misread case: no anchor → 'unanchored', flagged not-a-value."""
+        label = fetch_memories._verified_label(None)
+        assert "unanchored" in label
+        assert "value" in label   # carries the "not a value signal" qualifier
 
 
 # ============================================================================

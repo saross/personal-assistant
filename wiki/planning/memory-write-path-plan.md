@@ -532,7 +532,16 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    surfaced/used)**, orthogonal to "anchored". **(3)** The bigger lever is
    **anchor coverage** (~5–6 %): the digest surfaces from a 5 % pool, so raising
    coverage (forward-anchoring / item 6) does more than any confidence reform.
-   No code changed — design decision pending Shawn. No-API.
+   **✅ (a) SHIPPED 2026-06-05** (`fetch-memories.py` + `recall.md`): the
+   human/CC-facing recall displays no longer show the misleading
+   "Confidence: low" — they show the honest `verified` state instead
+   (`_verified_label`: verified / pending / unanchored), with "unanchored"
+   explicitly flagged "not a value signal". +5 tests, suite 1024. **Residual:**
+   `memory_mcp.py` still returns raw `confidence` in its JSON envelope (a
+   structured API, not a display; renaming would break the shape — left; could
+   add `verified` alongside later). **Stored `confidence` field untouched**
+   (dropping it from the schema is a bigger change — deferred). **(b)/(c) still
+   open:** earned-utility value signal (item 16); anchor coverage (item 6). No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.

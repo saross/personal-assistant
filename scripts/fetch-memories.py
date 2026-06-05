@@ -239,7 +239,7 @@ def try_postgres(
 
     try:
         columns = [
-            "id", "category", "content", "summary", "confidence",
+            "id", "category", "content", "summary", "confidence", "verified",
             "research_tags", "source_context", "created_at", "project",
         ]
         base = (
@@ -379,7 +379,7 @@ def try_semantic(
 
     try:
         columns = [
-            "id", "category", "content", "summary", "confidence",
+            "id", "category", "content", "summary", "confidence", "verified",
             "research_tags", "source_context", "created_at", "project",
         ]
         sql = (
@@ -636,12 +636,32 @@ def _merge_archive(
 # ============================================================================
 
 
+def _verified_label(verified: object) -> str:
+    """Human-readable verification status, for display in place of `confidence`.
+
+    Why this exists (write-path plan P9, 2026-06-05): post-v2 the stored
+    `confidence` is a deterministic echo of `verified`
+    (`anchor_verify.bind_confidence`), so showing it as "Confidence: low"
+    invited reading "low" as *low value* when it actually means *no verified
+    anchor* — and ~93 % of memories are unanchored. We show the underlying
+    `verified` state honestly instead. "unanchored" is a factual status, NOT a
+    value judgement (most unanchored memories are perfectly good).
+    """
+    v = str(verified).lower() if verified is not None else ""
+    return {
+        "true": "verified (anchors resolved)",
+        "false": "unverified (anchor did not resolve)",
+        "pending": "pending verification",
+        "tier3": "pending verification",
+    }.get(v, "unanchored — no anchor to check (not a value signal)")
+
+
 def format_output(memories: list[dict[str, Any]]) -> str:
     """
     Format memory results as markdown for CC consumption.
 
-    Produces a structured output with full content, confidence, tags,
-    and source context for each result.  Returns a zero-results
+    Produces a structured output with full content, verification status,
+    tags, and source context for each result.  Returns a zero-results
     message if the list is empty.
     """
     count = len(memories)
@@ -659,7 +679,7 @@ def format_output(memories: list[dict[str, Any]]) -> str:
         category = mem.get("category") or "unknown"
         created = (str(mem.get("created_at") or ""))[:10]
         content = mem.get("content") or "(no content)"
-        confidence = mem.get("confidence") or "unknown"
+        verification = _verified_label(mem.get("verified"))
 
         tags = mem.get("research_tags") or []
         if isinstance(tags, str):
@@ -673,7 +693,7 @@ def format_output(memories: list[dict[str, Any]]) -> str:
         similarity = mem.get("similarity")
         if similarity is not None:
             lines.append(f"Similarity: {similarity:.3f}")
-        lines.append(f"Confidence: {confidence}")
+        lines.append(f"Verification: {verification}")
         lines.append(f"Tags: {tags_str}")
         lines.append(f"Source: {source}")
         lines.append("---")

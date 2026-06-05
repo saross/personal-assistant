@@ -2088,6 +2088,16 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-05 (Fri, latest PA) — P9 (a) shipped: recall displays now show honest `verified` state, not the misleading "Confidence: low"
+
+After-hours incremental. Shawn chose option (a) (relabel/drop the misleading `confidence` display) and asked: relabel or drop? **Decided: neither relabel nor drop — replace it with the real underlying signal (`verified`), glossed** (a single relabel can't be honest across both eras, and dropping loses a real trust signal). Shipped to the two human/CC-facing recall surfaces:
+
+- **`fetch-memories.py`:** added `verified` to both SELECT column lists; new pure helper `_verified_label()` maps `verified` → `verified (anchors resolved)` / `unverified (anchor did not resolve)` / `pending verification` / **`unanchored — no anchor to check (not a value signal)`**; the per-result line is now `Verification:` not `Confidence:`. Live-checked: recall output now reads honestly.
+- **`recall.md`:** display token `(confidence)` → `(verified|pending|unanchored)` + a legend noting `unanchored` is a factual anchor-status, **NOT** a low-value flag.
+- **+5 tests** (`_verified_label` + format_output reflects `verified` not `confidence`); **full suite 1024**.
+- **Deliberately scoped:** the **stored** `confidence` field is untouched (schema drop is a bigger change, deferred). `memory_mcp.py` still returns raw `confidence` in its JSON envelope (structured API, not a display — renaming breaks the shape; left as a noted residual).
+- **Still open (Shawn to decide whether to continue):** (b) a *true* value signal via earned utility (item 16); (c) anchor coverage (item 6, the binding constraint). Logged in plan P9.
+
 ### 2026-06-05 (Fri, latest PA) — P9 investigated: no consumer treats `confidence` as value (good); but the field is incoherent + mislabelled, and the digest favours the anchored 5%
 
 Per Shawn's "P9 first, then see what we learn" + his open question (should a *value* metric be split from an *anchored*/verification one?). Read-only audit of every `confidence` consumer.

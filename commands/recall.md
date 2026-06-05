@@ -44,7 +44,7 @@ Total: [N] memories ([N] extraction, [N] manual)
 
 ### Most Recent (5)
 
-[category] (confidence) — created_at
+[category] (verified|pending|unanchored) — created_at
 content (truncated to ~100 chars)
 ---
 [... 4 more ...]
@@ -65,7 +65,7 @@ content (truncated to ~100 chars)
 5. **Return** top 10 matches, formatted as:
 
 ```text
-[category] (confidence) — created_at
+[category] (verified|pending|unanchored) — created_at
 content
 Tags: tag1, tag2, tag3
 Source: source_context
@@ -73,6 +73,15 @@ Source: source_context
 ```
 
 6. If more than 10 matches, note the total count and offer to show more
+
+**Verification token** (shown in parentheses, from the memory's `verified`
+field — present in the JSONL since v2): `verified` = anchors resolved;
+`pending` = anchors not yet checkable; `unanchored` = no anchor to check
+(`verified` absent/null — the majority of the corpus). **`unanchored` is a
+factual anchor-status, NOT a low-value flag** — most unanchored memories are
+perfectly good. This replaces the old `(confidence)` token, which was a
+misleading echo of `verified` (write-path plan P9). Omit the token if the
+distinction is not useful for the query at hand.
 
 ### Zero Matches
 
