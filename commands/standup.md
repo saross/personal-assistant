@@ -199,8 +199,10 @@ Not what you hope. What you're committing to.
 
 [If today is Friday, append:]
 
-📋 **Weekly review:** Run /weekly-review before you finish today. No weekly
-reviews have been completed yet — building this habit matters.
+📋 **Weekly review:** If you haven't run /weekly-review for the current ISO
+week yet, do it before the week closes — it reconciles the week's completions
+and feeds next week's plan. (Do not assert a review count; check
+`reports/weekly/` for the latest `YYYY-Www.md` rather than claiming "none done".)
 ```
 
 ### 7. Escalation Commentary Examples
