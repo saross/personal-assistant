@@ -446,6 +446,39 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    cron was **deliberately NOT added** (Shawn chose command + weekly-review),
    and the §8 digest window is left untouched (no session-start one-liner
    during the measurement period). **P6 COMPLETE.** No-API.
+7. **P7 — memory-extraction model eval: Haiku vs Gemini (NEW 2026-06-05,
+   Shawn's ask).** Re-evaluate **quality vs cost for memory *creation*** —
+   should the extraction hook (`hooks/extraction-hook.py`, currently Claude
+   **Haiku 4.5**) move to **Gemini** (e.g. `gemini-3.5-flash`), mirroring the
+   cc-session-toolkit *auto-metadata* switch (2026-05-22)? **Explicitly
+   SEPARATE from P3** (item 14): P3 changes the *prompt*; P7 changes the
+   *model*. Validate the P3 prompt on the current model (Haiku) FIRST, to
+   isolate prompt-effect from model-effect; then scope a Haiku-vs-Gemini
+   bake-off (cost/token + extraction quality on a shared sample).
+   **API-gated** (both models) — present model/batch/count/cost before any run.
+   Context for the origin of this item: Shawn believed extraction was already
+   on Gemini; investigation (2026-06-05) showed that was the *auto-metadata*
+   toolkit, not the memory hook — the two share a constant named
+   `EXTRACTOR_MODEL_ID`. Memory extraction is, and has always been, Haiku 4.5.
+8. **P8 — `/forget` & `/update` don't propagate to PostgreSQL (BUG, surfaced
+   2026-06-05).** `sync-to-postgres.py` is INSERT-only (`ON CONFLICT (id) DO
+   NOTHING`) and `is_active` is not among `JSONL_FIELDS`, so a JSONL
+   `is_active=false` (forget) or `content` edit (update) to an **existing** row
+   **never reaches PG**. `daily-sync.sh` does not rebuild PG. So the PG-reading
+   recall paths (session-start digest + `fetch-memories.py` autonomous
+   retrieval, via the `active_memories` view) **silently ignore `/forget` and
+   `/update`** until a manual `rebuild-postgres.py`. (The `/recall` *command*
+   reads the JSONL directly, so it may respect the edit — verify.) Both
+   commands' "PostgreSQL sync is automatic — next tick picks up the JSONB
+   change" claim is **false** for existing rows. Also multi-machine: a surgical
+   PG fix only corrects the local PG; other machines stay stale until they
+   rebuild. **Fix options:** (a) have `/forget`+`/update` do a surgical PG
+   `UPDATE` in lockstep (the `recover_anchors.py` / `archive-memories.py`
+   pattern) — cleanest; (b) make sync reconcile `is_active`+`content`+
+   `revisions` for existing rows; (c) scheduled `rebuild-postgres`. Today's two
+   corrections (`d2befeae` update, `52451aba` forget) were **PG-reconciled by
+   hand on this machine** (verified: `52451aba` now 0 in `active_memories`).
+   No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.
