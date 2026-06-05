@@ -342,9 +342,23 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    suite 996; dry-run from main validated (would archive 47). **Remaining:
    Shawn watches the first `--apply`, then adds the monthly cron line.**
    Doc: `wiki/planning/archival-cadence-2026-06-02.md`. No-API.
-3. **P3 — item 14: extraction selectivity tuning — ✅ DIAGNOSED + PROPOSAL
-   WRITTEN 2026-06-04, awaiting Shawn's sign-off (no live change made).**
-   Measured the over-extraction at source: the hook produces a **median 33**
+3. **P3 — item 14: extraction selectivity tuning — ❌ PROPOSAL REFUTED BY
+   VALIDATION 2026-06-05 (no live change ever made); needs rework.** A $1.17
+   Haiku spot-check + a confidence-pipeline source check killed the two main
+   levers: **(1)** the prompt is empirically weak (paired 50-window run:
+   per-run median 5→4, **11.4 % reduction**, zero-floor *backfired* 14→11
+   empties, noise-dominated −7..+9 swings); **(2)** sidelining `confidence=low`
+   is **INVALID** — the hook overrides Haiku's rating with
+   `bind_confidence(verified)` (`hooks/extraction-hook.py:1073`), so `low` ≈
+   "no verified anchor" (only ~6 % anchored), NOT low value — the step-change
+   0 %→81 % low tracks the v2 anchor rollout, and sidelining would hide 63–79 %
+   of recent memories. **Reframe:** session volume = runs-per-session (median
+   10, max 152) × per-run (3–5); the prompt only touches the modest per-run, not
+   the real driver. Rework toward **runs-per-session / firing cadence / dedup**,
+   or deprioritise (archival P2 already manages growth). Full write-up: the
+   "Validation outcome" section of `extraction-selectivity-proposal.md`.
+   Surfaced **P9** (confidence-overloading). *Original proposal body (below)
+   preserved as audit trail.* — Measured the over-extraction at source: the hook produces a **median 33**
    memories/session (mean 57, max 378) against the prompt's stated "2–8"
    target — **86 % of sessions over-target, 99 % of memories from them.** A
    volume problem, not terse junk (content median 286 chars). `decision` is
@@ -479,6 +493,21 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    corrections (`d2befeae` update, `52451aba` forget) were **PG-reconciled by
    hand on this machine** (verified: `52451aba` now 0 in `active_memories`).
    No-API.
+9. **P9 — `confidence` is overloaded: verification status, not value (surfaced
+   2026-06-05, by the P3 spot-check).** Since v2 (`2026-05-16`) the extraction
+   hook overwrites Haiku's self-rated confidence with
+   `anchor_verify.bind_confidence(verified)` — `verified∈{false,None}→low`,
+   `pending→medium`, `true→high`. With only ~6 % of memories anchored,
+   **`confidence=low` overwhelmingly means "no verified anchor"**, not "low
+   value" (recent low rate 63–79 %, vs 0 % pre-v2). Risk: any consumer that
+   treats `low` as low-value — recall ranking, the session digest, the P6
+   health report's "verified breakdown / confidence" lines — is really keying
+   on *anchor presence*, so it may be **systematically suppressing unanchored
+   (but valuable) memories** from recall. Investigate what actually consumes
+   `confidence` (digest, `fetch-memories`, recall) and decide whether to (a)
+   stop using `confidence` as a value proxy, (b) rename/split the field
+   (value vs verification), or (c) document the semantics loudly. Connects to
+   item 9 / §8 and P6. No-API diagnostic first.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.

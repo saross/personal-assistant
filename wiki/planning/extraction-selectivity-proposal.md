@@ -1,6 +1,65 @@
 # Extraction selectivity proposal (write-path plan item 14 / P3)
 
-**Status:** PROPOSAL — awaiting Shawn's sign-off. **No change has been made to
+**Status:** ~~PROPOSAL — awaiting sign-off~~ → **REFUTED BY VALIDATION
+2026-06-05** (see "Validation outcome" below). **No change was ever made to the
+live extraction hook.** §§1–7 are preserved as the audit trail of how we got
+here; they are **superseded** by the validation section.
+
+---
+
+## Validation outcome (2026-06-05) — proposal substantially REFUTED; do not ship
+
+A **$1.17** Haiku spot-check (`scripts/extraction-prompt-spotcheck.py`, 50 paired
+real windows; report `reports/extraction-spotcheck-20260605T075449Z.json`) plus
+a source check of the confidence pipeline refuted the two main levers:
+
+1. **Lever 1 (prompt) is empirically weak.** New-vs-old prompt, paired on 50 real
+   windows on Haiku 4.5: per-run median **5→4**, total **201→178 = 11.4 %
+   reduction** (target was ~3×). The zero-floor **backfired** — the empty-window
+   rate went **14→11** (the wrong way), with 6 windows flipping old=0→new≥5.
+   Per-window swings of **−7..+9** show extraction's run-to-run **stochasticity
+   dominates** a single-shot comparison. The drafted prompt does not do what we
+   intended.
+2. **Lever 2 (sideline `confidence=low`) is INVALID — `confidence` is not a value
+   signal.** Verified at source: the hook **overrides** Haiku's self-rating with
+   `anchor_verify.bind_confidence(verified)` (`hooks/extraction-hook.py:1073`;
+   rubric `anchor_verify.py:493–494`: `verified ∈ {false, None} → low`). Only
+   ~6 % of memories carry anchors, so `verified=None` (no anchor) dominates ⇒
+   **`low` ≈ "no verified anchor", NOT low value.** This is why the low rate
+   step-changed **0 % (Feb–Apr, pre-v2) → 51 % (May) → 81 % (June)** — it tracks
+   the v2 anchor/verify rollout, not quality. Sidelining `low` would hide
+   **63–79 % of recent memories**, most valuable-but-unanchored. The proposal's
+   central premise ("Haiku self-flags the low-value tail as `low`") was
+   backwards; the qualitative "low looks ephemeral" read was confirmation bias.
+   (The earlier "clean 19 % trim" used the stale all-time rate; go-forward it is
+   63–79 %.)
+3. **Lever 3 (per-run cap ~10)** survives but is marginal — per-run max is ~8–12,
+   so it would rarely fire.
+
+**Reframe.** Session volume (median 33) = **runs-per-session (median 10, max
+152) × per-run (3–5)**. The prompt only touches per-run (already modest);
+*nothing here touches the runs-per-session multiplier*, which is the real driver.
+The high-leverage levers are elsewhere: **(a)** fire extraction less often /
+batch more messages per run; **(b)** cross-run / write-time dedup; **(c)** accept
+extraction volume and rely on the already-built archival cadence (P2) +
+byte-budgeted digest to manage corpus growth.
+
+**Latent issue surfaced (own item — logged as P9):** `confidence` is
+**overloaded** — post-v2 it means *verification status*, but the digest / recall
+/ health-report may read it as *value*. If recall down-weights or filters `low`,
+it is systematically suppressing *unanchored* memories (the bulk of the corpus) —
+probably wrong. Needs its own investigation.
+
+**Recommendation: do NOT ship any lever.** P3 as scoped is refuted. Rework toward
+runs-per-session / dedup, or deprioritise (archival already manages growth). The
+$1.17 spot-check earned its cost: it caught a weak lever and a wrong premise
+before any live change.
+
+---
+
+*(Original proposal preserved below as audit trail — superseded by the above.)*
+
+**Status (original):** PROPOSAL — awaiting Shawn's sign-off. **No change has been made to
 the live extraction hook.** This documents the diagnostic and the options; the
 hook (`hooks/extraction-hook.py`) is live behaviour affecting *every* session,
 so it gets the item-13 treatment: design → sign-off → gated change → measure.
