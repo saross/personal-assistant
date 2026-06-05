@@ -55,6 +55,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from project_id import encode_project_id  # noqa: E402
 import digest as digest_selector  # noqa: E402  (pure Vector 2 selector)
+import surfacing_log  # noqa: E402  (item 16 earned-utility instrumentation)
 
 # ============================================================================
 # Configuration
@@ -1252,6 +1253,12 @@ def build_session_digest(
     except OSError as exc:  # best-effort instrumentation; never fail the hook
         print(f"[retrieval] WARN: could not write {DIGEST_LOG}: {exc}",
               file=sys.stderr)
+    # Item 16 (earned-utility, Stage 1): record which memories this digest
+    # surfaced, for the offline value-signal aggregator. Pure additive
+    # side-write — it does not touch the digest text or digest.log, so the
+    # §8 measurement (digest bytes) is unaffected. ``log_surfaced`` is
+    # best-effort and never raises.
+    surfacing_log.log_surfaced(result.entries, "digest", now=now)
     return result.text
 
 

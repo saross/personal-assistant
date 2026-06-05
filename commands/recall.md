@@ -126,6 +126,31 @@ This is best-effort instrumentation: it never alters the recall output
 and silently no-ops on failure. Keep doing it until the 2026-06-13 review
 decides whether to retire the apparatus.
 
+## Instrumentation — log which memories were surfaced (earned-utility, item 16)
+
+Separately from the count above, log the **IDs** of the memories you
+actually returned, so the earned-utility value signal (item 16, Stage 1 —
+`wiki/planning/earned-utility-value-signal-proposal.md`) can track which
+memories earn their keep. `/recall` is the strongest-intent surfacing
+path, so its IDs matter most. **After serving a `/recall` that returned
+one or more memories, run this once** (skip it for the bare statistics
+view and zero-match cases — there are no IDs to log):
+
+```bash
+python3 ~/personal-assistant/scripts/surfacing_log.py \
+  --path recall --ids "<the memory IDs you just returned, space-separated>"
+```
+
+- `--ids` — the IDs of the memories actually shown (e.g.
+  `2026-06-05-ab12cd34 2026-06-04-ef56ab78`), in the order returned.
+  These are Shawn's own record IDs, **never the search text** (privacy).
+- Comma separators are also accepted; whitespace is fine.
+
+Best-effort and read-only with respect to the corpus: it appends to
+`data/logs/surfaced.log` and never alters the recall output. Unlike the
+§8 count log above, this has **no review deadline** — it accrues forward
+until the Stage-2 consumption design (proposal §5–§6) is built.
+
 ## Examples
 
 ```text

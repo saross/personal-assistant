@@ -31,6 +31,7 @@ from typing import Any
 # Schema-version guard (audit IC5 / B-X1).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+import surfacing_log  # noqa: E402  (item 16 earned-utility instrumentation)
 
 # ============================================================================
 # Configuration
@@ -838,6 +839,12 @@ def _log_invocation(args: argparse.Namespace, results: Any) -> None:
             fh.write(line)
     except Exception:  # noqa: BLE001 — instrumentation must never raise
         pass
+    # Item 16 (earned-utility, Stage 1): log which memories this autonomous
+    # fetch returned, tagged path=fetch (active retrieval — weighted above
+    # passive digest exposure by the aggregator). Best-effort; never raises.
+    surfacing_log.log_surfaced(
+        results if isinstance(results, list) else None, "fetch"
+    )
 
 
 if __name__ == "__main__":

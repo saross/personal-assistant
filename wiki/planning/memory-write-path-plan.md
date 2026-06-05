@@ -183,8 +183,25 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     (NOT a record field — P8 makes it invisible to the PG readers + rewrites the
     hot corpus). **Staged:** Stage 1 = instrument now (forward-only, no-API, no
     consumption, starts the accrual clock); Stage 2 = wire the stay-of-execution
-    once months of data exist. Four open calls for Shawn in the proposal §7;
-    nothing built. No-API.
+    once months of data exist. Four open calls for Shawn in the proposal §7.
+    **✅ STAGE 1 BUILT + SHIPPED 2026-06-06** (forward-only instrumentation, no
+    consumption, no-API). New `scripts/surfacing_log.py` (per-ID logger: pure
+    formatter + best-effort writer + `--ids` CLI; appends one line per surfaced
+    ID to `data/logs/surfaced.log`, tagged `path=digest|fetch|recall`; gitignored
+    runtime log) + `scripts/surfacing_stats.py` (read-only aggregator: per-memory
+    `active_retrievals`/`digest_exposures`/`last_active_at`, weights active ≫
+    passive, importable `aggregate_surfacing()` for later health-report folding).
+    Wired at all three sites: the digest in `build_session_digest`
+    (`session-start-retrieval.py`, additive best-effort side-write — digest text
+    + digest.log untouched, §8 measurement unaffected), the autonomous fetch in
+    `_log_invocation` (`fetch-memories.py`, `path=fetch`), and `/recall` via a
+    sibling step in `recall.md` (the §8 count-logger `log-recall.py` left
+    untouched). **+26 tests, suite 1050 (0 regressions).** Live-verified: hook
+    imports cleanly, a real fetch wrote 3 `path=fetch` lines, aggregator read
+    them. Reserved the `session` column (always `-` for now — fetch/recall have
+    no session id, the digest fires once/session). **Stage 2 (the
+    stay-of-execution archival override) still deferred until months of data
+    accrue.**
 17. **Confidence-field hygiene** — use the `confidence` field or drop it.
 18. ✅ **Memory-health standing report — REPORT ENGINE BUILT 2026-06-04**
     (`scripts/memory-health-report.py`, read-only, +14 tests, suite 1019;
