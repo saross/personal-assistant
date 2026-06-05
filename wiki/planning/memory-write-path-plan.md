@@ -163,6 +163,28 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
     never-surfaced-in-N-months → archival candidate.
+    **✅ SCOPING/DESIGN DONE 2026-06-05** (P9 (b);
+    `wiki/planning/earned-utility-value-signal-proposal.md`). Re-derived at
+    source: all three surfacing logs (`digest.log`, `fetch-memories.log` via
+    `_log_invocation`/`log-recall.py`) record **counts, not memory IDs** — the
+    surfaced dicts are in hand at every log site but only `len(...)` is written,
+    so item 16 is blocked on a per-ID capture that does not yet exist (no
+    `surfaced_count` field on records either; grep = 0). **Three honest
+    constraints:** (i) the signal is earned *retrieval*, a proxy, not earned
+    *use*; (ii) passive digest surfacing (verified-true pool only, `digest.py:577`
+    → re-derives the anchor signal) must be weighted far below active
+    fetch/recall; (iii) the plan's "never surfaced → archive" framing is the
+    P3/P9 trap inverted — the digest structurally can't surface the unanchored
+    94 %, and the active logs are near-empty (6 fetch lines), so absence has
+    zero discriminating power. **Design: invert the polarity — presence
+    *protects*, absence never *condemns*.** Earned (active) retrieval buys a
+    record a **stay-of-execution** from the item-13 archival sweep, never an
+    eviction. Architecture: an append-only `surfaced.log` + offline aggregation
+    (NOT a record field — P8 makes it invisible to the PG readers + rewrites the
+    hot corpus). **Staged:** Stage 1 = instrument now (forward-only, no-API, no
+    consumption, starts the accrual clock); Stage 2 = wire the stay-of-execution
+    once months of data exist. Four open calls for Shawn in the proposal §7;
+    nothing built. No-API.
 17. **Confidence-field hygiene** — use the `confidence` field or drop it.
 18. ✅ **Memory-health standing report — REPORT ENGINE BUILT 2026-06-04**
     (`scripts/memory-health-report.py`, read-only, +14 tests, suite 1019;
@@ -540,8 +562,17 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    `memory_mcp.py` still returns raw `confidence` in its JSON envelope (a
    structured API, not a display; renaming would break the shape — left; could
    add `verified` alongside later). **Stored `confidence` field untouched**
-   (dropping it from the schema is a bigger change — deferred). **(b)/(c) still
-   open:** earned-utility value signal (item 16); anchor coverage (item 6). No-API.
+   (dropping it from the schema is a bigger change — deferred). **(b) SCOPED
+   2026-06-05** — earned-utility value signal (item 16):
+   `wiki/planning/earned-utility-value-signal-proposal.md`. Core findings: the
+   three surfacing logs record counts not IDs (item 16 blocked on a per-ID
+   capture); separate active retrieval from passive digest exposure; **invert
+   the plan's framing — presence protects, absence never condemns** (a
+   stay-of-execution on the item-13 sweep, not "never surfaced → archive", which
+   is the P3/P9 trap inverted); append-only `surfaced.log` + offline aggregation
+   (not a record field — P8). Staged: instrument now (forward-only) → consume
+   once data accrues. Awaiting Shawn (4 open calls, §7). **(c) still open:**
+   anchor coverage (item 6, the binding constraint). No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.
