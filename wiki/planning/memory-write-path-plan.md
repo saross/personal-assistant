@@ -350,16 +350,23 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    volume problem, not terse junk (content median 286 chars). `decision` is
    27 % of recent output (~60/day); **Haiku already self-flags the low-value
    tail `confidence: low` (19 %)** but that signal is discarded. Proposal
-   (`wiki/planning/extraction-selectivity-proposal.md`): **(1)** strengthen the
-   prompt — prescriptive ~10 cap + sharper value bar + sharper `decision` def
-   — as the primary *at-source* lever (Haiku picks; effect API-gated to
-   validate, or observe forward via P6); **(2)** a no-API confidence-aware
-   persistence gate (drop `low` minus an anchor/self-correction carve-out;
-   cuts ~19 %, simulated); **(3)** a HIGH backstop cap (~30–40) for runaway
-   sessions only. **Rejected the blunt low cap** (simulated top-12 drops 81 %,
-   87 % of it permanent-category — it destroys durable signal from dense
-   research days). **Implementation no-API; the prompt validation is
-   API-gated** (Haiku re-run on a sample → needs cost approval).
+   (`wiki/planning/extraction-selectivity-proposal.md`, rev. 2026-06-05):
+   **(1)** strengthen the prompt — prescriptive ~10 cap + sharper value bar +
+   sharper `decision` def — as the primary *at-source* lever (Haiku picks;
+   effect API-gated to validate, or observe forward via P6); **(2)** a no-API
+   confidence-aware **sideline (NOT delete)** — exclude `confidence='low'` from
+   the `active_memories` view (kills recall/digest noise) + an archival
+   criterion to cold-store it (reclaims JSONL/embedding); fully reversible;
+   **(3)** a HIGH backstop cap (~30–40) for runaway sessions only. **Rejected:
+   the blunt low cap** (top-12 drops 81 %, 87 % permanent-category) **and a
+   write-time hard-delete of `low`** — measured the bucket: carve-outs barely
+   fire (8 % anchored; `superseded_by`=0) and 62 % of `low` is
+   permanent-category with 2,400 carrying `why`/`how_to_apply`, so a one-way
+   delete on a noisy signal is too risky; sideline gives the same hot-path win,
+   reversibly. **Implementation no-API; prompt validation API-gated.**
+   **Open for sign-off (proposal §6):** target number + backstop cap; API
+   spot-check vs ship-and-observe (provisional: spot-check); all-three-together
+   vs stage (provisional: together).
 4. **P4 — item 3: neutralise dead fixed-payload weight — ✅ MOSTLY DONE
    2026-06-02.** `MEMORY.md` (harness auto-memory) neutralised 589→262 B/session
    (reversible; backup kept; content also in JSONL). CLAUDE.md redundancy

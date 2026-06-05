@@ -5,7 +5,10 @@ the live extraction hook.** This documents the diagnostic and the options; the
 hook (`hooks/extraction-hook.py`) is live behaviour affecting *every* session,
 so it gets the item-13 treatment: design → sign-off → gated change → measure.
 
-**Date:** 2026-06-04. **Author:** workstream-B (PA, memory-system).
+**Date:** 2026-06-04; **rev. 2026-06-05** — Lever 2 reworked from a write-time
+hard-drop to **sideline-not-delete** after measuring the `low` bucket's
+false-positive risk (carve-outs barely fire; 62 % of `low` is
+permanent-category). **Author:** workstream-B (PA, memory-system).
 
 All figures below are re-derivable at source from `data/memories/memories.jsonl`
 (filter `source=extraction`) and are point-in-time (the corpus grows
@@ -46,13 +49,16 @@ micro-decisions and plans miscategorised as durable choices:
 - *"Slot 1 rotation: Adela paper + deck tomorrow morning…"* (ephemeral scheduling)
 - *"Plan to use explore agents to summarise BolgiaTen's proposed development…"* (a plan)
 
-**The key signal: Haiku already flags the low-value tail itself.** Of 12
-sampled recent `decision` memories, **8 were `confidence: low`**. Corpus-wide,
-extraction confidence is **high 75 % / low 19 % / medium 6 %** — and the
-low-confidence bucket is demonstrably the ephemeral/procedural/micro tail. That
-signal is currently **discarded**: the prompt declares confidence *"advisory;
-downstream verification overrides"* (`:168`), and nothing gates on it, so every
-in-category memory is persisted regardless.
+**The key signal: Haiku flags a lower-value tail itself.** Of 12 sampled recent
+`decision` memories, **8 were `confidence: low`**, and those samples were
+ephemeral/procedural. Corpus-wide, extraction confidence is **high 75 % / low
+19 % / medium 6 %**. That signal is currently **discarded**: the prompt declares
+confidence *"advisory; downstream verification overrides"* (`:168`), and nothing
+gates on it, so every in-category memory is persisted regardless. **Caveat,
+measured (see Lever 2): the `low` bucket is *mixed*, not pure junk** — 62 % is
+permanent-category and 2,400 records carry `why`/`how_to_apply` guidance fields.
+This is exactly why Lever 2 *sidelines* `low` (reversible) rather than deleting
+it.
 
 ## 2. Root cause
 
@@ -65,11 +71,11 @@ in-category memory is persisted regardless.
 
 ## 3. Levers (and what each would drop, simulated over the existing corpus)
 
-Two of the three levers are **deterministic post-processing** and can be
-validated *now*, no API, by replaying the gate over the 22,347 existing
-extraction records. The third (the prompt) changes what Haiku generates and can
-only be measured by re-running extraction (API-gated) or observed forward via
-the P6 health report.
+Two of the three levers are **deterministic and no-API** (a view-predicate
+sideline + a session cap) and can be validated *now* by replaying them over the
+22,347 existing extraction records. The third (the prompt) changes what Haiku
+generates and can only be measured by re-running extraction (API-gated) or
+observed forward via the P6 health report.
 
 | Policy (simulated) | Keeps | Drops | Of dropped, permanent-category |
 |---|---|---|---|
@@ -79,8 +85,9 @@ the P6 health report.
 | D. Drop low + cap-12 | 18 % | 82 % | 87 % |
 | E. Drop low + cap-20 | 27 % | 73 % | 86 % |
 
-**Reading the table:** the confidence gate (A) is precise and low-risk — it
-removes the tail Haiku itself flagged. The blunt caps (B–E) are enormous but
+**Reading the table:** the confidence gate (A) identifies a well-targeted
+19 % — the tail Haiku itself flagged — but *how we act on it matters* (see
+Lever 2: sideline, not delete). The blunt caps (B–E) are enormous but
 **dangerous**: they drop by rank, so 87 % of what they cut is permanent-category
 (`decision`, `architecture`, `source_insight`, `methodology`), and a
 legitimately dense analysis session would lose genuinely-durable memories. The
@@ -105,13 +112,64 @@ This is the true *"fewer, higher-value at source"* lever — Haiku chooses which
 (API-gated)**; alternatively ship it and watch the P6 health report's volume +
 confidence mix move over the next weeks (forward observation, no API).
 
-### Lever 2 (SECONDARY, no-API) — confidence-aware persistence gate
+### Lever 2 (SECONDARY, no-API) — confidence-aware **sidelining** (not deletion)
 
-Don't persist `confidence: low` **unless** the memory carries a verifying
-anchor (`anchors` non-empty and well-formed) or is a flagged self-correction.
-The anchor/self-correction carve-out protects the v2 case where `low` is
-deliberately assigned to a structurally-valuable corrected claim (`:217–227`).
-Cuts ~19 %, well-targeted, deterministic, validatable now.
+**Decided 2026-06-05: sideline, do not hard-delete.** Use the `confidence: low`
+signal, but act on it *reversibly*. Earlier this section proposed a write-time
+hard-drop ("don't persist `low` unless anchored / self-corrected"). Measuring
+the bucket killed that idea — a write-time drop is a **one-way door** on a
+noisy signal, and the carve-outs that were meant to make it safe barely fire:
+
+- **The carve-outs are mostly inert.** Only **8 %** of `low` memories carry a
+  usable anchor (so the anchor carve-out spares almost nothing), and the
+  self-correction carve-out is **not implementable as written** — `superseded_by`
+  is populated **0** times and no field marks "the deliberately-kept-low original
+  of a correction" (`revisions` is the audit field, populated on 219 records of
+  all confidences, not a self-correction flag). So "drop `low` minus carve-outs"
+  was, in practice, "drop ~92 % of `low`".
+- **The `low` bucket is not cleanly junk.** Of 4,238 `low` memories, **62 %
+  (2,634) are permanent-category** (decision 1,099, gotcha 441, pattern 324,
+  architecture 214, source_insight 105…), and **2,400 of those carry
+  `why`/`how_to_apply`** guidance fields with 1,822 ≥ 250 chars. A structured
+  guidance memory Haiku merely *hedged* to `low` is not obviously low-value, and
+  we cannot cheaply separate valuable-`low` from junk-`low` at write time.
+- **A delete is self-blinding** — once dropped we cannot audit whether the
+  filter was right.
+
+**The policy — sideline, fully reversible, reuses existing machinery:**
+
+1. **Write `low` memories as normal** (nothing is lost at write time).
+2. **Exclude `confidence = 'low'` from the `active_memories` view** (a one-line
+   predicate, `AND confidence IS DISTINCT FROM 'low'`) → it stops surfacing in
+   `/recall` and the session-start digest. This kills the costs that bite most
+   immediately: recall noise and digest competition. (NB: this is a view change,
+   so it carries a `schema_version` bump + the DDL in `schema.sql`.)
+3. **To also reclaim JSONL size / embedding compute**, extend the archival
+   criterion (`scripts/archive-memories.py` / `monthly-archive.py`) to treat
+   `confidence = 'low'` as archival-eligible **independently of category decay**
+   — the current sweep keys on the category decay window only, so a fresh
+   permanent-category `low` record would otherwise stay in the hot JSONL (just
+   hidden from recall). With that small addition the monthly sweep cold-stores
+   sidelined `low`, still queryable via `fetch-memories.py --include-archive`.
+   *If we only do step 2, recall/digest go quiet but the hot file keeps the
+   hidden records — fine as a first cut; step 3 is the size win.*
+
+Net: ~100 % of the hot-path benefit of a delete, ~0 % of the irreversibility.
+If the `low`-filter ever proves too aggressive, the records are still there
+(in-corpus after step 2, in cold store after step 3). Deterministic, no-API.
+
+**Route to a true delete, if still wanted later (the one-way door, gated):**
+run the filter in **log-only dry-run** for ~2–4 weeks — log what it *would*
+delete to a side file, review a sample to confirm the false-positive rate is
+acceptably low — *then* flip to deletion. Do not delete on the uncalibrated
+self-report sight-unseen. Sidelining makes this optional rather than urgent.
+
+**Caveat (carve-out, revised):** since the anchor carve-out only touches 8 %
+and the self-correction carve-out is not yet implementable, the simplest first
+cut sidelines **all** `confidence = 'low'`. If we want to *keep* anchored-`low`
+in the active set (they are self-verifying), that is a one-line predicate
+addition; the self-correction carve-out needs a real marker field added to the
+prompt/schema first (separate, small piece of work — not a blocker).
 
 ### Lever 3 (BACKSTOP, no-API) — a HIGH per-session cap
 
@@ -124,21 +182,26 @@ control.
 
 1. **Lever 1 (prompt)** as the primary fix — the only lever that improves value
    *at source* rather than truncating after the fact.
-2. **Lever 2 (confidence gate with anchor/self-correction carve-out)** as a
-   deterministic backstop — clean 19 %, low risk, measurable now.
+2. **Lever 2 (confidence-aware *sidelining*)** — exclude `confidence = 'low'`
+   from `active_memories`/recall/digest; the P2 sweep cold-stores it. Reversible,
+   no-API, ~19 % off the hot path. **Not** a hard-delete (the bucket is 62 %
+   permanent-category and the carve-outs barely fire — see Lever 2).
 3. **Lever 3 (high backstop cap, ~30–40)** for runaway sessions only.
 4. **Reject the blunt low cap (B–E).** Volume ≠ worthlessness-of-the-tail.
 
 Combined expected effect: prompt does the heavy lifting (target ~10/session ⇒
-roughly a 3–4× reduction if Haiku complies), confidence gate + high cap catch
-what slips through. Conservative, reversible, and it keeps the value judgment
-where the semantics are.
+roughly a 3–4× reduction if Haiku complies), sidelining + high cap catch what
+slips through. Conservative, **reversible at every step**, and it keeps the
+value judgment where the semantics are.
 
 ## 5. Validation plan
 
-- **Lever 2 + 3 (deterministic):** replay over the existing corpus (done — §3
-  table). On implementation, add unit tests for the gate/cap logic and a
-  dry-run mode that reports what *would* be dropped on the next session.
+- **Lever 2 (sideline) + 3 (cap) — deterministic, no-API:** replay over the
+  existing corpus (done — §3 table). On implementation, add unit tests for the
+  view-predicate + cap logic. Sidelining is **reversible by construction** (the
+  records stay in the corpus / cold store), so it needs no dry-run gate — a
+  wrong filter is undone by reverting the predicate. The dry-run gate is
+  reserved for the *optional later* true-delete (Lever 2's one-way door).
 - **Lever 1 (prompt) — API-GATED.** Empirical validation = re-run extraction on
   a sample of ~10–20 recent transcripts with the revised prompt and compare
   volume + a manual value spot-check of kept-vs-dropped. This needs Haiku calls:
@@ -149,14 +212,19 @@ where the semantics are.
 
 ## 6. Open judgment calls for Shawn
 
-1. **Confidence gate — drop, or downgrade-and-keep?** Hard-drop `low` (minus
-   carve-outs), or keep but exclude from the session-start digest / recall
-   default? Hard-drop is simpler and the corpus-bloat lever; keep-but-hide is
-   more conservative.
+1. ✅ **Confidence gate — RESOLVED 2026-06-05: sideline, not delete** (Lever 2).
+   Sub-question still open: sideline **all** `low`, or keep anchored-`low` (8 %)
+   in the active set? Default = sideline all (simplest); the anchored carve-out
+   is a one-line add if wanted.
 2. **The target number** in the prompt (~10?) and the **backstop cap** (~30–40?).
-3. **Validation appetite:** pay for the API spot-check of the prompt change, or
-   ship-and-observe via P6?
-4. **Scope:** prompt + gate now; or stage (gate first as no-API, prompt later)?
+3. **Validation appetite (provisional lean: pay for an API spot-check):** re-run
+   extraction on ~10–20 transcripts (old vs new prompt) — I present
+   model/count/cost for approval first — or ship-and-observe via P6 (no API).
+4. **Scope (provisional lean: do all three together):** prompt + sideline + cap
+   in one change, or stage (the no-API sideline + cap first, prompt after).
+   Note: doing the prompt and the sideline together means the P6 health report
+   can't cleanly attribute the volume drop between them — the API spot-check
+   (decision 3) is the clean attribution if that matters to you.
 
 ## 7. What was NOT done (the gate)
 
