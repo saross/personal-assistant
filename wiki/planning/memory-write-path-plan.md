@@ -493,21 +493,46 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    corrections (`d2befeae` update, `52451aba` forget) were **PG-reconciled by
    hand on this machine** (verified: `52451aba` now 0 in `active_memories`).
    No-API.
-9. **P9 — `confidence` is overloaded: verification status, not value (surfaced
-   2026-06-05, by the P3 spot-check).** Since v2 (`2026-05-16`) the extraction
-   hook overwrites Haiku's self-rated confidence with
-   `anchor_verify.bind_confidence(verified)` — `verified∈{false,None}→low`,
-   `pending→medium`, `true→high`. With only ~6 % of memories anchored,
-   **`confidence=low` overwhelmingly means "no verified anchor"**, not "low
-   value" (recent low rate 63–79 %, vs 0 % pre-v2). Risk: any consumer that
-   treats `low` as low-value — recall ranking, the session digest, the P6
-   health report's "verified breakdown / confidence" lines — is really keying
-   on *anchor presence*, so it may be **systematically suppressing unanchored
-   (but valuable) memories** from recall. Investigate what actually consumes
-   `confidence` (digest, `fetch-memories`, recall) and decide whether to (a)
-   stop using `confidence` as a value proxy, (b) rename/split the field
-   (value vs verification), or (c) document the semantics loudly. Connects to
-   item 9 / §8 and P6. No-API diagnostic first.
+9. **P9 — `confidence` is overloaded (verification, not value) — ✅ INVESTIGATED
+   2026-06-05; no acute bug, but the field is incoherent + mislabelled.** Since
+   v2 (`2026-05-16`) the hook overwrites Haiku's self-rating with
+   `bind_confidence(verified)` (`verified∈{false,None}→low`, `pending→medium`,
+   `true→high`); only ~5–6 % are anchored, so `low` ≈ "no verified anchor".
+   **Consumer audit (the worry — does any recall path treat `low` as low-value
+   and suppress unanchored memories?): NO.** All consumers verified read-only:
+   - **digest.py** ranks by `verified` + tag-overlap + recency, *explicitly
+     never* `confidence` (`:17–18`); fallback even *prefers* anchored
+     (`has_anchors`, `:246–253`). Confidence unused.
+   - **fetch-memories.py** queries `active_memories` (is_active + decay, no
+     confidence clause), filters category/tag, orders by recency / embedding
+     similarity; `confidence` is **display-only** (`:662,676`).
+   - **/recall** filters `is_active=TRUE` + category/tag; `confidence`
+     display-only (`recall.md:47,68`).
+   - **active_memories view**: is_active + decay; no confidence predicate.
+   So the v2 designers already knew confidence ≠ value. **Real residuals
+   surfaced instead:** (a) **`confidence` is temporally incoherent** — of 18,023
+   active `high`, only 1,207 are `verified=true`, so ~16,800 `high` are *pre-v2
+   Haiku self-ratings* (uninformative — 93 % high incl. confabulations), while
+   post-v2 `high`=verified-echo; same field, two meanings (a 2nd code path at
+   `extraction-hook.py:~1084` also appends raw-Haiku confidence without
+   binding). (b) **It's mislabelled in display** — `/recall`/`fetch-memories`
+   show "Confidence: low" where a human/LLM reads "low value" but it means
+   "unanchored". (c) **The whole verification apparatus is anchor-gated** — the
+   digest surfaces from the ~5 % `verified=true` pool (1,207, enough to fill the
+   byte-budgeted digest) + anchored-preferred fallback, so it **deliberately
+   favours the anchored 5 %** (anti-confab) and the unanchored 93 % rarely reach
+   the digest — by design, via `verified`, not a confidence bug.
+   **Design recommendation (for the "separate value from anchored?" question):**
+   the fields are *already* separate (`confidence` / `verified` / `anchors`);
+   the mess is that `confidence` became a redundant verification-echo and is
+   shown as if it were value. **(1)** Relabel/drop `confidence` in recall
+   displays (don't let it read as value) — cheap. **(2)** A *true* value signal
+   can't come from LLM self-rating (v2 abandoned it for exactly this reason); the
+   principled source is **earned utility — item 16 (track what actually gets
+   surfaced/used)**, orthogonal to "anchored". **(3)** The bigger lever is
+   **anchor coverage** (~5–6 %): the digest surfaces from a 5 % pool, so raising
+   coverage (forward-anchoring / item 6) does more than any confidence reform.
+   No code changed — design decision pending Shawn. No-API.
 
 **Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
 10 (identifier-welding), 8 (drift-sweep job), 17, 19.

@@ -2088,6 +2088,15 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-05 (Fri, latest PA) — P9 investigated: no consumer treats `confidence` as value (good); but the field is incoherent + mislabelled, and the digest favours the anchored 5%
+
+Per Shawn's "P9 first, then see what we learn" + his open question (should a *value* metric be split from an *anchored*/verification one?). Read-only audit of every `confidence` consumer.
+
+- **The worry is unfounded — no recall path treats `confidence=low` as low-value.** `digest.py` ranks by `verified` + tag-overlap + recency, *explicitly never* confidence (`:17–18`; fallback even prefers anchored, `:246–253`). `fetch-memories.py` queries `active_memories` (is_active+decay, no confidence clause), orders by recency / embedding similarity, `confidence` display-only. `/recall` filters `is_active=TRUE`+category/tag, display-only. The v2 designers already knew confidence ≠ value. **No acute bug.**
+- **But the investigation surfaced three real residuals.** (a) **`confidence` is temporally incoherent:** of 18,023 active `high`, only 1,207 are `verified=true` → ~16,800 `high` are *pre-v2 Haiku self-ratings* (uninformative — 93 % high incl. confabulations); post-v2 `high` = verification echo. Same field, two meanings. (b) **Mislabelled in display:** `/recall`/`fetch-memories` print "Confidence: low" where a reader infers "low value" but it means "unanchored". (c) **The verification apparatus is anchor-gated:** the digest surfaces from the ~5 % `verified=true` pool (1,207, enough to fill the tiny digest) + anchored-preferred fallback — so it **deliberately favours the anchored 5 %**, and the unanchored 93 % rarely reach the digest (by design, via `verified`, not a confidence bug).
+- **On Shawn's design question (separate value from anchored?):** the fields are *already* separate (`confidence`/`verified`/`anchors`); the mess is `confidence` became a redundant verification-echo shown as if it were value. Recommendation: **(1)** relabel/drop `confidence` in recall displays (cheap); **(2)** a *true* value signal can't come from LLM self-rating (v2 abandoned it for that reason) — the principled source is **earned utility (item 16: track what's actually surfaced/used)**, orthogonal to "anchored"; **(3)** the bigger lever is **anchor coverage** (~5–6 %) — the digest draws from a 5 % pool, so raising coverage beats any confidence reform.
+- **No code changed** — investigation + design rec only; decision pending Shawn. Logged into plan P9. No-API.
+
 ### 2026-06-05 (Fri, latest PA) — P3 spot-check REFUTES the proposal: prompt lever weak + `confidence` is a verification artifact, not value. P3 needs rework; P9 logged
 
 Built + ran the green-lit Haiku spot-check (`scripts/extraction-prompt-spotcheck.py`, **50 paired real windows, 100 calls, ~$1.17, 0 failures**; report `reports/extraction-spotcheck-20260605T075449Z.json`). It earned its cost by returning a clear **negative** result and surfacing a wrong premise — both caught *before any live change*.
