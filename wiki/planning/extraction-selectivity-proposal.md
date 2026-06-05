@@ -5,10 +5,15 @@ the live extraction hook.** This documents the diagnostic and the options; the
 hook (`hooks/extraction-hook.py`) is live behaviour affecting *every* session,
 so it gets the item-13 treatment: design → sign-off → gated change → measure.
 
-**Date:** 2026-06-04; **rev. 2026-06-05** — Lever 2 reworked from a write-time
+**Date:** 2026-06-04; **rev. 2026-06-05a** — Lever 2 reworked from a write-time
 hard-drop to **sideline-not-delete** after measuring the `low` bucket's
 false-positive risk (carve-outs barely fire; 62 % of `low` is
-permanent-category). **Author:** workstream-B (PA, memory-system).
+permanent-category); **rev. 2026-06-05b** — Levers 1 & 3 reframed after the
+per-run analysis: per-window extraction is *already* restrained (median 3/run),
+so the multiplier is **runs-per-session**, not per-window greed — the prompt
+lever becomes a **per-window zero-floor + value bar** (not a session count), and
+the backstop becomes a **per-run cap (~10)**, not a per-session 30–40.
+**Author:** workstream-B (PA, memory-system).
 
 All figures below are re-derivable at source from `data/memories/memories.jsonl`
 (filter `source=extraction`) and are point-in-time (the corpus grows
@@ -36,6 +41,25 @@ This is a **volume** problem, not a terse-junk problem: content length is
 healthy (median 286 chars; only 9 % under 200 chars). The hook produces
 reasonably-sized memories — just 4–7× too many of them.
 
+**Where the volume comes from (the key reframe, measured 2026-06-05).**
+Extraction does **not** run once per session — it fires **incrementally per
+≤30-message window** (`messages[-30:]`, off `extraction-cursor.json`), so the
+prompt's "2–8 per session" is in fact applied *per window*. Decomposing the
+33/session:
+
+| Level | median | p90 | max |
+|---|---|---|---|
+| memories **per run** (one window) | **3** | 6 | 12 |
+| **runs per session** | **10** | 44 | **152** |
+| memories per session (= product) | 33 | 139 | 378 |
+
+**Per window Haiku is already inside the 2–8 target (median 3).** The 33/session
+is `10 windows × 3` — the multiplier is **runs-per-session**, not per-window
+greed. This kills the idea of a session-level "~10" in the prompt: extraction
+never sees the session, only a window, and already produces a sane ~3 from each.
+The lever is per-window restraint (a *zero-floor* + value bar), not a session
+count — see Lever 1.
+
 **Category mix (recent 30 d):** `decision` 27 %, `progress` 19 %, `gotcha`
 10 %, `commitment` 7 %, `architecture` 6 %, `pattern` 6 %, `context` 5 %.
 `decision` at 27 % = ~60 "decisions"/day — implausibly many genuine durable
@@ -62,8 +86,11 @@ it.
 
 ## 2. Root cause
 
-1. **Soft guidance, no enforcement.** "2–8" is a buried suggestion, not a
-   constraint; long sessions yield memories roughly proportional to content.
+1. **"Per session" is a misnomer + no zero-floor.** The "2–8" target is written
+   "per session" but applied **per ≤30-message window**, and "*typical* 2–8"
+   reads as a floor of ≥2 *every* window — so a session of 10 windows yields
+   ≥20 by construction. Nothing tells Haiku that most windows are worth **zero**
+   memories. The accumulation across runs, not per-window greed, is the volume.
 2. **An existing value signal is unused.** Haiku's own `confidence: low`
    (19 % of output) tracks the low-value tail but is never acted on.
 3. **No post-extraction gate.** Beyond the item-11 malformed-anchor drop, every
@@ -72,10 +99,13 @@ it.
 ## 3. Levers (and what each would drop, simulated over the existing corpus)
 
 Two of the three levers are **deterministic and no-API** (a view-predicate
-sideline + a session cap) and can be validated *now* by replaying them over the
+sideline + a per-run cap) and can be validated *now* by replaying them over the
 22,347 existing extraction records. The third (the prompt) changes what Haiku
 generates and can only be measured by re-running extraction (API-gated) or
-observed forward via the P6 health report.
+observed forward via the P6 health report. (The B–E rows below simulate
+*per-session* caps — shown to demonstrate *why* a low per-session cap is
+rejected, not as the chosen lever; the chosen backstop is the per-run cap in
+Lever 3.)
 
 | Policy (simulated) | Keeps | Drops | Of dropped, permanent-category |
 |---|---|---|---|
@@ -94,23 +124,32 @@ legitimately dense analysis session would lose genuinely-durable memories. The
 cap is the wrong *primary* lever — it confuses "too many" with "the last ones
 are worthless," which is false for a real research-heavy day.
 
-### Lever 1 (PRIMARY) — strengthen the prompt so Haiku extracts fewer, better
+### Lever 1 (PRIMARY) — a per-window **zero-floor + value bar** (not a session count)
 
-Make the cap prescriptive and give Haiku the value judgment (it has the
-semantics; a post-hoc cap does not):
+The reframe (§1) sets the design: per window Haiku already extracts a sane
+median 3, so the lever is **not** "fewer per session" (it never sees the
+session) — it is **letting Haiku return nothing** for the many routine windows,
+plus a sharper value bar. Concretely, change the prompt to:
 
-- *"Extract NO MORE THAN ~10 memories. If more seem worthy, rank by **durable,
-  cross-session** value and keep only the most valuable; DROP the rest."*
-- A sharper bar: *"A status update, a micro-decision, a one-off procedural pick,
+- **Zero-floor (the real change):** *"Most excerpts contain nothing worth
+  persisting for future sessions — return `[]` for those. Never invent memories
+  to fill a quota."* Replaces "*typical* 2–8" (which reads as ≥2 every window).
+- **Relabel:** "per session" → "from this excerpt" (it runs per window).
+- **Value bar:** *"A status update, a micro-decision, a one-off procedural pick,
   or a plan for later today is NOT worth persisting."*
-- Sharpen `decision`: *"an explicit, durable choice with lasting rationale —
+- **Sharpen `decision`:** *"an explicit, durable choice with lasting rationale —
   NOT a plan, a task-management pick, or a one-off procedural choice."*
 - Reinforce the existing self-correction rule.
 
-This is the true *"fewer, higher-value at source"* lever — Haiku chooses which
-~10 survive, by meaning. **Effect is not measurable without re-running Haiku
-(API-gated)**; alternatively ship it and watch the P6 health report's volume +
-confidence mix move over the next weeks (forward observation, no API).
+This is the true *"fewer, higher-value at source"* lever — Haiku makes the
+value call per window, by meaning, and is freed to keep nothing. **Target
+outcome, empirically expressible: drive the per-run median from 3 toward ~1**
+(with many 0s) ⇒ at ~1/run × ~10 runs that is ~10–12/session, roughly a 3×
+reduction — achieved by per-window restraint, **not** a session quota. **How far
+it actually moves is exactly what the API spot-check pins** (re-run the new
+prompt on sample windows, read the new per-run distribution); alternatively ship
+it and watch the P6 report's per-run / volume mix move over the following weeks
+(forward observation, no API).
 
 ### Lever 2 (SECONDARY, no-API) — confidence-aware **sidelining** (not deletion)
 
@@ -171,28 +210,45 @@ in the active set (they are self-verifying), that is a one-line predicate
 addition; the self-correction carve-out needs a real marker field added to the
 prompt/schema first (separate, small piece of work — not a blocker).
 
-### Lever 3 (BACKSTOP, no-API) — a HIGH per-session cap
+### Lever 3 (BACKSTOP, no-API) — a per-**run** cap of ~10
 
-A safety cap at, say, **30–40** to catch pathological runaway sessions (the
-197/378 outliers) without touching normal dense sessions. **Not** a low cap —
-B–E show a low cap destroys durable signal. This is a guardrail, not the volume
-control.
+The reframe also corrects the backstop. A per-**session** cap of 30–40 (my
+first suggestion) is **wrong**: the per-session impact curve shows cap-30
+touches **53 %** of sessions and cuts **59 %** of the corpus, cap-40 → 44 % /
+51 % — that is a *primary* cap, truncating by arrival-order (drops late-session
+content regardless of value), the very durable-signal-loss risk B–E flag. The
+clean backstop instead caps **per run**:
+
+- **Per-run cap ~10** (truncate the returned array). It lives exactly where the
+  "2–8" guidance already does; the max observed per run is 12, so it touches
+  almost nothing today and essentially nothing after Lever 1. A guardrail against
+  a single greedy window, with no temporal arbitrariness. Trivial to implement
+  and test.
+- **Optional session-level catastrophe guard (~150).** Only if we also want to
+  bound the 152-run / 378-memory pathology. ~150 ≈ current p90–p95, touching
+  only the ~8–10 % runaway tail and never a legitimately dense session (needs the
+  hook to count existing session memories). Likely unnecessary once Lever 1 +
+  the per-run cap + sideline are in — P6 will show if session totals stay
+  pathological. **Not** 30–40, which is a primary cap.
 
 ## 4. Recommendation
 
-1. **Lever 1 (prompt)** as the primary fix — the only lever that improves value
-   *at source* rather than truncating after the fact.
+1. **Lever 1 (prompt: per-window zero-floor + value bar)** as the primary fix —
+   the only lever that improves value *at source*. Goal: per-run median 3 → ~1.
 2. **Lever 2 (confidence-aware *sidelining*)** — exclude `confidence = 'low'`
-   from `active_memories`/recall/digest; the P2 sweep cold-stores it. Reversible,
-   no-API, ~19 % off the hot path. **Not** a hard-delete (the bucket is 62 %
-   permanent-category and the carve-outs barely fire — see Lever 2).
-3. **Lever 3 (high backstop cap, ~30–40)** for runaway sessions only.
+   from `active_memories`/recall/digest; extend the archival criterion to
+   cold-store it. Reversible, no-API, ~19 % off the hot path. **Not** a
+   hard-delete (the bucket is 62 % permanent-category and the carve-outs barely
+   fire — see Lever 2).
+3. **Lever 3 (per-run cap ~10)** as the clean guardrail; optional ~150
+   session catastrophe-guard. **Not** a per-session 30–40 (a primary cap that
+   hits ~half of all sessions).
 4. **Reject the blunt low cap (B–E).** Volume ≠ worthlessness-of-the-tail.
 
-Combined expected effect: prompt does the heavy lifting (target ~10/session ⇒
-roughly a 3–4× reduction if Haiku complies), sidelining + high cap catch what
-slips through. Conservative, **reversible at every step**, and it keeps the
-value judgment where the semantics are.
+Combined expected effect: the prompt does the heavy lifting (per-run 3 → ~1 ⇒
+~3× fewer per session if Haiku complies), sidelining takes ~19 % more off the
+hot path, the per-run cap bounds any greedy window. Conservative, **reversible
+at every step**, and it keeps the value judgment where the semantics are.
 
 ## 5. Validation plan
 
@@ -203,12 +259,13 @@ value judgment where the semantics are.
   wrong filter is undone by reverting the predicate. The dry-run gate is
   reserved for the *optional later* true-delete (Lever 2's one-way door).
 - **Lever 1 (prompt) — API-GATED.** Empirical validation = re-run extraction on
-  a sample of ~10–20 recent transcripts with the revised prompt and compare
-  volume + a manual value spot-check of kept-vs-dropped. This needs Haiku calls:
-  **present model (Haiku 4.5), batch/real-time, call count, and est. cost for
-  approval before running** (CLAUDE.md API gate). Cheaper alternative: ship the
-  prompt change and watch the P6 health report forward (no API), accepting a
-  slower feedback loop.
+  a sample of recent ≤30-message **windows** with the revised prompt and read
+  the **new per-run distribution** (does the median go 3 → ~1? how many windows
+  return `[]`?) + a manual value spot-check of kept-vs-dropped. This is the one
+  number current data can't pin. It needs Haiku calls: **present model (Haiku
+  4.5), batch/real-time, call count, and est. cost for approval before running**
+  (CLAUDE.md API gate). Cheaper alternative: ship the prompt change and watch the
+  P6 report's per-run / volume mix forward (no API), accepting a slower loop.
 
 ## 6. Open judgment calls for Shawn
 
@@ -216,7 +273,11 @@ value judgment where the semantics are.
    Sub-question still open: sideline **all** `low`, or keep anchored-`low` (8 %)
    in the active set? Default = sideline all (simplest); the anchored carve-out
    is a one-line add if wanted.
-2. **The target number** in the prompt (~10?) and the **backstop cap** (~30–40?).
+2. ✅ **The numbers — RESOLVED 2026-06-05** (Shawn signed off). No session count
+   in the prompt; instead a per-window **zero-floor + value bar** aiming to move
+   the per-run median 3 → ~1 (Lever 1). Backstop = a **per-run cap ~10** (Lever
+   3), with an optional ~150 session catastrophe-guard; the per-session 30–40 is
+   rejected (it hits ~half of all sessions).
 3. **Validation appetite (provisional lean: pay for an API spot-check):** re-run
    extraction on ~10–20 transcripts (old vs new prompt) — I present
    model/count/cost for approval first — or ship-and-observe via P6 (no API).
