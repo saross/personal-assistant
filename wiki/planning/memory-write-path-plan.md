@@ -156,10 +156,14 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     guard) — the cursor stranded above EOF after the shrink; a reset-to-0 +
     full re-scan reconciled it (and fixed 857 previously-unsynced live records).
 14. **Extraction selectivity tuning** — fewer, higher-value memories at source.
-    **DIAGNOSED + PROPOSAL 2026-06-04** (`wiki/planning/extraction-selectivity-
-    proposal.md`; see §6a item 3). Hook over-extracts ~4–7× (median 33/session
-    vs the prompt's 2–8 target); proposal = prompt fix (primary) + confidence
-    gate + high backstop cap. Awaiting sign-off; no live change made.
+    **❌ CLOSED AS SUPERSEDED & DEPRIORITISED 2026-06-06** (refuted by validation
+    2026-06-05; reviewed + closed with Shawn 2026-06-06). All three levers failed
+    (prompt weak 11.4 %; confidence-gate invalid — `confidence` is a verification
+    echo not value; cap marginal). Closed because the volume's impact is managed
+    downstream (archival P2 + digest Vector 2), P10 made the volume honest, and
+    item 16 (earned utility) is the principled successor. Decision + audit trail:
+    `wiki/planning/extraction-selectivity-proposal.md`; see §6a item 3. No live
+    change ever made.
 15. **Write-time semantic dedup** — embed + compare before insert (API-gated).
 16. **Memory utility/access tracking** — log what gets surfaced/recalled;
     never-surfaced-in-N-months → archival candidate.
@@ -381,8 +385,19 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    suite 996; dry-run from main validated (would archive 47). **Remaining:
    Shawn watches the first `--apply`, then adds the monthly cron line.**
    Doc: `wiki/planning/archival-cadence-2026-06-02.md`. No-API.
-3. **P3 — item 14: extraction selectivity tuning — ❌ PROPOSAL REFUTED BY
-   VALIDATION 2026-06-05 (no live change ever made); needs rework.** A $1.17
+3. **P3 — item 14: extraction selectivity tuning — ❌ REFUTED 2026-06-05 →
+   ✅ CLOSED AS SUPERSEDED & DEPRIORITISED 2026-06-06 (reviewed with Shawn; no
+   live change ever made).** Decision recorded in
+   `extraction-selectivity-proposal.md` ("Decision (2026-06-06)"). Closed because
+   the volume's *impact* is managed downstream (archival P2 + byte-budgeted
+   digest Vector 2 + the digest's anchored-pool bias), **P10's fix made the
+   volume honest** (densest windows no longer truncated to zero), and **item 16
+   (earned utility) is the principled successor to the dead confidence-gate**.
+   Parked, not pursued: cross-run/write-time **dedup (item 15)** — the only
+   reframed lever with real leverage, but API-gated + unbuilt. No further
+   at-source selectivity work planned; revisit only on a concrete problem, via
+   item 15 or item 16, not the refuted P3 levers. Refutation detail retained
+   below for the audit trail. A $1.17
    Haiku spot-check + a confidence-pipeline source check killed the two main
    levers: **(1)** the prompt is empirically weak (paired 50-window run:
    per-run median 5→4, **11.4 % reduction**, zero-floor *backfired* 14→11

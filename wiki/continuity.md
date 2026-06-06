@@ -2088,6 +2088,14 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — P3 (extraction selectivity) CLOSED as superseded & deprioritised (reviewed with Shawn)
+
+Reviewed P3 with Shawn and closed it. P3 was refuted 2026-06-05 (all three levers failed: prompt weak 11.4 %; confidence-gate invalid — `confidence` is a verification echo not value; per-run cap marginal). The review added the decisive context: P3's *concern* is already handled from the other end. **Closed as superseded, no lever shipped.** Recorded in the proposal ("Decision (2026-06-06)"), plan §6a P3 + §5 item 14.
+
+- **Why closed:** (1) the volume's *impact* is managed downstream — archival cadence (P2/item 13) keeps the hot corpus lean, the byte-budgeted digest (Vector 2) caps surfacing, the digest favours the anchored pool; (2) **P10's fix (today) made the volume honest** — the densest windows that were truncated to zero now extract fully, so a "reduce volume" lever would fight a bigger, legitimate number; (3) **item 16 (earned utility, Stage 1 shipped today) is the principled successor to the dead Lever 2** — value comes from what gets used, not from `confidence`.
+- **Parked, not pursued:** cross-run/write-time **dedup (item 15)** — the only reframed lever with real leverage, but embedding-driven (API-gated) + unbuilt, a separate deliberate project. Firing-cadence change considered + rejected (fights P10's truncation lesson). No further at-source selectivity work planned; revisit only on a concrete problem, via item 15 or item 16.
+- **Docs only, no code.** `extraction-selectivity-proposal.md` (status → CLOSED/SUPERSEDED + Decision section), plan §6a P3 + §5 item 14, this entry. Data submodule + `wiki/reflections/*` untouched.
+
 ### 2026-06-06 (Sat, latest PA) — P10 IMPLEMENTED: extraction no longer drops truncated windows (max_tokens 2000→8000 + salvage; +11 tests → suite 1083)
 
 Implemented the P10 fix (a)+(b) in the live extraction hook, per Shawn's go. No-API code change; ship-and-observe (no spot-check run). Back-fill of the 81 already-lost windows deferred (agreed not-worth-it-now; revisit after P3).

@@ -1,9 +1,43 @@
 # Extraction selectivity proposal (write-path plan item 14 / P3)
 
-**Status:** ~~PROPOSAL — awaiting sign-off~~ → **REFUTED BY VALIDATION
-2026-06-05** (see "Validation outcome" below). **No change was ever made to the
-live extraction hook.** §§1–7 are preserved as the audit trail of how we got
-here; they are **superseded** by the validation section.
+**Status:** ~~PROPOSAL — awaiting sign-off~~ → REFUTED BY VALIDATION 2026-06-05 →
+**CLOSED — SUPERSEDED & DEPRIORITISED 2026-06-06** (decision below). **No change
+was ever made to the live extraction hook.** §§1–7 are preserved as the audit
+trail; they are superseded by the validation section and this decision.
+
+---
+
+## Decision (2026-06-06) — closed as superseded; deprioritised
+
+P3's underlying concern (over-extraction → corpus bloat → noisy recall) has been
+**addressed from the other end**, and its own at-source levers are
+refuted/invalid (see "Validation outcome"). Reviewed with Shawn 2026-06-06;
+**closed as superseded, no lever shipped.** Reasoning:
+
+1. **The volume's *impact* is already managed downstream.** Archival cadence
+   (P2 / item 13, done) keeps the hot corpus lean; the byte-budgeted digest
+   (Vector 2, done) caps session-start surfacing regardless of volume; the digest
+   favours the anchored/verified pool. The residual cost of over-extraction is
+   mostly storage + embeddings — cheap, and archival evicts it.
+2. **P10 (fixed 2026-06-06) makes the volume *honest*** — the densest windows
+   that were silently truncated to zero now extract fully, so any "reduce volume"
+   lever now fights a bigger *and legitimate* number. Volume was artificially
+   depressed by data loss, not genuinely low.
+3. **Item 16 (earned-utility instrumentation, Stage 1 shipped 2026-06-06) is the
+   principled successor to the dead Lever 2.** A real value signal can't come
+   from `confidence` (a verification echo) — it comes from what actually gets
+   surfaced/used. Once accrued, *that* drives retention/selectivity far better
+   than any prompt tweak or confidence gate.
+
+**Parked, not pursued:** the only reframed lever with real leverage is
+**cross-run / write-time dedup (item 15)** — it attacks the `runs × per-run`
+redundancy directly — but it is embedding-driven (API-gated) and unbuilt, a
+separate deliberate project. A firing-cadence change (fewer/larger windows) was
+considered and not pursued (it fights P10's truncation lesson and risks losing
+incremental capture). **No further at-source selectivity work is planned;**
+revisit only if a concrete problem emerges (recall quality degrades, or
+storage/embedding cost becomes material) — and then via item 15 (dedup) or
+item 16 (earned-utility retention), not the refuted P3 levers.
 
 ---
 
