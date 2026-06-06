@@ -12,6 +12,40 @@ Plan reference: `wiki/planning/memory-write-path-plan.md` §5 item 6, §6a P9 (c
 
 ---
 
+## Step-0 dry-run result (2026-06-06) — net reach 13%, dilution confirmed; Lever A weaker than scoped
+
+Ran Lever A's resolution over the back-corpus **read-only** (nothing written;
+reused `triage_anchors.recovery_status` + `anchor_verify.verify_commit` over
+`broad_repo_set()`). Of **2,550** unanchored required-category memories:
+
+- **337 (13%) resolve UNIQUELY** — a clean anchor is inferable (290 via a
+  unique file-suffix match, 47 via a valid commit).
+- **76** ambiguous only (basename collision — unsafe to auto-anchor).
+- **2,137** absent: a path-like token is present but resolves *nowhere*.
+
+So the §2 "40% gross" (1,041 with a path-ish token) collapses to **13% net**. The
+gap is the 2,137 absent — tokens that *look* like files but don't resolve:
+**files named as future work to create** ("sketch `notes/index.md`", "create
+`notes/_tags.md`"), renamed/moved paths, and cross-project relative paths.
+
+**Quality is mixed (the dilution risk, confirmed).** Eyeballing the inferred
+anchors: some are genuine ("wiki structure will split into `wiki/index.md`" →
+correct), but a real fraction are **tangential or future-tense** mentions where
+the file existing does *not* verify the memory's claim ("`_inbox.md` should
+*move* from `notes/_inbox.md`…"). Naive token-selection also mis-picks (chose
+`CLAUDE.md` over the more-relevant `scripts/schema.sql` the same memory cited).
+A blanket "anchor any resolving token" would push weakly-verified memories into
+the digest's high-confidence pool — exactly the §7 (1) call.
+
+**Revised read.** Lever A's *effective* high-quality reach is well under 337 —
+order ~150–200 after discounting tangential/future mentions — i.e. a ~12–16%
+bump to the 1,214-strong verified-true pool, bought at the cost of some signal
+dilution and a corpus mutation. **That is no longer a slam-dunk.** The dry-run
+(like P3's spot-check) repriced the lever before any build. Updated
+recommendation in §6.
+
+---
+
 ## 1. What item 6 asks, and why it binds
 
 The digest ranks `verified=true` in-window memories (`digest.py` →
@@ -170,38 +204,49 @@ concrete) is worth doing; pushing anchoring into the abstract categories is not.
 
 ---
 
-## 6. Recommendation & sequencing
+## 6. Recommendation & sequencing — REVISED after the Step-0 dry-run
 
-1. **Lever A (deterministic anchor inference) — the one to build.** No-API,
-   reuses items 20/21, lifts both new writes and the back-corpus. **Build as its
-   own deliberate effort** (it mutates the corpus — guarded write, quiet window,
-   PG lockstep, like `recover_anchors.py`). Step 0 is no-API + read-only:
-   run the inference over the back-corpus in **dry-run** to get the *net resolved*
-   count (how many of the 1,041 actually resolve uniquely) — that decides whether
-   to proceed and is the honest size of the lever.
-2. **Lever B (type expansion)** — a secondary no-API increment; size the demand
-   first.
-3. **Lever C (prompt)** — only for what A can't reach, and only behind a cheap
-   API spot-check (P3 discipline).
-4. **Lever D (LLM retroactive)** — stays deferred; largely superseded by A.
+The Step-0 dry-run repriced Lever A (13% net, ~150–200 high-quality, dilution
+confirmed). The revised recommendation:
 
-This keeps item 6 an incremental, mostly-no-API effort rather than the heavy
-API-gated pass it was first framed as — because the biggest lever turned out to
-be deterministic.
+1. **Do NOT build Lever A as a blanket back-corpus mutation.** A modest,
+   dilution-prone 13% does not justify rewriting the corpus and weakening the
+   verified signal. The naive version is not worth it — the dry-run's job was to
+   establish exactly that, cheaply.
+2. **If anything, build only the FORWARD, high-precision slice — and only as an
+   anchor *suggestion*, not an auto-write.** At write time, when a required-
+   category memory cites a token that resolves *uniquely*, surface it (or anchor
+   it under a tight subject-proximity guard) so *new* memories anchor better
+   without a retroactive mutation. Lower stakes (no back-corpus rewrite, forward-
+   only, reversible). Still optional — its quality ceiling is bounded by the same
+   tangential-mention problem.
+3. **Lean on item 16 (earned utility) for the surfacing goal instead.** The real
+   objective is "get valuable memories surfaced". The dry-run shows anchoring
+   reaches that only partially and dilutively; **earned utility surfaces what
+   actually gets used regardless of anchorability** — strictly more general, and
+   already instrumented (Stage 1 shipped). This is the higher-leverage path; §5's
+   "complementary halves" tilts, post-dry-run, toward item 16 as the *primary*.
+4. **Lever B (type expansion)**, **Lever C (prompt)**, **Lever D (LLM
+   retroactive)** — all stay deferred/secondary as before; none is urgent.
+
+**Net:** item 6's binding-constraint *diagnosis* stands (the digest is gated on a
+flat ~27%), but the deterministic remedy is weaker than hoped, so the practical
+move is **mature item 16 rather than chase anchor coverage**. Anchor coverage is
+not abandoned — the forward high-precision slice (2) remains available — but it is
+**deprioritised below item 16** on the strength of this dry-run.
 
 ---
 
 ## 7. Open calls for Shawn
 
-1. **Lever A's dilution semantics (the main call):** accept that an inferred
-   anchor means "a cited file exists" (weaker than "claim verified"), with the
-   unique-resolution + required-category guards — or hold A until item 16 gives a
-   value signal that makes anchor-as-value less load-bearing? Lean: **accept it**
-   (guarded), since the contract is already "verify a cited specific" and the
-   coverage gain is large.
-2. **Build Lever A now (Step 0 dry-run first), or keep scoping?** Lean: do the
-   no-API Step-0 dry-run next — it's read-only and gives the real net-reach number
-   before any build commitment.
+1. ✅ **Step-0 dry-run — DONE 2026-06-06.** Net reach 13% (337/2,550), ~150–200
+   high-quality, dilution confirmed. Repriced the lever (see the Step-0 section).
+2. **The main call, post-dry-run:** given 13% net + confirmed dilution, **drop
+   the blanket back-corpus mutation** (lean: yes, drop it), and either (a) build
+   only the forward high-precision suggestion slice, or (b) skip anchor-inference
+   entirely and **make item 16 (earned utility) the primary surfacing lever**.
+   Lean: **(b)** — item 16 is more general and already instrumented; revisit the
+   forward slice (a) only if a cheap precision guard emerges.
 3. **Lever B (type expansion):** worth sizing, or skip until a concrete demand
    surfaces? Lean: size it opportunistically; not urgent.
 4. **Prompt (Lever C):** ever worth the API spot-check, given P3? Lean: defer

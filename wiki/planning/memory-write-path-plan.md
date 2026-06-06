@@ -641,8 +641,21 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    in `content`, add anchors that resolve uniquely — reuses items 20/21; reach
    ~1,041 forward + the back-corpus retroactively for $0, superseding most of
    the API-gated LLM pass). Item 6 (concrete) + item 16 (earned utility,
-   abstract-but-used) are complementary halves. Next: a read-only Step-0 dry-run
-   for the net-resolved count. Awaiting Shawn (4 open calls, §7). No-API.
+   abstract-but-used) are complementary halves. **✅ STEP-0 DRY-RUN DONE
+   2026-06-06 (read-only) — REPRICED THE LEVER DOWN.** Net reach **13 %
+   (337/2,550)**, not the 40 % gross — the 2,137 "absent" are path-like tokens
+   that resolve nowhere (files named as future work, renamed, cross-project). And
+   the quality is **mixed** — a real fraction are tangential/future-tense mentions
+   ("`_inbox.md` should *move*…") where the file existing doesn't verify the
+   claim, confirming the **dilution risk**; effective high-quality reach ~150–200.
+   **Revised recommendation:** drop the blanket back-corpus mutation (not worth it
+   — modest + dilutive), and **make item 16 (earned utility) the PRIMARY surfacing
+   lever** rather than chasing anchor coverage (item 16 surfaces what gets *used*,
+   regardless of anchorability — strictly more general + already instrumented). A
+   forward high-precision suggestion slice stays available but optional. The
+   binding-constraint *diagnosis* stands; the deterministic *remedy* is weaker
+   than hoped — the dry-run earned its keep (like P3's spot-check). Awaiting
+   Shawn. No-API.
 10. **P10 — extraction silently DROPS the densest windows (`max_tokens=2000`
     truncation → data loss). BUG, diagnosed 2026-06-06; NOT yet fixed.** Surfaced
     by the 2026-06-06 verify-checks agent (84 post-v2 "Failed to parse extraction

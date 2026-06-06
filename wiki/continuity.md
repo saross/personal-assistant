@@ -2088,6 +2088,16 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — item 6 Lever A Step-0 dry-run: repriced DOWN (13% net, dilution confirmed) → pivot to item 16 as the primary surfacing lever
+
+Executed the read-only, no-API Step-0 dry-run of Lever A (deterministic anchor inference) over the back-corpus. It earned its keep exactly like P3's spot-check — it repriced a compelling-looking lever before any build or corpus mutation. Nothing written.
+
+- **Method (read-only):** reused `triage_anchors.recovery_status` (unique file-suffix match) + `anchor_verify.verify_commit` over `broad_repo_set()` (32 repos, 21,671 basenames). For each of 2,550 unanchored required-category memories, extracted file/commit tokens from `content` and resolved them.
+- **Net result: 13% (337/2,550) resolve UNIQUELY** (290 file + 47 commit), 76 ambiguous, **2,137 absent**. The §2 "40% gross" collapsed because most path-like tokens resolve **nowhere** — files named as *future work to create* ("sketch `notes/index.md`"), renamed/moved, or cross-project.
+- **Quality is MIXED — dilution risk confirmed.** Eyeballing the inferred anchors: some genuine ("wiki structure will split into `wiki/index.md`"), but a real fraction tangential/future-tense ("`_inbox.md` should *move* from `notes/_inbox.md`") where the file existing doesn't verify the claim. Naive token-selection also mis-picks (chose `CLAUDE.md` over the more-relevant `scripts/schema.sql`). Effective high-quality reach ~150–200.
+- **Pivot (recommendation revised):** **drop the blanket back-corpus mutation** — a modest, dilution-prone 13% doesn't justify rewriting the corpus + weakening the verified signal. **Make item 16 (earned utility) the PRIMARY surfacing lever** instead — it surfaces what actually gets *used*, regardless of anchorability (strictly more general, already instrumented Stage 1). A forward high-precision anchor-suggestion slice stays available but optional. The binding-constraint *diagnosis* stands; the deterministic *remedy* is weaker than hoped.
+- **Provenance:** `wiki/planning/anchor-coverage-proposal.md` (Step-0 result section + §6/§7 revised); plan §6a P9 (c) updated. No code, no API, nothing written to the corpus. Data submodule + `wiki/reflections/*` untouched.
+
 ### 2026-06-06 (Sat, latest PA) — item 6 (anchor coverage / P9 (c)) SCOPED: the binding constraint, and its biggest lever turns out to be NO-API
 
 Scoping/design pass for item 6 (anchor coverage) — the binding constraint P9 named and the verify-checks confirmed is flat at ~27 % of post-v2 writes. `wiki/planning/anchor-coverage-proposal.md`. No code, no live change, no API. Diagnosed at source (PG + the extraction prompt).
