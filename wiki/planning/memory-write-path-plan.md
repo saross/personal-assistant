@@ -80,6 +80,11 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
 4. Activate the correction loop (`/forget`, `/update` actually used).
 5. Consolidation / dedup pass (semantic — exact dups ≈ 0).
 6. Grow forward anchor coverage (incl. the API-gated retroactive pass).
+   **✅ SCOPED 2026-06-06** (`wiki/planning/anchor-coverage-proposal.md`; §6a
+   P9 (c)) — headline lever is NO-API deterministic anchor inference (resolve
+   file/commit tokens already in content), largely superseding the API-gated
+   LLM pass; the ~27 % rate is a blend (abstract-category ceiling + concrete
+   escape-hatched headroom ~1,041). Next: read-only Step-0 dry-run.
 7. Replace the what-changed counter with something actionable.
 
 **Tier 3 — cheap safety/observability**
@@ -624,8 +629,20 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    stay-of-execution on the item-13 sweep, not "never surfaced → archive", which
    is the P3/P9 trap inverted); append-only `surfaced.log` + offline aggregation
    (not a record field — P8). Staged: instrument now (forward-only) → consume
-   once data accrues. Awaiting Shawn (4 open calls, §7). **(c) still open:**
-   anchor coverage (item 6, the binding constraint). No-API.
+   once data accrues. Awaiting Shawn (4 open calls, §7). **(c) ✅ SCOPED
+   2026-06-06** — anchor coverage (item 6, the binding constraint):
+   `wiki/planning/anchor-coverage-proposal.md`. The flat ~27 % is a **blend**,
+   not one ceiling: a genuine ceiling for abstract categories (correctly
+   unanchorable — forcing anchors = confabulation) + real headroom in
+   concrete-but-escape-hatched memories (the prompt's "mark `low` instead of
+   anchoring" hatch is used wholesale — 2,505 of 2,542 unanchored
+   required-category memories are `low`; many name files). **Headline lever is
+   NO-API:** deterministic anchor inference (resolve file/commit tokens already
+   in `content`, add anchors that resolve uniquely — reuses items 20/21; reach
+   ~1,041 forward + the back-corpus retroactively for $0, superseding most of
+   the API-gated LLM pass). Item 6 (concrete) + item 16 (earned utility,
+   abstract-but-used) are complementary halves. Next: a read-only Step-0 dry-run
+   for the net-resolved count. Awaiting Shawn (4 open calls, §7). No-API.
 10. **P10 — extraction silently DROPS the densest windows (`max_tokens=2000`
     truncation → data loss). BUG, diagnosed 2026-06-06; NOT yet fixed.** Surfaced
     by the 2026-06-06 verify-checks agent (84 post-v2 "Failed to parse extraction

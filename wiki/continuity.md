@@ -2088,6 +2088,18 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — item 6 (anchor coverage / P9 (c)) SCOPED: the binding constraint, and its biggest lever turns out to be NO-API
+
+Scoping/design pass for item 6 (anchor coverage) — the binding constraint P9 named and the verify-checks confirmed is flat at ~27 % of post-v2 writes. `wiki/planning/anchor-coverage-proposal.md`. No code, no live change, no API. Diagnosed at source (PG + the extraction prompt).
+
+- **Why it binds:** the digest surfaces only from the `verified=true` pool (1,214 = 21 % of post-v2). Coverage gates everything downstream.
+- **Root finding — the prompt's escape hatch is used wholesale.** Anchors are "required" for 6 categories, but the prompt says "if you cannot find an anchor, *either lower confidence to low or reword*" — and since `bind_confidence` overrides confidence anyway, "mark low" is the easy out. Of 2,542 unanchored required-category memories, **2,505 are `low`, 35 high**. By category the requirement bites unevenly: required 37 % vs other 10 %, but `decision` (biggest, 1,640) is only 32 % while architecture/completion/provenance hit 49–56 %.
+- **The 27 % is a BLEND, not one ceiling:** a genuine ceiling for abstract categories (self_reflection 2 %, pattern 6 %, prompt_effectiveness 3 % — correctly unanchorable, forcing anchors = confabulation) + **real headroom in concrete-but-escape-hatched memories** — unanchored decisions that *name files* (`lit-scout-zotero-import.py`, `CLAUDE.md`…) but took the hatch.
+- **Headline lever is NO-API — deterministic anchor inference.** Of the 2,542 unanchored required-category memories, **1,041 (40 %) already contain a file-path or commit-hash token in their content.** Resolve those tokens (reusing `verify_file`/`unique_suffix_match` from items 20/21) and add anchors that resolve uniquely — **no LLM, no API**, and it works both forward AND retroactively over the back-corpus for $0, superseding most of the API-gated LLM retroactive pass the plan had feared. Main risk: verified-signal dilution (an inferred anchor means "a cited file exists", weaker than "claim verified") — mitigated by unique-resolution + required-category-only guards.
+- **Strategic fork surfaced:** item 6 (concrete) and item 16 (earned utility, abstract-but-used) are **complementary halves** — don't over-invest anchoring into the abstract categories item 16 will cover better.
+- **Recommendation:** build Lever A (deterministic inference) as its own guarded effort; **Step 0 is a read-only no-API dry-run** to get the net-resolved count (how many of the 1,041 actually resolve uniquely) before committing. Levers B (anchor-type expansion, item 19) secondary; C (prompt tightening) P3-tempered + API-gated, deferred; D (LLM retroactive) largely superseded. 4 open calls in §7.
+- **Provenance:** `wiki/planning/anchor-coverage-proposal.md` (new); plan §6a P9 (c) + §5 item 6 updated. Data submodule + `wiki/reflections/*` untouched.
+
 ### 2026-06-06 (Sat, latest PA) — P3 (extraction selectivity) CLOSED as superseded & deprioritised (reviewed with Shawn)
 
 Reviewed P3 with Shawn and closed it. P3 was refuted 2026-06-05 (all three levers failed: prompt weak 11.4 %; confidence-gate invalid — `confidence` is a verification echo not value; per-run cap marginal). The review added the decisive context: P3's *concern* is already handled from the other end. **Closed as superseded, no lever shipped.** Recorded in the proposal ("Decision (2026-06-06)"), plan §6a P3 + §5 item 14.
