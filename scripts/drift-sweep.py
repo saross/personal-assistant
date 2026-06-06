@@ -154,7 +154,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
-    records = load_records(args.memories)
+    try:
+        records = load_records(args.memories)
+    except OSError as exc:
+        # Clean failure for a standing/cron run, rather than a bare traceback.
+        print(f"[drift-sweep] ERROR: cannot read {args.memories}: {exc}",
+              file=sys.stderr)
+        return 2
     result = run_sweep(records, as_of=now, days=args.days)
     record = trend_line(result, as_of=now)
 

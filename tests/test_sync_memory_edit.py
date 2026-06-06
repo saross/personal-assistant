@@ -196,3 +196,11 @@ def test_main_pg_unavailable(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sme, "reconcile_pg", _boom)
     rc = sme.main(["--id", "a", "--memories", str(p)])
     assert rc == sme.EXIT_PG_UNAVAILABLE
+
+
+def test_main_malformed_record_no_content(tmp_path: Path) -> None:
+    """A record present in JSONL but missing 'content' errors clearly (not PG-unavailable)."""
+    p = tmp_path / "memories.jsonl"
+    _write_jsonl(p, [{"id": "a"}])  # no 'content' key
+    rc = sme.main(["--id", "a", "--memories", str(p)])
+    assert rc == sme.EXIT_NOT_FOUND

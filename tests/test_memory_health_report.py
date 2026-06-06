@@ -278,3 +278,15 @@ class TestDriftTrend:
         assert out["runs"] == 12
         assert len(out["history"]) == 8  # last 8 only
         assert out["history"][-1]["fail_pct"] == 12.0
+
+
+def test_surfacing_section_recency_tiebreak() -> None:
+    """Equal active+digest counts → more-recently-surfaced ranks first (reproducible)."""
+    stats = {
+        "older": {"active_retrievals": 1, "digest_exposures": 0,
+                  "last_active_at": "x", "last_any_at": "2026-06-01T00:00:00+00:00"},
+        "newer": {"active_retrievals": 1, "digest_exposures": 0,
+                  "last_active_at": "x", "last_any_at": "2026-06-06T00:00:00+00:00"},
+    }
+    out = mhr.surfacing_section(stats)
+    assert out["top"][0]["id"] == "newer"

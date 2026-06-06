@@ -326,9 +326,12 @@ def surfacing_section(stats: dict[str, dict]) -> dict[str, Any]:
     yields zeros (the normal pre-accrual state).
     """
     summary = surfacing_stats.summarise(stats)
+    # Tiebreak on recency (last_any_at) so the top-N is reproducible when two
+    # memories share active + digest counts — matches surfacing_stats._render_human.
     ranked = sorted(
         stats.items(),
-        key=lambda kv: (kv[1]["active_retrievals"], kv[1]["digest_exposures"]),
+        key=lambda kv: (kv[1]["active_retrievals"], kv[1]["digest_exposures"],
+                        kv[1]["last_any_at"] or ""),
         reverse=True,
     )[:5]
     summary["top"] = [

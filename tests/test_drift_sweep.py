@@ -129,3 +129,13 @@ def test_main_no_log_skips_append(tmp_path: Path, monkeypatch) -> None:
     log = tmp_path / "d.jsonl"
     ds.main(["--log-path", str(log), "--no-log"])
     assert not log.exists()
+
+
+def test_main_missing_memories_file_exits_2(tmp_path: Path, monkeypatch) -> None:
+    """A read failure on the corpus exits 2 cleanly, not a bare traceback."""
+    def _raise(path):
+        raise FileNotFoundError("no such file")
+    monkeypatch.setattr(ds, "load_records", _raise)
+    rc = ds.main(["--memories", str(tmp_path / "nope.jsonl"),
+                  "--log-path", str(tmp_path / "d.jsonl"), "--no-log"])
+    assert rc == 2

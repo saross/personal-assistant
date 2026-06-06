@@ -161,6 +161,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[sync-memory-edit] ERROR: id {args.id} not found in {args.memories}",
               file=sys.stderr)
         return EXIT_NOT_FOUND
+    if "content" not in record:
+        # A valid memory always carries content; its absence means a malformed
+        # record. Fail with a clear, accurate message rather than letting the
+        # KeyError surface later as a misleading "PostgreSQL unreachable" — and
+        # rather than defaulting content to "" (which would blank the PG row).
+        print(f"[sync-memory-edit] ERROR: record {args.id} has no 'content' field "
+              "(malformed); not reconciling.", file=sys.stderr)
+        return EXIT_NOT_FOUND
 
     try:
         n = reconcile_pg(record, dbname=args.dbname)
