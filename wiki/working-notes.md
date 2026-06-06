@@ -1449,3 +1449,44 @@ equality is the cheap aggregate cross-check.
 
 Source: session 2026-06-04; live `--apply` (158 records); `scripts/monthly-archive.py`
 INVARIANCE gate; commit `4d44ef8` (archival); plan item 13/P2 + item 18.
+
+---
+
+## 2026-06-06: max_tokens=2000 was silently dropping the densest extraction windows (P10)
+
+Of 85 "Failed to parse extraction JSON" errors in `extraction.log`, **81 are
+truncation** — every one an `Unterminated string at char ~6,200–7,800`, the
+exact signature of the 2,000-token output cap cutting a dense window's JSON
+mid-string. The `JSONDecodeError` path returned `[]`, which advances the cursor
+(C2 audit note), so those 81 windows' memories were **lost forever** — and they
+were the *densest* (highest-content) windows, the cruel inverse of P3's
+over-extraction worry. 35 distinct sessions, ~1,768 messages, order ~1,200–2,000
+memories. The lesson: a too-small `max_tokens` is a **silent data-loss** class
+bug, not a cosmetic parse failure — it hides as "no memories extracted", not an
+error. Fixed by raising the cap to 8,000 + salvaging the complete-object prefix
+of a truncated array.
+
+Source: session 2026-06-06; `extraction.log` parse; `hooks/extraction-hook.py`
+P10 fix (commit `548c6b2`); `wiki/planning/extraction-truncation-proposal.md`.
+
+---
+
+## 2026-06-06: anchor coverage is stuck at ~27% because the prompt's "mark low" escape is frictionless
+
+The extraction prompt "requires" anchors for six categories but offers an
+escape: "if you cannot find an anchor, *either lower confidence to low or
+reword*". Since `bind_confidence` overrides confidence anyway, "mark low" is the
+frictionless out — and it is used wholesale: **2,505 of 2,542** unanchored
+required-category memories are `confidence=low` (35 high). So the requirement
+barely bites (required categories anchor 37 % vs 10 % for others, but `decision`
+— the biggest — is only 32 %). A read-only dry-run of deterministic anchor
+inference (resolve file/commit tokens already in the content) reached only
+**13 % net** (337/2,550), not the 40 % gross — most path-like tokens resolve
+nowhere (files named as future work to *create*, renames, cross-project), and a
+real fraction of the resolvable ones are tangential/future mentions (dilution).
+Two cheap validations (the dry-run + the Lever-B type-expansion sizing, <3 %
+demand) killed both deterministic remedies before any build — the conclusion is
+to let **item 16 (earned utility)** carry surfacing, not chase anchor coverage.
+
+Source: session 2026-06-06; PG queries over `claude_memories`;
+`recovery_status`/`verify_commit` dry-run; `wiki/planning/anchor-coverage-proposal.md`.

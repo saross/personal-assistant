@@ -1618,3 +1618,50 @@ exploration"], and 4 ["treats session-close as a first-class warm-context sweep"
 — reviewed and discarded by Shawn. The "anti-confab held" self-observation was
 not drafted as a user observation — working-with-claude territory per the
 2026-05-30 precedent.)*
+
+---
+
+## 2026-06-06 (PA / memory-system write-path: P8/P10/item-16/item-8/item-6 + 5-agent QA pass) — Drafted candidates (drafted 2026-06-06, awaiting review)
+
+### Candidate 1: "is it worth it?" is a standing gate that converts momentum into a cheap falsifying experiment
+
+Across the session Shawn's recurring "is it worth it?" / "do we need X?"
+questions repeatedly turned my forward momentum into the **cheapest experiment
+that could falsify the lever** before any build — the P3 spot-check ($1.17), the
+read-only anchor-inference dry-run, the Lever-B type-expansion sizing, the
+back-fill cost/benefit. Each one then repriced or killed a compelling-on-paper
+idea: P3 refuted, anchor inference 40 % gross → **13 % net + dilution**, Lever B
+<3 % demand, back-fill deferred. The signal: Shawn treats *plausible reasoning*
+as a prompt to **measure**, not to build — and the measurement beat the
+reasoning every time this session. The reusable shape: when a lever looks
+compelling, the next move is the cheapest thing that could prove it wrong, not
+the implementation.
+
+[ ]
+
+### Candidate 2: surfacing one's own process lapse is more useful than a silent one
+
+Shawn named his own slip rather than hiding it: for the first concurrent
+lit_search problem he forgot to ask for a branch/worktree (its commits landed
+straight on `main`), and he **flagged that explicitly** when handing me the
+second one (which he had branched). Naming the lapse let me keep my own commits
+cleanly isolated (explicit pathspecs) around the unexpected concurrent commits,
+rather than being caught out by them. Process honesty as a collaboration
+lubricant — the admitted gap was directly actionable in a way a silent one would
+not have been.
+
+[ ]
+
+### Candidate 3: delegate the breadth, keep the adversarial depth-review
+
+Shawn asked me to "send agents to run /audit" — delegating the QA fan-out (5
+agents) — but the correctness was won in the **triage, not the raw findings**: I
+caught that one audit's *suggested* fix (`.get("content","")`) would have blanked
+the PG content, and pushed back on a "guard the sibling import" finding that
+would have broken the codebase's own convention. The shape: agent fan-out is
+strong at *surfacing* candidates but weak at adjudicating them; the value of
+delegation depends on a real adversarial filter sitting between the agents' output
+and the commit. Shawn delegated the breadth and trusted the depth-review to land
+with me.
+
+[ ]
