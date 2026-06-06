@@ -2088,6 +2088,11 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — P10 fix PROPOSAL written ((a)+(b)); lit-scout fix branch merged to main
+
+- **P10 proposal** (`wiki/planning/extraction-truncation-proposal.md`) — Shawn picked "(a)+(b)". **(a)** raise extraction `max_tokens` 2000 → 8000 (headroom, self-funding); **(b)** detect truncation via `response.stop_reason == "max_tokens"` then **salvage the complete-object prefix** (keep the N fully-formed memories, drop only the cut-off tail) and advance the cursor. **Corrected my own earlier (b):** "treat truncation as transient / preserve the window" is wrong — re-reading the same oversized window truncates identically (a sizing problem, not a transient one), so it would **wedge** (the exact C2 failure mode); salvage-prefix is wedge-free and lossless for the prefix. (b)'s salvage logic is offline-unit-testable (no-API); an optional ~$4–5 Haiku spot-check quantifies the truncation-rate drop (gated). **Diagnosed + proposed, NOT edited** — live hook gets the careful treatment; implementation awaits Shawn's go (4 open calls in §9). Plan §6a P10 updated to point at the proposal.
+- **lit-scout fix branch merged.** `fix/litscout-zotero-arxiv-doi` (`184d193` — Zotero import handles arXiv DOIs, multi-slash DOIs, author lists; 3 files: `scripts/lit-scout-zotero-import.py` + the two agent docs) merged to main (`3cce512`, `--no-ff`). Verified conflict-free first (`merge-tree` exit 0; main never touched those files since base `cb79b0e`). Post-merge: 69 zotero/lit-scout tests pass, script compiles. **Separate from the lit-search 429-retry test failures** (those are from a different concurrent session's `fbe743c`, on `lit-search.py` — unrelated; confirmed pre-existing on clean HEAD; that session owns the fix).
+
 ### 2026-06-06 (Sat, latest PA) — Weekend infra follow-ups: Item C backup removed, drift-sweep built (item 8), 3 background agents' findings folded in; P10 (extraction truncation data-loss) FOUND
 
 After P8, cleared the two small background jobs + the two verify-checks (three read-only sonnet agents, all no-API), then built the agreed deliverable and logged a real bug the checks surfaced.

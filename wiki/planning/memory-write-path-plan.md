@@ -627,13 +627,23 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     **truncation** (retry-worthy), so the classification is wrong for this case.
     The cruel irony vs P3 (over-extraction): the *richest* windows extract
     **zero**. Scale: ~84 windows over 3 weeks (≈ a few hundred memories), spiky
-    (31 on a dense 2026-06-05). **Fix options (touches the LIVE hook → propose,
-    don't edit blind; validating needs Haiku calls → API-gated):** (a) bump
-    `max_tokens` (2000 → ~8000) — kills ~all current failures, cheap; (b) check
-    `response.stop_reason == "max_tokens"` and treat truncation as transient
-    (`return None`, preserve the window) instead of permanent — the principled
-    fix; (c) quarantine the raw truncated response to a side file (no-API safety
-    net, recoverable later). Recommended: (a)+(b) together. **Logged, not built.**
+    (31 on a dense 2026-06-05). **✅ PROPOSAL WRITTEN 2026-06-06 ((a)+(b),
+    Shawn's pick):** `wiki/planning/extraction-truncation-proposal.md`. **(a)
+    raise `max_tokens` 2000 → 8000** (named const; headroom, self-funding —
+    only costs more on windows that previously yielded zero) — kills ~all
+    current truncations. **(b) detect via `response.stop_reason == "max_tokens"`,
+    then SALVAGE the complete-object prefix** (return the N fully-formed memory
+    objects, drop only the incomplete tail) and advance the cursor. **Corrected
+    my earlier (b):** "treat truncation as transient / preserve the window" is
+    WRONG — re-reading the same oversized window truncates *identically*
+    (sizing, not transient), an infinite **wedge** (the exact C2 failure mode).
+    Salvage-prefix is wedge-free and lossless for the prefix. The genuine-
+    malformation path (`return []`) is kept for true 4xx/garbage. (c) quarantine
+    noted as a further safety net; an optional bounded reduce-window tail-retry
+    is a future refinement. Validation: (b)'s salvage is **offline-unit-testable
+    (no-API)**; an optional ~$4–5 Haiku spot-check quantifies the truncation-rate
+    drop (gated). **Proposal written; implementation awaits Shawn's go** (live
+    hook → careful treatment). See proposal §9 for the 4 open calls.
 
 **Lower:** items 4 (correction loop — ✅ DONE via P8 2026-06-06),
 7 (actionable what-changed counter), 10/identifier-welding,
