@@ -42,6 +42,13 @@ instrumentation, design §7c) so tier-2 utilisation can be measured over
 the observation window. Lines from this autonomous path carry no
 `source=` field; manual `/recall` lines carry `source=recall`.
 
+In addition, from 2026-06-06 (item 16 Stage 1), each `fetch-memories.py`
+invocation also logs the **IDs** of the memories it returned to
+`data/logs/surfaced.log` via `surfacing_log.log_surfaced()` (tagged
+`path=fetch`). This is separate from the count log above — it supports
+the earned-utility value signal that will eventually inform archival
+decisions. Best-effort; never raises.
+
 ## Protocol — when and how
 
 1. When the conversation touches a topic that plausibly matches stored
@@ -66,6 +73,31 @@ waiting on an announcement. Note this runs a *separate* path — `/recall`
 reads `memories.jsonl` directly rather than calling this script — so it
 is instrumented independently: each `/recall` appends a `source=recall`
 line to the same `logs/fetch-memories.log` (see `commands/recall.md`).
+
+From 2026-06-06 (item 16 Stage 1), `/recall` also logs the IDs of
+memories it surfaces to `data/logs/surfaced.log` via
+`scripts/surfacing_log.py --path recall` (see `commands/recall.md` for
+the mandatory instrumentation step). This is the strongest-intent
+surfacing path, so its IDs carry the most weight in the earned-utility
+aggregator (`scripts/surfacing_stats.py`).
+
+## Surfacing instrumentation (item 16)
+
+Three paths now write to `data/logs/surfaced.log` via
+`scripts/surfacing_log.py` (all added 2026-06-06):
+
+| Path | Tagged as | Where wired |
+|------|-----------|-------------|
+| Session-start digest | `path=digest` | `session-start-retrieval.py` `build_session_digest()` |
+| Autonomous fetch | `path=fetch` | `fetch-memories.py` `_log_invocation()` |
+| `/recall` | `path=recall` | `commands/recall.md` mandatory step |
+
+The aggregator `scripts/surfacing_stats.py` reads this log and computes
+per-memory `active_retrievals` (fetch + recall, weighted), `digest_exposures`
+(passive), and `last_active_at`. The `/weekly-review` health report surfaces
+these via `memory-health-report.py` section [G]. Stage 2 (an archival
+stay-of-execution based on earned utility) is deferred until sufficient data
+has accrued.
 
 ## Why lazy depth
 

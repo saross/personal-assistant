@@ -68,6 +68,10 @@ when present in the transcript.
 - `revisions` — append-only audit trail of `/update` operations.
 - `is_active` — soft-delete flag. `/forget` sets to `false`; recall
   filters by `is_active = true` via the `active_memories` view.
+  P8 (2026-06-06): `/forget` and `/update` now call
+  `scripts/sync_memory_edit.py` as a mandatory step to propagate
+  the change to PostgreSQL immediately (previously edits were silently
+  lost until a manual `rebuild-postgres`).
 
 ## Autonomous capture (memory-system v2, Phase 3)
 

@@ -91,8 +91,8 @@ Located in `hooks/`, registered in `settings.json`.
 
 | Hook | Trigger | Purpose |
 |------|---------|---------|
-| `extraction-hook.py` | Stop, PreCompact, SessionEnd | Memory extraction via Haiku. Cursor-tracked, slash-command filtered, tag-normalised. Extracts 24 categories of structured memories. |
-| `session-start-retrieval.py` | SessionStart | Level 1 retrieval. 54 memory slots (35 same-project + 11 cross-project + 8 constraints). Loads scratchpad, task status, and Tier 2 retrieval instructions. |
+| `extraction-hook.py` | Stop, PreCompact, SessionEnd | Memory extraction via Haiku. Cursor-tracked, slash-command filtered, tag-normalised. Extracts 24 categories of structured memories. `EXTRACTION_MAX_TOKENS = 8000` (raised from 2000 in P10, 2026-06-06); truncated responses are salvaged via `_salvage_truncated_array()` + `stop_reason == "max_tokens"` branch rather than dropped. |
+| `session-start-retrieval.py` | SessionStart | Level 1 retrieval. 54 memory slots (35 same-project + 11 cross-project + 8 constraints). Loads scratchpad, task status, and Tier 2 retrieval instructions. Also logs surfaced memory IDs to `data/logs/surfaced.log` via `surfacing_log.log_surfaced()` (item 16 earned-utility instrumentation, 2026-06-06). |
 
 ### Scripts
 
@@ -102,9 +102,10 @@ Located in `scripts/`.
 
 | Script | Purpose |
 |--------|---------|
-| `sync-to-postgres.py` | JSONL → PostgreSQL sync + auto-embed (5-min cron) |
+| `sync-to-postgres.py` | JSONL → PostgreSQL sync + auto-embed (5-min cron). P8 (2026-06-06): now syncs `is_active` in its INSERT so a row forgotten before its first sync lands inactive rather than being resurrected. |
+| `sync_memory_edit.py` | Surgical PG `UPDATE` for `/forget` and `/update` (P8, 2026-06-06). Reads the already-edited JSONL record and mirrors the six mutable columns (`is_active`, `content`, `confidence`, `verified`, `anchors`, `revisions`) into PostgreSQL. Idempotent. Called as a mandatory step by both commands. PG-only: runs on amd-tower; no-op notice on other machines. |
 | `apply-decay.py` | Mark expired memories inactive (weekly cron, Sun 3am) |
-| `fetch-memories.py` | CLI retrieval: `--query` (FTS), `--semantic` (pgvector), `--tag`, `--category`, `--id` |
+| `fetch-memories.py` | CLI retrieval: `--query` (FTS), `--semantic` (pgvector), `--tag`, `--category`, `--id`. Logs surfaced memory IDs via `surfacing_log` (item 16, 2026-06-06). |
 | `embed.py` | Shared Ollama embedding client (nomic-embed-text, 768d) |
 | `backfill-summaries.py` | Bulk summary generation via Haiku Batch API |
 | `backfill-embeddings.py` | Bulk embedding via Ollama |
@@ -112,6 +113,10 @@ Located in `scripts/`.
 | `tag-gardening.py` | Tag vocabulary analysis + merge (stats, similar, merge, orphans). Called by `/tags`. |
 | `sync-to-zotero.py` | Push `source_insight` memories to Zotero item notes via pyzotero API. Manual invocation; idempotent via footer markers. |
 | `memory_mcp.py` | Local MCP server exposing memory DB as 5 read-only tools (search, semantic_search, get_memory, list_recent, memory_statistics). stdio transport, FastMCP. |
+| `surfacing_log.py` | Append-only writer for `data/logs/surfaced.log` (item 16, 2026-06-06). Logs one tab-separated line per surfaced memory ID, tagged `path=digest\|fetch\|recall`. Pure formatter + best-effort I/O; never raises. CLI: `--path <path> --ids "<ids>"`. |
+| `surfacing_stats.py` | Read-only aggregator over `surfaced.log` (item 16, 2026-06-06). Reports per-memory `active_retrievals`, `digest_exposures`, `last_active_at`; weights active fetch/recall above passive digest. Importable as `aggregate_surfacing()` for the health report. |
+| `drift-sweep.py` | Anchor drift trend (item 8, 2026-06-06). Re-resolves the full anchored memory back-set and appends a trend line to `data/logs/drift-sweep.jsonl`. `--alert-threshold` sets an exit-1 threshold on the fail percentage. Read-only against the corpus. |
+| `memory-health-report.py` | Standing health report (run by `/weekly-review`). Gained section [G] Memory surfacing (reads `surfaced.log` via `surfacing_stats.aggregate_surfacing()`) and section [H] Anchor drift trend (reads `drift-sweep.jsonl` via `drift_trend()`), both added 2026-06-06. |
 
 **Session archiving:**
 
