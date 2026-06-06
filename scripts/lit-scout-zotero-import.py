@@ -33,6 +33,22 @@ Environment variables (sourced from ~/personal-assistant/.env)
     ZOTERO_STAGING_COLLECTION Top-level collection key under which dated
                               subcollections are created
 
+HTTP tuning knobs (optional; shared with lit-search.py)
+-------------------------------------------------------
+    LIT_SEARCH_MAX_RETRIES            Total attempts per fetch (default 4)
+    LIT_SEARCH_BASE_BACKOFF           Base backoff seconds (default 2.0)
+    LIT_SEARCH_MAX_BACKOFF            Cap on a single sleep (default 60.0)
+    LIT_SEARCH_BACKOFF_JITTER         +/- jitter fraction (default 0.5)
+    LIT_SEARCH_CROSSREF_MIN_INTERVAL  CrossRef pacing seconds (default 0.2)
+    LIT_SEARCH_DATACITE_MIN_INTERVAL  DataCite pacing seconds (default 0.2)
+    LIT_SEARCH_OPENALEX_MIN_INTERVAL  OpenAlex pacing seconds (default 0.1)
+    LIT_SEARCH_S2_MIN_INTERVAL        Semantic Scholar pacing (default 1.1)
+    LIT_SEARCH_DEFAULT_MIN_INTERVAL   Fallback host pacing (default 0.2)
+
+These deliberately reuse lit-search.py's `LIT_SEARCH_*` names so one setting
+tunes both tools; the logic is ported (not imported) to keep this script
+self-contained.
+
 Outputs
 -------
     - <workspace>/zotero-import-manifest.json — durable record of the run
@@ -44,13 +60,17 @@ Outputs
 from __future__ import annotations
 
 import argparse
+import email.utils
 import json
 import os
+import random
 import re
 import sqlite3
 import sys
+import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -65,6 +85,8 @@ import httpx
 # ----------------------------------------------------------------------------
 
 CROSSREF_BASE = "https://api.crossref.org"
+OPENALEX_BASE = "https://api.openalex.org"
+DATACITE_BASE = "https://api.datacite.org"
 MAILTO = "shawn@faims.edu.au"
 USER_AGENT = "lit-scout-zotero-import/1.0 (mailto:shawn@faims.edu.au)"
 HTTP_TIMEOUT = 30.0
@@ -86,6 +108,350 @@ CROSSREF_TO_ZOTERO_TYPE = {
     "dissertation": "thesis",
     "dataset": "dataset",
 }
+
+# DataCite `types.resourceTypeGeneral` → CrossRef-style type string. DataCite is
+# the registry of record for datasets, software, and many DataCite-only DOIs
+# (arXiv, Zenodo, institutional repositories). We translate its controlled
+# vocabulary into the CrossRef type strings that `CROSSREF_TO_ZOTERO_TYPE`
+# already understands, so `fetch_datacite` can hand `build_zotero_item` the
+# exact same internal record shape as CrossRef/OpenAlex and reuse one mapping
+# table. Values not listed here fall through to `journal-article` (the same
+# conservative default the CrossRef and OpenAlex paths use).
+#
+# `Text` is deliberately mapped to `journal-article` rather than the Zotero
+# `document` catch-all: DataCite tags scholarly articles, reports, and book
+# chapters all as `Text`, and the overwhelming majority of `Text` DOIs that
+# reach this fallback (i.e. ones CrossRef did NOT index) are journal articles
+# in regional/diamond-OA venues. A bare `document` would lose the container
+# title; `journal-article` preserves it. The CrossRef path still owns the
+# common, well-indexed cases, so this only affects DataCite-only `Text` DOIs.
+DATACITE_GENERAL_TO_CROSSREF_TYPE = {
+    "dataset": "dataset",
+    "software": "software",
+    "text": "journal-article",
+    "preprint": "posted-content",
+    "report": "report",
+    "conferencepaper": "proceedings-article",
+    "conferenceproceeding": "proceedings-article",
+    "book": "book",
+    "bookchapter": "book-chapter",
+    "dissertation": "dissertation",
+    "journalarticle": "journal-article",
+}
+
+# CrossRef-style type string → Zotero itemType, extended beyond
+# `CROSSREF_TO_ZOTERO_TYPE` with the few DataCite-introduced types that have no
+# CrossRef equivalent (notably `software` → `computerProgram`). Looked up after
+# `CROSSREF_TO_ZOTERO_TYPE` misses, so it never overrides an existing mapping.
+EXTRA_TYPE_TO_ZOTERO_TYPE = {
+    "software": "computerProgram",
+}
+
+
+# ----------------------------------------------------------------------------
+# HTTP tuning knobs (shared config with lit-search.py)
+# ----------------------------------------------------------------------------
+# These knobs deliberately reuse the `LIT_SEARCH_*` environment-variable names
+# that lit-search.py reads, so that setting e.g. `LIT_SEARCH_MAX_RETRIES=6`
+# once tunes BOTH tools identically. The defaults are copied verbatim from
+# lit-search.py (MAX_RETRIES=4, BASE_BACKOFF=2.0s, MAX_BACKOFF=60s,
+# BACKOFF_JITTER=±50%, per-host minimum intervals) so the two share behaviour
+# without importing from lit-search.py (whose hyphenated filename is not a
+# valid Python module name). A future shared `http_retry` module would let us
+# drop this duplication, but that refactor is intentionally out of scope here.
+
+
+def _env_float(name: str, default: float) -> float:
+    """
+    Read a float tuning knob from the environment, falling back to a
+    conservative default.
+
+    A missing/empty value uses the default silently; a malformed (non-float)
+    value emits a one-line warning to stderr and uses the default, so a typo
+    degrades gracefully rather than crashing the import.
+
+    Args:
+        name: Environment-variable name (e.g. ``LIT_SEARCH_BASE_BACKOFF``).
+        default: Value to use when the variable is unset, empty, or malformed.
+
+    Returns:
+        The parsed float, or ``default`` on absence/parse failure.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        sys.stderr.write(
+            f"WARNING: {name}={raw!r} is not a float; using default "
+            f"{default}.\n"
+        )
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    """
+    Read an int tuning knob from the environment (see :func:`_env_float`).
+
+    Args:
+        name: Environment-variable name (e.g. ``LIT_SEARCH_MAX_RETRIES``).
+        default: Value to use when the variable is unset, empty, or malformed.
+
+    Returns:
+        The parsed int, or ``default`` on absence/parse failure.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        sys.stderr.write(
+            f"WARNING: {name}={raw!r} is not an int; using default "
+            f"{default}.\n"
+        )
+        return default
+
+
+# Per-host minimum inter-request interval (seconds). Keyed by HOST so the floor
+# is honoured across an entire batch import (every DOI hits the same few hosts)
+# regardless of which fetch helper issued the request. DataCite is added on top
+# of lit-search.py's set; Semantic Scholar is included for config parity even
+# though this importer does not currently call S2.
+S2_HOST = "api.semanticscholar.org"
+CROSSREF_HOST = "api.crossref.org"
+OPENALEX_HOST = "api.openalex.org"
+DATACITE_HOST = "api.datacite.org"
+
+HOST_MIN_INTERVAL: dict[str, float] = {
+    S2_HOST: _env_float("LIT_SEARCH_S2_MIN_INTERVAL", 1.1),
+    CROSSREF_HOST: _env_float("LIT_SEARCH_CROSSREF_MIN_INTERVAL", 0.2),
+    OPENALEX_HOST: _env_float("LIT_SEARCH_OPENALEX_MIN_INTERVAL", 0.1),
+    DATACITE_HOST: _env_float("LIT_SEARCH_DATACITE_MIN_INTERVAL", 0.2),
+}
+# Floor applied to any host not listed above.
+DEFAULT_MIN_INTERVAL = _env_float("LIT_SEARCH_DEFAULT_MIN_INTERVAL", 0.2)
+
+# Retry / exponential-backoff knobs. Transient failures (HTTP 429, HTTP 5xx,
+# connection/timeout errors) are retried with exponential backoff plus jitter.
+# After exhausting attempts the caller's existing graceful-degradation path
+# runs (returns None → the next source in the fetch chain), so a persistently
+# rate-limited source still degrades to the remaining sources.
+MAX_RETRIES = _env_int("LIT_SEARCH_MAX_RETRIES", 4)  # total attempts per call
+BASE_BACKOFF = _env_float("LIT_SEARCH_BASE_BACKOFF", 2.0)  # seconds (attempt 0)
+MAX_BACKOFF = _env_float("LIT_SEARCH_MAX_BACKOFF", 60.0)  # cap on a single sleep
+BACKOFF_JITTER = _env_float("LIT_SEARCH_BACKOFF_JITTER", 0.5)  # +/- fraction
+
+# Track last request time per host for pacing. The lock makes the limiter safe
+# under future concurrency; the import currently runs single-threaded.
+_last_request: dict[str, float] = {}
+_pace_lock = threading.Lock()
+
+
+# ----------------------------------------------------------------------------
+# Per-host pacing + retry helpers (ported from lit-search.py to keep this
+# importer self-contained; see the knob block above for why we duplicate)
+# ----------------------------------------------------------------------------
+
+
+def _host_of(url: str) -> str:
+    """Extract the hostname from a URL for per-host pacing."""
+    return urllib.parse.urlsplit(url).hostname or ""
+
+
+def _pace_host(host: str) -> None:
+    """
+    Enforce the minimum inter-request interval for ``host``.
+
+    Sleeps just long enough that consecutive requests to the same host are
+    spaced by at least ``HOST_MIN_INTERVAL[host]`` (or ``DEFAULT_MIN_INTERVAL``
+    for hosts not listed). Because the timestamp is keyed by host and stored at
+    module scope, the floor applies across the whole import run, not just within
+    one call.
+
+    Args:
+        host: Hostname to pace (e.g. ``api.crossref.org``).
+    """
+    min_interval = HOST_MIN_INTERVAL.get(host, DEFAULT_MIN_INTERVAL)
+    with _pace_lock:
+        now = time.monotonic()
+        last = _last_request.get(host, 0.0)
+        elapsed = now - last
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_request[host] = time.monotonic()
+
+
+def _parse_retry_after(value: str) -> float | None:
+    """
+    Parse a ``Retry-After`` header value into a delay in seconds.
+
+    The header may be either an integer number of seconds or an HTTP-date
+    (RFC 7231).
+
+    Args:
+        value: Raw ``Retry-After`` header value (possibly empty).
+
+    Returns:
+        The delay in seconds (>= 0.0), or ``None`` if it cannot be parsed.
+        A past HTTP-date yields 0.0 (retry immediately, subject to the
+        backoff floor applied by the caller). A malformed/garbage value
+        yields ``None`` so the caller falls back to exponential backoff.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    # Numeric seconds form.
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    # HTTP-date form. `parsedate_to_datetime` raises (TypeError/ValueError) on
+    # unparseable input rather than returning None, so guard it and treat an
+    # unparseable header as "no usable hint" → fall back to backoff.
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    delay = parsed.timestamp() - time.time()
+    return max(0.0, delay)
+
+
+def _backoff_delay(attempt: int) -> float:
+    """
+    Exponential backoff with jitter for retry ``attempt`` (0-indexed).
+
+    ``delay = BASE_BACKOFF * 2**attempt``, multiplied by a random jitter factor
+    in ``[1 - BACKOFF_JITTER, 1 + BACKOFF_JITTER]``, then capped at
+    ``MAX_BACKOFF``. The jitter spreads out retries so repeated callers do not
+    stampede the API in lockstep ("thundering herd").
+
+    Args:
+        attempt: Zero-indexed retry attempt number.
+
+    Returns:
+        Sleep duration in seconds, in ``[0.0, MAX_BACKOFF]``.
+    """
+    raw = BASE_BACKOFF * (2 ** attempt)
+    jitter = 1.0 + random.uniform(-BACKOFF_JITTER, BACKOFF_JITTER)
+    return min(MAX_BACKOFF, max(0.0, raw * jitter))
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    """True for HTTP 429 and any 5xx (transient server-side failures)."""
+    return status_code == 429 or 500 <= status_code < 600
+
+
+def _request_with_retry(
+    do_request: Callable[[], httpx.Response],
+    host: str,
+    source: str,
+) -> httpx.Response:
+    """
+    Execute a single HTTP request with pacing + exponential-backoff retry.
+
+    ``do_request`` is a zero-argument callable that performs exactly one GET and
+    returns the ``httpx.Response`` (it must NOT do its own pacing/retry — this
+    helper owns both). The helper:
+
+      * paces the host before every attempt (so retries also respect the
+        per-host floor);
+      * retries on HTTP 429, HTTP 5xx, and connection/timeout errors;
+      * on 429 honours ``Retry-After`` (seconds or HTTP-date) when present,
+        otherwise uses exponential backoff with jitter;
+      * caps the number of attempts at ``MAX_RETRIES`` and any single sleep at
+        ``MAX_BACKOFF``, so a call can never hang indefinitely;
+      * after exhausting retries, returns the last response (so the caller's
+        existing non-200 handling runs) or re-raises the last connection error
+        (so the caller's existing ``except httpx.HTTPError`` runs).
+
+    Net effect: success and terminal-4xx (e.g. 404) paths are unchanged; only
+    transient failures gain extra, backed-off attempts before the SAME graceful
+    degradation the caller already implemented.
+
+    Args:
+        do_request: Zero-argument callable performing one GET.
+        host: Hostname used for pacing.
+        source: Human-readable source label for log messages.
+
+    Returns:
+        The final ``httpx.Response`` (success, terminal 4xx, or
+        retry-exhausted transient status).
+
+    Raises:
+        httpx.HTTPError: If every attempt failed with a connection-level error.
+    """
+    last_exc: httpx.HTTPError | None = None
+    last_resp: httpx.Response | None = None
+
+    for attempt in range(MAX_RETRIES):
+        _pace_host(host)
+        try:
+            resp = do_request()
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            # Connection-level failure: retryable.
+            last_exc = exc
+            last_resp = None
+            if attempt < MAX_RETRIES - 1:
+                delay = _backoff_delay(attempt)
+                sys.stderr.write(
+                    f"WARNING: {source}: connection error "
+                    f"({type(exc).__name__}); retry {attempt + 1}/"
+                    f"{MAX_RETRIES - 1} in {delay:.1f}s.\n"
+                )
+                time.sleep(delay)
+                continue
+            # Exhausted: re-raise so the caller's except-clause degrades it.
+            raise
+
+        last_resp = resp
+        if not _is_retryable_status(resp.status_code):
+            # Success or a terminal status (e.g. 404): return immediately.
+            return resp
+
+        # Transient HTTP status (429 or 5xx).
+        if attempt >= MAX_RETRIES - 1:
+            # Out of attempts: hand the response back so the caller's existing
+            # non-200 branch runs and returns None.
+            return resp
+
+        if resp.status_code == 429:
+            retry_after = _parse_retry_after(
+                resp.headers.get("Retry-After", "")
+            )
+            if retry_after is not None:
+                # Respect the server's hint, but never below the backoff floor
+                # for this attempt and never above the global cap.
+                delay = min(
+                    MAX_BACKOFF, max(retry_after, _backoff_delay(attempt))
+                )
+                hint = f"Retry-After={retry_after:.1f}s"
+            else:
+                delay = _backoff_delay(attempt)
+                hint = "no Retry-After"
+            sys.stderr.write(
+                f"WARNING: {source}: rate limited (429, {hint}); retry "
+                f"{attempt + 1}/{MAX_RETRIES - 1} in {delay:.1f}s.\n"
+            )
+        else:
+            delay = _backoff_delay(attempt)
+            sys.stderr.write(
+                f"WARNING: {source}: server error (HTTP "
+                f"{resp.status_code}); retry {attempt + 1}/"
+                f"{MAX_RETRIES - 1} in {delay:.1f}s.\n"
+            )
+        time.sleep(delay)
+
+    # Loop fell through (unreachable given the returns/raises above, but kept
+    # for total-function safety).
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("retry loop exited without a response")
 
 
 # ----------------------------------------------------------------------------
@@ -222,17 +588,36 @@ def parse_findings_table(report_md: Path) -> dict[str, dict[str, str]]:
 
 
 # ----------------------------------------------------------------------------
-# CrossRef metadata fetch (richer than lit-search.py's _normalise_crossref —
-# we need journal/volume/issue/pages/ISSN for the Zotero item)
+# Metadata fetch chain: CrossRef → DataCite → OpenAlex
+# ----------------------------------------------------------------------------
+# All three helpers return the SAME internal record shape (the CrossRef
+# `message` shape `build_zotero_item` consumes) and degrade to None on a miss,
+# so the chain is just "first non-None wins". We carry richer container fields
+# (journal/volume/issue/pages/ISSN) than lit-search.py's `_normalise_crossref`
+# because the Zotero item needs them. Every fetch is routed through
+# `_request_with_retry` for 429/5xx/connection resilience with per-host pacing.
 # ----------------------------------------------------------------------------
 
 
 def fetch_crossref(doi: str, client: httpx.Client) -> dict | None:
-    """Return the raw `message` block of a CrossRef works/<doi> record."""
+    """Return the raw `message` block of a CrossRef works/<doi> record.
+
+    Routed through :func:`_request_with_retry`, so transient HTTP 429 / 5xx /
+    connection errors are retried with backoff before degrading. The
+    degradation path is unchanged: a non-200 (including a retry-exhausted 429)
+    or a connection error returns ``None``, and the caller falls back to the
+    next source in the CrossRef → DataCite → OpenAlex chain.
+    """
     # CrossRef wants the DOI as a path segment with `/` URL-encoded.
     url = f"{CROSSREF_BASE}/works/{urllib.parse.quote(doi, safe='')}"
     try:
-        r = client.get(url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT)
+        r = _request_with_retry(
+            lambda: client.get(
+                url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT
+            ),
+            host=_host_of(url),
+            source="crossref",
+        )
         if r.status_code != 200:
             return None
         return r.json().get("message")
@@ -241,19 +626,25 @@ def fetch_crossref(doi: str, client: httpx.Client) -> dict | None:
 
 
 def fetch_openalex(doi: str, client: httpx.Client) -> dict | None:
-    """Fallback metadata fetch, normalised to the CrossRef `message` shape.
+    """Broad backstop metadata fetch, normalised to the CrossRef `message` shape.
 
-    CrossRef does not index every DOI — notably arXiv DOIs (`10.48550/arXiv.*`),
-    which are registered with DataCite. OpenAlex covers arXiv and most other
-    registries, so we fall back to it when CrossRef returns nothing. Only the
-    subset of fields `build_zotero_item` reads is mapped (type, title,
+    Last link in the CrossRef → DataCite → OpenAlex chain: tried only when both
+    CrossRef and DataCite return nothing. OpenAlex covers arXiv and most other
+    registries, so it catches the long tail neither prior source indexed. Only
+    the subset of fields `build_zotero_item` reads is mapped (type, title,
     container-title, volume, issue, page, ISSN, abstract, URL, issued); authors
-    are sourced from the claims contract, not from here, so author mapping is
-    best-effort.
+    are sourced from the claims contract when present, falling back to the
+    record's `author` list otherwise.
     """
-    url = f"https://api.openalex.org/works/https://doi.org/{urllib.parse.quote(doi, safe='')}"
+    url = f"{OPENALEX_BASE}/works/https://doi.org/{urllib.parse.quote(doi, safe='')}"
     try:
-        r = client.get(url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT)
+        r = _request_with_retry(
+            lambda: client.get(
+                url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT
+            ),
+            host=_host_of(url),
+            source="openalex",
+        )
         if r.status_code != 200:
             return None
         w = r.json()
@@ -316,6 +707,151 @@ def fetch_openalex(doi: str, client: httpx.Client) -> dict | None:
         "ISSN": issn,
         "abstract": "",  # OpenAlex stores an inverted index; skip reconstruction
         "URL": w.get("doi") or f"https://doi.org/{doi}",
+        "issued": {"date-parts": date_parts},
+    }
+
+
+def _datacite_creator(creator: dict) -> dict[str, str] | None:
+    """Convert one DataCite ``creators[]`` entry into a CrossRef-style author.
+
+    DataCite supplies structured ``familyName``/``givenName`` for personal
+    names and a flat ``name`` for organisations (and as a fallback). We prefer
+    the structured fields (so "Cowey, James M.S." round-trips to
+    family="Cowey", given="James M.S.") and fall back to the flat ``name``,
+    splitting a "Family, Given" string on the first comma when present.
+
+    Args:
+        creator: One element of DataCite ``data.attributes.creators``.
+
+    Returns:
+        A ``{"family": ..., "given": ...}`` or ``{"name": ...}`` dict matching
+        the CrossRef ``author`` shape, or ``None`` for an empty entry.
+    """
+    family = (creator.get("familyName") or "").strip()
+    given = (creator.get("givenName") or "").strip()
+    if family:
+        return {"family": family, "given": given}
+    name = (creator.get("name") or "").strip()
+    if not name:
+        return None
+    name_type = (creator.get("nameType") or "").strip().lower()
+    # A "Family, Given" personal name with no structured fields: split it so
+    # downstream author parsing keeps the family/given distinction.
+    if name_type != "organizational" and "," in name:
+        fam, _, giv = name.partition(",")
+        return {"family": fam.strip(), "given": giv.strip()}
+    return {"name": name}
+
+
+def fetch_datacite(doi: str, client: httpx.Client) -> dict | None:
+    """DataCite metadata fetch, normalised to the CrossRef `message` shape.
+
+    DataCite is the registry of record for datasets, software, and a long tail
+    of DataCite-only DOIs (Zenodo, arXiv, institutional repositories) that
+    CrossRef does not index. It sits in the chain BETWEEN CrossRef and OpenAlex:
+    CrossRef covers most journal/book DOIs; DataCite is authoritative for the
+    dataset/software/registry DOIs CrossRef misses; OpenAlex is the broad
+    backstop for anything neither indexes.
+
+    The returned dict is the SAME internal record shape `build_zotero_item`
+    already consumes from CrossRef/OpenAlex: ``type`` is a CrossRef-style type
+    string (translated from DataCite ``types.resourceTypeGeneral`` via
+    :data:`DATACITE_GENERAL_TO_CROSSREF_TYPE`), plus ``title``, ``author``,
+    ``container-title``, ``page``, ``abstract``, ``URL``, ``issued``, and a
+    ``publisher`` key (DataCite's ``publisher`` — e.g. "Zenodo" — which
+    `build_zotero_item` routes into the right per-type Zotero field).
+
+    Routed through :func:`_request_with_retry` for 429/5xx/connection
+    resilience; degrades to ``None`` on a non-200 or connection error exactly
+    like the CrossRef path, so the caller falls back to OpenAlex.
+
+    Args:
+        doi: The DOI to resolve (unencoded; e.g. ``10.5281/zenodo.3575154``).
+        client: A shared ``httpx.Client``.
+
+    Returns:
+        A CrossRef-``message``-shaped dict, or ``None`` if DataCite has no
+        record / the request failed after retries.
+    """
+    # DataCite wants the DOI as a single path segment with `/` URL-encoded.
+    url = f"{DATACITE_BASE}/dois/{urllib.parse.quote(doi, safe='')}"
+    try:
+        r = _request_with_retry(
+            lambda: client.get(
+                url,
+                headers={"Accept": "application/vnd.api+json"},
+                timeout=HTTP_TIMEOUT,
+            ),
+            host=_host_of(url),
+            source="datacite",
+        )
+        if r.status_code != 200:
+            return None
+        attrs = (r.json().get("data") or {}).get("attributes") or {}
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    # Type: DataCite controlled vocab → CrossRef-style string. Unknown values
+    # fall through to `journal-article`, matching CrossRef/OpenAlex defaults.
+    general = ((attrs.get("types") or {}).get("resourceTypeGeneral") or "")
+    cr_type = DATACITE_GENERAL_TO_CROSSREF_TYPE.get(
+        general.strip().lower(), "journal-article"
+    )
+
+    # Title: first non-empty `titles[].title`.
+    title = ""
+    for t in attrs.get("titles") or []:
+        cand = (t.get("title") or "").strip()
+        if cand:
+            title = cand
+            break
+
+    # Authors: structured DataCite creators → CrossRef-style author list.
+    authors = []
+    for creator in attrs.get("creators") or []:
+        mapped = _datacite_creator(creator)
+        if mapped:
+            authors.append(mapped)
+
+    # Year: DataCite gives a single `publicationYear`; express it as the
+    # CrossRef `issued.date-parts` shape so the date logic downstream is shared.
+    date_parts: list[list[int]] = [[]]
+    pub_year = attrs.get("publicationYear")
+    if pub_year:
+        try:
+            date_parts = [[int(pub_year)]]
+        except (TypeError, ValueError):
+            date_parts = [[]]
+
+    # Abstract: first `descriptions[].description` (DataCite tags these with a
+    # `descriptionType`, but the first is the abstract in practice; HTML strip
+    # happens later in `build_zotero_item`).
+    abstract = ""
+    for d in attrs.get("descriptions") or []:
+        cand = (d.get("description") or "").strip()
+        if cand:
+            abstract = cand
+            break
+
+    # Container: DataCite `container.title` (e.g. a journal/series name) when
+    # present, for the journal/book-section type paths.
+    container = ((attrs.get("container") or {}).get("title") or "").strip()
+
+    publisher = (attrs.get("publisher") or "").strip()
+    doi_value = (attrs.get("doi") or doi).strip()
+
+    return {
+        "type": cr_type,
+        "title": [title],
+        "author": authors,
+        "container-title": [container] if container else [],
+        "volume": "",
+        "issue": "",
+        "page": "",
+        "ISSN": [],
+        "abstract": abstract,
+        "publisher": publisher,
+        "URL": attrs.get("url") or f"https://doi.org/{doi_value}",
         "issued": {"date-parts": date_parts},
     }
 
@@ -389,6 +925,37 @@ def _given_family_creator(name: str) -> dict[str, str] | None:
         return {"creatorType": "author", "lastName": toks[-1],
                 "firstName": " ".join(toks[:-1])}
     return {"creatorType": "author", "name": name}
+
+
+def _creators_from_record(authors: list[dict]) -> list[dict[str, str]]:
+    """Convert a CrossRef-style ``author`` list into Zotero creators.
+
+    Used only when the claims contract is silent on authors for a DOI (e.g. a
+    DataCite-sourced dataset), so the structured creators from the fetched
+    record are not lost. Each input entry is either ``{"family", "given"}``
+    (personal name) or ``{"name"}`` (organisation / unparsed name), matching the
+    shape `fetch_crossref`/`fetch_openalex`/`fetch_datacite` emit.
+
+    Args:
+        authors: CrossRef-``message``-style ``author`` list.
+
+    Returns:
+        Zotero creator dicts, dropping any empty entries.
+    """
+    creators: list[dict[str, str]] = []
+    for a in authors:
+        family = (a.get("family") or "").strip()
+        given = (a.get("given") or "").strip()
+        if family:
+            creators.append(
+                {"creatorType": "author", "lastName": family,
+                 "firstName": given}
+            )
+            continue
+        name = (a.get("name") or "").strip()
+        if name:
+            creators.append({"creatorType": "author", "name": name})
+    return creators
 
 
 def parse_author_string(s: str) -> list[dict[str, str]]:
@@ -466,7 +1033,12 @@ def build_zotero_item(
       - tags: synthesised from run_timestamp + table_row + corrections
     """
     cr_type = crossref_msg.get("type", "")
-    item_type = CROSSREF_TO_ZOTERO_TYPE.get(cr_type, "journalArticle")
+    # Resolve the Zotero itemType: try the CrossRef map first, then the
+    # DataCite-introduced extras (e.g. `software` → `computerProgram`), then
+    # default to `journalArticle` (the historical fallback).
+    item_type = CROSSREF_TO_ZOTERO_TYPE.get(cr_type) or (
+        EXTRA_TYPE_TO_ZOTERO_TYPE.get(cr_type, "journalArticle")
+    )
 
     # Title: prefer the claims value (corrected, even if it is the
     # empty string) over CrossRef; only fall back to CrossRef when the
@@ -496,19 +1068,36 @@ def build_zotero_item(
         date_str = str(year)
 
     # Authors: corrected value from claims, parsed back to creators.
-    # Use `is None` so a verifier-corrected empty string (no authors
-    # asserted) is preserved verbatim instead of silently falling back.
-    authors_claim = (claims_for_doi.get("authors") or {}).get("value")
-    authors_str = "" if authors_claim is None else authors_claim
-    creators = parse_author_string(authors_str) if authors_str else []
+    # Three cases, in priority order:
+    #   1. The claims contract carries an `authors` category → that value is
+    #      authoritative (even a verifier-corrected empty string, which means
+    #      "no authors asserted" and must be preserved verbatim). We detect
+    #      this with `"authors" in claims_for_doi`, NOT a truthiness test, so a
+    #      legitimately-empty correction is not mistaken for "absent".
+    #   2. No `authors` category at all (e.g. a DataCite/CrossRef record fetched
+    #      for a DOI the claims set is silent on, such as a dataset) → fall back
+    #      to the fetched record's structured `author` list. This is what lets a
+    #      Zenodo dataset arrive with its 6 DataCite creators rather than zero.
+    #   3. Neither → no creators.
+    if "authors" in claims_for_doi:
+        authors_claim = (claims_for_doi.get("authors") or {}).get("value")
+        authors_str = "" if authors_claim is None else authors_claim
+        creators = parse_author_string(authors_str) if authors_str else []
+    else:
+        creators = _creators_from_record(crossref_msg.get("author") or [])
 
-    # Container fields from CrossRef.
+    # Container fields from the fetched record.
     journal = (crossref_msg.get("container-title") or [""])[0]
     volume = crossref_msg.get("volume", "")
     issue = crossref_msg.get("issue", "")
     pages = crossref_msg.get("page", "")
     issn_list = crossref_msg.get("ISSN", [])
     issn = issn_list[0] if issn_list else ""
+    # Publisher: DataCite supplies this directly (e.g. "Zenodo"); CrossRef
+    # records carry it under `publisher` too. Routed into the type-appropriate
+    # Zotero field below (datasets/preprints → `repository`, software →
+    # `company`, documents → `publisher`).
+    publisher = (crossref_msg.get("publisher") or "").strip()
     abstract = crossref_msg.get("abstract", "")
     if abstract:
         abstract = re.sub(r"<[^>]+>", "", abstract).strip()
@@ -547,7 +1136,10 @@ def build_zotero_item(
         "tags": tag_dicts,
         "collections": [subcollection_key],
     }
-    # Type-specific fields
+    # Type-specific fields. Each Zotero itemType names the "where published"
+    # field differently (Zotero has no universal `publisher`), so the DataCite
+    # `publisher` is routed into the per-type equivalent rather than a single
+    # field. Empty values are omitted to avoid writing blank fields.
     if item_type == "journalArticle":
         item.update(
             {
@@ -564,6 +1156,22 @@ def build_zotero_item(
     elif item_type in ("conferencePaper",):
         item["proceedingsTitle"] = journal
         item["pages"] = pages
+    elif item_type == "dataset":
+        # Zotero `dataset` has no `publisher` field; its repository/registry
+        # equivalent is `repository` (e.g. "Zenodo").
+        if publisher:
+            item["repository"] = publisher
+    elif item_type == "preprint":
+        # Zotero `preprint` uses `repository` for the hosting server (arXiv).
+        if publisher:
+            item["repository"] = publisher
+    elif item_type == "computerProgram":
+        # Zotero `computerProgram` uses `company` for the distributor.
+        if publisher:
+            item["company"] = publisher
+    elif item_type == "document":
+        if publisher:
+            item["publisher"] = publisher
 
     # Stash fix-hint context in extra for unverified rows.
     extras = []
@@ -784,13 +1392,23 @@ def run_import(args: argparse.Namespace) -> int:
         if existing:
             plan_skip.append((doi, existing))
             continue
+        # Metadata fetch chain: CrossRef → DataCite → OpenAlex.
+        #   - CrossRef indexes most journal/book DOIs (richest container data).
+        #   - DataCite is authoritative for datasets, software, and the
+        #     DataCite-registered DOIs CrossRef does not index (Zenodo, arXiv,
+        #     institutional repositories).
+        #   - OpenAlex is the broad backstop for anything neither covers.
+        # Each helper returns the same internal record shape, so the first
+        # non-None result wins and feeds `build_zotero_item` unchanged.
         crossref_msg = fetch_crossref(doi, cr_client)
         if not crossref_msg:
-            # CrossRef does not index every DOI (notably arXiv); fall back
-            # to OpenAlex before giving up.
+            crossref_msg = fetch_datacite(doi, cr_client)
+        if not crossref_msg:
             crossref_msg = fetch_openalex(doi, cr_client)
         if not crossref_msg:
-            plan_failed.append((doi, "no record in CrossRef or OpenAlex"))
+            plan_failed.append(
+                (doi, "no record in CrossRef, DataCite, or OpenAlex")
+            )
             continue
         table_row = table.get(doi.lower(), {})
         cat_corrections = by_doi_corrections.get(doi, {})
@@ -804,7 +1422,9 @@ def run_import(args: argparse.Namespace) -> int:
             subcollection_key="<PLACEHOLDER>",  # filled in live mode
         )
         plan_create.append((doi, item))
-        time.sleep(0.05)  # gentle on CrossRef
+        # No explicit sleep here: per-host pacing inside `_request_with_retry`
+        # (`_pace_host`) now enforces a polite minimum interval for every host
+        # the fetch chain touches, replacing the old flat 0.05 s CrossRef nap.
 
     cr_client.close()
 
