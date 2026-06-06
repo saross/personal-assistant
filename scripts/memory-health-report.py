@@ -64,11 +64,19 @@ QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-postgres-drops.json
 CONFAB_LOG = PA_DIR / "data" / "logs" / "confab-flags.log"
 if not CONFAB_LOG.exists():
     CONFAB_LOG = PA_DIR / "logs" / "confab-flags.log"
+SURFACED_LOG = PA_DIR / "data" / "logs" / "surfaced.log"
+if not SURFACED_LOG.exists():
+    SURFACED_LOG = PA_DIR / "logs" / "surfaced.log"
+DRIFT_LOG = PA_DIR / "data" / "logs" / "drift-sweep.jsonl"
+if not DRIFT_LOG.exists():
+    DRIFT_LOG = PA_DIR / "logs" / "drift-sweep.jsonl"
 DB_NAME = "claude_memories"
 
-# anchor_verify / triage_anchors are underscore-named — direct import works.
+# anchor_verify / triage_anchors / surfacing_stats are underscore-named — direct
+# import works.
 import anchor_verify as av  # noqa: E402
 import triage_anchors as ta  # noqa: E402
+import surfacing_stats  # noqa: E402  (item 16 earned-utility aggregator)
 
 # audit-postgres-sync.py is hyphenated — load via importlib so we can reuse
 # its archive-vs-PG parity check rather than re-derive it.
@@ -304,6 +312,64 @@ def parse_confab_log(lines: list[str]) -> dict[str, Any]:
         "flagged_by_source": dict(by_source.most_common()),
         "flagged_by_kind": dict(by_kind.most_common()),
     }
+
+
+# ============================================================================
+# §G — Memory surfacing (earned utility, item 16) — reads surfaced.log
+# ============================================================================
+
+def surfacing_section(stats: dict[str, dict]) -> dict[str, Any]:
+    """Roll the per-memory surfacing stats up for the report (pure).
+
+    ``stats`` is :func:`surfacing_stats.aggregate_surfacing` output. Returns the
+    corpus summary plus the top-5 most actively-retrieved ids. Empty input
+    yields zeros (the normal pre-accrual state).
+    """
+    summary = surfacing_stats.summarise(stats)
+    ranked = sorted(
+        stats.items(),
+        key=lambda kv: (kv[1]["active_retrievals"], kv[1]["digest_exposures"]),
+        reverse=True,
+    )[:5]
+    summary["top"] = [
+        {"id": mid, "active": s["active_retrievals"], "digest": s["digest_exposures"]}
+        for mid, s in ranked
+    ]
+    return summary
+
+
+# ============================================================================
+# §H — Anchor drift trend (item 8) — reads the drift-sweep.jsonl trend log
+# ============================================================================
+
+def drift_trend(lines: list[str]) -> dict[str, Any]:
+    """Parse the ``drift-sweep.jsonl`` trend log into latest + recent history.
+
+    Each line is one JSON sweep record (written by ``drift-sweep.py``). Pure;
+    tolerant — a malformed line is skipped. Returns ``runs`` count, the
+    ``latest`` record, and the last 8 records' ``fail_pct`` history for a trend.
+    """
+    runs: list[dict] = []
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            runs.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    if not runs:
+        return {"runs": 0, "latest": None, "history": []}
+    history = [
+        {
+            "run_at": r.get("run_at"),
+            "fail_pct": r.get("fail_pct"),
+            "total_anchored": r.get("total_anchored"),
+            "fail": r.get("fail"),
+        }
+        for r in runs[-8:]
+    ]
+    return {"runs": len(runs), "latest": runs[-1], "history": history}
 
 
 # ============================================================================
@@ -546,6 +612,41 @@ def render_report(report: dict[str, Any]) -> list[str]:
     else:
         out.append("\n[F] Tier C — skipped (pass --tier-c to run; does git resolution)")
 
+    sf = report.get("surfacing")
+    out.append("\n[G] Memory surfacing (earned utility — item 16)")
+    if not sf or sf.get("distinct_memories_surfaced", 0) == 0:
+        out.append("  (no surfacings logged yet — accruing forward)")
+    else:
+        out.append(
+            f"  distinct surfaced       : {sf['distinct_memories_surfaced']}"
+        )
+        out.append(
+            f"  ever actively retrieved : {sf['memories_ever_actively_retrieved']} "
+            "(fetch/recall — intent-driven)"
+        )
+        out.append(
+            f"  active / digest exposures: {sf['total_active_retrievals']} / "
+            f"{sf['total_digest_exposures']}"
+        )
+        if sf.get("top"):
+            top = ", ".join(f"{t['id']}({t['active']})" for t in sf["top"])
+            out.append(f"  top active              : {top}")
+
+    dt = report.get("drift_trend")
+    out.append("\n[H] Anchor drift trend (item 8 — from drift-sweep.jsonl)")
+    if not dt or dt.get("runs", 0) == 0:
+        out.append("  (no drift-sweep runs logged yet — run scripts/drift-sweep.py)")
+    else:
+        lat = dt["latest"]
+        run_day = str(lat.get("run_at", "?"))[:10]
+        out.append(
+            f"  latest ({run_day})    : {lat.get('fail')}/{lat.get('total_anchored')} "
+            f"fail = {lat.get('fail_pct')}%"
+        )
+        if len(dt["history"]) > 1:
+            trend = " → ".join(f"{h['fail_pct']}%" for h in dt["history"])
+            out.append(f"  fail% trend (last {len(dt['history'])}) : {trend}")
+
     out.append("\n" + "=" * 72)
     return out
 
@@ -585,6 +686,16 @@ def build_report(
         if CONFAB_LOG.exists() else []
     )
     confab = parse_confab_log(confab_lines)
+
+    # §G earned-utility surfacing (reads surfaced.log; fast, mutates nothing).
+    surfacing = surfacing_section(surfacing_stats.aggregate_surfacing(SURFACED_LOG))
+
+    # §H anchor drift trend (reads the drift-sweep.jsonl trend log; fast).
+    drift_lines = (
+        DRIFT_LOG.read_text(encoding="utf-8").splitlines()
+        if DRIFT_LOG.exists() else []
+    )
+    drift = drift_trend(drift_lines)
 
     # PG-dependent integrity
     pg = pg_snapshot(logger)
@@ -635,6 +746,8 @@ def build_report(
         "anchors": anchors,
         "integrity": integrity,
         "confab": confab,
+        "surfacing": surfacing,
+        "drift_trend": drift,
     }
 
     if run_tier_c:

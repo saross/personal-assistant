@@ -223,3 +223,58 @@ class TestTierCAudit:
         assert out["fail_count"] == 1
         # The resolving file anchor is excluded → empty split.
         assert out["failing_file_ref_recovery"] == {}
+
+
+class TestSurfacingSection:
+    """§G — earned-utility surfacing summary (item 16)."""
+
+    def test_empty_stats(self) -> None:
+        out = mhr.surfacing_section({})
+        assert out["distinct_memories_surfaced"] == 0
+        assert out["top"] == []
+
+    def test_summary_and_top(self) -> None:
+        stats = {
+            "a": {"active_retrievals": 3, "digest_exposures": 1,
+                  "last_active_at": "t", "last_any_at": "t"},
+            "b": {"active_retrievals": 0, "digest_exposures": 5,
+                  "last_active_at": None, "last_any_at": "t"},
+        }
+        out = mhr.surfacing_section(stats)
+        assert out["distinct_memories_surfaced"] == 2
+        assert out["memories_ever_actively_retrieved"] == 1  # only 'a'
+        assert out["total_active_retrievals"] == 3
+        assert out["total_digest_exposures"] == 6
+        # 'a' (active 3) ranks above 'b' (active 0).
+        assert out["top"][0]["id"] == "a"
+        assert out["top"][0]["active"] == 3
+
+
+class TestDriftTrend:
+    """§H — anchor drift trend parsing (item 8)."""
+
+    def test_no_runs(self) -> None:
+        assert mhr.drift_trend([]) == {"runs": 0, "latest": None, "history": []}
+        assert mhr.drift_trend(["", "  "])["runs"] == 0
+
+    def test_parses_and_keeps_latest_plus_history(self) -> None:
+        lines = [
+            '{"run_at": "2026-06-01T00:00:00+00:00", "fail_pct": 18.0, "total_anchored": 1500, "fail": 270}',
+            'GARBAGE LINE',
+            '{"run_at": "2026-06-06T00:00:00+00:00", "fail_pct": 18.4, "total_anchored": 1616, "fail": 297}',
+        ]
+        out = mhr.drift_trend(lines)
+        assert out["runs"] == 2  # malformed line skipped
+        assert out["latest"]["fail_pct"] == 18.4
+        assert [h["fail_pct"] for h in out["history"]] == [18.0, 18.4]
+
+    def test_history_capped_at_8(self) -> None:
+        lines = [
+            f'{{"run_at": "2026-06-{i:02d}T00:00:00+00:00", "fail_pct": {i}.0,'
+            f' "total_anchored": 1000, "fail": {i}}}'
+            for i in range(1, 13)
+        ]
+        out = mhr.drift_trend(lines)
+        assert out["runs"] == 12
+        assert len(out["history"]) == 8  # last 8 only
+        assert out["history"][-1]["fail_pct"] == 12.0

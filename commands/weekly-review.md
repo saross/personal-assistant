@@ -113,12 +113,23 @@ it mutates nothing, safe to run any time):
 venv/bin/python3 ~/personal-assistant/scripts/memory-health-report.py
 ```
 
-Capture sections [A]–[E] for the Memory-System Health section of the
-template below. The Tier-C anchor-fail audit (`--tier-c`, ~1.5 min of git
-resolution) is **optional** here — run it only if you want the write-time
-anchor-fail rate this week, or leave it to a less time-pressured moment. If
-the report exits non-zero (integrity != PASS — a recall leak, a duplicate-id,
-or quarantined PG-drops), that is a real finding: surface it prominently.
+Capture sections [A]–[H] for the Memory-System Health section of the
+template below — including **[G] memory surfacing** (earned utility, item 16)
+and **[H] anchor drift trend** (item 8), both read-only log reads. The Tier-C
+anchor-fail audit (`--tier-c`, ~1.5 min of git resolution) is **optional**
+here — run it only if you want the write-time anchor-fail rate this week, or
+leave it to a less time-pressured moment. If the report exits non-zero
+(integrity != PASS — a recall leak, a duplicate-id, or quarantined PG-drops),
+that is a real finding: surface it prominently.
+
+To add a fresh point to the **drift trend** ([H]), optionally run the
+drift-sweep first (~2 min of git resolution; appends one line to
+`drift-sweep.jsonl`); skip it on a time-pressured week and [H] just shows the
+last recorded point:
+
+```bash
+venv/bin/python3 ~/personal-assistant/scripts/drift-sweep.py
+```
 
 ### 3. Load Previous Review (for trends)
 
@@ -184,9 +195,12 @@ prior review's figures for trend where available:
 - **Integrity:** PASS/FAIL — archive↔PG parity, live\PG tail, quarantine count
 - **Anchors:** anchored %, verified true/false/pending
 - **Confab-flag rate:** verifier Σflagged/Σchecked + absolute manual catches
+- **Surfacing [G]:** distinct surfaced, ever-actively-retrieved, active/digest
+  exposures (earned-utility signal building toward item 16 Stage 2)
+- **Drift trend [H]:** latest fail %, and the trend vs prior weeks
 - **Tier-C** (only if `--tier-c` was run this week): fresh-anchor-fail rate
 Flag any FAIL or adverse trend (corpus bloating, dup-ids appearing, confab
-rate climbing). If the report was not run: "Not run this week."]
+rate climbing, drift rate rising). If the report was not run: "Not run this week."]
 
 ## Patterns
 

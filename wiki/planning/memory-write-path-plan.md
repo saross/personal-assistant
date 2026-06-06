@@ -655,7 +655,10 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    forward high-precision suggestion slice stays available but optional. The
    binding-constraint *diagnosis* stands; the deterministic *remedy* is weaker
    than hoped — the dry-run earned its keep (like P3's spot-check). Awaiting
-   Shawn. No-API.
+   Shawn. No-API. **✅ Lever B (anchor-type expansion / item 19) SIZED + DROPPED
+   2026-06-06:** negligible demand over 4,402 unanchored (URL 6, DOI 17, PR/issue
+   138-but-noisy, Zotero-already-supported 84, memory-id 2 — all <3 %), and the
+   few candidates need network to verify — no hidden type-narrowness reservoir.
 10. **P10 — extraction silently DROPS the densest windows (`max_tokens=2000`
     truncation → data loss). BUG, diagnosed 2026-06-06; NOT yet fixed.** Surfaced
     by the 2026-06-06 verify-checks agent (84 post-v2 "Failed to parse extraction
@@ -702,8 +705,13 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     deferred** (proposal §9; revisit after P3, agreed not-worth-it-now 2026-06-06).
 
 **Lower:** items 4 (correction loop — ✅ DONE via P8 2026-06-06),
-7 (actionable what-changed counter), 10/identifier-welding,
-8 (drift-sweep job — ✅ DONE 2026-06-06, `scripts/drift-sweep.py`), 17, 19.
+7 (actionable what-changed counter — §8-gated until 2026-06-13),
+10/identifier-welding (§8-gated), 8 (drift-sweep job — ✅ DONE 2026-06-06,
+`scripts/drift-sweep.py`; trend now folded into the `/memory-health` report
+[H] + `/weekly-review`), 17 (confidence-field hygiene), 19 (anchor-type
+expansion — ✅ SIZED + DROPPED 2026-06-06, negligible demand). The item-16
+earned-utility surfacing signal is now folded into the health report [G] +
+`/weekly-review` (2026-06-06), so it surfaces as it accrues.
 
 Items 5, 6, 15 (anything LLM/embedding-driven — semantic dedup, the
 retroactive anchor-gen pass to verify the back-corpus) are **API-gated** —

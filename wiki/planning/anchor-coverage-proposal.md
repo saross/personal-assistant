@@ -151,14 +151,18 @@ heavily-worked `anchor_verify.verify_file` / `verify_commit` /
   (valuable decisions never surfacing) is worse. This tension is the main design
   call (§8).
 
-### Lever B — anchor-type expansion (item 19, no-API)
+### Lever B — anchor-type expansion (item 19) — ❌ SIZED 2026-06-06, NOT WORTH IT
 
-Add `url`, `pr`/`issue`, `dataset`, and `memory`-to-`memory` anchor types: extend
-the prompt's type list, `wellformed_anchor`, and the verify functions. Captures
-referents currently lost to type-narrowness. No-API forward change, offline-
-testable. **But the demand is unquantified** (the malformed-type tail is tiny
-because the prompt suppresses it), so size it before building — sample unanchored
-research-side memories for unsupported referents.
+Idea: add `url`, `pr`/`issue`, `dataset`, `memory`-to-`memory` anchor types.
+**Sized read-only (2026-06-06) over the 4,402 unanchored post-v2 memories — the
+demand is negligible:** URL 6 (0 %), DOI 17 (0 %), arXiv 2 (0 %), PR/issue 138
+(3 %, and `#NNN` is noisy — mostly section/count numbers), Zotero-key-like 84
+(1 %, and `zotero` is *already* a supported type), memory-id ref 2 (0 %). And the
+few real candidates split badly on verifiability: URL/DOI/PR need **network** to
+resolve (so they'd just produce `verified=false`/`pending`, not grow the
+verified-true pool), while the locally-verifiable ones (Zotero — already
+supported; memory-to-memory — 2 records) are vanishing. **Conclusion: there is no
+hidden type-narrowness reservoir; Lever B is dropped.**
 
 ### Lever C — tighten the prompt escape hatch (P3-tempered, API-gated)
 
@@ -247,8 +251,9 @@ not abandoned — the forward high-precision slice (2) remains available — but
    entirely and **make item 16 (earned utility) the primary surfacing lever**.
    Lean: **(b)** — item 16 is more general and already instrumented; revisit the
    forward slice (a) only if a cheap precision guard emerges.
-3. **Lever B (type expansion):** worth sizing, or skip until a concrete demand
-   surfaces? Lean: size it opportunistically; not urgent.
+3. ✅ **Lever B (type expansion) — SIZED 2026-06-06: dropped.** Negligible demand
+   (<3 % even with noisy regexes), and the few candidates need network to verify.
+   No hidden reservoir; not worth building.
 4. **Prompt (Lever C):** ever worth the API spot-check, given P3? Lean: defer
    until A's net reach is known — if A lifts coverage materially, C may be
    unnecessary.

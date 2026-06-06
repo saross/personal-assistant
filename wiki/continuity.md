@@ -2088,6 +2088,15 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — cleanup: today's two signals folded into the health report ([G]+[H]); anchor-type expansion (Lever B) sized + dropped
+
+Two no-API cleanups to make today's instrumentation pay off and to close a speculative lever.
+
+- **#1 — surfacing + drift-trend folded into `memory-health-report.py` (and `/weekly-review`).** The earned-utility surfacing log and the drift-sweep trend log were accruing *invisibly*; now they surface in the standing report: **[G] Memory surfacing** (reads `surfaced.log` via `surfacing_stats.aggregate_surfacing` — distinct surfaced, ever-actively-retrieved, active/digest exposures, top-5) and **[H] Anchor drift trend** (reads `drift-sweep.jsonl` — latest fail % + last-8 trend). Both always-on + fast (log reads, no git/PG). `/weekly-review` already runs the report, so they appear in the ritual automatically; also added an optional weekly `drift-sweep.py` run (to append a trend point) + the two new fields to the review template. New pure `surfacing_section()` + `drift_trend()`; **+6 tests, health-report file 19 pass, full suite 1088** (only the 2 unrelated lit-search 429 fails). Live-verified: [G] already shows 11 distinct / 3 active / 8 digest exposures (the surfacing instrumentation has been firing live this session), [H] shows 297/1616 = 18.4%. This resolves item 16's "aggregator home" open call (health-report section, not standalone).
+- **#2 — Lever B (anchor-type expansion / item 19) SIZED → DROPPED.** Read-only count over the 4,402 unanchored post-v2 memories: URL 6 (0 %), DOI 17 (0 %), arXiv 2 (0 %), PR/issue 138 (3 %, but `#NNN` is noisy), Zotero-key-like 84 (1 %, and `zotero` is *already* supported), memory-id 2 (0 %). The few real candidates also split badly on verifiability — URL/DOI/PR need **network** (so they'd just be `verified=false`), the locally-verifiable ones are vanishing. **No hidden type-narrowness reservoir; Lever B not worth building.** Recorded in the anchor proposal (Lever B + §7 #3) + plan.
+- **Net for item 6:** both deterministic remedies now closed out — Lever A repriced to 13 %+dilution (drop the blanket mutation), Lever B negligible. Confirms **item 16 (earned utility) is the path**, and #1 just made its signal visible. The binding-constraint diagnosis stands; the at-source remedies don't pay.
+- **Provenance:** `scripts/memory-health-report.py` + `tests/test_memory_health_report.py` + `commands/weekly-review.md` (#1); `wiki/planning/anchor-coverage-proposal.md` + plan §6a (#2 + #1 notes); this entry. No live change to the digest/hook; data submodule + `wiki/reflections/*` untouched.
+
 ### 2026-06-06 (Sat, latest PA) — item 6 Lever A Step-0 dry-run: repriced DOWN (13% net, dilution confirmed) → pivot to item 16 as the primary surfacing lever
 
 Executed the read-only, no-API Step-0 dry-run of Lever A (deterministic anchor inference) over the back-corpus. It earned its keep exactly like P3's spot-check — it repriced a compelling-looking lever before any build or corpus mutation. Nothing written.
