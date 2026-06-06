@@ -1028,3 +1028,95 @@ class TestCursorFileLock:
             assert saved.get(f"sess-{i}") == f"uuid-{i}", (
                 f"lost write from worker {i}; final state: {saved!r}"
             )
+
+
+# ============================================================================
+# P10: max_tokens truncation salvage
+# ============================================================================
+
+
+class TestSalvageTruncatedArray:
+    """_salvage_truncated_array recovers the complete prefix of a cut-off array."""
+
+    def test_complete_array_returns_all(self):
+        text = '[{"content": "a"}, {"content": "b"}, {"content": "c"}]'
+        assert eh._salvage_truncated_array(text) == [
+            {"content": "a"}, {"content": "b"}, {"content": "c"}
+        ]
+
+    def test_truncated_mid_string_keeps_complete_prefix(self):
+        # Two complete objects, then a third cut off mid-string.
+        text = '[{"content": "a"}, {"content": "b"}, {"content": "cccc'
+        assert eh._salvage_truncated_array(text) == [
+            {"content": "a"}, {"content": "b"}
+        ]
+
+    def test_truncated_mid_object_keeps_prefix(self):
+        # Cut off mid-key of the second object.
+        text = '[{"content": "a"}, {"cat'
+        assert eh._salvage_truncated_array(text) == [{"content": "a"}]
+
+    def test_first_object_truncated_returns_empty(self):
+        text = '[{"content": "aaaa'
+        assert eh._salvage_truncated_array(text) == []
+
+    def test_open_bracket_only(self):
+        assert eh._salvage_truncated_array("[") == []
+
+    def test_empty_array(self):
+        assert eh._salvage_truncated_array("[]") == []
+
+    def test_non_array_returns_empty(self):
+        assert eh._salvage_truncated_array('{"content": "a"}') == []
+        assert eh._salvage_truncated_array("garbage") == []
+
+    def test_whitespace_and_newlines_between_objects(self):
+        text = '[\n  {"content": "a"},\n  {"content": "b"},\n  {"content": "tr'
+        assert eh._salvage_truncated_array(text) == [
+            {"content": "a"}, {"content": "b"}
+        ]
+
+    def test_non_dict_elements_filtered(self):
+        text = '[{"content": "a"}, "loose string", {"content": "b"}, {"c'
+        assert eh._salvage_truncated_array(text) == [
+            {"content": "a"}, {"content": "b"}
+        ]
+
+
+class TestTruncationRouting:
+    """A max_tokens stop_reason routes to salvage instead of dropping the window."""
+
+    @staticmethod
+    def _mock_response(text: str, stop_reason: str):
+        block = MagicMock()
+        block.text = text
+        resp = MagicMock()
+        resp.content = [block]
+        resp.stop_reason = stop_reason
+        return resp
+
+    def test_truncated_response_is_salvaged_not_dropped(self):
+        truncated = '[{"category": "progress", "content": "a"}, {"category": "tru'
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.return_value = self._mock_response(
+                    truncated, "max_tokens"
+                )
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-trunc")
+        # Pre-P10 this returned [] (whole window lost); now the one complete
+        # object is recovered.
+        assert result == [{"category": "progress", "content": "a"}]
+
+    def test_complete_response_unaffected(self):
+        complete = '[{"category": "progress", "content": "a"}]'
+        with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
+            with patch("anthropic.Anthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_client.messages.create.return_value = self._mock_response(
+                    complete, "end_turn"
+                )
+                mock_cls.return_value = mock_client
+                result = eh.extract_memories(_long_conversation(), "sess-ok")
+        assert result == [{"category": "progress", "content": "a"}]

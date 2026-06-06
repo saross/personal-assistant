@@ -642,8 +642,19 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
     noted as a further safety net; an optional bounded reduce-window tail-retry
     is a future refinement. Validation: (b)'s salvage is **offline-unit-testable
     (no-API)**; an optional ~$4–5 Haiku spot-check quantifies the truncation-rate
-    drop (gated). **Proposal written; implementation awaits Shawn's go** (live
-    hook → careful treatment). See proposal §9 for the 4 open calls.
+    drop (gated). **✅ IMPLEMENTED 2026-06-06 (no-API).** `hooks/extraction-hook.py`:
+    new `EXTRACTION_MAX_TOKENS = 8000` constant (replaces the literal `2000`);
+    new pure `_salvage_truncated_array()` (`raw_decode`s the complete leading
+    objects, stops at the cut-off tail, returns only dicts); a
+    `stop_reason == "max_tokens"` branch before `json.loads` that salvages +
+    advances the cursor (the genuine-malformation `return []` path kept for true
+    garbage). **+11 offline tests** (9 salvage shapes + truncation-routing +
+    complete-response-unaffected); extraction-hook file 73 pass, full suite 1083
+    (the only 2 fails are the unrelated lit-search 429 tests). Hook import-smoke
+    clean. The ~$4–5 spot-check was **not** run (ship-and-observe — the diagnosis
+    is conclusive + (b) is offline-tested; forward truncation rate now observable
+    via the verify-check query). **Back-fill of the 81 already-lost windows
+    deferred** (proposal §9; revisit after P3, agreed not-worth-it-now 2026-06-06).
 
 **Lower:** items 4 (correction loop — ✅ DONE via P8 2026-06-06),
 7 (actionable what-changed counter), 10/identifier-welding,

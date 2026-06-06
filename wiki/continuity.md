@@ -2088,6 +2088,16 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — P10 IMPLEMENTED: extraction no longer drops truncated windows (max_tokens 2000→8000 + salvage; +11 tests → suite 1083)
+
+Implemented the P10 fix (a)+(b) in the live extraction hook, per Shawn's go. No-API code change; ship-and-observe (no spot-check run). Back-fill of the 81 already-lost windows deferred (agreed not-worth-it-now; revisit after P3).
+
+- **`hooks/extraction-hook.py`** — three edits: **(a)** new `EXTRACTION_MAX_TOKENS = 8000` constant replacing the literal `max_tokens=2000` (the truncation cause); **(b)** new pure `_salvage_truncated_array(text)` (`json.JSONDecoder().raw_decode`s the complete leading objects, stops at the cut-off tail, returns only dicts) + a `getattr(response, "stop_reason", None) == "max_tokens"` branch *before* `json.loads` that salvages the prefix and advances the cursor. The genuine-malformation `return []` path is kept for the 4 true-garbage cases; the C2 transient-error `return None` path is untouched.
+- **Why salvage, not retry:** re-reading the same oversized window truncates identically (sizing, not transient) → naive "preserve + retry" would wedge (the C2 failure mode). Salvage keeps the N complete objects, drops only the incomplete tail, and advances — wedge-free.
+- **+11 offline tests** (`TestSalvageTruncatedArray` 9 shapes: complete / mid-string / mid-object / first-truncated / `[`-only / `[]` / non-array / whitespace / non-dict-filter; `TestTruncationRouting` 2: max_tokens→salvaged-not-dropped, end_turn→unaffected). extraction-hook file **73 pass**; **full suite 1083** (only the 2 unrelated lit-search 429 fails remain). Live hook import-smoke clean (`EXTRACTION_MAX_TOKENS=8000`, salvage works).
+- **Forward-only:** new dense windows now extract fully (or salvage); the truncation rate is observable going forward via the verify-check query. The 81 lost windows (~1,200–2,000 memories) stay recoverable from archived transcripts if/when the back-fill is scoped (after P3).
+- **Provenance:** `hooks/extraction-hook.py` + `tests/test_extraction_hook.py` (edited); plan §6a P10 marked IMPLEMENTED. Data submodule + `wiki/reflections/*` untouched.
+
 ### 2026-06-06 (Sat, latest PA) — P10 fix PROPOSAL written ((a)+(b)); lit-scout fix branch merged to main
 
 - **P10 proposal** (`wiki/planning/extraction-truncation-proposal.md`) — Shawn picked "(a)+(b)". **(a)** raise extraction `max_tokens` 2000 → 8000 (headroom, self-funding); **(b)** detect truncation via `response.stop_reason == "max_tokens"` then **salvage the complete-object prefix** (keep the N fully-formed memories, drop only the cut-off tail) and advance the cursor. **Corrected my own earlier (b):** "treat truncation as transient / preserve the window" is wrong — re-reading the same oversized window truncates identically (a sizing problem, not a transient one), so it would **wedge** (the exact C2 failure mode); salvage-prefix is wedge-free and lossless for the prefix. (b)'s salvage logic is offline-unit-testable (no-API); an optional ~$4–5 Haiku spot-check quantifies the truncation-rate drop (gated). **Diagnosed + proposed, NOT edited** — live hook gets the careful treatment; implementation awaits Shawn's go (4 open calls in §9). Plan §6a P10 updated to point at the proposal.

@@ -50,6 +50,14 @@ LOG_FILE = LOG_DIR / "extraction.log"
 # Model for extraction — Haiku is cheap and fast
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
+# Output-token cap for the extraction call. P10 (2026-06-06): was 2000, which
+# truncated content-dense windows mid-JSON — the response cut off at ~6–8k chars
+# (≈2000 tokens), ``json.loads`` raised, and the whole window was dropped (its
+# memories lost forever; 81 such windows over three weeks). 8000 gives Haiku room
+# to finish; any residual truncation is now detected and salvaged rather than
+# dropped (see ``_salvage_truncated_array`` and the ``stop_reason`` branch).
+EXTRACTION_MAX_TOKENS = 8000
+
 # Transcript parsing limits
 MIN_CONTENT_LENGTH = 500   # Skip short conversations
 MAX_EXCHANGES = 30         # Cap exchanges sent to Haiku
@@ -523,6 +531,40 @@ def parse_transcript(
 # ============================================================================
 
 
+def _salvage_truncated_array(text: str) -> list[dict]:
+    """Recover the complete leading objects from a truncated JSON array (P10).
+
+    A response truncated at ``max_tokens`` is ``[{obj}, {obj}, …, {partial`` —
+    N complete memory objects followed by one cut-off object. We ``raw_decode``
+    each value in turn and stop at the first failure (the truncated tail),
+    returning only the dicts fully recovered — never a partial. This converts
+    "truncate → drop the whole window" into "truncate → keep the N that fit".
+
+    Pure and API-free (offline-testable). Returns ``[]`` if ``text`` is not an
+    array or nothing parses.
+    """
+    text = text.strip()
+    if not text.startswith("["):
+        return []
+    decoder = json.JSONDecoder()
+    objs: list[dict] = []
+    i = 1  # step past the opening '['
+    n = len(text)
+    while i < n:
+        # Skip inter-element whitespace and separators before the next value.
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] == "]":
+            break
+        try:
+            value, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break  # reached the cut-off tail object — stop, keep what we have
+        if isinstance(value, dict):
+            objs.append(value)
+    return objs
+
+
 def extract_memories(messages: list[dict], session_id: str) -> list[dict] | None:
     """
     Send conversation to Haiku for structured memory extraction.
@@ -582,7 +624,7 @@ def extract_memories(messages: list[dict], session_id: str) -> list[dict] | None
     try:
         response = client.messages.create(
             model=HAIKU_MODEL,
-            max_tokens=2000,
+            max_tokens=EXTRACTION_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
     except (anthropic.APITimeoutError, anthropic.APIConnectionError) as e:
@@ -636,6 +678,21 @@ def extract_memories(messages: list[dict], session_id: str) -> list[dict] | None
             response_text = "\n".join(lines[1:-1])
         else:
             response_text = "\n".join(lines[1:])
+
+    # P10 (2026-06-06): a response cut off at max_tokens is NOT malformed — it is
+    # N complete memory objects plus a truncated tail. Salvage the complete
+    # prefix instead of dropping the whole window, then advance the cursor.
+    # (Re-reading the same oversized window would truncate identically — a naive
+    # "preserve + retry" would wedge, the C2 failure mode.) Genuine malformation
+    # still falls through to the JSONDecodeError branch below.
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        salvaged = _salvage_truncated_array(response_text)
+        logger.warning(
+            "Haiku response truncated at max_tokens (session %s); salvaged %d "
+            "complete memor%s from the truncated array",
+            session_id, len(salvaged), "y" if len(salvaged) == 1 else "ies",
+        )
+        return salvaged
 
     try:
         extracted = json.loads(response_text)
