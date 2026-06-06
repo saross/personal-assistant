@@ -611,9 +611,33 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    (not a record field — P8). Staged: instrument now (forward-only) → consume
    once data accrues. Awaiting Shawn (4 open calls, §7). **(c) still open:**
    anchor coverage (item 6, the binding constraint). No-API.
+10. **P10 — extraction silently DROPS the densest windows (`max_tokens=2000`
+    truncation → data loss). BUG, diagnosed 2026-06-06; NOT yet fixed.** Surfaced
+    by the 2026-06-06 verify-checks agent (84 post-v2 "Failed to parse extraction
+    JSON" errors in `extraction.log`) and run to ground at source. **Root cause:**
+    `hooks/extraction-hook.py:585` calls Haiku with `max_tokens=2000`; on a
+    content-dense window Haiku's JSON array of memories overruns the cap and is
+    **truncated mid-string**. **Every** failure is an `Unterminated string
+    starting at … (char ~6,200–7,800)` — the 2,000-token-cutoff signature, not
+    genuinely-malformed output. The `except json.JSONDecodeError` path
+    (`:653–656`) then `return []`, and per the C2 audit note (`:541–548`) `[]`
+    **advances the cursor** — so the window is never retried and **its memories
+    are lost forever.** The C2 design deliberately classed "malformed JSON" as a
+    hopeless/permanent input (give up, advance); the data shows it is actually
+    **truncation** (retry-worthy), so the classification is wrong for this case.
+    The cruel irony vs P3 (over-extraction): the *richest* windows extract
+    **zero**. Scale: ~84 windows over 3 weeks (≈ a few hundred memories), spiky
+    (31 on a dense 2026-06-05). **Fix options (touches the LIVE hook → propose,
+    don't edit blind; validating needs Haiku calls → API-gated):** (a) bump
+    `max_tokens` (2000 → ~8000) — kills ~all current failures, cheap; (b) check
+    `response.stop_reason == "max_tokens"` and treat truncation as transient
+    (`return None`, preserve the window) instead of permanent — the principled
+    fix; (c) quarantine the raw truncated response to a side file (no-API safety
+    net, recoverable later). Recommended: (a)+(b) together. **Logged, not built.**
 
-**Lower:** items 4 (correction loop), 7 (actionable what-changed counter),
-10 (identifier-welding), 8 (drift-sweep job), 17, 19.
+**Lower:** items 4 (correction loop — ✅ DONE via P8 2026-06-06),
+7 (actionable what-changed counter), 10/identifier-welding,
+8 (drift-sweep job — ✅ DONE 2026-06-06, `scripts/drift-sweep.py`), 17, 19.
 
 Items 5, 6, 15 (anything LLM/embedding-driven — semantic dedup, the
 retroactive anchor-gen pass to verify the back-corpus) are **API-gated** —
