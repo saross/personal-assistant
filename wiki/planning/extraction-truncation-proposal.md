@@ -39,18 +39,23 @@ silently lost forever." C2 (2026-05-19) fixed *transient API errors* (5xx/429
 → `return None`, cursor held) but **deliberately kept malformed JSON as
 permanent** ("bounded behaviour for hopeless inputs (4xx, malformed JSON…)").
 
-**The evidence that this is truncation, not "hopeless input":** every one of the
-84 failures in `data/logs/extraction.log` is an
-`Unterminated string starting at … (char ~6,200–7,800)` — and 2,000 output
-tokens ≈ 6,000–8,000 characters. The cutoff lands exactly at the token cap. The
-output is not malformed; it is *unfinished*. The classification is wrong for
-this case: truncation on a too-large window is **not** hopeless — the data was
-there, we just didn't give Haiku room to finish emitting it.
+**The evidence that this is truncation, not "hopeless input":** of the 85 parse
+failures in `data/logs/extraction.log`, **81 are truncation** — the JSON breaks
+at **char 5,912–7,846** (2,000 output tokens ≈ 6,000–8,000 characters; the
+cutoff lands exactly at the token cap), and the bracketing log lines show they
+come from **dense** windows. The output is not malformed; it is *unfinished*.
+The remaining **4** are genuine small-window malformation (char 54–1,310, from
+2–5-message windows) — those are the real "hopeless input" C2 was right about,
+and the fix below leaves them on the existing `return []` path. (Earlier notes
+said "every one is an unterminated string"; the accurate figure is 81/85.)
 
-**Scale:** ~84 windows over three weeks (≈ a few hundred memories at the
-per-window median of ~3), spiky — 31 on the dense 2026-06-05. The cruel inverse
-of P3 (which worried about *over*-extraction): here the **richest** windows
-extract **zero**.
+**Scale:** the 81 truncated windows span **35 distinct sessions** and ~1,768
+messages of content, over three weeks — spiky (31 on the dense 2026-06-05). Each
+overflowed *because* it was dense (emitting ~15–25 objects before the cutoff at
+~7k chars), so the lost count is well above the per-window median of ~3 —
+order **~1,200–2,000 memories**, not "a few hundred". The cruel inverse of P3
+(which worried about *over*-extraction): here the **richest** windows extract
+**zero**.
 
 ---
 
@@ -211,7 +216,52 @@ salvage. The C2 transient-error path (`return None`) is untouched.
 
 ---
 
-## 9. Open calls for Shawn
+## 9. Recovering the already-lost windows (back-fill) — feasible, qualified-worth-it
+
+The loss is **not permanent**: the full session transcripts are archived (Phase 0,
+2026-05-22 — `~/mnt/rpi-shares/cc-archives-consolidated/` + local mirrors), and
+the truncated windows are **precisely identifiable**. Each parse-failure line in
+`extraction.log` is bracketed by `Processing N new messages from session <id>`
+and `No memories extracted from N messages (session <id>)`, so a read-only log
+parse yields, for all **81** truncations, the `(session_id, message_count,
+timestamp)` — **35 distinct sessions**. So a targeted back-fill is buildable.
+
+**But "feasible" ≠ "worth doing now". The honest cost/benefit:**
+
+- **The information is preserved**, just not in the *memory index*. Those windows'
+  content is in the archived transcripts, searchable on demand (tier-3 / `/recall`
+  over the archive). Back-filling restores **proactive surfacing** (digest /
+  autonomous recall) for those windows — real value, but bounded.
+- **The recovered set is mixed signal.** Dense windows are exactly where P3's
+  ~4–7× over-extraction bites hardest, so re-extracting them re-imports both the
+  genuine signal *and* the over-extraction noise the archival/retention work is
+  managing. Recovering ~1,200–2,000 memories adds materially to corpus volume.
+- **Dedup is the technical crux.** A whole-session reprocess (simplest — reuse the
+  existing `reprocess-*` toolkit) re-produces the *non-truncated* windows'
+  memories too, so it needs dedup against the existing corpus (item 15 — unbuilt,
+  embedding-driven, API-gated). Targeted exact-window re-extraction avoids dedup
+  but needs cursor-position reconstruction (fiddly).
+- **API-gated.** Re-extraction is Haiku calls: ~$4 (targeted 81 windows) to ~$15–20
+  (full reprocess of 35 sessions). Present model/count/cost before any run.
+
+**Recommended sequence (so the back-fill is clean, not noise-amplifying):**
+
+1. **Fix P10 first** (§3–§8) — re-extracting *before* the fix just truncates
+   again. Non-negotiable ordering.
+2. **Land the P3 prompt/selectivity fix too**, ideally — then the re-extraction
+   uses the *better* prompt and recovers fewer, higher-value memories instead of
+   re-importing the dense-window noise.
+3. **Then** scope the back-fill as its own small API-gated project (log-parse →
+   identify windows → reprocess → dedup → insert net-new). A read-only first step
+   (the log parse + exact lost-window/-session list + a per-session memory-gap
+   estimate) is no-API and could be done anytime to firm up the decision.
+
+**Verdict: feasible and a qualified yes — but a deliberate, sequenced
+second-order move, not a quick patch.** Highest-value action is the forward fix;
+the back-fill is "nice to recover" given the transcripts are safe, and is best
+done after P10 *and* P3 so it restores signal without re-amplifying noise.
+
+## 10. Open calls for Shawn
 
 1. **`max_tokens` target:** 8,000 (proposed — generous headroom) vs a different
    value. Lean: 8,000.
