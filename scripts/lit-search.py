@@ -18,12 +18,17 @@ No API keys required — uses free tiers and polite pool headers.
 """
 
 import argparse
+import email.utils
 import json
 import logging
+import os
+import random
 import re
 import sys
+import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -40,19 +45,115 @@ CROSSREF_BASE = "https://api.crossref.org"
 S2_BASE = "https://api.semanticscholar.org/graph/v1"
 OPENALEX_BASE = "https://api.openalex.org"
 
-# Rate limiting (seconds between requests per source)
+
+def _env_float(name: str, default: float) -> float:
+    """
+    Read a float tuning knob from the environment, falling back to a
+    conservative default. A malformed value logs a warning (deferred to
+    first use, since logging is configured below) and uses the default.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        # `log` is configured later in this module; emit via stderr
+        # directly to avoid an import-order dependency.
+        sys.stderr.write(
+            f"WARNING: {name}={raw!r} is not a float; using default "
+            f"{default}.\n"
+        )
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int tuning knob from the environment (see `_env_float`)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        sys.stderr.write(
+            f"WARNING: {name}={raw!r} is not an int; using default "
+            f"{default}.\n"
+        )
+        return default
+
+
+# ----------------------------------------------------------------------------
+# Per-host pacing (minimum inter-request interval, seconds)
+# ----------------------------------------------------------------------------
+# Pacing is keyed by HOST rather than by logical source so that the floor is
+# honoured across an entire batch operation (e.g. `bibtex` over many DOIs,
+# which all hit api.crossref.org) and across every subcommand that touches a
+# given host. Semantic Scholar's unauthenticated public limit is roughly
+# 1 request/second, so we space S2 calls ~1.1 s apart by default; CrossRef
+# rewards a polite mailto with a moderate rate; OpenAlex is generous.
+#
+# Each knob is overridable via an environment variable for ad-hoc tuning
+# (e.g. backing right off when S2 is having a bad day) without code edits.
+S2_HOST = "api.semanticscholar.org"
+CROSSREF_HOST = "api.crossref.org"
+OPENALEX_HOST = "api.openalex.org"
+
+HOST_MIN_INTERVAL: dict[str, float] = {
+    S2_HOST: _env_float("LIT_SEARCH_S2_MIN_INTERVAL", 1.1),
+    CROSSREF_HOST: _env_float("LIT_SEARCH_CROSSREF_MIN_INTERVAL", 0.2),
+    OPENALEX_HOST: _env_float("LIT_SEARCH_OPENALEX_MIN_INTERVAL", 0.1),
+}
+# Floor applied to any host not listed above.
+DEFAULT_MIN_INTERVAL = _env_float("LIT_SEARCH_DEFAULT_MIN_INTERVAL", 0.2)
+
+# ----------------------------------------------------------------------------
+# Legacy per-source pacing map (retained for backward compatibility)
+# ----------------------------------------------------------------------------
+# `_rate_limit(source)` is still part of the module's internal surface. It now
+# delegates to the per-host limiter, but the source->host mapping below keeps
+# the old call sites working unchanged. S2's interval was previously 0.5 s,
+# which proved too aggressive against the ~1 req/s public limit; the per-host
+# floor (1.1 s) now governs S2 regardless of which key a caller passes.
 RATE_LIMITS = {
     "crossref": 0.1,
     "s2": 0.5,
     "openalex": 0.1,
 }
+_SOURCE_TO_HOST = {
+    "crossref": CROSSREF_HOST,
+    "s2": S2_HOST,
+    "openalex": OPENALEX_HOST,
+}
+
+# ----------------------------------------------------------------------------
+# Retry / exponential-backoff knobs
+# ----------------------------------------------------------------------------
+# Transient failures (HTTP 429, HTTP 5xx, connection/timeout errors) are
+# retried with exponential backoff plus jitter. After exhausting attempts the
+# caller's existing graceful-degradation path runs (returns None / emits a
+# "% FAILED" marker), so a persistently-429 source still degrades to the
+# remaining sources rather than crashing the whole call.
+MAX_RETRIES = _env_int("LIT_SEARCH_MAX_RETRIES", 4)  # total attempts per call
+BASE_BACKOFF = _env_float("LIT_SEARCH_BASE_BACKOFF", 2.0)  # seconds (attempt 0)
+MAX_BACKOFF = _env_float("LIT_SEARCH_MAX_BACKOFF", 60.0)  # cap on a single sleep
+BACKOFF_JITTER = _env_float("LIT_SEARCH_BACKOFF_JITTER", 0.5)  # +/- fraction
+
+# Optional Semantic Scholar API key (higher authenticated limits). Not
+# required — absence simply uses the public unauthenticated tier, exactly as
+# before. Both common env-var spellings are accepted.
+S2_API_KEY = (
+    os.environ.get("S2_API_KEY")
+    or os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+    or ""
+).strip()
 
 # Default result limits
 DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_CITATION_LIMIT = 50
 
-# Track last request time per source for rate limiting
+# Track last request time per host for pacing (thread-safe for future use).
 _last_request: dict[str, float] = {}
+_pace_lock = threading.Lock()
 
 # ============================================================================
 # Logging
@@ -71,26 +172,213 @@ log = logging.getLogger("lit-search")
 
 
 def _get_client() -> httpx.Client:
-    """Create an httpx client with appropriate headers."""
+    """Create an httpx client with appropriate headers.
+
+    If a Semantic Scholar API key is present in the environment it is added as
+    the `x-api-key` header (used only by S2; harmless to CrossRef/OpenAlex,
+    which ignore unknown headers). Absent a key, behaviour is identical to
+    before — the public unauthenticated tier.
+    """
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+    }
+    if S2_API_KEY:
+        headers["x-api-key"] = S2_API_KEY
     return httpx.Client(
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-        },
+        headers=headers,
         timeout=30.0,
         follow_redirects=True,
     )
 
 
+def _host_of(url: str) -> str:
+    """Extract the hostname from a URL for per-host pacing."""
+    return urllib.parse.urlsplit(url).hostname or ""
+
+
+def _pace_host(host: str) -> None:
+    """
+    Enforce the minimum inter-request interval for `host`.
+
+    Sleeps just long enough that consecutive requests to the same host are
+    spaced by at least `HOST_MIN_INTERVAL[host]` (or `DEFAULT_MIN_INTERVAL`).
+    Because the timestamp is keyed by host and stored at module scope, the
+    floor applies across an entire batch (e.g. `bibtex` over many DOIs) and
+    across every subcommand, not just within one call.
+    """
+    min_interval = HOST_MIN_INTERVAL.get(host, DEFAULT_MIN_INTERVAL)
+    with _pace_lock:
+        now = time.monotonic()
+        last = _last_request.get(host, 0.0)
+        elapsed = now - last
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_request[host] = time.monotonic()
+
+
 def _rate_limit(source: str) -> None:
-    """Enforce per-source rate limiting."""
-    now = time.time()
-    last = _last_request.get(source, 0.0)
-    delay = RATE_LIMITS.get(source, 0.1)
-    elapsed = now - last
-    if elapsed < delay:
-        time.sleep(delay - elapsed)
-    _last_request[source] = time.time()
+    """
+    Enforce pacing for a logical `source` (backward-compatible shim).
+
+    Delegates to the per-host limiter via the source->host mapping so that the
+    same floor governs every call to a host regardless of which subcommand or
+    source key issued it.
+    """
+    host = _SOURCE_TO_HOST.get(source)
+    if host is None:
+        # Unknown source key: fall back to the generic floor under its own
+        # bucket so it still gets paced.
+        _pace_host(source)
+    else:
+        _pace_host(host)
+
+
+def _parse_retry_after(value: str) -> float | None:
+    """
+    Parse a `Retry-After` header value into a delay in seconds.
+
+    The header may be either an integer number of seconds or an HTTP-date
+    (RFC 7231). Returns the delay in seconds (>= 0), or None if it cannot be
+    parsed. A past HTTP-date yields 0.0 (retry immediately, subject to the
+    backoff floor in the caller).
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    # Numeric seconds form.
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    # HTTP-date form. `parsedate_to_datetime` raises (TypeError/ValueError)
+    # on unparseable input rather than returning None, so guard it and treat
+    # an unparseable header as "no usable hint" -> fall back to backoff.
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    delay = parsed.timestamp() - time.time()
+    return max(0.0, delay)
+
+
+def _backoff_delay(attempt: int) -> float:
+    """
+    Exponential backoff with jitter for retry `attempt` (0-indexed).
+
+    delay = BASE_BACKOFF * 2**attempt, multiplied by a random jitter factor in
+    [1 - BACKOFF_JITTER, 1 + BACKOFF_JITTER], then capped at MAX_BACKOFF. The
+    jitter spreads out retries so concurrent/repeated callers do not stampede
+    the API in lockstep ("thundering herd").
+    """
+    raw = BASE_BACKOFF * (2 ** attempt)
+    jitter = 1.0 + random.uniform(-BACKOFF_JITTER, BACKOFF_JITTER)
+    return min(MAX_BACKOFF, max(0.0, raw * jitter))
+
+
+# Status codes treated as transient and therefore retryable.
+def _is_retryable_status(status_code: int) -> bool:
+    """True for HTTP 429 and any 5xx (transient server-side failures)."""
+    return status_code == 429 or 500 <= status_code < 600
+
+
+def _request_with_retry(
+    do_request: Callable[[], httpx.Response],
+    host: str,
+    source: str,
+) -> httpx.Response:
+    """
+    Execute a single HTTP request with pacing + exponential-backoff retry.
+
+    `do_request` is a zero-argument callable that performs exactly one GET and
+    returns the `httpx.Response` (it must NOT do its own pacing/retry — this
+    helper owns both). The helper:
+
+      * paces the host before every attempt (so retries also respect the
+        per-host floor);
+      * retries on HTTP 429, HTTP 5xx, and connection/timeout errors;
+      * on 429 honours `Retry-After` (seconds or HTTP-date) when present,
+        otherwise uses exponential backoff with jitter;
+      * caps the number of attempts at MAX_RETRIES and any single sleep at
+        MAX_BACKOFF, so a call can never hang indefinitely;
+      * after exhausting retries, returns the last response (so the caller's
+        existing non-200 handling runs) or re-raises the last connection
+        error (so the caller's existing `except httpx.HTTPError` runs).
+
+    Net effect: success and terminal-4xx paths are unchanged; only transient
+    failures gain extra, backed-off attempts before the SAME graceful
+    degradation the caller already implemented.
+    """
+    last_exc: httpx.HTTPError | None = None
+    last_resp: httpx.Response | None = None
+
+    for attempt in range(MAX_RETRIES):
+        _pace_host(host)
+        try:
+            resp = do_request()
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            # Connection-level failure: retryable.
+            last_exc = exc
+            last_resp = None
+            if attempt < MAX_RETRIES - 1:
+                delay = _backoff_delay(attempt)
+                log.warning(
+                    "%s: connection error (%s); retry %d/%d in %.1fs.",
+                    source, type(exc).__name__, attempt + 1,
+                    MAX_RETRIES - 1, delay,
+                )
+                time.sleep(delay)
+                continue
+            # Exhausted: re-raise so caller's except-clause degrades it.
+            raise
+
+        last_resp = resp
+        if not _is_retryable_status(resp.status_code):
+            # Success or a terminal status (e.g. 404): return immediately.
+            return resp
+
+        # Transient HTTP status (429 or 5xx).
+        if attempt >= MAX_RETRIES - 1:
+            # Out of attempts: hand the response back so the caller's
+            # existing non-200 branch logs and returns None / a marker.
+            return resp
+
+        if resp.status_code == 429:
+            retry_after = _parse_retry_after(
+                resp.headers.get("Retry-After", "")
+            )
+            if retry_after is not None:
+                # Respect the server's hint, but never below the backoff
+                # floor for this attempt and never above the global cap.
+                delay = min(
+                    MAX_BACKOFF, max(retry_after, _backoff_delay(attempt))
+                )
+                hint = "Retry-After=%.1fs" % retry_after
+            else:
+                delay = _backoff_delay(attempt)
+                hint = "no Retry-After"
+            log.warning(
+                "%s: rate limited (429, %s); retry %d/%d in %.1fs.",
+                source, hint, attempt + 1, MAX_RETRIES - 1, delay,
+            )
+        else:
+            delay = _backoff_delay(attempt)
+            log.warning(
+                "%s: server error (HTTP %d); retry %d/%d in %.1fs.",
+                source, resp.status_code, attempt + 1,
+                MAX_RETRIES - 1, delay,
+            )
+        time.sleep(delay)
+
+    # Loop fell through (should be unreachable given the returns/raises
+    # above, but kept for total-function safety).
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("retry loop exited without a response")
 
 
 def _safe_get(
@@ -110,39 +398,36 @@ def _safe_get(
     without distinguishing "still rate-limited" from "definitively not
     found". A second 429 silently fell through to the generic non-200
     branch and the caller saw a `None` indistinguishable from a 404.
-    The retry now honours `Retry-After`, and a repeated 429 logs an
-    explicit `WARN` with the source so silent rate-limit pressure
-    surfaces in the lit-scout run log.
+
+    Hardening 2026-06-06: pacing and retry are now delegated to the
+    shared `_request_with_retry` helper, which paces per host, retries
+    HTTP 429 / 5xx / connection errors with exponential backoff + jitter
+    (honouring `Retry-After` on 429), caps attempts at MAX_RETRIES and
+    any single sleep at MAX_BACKOFF, and — crucially — degrades exactly
+    as before once retries are exhausted (non-200 -> None below; a
+    connection error -> the `except httpx.HTTPError` branch -> None). A
+    persistently rate-limited source therefore still drops out cleanly,
+    leaving the remaining sources to answer, rather than crashing.
     """
-    _rate_limit(source)
+    host = _host_of(url)
     try:
-        resp = client.get(url, params=params)
+        resp = _request_with_retry(
+            lambda: client.get(url, params=params),
+            host=host,
+            source=source,
+        )
         if resp.status_code == 429:
-            # Honour Retry-After if the server supplies it; cap at 30 s
-            # so a misbehaving header can't stall the run indefinitely.
-            # Default to 5 s to preserve historical behaviour when the
-            # header is absent or unparseable.
-            retry_after_hdr = resp.headers.get("Retry-After", "")
-            backoff = 5.0
-            if isinstance(retry_after_hdr, str) and retry_after_hdr.strip():
-                try:
-                    backoff = min(30.0, max(1.0, float(retry_after_hdr)))
-                except ValueError:
-                    backoff = 5.0
+            # Retries exhausted while still rate-limited. Preserve the
+            # explicit WARN so silent rate-limit pressure stays visible,
+            # and the caller still cannot distinguish this from a 404 —
+            # the same contract as before.
             log.warning(
-                "%s: rate limited (429). Backing off %.1fs.", source, backoff,
+                "[lit-search] WARN: %s still rate-limited after %d "
+                "attempts (HTTP 429); returning None — caller cannot "
+                "distinguish this from 404. URL: %s",
+                source, MAX_RETRIES, url,
             )
-            time.sleep(backoff)
-            _rate_limit(source)
-            resp = client.get(url, params=params)
-            if resp.status_code == 429:
-                log.warning(
-                    "[lit-search] WARN: %s still rate-limited after retry "
-                    "(HTTP 429); returning None — caller cannot distinguish "
-                    "this from 404. URL: %s",
-                    source, url,
-                )
-                return None
+            return None
         if resp.status_code != 200:
             # Distinguish retryable transient failures (5xx) from terminal
             # 4xx so the log makes the failure mode visible. We still
@@ -854,11 +1139,18 @@ def cmd_bibtex(
     }
 
     for doi in dois:
-        _rate_limit("crossref")
         encoded = urllib.parse.quote(doi, safe='')
         url = f"{CROSSREF_BASE}/works/{encoded}/transform/application/x-bibtex"
+        # Pacing + retry now flow through the shared helper, so a batch of
+        # many DOIs is paced across the whole run (all hit api.crossref.org)
+        # and a transient 429/5xx on one DOI is retried with backoff before
+        # falling back to the same "% FAILED" marker as before.
         try:
-            resp = client.get(url, headers=bibtex_headers)
+            resp = _request_with_retry(
+                lambda u=url: client.get(u, headers=bibtex_headers),
+                host=_host_of(url),
+                source="crossref",
+            )
             if resp.status_code != 200:
                 log.warning(
                     "bibtex: HTTP %d for DOI %s", resp.status_code, doi
