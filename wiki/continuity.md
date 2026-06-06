@@ -2088,6 +2088,16 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-06-06 (Sat, latest PA) — anchor-machinery robustness follow-up DONE: `recover_anchors.py` brought to crash-safety parity with `archive-memories.py`
+
+Closed the QA follow-up flagged in the prior entry. **No quiet period needed** — it's a code change to the script, not a run of it (the quiet window only applies to executing `--apply`, which was NOT run). Brought `recover_anchors.py` to parity with the more-defensive `archive-memories.py`:
+
+- **`fsync` before the atomic rename** (`apply_plans`): added `out.flush(); os.fsync(out.fileno())` before `tmp.replace(corpus)` (+ `import os`), so a crash/power-loss between write and rename can't leave a truncated corpus. Mirrors `archive-memories.py:356–364`.
+- **Schema-drift guard in `_update_postgres`**: added `assert_schema_version(conn)` before the UPDATE — but with a **soft warn-and-return** (not `archive-memories`' `sys.exit(2)`), since the corpus is already committed by that point, so the JSONL is correct and only PG is left unreconciled (fix = `rebuild-postgres.py`). This is also a small improvement over the sibling's exit(2)-after-commit (which the audit flagged as partial-success-as-failure).
+- **Recovery doc**: a comment at the `_git_commit` call documenting that a commit failure leaves the corpus rewritten-but-uncommitted (a later run blocks on the dirty tree), with the two recovery commands (`git commit -- memories/memories.jsonl` to keep, or `git checkout --` to discard and re-run; the pass is idempotent).
+- **Deliberately NOT done:** the lock/commit reordering (restructuring the lock ordering is riskier than documenting the recovery — left as the doc above). Also left `archive-memories`' own `exit(2)`-after-commit untouched (a separate minor item, not corpus-risk).
+- **Verified:** compile clean; dry-run (no `--apply`) intact (mutates nothing); 17 `test_recover_anchors` pass; full suite 1091 (only the unrelated lit-search 429 fails). No new unit test added for the `fsync`/schema-guard paths — they are mechanical parity copies of `archive-memories`' patterns, whose equivalent PG path is likewise not unit-tested (matched the sibling's test posture). **`--apply` was NOT run; no corpus mutation.**
+
 ### 2026-06-06 (Sat, latest PA) — QA pass: 5 agents (1 doc-update + 4 /audit slices); 0 Critical; 3 small fixes applied; anchor-machinery robustness flagged as follow-up
 
 End-of-session QA to complement the piecemeal /audit use during composition. Dispatched 5 background sonnet agents (1 doc-updater + 4 read-only `/audit`-methodology slices over the memory-system code), then adversarially triaged the findings myself.

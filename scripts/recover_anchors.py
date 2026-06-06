@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -330,11 +331,23 @@ def apply_plans(plans, corpus: Path, *, do_postgres: bool) -> None:
                         n_written += 1
                     else:
                         out.write(line)  # verbatim — minimal diff
+                # Flush + fsync the temp file to disk BEFORE the atomic rename,
+                # so a crash/power-loss between the write and the replace cannot
+                # leave a truncated corpus (parity with archive-memories.py).
+                out.flush()
+                os.fsync(out.fileno())
             tmp.replace(corpus)
             print(f"rewrote {n_written} records in {corpus}", file=sys.stderr)
     finally:
         release_lock()
 
+    # NB: if _git_commit fails (e.g. a pre-commit hook rejects it, or a git lock
+    # is contended), the corpus is rewritten on disk but uncommitted — a later
+    # run will be blocked by ensure_safe_to_rewrite (dirty working tree). Recover
+    # inside the data submodule with either:
+    #   git commit -- memories/memories.jsonl   (keep the applied recovery), or
+    #   git checkout -- memories/memories.jsonl  (discard; the pass is idempotent
+    #                                             and can be re-run from clean).
     _git_commit(corpus, len(plans), mark_bulk_rewrite_commit_msg)
     if do_postgres:
         _update_postgres(plans)
@@ -367,6 +380,20 @@ def _update_postgres(plans) -> None:
         conn = psycopg2.connect(dbname="claude_memories")  # scripts/sync-to-postgres.py:53
     except Exception as exc:  # noqa: BLE001
         print(f"postgres unreachable ({exc}) — skipping", file=sys.stderr)
+        return
+    # Guard against schema drift before issuing any UPDATE (parity with
+    # archive-memories.py). The corpus is already committed by this point, so on
+    # a mismatch warn loudly and return rather than exit non-zero — the JSONL is
+    # correct; only PG is left unreconciled (fix with a rebuild-postgres).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _schema_version import assert_schema_version, SchemaVersionError
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError as exc:
+        conn.close()
+        print(f"WARNING: postgres schema mismatch ({exc}) after the corpus was "
+              "rewritten — PG not reconciled. Run rebuild-postgres.py to sync.",
+              file=sys.stderr)
         return
     n = 0
     with conn, conn.cursor() as cur:
