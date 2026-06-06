@@ -1621,7 +1621,7 @@ not drafted as a user observation — working-with-claude territory per the
 
 ---
 
-## 2026-06-06 (PA / memory-system write-path: P8/P10/item-16/item-8/item-6 + 5-agent QA pass) — Drafted candidates (drafted 2026-06-06, awaiting review)
+## 2026-06-06 (PA / memory-system write-path: P8/P10/item-16/item-8/item-6 + 5-agent QA pass) — Drafted candidates (reviewed 2026-06-06 — all three accepted)
 
 ### Candidate 1: "is it worth it?" is a standing gate that converts momentum into a cheap falsifying experiment
 
@@ -1637,7 +1637,7 @@ reasoning every time this session. The reusable shape: when a lever looks
 compelling, the next move is the cheapest thing that could prove it wrong, not
 the implementation.
 
-[ ]
+[x] accept
 
 ### Candidate 2: surfacing one's own process lapse is more useful than a silent one
 
@@ -1650,7 +1650,7 @@ rather than being caught out by them. Process honesty as a collaboration
 lubricant — the admitted gap was directly actionable in a way a silent one would
 not have been.
 
-[ ]
+[x] accept
 
 ### Candidate 3: delegate the breadth, keep the adversarial depth-review
 
@@ -1664,4 +1664,4 @@ delegation depends on a real adversarial filter sitting between the agents' outp
 and the commit. Shawn delegated the breadth and trusted the depth-review to land
 with me.
 
-[ ]
+[x] accept
