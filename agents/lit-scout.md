@@ -415,11 +415,11 @@ re-queried, whether they matched, any anomalies noticed.)
 
 <!-- BEGIN claims.jsonl -->
 ```jsonl
-{"claim_id":"10.xxxx-yyyy-authors","category":"authors","description":"Authors for row N","value":"Smith et al. (2024)","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-year","category":"year","description":"Publication year for row N","value":2024,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-title","category":"title","description":"Title for row N","value":"...","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-citation_count","category":"citation_count","description":"Citation count for row N","value":1234,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-doi_resolves","category":"doi_resolves","description":"DOI resolves to expected paper for row N","value":true,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-authors","doi":"10.xxxx/yyyy","category":"authors","description":"Authors for row N","value":"Smith et al. (2024)","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-year","doi":"10.xxxx/yyyy","category":"year","description":"Publication year for row N","value":2024,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-title","doi":"10.xxxx/yyyy","category":"title","description":"Title for row N","value":"...","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-citation_count","doi":"10.xxxx/yyyy","category":"citation_count","description":"Citation count for row N","value":1234,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-doi_resolves","doi":"10.xxxx/yyyy","category":"doi_resolves","description":"DOI resolves to expected paper for row N","value":true,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
 ```
 <!-- END claims.jsonl -->
 ````
@@ -431,6 +431,7 @@ The closing section emits **one JSONL object per verifiable claim**, delimited b
 | Field | Meaning |
 |---|---|
 | `claim_id` | **Deterministic ID** — `<doi-slug>-<field>` where `doi-slug` is the DOI lowercased with `/`→`-` (e.g., `10.1038-sdata.2016.18-authors`). Must be reproducible across runs to support iterate-mode matching. |
+| `doi` | **The full, unencoded DOI** (e.g. `10.18653/v1/2023.emnlp-main.398`). Carry it verbatim. The `claim_id` slug is lossy (`/`→`-` is irreversible for DOIs with hyphens or multiple slashes), so downstream consumers — notably the Zotero importer — rely on this field to recover the true DOI. |
 | `category` | One of: `authors`, `year`, `title`, `citation_count`, `doi_resolves`. |
 | `description` | Short human-readable claim description. |
 | `value` | The asserted value (string for authors/title; integer for year/citation_count; boolean for doi_resolves). |
@@ -440,6 +441,7 @@ The closing section emits **one JSONL object per verifiable claim**, delimited b
 **Emission rules:**
 
 - Emit five claims per row that has a DOI: authors, year, title, citation_count, doi_resolves.
+- On **every** claim, include the `doi` field carrying the full unencoded DOI (verbatim, original case). Do not rely on the `claim_id` slug to transport the DOI — its `/`→`-` encoding cannot be reversed for DOIs containing hyphens or multiple slashes.
 - For rows flagged `AUTHORS UNVERIFIED` (no DOI), **do not emit claims**. Those rows are surfaced to the user via the existing markdown but are outside the closed-loop verification pipeline.
 - Preserve the same row ordering as the Findings table.
 - In iterate mode, re-emit every PASS claim verbatim (same `claim_id`, same `value`) and re-emit corrected FAIL claims with the substituted `value`. Removed rows (DOI doesn't resolve) drop their claim_ids from the block.

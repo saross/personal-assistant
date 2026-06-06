@@ -316,9 +316,9 @@ appends the BibTeX file path separately.)
 
 <!-- BEGIN corrections.jsonl -->
 ```jsonl
-{"claim_id":"10.xxxx-yyyy-authors","status":"fail","category":"authors","description":"Authors for row N","proposer_value":"Smith et al. (2024)","true_value":"Jones, Wei & Park (2024)","severity":"high","failure_type":"encoding_artefact","fix_hint":"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. CrossRef family/given was swapped at the source.","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-year","status":"pass","category":"year","description":"Publication year for row N","proposer_value":2024,"true_value":2024,"severity":null,"failure_type":null,"fix_hint":null,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-doi_resolves","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","failure_type":"confabulation","fix_hint":"DOI returned HTTP 404; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata (HTTP 404)","source_file":"Findings table row M"}
+{"claim_id":"10.xxxx-yyyy-authors","doi":"10.xxxx/yyyy","status":"fail","category":"authors","description":"Authors for row N","proposer_value":"Smith et al. (2024)","true_value":"Jones, Wei & Park (2024)","severity":"high","failure_type":"encoding_artefact","fix_hint":"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. CrossRef family/given was swapped at the source.","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-year","doi":"10.xxxx/yyyy","status":"pass","category":"year","description":"Publication year for row N","proposer_value":2024,"true_value":2024,"severity":null,"failure_type":null,"fix_hint":null,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
+{"claim_id":"10.xxxx-yyyy-doi_resolves","doi":"10.xxxx/yyyy","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","failure_type":"confabulation","fix_hint":"DOI returned HTTP 404; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata (HTTP 404)","source_file":"Findings table row M"}
 ```
 <!-- END corrections.jsonl -->
 ````
@@ -332,6 +332,7 @@ Schema:
 | Field | Meaning |
 |---|---|
 | `claim_id` | **Same `claim_id` as in the proposer's claims.jsonl.** Copy through exactly so the closed-loop driver can match. |
+| `doi` | **Copy the proposer's `doi` field through verbatim** (the full unencoded DOI). Downstream consumers (the Zotero importer) read it to recover the true DOI, since the `claim_id` slug is lossy. If the proposer omitted it (legacy draft), set it from the DOI you resolved during verification. |
 | `status` | One of `pass`, `partial`, `fail`, `unverifiable`. Maps to the tolerance bands above. |
 | `category` | Echo the proposer's category (`authors`, `year`, `title`, `citation_count`, `doi_resolves`). |
 | `description` | Echo the proposer's description. |
@@ -346,6 +347,7 @@ Schema:
 **Emission rules:**
 
 - Emit one row per claim in the proposer's `claims.jsonl`. Do not skip claims. Do not add new claims (you verify, you do not introduce).
+- Copy the `doi` field through on every claim (verbatim from the proposer; or, for a legacy draft that lacks it, the DOI you resolved). Consumers depend on it because the `claim_id` slug cannot be reversed for DOIs with hyphens or multiple slashes.
 - If the proposer's draft contains no `<!-- BEGIN claims.jsonl --> ... <!-- END claims.jsonl -->` block (legacy single-round mode), still emit your integrated markdown report but write a single sentinel claim: `{"claim_id":"_legacy","status":"unverifiable","fix_hint":"Proposer did not emit claims.jsonl block; closed-loop iteration not possible. Re-run proposer with claims emission to enable iterate-mode."}`. The driver will not iterate and will surface the message to the user.
 - Maintain claim ordering identical to the proposer's emission. This lets the driver compute the set-of-FAIL-claim-ids cheaply for the no-progress check.
 - Do not invent severity to give FAIL claims a higher urgency than the rubric warrants. Severity drives prioritisation, not classification — over-classifying `medium` as `high` pollutes the calibration signal.

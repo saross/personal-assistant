@@ -154,7 +154,14 @@ def group_claims_by_doi(claims: list[dict]) -> dict[str, dict[str, dict]]:
         if not m:
             continue
         doi_slug, category = m.group(1), m.group(2)
-        doi = doi_slug.replace("-", "/", 1)
+        # Prefer the explicit, lossless `doi` field (claim contract from
+        # 2026-06-06 onward). Fall back to decoding the claim_id slug only
+        # for legacy workspaces that predate the field. The slug encodes
+        # `/`->`-`, which is NOT reversible for DOIs containing hyphens or
+        # multiple slashes (e.g. ACL anthology `10.18653/v1/2023.emnlp-main.557`
+        # or JAMIA `10.1093/jamia/ocae014`): `replace("-", "/", 1)` only
+        # recovers the first slash and corrupts the rest.
+        doi = (c.get("doi") or "").strip() or doi_slug.replace("-", "/", 1)
         by_doi.setdefault(doi, {})[category] = c
     return by_doi
 
@@ -233,6 +240,86 @@ def fetch_crossref(doi: str, client: httpx.Client) -> dict | None:
         return None
 
 
+def fetch_openalex(doi: str, client: httpx.Client) -> dict | None:
+    """Fallback metadata fetch, normalised to the CrossRef `message` shape.
+
+    CrossRef does not index every DOI — notably arXiv DOIs (`10.48550/arXiv.*`),
+    which are registered with DataCite. OpenAlex covers arXiv and most other
+    registries, so we fall back to it when CrossRef returns nothing. Only the
+    subset of fields `build_zotero_item` reads is mapped (type, title,
+    container-title, volume, issue, page, ISSN, abstract, URL, issued); authors
+    are sourced from the claims contract, not from here, so author mapping is
+    best-effort.
+    """
+    url = f"https://api.openalex.org/works/https://doi.org/{urllib.parse.quote(doi, safe='')}"
+    try:
+        r = client.get(url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        w = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    oa_to_crossref_type = {
+        "article": "journal-article",
+        "preprint": "posted-content",
+        "book": "book",
+        "book-chapter": "book-chapter",
+        "proceedings-article": "proceedings-article",
+        "dataset": "dataset",
+        "report": "report",
+        "dissertation": "dissertation",
+    }
+    cr_type = oa_to_crossref_type.get((w.get("type") or "").lower(), "journal-article")
+
+    authors = []
+    for a in w.get("authorships", []):
+        disp = ((a.get("author") or {}).get("display_name") or "").strip()
+        if not disp:
+            continue
+        toks = disp.split()
+        if len(toks) >= 2:
+            authors.append({"given": " ".join(toks[:-1]), "family": toks[-1]})
+        else:
+            authors.append({"name": disp})
+
+    src = (w.get("primary_location") or {}).get("source") or {}
+    container = src.get("display_name") or ""
+    issn = [i for i in (src.get("issn") or []) if i]
+
+    biblio = w.get("biblio") or {}
+    pages = ""
+    if biblio.get("first_page"):
+        pages = str(biblio["first_page"])
+        if biblio.get("last_page"):
+            pages += f"-{biblio['last_page']}"
+
+    # Date: prefer the full publication_date (YYYY-MM-DD), else the year.
+    date_parts: list[list[int]] = [[]]
+    pubdate = w.get("publication_date")
+    if pubdate:
+        try:
+            date_parts = [[int(x) for x in pubdate.split("-")]]
+        except ValueError:
+            date_parts = [[]]
+    if date_parts == [[]] and w.get("publication_year"):
+        date_parts = [[int(w["publication_year"])]]
+
+    return {
+        "type": cr_type,
+        "title": [w.get("title") or ""],
+        "author": authors,
+        "container-title": [container] if container else [],
+        "volume": biblio.get("volume") or "",
+        "issue": biblio.get("issue") or "",
+        "page": pages,
+        "ISSN": issn,
+        "abstract": "",  # OpenAlex stores an inverted index; skip reconstruction
+        "URL": w.get("doi") or f"https://doi.org/{doi}",
+        "issued": {"date-parts": date_parts},
+    }
+
+
 # ----------------------------------------------------------------------------
 # Local-sqlite dedup
 # ----------------------------------------------------------------------------
@@ -284,30 +371,72 @@ def find_existing_by_doi(doi: str, conn: sqlite3.Connection) -> list[dict]:
 # ----------------------------------------------------------------------------
 
 
+def _given_family_creator(name: str) -> dict[str, str] | None:
+    """Parse a single "Given … Family" full name into a Zotero creator.
+
+    Last whitespace-token is treated as the family name, the remainder as
+    given names (handles "Eric P. Xing", "H.-Y. Liu", "Tim Miller"). A
+    trailing parenthetical year (e.g. "Smith (2024)") is stripped. A
+    single-token or empty name falls back to a name-only creator.
+    """
+    name = re.sub(r"\s*\(\d{4}[a-z]?\)\s*$", "", name).strip()
+    # Drop a trailing "et al." and treat a bare "et al." as a non-author.
+    name = re.sub(r"[,;]?\s*et\s+al\.?\s*$", "", name, flags=re.IGNORECASE).strip()
+    if not name or re.fullmatch(r"et\s+al\.?", name, flags=re.IGNORECASE):
+        return None
+    toks = name.split()
+    if len(toks) >= 2:
+        return {"creatorType": "author", "lastName": toks[-1],
+                "firstName": " ".join(toks[:-1])}
+    return {"creatorType": "author", "name": name}
+
+
 def parse_author_string(s: str) -> list[dict[str, str]]:
     """
-    Convert "Family, Given; Family, Given; ..." → Zotero creators format.
+    Convert a claims.jsonl `authors` value into Zotero creators.
 
-    The format originates in our claims.jsonl `value` field for the
-    `authors` category. Falls back to a name-only creator for entries
-    that don't split on a comma (corporate authors etc.).
+    Handles two formats the contract has used:
+      - canonical "Family, Given; Family, Given; ..." (semicolon-delimited);
+      - the lit-scout proposer's "Given Family, Given Family, ..."
+        (comma-delimited list of full names, no semicolons) — historically
+        mis-parsed as a single author, the cause of "1 authors" imports.
+
+    A lone "Family, Given" with no semicolon is ambiguous with two
+    comma-separated single-name authors; the proposer never emits that
+    shape (single authors arrive as "Given Family", no comma), so we treat
+    a semicolon-free comma string as a list of "Given Family" names.
     """
-    creators = []
-    for entry in s.split(";"):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if "," in entry:
-            family, _, given = entry.partition(",")
-            creators.append(
-                {
+    s = (s or "").strip()
+    if not s:
+        return []
+    creators: list[dict[str, str]] = []
+    if ";" in s:
+        # Canonical "Family, Given; ..." form.
+        for entry in s.split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if "," in entry:
+                family, _, given = entry.partition(",")
+                creators.append({
                     "creatorType": "author",
                     "lastName": family.strip(),
                     "firstName": given.strip(),
-                }
-            )
-        else:
-            creators.append({"creatorType": "author", "name": entry})
+                })
+            else:
+                c = _given_family_creator(entry)
+                if c:
+                    creators.append(c)
+    elif "," in s:
+        # Comma-delimited list of "Given Family" full names.
+        for entry in s.split(","):
+            c = _given_family_creator(entry)
+            if c:
+                creators.append(c)
+    else:
+        c = _given_family_creator(s)
+        if c:
+            creators.append(c)
     return creators
 
 
@@ -657,7 +786,11 @@ def run_import(args: argparse.Namespace) -> int:
             continue
         crossref_msg = fetch_crossref(doi, cr_client)
         if not crossref_msg:
-            plan_failed.append((doi, "CrossRef returned no record"))
+            # CrossRef does not index every DOI (notably arXiv); fall back
+            # to OpenAlex before giving up.
+            crossref_msg = fetch_openalex(doi, cr_client)
+        if not crossref_msg:
+            plan_failed.append((doi, "no record in CrossRef or OpenAlex"))
             continue
         table_row = table.get(doi.lower(), {})
         cat_corrections = by_doi_corrections.get(doi, {})
