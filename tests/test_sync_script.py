@@ -269,10 +269,23 @@ class TestRecordToTuple:
         assert manual_tuple[3] == "manual"
 
     def test_tuple_length_matches_fields(self, sample_memories):
-        """Tuple length should match JSONL_FIELDS count (23 after v3 + Gap 3)."""
+        """Tuple length should match JSONL_FIELDS count (24 after the P8 is_active append)."""
         result = sync_mod.record_to_tuple(sample_memories[0])
         assert len(result) == len(sync_mod.JSONL_FIELDS)
-        assert len(result) == 23
+        assert len(result) == 24
+
+    def test_is_active_defaults_true_and_propagates(self):
+        """P8: is_active lands at the last tuple index — default True, False when set."""
+        active = sync_mod.record_to_tuple({
+            "id": "t-active", "category": "progress", "content": "x",
+            "created_at": "2026-06-06T00:00:00+00:00",
+        })
+        forgotten = sync_mod.record_to_tuple({
+            "id": "t-forgotten", "category": "progress", "content": "x",
+            "created_at": "2026-06-06T00:00:00+00:00", "is_active": False,
+        })
+        assert active[-1] is True
+        assert forgotten[-1] is False
 
     def test_tags_preserved_as_list(self, sample_memories):
         """research_tags should remain a list for PostgreSQL TEXT[] column."""
@@ -365,6 +378,8 @@ class TestFieldConsistency:
             # v3 additions (2026-05-17): source_message_uuid (Gap 1),
             # licence + extractor_model_id (Gap 3).
             "source_message_uuid", "licence", "extractor_model_id",
+            # P8 fix (2026-06-06): soft-delete flag now syncs to PG.
+            "is_active",
         }
         assert set(sync_mod.JSONL_FIELDS) == expected
 

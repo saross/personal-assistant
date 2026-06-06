@@ -76,6 +76,12 @@ JSONL_FIELDS = [
     "superseded_by", "revisions",
     # v3 schema
     "source_message_uuid", "licence", "extractor_model_id",
+    # Soft-delete flag (P8 fix, 2026-06-06). Appended last so existing
+    # tuple indices stay stable. Absent from most records (defaults TRUE);
+    # /forget writes is_active=false, and syncing it here means a
+    # forgotten-before-first-sync row inserts inactive rather than being
+    # resurrected as active by the INSERT's column default.
+    "is_active",
 ]
 
 
@@ -293,6 +299,9 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("source_message_uuid"),
         record.get("licence"),
         record.get("extractor_model_id"),
+        # Soft-delete flag (P8 fix, 2026-06-06) — defaults TRUE when absent,
+        # mirroring the column default; a /forget'd record carries False.
+        record.get("is_active", True),
     )
 
 
@@ -541,7 +550,8 @@ def insert_memories(
             created_at, deadline_at,
             anchors, verified, links, why, how_to_apply,
             superseded_by, revisions,
-            source_message_uuid, licence, extractor_model_id
+            source_message_uuid, licence, extractor_model_id,
+            is_active
         ) VALUES %s
         ON CONFLICT (id) DO NOTHING
         RETURNING id

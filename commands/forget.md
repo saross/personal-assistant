@@ -44,10 +44,25 @@ want to correct rather than retire.
      Reason: [reason if provided, else "no reason given"]
    ```
 
-6. **PostgreSQL sync is automatic** — the next `sync-to-postgres.py`
-   tick (every 5 min via cron) picks up the change. Recall via
-   `active_memories` view filters by `is_active = TRUE` so the
-   forgotten entry disappears from results.
+6. **Reconcile PostgreSQL in lockstep (mandatory):**
+
+   ```bash
+   python3 ~/personal-assistant/scripts/sync_memory_edit.py --id [id]
+   ```
+
+   This is **required**, not optional. `sync-to-postgres.py` is
+   INSERT-only (`ON CONFLICT (id) DO NOTHING`), so it does **not**
+   propagate an `is_active` flip to a row already in PostgreSQL. The
+   PG-reading recall paths — the session-start digest and the autonomous
+   `fetch-memories.py` depth-fetch, both via the `active_memories` view
+   (`WHERE is_active = TRUE`) — would otherwise keep surfacing the
+   forgotten memory until a manual `rebuild-postgres`. The helper issues a
+   surgical `UPDATE` so the forget takes effect immediately. It is
+   best-effort about the connection: if PostgreSQL is unreachable it prints
+   a clear WARNING and exits non-zero (run `rebuild-postgres` later). Note:
+   PostgreSQL currently runs only on amd-tower; on a machine without it the
+   helper prints a no-op notice, and that machine's recall reads the
+   git-synced JSONL directly, so the JSONL edit alone suffices there.
 
 ## Autonomous use (Claude self-invocation)
 

@@ -53,8 +53,24 @@ when the right move is retirement rather than revision.
      Verified flag cleared (anchors will be re-evaluated by Phase 2 sweep).
    ```
 
-6. **PostgreSQL sync is automatic** — next sync-to-postgres tick picks
-   up the JSONB change.
+6. **Reconcile PostgreSQL in lockstep (mandatory):**
+
+   ```bash
+   python3 ~/personal-assistant/scripts/sync_memory_edit.py --id [id]
+   ```
+
+   This is **required**, not optional. `sync-to-postgres.py` is
+   INSERT-only (`ON CONFLICT (id) DO NOTHING`), so the revised `content`
+   and the cleared `verified`/`anchors` never reach a row already in
+   PostgreSQL — the PG-reading recall paths (session-start digest +
+   autonomous `fetch-memories.py`, via `active_memories`) would keep
+   serving the stale content until a manual `rebuild-postgres`. The helper
+   issues a surgical `UPDATE` (mirroring `is_active`, `content`,
+   `confidence`, `verified`, `anchors`, `revisions`) so the correction
+   takes effect immediately. If PostgreSQL is unreachable it prints a clear
+   WARNING and exits non-zero (run `rebuild-postgres` later). PostgreSQL
+   currently runs only on amd-tower; elsewhere the helper is a no-op notice
+   and the git-synced JSONL edit suffices.
 
 ## Autonomous use (Claude self-invocation)
 

@@ -532,6 +532,27 @@ any corpus mutation must be done in a quiet window with explicit pathspecs.
    corrections (`d2befeae` update, `52451aba` forget) were **PG-reconciled by
    hand on this machine** (verified: `52451aba` now 0 in `active_memories`).
    No-API.
+   **✅ FIXED 2026-06-06 (fix (a) + the root-cause sync gap).** Two parts:
+   **(1)** added `is_active` to `sync-to-postgres.py` (`JSONL_FIELDS` + INSERT
+   column list + `record_to_tuple`, appended last so tuple indices stay
+   stable) — covers the forget-**before**-first-sync edge: a not-yet-synced
+   forgotten row now INSERTs inactive instead of being resurrected as active
+   by the column default. **(2)** new **`scripts/sync_memory_edit.py`** — the
+   surgical lockstep `UPDATE` (the `recover_anchors.py` pattern): given an id,
+   reads the edited JSONL record and `UPDATE`s the six mutable columns
+   (`is_active`/`content`/`confidence`/`verified`/`anchors`/`revisions`) so PG
+   mirrors JSONL; idempotent; one UPDATE reconciles both commands. Wired into
+   `commands/forget.md` + `commands/update.md` as a **mandatory** step
+   (replacing the false "PG sync is automatic" claim); PG-unreachable →
+   WARN + non-zero exit (run `rebuild-postgres` later); row-not-yet-in-PG →
+   benign NOTE (part (1) handles it). **+15 tests, suite 1065, 0 regressions.**
+   **Caught a real bug live:** `2026-05-28-183835fe9bfc` had been `/forget`'d
+   in JSONL on 2026-05-28 but PG still had `is_active=TRUE` and it was **still
+   in `active_memories`** (silently surfacing in recall for 9 days); the new
+   helper reconciled it (now 0 in `active_memories`). Multi-machine caveat
+   stands but is small — PG runs **only on amd-tower**; other machines' recall
+   reads the git-synced JSONL directly, so the JSONL edit alone suffices there.
+   **This delivers Tier-2 item 4 (activate the correction loop).** No-API.
 9. **P9 — `confidence` is overloaded (verification, not value) — ✅ INVESTIGATED
    2026-06-05; no acute bug, but the field is incoherent + mislabelled.** Since
    v2 (`2026-05-16`) the hook overwrites Haiku's self-rating with
