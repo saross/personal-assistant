@@ -875,12 +875,15 @@ def cmd_references(
         params={"fields": s2_fields},
     )
     if data and "references" in data:
-        for ref in (data["references"] or []):
+        # A rate-limited (HTTP 429) or partial S2 response can carry the key
+        # with a null value; coerce once so the loop and the log line agree
+        # (previously len(None) crashed here after CrossRef had already
+        # succeeded — 2026-06-12 lit-scout run on 10.1016/j.chbr.2026.101056).
+        s2_refs = data["references"] or []
+        for ref in s2_refs:
             if ref:
                 all_papers.append(_normalise_s2(ref))
-        log.info(
-            "S2: found %d references", len(data.get("references", []))
-        )
+        log.info("S2: found %d references", len(s2_refs))
 
     # OpenAlex: referenced_works list (gives OpenAlex IDs, need to resolve)
     data = _safe_get(
@@ -953,13 +956,13 @@ def cmd_citations(
         params={"fields": s2_fields},
     )
     if data and "citations" in data:
-        for cit in (data["citations"] or [])[:limit]:
+        # Same null-coercion as the references path: S2 can return the key
+        # with a null value on rate-limited/partial responses.
+        s2_cits = data["citations"] or []
+        for cit in s2_cits[:limit]:
             if cit:
                 all_papers.append(_normalise_s2(cit))
-        log.info(
-            "S2: found %d citations",
-            len(data.get("citations", [])),
-        )
+        log.info("S2: found %d citations", len(s2_cits))
 
     # OpenAlex: cited-by via filter
     # First resolve DOI to OpenAlex ID
