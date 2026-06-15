@@ -222,40 +222,59 @@ per-project scratchpad file.
 6. **Present plan** to user for approval before making any edits.
 7. **Update** `Last distilled:` date in each reviewed file's header.
 
-### 5c. Grimoire Publishing Review
+### 5c. Published-Artefacts Review (publish new + audit existing)
 
-Review which grimoire prompts have matured enough to publish for external
-reuse. Grimoire entries are **private-origin** (they live in the private
-`data/notes/grimoire/`); publishing is a deliberate **Pattern B** promotion
-— a polished public *copy* in `published/prompts/`, with the original
-staying private. See `published/README.md`. This is the grimoire analogue
-of the scratchpad distillation above and the `/weekly-review`
-cluster-and-carry: a periodic, draft-only, human-ratified curation.
+Curate `published/` — the subset of the repo recommended for external reuse.
+This covers **all three** kinds of published artefact: grimoire prompts
+(`published/prompts/`), skills (`published/skills/`), and agents
+(`published/agents/`). Like 5b and the `/weekly-review` cluster-and-carry,
+this is a periodic, draft-only, human-ratified curation.
 
-1. **Read** the grimoire: every `*.md` under
-   `~/personal-assistant/notes/grimoire/` plus its `README.md`; and list
-   the already-published copies in
-   `~/personal-assistant/published/prompts/`.
-2. **Identify candidates** — grimoire entries that are (a) NOT yet published
-   (no corresponding `published/prompts/<name>.md`), AND (b) have proven
-   useful or stabilised over the period (reused this month, referenced
-   across projects, or explicitly mature). New or still-churning entries are
-   not candidates.
-3. **Assess publish-readiness** for each candidate against the
-   `published/README.md` bar: generically reusable (not welded to one
-   project's specifics), free of private context (client names, unshipped
-   plans, credentials, identifiable third parties), and reads well
-   standalone.
-4. **Present the candidate list** to the user — for each: the grimoire path,
-   a one-line "why now", and any private context that would need stripping.
-   The user chooses **publish / defer / decline** per entry. Do not publish
-   anything without that per-entry approval.
-5. **On publish**, create the Pattern-B copy: copy the polished entry into
-   `published/prompts/<name>.md`, strip the flagged private context, verify
-   it reads standalone, and confirm the private original stays in place. Do
-   **not** symlink (Pattern A is for public-origin content only).
-6. **Empty is a valid outcome.** A month with nothing ripe publishes
-   nothing; deferred entries resurface next retro.
+**Policy (since 2026-06-15): copies only, no symlinks.** Every published
+entry is a deliberately copied and *sanitised* snapshot; the canonical
+working version stays in place (`skills/`, `agents/`, `data/notes/grimoire/`).
+The retired symlink approach republished live files un-sanitised — see
+`published/README.md` for why. The cost of copies is **drift**, which is why
+this step audits existing copies, not just new candidates.
+
+**Part A — audit existing copies for drift (do this first):**
+
+1. **List** every published copy (`published/{prompts,skills,agents}/*.md`)
+   and pair each with its source (the grimoire entry, `skills/<name>/SKILL.md`,
+   or `agents/<name>.md`).
+2. **Diff** each copy against its source. Flag any copy where the source has
+   **materially changed** since the copy was made (needs a refresh), or where
+   the source has since **gained private context** the copy doesn't reflect
+   (the copy may now mislead, or the source may no longer be publishable).
+3. **Re-sanitise check**: confirm each existing copy still meets the
+   `published/README.md` bar (no absolute/`~` paths, machine names, client/
+   project/collaborator names, instrumentation, identifiable third parties).
+   Flag any that slipped through a prior pass for **refresh or un-publish**.
+
+**Part B — identify new candidates:**
+
+4. **Scan** grimoire entries, `skills/`, and `agents/` for artefacts that are
+   (a) NOT yet published, AND (b) matured/stabilised over the period (reused,
+   referenced across projects, or explicitly mature). New or churning entries
+   are not candidates.
+5. **Assess publish-readiness** against the `published/README.md` bar:
+   generically reusable (not welded to one project's infra/specifics), free of
+   private context, reads standalone. Note exactly what would need stripping.
+
+**Part C — present and act (human-ratified):**
+
+6. **Present** to the user, in one list: drift/re-sanitise findings from Part A
+   and new candidates from Part B. For each, give the source path, a one-line
+   rationale, and any context needing stripping. The user chooses **publish /
+   refresh / un-publish / defer / decline** per entry. Do nothing without
+   per-entry approval.
+7. **On publish or refresh**, create/update the sanitised **copy**: copy the
+   source into the matching `published/` subdirectory, strip the flagged
+   private context, verify it reads standalone, and confirm the source stays
+   in place. **Copies only — do not symlink.** On **un-publish**, remove the
+   copy (the source is unaffected).
+8. **Empty is a valid outcome.** A month with no drift and nothing newly ripe
+   changes nothing here.
 
 ### 6. Apply Parameter Changes
 

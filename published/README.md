@@ -2,73 +2,59 @@
 
 Curation layer for external readers. Everything in the parent `personal-assistant/`
 repository is already public — this directory identifies the subset that is
-**polished and recommended for external reuse** (by other researchers, students,
-collaborators, or anyone finding the repo).
+**polished, sanitised, and recommended for external reuse** (by other researchers,
+students, collaborators, or anyone finding the repo).
 
-## Conventions
+## Convention — intentional, sanitised copies only
 
-Two patterns are in use, depending on origin:
+Every entry here is a **deliberately copied and sanitised artefact**. The
+canonical working version stays where it lives (`skills/`, `agents/`, or the
+private `data/notes/grimoire/`); the `published/` entry is a frozen, reviewed,
+privacy-checked **copy**.
 
-### Pattern A — Public-origin content (symlinks)
+> **Why not symlinks?** An earlier version of this directory symlinked live
+> skills and agents. That approach was retired on **2026-06-15**: a live symlink
+> republishes whatever happens to be in the working file, so hardcoded paths,
+> internal instrumentation, persona lines, infra coupling — and, in one teaching
+> case, potentially identifiable material — were exposed with no review gate.
+> Copies force an explicit sanitisation step before anything is recommended for
+> reuse.
 
-For content whose canonical version already lives elsewhere in this repo
-(skills, commands, agents), `published/` entries are **symlinks** pointing
-to the canonical source. No drift between the working version and the
-published version.
-
-```text
-published/skills/improve-prompt → ../../skills/improve-prompt/
-published/agents/lit-scout.md   → ../../agents/lit-scout.md
-```
-
-Including a symlink here is a curation signal: "this one is polished enough
-that I'd actively point an external reader to it."
-
-### Pattern B — Private-origin content (copies)
-
-For content whose canonical version lives in the private `data/` submodule
-(currently just grimoire prompts), `published/` entries are **canonical copies
-promoted from private scratch work**. The original stays private; only the
-polished version is made public.
+The trade-off is that copies can **drift** from their sources. The monthly
+`/retro` includes a *review published artefacts* step that re-checks each copy
+against its source and re-sanitises or refreshes it as needed.
 
 ```text
-data/notes/grimoire/some-prompt.md   (private — canonical working copy)
+skills/review-implementation/SKILL.md          (canonical working version)
     │
-    ▼ manual copy when polished
-published/prompts/some-prompt.md     (public — canonical published copy)
+    ▼ deliberate copy + sanitise when polished
+published/skills/review-implementation.md       (public — frozen, reviewed copy)
 ```
 
 ## Directory layout
 
-| Directory | Pattern | Contents |
-|-----------|---------|----------|
-| `prompts/` | B — copies | Promoted grimoire entries |
-| `skills/` | A — symlinks | Skills recommended for external reuse |
-| `agents/` | A — symlinks | Subagent definitions recommended for external reuse |
+| Directory | Contents |
+|-----------|----------|
+| `prompts/` | Promoted, sanitised grimoire prompts |
+| `skills/`  | Sanitised copies of skills recommended for external reuse |
+| `agents/`  | Sanitised copies of agent definitions recommended for external reuse |
 
 ## What's NOT here (and why)
 
-- **Commands** — most are tightly coupled to the task system (`/focus`,
-  `/standup`, `/done`, etc.). Externalising would require a rewrite, not
-  a symlink. May revisit.
-- **Hooks and scripts** — infrastructure for this specific system, not
-  generically reusable.
-- **Global CLAUDE.md components** — personal configuration.
-- **Settings** — machine/user configuration.
+- **Most commands** — tightly coupled to the task/memory system (`/focus`,
+  `/standup`, `/recall`, etc.). Externalising would require a rewrite, not a copy.
+- **Hooks and scripts** — infrastructure for this specific system.
+- **Global CLAUDE.md components and settings** — personal/machine configuration.
+- **Anything not yet sanitised** — e.g. the `lit-scout` / `prior-art-scout`
+  agent pairs (hardcoded paths + instrumentation) and several skills, pending a
+  deliberate stripping pass before they can be copied here.
 
-## Adding new entries
+## Adding or updating an entry
 
-**For a skill or agent:** create a symlink here pointing to the canonical
-file or directory.
-
-```bash
-# Skill (directory)
-ln -s ../../skills/my-skill published/skills/my-skill
-
-# Agent (file)
-ln -s ../../agents/my-agent.md published/agents/my-agent.md
-```
-
-**For a prompt:** copy the polished grimoire entry from `data/notes/grimoire/`
-into `published/prompts/`, strip any private context, and verify it reads
-well standalone.
+1. Copy the polished source file into the matching `published/` subdirectory.
+2. **Sanitise**: strip absolute / `~` paths, machine names, client / project /
+   collaborator names, internal instrumentation, unshipped plans, and anything
+   identifying a third party.
+3. Verify it reads standalone, then commit.
+4. At each `/retro`, re-check existing copies against their sources for drift and
+   refresh as needed.
