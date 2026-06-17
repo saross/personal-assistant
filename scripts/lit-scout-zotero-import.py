@@ -581,8 +581,16 @@ def parse_findings_table(report_md: Path) -> dict[str, dict[str, str]]:
         rows[doi.lower()] = {
             "fit": cells[1] if len(cells) > 1 else "",
             "cites": cells[2] if len(cells) > 2 else "",
-            "cluster": cells[doi_col + 3] if doi_col is not None and len(cells) > doi_col + 3 else "",
-            "status": cells[doi_col + 4] if doi_col is not None and len(cells) > doi_col + 4 else "",
+            "cluster": (
+                cells[doi_col + 3]
+                if doi_col is not None and len(cells) > doi_col + 3
+                else ""
+            ),
+            "status": (
+                cells[doi_col + 4]
+                if doi_col is not None and len(cells) > doi_col + 4
+                else ""
+            ),
         }
     return rows
 
@@ -930,9 +938,12 @@ def _given_family_creator(name: str) -> dict[str, str] | None:
 def _creators_from_record(authors: list[dict]) -> list[dict[str, str]]:
     """Convert a CrossRef-style ``author`` list into Zotero creators.
 
-    Used only when the claims contract is silent on authors for a DOI (e.g. a
-    DataCite-sourced dataset), so the structured creators from the fetched
-    record are not lost. Each input entry is either ``{"family", "given"}``
+    This is the PRIMARY source of creators in `build_zotero_item`: the registry
+    record (CrossRef/DataCite/OpenAlex) carries the full, correctly-ordered
+    author list, whereas the claims-contract `authors` value is only a short
+    display rendering (see the authors block in `build_zotero_item` for why the
+    registry wins). The claims string is consulted only as a fallback, when the
+    record has no authors. Each input entry is either ``{"family", "given"}``
     (personal name) or ``{"name"}`` (organisation / unparsed name), matching the
     shape `fetch_crossref`/`fetch_openalex`/`fetch_datacite` emit.
 
@@ -955,12 +966,25 @@ def _creators_from_record(authors: list[dict]) -> list[dict[str, str]]:
         name = (a.get("name") or "").strip()
         if name:
             creators.append({"creatorType": "author", "name": name})
+            continue
+        # Mononym / malformed entry with a `given` but no `family` and no
+        # `name` (rare in CrossRef, but this is now the PRIMARY creator path,
+        # so keep it rather than silently drop the author): store the lone
+        # given token as a name-only creator.
+        if given:
+            creators.append({"creatorType": "author", "name": given})
     return creators
 
 
 def parse_author_string(s: str) -> list[dict[str, str]]:
     """
     Convert a claims.jsonl `authors` value into Zotero creators.
+
+    Fallback path only: `build_zotero_item` now prefers the registry record's
+    structured authors (`_creators_from_record`) and calls this string parser
+    only when the record has no author list. The claims `authors` value is a
+    short display rendering, so parsing it is inherently lossy --- retained for
+    the rare record with no registry authors, not as the primary source.
 
     Handles two formats the contract has used:
       - canonical "Family, Given; Family, Given; ..." (semicolon-delimited);
@@ -1026,7 +1050,10 @@ def build_zotero_item(
 
     Authoritative source for each field:
       - title, year, citation_count, doi_resolves: from claims (corrected)
-      - authors: from claims (corrected; may differ from CrossRef raw)
+      - authors: from the registry record's structured `author` field
+        (CrossRef/DataCite/OpenAlex), which carries the full, correctly
+        ordered list; the claims `authors` string is only a fallback when
+        the record has none (see the authors block below for why)
       - publicationTitle, volume, issue, pages, ISSN, abstract, url:
         from CrossRef raw (claims contract does not cover these)
       - itemType: derived from CrossRef `type` via mapping table
@@ -1067,24 +1094,38 @@ def build_zotero_item(
     if not date_str and year:
         date_str = str(year)
 
-    # Authors: corrected value from claims, parsed back to creators.
-    # Three cases, in priority order:
-    #   1. The claims contract carries an `authors` category → that value is
-    #      authoritative (even a verifier-corrected empty string, which means
-    #      "no authors asserted" and must be preserved verbatim). We detect
-    #      this with `"authors" in claims_for_doi`, NOT a truthiness test, so a
-    #      legitimately-empty correction is not mistaken for "absent".
-    #   2. No `authors` category at all (e.g. a DataCite/CrossRef record fetched
-    #      for a DOI the claims set is silent on, such as a dataset) → fall back
-    #      to the fetched record's structured `author` list. This is what lets a
-    #      Zenodo dataset arrive with its 6 DataCite creators rather than zero.
-    #   3. Neither → no creators.
-    if "authors" in claims_for_doi:
+    # Authors: the authoritative full list is the registry record's structured
+    # `author` field (CrossRef for journals/books, DataCite for arXiv/Zenodo,
+    # OpenAlex as the backstop), parsed by `_creators_from_record`. We prefer it
+    # over the claims-contract `authors` value because that value is the
+    # lit-scout proposer's short DISPLAY rendering --- e.g. "Lu, Zhang (2025)" or
+    # "Vygotsky (1978/1980)" --- NOT a full, correctly-ordered author list.
+    # Round-tripping that string through `parse_author_string` produced the
+    # corruption seen in staged records: year-as-surname (the "(1978/1980)" tail
+    # has a slash, so the year-strip regex misses it and the token becomes the
+    # family name), flattened order, and blank given names. The verifier never
+    # catches this --- it validates only the first-author FAMILY against CrossRef,
+    # not the creator field this importer writes --- so the damage is downstream
+    # of verification. The registry record is exactly the authority the verifier
+    # checks against, so preferring it cannot discard a verifier correction; it
+    # restores the full list the short claim string only gestured at.
+    #
+    # Priority, therefore:
+    #   1. Registry record has a usable `author` list → that is canonical.
+    #   2. Else the claims contract carries an `authors` value → fall back to
+    #      parsing it (a record CrossRef/DataCite/OpenAlex indexed WITHOUT an
+    #      author list, but the proposer supplied one --- better a parsed string
+    #      than zero creators). An explicit empty correction stays empty.
+    #   3. Else → no creators.
+    record_creators = _creators_from_record(crossref_msg.get("author") or [])
+    if record_creators:
+        creators = record_creators
+    elif "authors" in claims_for_doi:
         authors_claim = (claims_for_doi.get("authors") or {}).get("value")
         authors_str = "" if authors_claim is None else authors_claim
         creators = parse_author_string(authors_str) if authors_str else []
     else:
-        creators = _creators_from_record(crossref_msg.get("author") or [])
+        creators = []
 
     # Container fields from the fetched record.
     journal = (crossref_msg.get("container-title") or [""])[0]
