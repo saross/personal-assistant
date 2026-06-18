@@ -38,6 +38,7 @@ in [continuity.md](continuity.md) workstream D.
 | `continuity.md` | `wiki/continuity.md` | **moved here 2026-05-28** |
 | `working-notes.md` | `wiki/working-notes.md` | **here** (since 2026-05-18) |
 | `user-observations.md` | `wiki/user-observations.md` | **here** (since 2026-05-18) |
+| `claude-observations.md` | `wiki/claude-observations.md` | **here** (since 2026-06-18) |
 | `index.md` (this file) | `wiki/index.md` | **here** (2026-05-28) |
 | `reflections/` | `wiki/reflections/` | **moved here 2026-05-28** (`/reflect` made layout-aware) |
 | Planning | `wiki/planning/` | **moved here 2026-05-28** |
@@ -86,6 +87,7 @@ should look like (minus the cross-project layer below).
 | Working notes | [working-notes.md](working-notes.md) | Research notes — empirical, chronological lab notebook (`/observe`, `/handoff`) |
 | Reflections | [`reflections/`](reflections/) | Meta-research — session reflection, abductive-reasoning, session log (`/reflect`; research repos only) |
 | User observations | [user-observations.md](user-observations.md) | Curated meta-observations about how we work together |
+| Claude observations | [claude-observations.md](claude-observations.md) | Claude-owned register of how-we-work observations (default-keep; bidirectional) |
 | Planning | [`planning/`](planning/) | Design docs, implementation plans, audits |
 | Documentation | [`docs/`](docs/) | System and infrastructure documentation |
 
