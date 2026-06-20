@@ -72,6 +72,7 @@ class TestRegistration:
         assert names == {
             "search_memories",
             "semantic_search",
+            "search_sessions",
             "get_memory",
             "list_recent",
             "memory_statistics",

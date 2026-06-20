@@ -62,6 +62,13 @@ _spec = importlib.util.spec_from_file_location(
 fetch_memories = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fetch_memories)
 
+# Load the hyphenated search-sessions module the same way (backs search_sessions).
+_ss_spec = importlib.util.spec_from_file_location(
+    "search_sessions", SCRIPT_DIR / "search-sessions.py",
+)
+search_sessions_mod = importlib.util.module_from_spec(_ss_spec)
+_ss_spec.loader.exec_module(search_sessions_mod)
+
 DB_NAME = "claude_memories"
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
@@ -334,6 +341,64 @@ async def semantic_search(
         ]
     results = results[:limit]
 
+    return _envelope(results, source="postgres")
+
+
+# -------------------------------------------------------------------------
+# Tool: search_sessions
+# -------------------------------------------------------------------------
+
+@mcp.tool(annotations=READ_ONLY)
+async def search_sessions(
+    query: Annotated[
+        str,
+        Field(min_length=1, description="Full-text query over archived session "
+              "transcript content (websearch syntax: quotes for phrases, OR, -exclude)"),
+    ],
+    project: Annotated[
+        str | None,
+        Field(description="Scope to one project (e.g. 'inscriptions')"),
+    ] = None,
+    role: Annotated[
+        str | None,
+        Field(description="Filter by turn role: 'user' or 'assistant'"),
+    ] = None,
+    substring: Annotated[
+        bool,
+        Field(description="Exact/identifier match (trigram ILIKE) instead of "
+              "stemmed full-text — use for code tokens like 'build_model_f1'"),
+    ] = False,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum results (1-50)"),
+    ] = 10,
+) -> str:
+    """
+    Search the CONTENT of past Claude Code sessions (transcript full-text).
+
+    This is the SAFE, indexed way to answer "where did we discuss X across past
+    sessions". It queries the pre-built session_chunks index and never
+    decompresses a transcript — do NOT hand-roll zcat/grep over ~/cc-archives
+    (that hard-locked the machine on 2026-06-21). Results carry an
+    archive_dir + turn_idx handle; retrieve the verbatim turn with the
+    search-sessions.py --show CLI.
+
+    Complements the memory tools: search_memories/semantic_search cover what was
+    distilled to memory; this covers the raw conversation that was not.
+    """
+    try:
+        results = search_sessions_mod.search(
+            query, project=project, role=role, limit=limit, substring=substring,
+        )
+    except ImportError:
+        return _error_envelope("psycopg2 not installed; session search unavailable.")
+    except Exception as exc:  # noqa: BLE001 — graceful degradation to the client
+        return _error_envelope(f"Session search failed: {exc}")
+
+    if not results:
+        return _envelope([], source="none",
+                         note="No matching session content. Try --substring for "
+                              "identifiers, a broader query, or the memory tools.")
     return _envelope(results, source="postgres")
 
 
