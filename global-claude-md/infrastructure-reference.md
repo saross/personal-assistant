@@ -40,7 +40,10 @@ Session end
   → cc-session-toolkit archive hooks
     → ~/cc-archives/ (compressed JSONL + metadata)
       → sync-sessions-to-postgres.py
-        → PostgreSQL sessions table (FTS searchable)
+        → PostgreSQL sessions table (metadata + Three-P summaries, FTS)
+      → index-session-content.py (transcript prose, line-oriented)
+        → PostgreSQL session_chunks table (per-turn FTS + trgm)
+          → search-sessions.py / /search-sessions / search_sessions MCP tool
 
 Session start
   → session-start-retrieval.py
@@ -125,6 +128,9 @@ Located in `scripts/`.
 | `bulk-archive.py` | 4-mode: discover, archive, enrich, verify. Haiku Batch API for metadata enrichment. Checkpoint/resume. |
 | `reprocess-sessions.py` | Extract memories from pre-hook sessions. Haiku Batch API, windowed (30 exchanges). |
 | `sync-sessions-to-postgres.py` | Session metadata → PostgreSQL `sessions` table |
+| `index-session-content.py` | Transcript prose → PostgreSQL `session_chunks` (per-turn FTS). Line-oriented, incremental by mtime. |
+| `search-sessions.py` | Indexed full-text search of session content + verbatim turn retrieval. Backs `/search-sessions` and the `search_sessions` MCP tool. |
+| `search-archives-safe.sh` + `_scan_archives.py` | Crash-proof bounded fallback grep of raw `.gz` (nice/ionice/timeout/cgroup/flock; Python line-scan engine). |
 
 **Zotero:**
 
@@ -183,6 +189,32 @@ Located in `scripts/`.
 - Subagent archives nested under parent sessions
 - 1,093 subagent sessions
 
+### Searching past sessions — the escalation ladder
+
+Four rungs, cheapest first. **Never grep raw `.gz` ad hoc** — a
+`zcat | tr | grep -oiE` search hard-locked the machine on 2026-06-21
+(diagnosis: `Code/inscriptions/planning/archive-search-crash-diagnosis-2026-06-21.md`).
+
+| Rung | Tool | Searches |
+|---|---|---|
+| 0 | `/recall`, `search_memories`/`semantic_search` MCP | distilled **memories** |
+| 1 | `/recall` session search, `sessions` table FTS | session **metadata** + Three-P summaries |
+| 2 | `/search-sessions`, `search-sessions.py`, `search_sessions` MCP | transcript **content** (`session_chunks`) |
+| 3 | `search-sessions.py --show <dir> --turn <n>` | the **exact turn(s)**, verbatim from the index |
+| fallback | `search-archives-safe.sh` | bounded ad-hoc grep of raw `.gz` (last resort) |
+
+- **`session_chunks`** (PostgreSQL): one row per user/assistant prose turn,
+  GENERATED `tsvector` (GIN) + `gin_trgm_ops` (substring/identifier). Populated
+  by `index-session-content.py` (incremental by mtime; main sessions by default,
+  `--include-subagents` for the rest). Excludes thinking/tool noise — matches are
+  conversation, not base64. A pgvector semantic column is designed but deferred
+  (lexical-first, 2026-06-21).
+- **`search-archives-safe.sh`** is the safe fallback when the index lacks
+  something. Its engine is `_scan_archives.py` (pure-Python, line-oriented) — not
+  ripgrep/grep, which on this machine are shell functions routing to the Claude
+  Code binary, not standalone tools. Wrapped in nice/ionice/timeout + a
+  systemd-run cgroup + a single-run flock so it cannot recreate the crash.
+
 ### Cron Jobs
 
 ```text
@@ -209,4 +241,11 @@ and Zotero queries. Run with `pytest` from the repo root (venv required).
 
 ### What's Not Built Yet
 
-_(empty — see backlog for remaining non-infrastructure items)_
+- **Auto-index session content at archive time.** `index-session-content.py` is
+  run manually / incrementally; wiring it into the post-archive hook chain
+  (alongside `sync-sessions-to-postgres.py`) would keep `session_chunks` fresh
+  with no manual step. Designed for, not yet wired (2026-06-21).
+- **Semantic session-content search.** The `session_chunks.embedding` pgvector
+  column + HNSW index are designed (commented in `schema.sql`) but deferred —
+  lexical FTS first. Activate by backfilling embeddings (reusing `embed.py`).
+- _Otherwise empty — see backlog for remaining non-infrastructure items._
