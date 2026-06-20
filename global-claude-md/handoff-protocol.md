@@ -69,7 +69,21 @@ Don't curate now — just **flag for the next `/weekly-review`**:
 This is the deliberate fix for the recap-too-late problem: capture at
 session-close, curate at weekly-review.
 
-#### 4. Capture user observations (suggest candidates)
+#### 4. Capture observations — two registers, split by *who observed whom*
+
+Observations about how we worked together split into two registers by a
+single axis — **the observer** (the register is the observer, not the
+subject). Draft each into the register the observer implies. Each repo's
+`claude-observations.md` header carries the full semantics:
+
+- **user-observations** — things *Shawn* observed about *Claude* (what I
+  did that was very helpful or very unhelpful). **Gated:** drafted as
+  candidates Shawn accepts / edits / discards.
+- **claude-observations** — things *I* observed about *Shawn* (his
+  working style, choices, decision dynamics) plus my own collaboration
+  self-critiques. **Default-keep:** written directly, not gated.
+
+##### 4a. user-observations — draft candidates (gated)
 
 **Draft 2–4 candidate observations** about how we worked together this
 session and surface them for review. Useful whether or not a full
@@ -82,18 +96,57 @@ Look for, when drafting candidates:
   you should have)
 - Decision-density dynamics — when did the session benefit from your
   steering vs my proposing
-- Meta-observations you made about your own working style
 - Inflection points where a new lens (e.g. open-science angle in
   2026-05-17) reframed the work
-- Whether anti-confabulation discipline held under context pressure
+
+The **one exception** where a Claude-noticed item belongs *here* rather
+than in claude-observations: if I notice Shawn react in-the-moment ("wow,
+that really helped"), I flag it as a user-obs candidate — it is data about
+my helpfulness, which is Shawn's territory even though I noticed it.
 
 You decide: accept / edit / discard / replace with your own. Empty is
 still a valid outcome — but the *drafted candidates* are what makes
 this step useful.
 
-Accepted observations land in `wiki/user-observations.md` (per project).
-This is your meta-level log about our collaboration, feeding eventually
-into `notes/working-with-claude.md` at curation time.
+Accepted observations land in the project's `user-observations.md`
+(`wiki/` on the four-artefact layout, `docs/notes/` legacy), feeding
+`notes/working-with-claude.md` at curation time.
+
+##### 4b. claude-observations — write directly (default-keep)
+
+Write 1–4 observations *I* made this session about how *Shawn* works —
+his working-style choices, decision dynamics, productive pushbacks — plus
+my own self-critiques about collaborating with him. These are **mine** and
+**default-keep**: I write them straight into the project's
+`claude-observations.md`; Shawn may read, respond, or prune, but the
+default is that they persist. Be liberal — empty is *not* the expected
+outcome here (unlike 4a).
+
+Look for:
+
+- A working-style choice worth carrying forward to calibrate future
+  instances (scope discipline, milestone-marking, a sharpening reframe)
+- A productive pushback or correction Shawn made
+- A self-critique: something I did in collaborating I'd do differently
+  (a confabulation caught, an action narrated as done before the tool ran)
+- A how-we-work pitfall or win from my vantage (session shape, leverage
+  left unused)
+
+**Symmetric dedup guard.** `/reflect` writes to this same register, and
+**either ritual may run first** in a session. Before writing, check
+`claude-observations.md` for entries already dated today: if the other
+ritual has already written this session's claude-obs, *augment* (add only
+what is genuinely new) rather than duplicate. Whichever runs first writes;
+the second tops up.
+
+If the file does not exist yet, create it from the sibling-repo template
+(header + observer-axis table) — see `wiki/claude-observations.md` in
+personal-assistant or `docs/notes/claude-observations.md` in inscriptions.
+It lives *beside* the reflections set, never inside `reflections/`.
+
+Format: `## claude-obs N — YYYY-MM-DD: <one-line summary>` with
+**Pattern.** / **Lesson.** / **How to apply.** sub-blocks; never modify an
+accepted entry in place — corrections land as new cross-referencing entries.
 
 #### 5. Commit and push
 
@@ -160,8 +213,8 @@ Carry-forward: <key in-flight state / gotcha / decision — omit if none>.
 
 - **Light session** (single quick question, no design work): skip steps
   2–4; just update continuity if there's anything worth noting.
-- **Heavy design session** (this one, for example): all five steps
-  warranted; expect the full 10 minutes.
+- **Heavy design session** (this one, for example): all six steps
+  warranted (4a + 4b both); expect the full 10 minutes.
 - **Verification-only session** (read state, confirm something, leave):
   often no continuity update needed at all.
 - **Step 6 (resume prompt) always runs**, regardless of session weight — even

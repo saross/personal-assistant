@@ -2,15 +2,17 @@
 title: "Claude Observations — design + cross-repo rollout"
 tags: [planning, infrastructure, reflection]
 created: 2026-06-18
-updated: 2026-06-18
-status: design-approved
+updated: 2026-06-20
+status: plumbing-built; active repos seeded
 ---
 
 # Claude Observations — design + cross-repo rollout
 
-**Status:** design approved 2026-06-18 (Shawn). Doc live in personal-assistant
-(`wiki/claude-observations.md`, seeded with Obs 1–3). Cross-repo build-out
-**pending — out-of-hours** (not to eat the pre-Europe paper sprint).
+**Status:** design approved 2026-06-18 (Shawn); **skill plumbing built +
+active repos seeded 2026-06-20.** Doc live in personal-assistant
+(`wiki/claude-observations.md`, Obs 1–6). `/handoff` §4 and `/reflect` now
+route observations by observer (see "Rollout" below). Dormant / infra-less
+repos deferred until active.
 
 ## What
 
@@ -41,26 +43,39 @@ their own document, these are safe — including in the research repos.
   `reflections/session-reflection.md` = narrative texture of a session.
 - **Format** — numbered, dated entries; summary line + body + subject tag.
 
-## Rollout (pending, out-of-hours)
+## Rollout — built 2026-06-20
 
-1. **Seed `claude-observations.md`** (or the repo's reflections-equivalent) in
-   each active repo: paper-b, inscriptions, map-reader-llm,
-   fieldmark-docs-staging, llm-history-paper, voice-assistant,
-   llm-reproducibility. Use the PA header as the template.
-2. **Skill plumbing (global skills — edit carefully):**
-   - `/handoff` step 4: split the single observation step into (a)
-     *user*-observation candidates (gated, as now) and (b) *claude*-observations
-     (default-keep, written directly).
-   - `/reflect`: add a step to append claude-observations (Shawn: "triggered
-     either by handoff or reflect").
-3. **Curation destination:** `user-observations.md` is supposed to feed
-   `notes/working-with-claude.md` — which **does not exist yet**. Decide whether
-   claude-observations feed the same curated note or stay standalone.
+1. **Seed `claude-observations.md`** in each active repo. **Done (active +
+   infra-ready):** `inscriptions` (`docs/notes/`, pre-existing 2026-06-20,
+   left as-is), `paper-b` (`wiki/`), `map-reader-llm` (`docs/notes/`),
+   `LLM-History-Paper` (`docs/notes/`). Seed = header + observer-axis table,
+   no entries (the inscriptions instance was used as the concrete per-repo
+   template — the matured rendering of the PA header). Placement convention:
+   *beside* the reflections set, never inside `reflections/`.
+   **Deferred (no reflections infra / dormant / mid-migration):**
+   `fieldmark-docs-staging`, `voice-assistant`, `llm-reproducibility` —
+   seed when each is next active.
+2. **Skill plumbing (global skills).** **Done:**
+   - `global-claude-md/handoff-protocol.md` §4 split into **4a**
+     user-observations (gated candidates, as before) and **4b**
+     claude-observations (default-keep, written directly). `commands/handoff.md`
+     refinement updated to match.
+   - `skills/reflect/SKILL.md` gained a "Claude-observations" step that writes
+     claude-obs directly after the reflection docs.
+   - **Symmetric dedup guard** in both: *either ritual may run first*; the
+     second detects today's entries and augments rather than duplicating.
+3. **Curation destination.** **Done:** created
+   `notes/working-with-claude.md` as **one shared stub** — the single curated
+   destination for *both* registers, populated at `/weekly-review` / `/retro`.
 
-## Open questions
+## Open questions — resolved 2026-06-20
 
-- Both `/handoff` and `/reflect` as triggers, or split roles (handoff drafts,
-  reflect curates)?
-- One register per repo, or a cross-repo aggregate at curation time?
-- Create `notes/working-with-claude.md` now (the user-observations curation
-  target is also missing), or defer until there's volume to curate?
+- **Triggers / roles** → *both* `/handoff` and `/reflect` write claude-obs
+  directly (no propose-review gate; write liberally), with a symmetric guard
+  because Shawn habitually runs `/reflect` first — either may run first.
+- **Per-repo vs aggregate** → *per-repo register* (the established pattern);
+  cross-repo aggregation happens only at curation time, into
+  `notes/working-with-claude.md`. No aggregation plumbing built (no volume yet).
+- **Create `notes/working-with-claude.md` now** → *yes*, as one shared stub
+  (it was a dangling pointer named by ~5 register files). Stays empty until a
+  curation pass has volume to lift.

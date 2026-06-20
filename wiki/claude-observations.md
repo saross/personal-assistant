@@ -37,10 +37,13 @@ Register = who is doing the observing, not who the observation is about:
   whichever register the observer implies.
 
 The earlier "bidirectional" framing (above) muddied this — the operative test
-is simply *who is observing whom*. **Failure mode to fix:** a `/handoff` that
+is simply *who is observing whom*. **Failure mode it fixes:** a `/handoff` that
 drafts *Claude-observing-Shawn* items as "user-observation candidates" is
-mis-filing — those are claude-observations. This is live until the skill
-plumbing is built (see rollout).
+mis-filing — those are claude-observations. **The skill plumbing now enforces
+this (built 2026-06-20):** `/handoff` §4 splits into 4a (user-obs, gated) and
+4b (claude-obs, default-keep), and `/reflect` writes claude-obs directly; a
+symmetric dedup guard lets either ritual run first. See
+`global-claude-md/handoff-protocol.md` §4 and `skills/reflect/SKILL.md`.
 
 **Why this exists / history.** An "LLM observations" doc existed early on and
 was deprecated ~2026-03-15 because, *in the LLM-research repos*, observations

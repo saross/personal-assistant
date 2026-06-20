@@ -163,6 +163,45 @@ freeform reflection.
 **Avoid**: Enumerated lists of "what X brought." If both parties' contributions
 matter, weave them into the narrative rather than listing them separately.
 
+## Claude-observations (write after the reflection docs)
+
+`claude-observations.md` is **not** a reflection document — it is the
+**default-keep** register of things *I* observed about *Shawn* (his working
+style, choices, decision dynamics) plus my own collaboration self-critiques.
+The defining axis is **the observer**: I-observe-Shawn → here;
+Shawn-observes-me → `user-observations.md` (gated, a `/handoff` concern). It
+lives *beside* the reflections set (`wiki/claude-observations.md` on the
+four-artefact layout, or `docs/notes/claude-observations.md` legacy), **never
+inside `reflections/`** — so it is not part of the priority-sorted document
+loop above. `/reflect` writes it directly: it is mine, default-keep, not gated
+on Shawn's acceptance. Be liberal — empty is *not* the expected outcome.
+
+After completing the reflection documents, append 1–4 claude-observations:
+
+- Write what *I* observed about how *Shawn* works this session — a
+  working-style choice worth carrying forward, a productive pushback, a
+  self-critique about my own collaboration, or a how-we-work win/pitfall from
+  my vantage.
+- **Do not** draft user-observations here (things Shawn observed about me) —
+  those are `/handoff`'s gated step, including the one exception it documents
+  (relaying an in-the-moment reaction from Shawn). `/reflect` writes only
+  Claude-observed items.
+
+**Symmetric dedup guard.** `/handoff` writes to this same register, and
+**either ritual may run first**. Before writing, check
+`claude-observations.md` for entries already dated today: if `/handoff` has
+already written this session's claude-obs, *augment* (add only what is
+genuinely new) rather than duplicate. Whichever ritual runs first writes; the
+second tops up.
+
+If the file does not exist, create it from the sibling-repo template (header +
+observer-axis table; see personal-assistant's `wiki/claude-observations.md` or
+inscriptions' `docs/notes/claude-observations.md`).
+
+Format: `## claude-obs N — YYYY-MM-DD: <one-line summary>` with **Pattern.** /
+**Lesson.** / **How to apply.** sub-blocks. Never modify an accepted entry in
+place — corrections land as new entries that cross-reference the older one.
+
 ## Standards
 
 - UK/Australian English throughout

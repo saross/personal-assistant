@@ -31,10 +31,20 @@ No arguments. Adapts to session weight (light / heavy / verification-only).
 
 3. **Key refinements** (do not omit, even when the protocol summary is
    skimmed):
-   - **Step 4 (user observations):** *draft 2–4 candidate observations*
-     about how we worked together this session, then surface them for
-     accept / edit / discard / replace. Do not ask a blank-page question —
-     candidates jog memory and are useful even when wrong.
+   - **Step 4 (observations — two registers, split by *who observed
+     whom*):**
+     - *4a user-observations (gated):* draft 2–4 candidate observations of
+       things **Shawn observed about Claude** (what I did that helped /
+       didn't), then surface them for accept / edit / discard / replace.
+       Don't ask a blank-page question — candidates jog memory and are
+       useful even when wrong. One exception lands here: an in-the-moment
+       Shawn reaction I relay ("wow, that helped").
+     - *4b claude-observations (default-keep):* write 1–4 observations of
+       things **I observed about Shawn** (working style, decisions) plus my
+       own collaboration self-critiques, *directly* into the project's
+       `claude-observations.md` — not gated. Be liberal. Symmetric dedup
+       guard with `/reflect`: **either ritual may run first**; if today's
+       claude-obs already exist, augment rather than duplicate.
    - **Step 5 (commit and push):** *default is commit-and-push everything*
      before handoff closes, batched by logical area (design-doc, protocol-doc,
      continuity, notes — one commit per area). Bundle into a single commit
