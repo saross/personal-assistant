@@ -430,3 +430,66 @@ ORDER BY total_cost_usd DESC;
 INSERT INTO sync_state (sync_type, last_position) VALUES
     ('sessions_to_postgres', '2000-01-01T00:00:00Z')
 ON CONFLICT (sync_type) DO NOTHING;
+
+-- ============================================================================
+-- Session content index (transcript full-text search)
+-- ============================================================================
+-- The `sessions` table above holds session-level METADATA + the Three-P
+-- summaries — enough to answer "which session was that?" but NOT the
+-- transcript text. `session_chunks` is the missing rung: one row per
+-- user/assistant TURN, holding the clean extracted text, so transcript
+-- *content* can be searched without ever decompressing a .gz at query time.
+--
+-- This is the indexed alternative to the safe ad-hoc fallback
+-- (scripts/search-archives-safe.sh). Populated by
+-- scripts/index-session-content.py, which parses each session.jsonl(.gz)
+-- line-by-line (never collapsing newlines — see the 2026-06-21 crash
+-- diagnosis) and extracts only the human/assistant prose, skipping tool
+-- noise. Searched by scripts/search-sessions.py / the /search-sessions
+-- skill / the search_sessions MCP tool.
+CREATE TABLE IF NOT EXISTS session_chunks (
+    id           BIGSERIAL PRIMARY KEY,
+    session_id   TEXT,           -- sessions.id (soft link; the archive holds
+                                 -- more sessions than the metadata sync covers,
+                                 -- so this is intentionally not a hard FK)
+    project      TEXT,           -- e.g. "inscriptions" (for scoped search)
+    archive_dir  TEXT NOT NULL,  -- session directory name under ~/cc-archives/
+    archive_path TEXT NOT NULL,  -- path to the .gz, relative to the archive root
+    turn_idx     INTEGER NOT NULL, -- ordinal of the turn within that file
+    role         TEXT,           -- 'user' | 'assistant'
+    text         TEXT NOT NULL,  -- clean extracted turn text (no tool noise)
+    char_len     INTEGER,
+    source_mtime DOUBLE PRECISION, -- .gz mtime, so unchanged files are skipped
+    indexed_at   TIMESTAMPTZ DEFAULT NOW(),
+    -- Auto-maintained FTS vector (PG 12+ generated column). 'english' config
+    -- matches the memories/sessions FTS indexes elsewhere in this schema.
+    tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+    -- Idempotent re-index: one row per (file, turn). Re-running the indexer
+    -- upserts on this key rather than duplicating.
+    UNIQUE (archive_path, turn_idx)
+);
+
+-- Word/phrase/followed-by full-text search.
+CREATE INDEX IF NOT EXISTS idx_session_chunks_tsv
+    ON session_chunks USING GIN(tsv);
+-- Substring / identifier / fuzzy search (complements FTS for code-like tokens).
+CREATE INDEX IF NOT EXISTS idx_session_chunks_text_trgm
+    ON session_chunks USING GIN(text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_session_chunks_session
+    ON session_chunks(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_chunks_project
+    ON session_chunks(project);
+CREATE INDEX IF NOT EXISTS idx_session_chunks_archive_dir
+    ON session_chunks(archive_dir);
+
+-- Deferred fast-follow (lexical-first by design, 2026-06-21): a pgvector
+-- embedding column for SEMANTIC session-content search, mirroring the
+-- memories.embedding pattern (vector(768), Ollama nomic-embed-text). Added
+-- here, commented, so the intent is recorded; activate by uncommenting +
+-- backfilling embeddings, no table rebuild required.
+--   ALTER TABLE session_chunks ADD COLUMN IF NOT EXISTS embedding vector(768);
+--   CREATE INDEX IF NOT EXISTS idx_session_chunks_embedding_hnsw
+--       ON session_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Rollback (additive migration; safe to drop with no effect on other tables):
+--   DROP TABLE IF EXISTS session_chunks;
