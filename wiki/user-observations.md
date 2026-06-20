@@ -1665,3 +1665,9 @@ and the commit. Shawn delegated the breadth and trusted the depth-review to land
 with me.
 
 [x] accept
+
+## 2026-06-20 (PA / collaboration-design: claude-observations build + weekend task-system) — Drafted candidates (pending review)
+
+### Candidate 1: a proactive solution-space survey flipped a decision in a non-expert domain
+
+On the SpiderOak "use or cancel" question I didn't just answer the framing — I surfaced (per the CLAUDE.md "survey the solution space in non-expert domains" rule) that the grandfathered unlimited plan (~$149/yr) is far cheaper than metered alternatives (Backblaze B2 ~$500/yr, Cloudflare R2 ~$1,200+/yr) for the real 6–8TB need, and that cancelling forfeits an irreplaceable deal. That materially changed the decision — Shawn came in leaning "cancel" and left reframing it as a backup-strategy choice. Flagged as a candidate because I noticed it land (the "Claude relays Shawn's reaction" exception): unsolicited solution-space survey in a non-expert domain was the high-value move, not over-stepping.

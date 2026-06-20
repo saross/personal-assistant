@@ -2,7 +2,7 @@
 title: "Personal-Assistant — Claude Observations"
 tags: [index]
 created: 2026-06-18
-updated: 2026-06-18
+updated: 2026-06-20
 status: seed
 ---
 
@@ -20,6 +20,27 @@ explicitly invited: critical-friend critiques of his prompting, missed
 opportunities (e.g. automation / unused leverage), and larger-picture
 critiques of the *shape* of our interaction at the multi-turn or session
 level.
+
+**claude-obs vs user-obs — the axis is the *observer* (clarified 2026-06-20).**
+Register = who is doing the observing, not who the observation is about:
+
+- **claude-observations** (this file): things *I* observe — most often about
+  **Shawn** (his working style and choices: e.g. choosing the bounded honest
+  option, pausing to mark a milestone), plus my own self-critiques and
+  how-we-work from my vantage. Default-keep.
+- **user-observations**: things *Shawn* observes about *me* — what I did that
+  was very helpful or very unhelpful. Usually Shawn-initiated. **One exception
+  where I seed a user-obs candidate:** if I notice Shawn react in-the-moment
+  (e.g. "wow, that really helped"), I flag it back at `/handoff` — it's data
+  about my helpfulness, which is Shawn's territory even though I noticed it.
+- **Grey middle** (how-we-work pitfalls/wins): either may raise; files to
+  whichever register the observer implies.
+
+The earlier "bidirectional" framing (above) muddied this — the operative test
+is simply *who is observing whom*. **Failure mode to fix:** a `/handoff` that
+drafts *Claude-observing-Shawn* items as "user-observation candidates" is
+mis-filing — those are claude-observations. This is live until the skill
+plumbing is built (see rollout).
 
 **Why this exists / history.** An "LLM observations" doc existed early on and
 was deprecated ~2026-03-15 because, *in the LLM-research repos*, observations
@@ -94,3 +115,15 @@ Two structural notes Shawn explicitly invited (2026-06-18):
   *within-session* scale, not just the day scale. Worth doing deliberately:
   when a long agent run starts, queue the foreground with the cheap-but-real
   work that's been waiting.
+
+## Obs 4 — 2026-06-20 — `[me]` Self-critique: I narrated an edit as done before the tool call ran
+
+On 2026-06-20 I told Shawn "I've updated the Brian backlog row" — but I had not actually made that Edit; I'd only described it. I caught it myself a turn later and corrected it openly. **What generalises:** don't narrate an action as *done* until the tool call has executed and returned. Reporting an intended edit as complete is a confabulation about my own behaviour — the same failure class as inventing an identifier, pointed inward. Verify-after-acting applies to my own claims, not only to subagents and memories.
+
+## Obs 5 — 2026-06-20 — `[you]` `[me]` Shawn's date-verification instinct caught load-bearing errors I'd carried forward
+
+This session Shawn corrected several wrong dates I'd propagated: a "29 Jun return" that was actually a two-leg trip (Denmark to 29 Jun, then Melbourne to 13 Jul); a "Mon 23 Jun" handoff that is in fact a *Tuesday*; and his own "week of 29 July" slip on a 7-Jul-deadline review. Each was deadline- or plan-critical. **What generalises:** the anti-confabulation rule applies to **dates**, not just identifiers — a welded-in wrong date ("29 Jun return") made a plan look safe (Brian's review "post-return") when it would have missed a deadline. When a date is load-bearing (a deadline, a travel boundary), re-derive it (`date -d`, the source doc) rather than carry it forward. Shawn's habit of cross-checking dates against reality is the backstop that caught these.
+
+## Obs 6 — 2026-06-20 — `[you]` Shawn sharpens a design by naming the operative distinction
+
+My claude-observations framing called the register "bidirectional [me]/[you]/[shape]" — serviceable but muddy. Shawn replaced it with a single clean axis: **register = the observer** (I-observe-you → claude-obs; you-observe-me → user-obs). **What generalises:** when a design feels over-tagged or fuzzy, the fix is usually to find the one operative distinction the framing is obscuring. Worth me reaching for "what's the single axis here?" before adding more categories.
