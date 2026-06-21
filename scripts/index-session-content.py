@@ -178,6 +178,13 @@ def index_archive(archive_root: Path, project: str | None,
                 ]
 
                 # Replace this file's rows transactionally (no stale turns).
+                # Known limitation: a file with ZERO extractable prose turns
+                # records no row, so its mtime is never stored and it is
+                # re-parsed every run. Dormant for main transcripts (every real
+                # session has ≥1 user turn); only bites pure-tool subagent files
+                # (--include-subagents) or corrupt archives, at a cost of one
+                # cheap re-parse per run. Accepted rather than adding a separate
+                # indexed-files table for a negligible, self-limiting cost.
                 cur.execute("DELETE FROM session_chunks WHERE archive_path = %s",
                             (rel_path,))
                 if rows:

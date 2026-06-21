@@ -68,19 +68,26 @@ def search(
         with conn.cursor() as cur:
             params: list[Any] = []
             if substring:
+                # Escape LIKE wildcards so an identifier like build_model_f1 is
+                # matched literally — otherwise '_' and '%' in the query act as
+                # wildcards (the opposite of what "exact/identifier" mode wants).
+                # Backslash is PostgreSQL's default LIKE escape character.
+                escaped = (query.replace("\\", "\\\\")
+                                .replace("%", "\\%")
+                                .replace("_", "\\_"))
                 select = (
-                    "SELECT c.archive_dir, c.turn_idx, c.role, c.session_id, c.project, "
-                    "s.title, s.started_at, 1.0::float AS rank, "
+                    "SELECT c.archive_dir, c.archive_path, c.turn_idx, c.role, "
+                    "c.session_id, c.project, s.title, s.started_at, 1.0::float AS rank, "
                     "left(c.text, 240) AS snippet "
                     "FROM session_chunks c LEFT JOIN sessions s ON s.id = c.session_id "
                     "WHERE c.text ILIKE %s"
                 )
-                params.append(f"%{query}%")
+                params.append(f"%{escaped}%")
                 order = " ORDER BY s.started_at DESC NULLS LAST, c.id DESC LIMIT %s"
             else:
                 select = (
-                    "SELECT c.archive_dir, c.turn_idx, c.role, c.session_id, c.project, "
-                    "s.title, s.started_at, ts_rank(c.tsv, q) AS rank, "
+                    "SELECT c.archive_dir, c.archive_path, c.turn_idx, c.role, "
+                    "c.session_id, c.project, s.title, s.started_at, ts_rank(c.tsv, q) AS rank, "
                     f"ts_headline('english', c.text, q, '{_HEADLINE_OPTS}') AS snippet "
                     "FROM session_chunks c "
                     "CROSS JOIN websearch_to_tsquery('english', %s) q "
@@ -112,20 +119,42 @@ def show_turns(
     *,
     context: int = 2,
     project: str | None = None,
+    archive_path: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve a turn and its neighbours verbatim from the index (no .gz read)."""
+    """Retrieve a turn and its neighbours verbatim from the index (no .gz read).
+
+    ``context`` counts *stored prose turns*, not raw record ordinals: turn_idx is
+    the source-record index, so it has gaps where tool/thinking records were
+    skipped. A naive ``BETWEEN turn_idx ± context`` would therefore return a
+    variable, often empty, set. We rank the prose turns within the file and take
+    a row-window of ±context around the focal turn instead.
+
+    Pass ``archive_path`` to disambiguate when a session directory holds more than
+    one transcript (main + subagents share an archive_dir but not an
+    archive_path); without it, archive_dir alone is unambiguous for the default
+    main-sessions-only index.
+    """
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            params: list[Any] = [archive_dir, turn_idx - context, turn_idx + context]
-            sql = (
-                "SELECT turn_idx, role, text FROM session_chunks "
-                "WHERE archive_dir = %s AND turn_idx BETWEEN %s AND %s"
-            )
+            where = "archive_dir = %s"
+            params: list[Any] = [archive_dir]
+            if archive_path:
+                where += " AND archive_path = %s"
+                params.append(archive_path)
             if project:
-                sql += " AND project = %s"
+                where += " AND project = %s"
                 params.append(project)
-            sql += " ORDER BY turn_idx"
+            params.extend([turn_idx, context, context])
+            sql = (
+                f"WITH ordered AS ("
+                f"  SELECT turn_idx, role, text, "
+                f"         row_number() OVER (ORDER BY turn_idx) AS rn "
+                f"  FROM session_chunks WHERE {where}), "
+                f"focus AS (SELECT rn FROM ordered WHERE turn_idx = %s) "
+                f"SELECT o.turn_idx, o.role, o.text FROM ordered o, focus f "
+                f"WHERE o.rn BETWEEN f.rn - %s AND f.rn + %s ORDER BY o.turn_idx"
+            )
             cur.execute(sql, params)
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -179,14 +208,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="Retrieve verbatim turns from this session directory.")
     parser.add_argument("--turn", type=int, help="Turn index to retrieve (with --show).")
     parser.add_argument("--context", type=int, default=2,
-                        help="Neighbour turns to include with --show (default 2).")
+                        help="Neighbour prose turns to include with --show (default 2).")
+    parser.add_argument("--archive-path",
+                        help="Disambiguate --show when a session dir holds multiple "
+                             "transcripts (main + subagents); usually unnecessary.")
     args = parser.parse_args(argv)
 
     try:
         if args.show is not None:
             if args.turn is None:
                 parser.error("--show requires --turn")
-            rows = show_turns(args.show, args.turn, context=args.context, project=args.project)
+            rows = show_turns(args.show, args.turn, context=args.context,
+                              project=args.project, archive_path=args.archive_path)
             print(json.dumps(rows, ensure_ascii=False, indent=2, default=str)
                   if args.json else _format_turns(rows, args.turn))
             return 0 if rows else 1

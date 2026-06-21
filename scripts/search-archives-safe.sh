@@ -64,8 +64,9 @@
 #   SAS_MAXLINE     per-line truncation guard, chars    (default 1000000)
 #   SAS_NO_CGROUP   set to 1 to skip the cgroup scope even if available
 #
-# EXIT CODES: 0 matches; 1 no matches (rg convention); 124 timed out;
-#             3 refused (another search already running).
+# EXIT CODES: 0 matches; 1 no matches (grep convention); 2 bad invocation
+#             (path/engine/python missing); 124 timed out; 3 refused
+#             (another search already running).
 # =============================================================================
 
 set -euo pipefail
@@ -84,7 +85,7 @@ ENGINE="${SCRIPT_DIR}/_scan_archives.py"
 
 # --- Argument parsing -------------------------------------------------------
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    sed -n '2,60p' "$0"   # print the header block as help
+    sed -n '2,69p' "$0"   # print the whole header block (through EXIT CODES) as help
     exit 0
 fi
 
@@ -114,9 +115,17 @@ if [[ ! -f "$ENGINE" ]]; then
     exit 2
 fi
 # Use the venv python if present (matches the rest of the hub's tooling),
-# else the system python3 — both can read gzip line-by-line.
+# else the system python3 — both can read gzip line-by-line. Fail loudly with
+# exit 2 if neither exists, so a missing interpreter is never mistaken for the
+# exit-1 "no matches" result.
 PYTHON="${SCRIPT_DIR}/../venv/bin/python3"
-[[ -x "$PYTHON" ]] || PYTHON="$(command -v python3)"
+if [[ ! -x "$PYTHON" ]]; then
+    PYTHON="$(command -v python3 || true)"
+    if [[ -z "$PYTHON" ]]; then
+        echo "search-archives-safe: python3 not found (need the venv or a system python3)." >&2
+        exit 2
+    fi
+fi
 
 # --- Build the resource-limit wrapper prefix --------------------------------
 # Always: nice (CPU yield) + ionice (I/O yield) + timeout (hard kill).
@@ -126,9 +135,16 @@ LIMIT_PREFIX=(nice -n 19 ionice -c3 timeout "$SAS_TIMEOUT")
 # This is the SAME systemd-run pattern the project already uses for sapphire
 # compute — not a new mechanism. If unavailable we degrade to nice/ionice/timeout,
 # which is still safe; we just lose the hard memory ceiling.
+#
+# NB: `systemctl is-system-running` exits NON-ZERO for "degraded" (one failed
+# unit is enough) even though the manager is fully usable and systemd-run works.
+# Test the STATE STRING, not the exit status, or a degraded-but-usable system
+# silently loses the OOM ceiling this wrapper exists to provide. `|| true` keeps
+# the non-zero exit from aborting under `set -e`.
 CGROUP_PREFIX=()
+_user_systemd_state="$(systemctl --user is-system-running 2>/dev/null || true)"
 if [[ "$SAS_NO_CGROUP" != "1" ]] && command -v systemd-run >/dev/null 2>&1 \
-        && systemctl --user is-system-running >/dev/null 2>&1; then
+        && [[ "$_user_systemd_state" == "running" || "$_user_systemd_state" == "degraded" ]]; then
     CGROUP_PREFIX=(systemd-run --user --scope --quiet
                    -p "MemoryMax=${SAS_MEMMAX}" -p "CPUQuota=${SAS_CPUQUOTA}")
     CGROUP_NOTE="cgroup MemoryMax=${SAS_MEMMAX} CPUQuota=${SAS_CPUQUOTA}"
@@ -140,10 +156,13 @@ fi
 # The Python engine streams each .gz line-by-line, applies a bounded regex with a
 # per-line length guard, and prints path:lineno: matches. AND-filtering and
 # context are handled inside the engine (no second process, no `tr`, no pipe).
-ENGINE_ARGS=("$ENGINE" "$PATTERN" "$SEARCH_PATH" -C "$SAS_CONTEXT"
-             --max-line "$SAS_MAXLINE")
+# Optionals (and any EXTRA_ARGS flags) come first; then a literal `--` so that a
+# PATTERN beginning with `-` (e.g. the very common `->`) is taken as the search
+# pattern, not parsed as an option.
+ENGINE_ARGS=("$ENGINE" -C "$SAS_CONTEXT" --max-line "$SAS_MAXLINE")
 [[ -n "$AND_PATTERN" ]] && ENGINE_ARGS+=(--and "$AND_PATTERN")
 ENGINE_ARGS+=("${EXTRA_ARGS[@]}")
+ENGINE_ARGS+=(-- "$PATTERN" "$SEARCH_PATH")
 
 echo "search-archives-safe: foreground search (do NOT relaunch if it seems slow)" >&2
 echo "  pattern : $PATTERN${AND_PATTERN:+   --and: $AND_PATTERN}" >&2

@@ -76,14 +76,20 @@ def scan_file(
     before: deque[tuple[int, str]] = deque(maxlen=context) if context else deque(maxlen=0)
     after_remaining = 0
     matches = 0
+    # Highest line number already written. Lines stream in increasing order, so
+    # this dedupes any overlap: an after-context line that later also qualifies
+    # as before-context of a nearby match must not be emitted twice.
+    last_printed = 0
 
     try:
         with gzip.open(path, "rt", errors="replace") as handle:
             for lineno, raw in enumerate(handle, start=1):
                 line = raw.rstrip("\n")
-                # Per-line guard: truncate before the regex touches it.
+                # Per-line guard: truncate before the regex touches it. No suffix
+                # is appended — the matched/displayed text must be the real
+                # content, never a marker the regex could spuriously match on.
                 if len(line) > max_line:
-                    line = line[:max_line] + " …[truncated]"
+                    line = line[:max_line]
 
                 is_match = bool(pattern.search(line))
                 if is_match and and_pattern is not None:
@@ -92,12 +98,18 @@ def scan_file(
                 if is_match:
                     matches += 1
                     for bno, btext in before:
-                        sys.stdout.write(f"{rel}:{bno}- {btext}\n")
-                    sys.stdout.write(f"{rel}:{lineno}: {line}\n")
+                        if bno > last_printed:
+                            sys.stdout.write(f"{rel}:{bno}- {btext}\n")
+                            last_printed = bno
+                    if lineno > last_printed:
+                        sys.stdout.write(f"{rel}:{lineno}: {line}\n")
+                        last_printed = lineno
                     before.clear()
                     after_remaining = context
                 elif after_remaining > 0:
-                    sys.stdout.write(f"{rel}:{lineno}- {line}\n")
+                    if lineno > last_printed:
+                        sys.stdout.write(f"{rel}:{lineno}- {line}\n")
+                        last_printed = lineno
                     after_remaining -= 1
                     if context:
                         before.append((lineno, line))
