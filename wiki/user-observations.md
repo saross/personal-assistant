@@ -1671,3 +1671,31 @@ with me.
 ### Candidate 1: a proactive solution-space survey flipped a decision in a non-expert domain
 
 On the SpiderOak "use or cancel" question I didn't just answer the framing — I surfaced (per the CLAUDE.md "survey the solution space in non-expert domains" rule) that the grandfathered unlimited plan (~$149/yr) is far cheaper than metered alternatives (Backblaze B2 ~$500/yr, Cloudflare R2 ~$1,200+/yr) for the real 6–8TB need, and that cancelling forfeits an irreplaceable deal. That materially changed the decision — Shawn came in leaning "cancel" and left reframing it as a backup-strategy choice. Flagged as a candidate because I noticed it land (the "Claude relays Shawn's reaction" exception): unsolicited solution-space survey in a non-expert domain was the high-value move, not over-stepping.
+
+## 2026-06-21 (PA-infra / safe session-search build + claude-obs plumbing + LLM-use inventory) — Drafted candidates (pending review)
+
+Mark with ✓ accept / ✏ edit / ✗ discard / replace inline. Empty is fine.
+
+### Candidate 1: Naming the anti-satisficing rule up front changed the architecture, not just the effort
+
+You handed me the crash diagnosis with two clauses — *"don't take proposed solutions as gospel"* and *"leverage the infrastructure we have built already"* — before I'd read it. Those weren't encouragement; they were the actual design constraint. Following them, I verified the diagnosis's "build a fresh SQLite index" against the live system and found PostgreSQL + pgvector already there, so the real fix was an integrated `session_chunks` table, not a parallel index. The steer paid for itself.
+
+**What this means in practice:** for any task that begins from someone else's recommendation (a diagnosis, a prior plan, a tool's "recommended" path), a one-line "don't assume the recommendation fits — check it against what we already run" is high-leverage framing. Worth me reaching for it unprompted when a task hands me a pre-baked solution.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 2: The phased "safety net first, then the real fix" gate was your call, and it was the right risk order
+
+When I laid out the build, you picked "land the safe fallback as its own commit first, then build the indexed ladder." That sequenced the crash-risk to zero immediately, independent of how far the larger build got. You also inserted the `/audit` at ready-to-commit rather than after pushing.
+
+**What this means in practice:** you reliably gate risk-reduction *before* feature-completeness — the cheap safety commit first, the adversarial review before the push, not after. When I propose a multi-part build, I should offer the risk-isolating first step explicitly rather than bundling it into one PR; it matches how you sequence.
+
+[ ] accept   [ ] edit   [ ] discard
+
+### Candidate 3: Approving the multi-agent audit fan-out, with the depth-review landing on me
+
+You asked for `/audit` over the new code; I ran five parallel adversarial auditors, then triaged their findings myself — keeping the real bugs (context-dedup, the `degraded`-systemd cgroup gap), documenting the dormant ones, and rejecting the over-reach. The fan-out surfaced candidates; the value was in the filter between their output and the commit.
+
+**What this means in practice:** you trust breadth to be delegated and depth-adjudication to land with me — same contract as the 2026-06-06 QA pass. Worth confirming this is the working pattern you want for audits (agents surface, I adversarially filter, you see only the triaged result), so I keep applying it.
+
+[ ] accept   [ ] edit   [ ] discard

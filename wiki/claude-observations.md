@@ -2,7 +2,7 @@
 title: "Personal-Assistant — Claude Observations"
 tags: [index]
 created: 2026-06-18
-updated: 2026-06-20
+updated: 2026-06-21
 status: seed
 ---
 
@@ -130,3 +130,15 @@ This session Shawn corrected several wrong dates I'd propagated: a "29 Jun retur
 ## Obs 6 — 2026-06-20 — `[you]` Shawn sharpens a design by naming the operative distinction
 
 My claude-observations framing called the register "bidirectional [me]/[you]/[shape]" — serviceable but muddy. Shawn replaced it with a single clean axis: **register = the observer** (I-observe-you → claude-obs; you-observe-me → user-obs). **What generalises:** when a design feels over-tagged or fuzzy, the fix is usually to find the one operative distinction the framing is obscuring. Worth me reaching for "what's the single axis here?" before adding more categories.
+
+## Obs 7 — 2026-06-21 — `[you]` `[me]` "Don't take proposed solutions as gospel" + "leverage existing infra" caught a real over-build
+
+Handing me the archive-search crash diagnosis, Shawn said explicitly: *don't take proposed solutions as gospel* and *leverage the infrastructure we've already built*. The diagnosis (written by a prior instance) recommended building a fresh SQLite FTS5 index. Taking his steer, I verified the recommendation against the live system and found the project already runs a PostgreSQL DB with `pg_trgm` + `pgvector` and a synced `sessions` table — so a standalone SQLite index would have duplicated the query layer. The fix became a `session_chunks` table integrated with the existing memory MCP. **What generalises:** a "recommended solution" — even a careful one — is an input to verify, not a spec to implement. The highest-value check before building is "does this fit the infrastructure that already exists?", and Shawn's two-clause steer is exactly that check named in advance. When a prior diagnosis hands me a design, re-cost it against the current system before committing.
+
+## Obs 8 — 2026-06-21 — `[me]` Self-critique: I built on an unverified tool assumption (`rg`) and only caught it at test time
+
+I wrote the safe-search wrapper to call `rg -z` (per the diagnosis), and only discovered *during testing* — not design — that on this machine `rg` and `grep` are shell **functions** routing to the Claude Code binary, not standalone tools. The diagnosis's whole stopgap could never have run from a script, and that harness `rg` was itself the OOM-killed process in the original crash. I had to re-architect the engine to pure Python after the fact. **What generalises:** when a hardening tool's entire value is reliability, verify its external-tool dependencies are what I think they are (`type rg`, is it a real binary?) at *design* time, not test time. I treated "rg exists" as given because `command -v rg` succeeded in the interactive shell — but the interactive shell is exactly where the function shadows the (absent) binary. The earlier "verify specifics at the source" rule applies to tool identity, not just to dates and identifiers.
+
+## Obs 9 — 2026-06-21 — `[you]` Shawn treats an incident as a design prompt, not just a fix to ship
+
+After a search crashed his machine for hours, Shawn didn't ask for a patch — he asked for *"a safe, fast, principled approach … that leverages the infrastructure we have built already"*, and named the thing he actually wanted back: *"there was supposed to be a smoother way to escalate from 'use the memory system' to 'examine the transcripts'."* That reframed a one-off bug-fix into building the whole escalation ladder (memory → metadata → content → exact turn → safe fallback). He also gated it well: the `/audit`-at-ready-to-commit and the phased "land the safety net first, then the real fix" both came from him. **What generalises:** Shawn's instinct at an incident is to ask what *system* should have existed, not just what broke. When something fails, the high-value response is often the durable capability it reveals is missing — and he'll reach for that framing himself, so I should meet it with design, not just remediation.
