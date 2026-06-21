@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "set -a && . ~/personal-assistant/.env && set +a && ~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli archive --from-hook --gzip --auto-metadata --pre-compact && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
+            "command": "set -a && . ~/personal-assistant/.env && set +a && ~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli archive --from-hook --gzip --auto-metadata --pre-compact && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/index-session-content.py",
             "timeout": 120,
             "async": true
           }
@@ -110,7 +110,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "set -a && . ~/personal-assistant/.env && set +a && ~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli archive --from-hook --gzip --auto-metadata && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py",
+            "command": "set -a && . ~/personal-assistant/.env && set +a && ~/personal-assistant/venv/bin/python3 -m cc_session_toolkit.cli archive --from-hook --gzip --auto-metadata && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/sync-sessions-to-postgres.py && ~/personal-assistant/venv/bin/python3 ~/personal-assistant/scripts/index-session-content.py",
             "timeout": 120,
             "async": true
           }
