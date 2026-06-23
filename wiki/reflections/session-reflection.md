@@ -137,3 +137,71 @@ under it. If something seems to behave unexpectedly under the new
 convention, check `tasks/SYSTEM.md` for the 2026-04-18 adjustment
 history entries before concluding the system is broken.
 
+
+## Entry 2 — 2026-05-29: The discrepancy that was a gap, not an error
+
+*(Written first-person by the instance that ran the session — a `/track`
+block and a full `/recap`. No compaction; these are direct observations.)*
+
+This was a routine accountability session until one question turned it
+into something worth recording. I had already closed the recap with
+inscriptions logged at 0.25h for Friday when Shawn asked: *"Did I really
+only spend 0.25 hours on inscriptions? I thought I spent some time earlier
+in the week getting the Bayesian analysis launched."*
+
+### What surprised me
+
+The reflex was to reconcile that as someone misremembering — either my
+number was too low or his recollection had inflated. Both framings were
+wrong. My 0.25h was correct *for the day*; his memory was correct *for the
+week*. The two numbers never actually conflicted — they answered different
+questions — and the friction between them pointed at a third thing neither
+had named: **Sunday 2026-05-24 had a full day of inscriptions work (the
+Stage 1 / Stage 2 empirical-Bayes runs) and zero hours logged.** The whole
+day was simply absent from the time-log. The discrepancy wasn't an error in
+either source; it was a gap between them.
+
+### The move that resolved it
+
+Not arbitration between two fallible memories, but grounding in a record
+neither of us authored. Re-reading the time-log confirmed the absence (no
+2026-05-24 row at all); the inscriptions git history showed nine commits
+that Sunday, 11:39 to 23:59. The independent artefact adjudicated.
+
+This is the same epistemic discipline the project's reflections keep
+circling — but inverted. The confabulation work (Entry 1 here and in
+`abductive-reasoning.md`) is about the *machine's* output being the
+untrustworthy thing, with human and API ground-truth correcting it. Here
+the *record* was incomplete and the *human's* episodic memory was the
+reliable signal that something was off. The lesson runs in both directions:
+treat "that doesn't feel right" as a probe trigger, and reach for an
+independent artefact rather than re-litigating two suspect sources against
+each other. Anti-confabulation is usually framed as defending against the
+model; this session was the reminder that the *record* needs the same
+suspicion, and that the human's felt sense of their own week is sometimes
+the most grounded source in the room.
+
+### The question that emerged and wasn't pursued
+
+How many other days are missing? We found 2026-05-24 only because Shawn
+happened to remember a specific, memorable piece of work — launching a
+multi-day run. Days of more forgettable work, or work that left no git
+trail, would never surface this way. The per-day `/recap` structure has a
+structural blind spot: it can only capture days on which a recap actually
+runs, and weekend or un-recapped days fall through silently. A systematic
+git-vs-time-log diff would find those gaps the way the targeted check found
+this one — but I ran the targeted check, not the sweep. That diff is a
+genuine `system_friction` candidate and a small tool worth building; it was
+named and deferred, not done.
+
+### Hardest to reconstruct in six months
+
+The 3h now sitting against 2026-05-24 is a Shawn estimate made six days
+after the fact, and many of that day's commits are autonomous `chore(runs)`
+— launch-and-leave — so the commit span (11:39–23:59) wildly overstates
+active attention. The git log anchors *that the work happened* and *what it
+was*; it cannot anchor *how many hours of human attention* it cost. The 3h
+is the most defensible number available, but it is a reconstruction, not a
+measurement, and a future reader should not mistake its precision for
+accuracy.
+

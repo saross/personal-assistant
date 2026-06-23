@@ -137,3 +137,59 @@ work formed one arc despite three distinct session boundaries.
   rather than executing edits. Fix was to exit plan mode; subagents
   then executed normally. Noted in scratchpad as a pattern.
 
+
+## Entry 2 — 2026-05-29 (Fri evening)
+
+### Scope
+
+End-of-day accountability session: one `/track` block (after-hours EFN),
+a full `/recap` for Friday 2026-05-29, and a retroactive time correction
+for Sunday 2026-05-24 surfaced by a user query during the recap close-out.
+
+### Major outputs
+
+- **`reports/time-log.csv`** — Friday 2026-05-29 logged across five
+  entries totalling 8.25h: efn 5.75 (Founders meeting, bizdev first pass,
+  Cormac IP/costing email + after-hours touch-base/links), anu 1.0
+  (end-of-session surveys), personal-assistant 0.75 (evening infra), map-
+  reader-llm 0.5 (reorg, Paused), inscriptions 0.25. Plus one back-fill:
+  **inscriptions 3h dated 2026-05-24 (catch-up flag)** for the editorial-
+  bias-correction approach + empirical-Bayes run launch.
+- **`tasks/waiting-for.md`** — new row: BolgiaTen internal stakeholder
+  buy-in on IP + costing, waiting on Cormac, poke ~2026-06-12.
+- **`standups/2026-05-29.md`** — full recap appended (committed-vs-actual,
+  parallel work, estimation accuracy, key developments, hours table) +
+  Tomorrow (Sat 2026-05-30) plan.
+- **`reports/work-log.md`** — dated human-readable entry.
+- **Progress memory** `2026-05-29-09a6545ea496` (category `progress`,
+  30-day decay).
+
+### Key decisions
+
+- **Bizdev plan → its own focus slot.** Shawn's call: "produce business
+  development plan" is a genuine 1h–1wk task (~2–3 days, post-pivot, after
+  Opus recommended a significant pivot in the claude.ai session) and should
+  *replace* the narrower "outreach campaign planning #83" Slot 3 framing,
+  with outreach folded in as a sub-component. FOCUS.md surgery deferred to
+  Saturday's `/weekly-review` rather than edited mid-recap.
+- **Slot 2 OSS-vs-IP task complete** (delivered 2026-05-28) — flagged for
+  `/done` rotation to the Mon 2026-06-01 BolgiaTen-feedback + Elevate
+  draft-terms block during weekly-review.
+- **Retroactive 2026-05-24 entry dated to the work day, not the log day**,
+  per the `/track` catch-up convention; 3h is a user estimate.
+
+### Contextual assumptions
+
+- **2026-05-24 is a Sunday → last day of W21** (Mon 05-18 → Sun 05-24).
+  The back-fill lands in W21 totals, not W22; W22 inscriptions stays 4.0h.
+  The W21 closure record tracks closures, not hours, so it is unaffected;
+  any W21 hours-total reconciliation happens at the next weekly-review.
+- **The 3h is a reconstruction, not a measurement.** 2026-05-24's git
+  activity includes autonomous `chore(runs)` commits (launch-and-leave),
+  so the 11:39–23:59 commit span ≠ active attention.
+- **map-reader-llm (0.5h) is a Paused project** but under the ≥1h/day slip
+  threshold, so it reads as a legitimate drive-by aggregate, not a slip
+  (consistent with the standup's complementary-attention finding).
+- **No compaction** — written first-person by the instance that did the
+  work.
+
