@@ -1049,7 +1049,11 @@ def build_zotero_item(
     Build a Zotero item dict suitable for `zot.create_items([item])`.
 
     Authoritative source for each field:
-      - title, year, citation_count, doi_resolves: from claims (corrected)
+      - title: from the registry record's `title` (CrossRef/DataCite/
+        OpenAlex), which carries the full, untruncated title; the claims
+        `title` string is only a fallback when the record has none (see
+        the title block below for why — symmetric with authors)
+      - year, citation_count, doi_resolves: from claims (corrected)
       - authors: from the registry record's structured `author` field
         (CrossRef/DataCite/OpenAlex), which carries the full, correctly
         ordered list; the claims `authors` string is only a fallback when
@@ -1067,17 +1071,38 @@ def build_zotero_item(
         EXTRA_TYPE_TO_ZOTERO_TYPE.get(cr_type, "journalArticle")
     )
 
-    # Title: prefer the claims value (corrected, even if it is the
-    # empty string) over CrossRef; only fall back to CrossRef when the
-    # claims-side value is absent or None. Direct `or` would skip a
-    # legitimately empty correction and silently restore the CrossRef
-    # title, drifting away from the verifier's output.
+    # Title: registry-first, symmetric with the authors block below. The
+    # registry record's `title` (CrossRef for journals/books, DataCite for
+    # arXiv/Zenodo, OpenAlex as the backstop) carries the full, untruncated
+    # title; the claims-contract `title` is the lit-scout proposer's
+    # rendering, which has been observed to truncate or reword the title.
+    # The verifier scores a title mismatch as PARTIAL (not FAIL), and
+    # iterate-mode only propagates FAIL corrections back into claims.jsonl,
+    # so a truncated proposer title is never corrected upstream and lands in
+    # Zotero verbatim unless we prefer the registry here. In the 2026-06-25
+    # run, 8 of 24 titles were truncated and only a manual patch avoided
+    # corruption. Preferring the registry cannot discard a verifier
+    # correction the same way the authors block cannot: the registry record
+    # is exactly the authority the verifier checks titles against.
+    #
+    # Priority:
+    #   1. Registry record has a non-empty `title` → that is canonical.
+    #   2. Else fall back to the claims `title` value. An explicit empty
+    #      correction (the claims `value` is the empty string) is preserved
+    #      rather than coerced away, mirroring the old behaviour's care with
+    #      empty corrections; only an absent/None claim yields "".
+    # Note the asymmetry in the empty-string handling between the two
+    # sources: an empty *registry* title must NOT clobber a usable claims
+    # title (hence the truthiness test on `registry_title`), whereas an
+    # empty *claims* title is a legitimate (if rare) correction and is kept.
+    registry_title = (crossref_msg.get("title") or [""])[0]
     title_claim = (claims_for_doi.get("title") or {}).get("value")
-    title = (
-        title_claim
-        if title_claim is not None
-        else (crossref_msg.get("title") or [""])[0]
-    )
+    if registry_title:
+        title = registry_title
+    elif title_claim is not None:
+        title = title_claim
+    else:
+        title = ""
 
     # Year/date: claims has integer year; CrossRef date is richer.
     year = (claims_for_doi.get("year") or {}).get("value")
@@ -1103,11 +1128,13 @@ def build_zotero_item(
     # Round-tripping that string through `parse_author_string` produced the
     # corruption seen in staged records: year-as-surname (the "(1978/1980)" tail
     # has a slash, so the year-strip regex misses it and the token becomes the
-    # family name), flattened order, and blank given names. The verifier never
-    # catches this --- it validates only the first-author FAMILY against CrossRef,
-    # not the creator field this importer writes --- so the damage is downstream
-    # of verification. The registry record is exactly the authority the verifier
-    # checks against, so preferring it cannot discard a verifier correction; it
+    # family name), flattened order, and blank given names. The verifier checks
+    # the proposer's attribution STRING (first author, count, and named later
+    # authors --- broadened 2026-06-26), not the structured creator field this
+    # importer writes, so even a clean verification does not guarantee a clean
+    # round-trip of the claims string. The registry record is exactly the
+    # authority the verifier checks against, so preferring it cannot discard a
+    # verifier correction; it
     # restores the full list the short claim string only gestured at.
     #
     # Priority, therefore:
