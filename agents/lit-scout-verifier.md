@@ -80,20 +80,40 @@ For every row in the findings table:
 ```
 
 Parse the JSON response. Extract:
-- `authors` array — first element's family name
+- `authors` array — the full ordered list of family names, plus the
+  total author count (not only the first element)
 - `year`
 - `title`
 - `citation_count`
 
 Compare against the row's claims. A claim **passes** if:
 - Authors: the row's attribution (e.g., "Walters et al." or
-  "Walters & Wilder") has first author's family name matching the
-  API's `authors[0]`. Small formatting differences are OK; wrong
-  family names are NOT. Note that CrossRef's `family`/`given`
-  encoding can be wrong — apply domain judgement where the encoding
-  is visibly swapped (e.g., if CrossRef returns `family="Philippe"`
-  for a paper whose author is widely known as "Philippe Lanos", the
-  true family name is Lanos, not Philippe).
+  "Walters & Wilder") must agree with the API on **all** of the
+  following, not just the first author:
+  1. **First-author family name** — matches the API's `authors[0]`
+     family name. Small formatting differences are OK; a wrong family
+     name is NOT.
+  2. **Author count** — the number of authors the attribution implies
+     matches the API's author-list length. "Smith & Jones" implies
+     exactly two; "Smith et al." implies three or more; a bare
+     "Smith" implies one. A count mismatch (e.g., the row names two
+     specific authors but the paper has three) is a real divergence,
+     not a formatting nicety.
+  3. **Every named non-first author** — where the attribution spells
+     out a second (or later) author by family name, each named family
+     name must match the API's author list **in order**. A row that
+     reads "Orengo & Petrie" when the registry's `authors[1]` family
+     is "Garcia-Molsosa" is wrong even though the first author is
+     right. Where the attribution uses "et al." after the first
+     author, only the count band (≥3) is checked, not the specific
+     later names, since "et al." does not assert them.
+
+  Apply domain judgement to CrossRef's `family`/`given` encoding,
+  which can be swapped at the source — e.g., if CrossRef returns
+  `family="Philippe"` for a paper whose author is widely known as
+  "Philippe Lanos", the true family name is Lanos, not Philippe.
+  This judgement applies to every position you compare, not only the
+  first author.
 - Year: matches exactly.
 - Title: matches approximately (minor formatting/capitalisation OK).
 - Cites: within 10% of API value, OR both within 20 of each other
@@ -114,11 +134,44 @@ PASS and FAIL and is defined per field as follows:
 
 | Field | PASS | PARTIAL | FAIL |
 |---|---|---|---|
-| `authors` | First author family name matches; minor formatting variation OK | Wrong rendering style ("Smith & Jones" vs "Smith and Jones") but same first author family name | Wrong first author family name |
+| `authors` | First-author family matches, author count matches, and every named non-first author family matches in order; minor formatting variation OK | Wrong rendering style only ("Smith & Jones" vs "Smith and Jones") with first author, count, and all named authors otherwise correct | Wrong first-author family, **OR** author count mismatch, **OR** any named non-first author family wrong/misordered |
 | `year` | Exact match | ±1 year (covers publication-date vs first-online-date ambiguity that CrossRef sometimes surfaces) | Beyond ±1 year |
 | `title` | Approximate match (capitalisation, punctuation, "the" prefix variation OK) | Same paper but markedly different wording (e.g., subtitle present in one, absent in other) | Different paper |
 | `citation_count` | Within 10 % or ±20 absolute (whichever is larger) | Within 25 % or ±50 absolute, but exceeds PASS | Beyond — different paper, stale fetch, or count from a different API |
 | `doi_resolves` | DOI resolves to the expected paper | (no PARTIAL — binary check) | DOI does not resolve, or resolves to a different paper |
+
+**Why count and non-first-author mismatches must be FAIL, not
+PARTIAL.** The driver iterates on FAIL only; a PARTIAL verdict surfaces
+to the user as a footnote and does **not** propagate a corrected value
+back into `claims.jsonl`, so the Zotero importer would still receive
+the wrong attribution. The `authors` PARTIAL band is therefore reserved
+strictly for cosmetic rendering differences (separator/`et al.` style)
+where the underlying first author, count, and every named author are
+all correct. Any substantive author divergence — wrong first author,
+wrong count, or a wrong/misordered later author — is a FAIL so that
+iterate-mode is triggered and a corrected `true_value` is propagated.
+When you emit the FAIL claim, put the **full corrected attribution** in
+`true_value` (first author plus the corrected later authors / count, in
+the row's rendering style), not just the first author, so the proposer
+substitutes the whole correct list.
+
+**Worked example — the Orengo/Petrie → Garcia-Molsosa case
+(2026-06-25 run).** The proposer rendered a row as
+"Orengo, H.A.; Petrie, C.A. (2022)". The first-author family (Orengo)
+is correct, so the old first-author-only rubric scored the row PASS and
+never triggered an iteration. But the registry's `authors` list is
+`[Orengo, Garcia-Molsosa, …]` — the real second author is
+Garcia-Molsosa; "Petrie" was cross-contaminated from an adjacent
+same-first-author row. Under the broadened rubric this is a FAIL on
+`authors`: the first author matches but the named second-author family
+("Petrie") does not match the registry's `authors[1]` ("Garcia-Molsosa").
+The FAIL claim carries `true_value` of the corrected attribution
+(e.g., "Orengo, Garcia-Molsosa et al. (2022)") and a `fix_hint` naming
+the substitution, so iterate-mode corrects the row rather than letting
+the wrong second author pass silently. Had the row instead read
+"Orengo et al. (2022)" with the registry showing three or more authors,
+that "et al." asserts only the ≥3 count (which matches) and no specific
+second name, so it would PASS on the count band.
 
 **Severity (FAIL claims only)** — a separate axis from tolerance.
 Tolerance decides PASS/PARTIAL/FAIL; severity ranks FAIL claims for
