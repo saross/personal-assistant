@@ -198,6 +198,45 @@ def test_main_pg_unavailable(tmp_path: Path, monkeypatch) -> None:
     assert rc == sme.EXIT_PG_UNAVAILABLE
 
 
+def test_main_operational_error_labelled_unreachable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A connection-level failure keeps the 'PostgreSQL unreachable' label."""
+    import psycopg2
+
+    p = tmp_path / "memories.jsonl"
+    _write_jsonl(p, [{"id": "a", "content": "x"}])
+
+    def _boom(rec, **kw):
+        raise psycopg2.OperationalError("connection refused")
+
+    monkeypatch.setattr(sme, "reconcile_pg", _boom)
+    rc = sme.main(["--id", "a", "--memories", str(p)])
+    assert rc == sme.EXIT_PG_UNAVAILABLE
+    assert "unreachable" in capsys.readouterr().err
+
+
+def test_main_query_error_not_labelled_unreachable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A query-level failure (e.g. schema mismatch) must NOT claim
+    'unreachable' — that mislabel sent the 2026-07-04 zbook diagnosis down
+    the wrong path. It points at schema.sql + rebuild instead."""
+    p = tmp_path / "memories.jsonl"
+    _write_jsonl(p, [{"id": "a", "content": "x"}])
+
+    def _boom(rec, **kw):
+        raise RuntimeError('column "verified" does not exist')
+
+    monkeypatch.setattr(sme, "reconcile_pg", _boom)
+    rc = sme.main(["--id", "a", "--memories", str(p)])
+    assert rc == sme.EXIT_PG_UNAVAILABLE
+    err = capsys.readouterr().err
+    assert "unreachable" not in err
+    assert "query failed" in err
+    assert "schema" in err
+
+
 def test_main_malformed_record_no_content(tmp_path: Path) -> None:
     """A record present in JSONL but missing 'content' errors clearly (not PG-unavailable)."""
     p = tmp_path / "memories.jsonl"

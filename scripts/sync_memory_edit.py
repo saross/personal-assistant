@@ -179,9 +179,20 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return EXIT_PG_UNAVAILABLE
     except Exception as exc:  # noqa: BLE001 — surface, don't crash the command
-        print(f"[sync-memory-edit] WARNING: PostgreSQL unreachable ({exc}) — edit "
-              "NOT propagated. Run rebuild-postgres on this machine when PG is back.",
-              file=sys.stderr)
+        # Distinguish "server not there" from "server there, query failed".
+        # A schema mismatch (e.g. a pre-v2 mirror missing the ``verified``
+        # column) used to be mislabelled "PostgreSQL unreachable", which sent
+        # the 2026-07-04 zbook diagnosis down the wrong path first.
+        import psycopg2
+        if isinstance(exc, psycopg2.OperationalError):
+            print(f"[sync-memory-edit] WARNING: PostgreSQL unreachable ({exc}) — "
+                  "edit NOT propagated. Run rebuild-postgres on this machine "
+                  "when PG is back.", file=sys.stderr)
+        else:
+            print(f"[sync-memory-edit] WARNING: PostgreSQL query failed ({exc}) — "
+                  "edit NOT propagated. Likely a schema mismatch: apply "
+                  "scripts/schema.sql, then rebuild-postgres on this machine.",
+                  file=sys.stderr)
         return EXIT_PG_UNAVAILABLE
 
     if n == 1:
