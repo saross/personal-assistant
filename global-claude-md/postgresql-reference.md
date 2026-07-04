@@ -16,7 +16,7 @@ from JSONL at any time.
 | Script | Purpose | Schedule |
 |--------|---------|----------|
 | `scripts/sync-to-postgres.py` | JSONL → PostgreSQL sync + auto-embed. P8 (2026-06-06): `is_active` is now included in the INSERT column list so a row forgotten before its first sync lands with `is_active=false` rather than being resurrected by the column default (`ON CONFLICT DO NOTHING` means a subsequent sync will not overwrite it). | Cron every 5 min |
-| `scripts/sync_memory_edit.py` | Surgical `UPDATE` of mutable columns for a single memory (P8, 2026-06-06). Called by `/forget` and `/update` as a **mandatory** step immediately after the JSONL rewrite. Mirrors `is_active`, `content`, `confidence`, `verified`, `anchors`, `revisions` from the edited JSONL record into PG. Idempotent; reports (does not error) if the row is not yet in PG. PG runs only on amd-tower; the helper prints a no-op notice on other machines. | On `/forget` and `/update` |
+| `scripts/sync_memory_edit.py` | Surgical `UPDATE` of mutable columns for a single memory (P8, 2026-06-06). Called by `/forget` and `/update` as a **mandatory** step immediately after the JSONL rewrite. Mirrors `is_active`, `content`, `confidence`, `verified`, `anchors`, `revisions` from the edited JSONL record into PG. Idempotent; reports (does not error) if the row is not yet in PG. The helper simply attempts a local connection — on a machine without PG it warns and exits non-zero (recall there reads JSONL, so the edit still lands); a connection that succeeds but whose query fails (schema mismatch) is reported as "query failed", pointing at `schema.sql` + rebuild (labelling fixed 2026-07-04). | On `/forget` and `/update` |
 | `scripts/apply-decay.py` | Mark expired memories inactive | Weekly manual |
 | `scripts/rebuild-postgres.py` | Full rebuild from JSONL | As needed |
 | `scripts/schema.sql` | Database schema (tables, indexes, views) | One-time |
@@ -65,8 +65,9 @@ by Ollama's nomic-embed-text model via `scripts/embed.py`.
 - **Extension:** pgvector (`CREATE EXTENSION vector`)
 - **Index:** HNSW on `embedding` column (cosine distance)
 - **Dimension:** 768 (nomic-embed-text output)
-- **Population:** Auto-embedded during sync cron (100 records per batch)
-- **Coverage:** All memories embedded (~14,900 as of 2026-04-11)
+- **Population:** Auto-embedded during sync cron (100 records per batch);
+  `scripts/backfill-embeddings.py` embeds the whole backlog in one pass
+- **Coverage:** All memories embedded (~29,180 as of 2026-07-04)
 
 **Semantic search query:**
 
@@ -106,11 +107,22 @@ FROM sessions GROUP BY project ORDER BY total DESC;
 
 ### Multi-Machine Setup
 
-PostgreSQL is local per machine but is currently configured only on
-amd-tower. Other machines read the git-synced JSONL directly, so the
-PG-writing paths (the sync cron, `sync_memory_edit.py`) are no-ops there
-— with no PG to write to, `/forget` and `/update` print a no-op notice
-from the helper and the JSONL edit alone suffices.
+PostgreSQL is local per machine, currently configured on **amd-tower and
+zbook** (zbook repaired 2026-07-04 after drifting since 2026-05-02 — see
+below). Machines without PG read the git-synced JSONL directly; the
+PG-writing paths fail loudly there (`sync_memory_edit.py` warns and exits
+non-zero) but the JSONL edit alone suffices for recall.
 
 To set up PG on a new machine: install PostgreSQL, apply schema, run
 `rebuild-postgres.py`.
+
+**Schema migrations must be applied on EVERY PG machine.** Each script
+asserts `meta.schema_version` before touching the DB, so a host that
+misses a migration has its sync halted by design — silently, from the
+user's perspective, because recall falls back to JSONL. This is exactly
+what happened on zbook: the version gate landed in code on 2026-05-02
+(audit batch 4) but `schema.sql` was applied only on amd-tower, and
+zbook's cron then failed every 5 minutes for two months (13,231 runs)
+before a `/forget` surfaced it. After any schema change: apply
+`schema.sql` on each PG machine, then check that machine's
+`data/logs/sync-cron.log` shows a clean run.
