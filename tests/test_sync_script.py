@@ -261,6 +261,43 @@ class TestRecordToTuple:
         assert result[21] is None                                          # licence
         assert result[22] is None                                          # extractor_model_id
 
+    def test_explicit_null_session_id_coerced_to_empty(self):
+        """A present-but-null session_id must coerce to "" (NOT NULL column).
+
+        Manual (/remember) records carry an explicit ``session_id: null``;
+        a plain .get default only covers the absent-key case, and the None
+        passed through aborted a full rebuild's insert batch (2026-07-04).
+        """
+        record = {
+            "id": "test-null-session",
+            "session_id": None,
+            "category": "decision",
+            "content": "Manually captured memory.",
+            "created_at": "2026-06-15T00:00:00+00:00",
+        }
+        result = sync_mod.record_to_tuple(record)
+        assert result[1] == ""
+
+    def test_unparseable_deadline_coerced_to_none(self):
+        """A non-timestamp deadline_at (e.g. "TBD") must sync as None.
+
+        deadline_at is free text at capture time; passing it through to
+        the TIMESTAMPTZ column aborted a full rebuild's insert batch
+        (2026-07-04). A parseable deadline must still pass through intact.
+        """
+        base = {
+            "id": "test-tbd-deadline",
+            "category": "openness",
+            "content": "Commitment with an undetermined deadline.",
+            "created_at": "2026-07-02T00:00:00+00:00",
+        }
+        tbd = sync_mod.record_to_tuple({**base, "deadline_at": "TBD"})
+        assert tbd[12] is None
+        kept = sync_mod.record_to_tuple(
+            {**base, "deadline_at": "2026-07-15T00:00:00+00:00"}
+        )
+        assert kept[12] == "2026-07-15T00:00:00+00:00"
+
     def test_source_field_included(self, sample_memories):
         """Source field (extraction/manual) should be at index 3."""
         extraction_tuple = sync_mod.record_to_tuple(sample_memories[0])

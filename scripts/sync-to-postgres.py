@@ -257,6 +257,27 @@ def classify_jsonl_line(
     return record, None
 
 
+def _deadline_or_none(value: Any) -> Any:
+    """Pass through a parseable ISO timestamp; coerce anything else to None.
+
+    ``deadline_at`` is free text at capture time — a manual record has
+    carried ``"TBD"`` — and an unparseable value must not abort the whole
+    insert batch against the TIMESTAMPTZ column. NULL is semantically safe:
+    the decay view falls back to ``created_at`` when ``deadline_at`` is NULL.
+    """
+    if value is None:
+        return None
+    from datetime import datetime
+    try:
+        datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        logging.getLogger("sync-to-postgres").warning(
+            "Unparseable deadline_at %r — syncing as NULL", value,
+        )
+        return None
+    return value
+
+
 def record_to_tuple(record: dict[str, Any]) -> tuple:
     """
     Convert a parsed JSONL record to an INSERT-ready tuple.
@@ -275,7 +296,10 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
 
     return (
         record["id"],
-        record.get("session_id", ""),
+        # ``or ""`` rather than a .get default: manual (/remember) records
+        # carry an explicit ``session_id: null``, which .get would pass
+        # through to the NOT NULL column and abort the whole insert batch.
+        record.get("session_id") or "",
         record.get("project"),
         record.get("source", "extraction"),
         record["category"],
@@ -286,7 +310,7 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("zotero_key"),
         record.get("source_context", ""),
         record["created_at"],
-        record.get("deadline_at"),
+        _deadline_or_none(record.get("deadline_at")),
         # v2 fields (2026-05-16)
         Json(_list_or_empty(record.get("anchors"))),
         record.get("verified"),
