@@ -2,7 +2,7 @@
 title: "Personal-assistant wiki — index"
 tags: [index]
 created: 2026-05-28
-updated: 2026-05-28
+updated: 2026-07-04
 status: seed
 ---
 
@@ -79,7 +79,11 @@ Three moments knit the wiki to the rest of the system:
 ## PA project layer
 
 The per-project artefacts. This shape is what every other repo's `wiki/`
-should look like (minus the cross-project layer below).
+should look like (minus the cross-project layer below). Migration
+precedents: this repo (2026-05-28 — see Migration status above) and
+llm-reproducibility (2026-07-03, commit `8845a45` in that repo — the first
+migration of a repo with user-facing product docs, establishing the
+docs-vs-wiki split recorded under [Conventions](#docs-vs-wiki-split-cross-repo)).
 
 | Artefact | Path | Job |
 |---|---|---|
@@ -89,7 +93,7 @@ should look like (minus the cross-project layer below).
 | User observations | [user-observations.md](user-observations.md) | Curated meta-observations about how we work together |
 | Claude observations | [claude-observations.md](claude-observations.md) | Claude-owned register of how-we-work observations (default-keep; bidirectional) |
 | Planning | [`planning/`](planning/) | Design docs, implementation plans, audits |
-| Documentation | [`docs/`](docs/) | System and infrastructure documentation |
+| Documentation | [`docs/`](docs/) | System and infrastructure documentation — `wiki/docs/` is the PA-style exception (these docs *are* the process record); repos with user-facing product docs keep `docs/` at repo root instead (see [Conventions](#docs-vs-wiki-split-cross-repo)) |
 
 `working-notes.md` (research record) and `reflections/` (meta-research on
 how the work and the collaboration unfold) are **separate layers with
@@ -236,6 +240,30 @@ status: seed | active | stable | archive
 - No dates in filenames — dates live in entry headings or frontmatter.
 - Exceptions: convention-mandated uppercase (`README.md`); leading
   underscore for non-page files (`_inbox.md`, `_tags.md`).
+
+### docs/ vs wiki/ split (cross-repo)
+
+Decided 2026-07-03 in llm-reproducibility (commit `8845a45` there);
+promoted to this cross-repo template 2026-07-04.
+
+- **Repos with user-facing product documentation keep `docs/` at the repo
+  root.** GitHub Pages builds from `/docs`, and JOSS/rOpenSci reviewers
+  expect user documentation there. Only the process record — continuity,
+  lab notebook, reflections, planning — lives in `wiki/`.
+- **Never nest process notes under `docs/`.** It pollutes doc-site builds
+  and mixes two lifecycles (product docs version with releases; the
+  process record accretes continuously).
+- **Never use GitHub's Wiki feature.** It is a separate repository,
+  unversioned with releases, and excluded from Zenodo archives.
+- **Exception — PA-style repos:** where a repo's documentation *is* its
+  system/process documentation (as here), `wiki/docs/` is fine; there is
+  no separate product to document.
+
+**README disambiguation map:** every migrated repo's README carries a
+two-line map — `docs/` documents the *product*, `wiki/` documents the
+*process*. Model text: the "docs/ vs wiki/" blockquote in
+llm-reproducibility's `README.md`, and the preamble of its
+`wiki/index.md`.
 
 ### What does NOT live here
 
