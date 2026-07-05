@@ -88,6 +88,18 @@ For example, if the cwd is `/home/shawn/Code/map-reader-llm`, set `project` to
 `-home-shawn-Code-map-reader-llm`. This matches the encoding Claude Code uses for
 project directories under `~/.claude/projects/`.
 
+**Deriving `session_id`**: The scratchpad directory path in the system
+prompt embeds the current session's UUID as a path component —
+`/tmp/claude-1000/<encoded-cwd>/<session-uuid>/scratchpad` — and that UUID
+is the transcript ID under `~/.claude/projects/<encoded-cwd>/`. Use it. If
+no scratchpad path is available and the ID genuinely cannot be determined,
+**omit the field entirely** — never write `null`, `""`, or an invented
+label. (Write-side anti-confabulation: 41 legacy manual records carry
+made-up slugs like `session-39`, and 43 more carried null/empty values
+that aborted PostgreSQL sync batches until the 2026-07-04 tolerance fix.
+A missing field is honest; a fabricated identifier is not.) Real session
+IDs matter downstream: memory–session linking JOINs on this field.
+
 **Important**: When writing the JSON line, ensure all string values are properly
 JSON-escaped. In particular, escape double quotes (`\"`) and backslashes (`\\`)
 within content. Use `json.dumps()` semantics — do not hand-construct the JSON line.
