@@ -466,6 +466,10 @@ class TestSafeGet:
         """Create a mock httpx response."""
         mock = MagicMock()
         mock.status_code = status_code
+        # Real dict, not an auto-MagicMock: headers.get("Retry-After") must
+        # return a genuine miss — float(MagicMock) is 1.0, which would smuggle
+        # a phantom Retry-After hint into the retry-delay calculation.
+        mock.headers = {}
         if raise_json_error:
             mock.json.side_effect = json.JSONDecodeError(
                 "test", "doc", 0
@@ -494,9 +498,12 @@ class TestSafeGet:
         assert result is None
 
     @patch("time.sleep")
-    @patch.object(lit_search, "_rate_limit")
-    def test_429_retries_once(self, mock_rl, mock_sleep):
-        """429 then 200 returns the second response."""
+    def test_429_then_success_returns_second_response(self, mock_sleep):
+        """429 then 200: one backed-off retry recovers the response.
+
+        The delay itself is jittered (fbe743c, 2026-06-06), so assert that
+        a sleep happened — never its exact value.
+        """
         client = MagicMock()
         expected = {"message": "ok"}
         client.get.side_effect = [
@@ -505,29 +512,34 @@ class TestSafeGet:
         ]
         result = lit_search._safe_get(client, "http://test", "s2")
         assert result == expected
-        mock_sleep.assert_called_once_with(5.0)
-        # _rate_limit called twice: initial + before retry
-        assert mock_rl.call_count == 2
+        assert client.get.call_count == 2
+        assert mock_sleep.called
 
     @patch("time.sleep")
-    @patch.object(lit_search, "_rate_limit")
-    def test_429_twice_returns_none(self, mock_rl, mock_sleep):
-        """429 on both attempts returns None."""
+    def test_429_exhausts_retries_returns_none(self, mock_sleep):
+        """429 on every attempt: MAX_RETRIES attempts, then None."""
         client = MagicMock()
         client.get.side_effect = [
-            self._make_mock_response(429),
-            self._make_mock_response(429),
+            self._make_mock_response(429)
+            for _ in range(lit_search.MAX_RETRIES)
         ]
         result = lit_search._safe_get(client, "http://test", "s2")
         assert result is None
+        assert client.get.call_count == lit_search.MAX_RETRIES
 
-    @patch.object(lit_search, "_rate_limit")
-    def test_network_error_returns_none(self, mock_rl):
-        """httpx.HTTPError returns None."""
+    @patch("time.sleep")
+    def test_network_error_returns_none(self, mock_sleep):
+        """Connection errors are retried, then degrade to None.
+
+        time.sleep MUST be patched here: connection errors became
+        retryable in fbe743c, and the unpatched backoff slept ~16 real
+        seconds per run while the test still passed.
+        """
         client = MagicMock()
         client.get.side_effect = httpx.ConnectError("Connection refused")
         result = lit_search._safe_get(client, "http://test", "crossref")
         assert result is None
+        assert client.get.call_count == lit_search.MAX_RETRIES
 
     @patch.object(lit_search, "_rate_limit")
     def test_invalid_json_returns_none(self, mock_rl):
@@ -778,9 +790,13 @@ class TestBibtex:
         assert "Walters_2023" in result
         assert "FAILED" in result
 
+    @patch("time.sleep")
     @patch.object(lit_search, "_rate_limit")
-    def test_network_error_leaves_comment(self, mock_rl):
-        """httpx network error leaves a comment marker."""
+    def test_network_error_leaves_comment(self, mock_rl, mock_sleep):
+        """httpx network error leaves a comment marker.
+
+        time.sleep MUST be patched: connection errors are retried with
+        real backoff since fbe743c (~12 s unpatched)."""
         client = MagicMock()
         client.get.side_effect = httpx.ConnectError("refused")
 
