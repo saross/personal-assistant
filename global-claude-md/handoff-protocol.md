@@ -148,12 +148,15 @@ Format: `## claude-obs N — YYYY-MM-DD: <one-line summary>` with
 **Pattern.** / **Lesson.** / **How to apply.** sub-blocks; never modify an
 accepted entry in place — corrections land as new cross-referencing entries.
 
-**Visibility (added 2026-07-05):** default-keep is not default-invisible.
-After writing, list the titles of the claude-obs just written (one line
-each, with their Obs numbers) in the handoff close-out message, so Shawn
-sees when and what the register received without having to open the file.
-Prompted by Shawn not noticing that Obs 10–12 had been written during a
-handoff ("I don't see any observations from your point of view").
+**Visibility (added 2026-07-05, strengthened same day):** default-keep is
+not default-invisible. Display the **full text** of the claude-obs written
+this session in the handoff close-out message, alongside the 4a user-obs
+candidates — Shawn reads the two registers together at session close
+specifically to make mid-course corrections in how he works with Claude.
+Titles alone were tried first and immediately found insufficient (Shawn,
+2026-07-05: he'd been seeing "only half of the obs"). Default-keep
+semantics are unchanged: the entries are already written; the display is
+for his awareness, not approval.
 
 #### 5. Commit and push
 

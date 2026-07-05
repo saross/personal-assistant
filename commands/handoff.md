@@ -44,7 +44,11 @@ No arguments. Adapts to session weight (light / heavy / verification-only).
        own collaboration self-critiques, *directly* into the project's
        `claude-observations.md` — not gated. Be liberal. Symmetric dedup
        guard with `/reflect`: **either ritual may run first**; if today's
-       claude-obs already exist, augment rather than duplicate.
+       claude-obs already exist, augment rather than duplicate. **Then
+       display the obs full-text in the close-out message alongside the 4a
+       candidates** (protocol Visibility rule, 2026-07-05) — Shawn reads
+       both registers together to make mid-course corrections; written ≠
+       seen.
    - **Step 5 (commit and push):** *default is commit-and-push everything*
      before handoff closes, batched by logical area (design-doc, protocol-doc,
      continuity, notes — one commit per area). Bundle into a single commit

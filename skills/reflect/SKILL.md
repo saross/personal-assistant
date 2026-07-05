@@ -194,6 +194,11 @@ already written this session's claude-obs, *augment* (add only what is
 genuinely new) rather than duplicate. Whichever ritual runs first writes; the
 second tops up.
 
+**Visibility (2026-07-05).** After writing, display the full text of the
+just-written claude-obs in the session's closing message — Shawn reads them
+at session close to make mid-course corrections in how we work; default-keep
+means not-gated, not not-shown.
+
 If the file does not exist, create it from the sibling-repo template (header +
 observer-axis table; see personal-assistant's `wiki/claude-observations.md` or
 inscriptions' `docs/notes/claude-observations.md`).
