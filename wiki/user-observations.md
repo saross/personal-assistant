@@ -2,7 +2,7 @@
 title: "Personal-Assistant — User Observations"
 tags: [index]
 created: 2026-05-18
-updated: 2026-05-18
+updated: 2026-07-05
 status: seed
 ---
 
@@ -1699,3 +1699,39 @@ You asked for `/audit` over the new code; I ran five parallel adversarial audito
 **What this means in practice:** you trust breadth to be delegated and depth-adjudication to land with me — same contract as the 2026-06-06 QA pass. Worth confirming this is the working pattern you want for audits (agents surface, I adversarially filter, you see only the triaged result), so I keep applying it.
 
 [ ] accept   [ ] edit   [ ] discard
+
+## 2026-07-05 (PA-infra / PG repair + session_id forensics) — Accepted (Shawn: "please keep the user-notes")
+
+### Candidate 1: The "confirm there's no way" probe caught an untested impossibility claim
+
+Claude's wrap-up asserted the legacy records' originating sessions were
+"mostly unknowable now" — without having attempted reconstruction. Shawn's
+*"just to put that to bed, can you confirm there's no way to reconstruct
+the originating session?"* forced the test, which recovered 44/84 (52%)
+with hard evidence.
+
+**What this means in practice:** a declared impossibility from Claude is a
+checkable claim wearing a disclaimer's clothing. The probe that converts it
+is cheap: "confirm there's no way". (Claude-side mirror: claude-obs 10.)
+
+### Candidate 2: Wrap-up-as-inventory handed over a ready loose-ends list
+
+Claude's repair wrap-up flagged the pre-existing lit-search test failures
+unprompted, alongside the amd-tower follow-up. That inventory became the
+next session-segment's agenda ("let's tie up a couple of loose ends")
+with zero re-discovery cost.
+
+**What this means in practice:** the wrap-up that lists what was *found
+but not fixed* is as valuable as the fix report itself — it converts
+residue into agenda.
+
+### Candidate 3: An arithmetic slip ("183 manual records") shipped in a polished summary
+
+The components (124 + 41 + 23 + 15 + 5) were all individually verified;
+the in-head total was wrong (208, stated as 183). Caught only at
+re-derivation in the follow-up.
+
+**What this means in practice:** polish is not verification — numbers in
+Claude's summaries deserve the same at-source scepticism as filenames and
+hashes, especially totals that "sound right". (Claude-side mirror:
+claude-obs 11.)

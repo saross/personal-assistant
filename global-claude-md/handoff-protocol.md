@@ -148,6 +148,13 @@ Format: `## claude-obs N — YYYY-MM-DD: <one-line summary>` with
 **Pattern.** / **Lesson.** / **How to apply.** sub-blocks; never modify an
 accepted entry in place — corrections land as new cross-referencing entries.
 
+**Visibility (added 2026-07-05):** default-keep is not default-invisible.
+After writing, list the titles of the claude-obs just written (one line
+each, with their Obs numbers) in the handoff close-out message, so Shawn
+sees when and what the register received without having to open the file.
+Prompted by Shawn not noticing that Obs 10–12 had been written during a
+handoff ("I don't see any observations from your point of view").
+
 #### 5. Commit and push
 
 **Default: commit and push everything before handoff closes.** Batched
