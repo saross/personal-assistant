@@ -1490,3 +1490,47 @@ to let **item 16 (earned utility)** carry surfacing, not chase anchor coverage.
 
 Source: session 2026-06-06; PG queries over `claude_memories`;
 `recovery_status`/`verify_commit` dry-run; `wiki/planning/anchor-coverage-proposal.md`.
+
+---
+
+## 2026-07-05: a schema-version gate without per-machine rollout = a silent two-month outage, measured
+
+The 2026-05-02 audit added a `meta.schema_version` assertion to every
+PG-touching script. The code ships everywhere via git; the migration
+(`schema.sql`) was applied on amd-tower only. Result on zbook: the sync cron
+failed **every 5 minutes for two months — 13,231 failed runs** — with zero
+user-visible symptoms, because `/recall` degrades gracefully to the JSONL
+fallback. Detection finally came sideways, from a `/forget` whose
+PG-reconcile step surfaced a (mislabelled) error. Two principles measured in
+the wild: **(1) a version gate is a distributed change** — pair it with an
+apply-on-every-instance step and a per-machine log check
+(`data/logs/sync-cron.log`), now codified in
+`global-claude-md/postgresql-reference.md`; **(2) graceful degradation hides
+outages** — every fallback added needs a paired detection point, or the
+fallback converts failure into silence.
+
+Source: session 2026-07-04/05; `data/logs/sync.log` + `sync-cron.log`
+(13,231 counted); root-cause commits `137f624` (gate) vs `8845a45`-era
+amd-tower-only apply; repair recorded in continuity 2026-07-05 entry.
+
+---
+
+## 2026-07-05: memory→session link forensics — 44/84 (52%) recovered; archive coverage is the bound
+
+84 manual memories carried unusable `session_id` values (43 null/empty/absent,
+41 invented slugs). Reconstruction method: the `/remember` flow echoes the new
+record's ID into the conversation, so a multi-pattern scan of all 2,987
+archived transcripts finds candidate origin sessions; requiring the session's
+time window to bracket the record's `created_at` separates origination from
+later recalls (which also quote IDs). Yield: **44 reconstructed with hard
+evidence, 40 honestly unrecoverable** — 25 origin-never-archived (dominated by
+pre-archiving-era February sessions), 14 recall-only hits, 1 ambiguous
+(two concurrent bracketing sessions — stripped rather than guessed).
+**What the yield measures: retrospective provenance is bounded by archive
+coverage, not by technique** — the method found essentially everything the
+archives contain. Generalises to any "which session produced this artefact?"
+question.
+
+Source: session 2026-07-05; scan + resolution in
+`data/logs/session-id-reconstruction-2026-07-05.json`; rewrite in data commit
+`0cb74c4`; spec fix `fe95602`.
