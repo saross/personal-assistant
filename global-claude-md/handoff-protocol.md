@@ -52,6 +52,12 @@ similar work), draft 1–3 candidate entries for the project's
 
 You decide: accept / edit / discard. Empty is a valid outcome.
 
+**No silent discard (codified 2026-07-05).** If Shawn gives no verdict
+before session close, the candidates are *held over*, not dropped: note
+them in the continuity session-log entry and re-surface at the next
+`/handoff` or `/recap`. A missing reply usually means a tired human, not
+a rejection — the gate exists to filter, silence filters nothing.
+
 #### 3. Flag candidate wiki entries
 
 Scan the session content for material that could feed
@@ -107,6 +113,14 @@ my helpfulness, which is Shawn's territory even though I noticed it.
 You decide: accept / edit / discard / replace with your own. Empty is
 still a valid outcome — but the *drafted candidates* are what makes
 this step useful.
+
+**Write the candidates into `user-observations.md` as a "(pending
+review)" section at handoff time** — before or alongside surfacing them
+in chat. Chat-only candidates evaporate; in-file pending sections hold
+over for the next session, `/recap`, or `/weekly-review`. Silence never
+discards. (Long-standing de facto practice — pending sections from
+2026-05-18 onward persist in-file — codified 2026-07-05 after a
+chat-only deviation nearly lost accepted-in-intent observations.)
 
 Accepted observations land in the project's `user-observations.md`
 (`wiki/` on the four-artefact layout, `docs/notes/` legacy), feeding

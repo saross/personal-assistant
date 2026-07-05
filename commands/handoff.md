@@ -38,7 +38,11 @@ No arguments. Adapts to session weight (light / heavy / verification-only).
        didn't), then surface them for accept / edit / discard / replace.
        Don't ask a blank-page question — candidates jog memory and are
        useful even when wrong. One exception lands here: an in-the-moment
-       Shawn reaction I relay ("wow, that helped").
+       Shawn reaction I relay ("wow, that helped"). **Write candidates
+       into `user-observations.md` (pending review) at handoff time; an
+       un-answered gate holds over to the next session/recap — silence
+       never discards** (2026-07-05; applies to step-2 working-notes
+       candidates too, via a continuity carry-forward note).
      - *4b claude-observations (default-keep):* write 1–4 observations of
        things **I observed about Shawn** (working style, decisions) plus my
        own collaboration self-critiques, *directly* into the project's
