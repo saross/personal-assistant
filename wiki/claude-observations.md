@@ -2,7 +2,7 @@
 title: "Personal-Assistant — Claude Observations"
 tags: [index]
 created: 2026-06-18
-updated: 2026-06-21
+updated: 2026-07-05
 status: seed
 ---
 
@@ -142,3 +142,15 @@ I wrote the safe-search wrapper to call `rg -z` (per the diagnosis), and only di
 ## Obs 9 — 2026-06-21 — `[you]` Shawn treats an incident as a design prompt, not just a fix to ship
 
 After a search crashed his machine for hours, Shawn didn't ask for a patch — he asked for *"a safe, fast, principled approach … that leverages the infrastructure we have built already"*, and named the thing he actually wanted back: *"there was supposed to be a smoother way to escalate from 'use the memory system' to 'examine the transcripts'."* That reframed a one-off bug-fix into building the whole escalation ladder (memory → metadata → content → exact turn → safe fallback). He also gated it well: the `/audit`-at-ready-to-commit and the phased "land the safety net first, then the real fix" both came from him. **What generalises:** Shawn's instinct at an incident is to ask what *system* should have existed, not just what broke. When something fails, the high-value response is often the durable capability it reveals is missing — and he'll reach for that framing himself, so I should meet it with design, not just remediation.
+
+## Obs 10 — 2026-07-05 — `[you]` Shawn holds negative claims to the same evidence standard as positive ones
+
+Closing out the session_id cleanup, I asserted the legacy records' originating sessions were "mostly unknowable now" — a throwaway justification for not backfilling. Shawn didn't accept the impossibility claim: *"just to put that to bed, can you confirm there's no way to reconstruct the originating session?"* The confirmation attempt recovered **44 of 84** with hard evidence (the `/remember` capture echo in archived transcripts, cross-checked against session time windows). **What generalises:** "it can't be done" is a checkable claim, not a disclaimer, and I had stated it untested. Declared impossibility deserves the same anti-confabulation discipline as declared fact — attempt the cheapest recovery path before writing "unrecoverable", or phrase it honestly as "I have not attempted reconstruction". Shawn's instinct to challenge the negative claim is worth internalising: he asks for the confirmation *before* letting the claim close a topic.
+
+## Obs 11 — 2026-07-05 — `[me]` Self-critique: an in-head aggregate ("183 manual records") shipped in a polished summary
+
+My wrap-up stated 183 total manual records; the true figure was 208 (124 + 41 + 23 + 15 + 5 from my own profiling output, printed earlier in the same session). I caught it only when re-deriving the arithmetic for the follow-up. **What generalises:** aggregates I compute in-head for prose are exactly the "specifics" the anti-confabulation rule covers — a number in a final summary needs to come from tool output re-read in that turn, not from memory of an earlier turn. The failure mode is subtle because the components were all correct and verified; only the mental addition was wrong. Sum in code, not in prose.
+
+## Obs 12 — 2026-07-05 — `[you]` A well-written backlog row made cold-start execution frictionless — write rows for a reader with zero session memory
+
+Shawn opened with "in the backlog there should be a flag about a serious memory problem — can you check for it?" — trusting the system to hold the detail, and it did. Yesterday's row carried everything needed: the misleading-error observation, the exact repair sequence, the embed-cost gate, and the open investigate-why question. Execution needed no reconstruction of the discovering session. **What generalises:** the row was written as if its reader had zero session memory — that is the standard. When I write backlog/waiting-for rows, include the diagnostic anchor (what was observed, where), the planned sequence, the gates, and the open questions — the marginal minute at capture time repaid itself several times over at execution time. This is the capture-everything-at-plan-time feedback rule observed working in the wild.
