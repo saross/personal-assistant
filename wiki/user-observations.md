@@ -1736,7 +1736,7 @@ Claude's summaries deserve the same at-source scepticism as filenames and
 hashes, especially totals that "sound right". (Claude-side mirror:
 claude-obs 11.)
 
-## 2026-07-06 (career/cosmos: Cosmos grant decision + ARDC meeting prep) — Drafted candidates (pending review)
+## 2026-07-06 (career/cosmos: Cosmos grant decision + ARDC meeting prep) — Drafted candidates (reviewed 2026-07-06: 1, 2, 4 accepted; 3 discarded)
 
 ### Candidate 1: The 186-grantee proximity scan answered a worry with evidence, not reassurance
 
@@ -1761,7 +1761,7 @@ distinction with a genuine third one, which became the sharpest version
 is high-yield — the archive turns a half-memory into a citable position,
 and the delta between memory and record can carry new content.
 
-### Candidate 3: Evidence-based correction of the time-log project names
+### Candidate 3: Evidence-based correction of the time-log project names — DISCARDED (2026-07-06, Shawn's verdict)
 
 Given "/track personal 0.5 infrastructure work to resolve memory issue",
 Claude checked what `personal` had historically meant (life admin) before

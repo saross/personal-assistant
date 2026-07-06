@@ -1534,3 +1534,36 @@ question.
 Source: session 2026-07-05; scan + resolution in
 `data/logs/session-id-reconstruction-2026-07-05.json`; rewrite in data commit
 `0cb74c4`; spec fix `fe95602`.
+
+## 2026-07-06: "not machine-optimised" pages often have a clean data backend — check before automating
+
+The Cosmos Institute community site (community.cosmos-institute.org) renders its
+grantee gallery client-side; Shawn warned it "isn't machine-optimised" and expected
+link-following. The page source revealed an undocumented JSON API (`/api/search`,
+`?program=` filter) that returned all 186 grantees across five programmes in two
+requests — names, projects, one-line descriptions — making an exhaustive
+proximity scan trivial where sampling had seemed necessary.
+
+**Implication:** before browser automation or page-by-page fetching of a
+JS-rendered site, grep the served HTML for `fetch(`/API endpoints. The
+enumerate-everything answer ("no overlap in 186 grantees") is categorically
+stronger than a sampled one, and here it was *cheaper*. (Accepted at 2026-07-06
+verdict; from the Cosmos/ARDC session.)
+
+## 2026-07-06: session-archaeology workflow validated — title search → transcript grep → Gmail triangulation
+
+A half-remembered conversation ("I know I discussed the ARDC's NDRI application
+with Claude, but claude.ai search finds nothing") was fully recovered in ~15
+minutes: PostgreSQL sessions-table title search located the 1 May 2026 session
+(`b8758cc7`); zgrep of the archived transcript recovered the verbatim critique
+and strategic framing; the subagent transcripts held the lit-scout outputs; Gmail
+triangulation recovered the sent proposal and the source PDF (an email
+attachment). Every artefact of a "lost" session was recoverable from four
+complementary stores.
+
+**Implication:** the archive earns its keep at exactly this moment — treat "I
+remember discussing X with you" as a *search task* across sessions DB →
+transcripts → subagents → email, in that order. Hazard surfaced en route: a
+local-only git repo on a multi-machine setup (`~/Code/talks` on amd-tower) is
+invisible from other hosts and reads as deleted — remediation captured to inbox
+2026-07-06. (Accepted at 2026-07-06 verdict; from the Cosmos/ARDC session.)
