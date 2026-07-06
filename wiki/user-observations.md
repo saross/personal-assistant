@@ -1735,3 +1735,51 @@ re-derivation in the follow-up.
 Claude's summaries deserve the same at-source scepticism as filenames and
 hashes, especially totals that "sound right". (Claude-side mirror:
 claude-obs 11.)
+
+## 2026-07-06 (career/cosmos: Cosmos grant decision + ARDC meeting prep) — Drafted candidates (pending review)
+
+### Candidate 1: The 186-grantee proximity scan answered a worry with evidence, not reassurance
+
+Asked "are we too close to any funded project?", Claude swept every grantee
+across all five Cosmos programmes via the site's JSON API, chased the one
+genuine near-neighbour (Metalens) to its own website, and came back with a
+differentiated answer (synthesis layer vs verification layer). Shawn:
+"exactly the analysis I needed".
+
+**What this means in practice:** proximity/overlap worries deserve
+enumeration, not vibes — the marginal cost of checking *all* of them was
+near zero once the data source was found, and the answer became defensible.
+
+### Candidate 2: Verbatim recovery beat both memories — and made the misremembering productive
+
+Shawn's recollection of the 1 May bid critique didn't match the record; the
+recovered verbatim passage showed his memory had merged the recorded
+distinction with a genuine third one, which became the sharpest version
+(AI as trainee / querent / curator) for the Natasha meeting.
+
+**What this means in practice:** "can you find what we actually said?"
+is high-yield — the archive turns a half-memory into a citable position,
+and the delta between memory and record can carry new content.
+
+### Candidate 3: Evidence-based correction of the time-log project names
+
+Given "/track personal 0.5 infrastructure work to resolve memory issue",
+Claude checked what `personal` had historically meant (life admin) before
+logging, and rerouted to `personal-assistant` with the evidence shown.
+Shawn: "thanks for the corrections".
+
+**What this means in practice:** normalisation against the *established
+usage* of a vocabulary beats literal transcription of the user's shorthand
+— but only works when the correction is shown, not silent.
+
+### Candidate 4: The programme-vs-product explainer anchored to Shawn's own CV
+
+The "what does a programme manager actually do" answer was built from the
+NCRIS context and Shawn's actual history (FAIMS-as-programme reframe, NII
+portfolio as mini-programme) rather than generic PM literature. Shawn:
+"This is very helpful."
+
+**What this means in practice:** career-positioning questions want the
+general model *instantiated against the person's own record* — the reframe
+("programme-shaped work without the title") was the useful artefact, not
+the six-activity list alone.
