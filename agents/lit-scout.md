@@ -160,6 +160,26 @@ include a row if the DOI is absent and you cannot verify authors from
 another grounded source — if that happens, mark the row as
 `AUTHORS UNVERIFIED` in Notes and move it to the end of the table.
 
+**Author rendering MUST be gated on the length of the `authors`
+array** (systematic defect found 2026-07-07/08: three runs rendered
+"et al." on two-author papers, suppressing named co-equal co-authors
+— 11 corrected instances; the one run using this rule scored 0
+errors across 120 claims):
+
+- `len == 1` → bare surname: `Smith (2024)`
+- `len == 2` → both surnames: `Smith & Jones (2024)`
+- `len >= 3` → `Smith et al. (2024)`
+
+"et al." asserts three or more authors; applying it to a two-author
+paper is an authorship misattribution the verifier scores as FAIL.
+Watch for two CrossRef encoding artefacts when extracting the
+surname: compound family names split across `family`/`given` (e.g.
+family="Gehlen", given="Karsten Peters-von" → true family
+"Peters-von Gehlen"), and corporate authors encoded as their first
+member (e.g. the Open Science Collaboration returned as
+authors[0].family="Aarts" with 270 members — render the corporate
+name with a bracketed gloss and pre-flag it for the verifier).
+
 **Do not assume this is the only check.** The `/lit-scout` slash
 command runs the `lit-scout-verifier` serial agent against your draft
 afterwards. Your discipline here is the first line of defence; the
@@ -170,8 +190,10 @@ verifier is the second. Both have empirical value
 
 After the table is compiled, pick 3 random rows and re-run `metadata`
 on each. Compare the returned `authors[0]` and `year` against the
-table. If any mismatch: re-run `metadata` for ALL rows and rebuild
-the relevant columns from scratch. Document the self-check briefly
+table, and check that each rendered author label's form matches the
+returned author count (bare surname / "A & B" / "et al." per the
+length-gated rule above). If any mismatch: re-run `metadata` for ALL
+rows and rebuild the relevant columns from scratch. Document the self-check briefly
 in your output's "Proposer self-check" section.
 
 ## Discovery methodology
@@ -453,7 +475,8 @@ The closing section emits **one JSONL object per verifiable claim**, delimited b
   paper that solves a different problem is LOW Fit.
 - **Cites**: Raw citation count from `metadata` API response. Signals
   canonical weight independently of Fit.
-- **Authors (Year)**: From `metadata` API response verbatim.
+- **Authors (Year)**: From `metadata` API response verbatim, rendered
+  per the length-gated rule (bare / "A & B" / "et al." by author count).
 - **Title**: From `metadata` API response.
 - **DOI**: From `metadata` API response.
 - **Chain**: How first surfaced (seed, refs-of #N, cited-by #N,
