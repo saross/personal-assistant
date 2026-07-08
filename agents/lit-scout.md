@@ -99,6 +99,45 @@ For dataset and data publication discovery:
 WebFetch: https://api.datacite.org/dois?query={search_terms}&resource-type-id=dataset
 ```
 
+### arXiv and preprint handling
+
+Preprint-first work is NOT outside the DOI pipeline. Every modern
+arXiv paper has an auto-assigned DataCite DOI of the form
+`10.48550/arXiv.<id>` — construct it from the arXiv ID and treat the
+item as DOI-bearing throughout (metadata verification, claims block,
+Zotero dedup, and the staging importer all work on that form). Do NOT
+exclude or relegate a relevant preprint as `AUTHORS UNVERIFIED`
+merely because CrossRef does not index it: the 2026-07-07/08 stack
+sweep showed that rule silently amputates the newest 2025–26 layer of
+fast-moving fields (six pipelines each narrated directly relevant
+arXiv work in Gaps instead of grounding it in the table, forcing a
+dedicated follow-up sweep).
+
+Grounding sources for arXiv items, in order:
+
+1. `lit-search.py metadata "10.48550/arXiv.<id>"` — resolves via the
+   DataCite chain; when it returns a full record, use it exactly like
+   a CrossRef DOI.
+2. The arXiv API directly when (1) is thin or empty:
+   `curl -s 'http://export.arxiv.org/api/query?id_list=<id>'`
+   (Atom XML, no auth; title, full author list, and dates verbatim).
+   Discovery searches:
+   `.../api/query?search_query=all:%22quoted+phrase%22&max_results=20`.
+3. Citation counts: Semantic Scholar
+   `https://api.semanticscholar.org/graph/v1/paper/arXiv:<id>?fields=title,citationCount,year,authors,externalIds`
+   — pace requests ≥1.1 s apart and back off on HTTP 429. Record the
+   count source in the claim's `source_method`.
+
+Check Semantic Scholar `externalIds` for a journal/proceedings DOI:
+if the preprint has since been published, prefer the published
+version's DOI for the row and note the arXiv origin (or keep the
+10.48550 form and flag the published DOI in Status — publication
+status is itself a useful signal for the user).
+
+BibTeX caveat: `lit-search.py bibtex` declines 10.48550 DOIs. arXiv
+items reach Zotero via the staging importer (DataCite path) or by
+arXiv ID, so absence from a BibTeX export is expected, not an error.
+
 ### Zotero deduplication
 
 Check what the user already has. The Zotero database is at

@@ -125,6 +125,23 @@ in it fails.
 If the `metadata` API call fails for a row (HTTP error, DOI not
 resolvable), mark the row **UNVERIFIABLE** — do not pass it.
 
+### arXiv rows (DOIs of the form 10.48550/arXiv.\<id\>)
+
+These are DataCite-registered DOIs and are verifiable like any other:
+`lit-search.py metadata` resolves them through the DataCite/OpenAlex
+chain. If that call is thin or fails, query the arXiv API directly —
+`curl -s 'http://export.arxiv.org/api/query?id_list=<id>'` — which is
+authoritative for title, author list, and dates. Do NOT mark an arXiv
+row UNVERIFIABLE without trying the arXiv API. Citation counts for
+arXiv rows typically originate from Semantic Scholar
+(`https://api.semanticscholar.org/graph/v1/paper/arXiv:<id>?fields=citationCount`,
+paced ≥1.1 s); where the proposer's count and `lit-search.py`'s
+disagree, cross-check Semantic Scholar before scoring — a
+source-attribution difference inside the usual tolerance is PASS and
+a larger drift is PARTIAL, not FAIL. If the proposer asserts the
+preprint was "published as" some venue DOI, verify that via Semantic
+Scholar `externalIds` or a `metadata` call on the claimed venue DOI.
+
 ## Tolerance bands: PASS / PARTIAL / FAIL boundary
 
 The verification-method rules above define the **PASS band** per
