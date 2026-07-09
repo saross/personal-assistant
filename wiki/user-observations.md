@@ -1783,3 +1783,38 @@ portfolio as mini-programme) rather than generic PM literature. Shawn:
 general model *instantiated against the person's own record* — the reframe
 ("programme-shaped work without the title") was the useful artefact, not
 the six-activity list alone.
+
+## 2026-07-09 (career/cosmos: four-day ritual arc, session close) — Drafted candidates (pending review)
+
+### Candidate 1: The tripwire pattern earned its keep in one week
+
+Monday's standup asked for daily targets "such that if Tuesday's target slips,
+you know by 6pm"; Wednesday at ~17:30 the tripwire fired, the arithmetic was
+put on the table, and Brian was messaged the same evening — the fourth date
+slip, but the first one declared *before* the deadline rather than at it.
+
+**What this means in practice:** the tripwire's value wasn't detection (Shawn
+knew §4 was slow) — it was the pre-attached consequence, which converted an
+awkward judgement call into a scheduled action.
+
+### Candidate 2: Claude reframing follow-ups by their stakes ("champion-grade")
+
+When the GEOMAR debrief revealed a referral-based internal champion, Claude
+reframed Thursday's routine deliverable ("send an invite") as "the first
+onboarding experience of the person who'll sell Fieldmark internally", and
+upgraded the inbox row to match.
+
+**What this means in practice:** captures gain value when the *stakes* travel
+with the task, not just the action — the row now tells Thursday-Shawn how well
+to do it, not merely what to do.
+
+### Candidate 3: The calibration loop produced a reusable rule, not just a record
+
+Two consecutive section overruns (§3, §4) were traced to the same cause
+(evidence layer, not prose), and the recap converted them into a forward rule:
+estimate claims-heavy sections by evidence count, not prose maturity;
+decomposed-from-combined material carries hidden evidence debt.
+
+**What this means in practice:** recaps that stop at "took longer than
+expected" waste the data — the win came from naming the mechanism and
+projecting it onto future estimates.
