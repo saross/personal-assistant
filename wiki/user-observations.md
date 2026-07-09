@@ -1784,7 +1784,7 @@ general model *instantiated against the person's own record* — the reframe
 ("programme-shaped work without the title") was the useful artefact, not
 the six-activity list alone.
 
-## 2026-07-09 (career/cosmos: four-day ritual arc, session close) — Drafted candidates (pending review)
+## 2026-07-09 (career/cosmos: four-day ritual arc, session close) — Drafted candidates (reviewed 2026-07-09: ALL THREE accepted)
 
 ### Candidate 1: The tripwire pattern earned its keep in one week
 
