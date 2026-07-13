@@ -1818,3 +1818,31 @@ decomposed-from-combined material carries hidden evidence debt.
 **What this means in practice:** recaps that stop at "took longer than
 expected" waste the data — the win came from naming the mechanism and
 projecting it onto future estimates.
+
+## 2026-07-13 (PA-hub / five-day accountability arc Thu→Mon, session close) — Drafted candidates (pending review)
+
+1. **The pace extrapolation was immediately load-bearing** *(in-the-moment
+   reaction, flagged per the handoff exception)*: when Claude converted
+   tracked hours + LaTeX paragraph counts into a forward schedule for
+   §§5–6 ("~10–12h; Friday reachable if Monday delivers ~5.5h"), Shawn's
+   response was "seeing this really helps me estimate time and plan my
+   week" — the first live output of the throughput method, minutes after
+   it was ratified. Candidate lesson: quantitative forward projections
+   from the system's own records (not generic advice) are the
+   highest-value planning output the hub session produces.
+2. **Afternoon standups still worked as triage instruments.** Three
+   consecutive standups ran mid-afternoon (15:07 / 14:43 / 13:32), and
+   twice the standup's first output was catching a hard deadline in the
+   remaining hours (GEOMAR COB Thursday with 90 minutes of free window
+   left; the Monday 8-paragraph tripwire). Candidate lesson: a late
+   standup is not a degraded standup — it becomes a remaining-day triage,
+   and the system should lean into that framing rather than apologise for
+   the hour.
+3. **Transparent corrections kept the record trustworthy without
+   friction.** When "§3" meant §4, the time-log entry recorded the
+   discrepancy visibly instead of silently correcting; when "one
+   paragraph to go" turned out to be subsection-scope, the row was
+   amended with the clarification noted. Candidate lesson: the
+   correct-with-provenance habit (log what was said, what was meant, and
+   that the difference was noticed) is what lets Shawn trust summaries
+   built on the record later.
