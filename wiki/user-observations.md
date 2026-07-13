@@ -1819,7 +1819,7 @@ decomposed-from-combined material carries hidden evidence debt.
 expected" waste the data — the win came from naming the mechanism and
 projecting it onto future estimates.
 
-## 2026-07-13 (PA-hub / five-day accountability arc Thu→Mon, session close) — Drafted candidates (pending review)
+## 2026-07-13 (PA-hub / five-day accountability arc Thu→Mon, session close) — Drafted candidates (reviewed 2026-07-13: 1 ACCEPTED; 2 discarded with correction — late standups = morning personal matters + after-dinner work block, day shifted not shrunk (context captured to scratchpad); 3 discarded (Shawn wrote 'drop 4'; read as candidate 3, the only remaining item))
 
 1. **The pace extrapolation was immediately load-bearing** *(in-the-moment
    reaction, flagged per the handoff exception)*: when Claude converted

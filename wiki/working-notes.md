@@ -1567,3 +1567,32 @@ transcripts → subagents → email, in that order. Hazard surfaced en route: a
 local-only git repo on a multi-machine setup (`~/Code/talks` on amd-tower) is
 invisible from other hosts and reads as deleted — remediation captured to inbox
 2026-07-06. (Accepted at 2026-07-06 verdict; from the Cosmos/ARDC session.)
+
+## 2026-07-13: Empirical editing-throughput extraction — three convergent measurements from the system's own records
+
+During the Paper B revision arc, editing pace proved retroactively
+extractable from the PA system's records: tracked hours per section
+(`reports/time-log.csv`, whose free-text descriptions name the section
+being edited) crossed with prose-paragraph counts from the LaTeX source
+gave three independent measurements — §3: 10 paragraphs / 5.5h ≈ 1.8/h;
+§4.1–4.4: ~25 paragraphs / ~13.75h ≈ 1.8/h; §4.5 (live sample): ~2
+paragraphs / 1.0h ≈ 2.0/h. Convergent despite both sections running ~2×
+their *section-level* estimates: the variance lived between paragraphs,
+not in the average — which is exactly why paragraph-throughput
+extrapolation works where per-section estimation failed. The forward
+projection (~20 remaining paragraphs → ~10–12h incl. the abstract sweep)
+was accepted as planning-grade by Shawn the same day.
+
+Design implications: (a) the time-log's per-entry descriptions are the
+load-bearing element — without section identity in free text, the
+retro-extraction is impossible; (b) prospective instrumentation
+(paragraphs-completed on paper-editing `/track` rows, adopted 2026-07-12)
+removes the retro-extraction cost entirely; (c) cold-start rule for a new
+paper: seed from the previous paper's measured pace until ~4–5 of its own
+paragraphs are timed.
+
+Anchors: `reports/time-log.csv` rows 2026-07-06 → 2026-07-12 (pa-data);
+paper-b `assembly/sections/*.tex` paragraph counts (2026-07-12);
+`notes/llm-craft.md` 2026-07-12 throughput entry. Accepted at the
+2026-07-13 handoff review (companion candidate W2, slots-vs-calendar,
+discarded).
