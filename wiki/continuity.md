@@ -2148,7 +2148,9 @@ skipped_legacy); the cursor correctly refuses to advance. **Root-cause hypothesi
 library.** Correction needs Shawn's Zotero-account knowledge — see the new
 things-to-verify item. Held over per no-silent-discard: two working-notes candidates
 (W-a id-diff integrity instrument; W-b rebuild economics) + four user-obs candidates
-(pending section in `wiki/user-observations.md`) await verdicts.
+(pending section in `wiki/user-observations.md`) await verdicts. **Resolved same
+session (verdicts given at handoff review): W-a + W-b ACCEPTED → written to
+`wiki/working-notes.md`; user-obs 2 & 4 ACCEPTED, 1 & 3 discarded (heading updated).**
 
 - Public repo: this entry + things-to-verify items; `wiki/user-observations.md`
   (2026-07-15 pending section); `wiki/claude-observations.md` (Obs 21–22).

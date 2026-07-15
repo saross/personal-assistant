@@ -1847,7 +1847,7 @@ projecting it onto future estimates.
    that the difference was noticed) is what lets Shawn trust summaries
    built on the record later.
 
-## 2026-07-15 (PA-hub / machine-swap sync + Zotero diagnosis) — Drafted candidates (pending review)
+## 2026-07-15 (PA-hub / machine-swap sync + Zotero diagnosis) — Drafted candidates (reviewed 2026-07-15: 2, 4 accepted; 1, 3 discarded)
 
 1. **Whole-arc delegation kept the paper day intact.** The entire
    home-network reintegration (repo sweep, three-layer memory repair,

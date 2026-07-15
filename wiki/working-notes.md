@@ -1596,3 +1596,49 @@ paper-b `assembly/sections/*.tex` paragraph counts (2026-07-12);
 `notes/llm-craft.md` 2026-07-12 throughput entry. Accepted at the
 2026-07-13 handoff review (companion candidate W2, slots-vs-calendar,
 discarded).
+
+## 2026-07-15: PG↔JSONL id-diff — a ~30-second integrity instrument that row counts cannot replace
+
+During the zbook→amd-tower machine-swap sync, the two PostgreSQL memory
+mirrors reached row counts within 0.02% of each other (30,804 vs 30,811 at
+one checkpoint) — close enough that a count-based convergence check would
+have passed. A per-id diff (`comm -3` on sorted `SELECT id FROM memories`
+dumps from both machines) instead decomposed the residual into three
+distinct defect classes in one pass: (1) five records lost from the
+canonical JSONL entirely (present only in one machine's PG — real data
+loss, recovered by serialising the PG rows back to JSONL); (2) fourteen
+records union-merged into the canonical at the git fork point, *below* the
+line-number sync cursor and therefore permanently invisible to incremental
+sync; (3) ordinary few-minute replication lag (self-healing). The
+instrument costs ~30 seconds and is exact; the count comparison is neither.
+Convergence was then *proved* by re-running it to an empty diff.
+
+Anchors: continuity 2026-07-15 session-log entry (public repo);
+`data/logs/sync.log` insert-accounting lines 2026-07-15 14:23:14 +
+14:24:18 (`inserted=11/3, unexpected_drops=0`); `tasks/inbox.md`
+integrity-defects row (2026-07-15). Accepted at the 2026-07-15 handoff
+review (Shawn: "please keep the working-notes candidates").
+
+## 2026-07-15: derived-store rebuild economics — cheap enough to be the default convergence move
+
+Full rebuild of amd-tower's `claude_memories` (reset via
+`rebuild-postgres.py --yes`, then the documented repopulation chain:
+`sync-to-postgres.py` → `sync-sessions-to-postgres.py` →
+`backfill-embeddings.py`): 30,798 memory records + 713 sessions + 30,698
+embeddings (via sapphire's GPU over the LAN), ~15 minutes wall-clock, $0,
+with a `pg_dump | gzip` backup (150 MB) taken first as insurance. This
+matches the 2026-07-04 zbook precedent (~8 min, local Ollama). Implication:
+for this corpus size, "drop and rebuild from canonical" is not a last
+resort — it is cheaper and more certain than diagnosing and patching
+derived-state drift in place (the amd-tower mirror carried ~7,200
+pre-dedup ghost rows that no incremental mechanism would ever have
+removed). The canonical-JSONL-is-authoritative design is what makes this
+safe; the backup covers the one asymmetry (PG-only orphans, which today's
+id-diff instrument is designed to catch first).
+
+Anchors: continuity 2026-07-15 session-log entry;
+`scripts/rebuild-postgres.py` (reset semantics + next-steps chain in its
+completion message); backup at `/tmp/claude_memories-pre-rebuild-20260715.sql.gz`
+on amd-tower (ephemeral); zbook precedent in the 2026-07-05 continuity
+entry. Accepted at the 2026-07-15 handoff review (Shawn: "please keep the
+working-notes candidates").
