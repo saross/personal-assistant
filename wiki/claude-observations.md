@@ -186,3 +186,37 @@ The Brian relationship this fortnight: Shawn slipped the handover date four time
 ## Obs 20 — 2026-07-13 — `[me]` Self-critique: two scope-reading errors on progress statements in one arc — the unit hierarchy needs checking before a claim lands in the record
 
 Twice this arc I recorded a progress claim at the wrong level of the artefact hierarchy. (1) I read Shawn's "one paragraph to go" as section-scope (§4 nearly closed) when it was subsection-scope (tool-discovery) — the scoreboard briefly overstated the position until his correction, and the time-log row needed amending. (2) My obs-writer seed cited pa-data commit `4c5eb91` as the anchor for the 2026-07-08 recap's estimation-accuracy note; the agent's verification pass found the right commit was `e9d3b49` — my hash was the *following day's* standup commit. Both are the same error shape: an eager contextual read filling in the containing unit (which section? which commit?) without checking the hierarchy. The safety nets worked (Shawn's correction; the agent's anchor verification — the write-side rule earning its keep against its own author), but both catches were downstream of me. **What generalises:** before a progress claim or anchor lands in a record, name the unit explicitly and verify it — "one paragraph to go *in what?*", "this commit *contains what?*". Ambiguous progress statements get a one-line clarifying question at capture time, not a guess.
+
+## Obs 21 — 2026-07-15 — `[you]` Shawn's infra delegations arrive with scope, pointers, and a testable memory — the pointer-not-payload style extends to his own recollections
+
+Today's machine-swap request was three crisp clauses (check repos / sync the
+memory system / update the servers) plus two pointers instead of payloads:
+"we found an error in the memory system… that should be in continuity.md or a
+separate note" (it was — backlog row 21 held the full procedure) and "I
+thought I had Zotero sync working on amd-tower before I left" (verifiably
+half-right in the most useful way: config present, defect elsewhere and
+older). He does not re-explain what the record already holds; he points at
+where the record should be and lets the executor verify. **What
+generalises:** treat his pointers as claims to *test*, not instructions to
+*trust* — both pointers today were accurate about where to look and slightly
+stale about what would be found there, and the value was in the looking.
+The complementary move: when returning work, answer in the same register —
+state what the record now says and where, not a narrative he must re-derive.
+
+## Obs 22 — 2026-07-15 — `[me]` Self-critique: two evidence-handling faults in one arc — a two-cause gap collapsed to one cause, and a tail-clipped error line nearly inverted a conclusion
+
+(1) The active-row divergence between the two PG mirrors had two independent
+contributors (never-rebuilt pre-dedup rows AND unapplied decay on both
+machines); my interim message to Shawn named only the dramatic one ("ghost
+rows polluting /recall"). The rebuild would have "fixed" the number while
+mis-educating the record about why. (2) Testing Zotero on zbook, I read
+`tail -8` of the output, saw a clean JSON summary, and briefly concluded
+"zbook works — amd-tower's key is stale"; the ERROR line was one line above
+the clip. The correct conclusion (broken identically everywhere, defect
+predates travel) emerged only on the full-output re-run. **What
+generalises:** (a) when a measured gap has plausible multiple contributors,
+enumerate them in the interim report — pick-the-vivid-one is a confabulation
+shape even when every stated fact is true; (b) never conclude from truncated
+tool output — grep for error/status markers or read the whole thing before a
+verdict lands in chat, because the clipped line is always the one that
+matters.

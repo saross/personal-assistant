@@ -1846,3 +1846,38 @@ projecting it onto future estimates.
    correct-with-provenance habit (log what was said, what was meant, and
    that the difference was noticed) is what lets Shawn trust summaries
    built on the record later.
+
+## 2026-07-15 (PA-hub / machine-swap sync + Zotero diagnosis) — Drafted candidates (pending review)
+
+1. **Whole-arc delegation kept the paper day intact.** The entire
+   home-network reintegration (repo sweep, three-layer memory repair,
+   server catch-up, Zotero investigation) ran to completion without
+   pulling Shawn off §5 — the standup's "no further digressions"
+   commitment held *because* the infra work had an executor. Candidate
+   lesson: on protected solo days, the hub session's job is to absorb
+   whole workstreams, not to queue questions; the "one decision for you,
+   no rush" pattern (vivienne) is the right interrupt granularity.
+2. **Id-level verification turned "synced" into "recovered".** Row counts
+   were within a few records of each other and could have passed as
+   converged; the per-id diff (`comm` on sorted id dumps) is what exposed
+   five canonically-lost records and fourteen cursor-invisible ones.
+   Candidate lesson: for stores that matter, "counts match approximately"
+   is not a convergence check — demand identity at the id level; the
+   check costs ~30 seconds.
+3. **Calibration miss worth keeping: the interim ghost-rows claim
+   overstated its evidence.** The active-row gap was first reported as
+   "~3,300 ghost records polluting /recall" when part of the gap was
+   simply unapplied decay on a freshly rebuilt mirror; the corrected
+   two-cause diagnosis followed, but the confident first framing reached
+   Shawn. Candidate lesson: when a divergence has two plausible
+   contributors, the interim report should name both, not the more
+   dramatic one.
+4. **"I thought I had it working" was treated as a lead, and it was
+   right.** Shawn's recollection about Zotero-on-amd-tower survived two
+   plausible refutations (missing env vars — artefact of the runner;
+   the May key rename — already applied): his config was present and
+   correct, and the real defect predates travel and affects both
+   machines. Candidate lesson: user memories of past working states are
+   high-prior investigation leads, not claims to be reassured away —
+   the third hypothesis was only found because the first two were
+   checked against his recollection rather than accepted over it.
