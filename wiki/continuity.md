@@ -1059,12 +1059,22 @@ Read these *before* starting new work. Most should take <5 min each.
   and mint a write-scoped key + confirm the item keys exist there. Then verify:
   `set -a && . ./.env && set +a && venv/bin/python3 scripts/sync-to-zotero.py` —
   expect `created: 5`. Full investigation: 2026-07-15 session-log entry.
-- [ ] 2026-07-15 **amd-tower post-swap spot-checks** (first session on amd-tower):
-  (1) `tail data/logs/sync-cron.log` — ticks green post-rebuild; (2) memories row
-  count still tracking zbook (`psql -d claude_memories -tc "SELECT COUNT(*) FROM
-  memories;"`); (3) rpi-shares still mounted (manual SSHFS dies at reboot — the
-  autofs inbox row is the durable fix); (4) daily-sync ran cc-archives + R2 passes
-  at SessionStart.
+- [x] 2026-07-15 **amd-tower post-swap spot-checks — ALL PASS** (verified 15:12
+  AEST, first amd-tower session post-handoff): (1) sync-cron green — cursor at
+  EOF (`sync-cursors.json` postgres_sync_line 30827 == JSONL length), last clean
+  run 15:10:02 AEST; the 11:30–11:50 poison-record errors in `sync-cron.log`
+  (record `2026-06-15-46328e405d0c`, null session_id) were the tail of the
+  repair-replay window and stopped before handoff. **Latent defect noted:** that
+  JSONL line still carries `session_id: null` (PG holds `''` via rebuild
+  coercion) — any future cursor rewind/replay through the incremental insert
+  path will jam on it again; belongs with the splice-below-cursor candidate
+  fixes in the 2026-07-15 inbox row. (2) Row count tracking zbook — amd-tower
+  30,827 (PG == JSONL), zbook 30,825 over SSH (192.168.1.80; hostname didn't
+  resolve): amd-tower 2 ahead from today's local extractions, correct drift
+  direction. (3) rpi-shares mounted rw via SSHFS. (4) daily-sync ran at
+  SessionStart 14:21 — cc-archives sync [3/3] complete, R2 push complete
+  (real push 14:09, 14:21 nothing-to-transfer), symlinks refreshed. Benign
+  `deadline_at 'TBD'` warning in sync-cron.log is a task row, not memories.
 
 - [x] 2026-05-30 **Vector 2 PASS 2 shipped + enabled on amd-tower — DONE
   (commit `68427cd`).** Pre-flight proof re-run this session held (PA hub
