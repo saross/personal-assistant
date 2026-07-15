@@ -19,6 +19,9 @@ to the first working solution.
 - When you (CC) recognise mid-implementation that you've made a significant design
   choice that the user may not have the domain expertise to evaluate
 - Proactively, when the aggregate implications of an approach haven't been stated
+- Before lodging a preregistration, launching a study, or committing to an
+  experimental protocol — run the review at the commitment boundary, while
+  defects are still free to fix rather than public amendments
 
 ## Background: The Discovery/Exploitation Pattern
 
@@ -151,6 +154,38 @@ Based on the above, provide a clear recommendation:
 - [ ] Checked whether adaptive or sequential designs are applicable
 - [ ] Computed required sample size for target power
 - [ ] Reviewed whether confounds have been adequately controlled
+
+### Study Designs and Preregistrations
+
+Added 2026-07-15 after the llm-reproducibility Phase 2 preregistration review:
+the protocol's phases generalised to study designs, but the highest-value
+findings (circularity, criterion contamination, post-treatment conditioning)
+came from unprompted reasoning. This checklist encodes them so future runs
+don't depend on the reviewer re-deriving the defect classes. Provenance:
+llm-reproducibility `wiki/working-notes.md` Observation 8.
+
+- [ ] No definitional circularity: the outcome's definition shares no content
+      with the predictor (verdicts, composite scores, and rubrics are the
+      usual offenders)
+- [ ] No criterion contamination: measures do not directly reward membership
+      of the grouping variable they are tested against
+- [ ] Sample restrictions are treatment-invariant: no filtering on variables
+      the intervention/policy could itself affect (post-treatment conditioning)
+- [ ] Each hypothesis's wording claims only what its test can establish
+      (equivalence and "regardless of X" clauses need equivalence-grade designs)
+- [ ] Causal language has a counterfactual: control series, comparison group,
+      or explicit trend adjustment — a before/after alone confounds with time
+- [ ] Everything analysis-relevant is pre-specified: cohort assignment rules,
+      missing-data fallbacks, exclusion handling, and denominators locked
+      before outcomes are observable
+- [ ] Blinding/ordering commitments wherever assessor knowledge of outcomes
+      could contaminate scores (state the pipeline ordering explicitly)
+- [ ] Instruments have a reliability/validation plan with thresholds and
+      pre-specified fallbacks (especially LLM-scored instruments)
+- [ ] Power computed per test with realistic group splits; underpowered tests
+      reframed as estimation up front, not excused afterwards
+- [ ] Amendment/deviation policy stated, and the review run BEFORE the
+      commitment boundary (lodgement, launch, spend) while fixes are still free
 
 ## Standards
 
