@@ -1049,6 +1049,23 @@ until first non-CC API spend.
 
 Read these *before* starting new work. Most should take <5 min each.
 
+- [ ] 2026-07-15 **Zotero write-back correction — DECISION NEEDED (Shawn).** The
+  write-back has been failing on BOTH machines (5 notes pending since 19–20 May):
+  `build_zotero_client()` targets `users/$ZOTERO_LIBRARY_ID` with type hard-coded
+  `"user"` (scripts/sync-to-zotero.py:320), but the paper-b key + target items
+  (`MPZHXY3P`, `FGM4PVSX`) appear to belong to the paper-b group library (GET 404 +
+  POST 403 in both machines' runs). Decide: (i) point the script at the group
+  library (group id + `"group"` type, env-driven), or (ii) keep the user library
+  and mint a write-scoped key + confirm the item keys exist there. Then verify:
+  `set -a && . ./.env && set +a && venv/bin/python3 scripts/sync-to-zotero.py` —
+  expect `created: 5`. Full investigation: 2026-07-15 session-log entry.
+- [ ] 2026-07-15 **amd-tower post-swap spot-checks** (first session on amd-tower):
+  (1) `tail data/logs/sync-cron.log` — ticks green post-rebuild; (2) memories row
+  count still tracking zbook (`psql -d claude_memories -tc "SELECT COUNT(*) FROM
+  memories;"`); (3) rpi-shares still mounted (manual SSHFS dies at reboot — the
+  autofs inbox row is the durable fix); (4) daily-sync ran cc-archives + R2 passes
+  at SessionStart.
+
 - [x] 2026-05-30 **Vector 2 PASS 2 shipped + enabled on amd-tower — DONE
   (commit `68427cd`).** Pre-flight proof re-run this session held (PA hub
   17,068 B → 1,489 B / 91.3 %; inscriptions 17,493 B → 1,485 B / 91.5 %;
@@ -2087,6 +2104,60 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-07-15 (Wed, latest PA-hub) — SESSION CLOSE (/handoff): standup + machine-swap sync (zbook → amd-tower daily driver); memory mirrors converged after three-layer repair; Zotero write-back diagnosed (broken on BOTH machines)
+
+Morning: standup (11:20 — late start absorbed as load-bearing §5 review; Wed = paper-b
+push, target draft DONE, floor ≥8 cleared paragraphs) + /track rows (efn 0.75, paper-b
+1.5). Afternoon (delegated in full while Shawn edited §5): home-network reintegration
+for the daily-driver swap. **(a) Repos:** zero unpushed anywhere; 4 zbook + 9 amd-tower
+repos fast-forwarded; stranded work committed + pushed (colour-names — README/.gitignore/
+data/docs/scripts, 23 files; map-reader `proposer-all/` artefacts; 3 sapphire inscriptions
+run logs from 20–21 Jun). **`~/Code/vivienne` has NO remote — decision pending** (same
+class as the talks row, which resolved as already-private-since-1-May → inbox-archive).
+**(b) Memory system, three layers:** (1) amd-tower's sync jam (poison record, backlog
+row 21) cleared by git pull — non-interactive auth worked around the passphrase-protected
+GitHub key via the live GNOME-keyring agent (`SSH_AUTH_SOCK=/run/user/1000/keyring/ssh`);
+(2) full derived-store rebuild on amd-tower (pre-dedup ghosts: 38,039 → 30,798 rows;
+backup `/tmp/claude_memories-pre-rebuild-20260715.sql.gz` on amd-tower; embeddings via
+sapphire; `apply-decay` then run on BOTH machines — zbook's weekly decay was also stale);
+(3) two integrity defects found and repaired — **five records (session `7611d1aa`,
+13–14 Jul) lost from canonical** (existed only in zbook PG; never committed — `git log -S`
+empty; mechanism unconfirmed, and NOT prevented by the `merge=union` driver in place since
+2026-04-30, data commit `020826f`) recovered by PG→JSONL serialisation (lines 30803–30807);
+and **14 amd-tower travel-period records union-merged at the fork point (lines
+28384–28397), below zbook's already-advanced line cursor** — invisible to incremental sync;
+fixed by cursor rewind + replay (insert accounting clean: 11+3 inserted, 0 unexpected
+drops). The splice-below-cursor behaviour is *systematic* whenever a cross-machine merge
+lands older appends — candidate fixes in the 2026-07-15 inbox row. **Final state: PG id-diff
+between machines = 0; 30,811 rows each; 100 % embedded; sessions table 713; cron green.**
+**(c) Servers:** Vantec re-attached + unlocked by Shawn (`/mnt/vantec` 9.4 T used / 4.5 T
+free); rpi-shares SSHFS-mounted on both clients (manual — autofs row still the durable
+fix); cc-archives converged (3 passes) on both + **first R2 offsite push since 23 Jun**
+(amd-tower, 14:09). **Zotero write-back — investigation (Shawn-requested):** his memory
+("worked on amd-tower before I left") was **treated as a lead and was right about config**
+— amd-tower's `.env` has all four current key names (count-only check; the 23 May rename
+`e2d12ac` is NOT the issue), and the chain's "must be set" error was an artefact of my
+env-scrubbed `setsid` invocation (the script has no dotenv loading; it relies on the
+caller sourcing `.env`). The real defect is **identical on both machines** with env
+loaded: GET 404 (target items `MPZHXY3P`, `FGM4PVSX` absent from `users/3097511`) + POST
+403 "Write access denied" — 5 `source_insight` notes pending since 2026-05-19/20 (+56
+skipped_legacy); the cursor correctly refuses to advance. **Root-cause hypothesis:
+`build_zotero_client()` hard-codes library type `"user"` (sync-to-zotero.py:320) while
+`ZOTERO_API_KEY_PAPER_B` + the referenced items likely belong to the paper-b GROUP
+library.** Correction needs Shawn's Zotero-account knowledge — see the new
+things-to-verify item. Held over per no-silent-discard: two working-notes candidates
+(W-a id-diff integrity instrument; W-b rebuild economics) + four user-obs candidates
+(pending section in `wiki/user-observations.md`) await verdicts.
+
+- Public repo: this entry + things-to-verify items; `wiki/user-observations.md`
+  (2026-07-15 pending section); `wiki/claude-observations.md` (Obs 21–22).
+- Data: `tasks/inbox.md` (talks row → archive; rpi-shares update; integrity-defects
+  row added then amended re `020826f`); `tasks/inbox-archive.md`;
+  `memories/memories.jsonl` (5 recovered records, lines 30803–30807);
+  `notes/_inbox.md` (2 wiki-candidate lines); `standups/2026-07-15.md` (morning).
+- Other repos: colour-names, map-reader-llm (zbook pushes); inscriptions (sapphire
+  push `chore(runs)`); paper-b/llm-repro untouched (Shawn's sessions own them today).
 
 ### 2026-07-13 (Mon, latest PA-hub) — SESSION CLOSE (/handoff): five-day accountability arc Thu→Mon; W28 review; throughput estimation instrumented
 
