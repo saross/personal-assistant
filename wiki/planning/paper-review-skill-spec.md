@@ -1,6 +1,9 @@
 # Paper-review skill — spec (draft 2026-07-01)
 
 Status: **draft for Shawn's review.** Drafted with CC during Paper B §2 editing.
+Updated 2026-07-17 after the first full multi-agent critical-friend run (Paper B
+§5 Discussion) — amendments are marked *(§5 run, 2026-07-17)* in place; material
+with no existing home is in the dated learnings section at the end.
 
 A reusable reviewer for academic paper prose, in two modes that share one
 architecture:
@@ -23,17 +26,54 @@ architecture:
 - **Fresh-context panel.** Each lens is a fresh-context subagent that reads only
   the target artefact — no drafting-conversation memory. (Reflexively enacts the
   paper's own thesis: independence of context gives a check its catching power.)
+- **Settled rulings travel with the target** *(§5 run, 2026-07-17)*. Feed each
+  lens the target file's settled-rulings register (the STANDING GUARDS /
+  wording-guards comment block), explicitly marked "author-settled — do not
+  re-flag; report only if the prose has drifted from the recorded ruling".
+  Without this, fresh eyes relitigate closed questions: the §5 mechanical lens
+  re-flagged four items the author had ruled on within 24 hours (apparatus-knot
+  wording, "an historical", "gave up on", remit-in-close) — wasted findings and
+  wasted author attention.
 - **Evidence-anchored findings.** Every finding carries a checkable anchor: line
   number, grep hit, citekey, atom id, or verbatim source quote. No anchor → not a
   finding. (From the prototype; matches the anti-confabulation write-side rule.)
+  Lenses also emit an explicit `CLEAN: <dimension>` line for each dimension with
+  no findings, so silence is never ambiguous *(§5 run, 2026-07-17)*.
 - **Deterministic aggregation.** Findings carry `severity ∈ {blocker, major,
   minor}`; the verdict is computed from severities, **not** from any agent's
   self-reported pass boolean. (Anti-satisficing; from the prototype.)
+  *(§5 run, 2026-07-17 — two aggregation rules added:)*
+  - **Convergence upgrades priority.** Independent convergence is a severity
+    signal: when several lenses find the same issue unprompted, upgrade its
+    confidence/priority in the report. On the §5 run, three lenses
+    independently found the same structural miscount (the roadmap said "five
+    further principles"; six `\paragraph` blocks followed).
+  - **The orchestrator MUST verify contested findings against authoritative
+    sources before presenting.** One lens reported the prose contradicting the
+    file's own verification anchor (METR 80% vs a recorded "90%"); source
+    verification (arXiv fetch) showed the *prose* was right and the *anchor*
+    was stale — the naive fix would have broken correct text.
 - **Mechanical pre-pass (no LLM, runs first, cheap):** aspell (en_AU, tex mode),
   doubled words, dash consistency (`human--AI`), brace/paren balance, **citation
   resolution** (every `\parencite/\cite/\textcite` key defined in the bibs), word
   budget via `texcount` where available. Deterministic; feeds the report before
-  any agent runs.
+  any agent runs. *(§5 run, 2026-07-17 — three checks added:)*
+  - **Aux-label sanity check.** For every `\ref` target, read the `\newlabel`
+    value from the `.aux` and flag implausible resolutions (e.g. all supplement
+    labels resolving to the same section number). The §5 run's biggest catch:
+    labels on `\section*`/`\subsection*` (starred — the counter never steps)
+    made every "Supplement~A `\ref{supp:A.3}`" render as "Supplement A 6"
+    across seven sites, silently passing every "clean" build. A one-line aux
+    grep would have caught it months earlier.
+  - **Guard-comment anchor freshness.** Header comments that cite file:line
+    anchors (e.g. "verified at 04:235") go stale when files are edited or
+    comments consolidated; verify each anchor still points at the claimed
+    content. The §5 run caught the orchestrator's own stale anchors.
+  - **Build-convergence gate.** Clean-rebuild (`latexmk -C`, then a raised
+    `$max_repeat`) as part of the pre-pass; and in the apply phase, **always
+    gate commits on build success (`&&`, not `;`)** — the §5 run pushed a
+    commit past a failed build because the chain wasn't gated (harmless, a
+    convergence artefact, but the hole is real).
 
 ## Dimensions (lenses) — general, parameterised
 
@@ -60,7 +100,13 @@ architecture:
    pipeline + the verbatim-quote discipline]*
 2. **Internal consistency & once-and-only-once.** Contradiction with other
    sections? Each concept introduced once and covered thoroughly (no redundancy,
-   no gap)? Every `\ref{}` targets the right section?
+   no gap)? Every `\ref{}` targets the right section? *(§5 run, 2026-07-17:)*
+   duplication findings are **policy questions, not defects** — when a guard
+   says "don't restate §4 evidence" but the author has deliberately written
+   compressed worked examples, the fix is often amending the guard to codify
+   actual practice, then repairing only objective breaches (identical strings,
+   verbatim cross-section echoes). The lens reports the tension; the
+   orchestrator frames it as guard-vs-prose for the author to rule on.
 3. **Calibration & over-claim.** Is each claim proportionate to its evidence?
    Over-claim ("shows/demonstrates/clearly"), mis-calibrated hedges, altitude
    (argument at altitude; exhaustive detail to a supplement). *[reproducibility
@@ -88,11 +134,31 @@ architecture:
   **adversarial synthesis** (the Reviewer-2 report) → deterministic aggregation.
   Pre-submission use.
 
+Two scope extensions validated on the §5 run (2026-07-17) — candidates for the
+skill's checklist:
+
+- **Whole-paper heading review:** accuracy, parallelism, grammatical
+  consistency of heading forms, and collisions (e.g. two "Limitations"
+  sections left behind after a restructure).
+- **Cross-reference audit** distinguishing wrong-level refs (fix) from
+  deliberate section-level refs (keep), including adding subsection labels
+  where targets lack them.
+
 ## Report structure
 
 Per-dimension verdict + findings (each: severity + evidence anchor + detail) →
 overall verdict → prioritised recommendations. (From the reproducibility
 framework.)
+
+**Triaged presentation** *(validated on the §5 run, 2026-07-17)* — three tiers,
+so author rulings can be collected in one batch:
+
+1. **Act-now mechanical batch** — author pre-authorises; no per-item review.
+2. **Rulings-needed** — before→after snippets with one line of context each,
+   so the author can review in chat without opening the file.
+3. **Standing-rulings-honoured** — items flagged again by fresh eyes but
+   already ruled on; listed for transparency, not reopened unless the author
+   asks.
 
 ## Implementation
 
@@ -104,7 +170,8 @@ framework.)
   layers (lenses, syntheses) are `agent()` calls.
 - **Cost profile:** section ≈ 4–5 agents; whole-paper ≈ (8 sections × 4 lenses) +
   2 syntheses ≈ ~34 agents. Whole-paper adversarial is a deliberate pre-submission
-  spend, not a routine run.
+  spend, not a routine run. Measured on the §5 run (2026-07-17): roughly 270k
+  subagent tokens across four lenses, ~4–6 minutes each (parallel).
 
 ## Build plan (atom-first)
 
@@ -130,3 +197,28 @@ framework.)
 4. **Panel size (default, tunable):** 4 lenses single-pass + the free mechanical
    pre-pass; add redundancy on the killer dimension only in whole-paper adversarial
    mode.
+
+## Learnings from the §5 run (2026-07-17)
+
+First full multi-agent critical-friend run: Paper B §5 Discussion, four
+fresh-context lenses launched in parallel over one section file
+(flow/altitude; duplication & cross-section consistency; claim–evidence &
+cross-ref audit; mechanical & register) — a run-specific partition of the
+dimensions above, not a replacement for them. Each lens returned raw findings
+with `severity ∈ {blocker, major, minor}`, a verbatim anchor, and
+`CLEAN: <dimension>` lines; the orchestrator verified contested findings
+against sources before presenting a triaged report; author rulings were
+collected in one batch. Amendments marked *(§5 run, 2026-07-17)* throughout
+the spec came from this run; what follows had no existing home.
+
+### Apply phase (new — the spec previously stopped at the report)
+
+- **Batch fixes via scripted exact-string replacement with assertions.** A
+  Python script with per-edit assertions (exact-string match, count == 1)
+  proved safer than hand-editing at volume; a failed assertion aborts rather
+  than silently mis-applying.
+- **Concurrent-author risk is real.** The author edits between review and
+  apply — re-read the target immediately before applying; two stale-buffer
+  collisions happened earlier in the same project.
+- **Gate commits on build success** (`&&`, not `;`) — see the
+  build-convergence gate under the mechanical pre-pass.
