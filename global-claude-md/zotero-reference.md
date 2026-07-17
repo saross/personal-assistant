@@ -170,7 +170,7 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 |---|---|---|---|
 | `ZOTERO_LIBRARY_ID` | User ID for the personal library | — | every write-side script |
 | `ZOTERO_API_KEY_PERSONAL` | Personal-library write + all-groups read | broad | `scripts/lit-scout-zotero-import.py` |
-| `ZOTERO_API_KEY_PAPER_B` | Personal-library write; group-library write for `2025-MQ-LLM-DH-software-longevity` (groupID 5861859) only; all-groups read (verified via the `/keys` endpoint, 2026-07-11) | narrow | `scripts/sync-to-zotero.py` |
+| `ZOTERO_API_KEY_PAPER_B` | Personal-library **read-only** (library/files/notes, no write — a personal-library DELETE returns 403); group-library write for `2025-MQ-LLM-DH-software-longevity` (groupID 5861859) only; all-groups read (re-verified via the `/keys/current` endpoint, 2026-07-17) | narrow | `scripts/sync-to-zotero.py` |
 | `ZOTERO_STAGING_COLLECTION` | Top-level collection key under My Library where dated subcollections are created (current value: `IX8XR97K` for the `staging` collection) | — | `scripts/lit-scout-zotero-import.py` |
 
 ### Target-suffixed naming convention (adopted 2026-05-22)
