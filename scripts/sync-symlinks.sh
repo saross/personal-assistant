@@ -2,9 +2,9 @@
 # sync-symlinks.sh — Refresh ~/.claude/ symlinks + global CLAUDE.md.
 #
 # The cheap, idempotent subset of setup.sh: ensures that every command,
-# skill, and agent in this repo is linked into the locations Claude Code
-# reads from, and that settings.json + the composed global CLAUDE.md are
-# up to date. Safe to run on every sync — it performs filesystem checks
+# skill, agent, and output style in this repo is linked into the
+# locations Claude Code reads from, and that settings.json + the
+# composed global CLAUDE.md are up to date. Safe to run on every sync — it performs filesystem checks
 # only and only updates links when they are missing or wrong.
 #
 # Designed to be called from both:
@@ -121,7 +121,7 @@ ensure_symlink() {
 # Step 1: Submodule init/update (idempotent; no-op once up to date)
 # ---------------------------------------------------------------------------
 
-say "[1/7] Ensuring data submodule is initialised..."
+say "[1/8] Ensuring data submodule is initialised..."
 cd "$PA_DIR"
 git submodule update --init --recursive --quiet
 say_verbose "  Submodule ready."
@@ -130,14 +130,14 @@ say_verbose "  Submodule ready."
 # Step 2: settings.json symlink
 # ---------------------------------------------------------------------------
 
-say "[2/7] Linking settings.json..."
+say "[2/8] Linking settings.json..."
 ensure_symlink "$PA_DIR/settings.json" "$CLAUDE_DIR/settings.json" "settings.json"
 
 # ---------------------------------------------------------------------------
 # Step 3: Command symlinks
 # ---------------------------------------------------------------------------
 
-say "[3/7] Linking commands..."
+say "[3/8] Linking commands..."
 mkdir -p "$CLAUDE_DIR/commands"
 prune_stale_symlinks "$CLAUDE_DIR/commands" "$PA_DIR/commands" "command"
 for cmd in "$PA_DIR"/commands/*.md; do
@@ -149,7 +149,7 @@ done
 # Step 4: Skill symlinks
 # ---------------------------------------------------------------------------
 
-say "[4/7] Linking skills..."
+say "[4/8] Linking skills..."
 mkdir -p "$CLAUDE_DIR/skills"
 prune_stale_symlinks "$CLAUDE_DIR/skills" "$PA_DIR/skills" "skill"
 for skill_dir in "$PA_DIR"/skills/*/; do
@@ -163,7 +163,7 @@ done
 # Step 5: Agent symlinks
 # ---------------------------------------------------------------------------
 
-say "[5/7] Linking agents..."
+say "[5/8] Linking agents..."
 mkdir -p "$CLAUDE_DIR/agents"
 prune_stale_symlinks "$CLAUDE_DIR/agents" "$PA_DIR/agents" "agent"
 for agent_file in "$PA_DIR"/agents/*.md; do
@@ -172,15 +172,32 @@ for agent_file in "$PA_DIR"/agents/*.md; do
 done
 
 # ---------------------------------------------------------------------------
-# Step 6: Compose global CLAUDE.md
+# Step 6: Output-style symlinks
+#
+# Output styles follow the same repo-source + symlink pattern as skills
+# (added 2026-07-18, Workstream G). Claude Code reads user-level styles
+# from ~/.claude/output-styles/; per-project styles in a repo's
+# .claude/output-styles/ are unaffected by this step.
 # ---------------------------------------------------------------------------
 
-say "[6/7] Composing global CLAUDE.md..."
+say "[6/8] Linking output styles..."
+mkdir -p "$CLAUDE_DIR/output-styles"
+prune_stale_symlinks "$CLAUDE_DIR/output-styles" "$PA_DIR/output-styles" "output-style"
+for style_file in "$PA_DIR"/output-styles/*.md; do
+    [ -f "$style_file" ] || continue
+    ensure_symlink "$style_file" "$CLAUDE_DIR/output-styles/$(basename "$style_file")" "$(basename "$style_file")"
+done
+
+# ---------------------------------------------------------------------------
+# Step 7: Compose global CLAUDE.md
+# ---------------------------------------------------------------------------
+
+say "[7/8] Composing global CLAUDE.md..."
 bash "$PA_DIR/scripts/compose-global-claude-md.sh" >/dev/null
 say_verbose "  Composed."
 
 # ---------------------------------------------------------------------------
-# Step 7: Verify Python dependencies (cc-session-toolkit and friends)
+# Step 8: Verify Python dependencies (cc-session-toolkit and friends)
 #
 # Why this lives in sync-symlinks rather than setup.sh-only:
 # session-archive hooks (`cc_session_toolkit.cli archive` on
@@ -191,7 +208,7 @@ say_verbose "  Composed."
 # when something is actually missing.
 # ---------------------------------------------------------------------------
 
-say "[7/7] Verifying Python dependencies..."
+say "[8/8] Verifying Python dependencies..."
 if [ ! -d "$PA_DIR/venv" ]; then
     say "  WARNING: venv/ not present — run setup.sh to bootstrap."
 elif [ ! -f "$PA_DIR/requirements.txt" ]; then
