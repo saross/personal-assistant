@@ -2115,6 +2115,67 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-07-21 (Tue, latest PA-hub) — SESSION WIND-DOWN (model swap Opus→Fable): six-day accountability arc Wed 15 → Tue 21; Paper B SUBMITTED-READY + handed to Brian; W29 review + two-month runway plan; Cosmos at the goal line
+
+Long multi-day session (amd-tower, PA-hub). **Ran the task-system daily through Paper B's
+end-game and into the two-month runway.** Resume state below is the beacon — the durable
+records are FOCUS.md (runway record at top + all three slots), `reports/weekly/2026-W29.md`,
+and the standup files 07-15 → 07-21.
+
+**Focus slots (as of Tue 21, 11:15):**
+- **Slot 1 — Paper B: task CLOSED Fri 17** (15d in focus; "edit §3→end" done). Editing pass
+  finished end-to-end (§4 frozen, §5 rebuilt, Conclusion, abstract, bibliography), handed to
+  Brian as a **submission-ready RSOS-templated manuscript**. **Waiting on Brian's weekend
+  readthrough + adversarial read.** Successor task = **RSOS submission, Fri 24 Jul, all-day
+  booked** (Google Calendar event created; ~30 min minor LaTeX/bibtex fixes in the paper-b
+  beacon; celebration beer). Slot in waiting state — no action unless Brian hands over early.
+- **Slot 2 — Cosmos grant: AT THE GOAL LINE.** OSF prereg **LODGED 2026-07-20** (with embargo;
+  osf.io/dqnhg) = serial gate cleared. Overnight session redrafted the 500-word application.
+  **Tue 21 first action (IN PROGRESS at wind-down): verify the redraft (list every number/
+  name/date/claim as verified-vs-record or from-memory — error_mode drumbeat this week) →
+  SUBMIT today.** Brian read optional (he approved v0.3 on 09 Jul); submit by **Thu 23 latest**
+  either way. Deadline Sun 26. **This closes the slot — sixth-move history, no Paper-B excuse
+  left.**
+- **Slot 3 — RDA WG proposal: promoted Mon 20**, named day Tue 21 scoped to **reconnaissance
+  only** (locate docs, take stock, pull together what needs adding/changing); actual edits +
+  WG-member emails slide to Wed to protect the reset. Target Oct 2026.
+
+**Two-month runway (set at W29 review 07-20; full record atop FOCUS.md):** must be **out of the
+house ~15 Sep**. Separation disclosure SUBMITTED 07-20 (Shawn's done, Adela's forwarded) →
+gates Family Court → ~1mo settlement → title transfer → sale. **W30–31 = full-time research
+push** (cheap-revision window); **from 3 Aug ~20h/wk = 10 EFN + 10 research**. **ARDC ads
+expected week of 10 Aug** (CEO back 3 Aug), 3–4wk process, Shawn 70–80% success → start ~21 Sep.
+**Mid-Sept targets:** map-reader SUBMITTED, llm-repro JAS research phase DONE (25–35 papers),
+**inscriptions → stretch/fallback**. **Load-bearing dependency: the style-gap halving**
+(write-like-me workstream, parallel session; `academic-prose` skill shipped 07-19) — the
+40h/paper estimate assumes it; Paper B's measured base rate at the current gap is 57.25h.
+
+**Pace mechanism (Shawn asked to be held to Paper-B-style treatment):** Sunday 07-19 stamina
+crash (recovery, not slip); Mon 07-20 hit 9.25h over the proposed 8h ceiling. **Tue 21 =
+deliberate RESET** (earlier meals/exercise/bed); today's ceiling = **quit ~16:30–17:00, breach
+signal past 17:30 → log at recap**. **Standing 8h-number + hard-cap consequence deferred to the
+W30 review BY DESIGN** (ratify on reset-week data, not one crashed Sunday). Do not let "defer to
+W30" become "never" — W30 review must name the standing number.
+
+**Live waiting-on (load-bearing):** lawyer's post-disclosure step (the sale/move chain);
+**Adela disclosure return — ping Mon 27 Jul, HARD DEADLINE Mon 3 Aug**; Brian (Fri 24);
+Emmanuel (reply-or-park ~24 Jul); ARDC (monitor postings from ~3 Aug).
+
+**Open, un-scheduled:** **clear-all-reviews session** (13 inbox items + ~35 notes-inbox rows +
+the **2026-05-29 vocab-validation report still unapplied** — its gate, Paper B, has cleared;
+wants a slot this week; wiki cluster-and-carry deferred at W29 to here). **June+July → ONE
+retro at month-end (~31 Jul)** — named, on time.
+
+- Public repo: standups 07-16→07-21; `wiki/continuity.md` (this entry); FOCUS.md (runway record
+  + Slots 1–3); this session's commits through wind-down.
+- Data: `reports/weekly/2026-W29.md` + 3 collaborator reports; `reports/time-log.csv` (07-15→21,
+  ~50 rows); `reports/work-log.md` (07-17, 07-20); `tasks/waiting-for.md` (Brian/Adela/lawyer/
+  Emmanuel/Rory-parked); `tasks/backlog.md` (reflect-and-prioritise done, RDA promoted);
+  `tasks/inbox.md` (Flinders + Odette captures; §5 row closed); memories (recap + hook
+  extractions). All committed + pushed.
+- Model swap: Opus 4.8 → Fable at this point. Next session resumes from this beacon — no need to
+  re-read the session body.
+
 ### 2026-07-15 (Wed, latest PA-hub) — SESSION CLOSE (/handoff): standup + machine-swap sync (zbook → amd-tower daily driver); memory mirrors converged after three-layer repair; Zotero write-back diagnosed (broken on BOTH machines)
 
 Morning: standup (11:20 — late start absorbed as load-bearing §5 review; Wed = paper-b
