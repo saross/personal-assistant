@@ -2115,6 +2115,32 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-07-21 (Tue, latest SA) — session-archiving: tiered architecture DECIDED; 40-entry Three Ps audit (zero extractor confabulation); standalone upgrade plan
+
+Multi-day session (started Fri 18, Brian-tooling review) resolved the
+session-archiving question: **one conceptual system, two layers** —
+cc-session-toolkit floor everywhere, Brian's `transcript-archive`
+plugin as the per-repo research tier (~70% of repos), /reflect-vs-
+/handoff as the ratified analogy. Five-agent Three Ps audit of 40
+sampled `session.meta.json` entries: 125/126 hashes and ~530 paths
+verified (the one failure inherited from a stale in-repo doc, not
+invented); tags (1.50) and framing boilerplate the systemic
+weaknesses; ~18% of floor entries sensitivity-bearing → never-promote-
+without-screen rule ratified. Compliance finding reframed by Shawn as
+procedural (no sensitive student data in personal account at all),
+not technical routing. **All actionable items consolidated in
+`planning/session-archiving-upgrade-plan-2026-07-21.md`** (18 items,
+A research-tier adoption / B floor upgrades / C extractor quality /
+D governance); inbox item created pointing at it.
+
+- Plan: `wiki/planning/session-archiving-upgrade-plan-2026-07-21.md`
+- Audit: `data/reports/threeps-audit-2026-07-21.md` (data `f99270b`,
+  correction addendum same day)
+- Inbox: 2026-07-21 capture "Session-transcript infra" → plan doc
+- (Same session, earlier, style-guide workstream: academic-prose
+  skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
+  register note + delta mining — logged in those repos' commits.)
+
 ### 2026-07-21 (Tue, latest PA-hub) — SESSION WIND-DOWN (model swap Opus→Fable): six-day accountability arc Wed 15 → Tue 21; Paper B SUBMITTED-READY + handed to Brian; W29 review + two-month runway plan; Cosmos at the goal line
 
 Long multi-day session (amd-tower, PA-hub). **Ran the task-system daily through Paper B's
