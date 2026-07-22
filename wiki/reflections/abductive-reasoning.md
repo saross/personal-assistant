@@ -24,6 +24,8 @@ Entries are numbered sequentially and dated.
 
 ## Entry 1 — 2026-04-17: Partial grounding collapse at the synthesis boundary
 
+**Session anchor (retro-matched 2026-07-22):** `2026-04-16T05-06_comprehensive-agent-workflow-training-and` — session `6e7ef1fd-541d-4ddd-a949-e82443cb34e1`, confidence: transcript-confirmed.
+
 ### Surprising fact
 
 The v1 lit-scout agent produced output that *looked* rigorous:
@@ -135,6 +137,8 @@ Plus:
 ### Confidence note (revised 2026-04-19 after transcript
 re-inspection)
 
+**Session anchor (retro-matched 2026-07-22):** unmatched — no archive located; see match report 2026-07-22.
+
 The 75% spot-check rate (3/4 rows) is a small-sample estimate, not a
 population rate. The direction of the finding is robust (multiple
 independent mis-attributions on distinct papers in a single run); the
@@ -172,6 +176,8 @@ sufficient this time; the claim that only an architectural fix
 against a real confabulation.
 
 ### Further update (2026-04-18, after v3 scrutinised test)
+
+**Session anchor (retro-matched 2026-07-22):** `2026-04-18T07-11_executed-lit-scout-v3-test-protocol-and` — session `6f5ba855-ca71-491e-8f53-3e67ab87da8a`, confidence: transcript-confirmed.
 
 The v3 test (fresh query: Bayesian archaeological dating uncertainty,
 25 rows) established two things that refine the confidence picture:
@@ -237,6 +243,8 @@ piece of evidence that procedural same-context verification *with
 adversarial framing* may be a non-trivial partial substitute.
 
 ### Further update (2026-04-19, after the v4.x serial-agent arc)
+
+**Session anchor (retro-matched 2026-07-22):** unmatched — no archive located; see match report 2026-07-22.
 
 Four additional lit-scout test runs on 2026-04-19 substantially
 refine the confidence picture:
