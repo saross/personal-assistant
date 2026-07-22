@@ -146,6 +146,38 @@ arrays 1.63.
   metas, or purge the cohort. Shawn's call; needs listing first
   (cheap grep). (~1 h to enumerate + decide)
 
+## E. Reflection-layer repairs (added 2026-07-22)
+
+The /reflect output review (2026-07-22) found the reflection corpus
+high-quality but under-anchored for its intended research use. Shawn
+ruled transcript-pairing mandatory. Correction on the record: the
+review's initial "19 abductive entries vs ~100 paper-b sessions, zero
+skips" was a counting error (subheads swept into entry counts) —
+paper-b has 20 true session-log entries and near-total reflection
+coverage; the skip-discipline gap applies prospectively, not to
+paper-b's record.
+
+- [x] **E1. /reflect schema 2** (2026-07-22, commit `aeb2897`):
+  mandatory session-id anchor + instance field on abductive entries,
+  standardised core + named optional sections (incl. the falsifier
+  "What would change this belief"), mandatory skip assessments (the
+  denominator), retro-annotation convention, and a prompt-rotation
+  guard for session reflections ("surprised" had collapsed to ~100%
+  selection; "uncertain or unresolved" used once in ~90 entries).
+- [x] **E2. Retro-match existing abductive entries to archived
+  transcripts** (2026-07-22, three agents): ~58 entries + skip
+  records across inscriptions (32), paper-b (19),
+  llm-reproducibility (6+4), personal-assistant (1) annotated
+  in place with `Session anchor (retro-matched …)` lines and
+  confidence labels (transcript-confirmed / meta-matched /
+  unmatched). Match reports in the session record.
+- [ ] **E3. Anchor-coverage check in the research-project run-up.**
+  Before the abductive-record research project starts (a few months
+  out), re-audit: every entry since 2026-07-22 carries a
+  contemporaneous session id; unmatched retro entries re-attempted
+  against any newly indexed archives (cf. B6 location
+  reconciliation). (~0.5 h)
+
 ## Sequencing suggestion
 
 A1 → A2 → (A3–A6 rollout) as the visible win; C1–C4 as one batched
