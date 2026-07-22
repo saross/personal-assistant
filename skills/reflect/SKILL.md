@@ -92,6 +92,40 @@ Part of an ongoing cross-project research investigation into AI
 reasoning patterns. Only updated when the session produced genuinely
 surprising findings — the conditional trigger keeps entries sharp.
 
+### Abductive entry contract (schema 2, 2026-07-22)
+
+This document is a research corpus (intended for cross-project
+analysis); entries must be findable, auditable, and comparable across
+projects. Every new entry follows this contract:
+
+- **Heading:** `## Entry N — YYYY-MM-DD: <title>` — continue the
+  file's numbering; if the file uses the older date-first form, keep
+  its numbering scheme but add the anchor fields below.
+- **First two lines of every entry (mandatory):**
+  - `**Session:** <session-id>` — obtain the current session id from
+    the newest transcript in this project's slug:
+    `ls -t ~/.claude/projects/<cwd-slug>/*.jsonl | head -1` (basename
+    minus `.jsonl`). If genuinely unobtainable, write
+    `unrecorded` — never guess.
+  - `**Instance:** primary` (the default) or `post-compaction` /
+    `continuation-from-summary` when this instance did not directly
+    experience the episode. This is cheap insurance — the default is
+    almost always `primary` under the short-session practice.
+- **Core sections:** `### Surprising fact` / `### Probe` /
+  `### Belief revision` — always these three names.
+- **Named optional extensions** (use these titles, not ad hoc ones):
+  `### What would change this belief` (falsifier — use liberally),
+  `### Implications for practice`, `### What this is not`.
+- **Skip assessments are mandatory:** when /reflect runs and no
+  episode qualifies, append a one-line dated assessment
+  (`### YYYY-MM-DD — Assessment: no qualifying episodes` + one
+  sentence why). The skips are the denominator for the research
+  analysis; silence is data loss.
+- **Retro-annotations** (anchors added after the fact) are always
+  marked as such: `**Session anchor (retro-matched YYYY-MM-DD):** …`
+  with a confidence label. Never present a retro-match as
+  contemporaneous.
+
 > **Not a reflection document:** `working-notes.md` (the *research-notes*
 > layer — empirical observations, methodological notes, and analytical
 > findings) is **not** part of the reflections set and is neither created
@@ -144,6 +178,14 @@ When writing the session reflection (priority 1 document), select 2–3 prompts
 from this pool based on what is most relevant to the session. Do not use all
 prompts every time. Do not impose a fixed structure — let the prompts guide
 freeform reflection.
+
+**Rotation guard (2026-07-22).** Selection has historically collapsed
+onto a favourite trio ("surprised" appeared in ~100% of entries in the
+two largest projects, while "uncertain or unresolved" was used once
+across ~90 entries). Before selecting, glance at the previous two
+entries: if a prompt appears in both, prefer one that appears in
+neither. Relevance still wins — but when two prompts are equally apt,
+take the one this document has heard from least.
 
 **Core pool** (use at least one):
 
