@@ -165,18 +165,54 @@ paper-b's record.
   guard for session reflections ("surprised" had collapsed to ~100%
   selection; "uncertain or unresolved" used once in ~90 entries).
 - [x] **E2. Retro-match existing abductive entries to archived
-  transcripts** (2026-07-22, three agents): ~58 entries + skip
-  records across inscriptions (32), paper-b (19),
-  llm-reproducibility (6+4), personal-assistant (1) annotated
-  in place with `Session anchor (retro-matched …)` lines and
-  confidence labels (transcript-confirmed / meta-matched /
-  unmatched). Match reports in the session record.
-- [ ] **E3. Anchor-coverage check in the research-project run-up.**
-  Before the abductive-record research project starts (a few months
-  out), re-audit: every entry since 2026-07-22 carries a
-  contemporaneous session id; unmatched retro entries re-attempted
-  against any newly indexed archives (cf. B6 location
-  reconciliation). (~0.5 h)
+  transcripts** (2026-07-22, three agents; commits inscriptions
+  `5dd52ad`, paper-b `ba50e16`, llm-repro `676d0e2`, PA `3507c0b`).
+  **63 records annotated: 49 transcript-confirmed (78%), 8
+  meta-matched, 6 unmatched** — inscriptions 33/33 confirmed;
+  paper-b 10/7/2; llm-repro 4/1/2 (file held 5 entries + 2 skips,
+  not the 6+4 previously stated); PA 2/0/2 (entry + dated revision
+  subsections anchored separately). Every meta-matched and unmatched
+  record traces to ONE cause: travel/machine-swap coverage gaps —
+  eight paper-b archives (2026-06-25→07-14) and two llm-repro
+  archives are meta-only locally (transcripts recorded by sha256 in
+  the meta but absent, plausibly on R2 or never converged from
+  zbook), and six records' authoring sessions ran on another machine
+  and were never archived here. Also surfaced: inscriptions Entry 14
+  referenced by three entries but never written (reconstructable —
+  its session is now identified); one duplicate archive dir sharing
+  a session id (→ B6); one in-file date contradicting git history
+  (PA confidence note, 04-19 vs commit 04-18).
+- [x] **E3a. Convergence repair (2026-07-22).** Root cause found:
+  daily-sync's cc-archives passes push transcripts up append-only
+  and sync metadata both ways, but **no pass pulls transcripts
+  down** — local mirrors are transcript-partial by design, and the
+  meta-only shells were zbook-archived sessions whose transcripts
+  only canonical (and zbook) held. Repair run with all machines up:
+  zbook → local → canonical append-only passes plus the missing
+  pull leg; all 25 paper-b + current llm-repro transcripts now
+  present locally and **sha256-verified against their metas (25/25,
+  0 mismatches)**; two never-archived sessions recovered from
+  zbook's raw store and archived `--stats-only` (no API calls;
+  placeholder metadata pending needs-review):
+  `2026-07-14T12-23_19779003` (paper-b) and
+  `2026-07-13T23-54_6590f984 → _6590f824` (llm-repro); zbook,
+  local, and canonical fully converged. Residue: the older
+  `agent-*` meta-only cohort (2025-11→2026-01 llm-repro subagent
+  archives) has no transcripts anywhere — treat under B6.
+- [ ] **B7. Decide the transcript-pull posture** (new, from E3a):
+  either add a pass-4 append-only transcript pull to daily-sync
+  (full mirrors everywhere; ~3.6 GB today) or keep partial mirrors
+  and teach `/search-sessions` + matching tooling to fall back to
+  the canonical store via the rpi-shares mount. The silent gap this
+  session found argues for full mirrors + the autofs fix. (~1 h)
+- [ ] **E3b. Anchor close-out.** (in progress 2026-07-22: rematch
+  agent upgrading the 13 non-confirmed records post-restore.)
+  Then: (c) optionally reconstruct inscriptions Entry 14 as an
+  explicitly retro-marked entry from its identified transcript;
+  (d) before the research project starts, audit that every entry
+  since 2026-07-22 carries a contemporaneous session id; (e) the
+  paper-b 2026-07-02 daytime session remains unlocated — last
+  resort is R2 and any third-machine stores. (~1 h)
 
 ## Sequencing suggestion
 
