@@ -196,23 +196,48 @@ paper-b's record.
   placeholder metadata pending needs-review):
   `2026-07-14T12-23_19779003` (paper-b) and
   `2026-07-13T23-54_6590f824` (llm-repro); zbook,
-  local, and canonical fully converged. Residue: the older
-  `agent-*` meta-only cohort (2025-11→2026-01 llm-repro subagent
-  archives) has no transcripts anywhere — treat under B6.
-- [ ] **B7. Decide the transcript-pull posture** (new, from E3a):
-  either add a pass-4 append-only transcript pull to daily-sync
-  (full mirrors everywhere; ~3.6 GB today) or keep partial mirrors
-  and teach `/search-sessions` + matching tooling to fall back to
-  the canonical store via the rpi-shares mount. The silent gap this
-  session found argues for full mirrors + the autofs fix. (~1 h)
-- [ ] **E3b. Anchor close-out.** (in progress 2026-07-22: rematch
-  agent upgrading the 13 non-confirmed records post-restore.)
-  Then: (c) optionally reconstruct inscriptions Entry 14 as an
-  explicitly retro-marked entry from its identified transcript;
-  (d) before the research project starts, audit that every entry
-  since 2026-07-22 carries a contemporaneous session id; (e) the
-  paper-b 2026-07-02 daytime session remains unlocated — last
-  resort is R2 and any third-machine stores. (~1 h)
+  local, and canonical fully converged. (Correction, same day: the
+  older `agent-*` meta-only cohort was NOT lost — zbook's archive
+  store held those transcripts and the zbook→local pass recovered
+  them; the completeness gate now reads 0 across the corpus.)
+- [x] **B7. Transcript-pull posture: DECIDED + IMPLEMENTED
+  (2026-07-22).** Full mirrors on all working machines (zbook LUKS
+  full-disk encryption confirmed by Shawn). daily-sync gains pass 4
+  (append-only transcript pull canonical → local) and a
+  **completeness gate**: metas recording a `jsonl_sha256` with no
+  local transcript and no `transcript_lost` write-off marker are
+  counted to `~/.cache/cc-archives-gate`; daily-sync-trigger
+  surfaces a warning at EVERY session start while non-zero. Store
+  roles documented in `network-resources.md` (mirrors / canonical /
+  R2-backup / project-local side-output), including the R2
+  break-glass pull and the pre-travel gate-must-read-0 ritual.
+  Verified in production same day: all four passes green, gate 0,
+  R2 push complete. Rejected alternative (canonical-fallback in
+  consumers) recorded in the 2026-07-22 session.
+- [x] **E3b. Anchor close-out (2026-07-22).** Post-repair rematch:
+  **29 of 30 anchor records transcript-confirmed, 0 meta-matched,
+  1 unmatched** (paper-b 2026-07-02 daytime — its session fell in a
+  genuine archive gap; not in any store incl. R2, which mirrors
+  canonical; accepted as lost unless a third machine surfaces).
+  The rematch also found and repaired a third failure mode: three
+  archives were **mid-session snapshots** (sha-verified strict
+  prefixes of the full sessions) truncating exactly the episode
+  material; re-archived complete from zbook's raw store
+  (--stats-only), truncated metas kept as in-dir backups.
+  Commits: paper-b `a6e0537`, llm-repro `f2ce612`, PA `fc14a4e`.
+  Remaining sub-items: (c) optional Entry 14 reconstruction
+  (inscriptions); (d) pre-research audit of contemporaneous
+  session ids.
+- [ ] **B8. Snapshot-supersede handling** (new, from E3b): archives
+  created mid-session (pre-compact or early Stop) can fossilise a
+  truncated transcript that later looks complete. Toolkit should
+  re-archive (or flag needs_review) when the raw session grew after
+  the archive was cut — detectable by comparing archive
+  `jsonl_bytes` against the raw file before rotation. Fold the B6
+  dedupe residue in here too: one byte-identical duplicate archive
+  pair (llm-repro 6590f824), the 13 KB `50ed4d22` stub, the
+  inscriptions duplicate dir pair, and the project-local
+  `archive/cc-sessions/` duplicates policy. (~2 h)
 
 ## Sequencing suggestion
 

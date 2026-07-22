@@ -32,6 +32,20 @@ SYNC_SCRIPT="${SCRIPT_DIR}/daily-sync.sh"
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 
+# cc-archives completeness gate (B7, 2026-07-22): surface transcript-
+# partial state at EVERY session start, not just on sync days. The gate
+# file is written by daily-sync.sh's cc-archives pass; a non-zero first
+# line means that many session.meta.json files record a transcript hash
+# whose transcript is absent locally (and not written off). Silence on
+# this state is how meta-only shells went unnoticed for weeks.
+GATE_FILE="${HOME}/.cache/cc-archives-gate"
+if [[ -f "$GATE_FILE" ]]; then
+    GATE_COUNT="$(head -1 "$GATE_FILE" 2>/dev/null)"
+    if [[ "$GATE_COUNT" =~ ^[0-9]+$ ]] && [[ "$GATE_COUNT" -gt 0 ]]; then
+        echo "[cc-archives gate] ${GATE_COUNT} archived session(s) lack a local transcript — run daily-sync at home to pull, or see plan B7/B6 (${GATE_FILE} lists them)" >&2
+    fi
+fi
+
 # Already ran today? Exit silently — dominant path on every session after the
 # first of the day.
 if [[ -f "$LOCK_FILE" ]] && [[ "$(cat "$LOCK_FILE" 2>/dev/null)" == "$TODAY" ]]; then

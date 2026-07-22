@@ -537,31 +537,88 @@ if [[ $DRY_RUN -eq 0 ]]; then
     elif [[ ! -d "$CC_ARCHIVES_LOCAL" ]]; then
         log "cc-archives sync: $CC_ARCHIVES_LOCAL missing — nothing to push"
     else
-        log "cc-archives sync [1/3]: append-only push $CC_ARCHIVES_LOCAL/ → canonical"
+        log "cc-archives sync [1/4]: append-only push $CC_ARCHIVES_LOCAL/ → canonical"
         if rsync -a --ignore-existing --stats \
             "$CC_ARCHIVES_LOCAL/" "$CC_ARCHIVES_CANONICAL/" \
             >>"$LOG_FILE" 2>&1; then
-            log "cc-archives sync [1/3]: complete"
+            log "cc-archives sync [1/4]: complete"
         else
-            log "cc-archives sync [1/3]: rsync exited non-zero (see log)"
+            log "cc-archives sync [1/4]: rsync exited non-zero (see log)"
         fi
 
-        log "cc-archives sync [2/3]: metadata --update push → canonical"
+        log "cc-archives sync [2/4]: metadata --update push → canonical"
         if rsync -rt --update --stats "${CC_META_FILTER[@]}" \
             "$CC_ARCHIVES_LOCAL/" "$CC_ARCHIVES_CANONICAL/" \
             >>"$LOG_FILE" 2>&1; then
-            log "cc-archives sync [2/3]: complete"
+            log "cc-archives sync [2/4]: complete"
         else
-            log "cc-archives sync [2/3]: rsync exited non-zero (see log)"
+            log "cc-archives sync [2/4]: rsync exited non-zero (see log)"
         fi
 
-        log "cc-archives sync [3/3]: metadata --update pull canonical → local"
+        log "cc-archives sync [3/4]: metadata --update pull canonical → local"
         if rsync -rt --update --stats "${CC_META_FILTER[@]}" \
             "$CC_ARCHIVES_CANONICAL/" "$CC_ARCHIVES_LOCAL/" \
             >>"$LOG_FILE" 2>&1; then
-            log "cc-archives sync [3/3]: complete"
+            log "cc-archives sync [3/4]: complete"
         else
-            log "cc-archives sync [3/3]: rsync exited non-zero (see log)"
+            log "cc-archives sync [3/4]: rsync exited non-zero (see log)"
+        fi
+
+        # Pass 4 (B7 decision, 2026-07-22): append-only transcript pull,
+        # canonical → local. Passes 1–3 push transcripts up and sync
+        # metadata both ways, but never pull transcripts down — so a
+        # machine only held transcripts for sessions it archived itself,
+        # and sessions archived on the other machine appeared locally as
+        # meta-only shells (discovered via the abductive-anchor retro-
+        # matching, 2026-07-22). Working machines now carry full mirrors:
+        # zbook needs offline completeness when travelling, and symmetric
+        # full mirrors keep every consumer (search-sessions, matching
+        # agents) single-path. See wiki/planning/
+        # session-archiving-upgrade-plan-2026-07-21.md items B7/E3a.
+        log "cc-archives sync [4/4]: append-only transcript pull canonical → local"
+        if rsync -a --ignore-existing --stats \
+            "$CC_ARCHIVES_CANONICAL/" "$CC_ARCHIVES_LOCAL/" \
+            >>"$LOG_FILE" 2>&1; then
+            log "cc-archives sync [4/4]: complete"
+        else
+            log "cc-archives sync [4/4]: rsync exited non-zero (see log)"
+        fi
+
+        # Completeness gate (B7): count metas that record a transcript
+        # hash (archive.jsonl_sha256) but have no sibling transcript on
+        # disk and no explicit transcript_lost write-off marker. Result
+        # goes to a machine-local status file; daily-sync-trigger.sh
+        # surfaces a warning at every session start while the count is
+        # non-zero. This makes transcript-partial state explicit instead
+        # of silent — the failure mode that hid the meta-only shells.
+        GATE_FILE="$HOME/.cache/cc-archives-gate"
+        "$HOME/personal-assistant/venv/bin/python3" - "$CC_ARCHIVES_LOCAL" "$GATE_FILE" <<'PYEOF' >>"$LOG_FILE" 2>&1 || log "cc-archives gate: check failed (see log)"
+import json, sys
+from pathlib import Path
+root, gate = Path(sys.argv[1]), Path(sys.argv[2])
+missing = []
+for meta_p in root.rglob("session.meta.json"):
+    try:
+        m = json.load(open(meta_p))
+    except Exception:
+        continue
+    arch = m.get("archive", {}) or {}
+    if not arch.get("jsonl_sha256"):
+        continue                      # no transcript ever recorded
+    if arch.get("transcript_lost"):
+        continue                      # explicitly written off (B6)
+    d = meta_p.parent
+    if not (d / "session.jsonl.gz").exists() and not (d / "session.jsonl").exists():
+        missing.append(str(d.relative_to(root)))
+gate.parent.mkdir(parents=True, exist_ok=True)
+lines = [str(len(missing))] + sorted(missing)[:20]
+if len(missing) > 20:
+    lines.append(f"... +{len(missing) - 20} more")
+gate.write_text("\n".join(lines) + "\n")
+print(f"cc-archives gate: {len(missing)} meta(s) lack a local transcript")
+PYEOF
+        if [[ -f "$GATE_FILE" ]]; then
+            log "cc-archives gate: $(head -1 "$GATE_FILE") missing transcript(s) recorded to $GATE_FILE"
         fi
 
         # cc-archives → Cloudflare R2 (Phase 0e offsite backup). Runs AFTER
