@@ -195,7 +195,7 @@ paper-b's record.
   zbook's raw store and archived `--stats-only` (no API calls;
   placeholder metadata pending needs-review):
   `2026-07-14T12-23_19779003` (paper-b) and
-  `2026-07-13T23-54_6590f984 → _6590f824` (llm-repro); zbook,
+  `2026-07-13T23-54_6590f824` (llm-repro); zbook,
   local, and canonical fully converged. Residue: the older
   `agent-*` meta-only cohort (2025-11→2026-01 llm-repro subagent
   archives) has no transcripts anywhere — treat under B6.
