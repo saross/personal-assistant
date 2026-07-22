@@ -137,7 +137,7 @@ Plus:
 ### Confidence note (revised 2026-04-19 after transcript
 re-inspection)
 
-**Session anchor (retro-matched 2026-07-22):** unmatched — no archive located; see match report 2026-07-22.
+**Session anchor (retro-matched 2026-07-22):** `2026-04-16T05-06_comprehensive-agent-workflow-training-and` — session `6e7ef1fd-541d-4ddd-a949-e82443cb34e1`, confidence: transcript-confirmed. (Revision authored near session close: Edit at 2026-04-18T06:39Z, commit `9f3d909`. Archive completed 2026-07-22: the earlier snapshot ended 2026-04-18T00:03Z mid-session; the full transcript to 2026-04-18T07:10Z was re-archived from zbook.)
 
 The 75% spot-check rate (3/4 rows) is a small-sample estimate, not a
 population rate. The direction of the finding is robust (multiple
@@ -244,7 +244,7 @@ adversarial framing* may be a non-trivial partial substitute.
 
 ### Further update (2026-04-19, after the v4.x serial-agent arc)
 
-**Session anchor (retro-matched 2026-07-22):** unmatched — no archive located; see match report 2026-07-22.
+**Session anchor (retro-matched 2026-07-22):** `2026-04-18T07-11_executed-lit-scout-v3-test-protocol-and` — session `6f5ba855-ca71-491e-8f53-3e67ab87da8a`, confidence: transcript-confirmed. (Same session as the 2026-04-18 update above; the v4.x arc ran 2026-04-19 within it, and the update was authored near session close: Edit at 2026-04-19T10:50Z, commit `8136074`. Archive completed 2026-07-22: the earlier snapshot was a 474-line mid-session capture; the full transcript to 2026-04-19T12:12Z was re-archived from zbook.)
 
 Four additional lit-scout test runs on 2026-04-19 substantially
 refine the confidence picture:
