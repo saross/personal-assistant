@@ -319,3 +319,48 @@ empirically validated; introduce the architectural-domestication
 refinement as the 2026 worked example; treat catching power as a
 cautious, small-n finding that motivates the independence argument
 without overclaiming.
+
+## Entry 2 — 2026-07-22: The "lost cohort" that was never lost — designation is not completeness
+
+**Session:** 3e5b854d-f597-4beb-836f-ba7073622fb1
+**Instance:** primary
+
+### Surprising fact
+
+Implementing the cc-archives completeness gate, I predicted it would
+read ~45 permanently: the llm-reproducibility `agent-*` archives
+(2025-11→2026-01) were meta-only locally AND absent from the
+canonical store, so I had written them off as lost ("no transcripts
+anywhere — treat under B6"). The gate's first run read **0**. Every
+transcript was present.
+
+### Probe
+
+Listed an `agent-*` directory: an uncompressed `session.jsonl` sat
+beside the meta. The zbook→local append-only pass (run minutes
+earlier as part of the convergence repair) had restored the whole
+cohort — zbook's archive store had held those transcripts since they
+were created. My "lost" inference had checked local and canonical
+but not zbook, because I treated canonical as, by definition, the
+union of all machines.
+
+### Belief revision
+
+"Canonical = union of everything" is a property of *executed
+process*, not of designation: it holds only after every machine's
+push pass has actually run, and zbook's pushes had silently lapsed
+(unmounted rpi-shares) for the same reason the meta-only shells
+formed in the other direction. Generalised: for any aggregation
+point in a distributed store, absence at the aggregate is evidence
+about the *sync process*, not about existence — exhaustive search
+means checking the leaves, not the root. The same session produced
+the mirror-image error twice more (mid-session snapshot archives
+that looked complete; a paper-b "~100 sessions" denominator from
+counting subheadings), all one family: a derived view treated as
+the thing itself.
+
+### What would change this belief
+
+If the gate reads non-zero after all machines have run their push
+passes at home, the union assumption has failed somewhere new —
+that residue would be genuine loss, not process lag.

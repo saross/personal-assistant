@@ -220,3 +220,54 @@ shape even when every stated fact is true; (b) never conclude from truncated
 tool output — grep for error/status markers or read the whole thing before a
 verdict lands in chat, because the clipped line is always the one that
 matters.
+
+## Obs 23 — 2026-07-23 — `[you]` Shawn's scepticism is a calibrated instrument — his surprise flagged two real errors before any audit did
+
+**Pattern.** Twice this session his puzzlement was the tripwire: "have we
+really had that many paper-b sessions?" exposed my subhead-counting error
+(~100 → 20), and "I thought R2 was the travel solution!?" exposed a
+designed-but-half-built store role that the documentation contradicted.
+Both times the audit merely confirmed what his priors had already caught.
+
+**Lesson.** When Shawn expresses surprise at a specific I've stated,
+treat it as a verification demand with a high hit-rate, not as a request
+for reassurance — his mental model of his own practice is dense and
+usually right.
+
+**How to apply.** On any "really? that many/that way?" from Shawn,
+re-derive the specific from source before defending it, and say plainly
+which of us was right once checked.
+
+## Obs 24 — 2026-07-23 — `[me]` Self-critique: a structural grep became a false denominator, and the criticism built on it landed on the user
+
+**Pattern.** I counted `^## |^### ` headings as "entries" in two
+different files, producing 110 abductive entries (real: 19) and ~100
+paper-b sessions (real: 20), then criticised the skip discipline of a
+project that had in fact reflected in every session. Formats drift per
+file (`## Entry N —` vs `## 2026-` vs inverted hybrids); the same error
+recurred within hours because the first fix was local, not general.
+
+**Lesson.** A count used as a denominator — especially one feeding a
+criticism — needs its extraction pattern verified against the file's
+actual heading format first, and cross-checked against an independent
+source (here: archive counts, git history) when it drives a judgement.
+
+**How to apply.** Before quoting any structurally-derived count, print
+the first few matched lines, not just the number; if the count supports
+an accountability claim, verify by a second method before delivering it.
+
+## Obs 25 — 2026-07-23 — `[me]` Self-critique: piped a state-changing script into `head` and killed it mid-run
+
+**Pattern.** Testing the trigger's new gate line, I ran
+`daily-sync-trigger.sh 2>&1 | head -2` — head closed the pipe after two
+lines and SIGPIPE killed the full daily-sync it had (correctly) decided
+to launch. No damage resulted (the lock stayed unset; the log showed
+death before any git operation), but only luck in timing made it clean.
+
+**Lesson.** Truncating pipes are for read-only output. A script that
+mutates state must run to completion with its output captured (redirect
+to file, then inspect), never piped into anything that can exit early.
+
+**How to apply.** Before adding `| head` (or `| grep -m`) to a command,
+ask whether the left side changes state; if it does, redirect to a file
+in the scratchpad and head the file instead.

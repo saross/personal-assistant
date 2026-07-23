@@ -2142,6 +2142,18 @@ written: **`wiki/docs/session-archiving-system.md`**.
 - Plan (B7/B8/E updated): `wiki/planning/session-archiving-upgrade-plan-2026-07-21.md`
 - Sync: `scripts/daily-sync.sh` (pass 4 + gate), `scripts/daily-sync-trigger.sh` (per-session surfacing)
 - Anchor commits: inscriptions `5dd52ad`, paper-b `ba50e16`+`a6e0537`, llm-repro `676d0e2`+`f2ce612`, PA `3507c0b`+`fc14a4e`
+- **Open threads at session close (2026-07-23)** — all named in tray
+  files; nothing lives only in this session: (1) **Brian's PRs #8–#10**
+  → waiting-for row 2026-07-18 (follow-up PRs F4/F6/F7 contingent on
+  his uptake — don't build unprompted). (2) **Write-like-me efficacy
+  test** → addendum on the 2026-07-12 inbox row (build complete; test
+  on next queued paper; 57 h baseline). (3) **SA plan open items**
+  (A1–A6 research-tier pilot, B1–B6+B8 floor, C1–C7 extractor
+  quality, D1–D2 governance, E3b(c)/(d)) → 2026-07-21 inbox row →
+  plan doc. (4) Two recovered archives carry **placeholder metadata**
+  pending ~$0.027/session Gemini approval (fold into the needs-review
+  loop, plan B2). (5) **D2 teaching-archives retention** — Shawn's
+  decision, ~1 h enumerate-and-decide.
 
 ### 2026-07-21 (Tue, latest SA) — session-archiving: tiered architecture DECIDED; 40-entry Three Ps audit (zero extractor confabulation); standalone upgrade plan
 
