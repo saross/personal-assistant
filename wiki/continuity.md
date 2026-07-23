@@ -2115,6 +2115,34 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-07-22/23 (Wed/Thu, latest SA) — reflect schema 2; abductive corpus anchored 29/30; convergence repair; sync pass 4 + completeness gate; system wiki page
+
+Continuation of the SA session. /reflect review → **schema 2**
+(`aeb2897`): mandatory session-id anchors + instance field on
+abductive entries, mandatory skip assessments, prompt-rotation guard
+("surprised" had collapsed to ~100% selection). Retro-matching agents
+anchored the full abductive corpus; a convergence repair (all
+machines) then resolved every gap but one — **29/30 records
+transcript-confirmed**, sole loss paper-b 2026-07-02 daytime. Root
+cause of the gaps: daily-sync's cc-archives passes never pulled
+transcripts down; **B7 decided + implemented** (`c2c75b4`): pass 4
+append-only pull → full mirrors on both working machines (zbook LUKS
+confirmed), plus a completeness gate surfaced at every session start
+(`~/.cache/cc-archives-gate`). R2 clarified as disaster backup with a
+break-glass pull, not the travel path (store-role table:
+`data/global-claude-md/network-resources.md`, `c654ee1`). Third
+failure mode found and repaired: three mid-session snapshot archives
+(strict-prefix transcripts) re-archived complete → new plan item B8.
+Two of my own claims corrected on the record: paper-b session count
+(20, not ~100 — subhead-count error) and the `agent-*` cohort (never
+lost; zbook held the transcripts). State-oriented system reference
+written: **`wiki/docs/session-archiving-system.md`**.
+
+- System page: `wiki/docs/session-archiving-system.md`
+- Plan (B7/B8/E updated): `wiki/planning/session-archiving-upgrade-plan-2026-07-21.md`
+- Sync: `scripts/daily-sync.sh` (pass 4 + gate), `scripts/daily-sync-trigger.sh` (per-session surfacing)
+- Anchor commits: inscriptions `5dd52ad`, paper-b `ba50e16`+`a6e0537`, llm-repro `676d0e2`+`f2ce612`, PA `3507c0b`+`fc14a4e`
+
 ### 2026-07-21 (Tue, latest SA) — session-archiving: tiered architecture DECIDED; 40-entry Three Ps audit (zero extractor confabulation); standalone upgrade plan
 
 Multi-day session (started Fri 18, Brian-tooling review) resolved the
