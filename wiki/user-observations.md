@@ -1881,3 +1881,26 @@ projecting it onto future estimates.
    high-prior investigation leads, not claims to be reassured away —
    the third hypothesis was only found because the first two were
    checked against his recollection rather than accepted over it.
+
+## 2026-07-24 (AR / adversarial-reviewer kickoff, session close) — Drafted candidates (pending review)
+
+1. **The non-negotiable /audit rule earned its keep on freshly "verified" code.**
+   You invoked /audit on code that had already passed its test suite and a
+   live smoke test — and it found 5 Critical defects, all in the untested
+   live paths (phantom POST successes, mid-run aborts, duplicate-minting on
+   transient errors). If accepted, the sharpening is: tests + smoke prove
+   the happy path; the audit's value concentrates precisely where execution
+   hasn't reached yet.
+2. **"What do I need to check before merge?" produced a better review than
+   an open-ended one.** Asking me to enumerate the judgement calls I had
+   made on your behalf (stamp wording, baked-in default model, PDF-over-HTML
+   preference) turned PR review from diff-reading into decision-ratifying —
+   and it surfaced the requirements.txt gap neither of us had listed.
+   Candidate practice: for any Claude-authored PR, ask for the
+   judgement-call inventory first.
+3. **Mid-turn steering messages worked well for parallel work.** You dropped
+   corrections and new tasks into running turns (Ronin, tags, Böckeler,
+   uncommitted code) rather than waiting for clean boundaries; the session
+   absorbed them without losing the main thread. If that matched your
+   experience, it's worth keeping as the default interaction style for
+   long agent-heavy sessions.
