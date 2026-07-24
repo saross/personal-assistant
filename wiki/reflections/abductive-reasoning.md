@@ -364,3 +364,59 @@ the thing itself.
 If the gate reads non-zero after all machines have run their push
 passes at home, the union assumption has failed somewhere new —
 that residue would be genuine loss, not process lag.
+
+## Entry 3 — 2026-07-24: Every attribution surface was stale except the bottom one
+
+**Session:** a5a760a8-01d0-499d-bad1-f702289ebae8
+**Instance:** primary
+
+### Surprising fact
+
+Two independent forensic passes over the same question — "which model
+generated the existing AB+ corpus?" — returned contradictory answers from
+sources that should have agreed. Archived per-message transcript fields said
+tranches 4–6 (35 proposer/verifier subagents) ran `claude-opus-4-8`; the git
+`Co-Authored-By` trailers on the very commits that landed those tranches
+said Claude Fable 5. Both are machine-written records of the same events.
+One had to be wrong, and the wrong one was the one humans actually read.
+
+### Probe
+
+Streamed the per-message `model` fields from the launching session's
+`session.jsonl.gz` and every subagent transcript: the session *opened* on
+Fable (2026-06-12), recorded a model switch to Opus at 2026-06-13T11:25:58Z,
+and launched all 35 AB+ subagents on 06-16 — after the switch, 100% Opus.
+`session.meta.json`'s top-level `model_id` still said Fable for the whole
+session; the commit trailers inherited the same stale session-level
+identity. A live dispatch probe (one trivial workflow agent with
+`model: 'claude-opus-4-8'`, then reading its transcript) confirmed the
+harness resolves full model IDs faithfully — the pinning mechanism works;
+only the *reporting* surfaces lie.
+
+### Belief revision
+
+Before: commit trailers were treated as reliable model attribution (I had
+been emitting them all session as exactly that). After: a strict reliability
+ordering — per-message transcript fields (ground truth) > commit trailers =
+session metadata (both inherit a session-level label that survives
+mid-session model switches unchanged) > artefact headers (recorded nothing).
+The general form: **any attribution recorded at a coarser granularity than
+the event it describes goes stale silently when the attribute changes
+mid-scope.** Session-scoped labels cannot attribute message-scoped facts.
+
+### What would change this belief
+
+A demonstrated case where a per-message `model` field misreports the
+serving model (e.g. a proxy rewriting response metadata), or harness
+documentation showing trailers are derived per-commit rather than
+per-session — either would demote the "bottom surface is trustworthy"
+claim from rule to heuristic.
+
+### Implications for practice
+
+Encoded same-day: pipelines pin the model per agent call and stamp
+artefacts at dispatch/render with what was *requested*; transcripts stay
+the oracle for what was *resolved*; the convention landed in the
+paper-review spec, `/audit-config` (new error mode), and `/phase-gate`.
+Corollary honoured in the wording itself: the stamp says "requested",
+because the script cannot testify to more than it knows.

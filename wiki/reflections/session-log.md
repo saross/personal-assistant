@@ -193,3 +193,62 @@ for Sunday 2026-05-24 surfaced by a user query during the recap close-out.
 - **No compaction** — written first-person by the instance that did the
   work.
 
+
+## Entry 3 — 2026-07-24 (Fri, workstream AR)
+
+**Session:** a5a760a8-01d0-499d-bad1-f702289ebae8. Parallel to the day's
+standup/track session (workstream-labelled commits throughout).
+
+### Done
+
+- **Prior-art scout loop** (`/prior-art-scout-iterate`): PASS after 1
+  iterate pass; 24 candidates, 117 claims API-verified; one confabulated
+  last-active date corrected. Verdict: build, informed by. Report committed
+  (`wiki/planning/prior-art-adversarial-reviewer-2026-07-24.md`, commit `1efdcac`).
+  Six design imports folded into the spec as candidates.
+- **AB+ audit** (proposer → independent re-check → corrected v2): coverage
+  ground truth 93/171 items, 55/79 cited keys; cite-regex (`\citealp`) and
+  sync-race (169 vs 171) findings; cited-tag reconciliation (venue-skew
+  ruling: tags track `assembly/`); Ronin confirmed cited; Böckeler
+  HTML-only. Zotero tag fixes + duplicate trashed via API.
+- **Model-provenance forensics** (2 Sonnet agents over `~/cc-archives` +
+  repo): 68/93 entries `claude-opus-4-8`, 25/93 `claude-fable-5`; commit
+  trailers for tranches 4–6 shown stale (mid-session model switch
+  2026-06-13T11:25:58Z); per-message transcript fields established as sole
+  ground truth.
+- **Paper-repo PRs**: #20 (model pin+stamp, HTML-snapshot sources,
+  collection-key repoint, tracked note-push module, provenance record +
+  map, quoted-bib fix, requirements.txt; hardened by a three-agent `/audit`
+  finding 5 Critical / 8 Medium — all fixed, 14 tests), #21 (title-markup
+  join fix, deterministic citation-context seed), both merged; #22
+  (default-bib-join glob) opened, pending merge.
+- **Tranche 8 generated**: pilot `wf_deb1127b-09f` + main `wf_6de9969c-341`
+  (38 agents, 3.12M subagent tokens, 0 errors); 117/117 quotes verified;
+  17/20 verifier-clean, 3 mild advisory notes; committed `85e1e88`.
+- **Zotero batch live**: 20 notes created + 93 provenance stamps, zero
+  failures; manifests committed. **Cited-key coverage: 75/79 (94.9%)** —
+  remainder are explicit rulings (Ballsun-Stanton pending, two books, one
+  film excluded).
+- **PA repo**: spec amendments (scout findings, AB+ status → resolved,
+  model-provenance convention), `/audit-config` error mode + `/phase-gate`
+  standard added.
+
+### Key decisions
+
+- Opus 4.8 for AB+ generation (quota + demonstrated sufficiency); model
+  pinned at dispatch, stamped at render, "requested" wording.
+- Deterministic citation-context seed for gap keys (no §2-synthesis entries
+  exist for them); seed committed before the run it fed.
+- Films default-excluded from AB+ at citekey-resolution stage.
+- Back-fill via Zotero-note stamps, not rewrites of committed entry files.
+
+### Contextual assumptions
+
+- Fable unavailable-window (2026-06-13→07-02) explains the corpus split;
+  plan quotas, not capability, drove the Opus choice today.
+- Paper repo is gated (branch+PR); PA repo is direct-push. The concatenated
+  `--bib` workaround existed only to avoid rushing a code change through
+  the gate mid-batch (PR #22 is the real fix).
+- Local Zotero SQLite lags the API: today's 113 note writes will appear
+  locally after the next client sync; the push manifests are the record
+  until then.

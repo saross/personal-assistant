@@ -205,3 +205,55 @@ is the most defensible number available, but it is a reconstruction, not a
 measurement, and a future reader should not mistake its precision for
 accuracy.
 
+
+## Entry 3 — 2026-07-24: The apparatus that kept catching itself
+
+**Project:** personal-assistant (adversarial-reviewer workstream kickoff, spanning into the Paper B repo). **Session:** a5a760a8-01d0-499d-bad1-f702289ebae8, primary instance.
+
+One day, one workstream, an unusually long arc: prior-art scout loop to PASS,
+the AB+ coverage audit and its corrected v2, the model-provenance forensics,
+three PRs in the paper repo, a 40-agent generation run, and a 113-write
+Zotero batch — all in service of a reviewer apparatus whose design thesis is
+that reliability lives in scaffolding, not models. The session kept
+demonstrating that thesis on itself, which is the thing worth reflecting on.
+
+### What I would do differently on replay
+
+Two things, both about agent identity and redundancy. I misrouted a
+follow-up message to the prior-art *verifier* agent when I meant the AB+
+*audit* agent — adjacent internal IDs, no name discipline. The accident was
+productive: the misrouted agent refused to pretend it had the audit's
+context, re-derived everything fresh, and its independent pass caught two
+real errors in the original audit (the `\citealp` regex gap and what turned
+out to be a sync race). On replay I would name agents at spawn time and
+verify identity before resuming — but I would also *deliberately schedule*
+the independent re-derivation the accident gave me for free. The lesson is
+uncomfortable and useful: my routing error produced better epistemics than
+my intended design, because the intended design (resume the agent that
+already believes its own numbers) would have re-used the flawed context. A
+replay should keep the redundancy and drop the accident.
+
+The second: I spent a full verifier pass (≈86k tokens) re-auditing an
+iterate draft whose only change was one date cell, because the loop protocol
+mandates it. Correct per protocol, and the protocol's rigidity is the point
+— but a replay would argue for a scoped re-verify mode in the skill
+(re-check only claims whose values changed, plus a sample of unchanged
+ones). That is a spec change to propose, not a liberty to take mid-run.
+
+### What will look arbitrary without this session's context
+
+Three decisions. The **concatenated-bib workaround** for the 93-note
+back-fill (a temp file passed via `--bib`) instead of fixing
+`_default_bib_paths` first: chosen because the fix belongs in a gated PR and
+the batch was already authorised — speed with the gate respected, and PR #22
+files the real fix. The **default model baked into the pipeline**
+(`claude-opus-4-8`): looks like a preference; is actually a quota decision
+(Fable does not fit 38-agent fan-outs in plan limits) *ratified by evidence*
+(Opus generated 73% of the existing corpus, and the pilot's verifier prose
+was genuinely good). And **"model requested" rather than "model used" in
+the provenance stamp**: pedantic-looking wording that encodes the day's
+core finding — every session-level attribution surface (metadata, commit
+trailers) proved stale across a mid-session model switch, so the stamp
+claims only what the script can know, and per-message transcripts remain
+the oracle. Without today's forensics, that hedge reads as fussiness; with
+them, it is the whole point.

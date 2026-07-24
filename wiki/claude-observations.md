@@ -271,3 +271,61 @@ to file, then inspect), never piped into anything that can exit early.
 **How to apply.** Before adding `| head` (or `| grep -m`) to a command,
 ask whether the left side changes state; if it does, redirect to a file
 in the scratchpad and head the file instead.
+
+## Obs 26 — 2026-07-24 — `[you]` Shawn's hunches about his own history are probe triggers, again — "I suspect some AB+es were Opus" was exactly right
+
+**Pattern.** With no records in front of him, Shawn suspected part of the
+AB+ corpus was Opus-generated because he remembered Fable being unavailable
+"for a couple of weeks". The transcript forensics confirmed it precisely:
+a 19-day Fable absence (06-13→07-02) and 68/93 entries Opus-made — against
+commit trailers actively asserting the opposite for two tranches. This is
+the same phenomenon as Obs 23 and the May time-log gap: his episodic memory
+of his own working life outperforms the written record's convenient surface.
+
+**Lesson.** His recollections about *when tools/models/conditions changed*
+deserve forensic follow-up even when (especially when) the records
+disagree — the records inherit stale labels; his memory doesn't.
+
+**How to apply.** When a Shawn-hunch contradicts a machine-written record,
+descend one granularity level in the record (per-message, per-line,
+per-commit) before ruling either way.
+
+## Obs 27 — 2026-07-24 — `[me]` Self-critique: I resumed the wrong agent by ID — and the mistake outperformed my design
+
+**Pattern.** I sent the AB+ follow-up tasks to the prior-art *verifier's*
+agent ID instead of the audit agent's, having tracked identities by
+lookalike hex strings rather than names. The misrouted agent declined to
+roleplay having context it lacked, re-derived everything from source, and
+its fresh pass caught two real errors the original audit context would have
+carried forward (the `\citealp` regex miss; the "cited but not in
+collection" claim later explained as a sync race).
+
+**Lesson.** Two lessons that pull in different directions and are both
+true: (1) agent identity needs the same discipline as file paths — name at
+spawn, verify before resume; (2) resuming a context that believes its own
+numbers is sometimes the *worse* epistemic choice — the fresh-context
+re-derivation I got by accident is worth scheduling on purpose for any
+audit whose numbers are about to drive writes.
+
+**How to apply.** Name agents at spawn. And when an audit's output is
+about to become a work-list or a write batch, send the verification to an
+agent that has never seen the audit — deliberately, not accidentally.
+
+## Obs 28 — 2026-07-24 — `[you]` Quota-tiered model delegation, stated as policy — capability arguments came second
+
+**Pattern.** Shawn assigned models by economics first: Fable for the
+judgement-heavy orchestration he was already in, Opus 4.8 for the 38-agent
+production fan-out ("that volume won't fit my plan quotas"), Sonnet for
+transcript forensics ("a simple search and retrieval"), inviting capability
+pushback only after the quota frame was set. The capability evidence then
+ratified every tier (Opus built 73% of the corpus; Sonnet's forensics were
+immaculate).
+
+**Lesson.** Default the tiering conversation to his frame: quota envelope
+first, capability sufficiency second, with pilot-plus-verification as the
+arbiter rather than model-tier prestige.
+
+**How to apply.** For any multi-agent proposal, lead with agent count ×
+model tier × plan impact, and reserve the top tier for stages where
+judgement density is the bottleneck — then prove sufficiency empirically
+(pilot + transcript check), not rhetorically.
