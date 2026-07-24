@@ -1045,9 +1045,40 @@ until first non-CC API spend.
 
 ---
 
+### I. Adversarial reviewer (`/review-paper`) — AR — *kicked off 2026-07-24; substrate complete, apparatus build next*
+
+Pre-submission "Reviewer 2" apparatus for papers (Paper B first; shareable
+with Brian). Authoritative docs: `wiki/planning/paper-review-skill-spec.md`
+(design + resolved decisions + 2026-07-24 amendments) and
+`wiki/planning/prior-art-adversarial-reviewer-2026-07-24.md` (verified
+prior-art report, PASS).
+
+| Piece | Status |
+|---|---|
+| Prior-art scout loop | **PASS 2026-07-24** — build-informed-by verdict; 6 design imports in spec as candidates for ruling |
+| AB+ substrate (source-fidelity lens) | **complete 2026-07-24** — 75/79 cited keys (94.9%); remainder = explicit rulings (3 unavailable, 1 film) |
+| Model-provenance convention | **live** — pin at dispatch, stamp at render, transcripts are truth; enforced via /audit-config + /phase-gate |
+| Paper-repo pipeline | PRs #20, #21 merged; **#22 open** (default-bib-join glob) |
+| The apparatus itself | **next** — generalise `adversarial-review-s3.mjs` → `/review-paper` skill + portable workflow (adversarial stance, meta-reviewer pass, Devil's-Advocate hard rules, SSH-hedging stress test) |
+
+---
+
 ## Things to verify on next session (priority queue)
 
 Read these *before* starting new work. Most should take <5 min each.
+
+- [ ] 2026-07-24 **AR: paper-repo PR #22 pending merge** (default-bib-join
+  glob — one function; the 2026-07-24 back-fill used a concatenated `--bib`
+  workaround, so nothing is blocked, but future push runs want it merged).
+- [ ] 2026-07-24 **AR: 3 advisory verifier flags on tranche-8 entries await
+  Shawn's ruling** (asch_1956 "added force"→sole-source; barats_fading_2020
+  "one of the biggest"→"single biggest"; olofsson_good_2014 "independently
+  sourced"). Visible in the entries + Zotero notes; non-blocking by design.
+- [ ] 2026-07-24 **Zotero write-back item below now has a working template:**
+  paper-b `scripts/ab_plus/push_notes.py` writes to the group library
+  (5861859) via `ZOTERO_API_KEY_PAPER_B` with urllib — 113 successful writes
+  2026-07-24. `sync-to-zotero.py`'s fix is likely option (i) with that
+  pattern.
 
 - [ ] 2026-07-15 **Zotero write-back correction — DECISION NEEDED (Shawn).** The
   write-back has been failing on BOTH machines (5 notes pending since 19–20 May):
@@ -2114,6 +2145,47 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-07-24 (Fri, latest AR) — SESSION CLOSE (/handoff): adversarial-reviewer kickoff — prior-art PASS, AB+ substrate complete (75/79), model-provenance convention shipped
+
+Workstream-AR kickoff session, parallel to the day's PA-hub standup session.
+Full arc: **prior-art scout loop** (`/prior-art-scout-iterate`) to PASS (24
+candidates, 117 API-verified claims; PeerGenius.ai identified as the
+commercial analogue; verdict build-informed-by; report committed `1efdcac`,
+six design imports in the spec awaiting ruling). **AB+ audit chain**
+(proposer → independent re-check → corrected v2) established coverage ground
+truth and caught its own errors (`\citealp` regex; a Zotero sync race that
+mimicked a join bug). **Model-provenance forensics**: 68/93 existing entries
+Opus-4.8-made, 25 Fable-made; commit trailers + session metadata proven
+stale across a mid-session model switch — per-message transcript fields are
+the only reliable attribution. Convention (pin at dispatch / stamp at render
+/ transcripts are truth) landed in the spec, `/audit-config`, and
+`/phase-gate` (`53b3b57`). **Paper-repo build via gated PRs**: #20 (pin+stamp,
+HTML-snapshot sources, tracked note-push re-authoring, provenance record,
+hardened by a 3-agent `/audit` — 5 Critical/8 Medium found and fixed, incl.
+POST-200-with-failed-map and a dry-run-only idempotency hole) and #21
+(title-markup join fix + deterministic citation-context seed) merged; #22
+open. **Tranche 8 generated and pushed**: pilot + 38-agent run
+(`wf_deb1127b-09f`, `wf_6de9969c-341`; 3.12M subagent tokens; 583/583
+messages on the pinned model), 117/117 quotes deterministically verified,
+17/20 verifier-clean; Zotero batch live — 20 notes created + 93 provenance
+back-fill stamps, zero failures. **AB+ cited-key coverage now 75/79
+(94.9%)**; the 4 uncovered are explicit rulings. Also: cited-tags
+reconciled to `assembly/` (3 flips, 2 adds), Böckeler duplicate trashed,
+films excluded from AB+ by ruling. Next session: build the apparatus itself
+(`/review-paper` skill + portable workflow).
+
+- PA commits: `1efdcac` (prior-art report), `566d506` (spec: scout findings
+  + AB+ status), `53b3b57` (provenance convention + gate checks), `ae887f8`
+  (substrate complete), + reflections/continuity/observations commits at
+  close.
+- Paper-b: PR #20 (6 commits, merged `76f1484`), PR #21 (merged `2f74666`),
+  PR #22 (open); seed `f93a231`; tranche 8 `85e1e88`; manifests `7600fec`.
+- Working-notes candidates HELD OVER (no verdict yet, per no-silent-discard):
+  (1) measured AB+ per-source cost on Opus 4.8 — pilot 158.8k, run avg
+  ~164k subagent tokens/source; (2) attribution-reliability ordering
+  (per-message transcript > commit trailer = session metadata > artefact).
+- Session id: a5a760a8-01d0-499d-bad1-f702289ebae8.
 
 ### 2026-07-22/23 (Wed/Thu, latest SA) — reflect schema 2; abductive corpus anchored 29/30; convergence repair; sync pass 4 + completeness gate; system wiki page
 
