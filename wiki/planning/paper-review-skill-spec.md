@@ -291,3 +291,26 @@ corrected v2; scripts in session scratchpad, `abplus-audit-v2.py`):
   natbib/biblatex command family (any command containing "cite") —
   a `\citealp`-shaped miss produced a false "uncited" finding in the v1
   audit.
+
+## Model provenance convention (2026-07-24)
+
+Applies to this skill's workflow and to every agent-spawning workflow in
+scope. Forensics on the AB+ corpus showed session-level records are
+unreliable: a mid-session model switch left both `session.meta.json` and git
+`Co-Authored-By` trailers stale, mislabelling 35 subagents' work; only
+per-message transcript fields survived (see the paper repo's
+`planning/ab-plus-model-provenance-2026-07-24.md`). Therefore:
+
+1. **Pin at dispatch** — every `agent()` call passes an explicit model
+   (`args.model` with a stated default), never session-inherited.
+2. **Stamp the artefact** — the deterministic render/output step writes
+   model, run date, workflow run ID, and script git rev into every generated
+   artefact. The *script* stamps what it requested; models are never asked
+   to self-report identity.
+3. **Transcripts are ground truth** — the archived per-message `model`
+   fields remain the audit trail for the resolved model; stamps make
+   attribution artefact-local.
+
+Enforced at launch time via the `/audit-config` error-mode table ("Agent
+model unpinned") and the `/phase-gate` standards. Implemented for AB+ in
+paper-repo PR #20 (2026-07-24).

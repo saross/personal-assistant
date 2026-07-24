@@ -106,6 +106,7 @@ the API. Check against these known failure modes:
 | **Wrong instruction file** | `instruction_file` matches the intended track (image vs text-only) | H10/H12 base config error |
 | **Example paths broken** | EVERY path in the `examples` list resolves to a file under `inputs/examples/` | Filesystem check |
 | **Example image dimensions** | Crop images are the expected size (e.g., 150×150 for hard examples, 384×384 for nulls) | Pipeline consistency |
+| **Agent model unpinned** | Any workflow/script that spawns agents pins its model explicitly (e.g. `opts.model`, config field) AND stamps model + run identity into generated artefacts. Session-inherited model is a FAIL: session metadata and commit trailers both go stale across mid-session model switches | AB+ provenance forensics, 2026-07-24 |
 
 For each config, report PASS or FAIL per error mode. A FAIL on any error mode
 is a BLOCKER.

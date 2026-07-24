@@ -136,3 +136,8 @@ Present the summary table and recommend:
 - Do not skip steps — even "obvious" assumptions should be listed
 - Flag when statistical power cannot be assessed (e.g., qualitative decisions)
   and note the basis for the decision instead
+- If the phase spawns LLM agents, confirm the model is pinned explicitly and
+  stamped into the phase's artefacts (never session-inherited) — added
+  2026-07-24 after the AB+ provenance forensics showed session metadata and
+  commit trailers both mislabel the executing model across mid-session
+  switches
