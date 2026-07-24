@@ -279,10 +279,9 @@ unchanged (deferred / benchmark). Statuses noted per item:
   uses. Before trusting the adversarial mode, run it over a known-good
   hedged section and confirm calibrated hedges are not flagged as weakness.
 - **Hallucinated-objection taxonomy** (arXiv 2602.05930) → *orchestrator
-  verification of contested findings*. **ADOPTED AS VOCABULARY 2026-07-24**
-  (the meta-reviewer's trust enum + the skill's kill-list classification;
-  CC's call — cheap, and it slots into the existing verify-before-
-  presenting step. Overrule if unwanted.) Classify killed objections as total
+  verification of contested findings*. **ADOPTED AS VOCABULARY 2026-07-24;
+  confirmed by Shawn same day** (decision review) — the meta-reviewer's
+  trust enum + the skill's kill-list classification. Classify killed objections as total
   fabrication / partial corruption / identifier hijacking / placeholder /
   semantic — gives the existing verify-before-presenting step a vocabulary
   and a calibration record.

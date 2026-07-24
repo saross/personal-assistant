@@ -1069,29 +1069,31 @@ prior-art report, PASS).
 
 Read these *before* starting new work. Most should take <5 min each.
 
-- [ ] 2026-07-24 **AR: paper-repo PR #22 pending merge** (default-bib-join
-  glob — one function; the 2026-07-24 back-fill used a concatenated `--bib`
-  workaround, so nothing is blocked, but future push runs want it merged).
-- [ ] 2026-07-24 **AR: 3 advisory verifier flags on tranche-8 entries await
-  Shawn's ruling** (asch_1956 "added force"→sole-source; barats_fading_2020
-  "one of the biggest"→"single biggest"; olofsson_good_2014 "independently
-  sourced"). Visible in the entries + Zotero notes; non-blocking by design.
-- [ ] 2026-07-24 **Zotero write-back item below now has a working template:**
-  paper-b `scripts/ab_plus/push_notes.py` writes to the group library
-  (5861859) via `ZOTERO_API_KEY_PAPER_B` with urllib — 113 successful writes
-  2026-07-24. `sync-to-zotero.py`'s fix is likely option (i) with that
-  pattern.
-
-- [ ] 2026-07-15 **Zotero write-back correction — DECISION NEEDED (Shawn).** The
-  write-back has been failing on BOTH machines (5 notes pending since 19–20 May):
-  `build_zotero_client()` targets `users/$ZOTERO_LIBRARY_ID` with type hard-coded
-  `"user"` (scripts/sync-to-zotero.py:320), but the paper-b key + target items
-  (`MPZHXY3P`, `FGM4PVSX`) appear to belong to the paper-b group library (GET 404 +
-  POST 403 in both machines' runs). Decide: (i) point the script at the group
-  library (group id + `"group"` type, env-driven), or (ii) keep the user library
-  and mint a write-scoped key + confirm the item keys exist there. Then verify:
-  `set -a && . ./.env && set +a && venv/bin/python3 scripts/sync-to-zotero.py` —
-  expect `created: 5`. Full investigation: 2026-07-15 session-log entry.
+- [x] 2026-07-24 **AR: paper-repo PR #22 — MERGED** (decision review,
+  2026-07-24 evening; merge commit `d23fbfc`, worktree + branch cleaned up).
+- [x] 2026-07-24 **AR: 3 advisory verifier flags — RULED (amend per
+  verifier)** (decision review, 2026-07-24 evening). Entries amended with
+  Author-ruling notes (paper-b `e6d497d`); olofsson positioning watch-item
+  ruled acceptable, kept; stale Zotero notes deleted + re-pushed from the
+  amended entries (3 clean creates). Verifier sections retained unedited.
+- [x] 2026-07-15/24 **Zotero write-back — RESOLVED (decision review,
+  2026-07-24 evening), and the 2026-07-15 diagnosis was WRONG.** Probing all
+  15 accessible libraries showed the 5 pending notes target THREE libraries:
+  3 → `MPZHXY3P` (FAIMS-Project group 2542876, blogPost), 1 → `FGM4PVSX`
+  (SDAM-AU group 2366083 — an ATTACHMENT key, parent `RWKBBVTZ`), 1 →
+  `ENPYIZQF` (personal library). No held key writes to the first two, and
+  shared-group writes need a visibility ruling anyway. **Ruled: personal
+  now; park shared.** Implemented: `build_zotero_client()` is env-driven
+  (`ZOTERO_SYNC_LIBRARY_TYPE`, default `user` + `ZOTERO_API_KEY_PERSONAL`;
+  `group` + `ZOTERO_API_KEY_PAPER_B` available); parent-not-found (409)
+  parks as `skipped_not_found` instead of failing so the cursor advances.
+  Live run verified: `created: 1` (note `WUKQ9S5G` on the Kazanlak article,
+  read back OK), `skipped_not_found: 4`, `failed: 0`, cursor 32654. The 4
+  parked records are recoverable in
+  `data/memories/quarantine-zotero-skipped.jsonl` (reason
+  `zotero_item_missing`) if shared-group notes are ever ruled in; the
+  SDAM-AU one also needs its attachment key re-pointed to parent
+  `RWKBBVTZ`.
 - [x] 2026-07-15 **amd-tower post-swap spot-checks — ALL PASS** (verified 15:12
   AEST, first amd-tower session post-handoff): (1) sync-cron green — cursor at
   EOF (`sync-cursors.json` postgres_sync_line 30827 == JSONL length), last clean
@@ -2147,6 +2149,28 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-07-24 (Fri, latest AR, decision review) — six outstanding decisions ruled; tranche-8 amendments live; write-back diagnosis corrected + repaired
+
+Same session as the apparatus build, continued. Shawn reviewed the
+outstanding-decisions queue one at a time; all six ruled and executed:
+(1) hallucinated-objection taxonomy **confirmed as built**; (2)–(4) the
+three tranche-8 advisory flags **amended per verifier** (paper-b
+`e6d497d`; stale Zotero notes deleted + re-pushed; olofsson positioning
+watch-item kept); (5) **PR #22 merged** (`d23fbfc`); (6) Zotero
+write-back — the 2026-07-15 group-library diagnosis proved WRONG on
+first live attempt (404 in the paper-b group too); read-only probes
+across all accessible libraries located the 5 pending targets in THREE
+libraries (FAIMS-Project / SDAM-AU / personal). Re-ruled: **personal
+now; park shared**. Implemented env-driven library targeting (default
+personal + `ZOTERO_API_KEY_PERSONAL`), 409-parent-not-found parks
+instead of failing, focused audit of the change (F1–F5 fixed incl.
+config-error exit code); live run `created: 1` / parked 4 / cursor
+advanced — the May backlog is clear. Details + recovery paths in the
+verify-queue entries above. Lesson for the error-mode ledger: the
+2026-07-15 entry inferred "group library" from 404+403 without probing
+the other groups — a diagnosis recorded as likely became a ruling
+premise; the fix survived contact with the API for one item in five.
 
 ### 2026-07-24 (Fri, latest AR, 2nd session) — apparatus BUILT: /review-paper skill + portable workflow + mechanical pre-pass; 3-agent audit, all findings fixed
 
