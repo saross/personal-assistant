@@ -165,9 +165,15 @@ so author rulings can be collected in one batch:
 - A **skill** (working title `/review-paper`) that runs a **generalised Workflow
   script** — the prototype `.mjs`, with lens prompts and constraints lifted into
   `args`: `{ target, stance, scope, lensSet, atomMapPath?, wordBudget?,
-  constraints? }`.
+  constraints? }`. *(Built 2026-07-24 — see the build record at the end. The
+  live arg surface is documented in the workflow script's header; `atomMapPath`
+  was superseded by the AB+ substrate decision, and `wordBudget` moved to the
+  mechanical pre-pass.)*
 - Deterministic layers (mechanical pre-pass, aggregation) live in the script; LLM
-  layers (lenses, syntheses) are `agent()` calls.
+  layers (lenses, syntheses) are `agent()` calls. *(Amended 2026-07-24: the
+  Workflow sandbox has no filesystem access, so the mechanical pre-pass lives in
+  its own Python script and its findings enter the aggregation via
+  `prepassFindings`.)*
 - **Cost profile:** section ≈ 4–5 agents; whole-paper ≈ (8 sections × 4 lenses) +
   2 syntheses ≈ ~34 agents. Whole-paper adversarial is a deliberate pre-submission
   spend, not a routine run. Measured on the §5 run (2026-07-17): roughly 270k
@@ -177,16 +183,21 @@ so author rulings can be collected in one batch:
 
 1. Generalise the prototype into a parameterised **section** workflow + thin skill
    wrapper; default stance critical-friend; source-fidelity uses AB+ entries where
-   present and flags the rest. Run on Paper B §3–§8 to harden the rubric.
+   present and flags the rest. *(Built 2026-07-24; hardening runs on Paper B
+   §3–§8 still to do.)* Run on Paper B §3–§8 to harden the rubric.
 2. **Generate the full-paper AB+ corpus** — the source-fidelity substrate *and* a
    standalone artefact Shawn wants. Run `ab-plus-pipeline.mjs` over the citekey gap
    (§1, §3–§8, any un-AB+'d §2). **API-gate review first.** Source-fidelity then
-   reaches full coverage.
+   reaches full coverage. *(Done 2026-07-24 — 75/79, see substrate status.)*
 3. Add the **adversarial** stance (fail-by-default preamble + verdict aggregation).
+   *(Built 2026-07-24, incl. Devil's-Advocate hard rules, meta-reviewer, and
+   unanimous-check; SSH-hedging stress test still to run.)*
 4. **Chain AB+ generation into the reviewer** so a missing entry self-heals
-   (auto-generate) rather than only flags.
+   (auto-generate) rather than only flags. *(Not built — still open.)*
 5. Compose the **whole-paper** mode (fan-out + cross-section synthesis +
-   Reviewer-2). Build near submission.
+   Reviewer-2). Build near submission. *(Structurally built 2026-07-24 —
+   `scope: 'paper'` fans out per-section panels, then cross-section synthesis,
+   then meta-review — but unexercised on a real paper.)*
 
 ## Decisions (resolved 2026-07-01)
 
@@ -232,11 +243,19 @@ directory). Verdict: **build, informed by** — nothing found does hostile
 whole-paper pre-submission review for humanities/social-science argument
 structure; the commercial services that exist (PeerGenius.ai 7-persona
 panel + editor aggregation; Enago AI Peer Review Lite) are STEM/biomedical
-and closed. Design imports below are **candidates for Shawn's ruling**,
-mapped to the spec component they would amend:
+and closed. Design imports below were candidates for Shawn's ruling; the
+2026-07-24 apparatus-build instruction ("adversarial stance, meta-reviewer
+pass, Devil's-Advocate hard rules, SSH-hedging stress test") ruled the
+first three IN — each is now built (see the build record). The
+hallucinated-objection taxonomy was adopted in the build as vocabulary
+only (CC's call, pending explicit confirmation); the last two are
+unchanged (deferred / benchmark). Statuses noted per item:
 
 - **Devil's-Advocate hard rules** (tianmind-studio/expert-review-panel,
-  MIT) → *adversarial stance preamble*. Dissent must cite specific
+  MIT) → *adversarial stance preamble*. **BUILT 2026-07-24** (hard-rule
+  fields are schema-required in adversarial mode; `[UNANIMOUS-CHECK]`
+  dispatches a devil's advocate when the full panel returns clean).
+  Dissent must cite specific
   evidence, name the target claim, state a falsifiable counter-condition,
   and self-declare its retraction condition; an `[UNANIMOUS-CHECK]` flag
   forces re-examination when all lenses agree. A stronger anti-sycophancy
@@ -244,17 +263,26 @@ mapped to the spec component they would amend:
   evidence-anchor rule.
 - **Meta-reviewer pass** (PeerGenius editor-aggregation pattern +
   OpenReviewer's fine-tuned-critic finding) → *whole-paper Reviewer-2
-  synthesis*. A distinct persona that reads the panel's own findings
+  synthesis*. **BUILT 2026-07-24** (runs on every adversarial run, both
+  scopes; classifies finding trustworthiness, prioritises, names blind
+  spots and verify-before-presenting refs; verdict authority stays with
+  the deterministic aggregation). A distinct persona that reads the panel's own findings
   adversarially before the report is assembled. Constraint: deterministic
   severity aggregation remains the verdict authority — the meta-reviewer
   critiques and prioritises findings, never overrides the computed verdict.
 - **SSH-hedging stress test** (LLM-REVal, arXiv 2510.12367) → *calibration
-  checklist*. LLM reviewers systematically underrate prose containing
+  checklist*. **BUILT 2026-07-24 as a required calibration gate** in the
+  skill (procedure + pass criterion; inline guard added to the calibration
+  lens) — **not yet run**; required before the adversarial stance's first
+  real use. LLM reviewers systematically underrate prose containing
   critical/risk/hedging language — exactly the register careful SSH writing
   uses. Before trusting the adversarial mode, run it over a known-good
   hedged section and confirm calibrated hedges are not flagged as weakness.
 - **Hallucinated-objection taxonomy** (arXiv 2602.05930) → *orchestrator
-  verification of contested findings*. Classify killed objections as total
+  verification of contested findings*. **ADOPTED AS VOCABULARY 2026-07-24**
+  (the meta-reviewer's trust enum + the skill's kill-list classification;
+  CC's call — cheap, and it slots into the existing verify-before-
+  presenting step. Overrule if unwanted.) Classify killed objections as total
   fabrication / partial corruption / identifier hijacking / placeholder /
   semantic — gives the existing verify-before-presenting step a vocabulary
   and a calibration record.
@@ -328,3 +356,51 @@ per-message transcript fields survived (see the paper repo's
 Enforced at launch time via the `/audit-config` error-mode table ("Agent
 model unpinned") and the `/phase-gate` standards. Implemented for AB+ in
 paper-repo PR #20 (2026-07-24).
+
+## Build record (2026-07-24, second AR session)
+
+The apparatus is built and audited. Three components, all in
+`personal-assistant`:
+
+- **`skills/review-paper/SKILL.md`** — the orchestration protocol
+  (parameters → mechanical pre-pass → API gate → dispatch →
+  verify-contested-findings → triaged report + provenance stamp → apply
+  phase), plus the SSH-hedging calibration gate. Symlinked into
+  `~/.claude/skills/` (auto-healed by `sync-symlinks.sh`).
+- **`scripts/review-paper-prepass.py`** — the deterministic mechanical
+  pre-pass (aspell en_AU, doubled words, dash conventions, brace/paren
+  balance, full-cite-family citation resolution, texcount word budget,
+  aux-label sanity with per-prefix grouping, guard-anchor freshness,
+  opt-in build gate) + settled-rulings register extraction. Lives outside
+  the workflow because the Workflow sandbox has no filesystem access;
+  findings join the deterministic verdict via `prepassFindings`.
+- **`scripts/workflows/review-paper.mjs`** — the portable panel workflow.
+  Both stances, both scopes; per-stance JSON schemas (Devil's-Advocate
+  fields required in adversarial mode); fresh-context lens panels fanned
+  out per target; cross-section synthesis (paper scope); deterministic
+  severity aggregation with convergence marking (repo-relative path
+  normalisation); `[UNANIMOUS-CHECK]` devil's advocate; meta-reviewer with
+  the hallucinated-objection trust taxonomy; model pinned at dispatch
+  (default `claude-opus-4-8`), `run_date` echoed for the artefact stamp.
+
+**Audit (same day):** three-agent `/audit` (one per file, cross-file
+contracts in scope) found 3 Critical / 9 Medium / ~17 Low. Headline
+catches, all fixed and re-verified against fixtures + real Paper B
+sections: settled-rulings register keyed relative vs looked up absolute
+(silently dead feature — confirmed independently by all three agents);
+aux-label "starred-section" check colliding across counter types
+(sec 1 / fig 1 / tab 1 → false major); citations wrapped across lines
+never checked; lensSet fail-fast swallowed by `pipeline` (invalid config
+would have produced CONFIRMED on zero review); no coverage guard on the
+verdict (fully failed panel now throws; partial failure warns and is
+echoed as `partialCoverage`, which SKILL.md rules gate-invalidating);
+texcount "(errors:N)" trailer parsed as the word count. The audit-fix
+round itself produced one new bug (that texcount parse) — caught by
+re-running the fixtures, which is the pattern to keep: every audit fix
+gets an empirical re-test, not just a re-read.
+
+**Standing next steps:** (1) run the SSH-hedging stress test before the
+adversarial stance's first real use; (2) critical-friend hardening runs
+over Paper B §3–§8 (build plan step 1's tail); (3) AB+ self-heal chaining
+(step 4); (4) first real whole-paper adversarial run when a paper is at
+the pre-submission gate.
