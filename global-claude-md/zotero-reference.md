@@ -168,7 +168,9 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 
 | Name | Purpose | Scope | Read by |
 |---|---|---|---|
-| `ZOTERO_LIBRARY_ID` | User ID for the personal library | — | every write-side script |
+| `ZOTERO_LIBRARY_ID` | User ID for the personal library | — | personal-library scripts (`add-doi-to-zotero.py`, `lit-scout-zotero-import.py`); `sync-to-zotero.py` only when `ZOTERO_SYNC_LIBRARY_TYPE=user` |
+| `ZOTERO_GROUP_ID` | Group library ID (paper-b group `5861859`) | — | `scripts/sync-to-zotero.py` (default target since the 2026-07-24 ruling) |
+| `ZOTERO_SYNC_LIBRARY_TYPE` | `group` (default) or `user` — which library `sync-to-zotero.py` writes to | — | `scripts/sync-to-zotero.py` |
 | `ZOTERO_API_KEY_PERSONAL` | Personal-library write + all-groups read | broad | `scripts/lit-scout-zotero-import.py` |
 | `ZOTERO_API_KEY_PAPER_B` | Personal-library **read-only** (library/files/notes, no write — a personal-library DELETE returns 403); group-library write for `2025-MQ-LLM-DH-software-longevity` (groupID 5861859) only; all-groups read (re-verified via the `/keys/current` endpoint, 2026-07-17) | narrow | `scripts/sync-to-zotero.py` |
 | `ZOTERO_STAGING_COLLECTION` | Top-level collection key under My Library where dated subcollections are created (current value: `IX8XR97K` for the `staging` collection) | — | `scripts/lit-scout-zotero-import.py` |
@@ -213,8 +215,11 @@ venv/bin/python3 scripts/sync-to-zotero.py [--dry-run] [--limit N] [--verbose]
 **Requirements:**
 
 - `pyzotero` library (install: `venv/bin/pip install pyzotero`)
-- `ZOTERO_LIBRARY_ID` and `ZOTERO_API_KEY_PAPER_B` env vars (see
-  **API Credentials** above)
+- `ZOTERO_GROUP_ID` and `ZOTERO_API_KEY_PAPER_B` env vars (see
+  **API Credentials** above). The script targets the paper-b **group**
+  library by default (ruled 2026-07-24 — the target items live there);
+  set `ZOTERO_SYNC_LIBRARY_TYPE=user` + `ZOTERO_LIBRARY_ID` to target
+  the personal library instead
 - The memory's `zotero_key` field must contain a valid 8-character
   alphanumeric Zotero item key (pattern `^[A-Z0-9]{8}$`). Memories with
   legacy keys (citation slugs, DOIs, arXiv IDs) are skipped with a warning

@@ -14,12 +14,18 @@ Usage:
     venv/bin/python3 scripts/sync-to-zotero.py [--dry-run] [--limit N] [--verbose]
 
 Environment variables:
-    ZOTERO_LIBRARY_ID      — Your Zotero user or group library ID
-    ZOTERO_API_KEY_PAPER_B — API token with write access to notes
-                             (Paper-B-scoped under the target-suffixed
-                             naming convention adopted 2026-05-22; see
-                             workstream H in wiki/continuity.md and
-                             global-claude-md/zotero-reference.md).
+    ZOTERO_SYNC_LIBRARY_TYPE — "user" (default) or "group"; which library
+                               this script writes to (ruled 2026-07-24,
+                               "personal now; park shared" — items outside
+                               the configured library skip cleanly).
+    ZOTERO_LIBRARY_ID        — personal library ID (used when type is "user")
+    ZOTERO_GROUP_ID          — group library ID (used when type is "group")
+    ZOTERO_API_KEY_PERSONAL  — personal-library write key (type "user")
+    ZOTERO_API_KEY_PAPER_B   — group-write key for the paper-b group only
+                               (type "group"; target-suffixed naming
+                               convention adopted 2026-05-22; see
+                               workstream H in wiki/continuity.md and
+                               global-claude-md/zotero-reference.md).
 """
 
 from __future__ import annotations
@@ -297,14 +303,38 @@ def build_zotero_client() -> Any:
     """
     Initialise a pyzotero client using environment variables.
 
-    Returns a pyzotero.Zotero instance configured for the user's library.
+    Targets the PERSONAL library by default (ruled 2026-07-24, "personal
+    now; park shared"): the 2026-07-24 probe showed the pending notes'
+    target items are scattered across libraries — a personal-library
+    article, plus items in two SHARED group libraries (FAIMS-Project,
+    SDAM-AU) that no held key can write to and that need an explicit
+    visibility ruling before any Claude note lands there. Only the
+    personal-library path is both writable (``ZOTERO_API_KEY_PERSONAL``)
+    and ruled in; items outside the configured library skip cleanly (see
+    the parent-not-found handling in ``sync_memory``).
+
+    Env: ``ZOTERO_SYNC_LIBRARY_TYPE`` ("user" by default; "group" targets
+    the paper-b group), ``ZOTERO_LIBRARY_ID`` or ``ZOTERO_GROUP_ID``
+    respectively, and the type-matched key (``ZOTERO_API_KEY_PERSONAL``
+    for user, ``ZOTERO_API_KEY_PAPER_B`` for group — the only held
+    group-write key, scoped to group 5861859).
     Raises if credentials are missing or pyzotero is not installed.
     """
-    library_id = os.environ.get("ZOTERO_LIBRARY_ID")
-    api_key = os.environ.get("ZOTERO_API_KEY_PAPER_B")
+    library_type = os.environ.get("ZOTERO_SYNC_LIBRARY_TYPE", "").strip().lower() or "user"
+    if library_type not in ("group", "user"):
+        raise RuntimeError(
+            f"ZOTERO_SYNC_LIBRARY_TYPE must be 'group' or 'user', "
+            f"got {library_type!r}."
+        )
+    if library_type == "group":
+        id_var, key_var = "ZOTERO_GROUP_ID", "ZOTERO_API_KEY_PAPER_B"
+    else:
+        id_var, key_var = "ZOTERO_LIBRARY_ID", "ZOTERO_API_KEY_PERSONAL"
+    library_id = os.environ.get(id_var)
+    api_key = os.environ.get(key_var)
     if not library_id or not api_key:
         raise RuntimeError(
-            "ZOTERO_LIBRARY_ID and ZOTERO_API_KEY_PAPER_B must be set "
+            f"{id_var} and {key_var} must be set "
             "in the environment (see ~/personal-assistant/.env)."
         )
 
@@ -316,7 +346,7 @@ def build_zotero_client() -> Any:
             "venv/bin/pip install pyzotero"
         ) from exc
 
-    return pyzotero_module.Zotero(library_id, "user", api_key)
+    return pyzotero_module.Zotero(library_id, library_type, api_key)
 
 
 def _is_not_found_exception(exc: Exception) -> bool:
@@ -399,6 +429,20 @@ def sync_memory(
     if isinstance(result, dict):
         failed = result.get("failed", {})
         if failed:
+            # A 409 "Parent item not found" means the target item is not in
+            # the configured library (items live scattered across personal +
+            # group libraries — 2026-07-24 probe). That is a park, not a
+            # failure: skip so the cursor can advance past it.
+            if all(
+                isinstance(entry, dict) and entry.get("code") == 409
+                and "not found" in str(entry.get("message", "")).lower()
+                for entry in failed.values()
+            ):
+                logger.warning(
+                    f"Item {item_key} not in the configured library for "
+                    f"{mem_id} — skipping (parked)"
+                )
+                return "skipped_not_found"
             logger.error(
                 f"Zotero reported failure for {mem_id}: {failed}"
             )
@@ -462,6 +506,10 @@ def run_sync(
         zot = build_zotero_client() if not dry_run else None
     except RuntimeError as exc:
         logger.error(str(exc))
+        # Count the pending batch as failed so main() exits non-zero: a
+        # config error (missing env var) must not report success with
+        # created: 0 (audit F2, 2026-07-24).
+        summary["failed"] = len(pending)
         return summary
 
     # Dry run still needs a client to check existing notes — but we can
