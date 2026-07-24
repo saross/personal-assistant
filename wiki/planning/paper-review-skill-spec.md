@@ -268,7 +268,7 @@ mapped to the spec component they would amend:
   pre-pass already does key-resolution and the AB+ corpus does source
   verification, so note it as a benchmark, not a dependency.
 
-## AB+ substrate status (2026-07-24 audit)
+## AB+ substrate status (2026-07-24 audit; RESOLVED same day — see below)
 
 Zotero Paper-B collection audited (proposer + independent re-check +
 corrected v2; scripts in session scratchpad, `abplus-audit-v2.py`):
@@ -291,6 +291,20 @@ corrected v2; scripts in session scratchpad, `abplus-audit-v2.py`):
   natbib/biblatex command family (any command containing "cite") —
   a `\citealp`-shaped miss produced a false "uncited" finding in the v1
   audit.
+
+**Resolution (2026-07-24, same day):** the gap run completed. Paper-repo
+PRs #20 (provenance pin+stamp, HTML snapshots, tracked note-push, /audit
+hardening) and #21 (title-markup join fix, deterministic citation-context
+seed) merged; tranche 8 generated (20 entries, `claude-opus-4-8` pinned and
+transcript-verified, 117/117 quotes deterministically verified, 17/20
+verifier-clean with 3 mild advisory notes); Zotero batch clean (20 notes
+created, 93 back-fill provenance stamps, zero failures). **Cited-key AB+
+coverage: 75/79 (94.9%)** — the remaining 4 are explicit rulings (3
+unavailable sources incl. two print books, 1 film). The source-fidelity
+lens's substrate is ready for the adversarial whole-paper run; late
+arrivals (e.g. `Ballsun-Stanton2026Absence`) are one-key pipeline
+invocations. Seed difference for tranche 8 (citation-context, not §2
+synthesis) is recorded in the tranche index.
 
 ## Model provenance convention (2026-07-24)
 
