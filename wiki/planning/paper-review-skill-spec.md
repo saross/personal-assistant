@@ -222,3 +222,72 @@ the spec came from this run; what follows had no existing home.
   collisions happened earlier in the same project.
 - **Gate commits on build success** (`&&`, not `;`) — see the
   build-convergence gate under the mechanical pre-pass.
+
+## Prior-art scout findings (2026-07-24)
+
+Closed-loop `/prior-art-scout-iterate` run before freezing the adversarial
+design: PASS after one iterate pass, 24 candidates, 117 claims verified.
+Full report: `prior-art-adversarial-reviewer-2026-07-24.md` (same
+directory). Verdict: **build, informed by** — nothing found does hostile
+whole-paper pre-submission review for humanities/social-science argument
+structure; the commercial services that exist (PeerGenius.ai 7-persona
+panel + editor aggregation; Enago AI Peer Review Lite) are STEM/biomedical
+and closed. Design imports below are **candidates for Shawn's ruling**,
+mapped to the spec component they would amend:
+
+- **Devil's-Advocate hard rules** (tianmind-studio/expert-review-panel,
+  MIT) → *adversarial stance preamble*. Dissent must cite specific
+  evidence, name the target claim, state a falsifiable counter-condition,
+  and self-declare its retraction condition; an `[UNANIMOUS-CHECK]` flag
+  forces re-examination when all lenses agree. A stronger anti-sycophancy
+  mechanism than "be critical", and it maps directly onto the existing
+  evidence-anchor rule.
+- **Meta-reviewer pass** (PeerGenius editor-aggregation pattern +
+  OpenReviewer's fine-tuned-critic finding) → *whole-paper Reviewer-2
+  synthesis*. A distinct persona that reads the panel's own findings
+  adversarially before the report is assembled. Constraint: deterministic
+  severity aggregation remains the verdict authority — the meta-reviewer
+  critiques and prioritises findings, never overrides the computed verdict.
+- **SSH-hedging stress test** (LLM-REVal, arXiv 2510.12367) → *calibration
+  checklist*. LLM reviewers systematically underrate prose containing
+  critical/risk/hedging language — exactly the register careful SSH writing
+  uses. Before trusting the adversarial mode, run it over a known-good
+  hedged section and confirm calibrated hedges are not flagged as weakness.
+- **Hallucinated-objection taxonomy** (arXiv 2602.05930) → *orchestrator
+  verification of contested findings*. Classify killed objections as total
+  fabrication / partial corruption / identifier hijacking / placeholder /
+  semantic — gives the existing verify-before-presenting step a vocabulary
+  and a calibration record.
+- **Calibration harness** (jinming99/reviewer-under-review, Apache-2.0) →
+  *future evaluation*. Bipartite concern-match graphs + L0–L4 ladder for
+  grading AI reviewers against real referee reports. Adopt when real
+  reviews exist to calibrate against (e.g. once Paper B's referee reports
+  arrive) rather than building this from scratch.
+- **refchecker** (markrussinovich/refchecker, MIT) → *mechanical pre-pass,
+  probably redundant*. External-API citation-existence checking; our
+  pre-pass already does key-resolution and the AB+ corpus does source
+  verification, so note it as a benchmark, not a dependency.
+
+## AB+ substrate status (2026-07-24 audit)
+
+Zotero Paper-B collection audited (proposer + independent re-check +
+corrected v2; scripts in session scratchpad, `abplus-audit-v2.py`):
+
+- **Coverage: 93/171 items with AB+ notes; 55/79 cited keys (69.6%).**
+  Generation work-list: **23 cited keys** (batch LLM run — API-gate review
+  before launching). 53 uncited/unmapped items need triage, not generation.
+- **Two pipeline prerequisites** before the gap run: (1)
+  `_query_zotero_pdfs` (paper repo, `scripts/ab_plus/zotero.py`) surfaces
+  PDF attachments only — needs HTML-snapshot support
+  (`bockelerHarnessEngineering2026` is HTML-only); (2) the Zotero
+  note-push step ran from code never committed — re-author as a tracked
+  module via branch + PR (the paper repo is gated, PR-merge history).
+- **Source exclusion (ruled 2026-07-24): no AB+ entries for films** —
+  default-exclude non-text sources by BibTeX entry type at the
+  citekey-resolution stage, *before* the attachment requirement (the
+  *Ronin* case: cited via `\citealp` at `04-results.tex:145`, correctly in
+  the bib, but not an AB+ target).
+- Cite-regex lesson for the source-fidelity lens: match the **full**
+  natbib/biblatex command family (any command containing "cite") —
+  a `\citealp`-shaped miss produced a false "uncited" finding in the v1
+  audit.
