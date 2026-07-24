@@ -1045,7 +1045,7 @@ until first non-CC API spend.
 
 ---
 
-### I. Adversarial reviewer (`/review-paper`) — AR — *kicked off 2026-07-24; substrate complete, apparatus build next*
+### I. Adversarial reviewer (`/review-paper`) — AR — *apparatus BUILT + audited 2026-07-24 (2nd session); calibration + hardening next*
 
 Pre-submission "Reviewer 2" apparatus for papers (Paper B first; shareable
 with Brian). Authoritative docs: `wiki/planning/paper-review-skill-spec.md`
@@ -1059,7 +1059,9 @@ prior-art report, PASS).
 | AB+ substrate (source-fidelity lens) | **complete 2026-07-24** — 75/79 cited keys (94.9%); remainder = explicit rulings (3 unavailable, 1 film) |
 | Model-provenance convention | **live** — pin at dispatch, stamp at render, transcripts are truth; enforced via /audit-config + /phase-gate |
 | Paper-repo pipeline | PRs #20, #21 merged; **#22 open** (default-bib-join glob) |
-| The apparatus itself | **next** — generalise `adversarial-review-s3.mjs` → `/review-paper` skill + portable workflow (adversarial stance, meta-reviewer pass, Devil's-Advocate hard rules, SSH-hedging stress test) |
+| The apparatus itself | **BUILT 2026-07-24 (2nd session)** — `skills/review-paper/SKILL.md` + `scripts/review-paper-prepass.py` + `scripts/workflows/review-paper.mjs` (both stances, both scopes, DA hard rules, meta-reviewer, unanimous-check); 3-agent /audit (3 Critical/9 Medium) all fixed + fixture-verified; build record in the spec |
+| SSH-hedging stress test | **next, REQUIRED before first adversarial use** — procedure in SKILL.md §"Calibration gate"; record result in the spec |
+| Critical-friend hardening runs | next — Paper B §3–§8 section runs to harden the rubric (build plan step 1 tail); AB+ self-heal chaining (step 4) still open |
 
 ---
 
@@ -2145,6 +2147,47 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-07-24 (Fri, latest AR, 2nd session) — apparatus BUILT: /review-paper skill + portable workflow + mechanical pre-pass; 3-agent audit, all findings fixed
+
+Second AR session of the day. **The apparatus itself is built** — the
+Paper B prototype (`adversarial-review-s3.mjs`) generalised into three
+components in this repo (commit `171fa07`): the `/review-paper` skill
+(orchestration protocol: parameters → free mechanical pre-pass → API
+gate → dispatch → verify-contested-findings with the hallucinated-
+objection taxonomy → triaged three-tier report + provenance stamp →
+apply-phase rules), `scripts/review-paper-prepass.py` (deterministic
+pre-pass, 9 checks + settled-rulings register extraction; lives outside
+the workflow because the Workflow sandbox has no filesystem), and
+`scripts/workflows/review-paper.mjs` (fresh-context panel; both stances,
+both scopes; Devil's-Advocate hard-rule fields schema-required in
+adversarial mode; `[UNANIMOUS-CHECK]` devil's advocate on a clean panel;
+meta-reviewer that critiques findings but never overrides the
+deterministic verdict; model pinned at dispatch, default
+`claude-opus-4-8`). Skill symlinked into `~/.claude/skills/` and
+registered. **Three-agent /audit** (one per file, cross-file contracts in
+scope) returned 3 Critical / 9 Medium / ~17 Low — headline: the settled-
+rulings register was keyed relative but looked up absolute (silently dead
+feature, confirmed by all three agents independently); aux-label check
+collided across counter types; wrapped citations went unchecked; an
+invalid `lensSet` would have produced CONFIRMED on zero review. All
+fixed; every fix re-verified empirically against fixtures + real Paper B
+sections — which caught one new bug the fix round itself introduced
+(texcount `(errors:N)` trailer parsed as the word count). Spec updated
+with build record + import rulings (`c2782e5`): DA hard rules, meta-
+reviewer, SSH stress test ruled in via the build instruction; taxonomy
+adopted as vocabulary (CC's call, flagged for confirmation); calibration
+harness + refchecker unchanged.
+
+- **Next session:** run the SSH-hedging stress test (REQUIRED before
+  first adversarial use; procedure in SKILL.md §"Calibration gate");
+  then critical-friend hardening runs over Paper B §3–§8. AB+ self-heal
+  chaining (build plan step 4) still open.
+- Carry-forward unchanged from the morning session: paper-b PR #22 open;
+  3 advisory tranche-8 flags await Shawn's ruling; local Zotero SQLite
+  lags the 113 API writes until the client syncs.
+- PA commits: `171fa07` (apparatus), `c2782e5` (spec), + this continuity
+  update.
 
 ### 2026-07-24 (Fri, latest AR) — SESSION CLOSE (/handoff): adversarial-reviewer kickoff — prior-art PASS, AB+ substrate complete (75/79), model-provenance convention shipped
 
