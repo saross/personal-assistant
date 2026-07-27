@@ -174,6 +174,17 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 | `ZOTERO_API_KEY_PERSONAL` | Personal-library write + all-groups read | broad | `scripts/lit-scout-zotero-import.py` |
 | `ZOTERO_API_KEY_PAPER_B` | Personal-library **read-only** (library/files/notes, no write — a personal-library DELETE returns 403); group-library write for `2025-MQ-LLM-DH-software-longevity` (groupID 5861859) only; all-groups read (re-verified via the `/keys/current` endpoint, 2026-07-17) | narrow | `scripts/sync-to-zotero.py` |
 | `ZOTERO_STAGING_COLLECTION` | Top-level collection key under My Library where dated subcollections are created (current value: `IX8XR97K` for the `staging` collection) | — | `scripts/lit-scout-zotero-import.py` |
+| `ZOTERO_API_KEY_FAIMS` | Personal-library write; group write for `FAIMS-internal` (525489) and `FAIMS-Project` (2542876); all-groups read | narrow | no script yet |
+| `ZOTERO_API_KEY_SDAM_AU` | Personal-library write; **group write on `all`** plus explicit write on `SDAM-AU` (2366083); all-groups read | **broad** | no script yet |
+| `ZOTERO_PAPER_B_COLLECTION` | Collection key `H6KXYXKX` = `Paper-B` (171 items) in **group** 5861859, not My Library | — | no script yet |
+| `ZOTERO_SPA_COLLECTION` | Collection key `PZN5ATJK` = `SPA` (61 items) in **group** `SDAM-AU` (2366083) | — | no script yet |
+| `ZOTERO_FAIMS_INTERNAL_GROUP_ID` | `525489` | — | no script yet |
+| `ZOTERO_FAIMS_PROJECT_GROUP_ID` | `2542876` | — | no script yet |
+
+All key scopes above re-verified against `/keys/current` on 2026-07-27; all
+four keys read both the personal library (user 3097511) and group 5861859
+successfully. `ZOTERO_API_KEY_PAPER_B` confirmed still personal-read-only
+with group-5861859 write, exactly as this table has described it.
 
 ### Target-suffixed naming convention (adopted 2026-05-22)
 
@@ -202,6 +213,28 @@ any logs the shell is being piped into**. This happened once 2026-05-22
 during the workstream-H Paper-B key rotation; the leaked key was revoked
 and reissued the same day. Always quote the value and double-check the
 variable name uses only `[A-Z0-9_]` before pressing Enter.
+
+**It recurred 2026-07-27**, and the `.env` file is the dangerous case
+rather than the prompt: `~/.claude/settings.json` sources this file under
+`set -a` in two session hooks, so a malformed line is re-parsed — and
+re-echoed — on every hook run, not once. Three names were affected
+(`ZOTERO_API_KEY_SDAM-AU`, `ZOTERO_FAIMS-internal_GROUP_ID`,
+`ZOTERO_FAIMS-Project_GROUP_ID`); all were renamed to underscores. Caught
+before any hook fired: a full-content search of `~/.claude`, the sync logs,
+`~/cc-archives`, and the canonical rpi-server store found **zero**
+occurrences of the affected key's value, so no rotation was needed.
+
+Two lessons worth keeping. **A hyphenated name is invisible to the obvious
+audit.** Listing variables with `grep -oE '^[A-Za-z_0-9]+='` silently skips
+exactly the malformed lines you are looking for — the first pass over this
+file reported 14 clean names and missed all three. Anchor the name character
+class on `=`, not on what a valid name should look like:
+`grep -oE '^[^=]+='`. **And the parse error is the real detector** — source
+the file in a subshell and treat any output as a finding:
+
+```bash
+bash -c 'set -a; . ~/personal-assistant/.env; set +a' 2>&1   # must be silent
+```
 
 ## Write-Back Sync (`sync-to-zotero.py`)
 
