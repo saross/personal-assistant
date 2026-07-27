@@ -1,5 +1,7 @@
 # Secrets
 .env
+.env.*
+!.env.example
 
 # Runtime state (machine-specific)
 .last-email-triage
