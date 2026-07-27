@@ -210,6 +210,16 @@ not obvious from the docs:
 - **Anti-confabulation:** re-read any path, commit hash, PID, or filename
   before putting it in the prompt (same rule as step 1) — the prompt is only
   useful if its pointers are correct.
+- **Fetch first (git repos):** open the prompt with an instruction to run
+  `git fetch` and report ahead/behind *before* doing anything else. This is
+  cheap and catches the multi-machine case where another machine pushed after
+  this session's last sync. It is not optional politeness: `git status` and
+  `git rev-list origin/main...HEAD` both read the **local** `origin/main` ref
+  and never contact the remote, so without a fetch they report "in sync" from
+  a stale pointer — indistinguishable from genuinely being in sync. On
+  2026-07-27 that cost a full duplicate build in `llm-reproducibility`: the
+  resumed session's sync check said `0 behind`, while seven commits had been
+  pushed from another machine three days earlier.
 
 This step **always runs**, even for light or verification-only sessions: if
 nothing changed, the prompt is just a one-line pointer to the current
@@ -219,7 +229,9 @@ again.
 Suggested shape (display in a fenced block so it copies cleanly):
 
 ```text
-Resume <project>. Read <continuity/planning doc path> (<beacon / section>).
+Resume <project>. FIRST: git fetch && git status -sb — report ahead/behind
+before starting work (another machine may have pushed since this handoff).
+Read <continuity/planning doc path> (<beacon / section>).
 Next: <immediate next action(s)>.
 Carry-forward: <key in-flight state / gotcha / decision — omit if none>.
 ```
