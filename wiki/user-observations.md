@@ -1932,3 +1932,58 @@ same evening handed over the cross-machine sync at 22:15 with "the sync is mine 
 you went to bed, the sync surfaced and repaired two integrity defects autonomously.
 Externalising the stop signal to the assistant, rather than willpower, matched how the
 Thursday hard-stop (GroundSight) outperformed willpower-based quitting earlier that week.
+
+### Candidate 4: Major-submission recovery has a measurable, repeatable cost — and it was never budgeted
+
+Articulated by Shawn on 2026-07-27, three days after the Paper B submission (RSOS-261690,
+Fri 24 Jul), explicitly framed as a forward-applicable learning rather than an excuse for a
+slow day.
+
+**The observed spill-over from a big push (last week: mostly Paper B):**
+
+1. **Life-maintenance hangover** — cooking, cleaning, bill paying, errand-running all
+   neglected during the push, then come due together. A weekend was not enough to clear it;
+   it blew into Monday.
+2. **Email falls behind.**
+3. **Smaller work tasks fall behind** — the visible symptom being the very full inbox.
+4. **General fatigue / burnout tax on work for a few days** after the push ends.
+5. **Change-of-context penalty** — getting his head back into the map-reader paper took a
+   substantial part of the day. "It's coming back to me, but this made work slow."
+
+**Shawn's proposed budget, for the next task equivalent to a journal-article submission:**
+
+| Recovery limb | Budget |
+|---|---|
+| Life maintenance | a weekend **plus ~half a business day** (some tasks are business-hours-only) |
+| Email + small work tasks | half a day |
+| Context switch onto the new task | half a day |
+
+Net: roughly **a weekend plus ~1.5 business days** before full-rate work resumes on the
+next thing.
+
+**Independent corroboration already in the record** — this is not purely self-report. The
+"smaller work tasks fall behind" limb was measured *before* Shawn articulated it: the
+inbox grew for two consecutive weeks, 13→19 rows, which is precisely why the
+clear-all-reviews drain was promoted to Slot 1 at the W30 review (`tasks/FOCUS.md`, Slot 1
+promotion note, 2026-07-27). Today's tracked hours (3.75h against the 7h-tracked target)
+are the fatigue + context-switch limbs showing up in the time log.
+
+**Forward implication, for the retro to rule on:** none of this was budgeted into W31. Today
+was in effect an unplanned recovery day. If the budget above is right, the post-submission
+tax is a *planning parameter*, not a variance — candidate for `tasks/SYSTEM.md` alongside
+`workday_target_hours` and `evening_hard_stop`, to be applied at the *next* milestone
+(RDA submission Mon 17 Aug is the nearest candidate).
+
+**Ratified same evening (2026-07-27), not deferred to the retro.** Shawn, on reading the
+above: *"Thinking back over my career, this always happens, slow days after a big push /
+deadline, especially on something intellectually taxing (Friday required a lot of focus for
+a long time to pull everything together and get it over the line)."* Two things that
+promoted this from a candidate to a parameter: (1) it is a **career-long pattern**, not a
+Paper-B one-off, so it will recur at every future milestone; (2) the severity **scales with
+the intellectual intensity of the push**, not its calendar length — which makes it
+*predictable in advance* from the shape of the work, and therefore budgetable. Now live as
+`milestone_recovery_budget` in `tasks/SYSTEM.md`.
+
+Shawn's own framing of why articulating it mattered: being forced to state it clarified what
+had actually happened on a day he was disappointed by, and converted it from a private
+frustration into a system parameter.
