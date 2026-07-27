@@ -1069,6 +1069,31 @@ prior-art report, PASS).
 
 Read these *before* starting new work. Most should take <5 min each.
 
+- [ ] 2026-07-27 **Zotero shared-group write-back — RULED, awaiting keys
+  (work package, ready to execute on amd-tower).** Shawn's ruling
+  (2026-07-27): Claude notes ALWAYS allowed in FAIMS-Project (he owns the
+  group); SDAM-AU writes limited to the `SPA` collection (key `PZN5ATJK`,
+  top-level; reads fine group-wide). **Blocked on Shawn minting two keys**
+  at zotero.org/settings/keys (per-group permissions, Read/Write on just
+  that group): `ZOTERO_API_KEY_FAIMS_PROJECT` (group 2542876) and
+  `ZOTERO_API_KEY_SDAM_AU` (group 2366083), then adding both to
+  `~/personal-assistant/.env` on amd-tower. Caveat ruled visible: Zotero
+  keys cannot be collection-scoped, so SPA-only is enforced in the sync
+  script (item ∈ `PZN5ATJK` check), not by the key. Implementation steps
+  once keys exist: (1) extend `scripts/sync-to-zotero.py` to route
+  per-item across libraries (locate item via all-groups read; select the
+  target-suffixed key; enforce the SPA gate for SDAM-AU) — /audit the
+  change; (2) replay the 4 parked notes from
+  `data/memories/quarantine-zotero-skipped.jsonl` (cursor 32654 is past
+  them — replay reads the quarantine file, not the cursor); (3) the
+  SDAM-AU note targets attachment `FGM4PVSX` — re-point to parent
+  `RWKBBVTZ` (the Hanson book), which is currently in collections
+  `F2385QXW`/`ZAS3ZRV4`, NOT in SPA: it only becomes writable if Shawn
+  adds the book to SPA, else it stays parked by the ruling. **Machine
+  note:** `ZOTERO_GROUP_ID=5861859` was added to zbook's `.env` only
+  (2026-07-24); add it to amd-tower's `.env` alongside the new keys
+  (`.env` is per-machine, not in git).
+
 - [x] 2026-07-24 **AR: paper-repo PR #22 — MERGED** (decision review,
   2026-07-24 evening; merge commit `d23fbfc`, worktree + branch cleaned up).
 - [x] 2026-07-24 **AR: 3 advisory verifier flags — RULED (amend per
@@ -2149,6 +2174,20 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-07-27 (Mon, latest AR) — WIND-DOWN (light): shared-group write ruling recorded; work moves to amd-tower
+
+Light wind-down by design (full /handoff ran for AR on 2026-07-24, and
+everything since was committed with continuity entries in real time —
+nothing lives only in this session). Shawn ruled the shared-group
+question the parked notes were waiting on: FAIMS-Project always
+writable (owner); SDAM-AU limited to the `SPA` collection. The
+executable work package — key minting (Shawn), multi-library routing in
+`sync-to-zotero.py`, quarantine replay, attachment re-point — is fully
+specified in the 2026-07-27 verify-queue entry above. AR next steps
+unchanged (workstream-I table): SSH-hedging stress test before first
+adversarial use, then §3–§8 hardening runs. Session close: zbook →
+amd-tower; weekly-review + rituals resume there.
 
 ### 2026-07-24 (Fri, latest AR, decision review) — six outstanding decisions ruled; tranche-8 amendments live; write-back diagnosis corrected + repaired
 
