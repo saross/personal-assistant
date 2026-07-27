@@ -1904,3 +1904,31 @@ projecting it onto future estimates.
    absorbed them without losing the main thread. If that matched your
    experience, it's worth keeping as the default interaction style for
    long agent-heavy sessions.
+
+
+## 2026-07-27 (PA-hub / six-day coordination arc Tue 21 → Mon 27, session close) — Drafted candidates (pending review)
+
+### Candidate 1: The two-stage verification you designed caught the verifier itself
+
+You mandated the claim-by-claim Cosmos verification at Tuesday's standup, then a
+clean-context adversarial re-check. The second stage corrected three pointer errors in
+the first stage's own ledger (Obs 4 vs 6; pilot §2.1 vs §1/§7; "both CVs" vs one).
+Verification notes are claims too — your architecture, not my diligence, is what caught
+it. Candidate practice: any high-stakes verification ledger gets its own fresh-context
+pass before it's relied on.
+
+### Candidate 2: The resource-competition reframe unlocked a stuck prioritisation
+
+At the Slot-2 conversation you brought a large decision space ("which llm-repro thing?")
+and reacted strongly ("this really clarified my thinking") when it was reframed as: the
+JAS run and the wildcard paper consume different resources — the JAS run competes with
+nothing, the wildcard competes with map-reader. When a choice feels hard, checking
+whether the options even draw on the same scarce resource may dissolve it.
+
+### Candidate 3: Delegating pace enforcement to Claude worked on night one
+
+You asked for the post-22:00 wind-down reminder (any interaction except /recap) and the
+same evening handed over the cross-machine sync at 22:15 with "the sync is mine to run" —
+you went to bed, the sync surfaced and repaired two integrity defects autonomously.
+Externalising the stop signal to the assistant, rather than willpower, matched how the
+Thursday hard-stop (GroundSight) outperformed willpower-based quitting earlier that week.

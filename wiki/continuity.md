@@ -2359,6 +2359,57 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-07-27 (Mon, latest PA-hub) — SESSION CLOSE (/handoff): the three-submission week ran through this session; W30 review + pace ratified; RDA Drive mis-pair found and fixed; memory-integrity trilogy
+
+Six-day arc as the PA-hub coordination layer (amd-tower; resumed 2026-07-21 from the
+model-swap beacon below; Shawn on zbook Fri–Sun). **The week's headline ran through this
+session's rituals: THREE SUBMISSIONS** — Cosmos (Tue 21, Day 16, claim-by-claim +
+clean-context adversarial verification first), RDA IG proposal revived+circulated (Thu 23,
+Day 4), Paper B to RSOS (Fri 24, **RSOS-261690**, via zbook; queue pre-cleared here Wed–Thu).
+Canonical record: `reports/weekly/2026-W30.md` (written Mon 27, retrospectively — weekend
+was rest by design). **W30-review decisions:** Slot 1 = clear-all-reviews drain (named day
+Thu 30); pace RATIFIED into `tasks/SYSTEM.md` (`workday_target_hours=7 tracked` avg;
+`evening_hard_stop=22:00`, emergency-only override; Claude's post-22:00 wind-down reminder
+standing, scratchpad 2026-07-23); wildcard credibility-review probe Fri 31; Substack w/c
+3 Aug; June+July retro Fri–Sun. **Slot 2 = map-reader** (rotated Wed 22 via an in-session
+prioritisation conversation — the reframe that unlocked it: the two llm-repro directions
+consume different resources, so the JAS run competes with nothing while the wildcard
+competes with map-reader for drafting hours; Day 1 block finally ran Mon 27 ~12:40 after
+two explicit trades; **Friday floor deliberately deferred to first-generation evidence** —
+first full paper-generation with the academic-prose skill, revision-cost range 30–60h,
+checkpoint at Mon's recap). **Slot 3 = llm-repro JAS** (rotated Fri via zbook; §9 verdicts
+first). **Infrastructure findings this session, all repaired:** (1) circular skill
+self-symlinks deleted — and the apparent regenerator was daily-sync's `stash -u` cycle
+refreshing untracked-file timestamps (scratchpad rule; `scripts/daily-sync.sh:262`);
+(2) memory-integrity trilogy — 29-record zbook below-cursor gap (16 Jul splice), 23-record
+pre-commit loss recovered PG→JSONL (instance 3 of the class; map
+`data/logs/pg-recovery-2026-07-23.json`), plus two more below-cursor repairs during syncs
+Thu/Mon; both machines converged (id-diff 0/0, 100% embedded; ~32.9k records) — the
+integrity inbox row is now the drain session's headline; (3) **RDA Drive mis-pair** found
+Mon: the Drive "Summary_and_Description" doc held the final SoW and the "Statement_of_Work"
+doc held the pre-trim SoW — the actual 410/848-word Summary+Description had never reached
+Drive; local files had been deleted with Downloads, recovered byte-exact from trash,
+archived privately (`data/archive/rda-ig-application-2026-07/` — member emails, hence not
+public wiki), both Drive docs re-pasted by Shawn and marker-verified correct. RDA sequence:
+group reminder ~Thu 6 Aug → comments close Fri 14 Aug → **submit Mon 17 Aug**; Kiera STM
+confirmation in flight; word-cap provenance resolved (the 250–400/500–800 "limits" are
+self-imposed, not RDA's — template V4 + page + web form all checked). **Live waits:** Adela
+(Slovakia; calendar check Wed 29 15:00; hard deadline Mon 3 Aug), lawyer, RSOS (1–3 mo),
+Cosmos (~mid/late Aug), ARDC postings (~3 Aug), Emmanuel (Fri 31). BolgiaTen invoice PAID
+(confirmed Mon). **Carry-forward:** new Zotero write keys (Mon) may unblock the stalled
+`sync-to-zotero` pipeline (403 since May; hypothesis = key/library mismatch,
+`sync-to-zotero.py:320`) — test pending; 2026-07-24 AR user-obs batch still pending review.
+
+- Public repo: this entry; `wiki/user-observations.md` (2026-07-27 pending candidates);
+  `wiki/claude-observations.md` (Obs 29–31); `tasks/SYSTEM.md` via symlink (pace params).
+- Data: `reports/weekly/2026-W30.md` + 3 collaborator reports; standups 07-21→27 with
+  recaps + commitments; FOCUS.md (all three slots re-populated across the arc);
+  waiting-for (Adela travel, invoice closed, Kiera, RSOS); inbox (19 held — drain Thu;
+  eRA captures; RDA sequence; public-docx privacy item); backlog (map-reader follow-ups,
+  wildcard probe, eRA deadlines); scratchpad (stash-cycle rule, wind-down rule ratified);
+  `archive/rda-ig-application-2026-07/`; time-log Mon–Mon.
+- Session continues for Shawn in a fresh context (map-reader block running; recap tonight).
+
 ### 2026-07-21 (Tue, latest PA-hub) — SESSION WIND-DOWN (model swap Opus→Fable): six-day accountability arc Wed 15 → Tue 21; Paper B SUBMITTED-READY + handed to Brian; W29 review + two-month runway plan; Cosmos at the goal line
 
 Long multi-day session (amd-tower, PA-hub). **Ran the task-system daily through Paper B's

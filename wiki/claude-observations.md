@@ -329,3 +329,50 @@ arbiter rather than model-tier prestige.
 model tier × plan impact, and reserve the top tier for stages where
 judgement density is the bottleneck — then prove sufficiency empirically
 (pilot + transcript check), not rhetorically.
+
+
+## Obs 29 — 2026-07-27 — `[you]` Floor-follows-evidence, self-imposed: Shawn deferred his own accountability metric until the data could exist
+
+Asked at the W30 review to name map-reader's Friday floor, Shawn declined — with a
+mechanism, not a dodge: this is the first full paper-generation from outline +
+intermediate docs with the academic-prose skill; revision cost spans 30–60h until one
+generated section collapses the range; the floor gets named at Monday's recap on that
+evidence. **Pattern.** The calibration discipline the system spent months teaching
+(floors, tripwires, evidence-first estimates) is now being applied by Shawn *to the
+accountability apparatus itself* — he is designing his own consequence structures a
+step ahead of the standup. **Lesson.** When Shawn defers a commitment with a named
+evidence-gate and a checkpoint date, that is the system working, not avoidance — log
+the checkpoint and hold him to *it*, not to a premature number. **How to apply.**
+Distinguish "deferred with cause + checkpoint" from "moved without decision" (the
+Cosmos six-move shape); only the second earns confrontation.
+
+## Obs 30 — 2026-07-27 — `[you]` Three submissions, one mechanism — and the system's role has shifted from confrontation to bookkeeping
+
+Cosmos (Tue), RDA circulation (Thu), Paper B (Fri) all closed the same way: queue
+pre-cleared in advance, a floor or named day with a pre-named give, submission executed
+on schedule. Nothing this week needed the confrontational register; the escalation
+machinery idled while the closure machinery ran. **Pattern.** Shawn's throughput
+constraint was never effort — it was the absence of pre-named consequence structures,
+and he now builds them himself at planning time. **Lesson.** The system's marginal value
+is migrating from "hard questions" to "accurate ledgers + protected blocks + carried
+context"; the hard questions still matter at *planning* boundaries (naming the give)
+rather than at execution. **How to apply.** Spend standup sharpness on whether
+tomorrow's structure exists (floor? give? checkpoint?), not on whether yesterday's
+effort sufficed.
+
+## Obs 31 — 2026-07-27 — `[me]` Self-critique: two stale-context weld jobs in one week — the anti-confabulation rule holds only at the moment of writing
+
+Twice this arc I stated in-context material as verified fact: the BolgiaTen invoice
+(welded Shawn's meeting mention onto the June invoice from the old ETL row — wrong
+invoice, wrong month) and the RDA "form limits" (presented the draft's own header caps
+as RDA requirements until Shawn asked where they came from — template, page, and web
+form all turned out to carry no limits). Both corrected fast, both because Shawn
+challenged the specific. **Pattern.** My failure mode is not inventing facts from
+nothing — it is promoting *plausible in-context* facts to *verified* status when they
+arrive adjacent to true ones. **Lesson.** The write-side anchor rule needs to fire at
+*assertion* time, not only at memory-save time: any specific I attach to a user
+statement ("the ~16 Jun invoice", "the form's limits") is my inference unless the user
+said it. **How to apply.** When annotating a user's terse statement with an identifying
+detail they did not supply, mark it as inference in the same sentence — or ask — before
+it enters a tracked record; the waiting-for correction cost three edits, the Drive
+audit cost none because the provenance question was asked first.
