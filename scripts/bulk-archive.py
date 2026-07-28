@@ -23,11 +23,14 @@ Modes:
 
 import argparse
 import gzip
+import importlib.util
 import json
 import logging
 import os
 import re
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +52,24 @@ DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
 CATALOGUE_FILE = DEFAULT_ARCHIVE_ROOT / "CATALOG.json"
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+# OpenAI GPT-5.6 Terra, chosen 2026-07-28 after a blinded five-arm bake-off
+# (Terra 38/60 overall, 27/30 on long sessions — and the corpus is long).
+# Prices are USD per million tokens, verified 2026-07-28 against
+# https://developers.openai.com/api/docs/pricing. The Flex service tier is
+# -50% on both input and output, and this adapter always requests Flex, so
+# the effective rates are half the numbers below.
+TERRA_MODEL = "gpt-5.6-terra"
+TERRA_INPUT_PRICE_PER_MTOK = 2.50
+TERRA_OUTPUT_PRICE_PER_MTOK = 15.00
+TERRA_FLEX_DISCOUNT = 0.50
+
+# Distilled-token floor below which a session carries no metadata worth
+# generating. Sessions under this are `/clear`- or `/exit`-only invocations,
+# aborted starts, or two-turn trivia: verified by inspection 2026-07-28, where
+# a recurring *exact* 64-token extract turned out to be the local-command
+# caveat boilerplate and nothing else. Mirrors `resample-bake-off-manifest.py`.
+MIN_CONTENT_TOKENS = 1_000
 
 # Estimated tokens per lightweight enrichment request.
 # Based on progressive-disclosure-plan.md: ~12M tokens total / 603 sessions.
@@ -178,18 +199,162 @@ def _reconstruct_path_from_encoded(encoded: str) -> Path | None:
     return current if current != Path("/") else None
 
 
+def _make_token_counter(logger: logging.Logger):
+    """Return a ``Path -> int`` distilled-token counter, or ``None``.
+
+    Reuses ``scripts/extract-transcript-text.py`` — the same distiller the
+    metadata prompt is fed from — so the discovery floor is measured on
+    exactly the text the extractor model will see, not on raw JSONL bytes.
+    Raw bytes are a bad proxy: an aborted session carrying one 55 KB injected
+    attachment distils to 256 characters of boilerplate.
+
+    Token estimator is ``chars / 4``, matching the bake-off manifests. It runs
+    ~11% under a real tokenizer (measured against the 2026-07-28 Terra usage
+    records), which is the safe direction for a floor.
+    """
+    extractor_path = Path(__file__).with_name("extract-transcript-text.py")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "extract_transcript_text", str(extractor_path)
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load {extractor_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        logger.error(
+            "Could not load transcript extractor (%s): %s", extractor_path, exc
+        )
+        sys.exit(1)
+
+    def count(jsonl_file: Path) -> int:
+        try:
+            return max(1, len(module.extract_transcript_text(str(jsonl_file))) // 4)
+        except Exception as exc:
+            logger.warning("Distillation failed for %s: %s", jsonl_file, exc)
+            return 0
+
+    return count
+
+
+def _source_machine_of(jsonl_file: Path) -> str:
+    """Best-effort label for which machine's store a transcript came from.
+
+    In the merged-snapshot layout the machine name is the grandparent
+    directory (``<root>/<machine>/<cwd-key>/x.jsonl``). In the live layout
+    there is no machine level, so report ``"local"``.
+    """
+    parts = jsonl_file.parts
+    if len(parts) >= 3 and parts[-2].startswith("-"):
+        candidate = parts[-3]
+        return "local" if candidate == "projects" else candidate
+    return "local"
+
+
+def iter_source_project_dirs(
+    source_root: Path,
+    logger: logging.Logger,
+) -> list[tuple[str, Path]]:
+    """Yield ``(encoded_cwd_key, project_dir)`` pairs from a transcript store.
+
+    Two layouts are supported, detected rather than configured:
+
+    **Live layout** — ``<root>/<cwd-key>/*.jsonl``, i.e. ``~/.claude/projects``.
+
+    **Merged-snapshot layout** — ``<root>/<machine>/<cwd-key>/*.jsonl``, as
+    produced by the 2026-07-28 raw containment snapshot. This matters because
+    the two machines' stores are disjoint in practice: of the 77 backfillable
+    sessions found on 2026-07-28, **55 existed only on zbook**, so a run against
+    amd-tower's live store would have silently archived 22 of 77 and reported
+    success. Retrieval is raw-first for exactly this reason.
+
+    The same cwd-key appearing under several machines is merged, and a session
+    present on both is taken from whichever copy is larger — 14 of the copies
+    quarantined during the 2026-07-28 consolidation had 0-byte transcripts, so
+    "largest wins" is the evidence-backed tie-break, not an arbitrary one.
+    """
+    if not source_root.is_dir():
+        logger.warning("Source root not found: %s", source_root)
+        return []
+
+    # A live store's children hold *.jsonl directly; a snapshot's children are
+    # machine directories whose grandchildren do. Probe rather than assume.
+    is_snapshot = not any(
+        child.is_dir() and any(child.glob("*.jsonl"))
+        for child in source_root.iterdir()
+    )
+
+    if not is_snapshot:
+        pairs = [
+            (d.name, d) for d in sorted(source_root.iterdir()) if d.is_dir()
+        ]
+        logger.info(
+            "Source %s: live layout, %d project dirs", source_root, len(pairs)
+        )
+        return pairs
+
+    merged: dict[str, list[Path]] = {}
+    for machine_dir in sorted(source_root.iterdir()):
+        if not machine_dir.is_dir():
+            continue
+        for proj_dir in sorted(machine_dir.iterdir()):
+            if proj_dir.is_dir():
+                merged.setdefault(proj_dir.name, []).append(proj_dir)
+
+    logger.info(
+        "Source %s: merged-snapshot layout, %d project dirs across %d machines",
+        source_root, len(merged),
+        len([d for d in source_root.iterdir() if d.is_dir()]),
+    )
+    # Return every (key, dir) pair; de-duplication by session id happens in
+    # discover_sessions, which can compare file sizes across the copies.
+    return [(key, d) for key, dirs in sorted(merged.items()) for d in dirs]
+
+
+def archived_session_ids_on_disk(
+    archive_root: Path,
+    logger: logging.Logger,
+) -> set[str]:
+    """Collect archived session ids by walking ``session.meta.json`` on disk.
+
+    **Why not just read CATALOG.json:** the catalogue under-reports badly. On
+    2026-07-28 it held 539 entries against 728 distinct session ids present on
+    disk — 189 sessions archived but uncatalogued. Deduplicating discovery
+    against the catalogue alone would therefore re-archive those 189, which is
+    precisely the double-archiving-with-divergent-titles defect the archive was
+    just repaired for. Disk is authoritative; the catalogue is a derived index
+    and is regenerated by ``verify --fix-catalogue``.
+    """
+    ids: set[str] = set()
+    for meta_path in archive_root.rglob("session.meta.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Unreadable metadata at %s: %s", meta_path, exc)
+            continue
+        session_id = (meta.get("session") or {}).get("id")
+        if session_id:
+            ids.add(session_id)
+    logger.info("Found %d archived session ids on disk", len(ids))
+    return ids
+
+
 def resolve_project_mapping(
     logger: logging.Logger,
+    source_pairs: list[tuple[str, Path]] | None = None,
 ) -> dict[str, tuple[Path | None, str]]:
     """
     Build a mapping from encoded project directory names to (project_root,
     project_name) tuples.
 
-    Strategy: for each project dir in ~/.claude/projects/, find a session
+    Strategy: for each project dir in the source store, find a session
     JSONL and extract ``cwd``. Falls back to path reconstruction from the
     encoded name. When neither succeeds, ``project_root`` is ``None`` —
     the call site must consult ``archive_root`` instead of treating any
     fallback path as a real project directory.
+
+    ``source_pairs`` comes from :func:`iter_source_project_dirs`; when omitted
+    the live store is used, preserving the original behaviour.
 
     Returns:
         Dictionary mapping encoded dir name to (project_root, project_name).
@@ -197,15 +362,16 @@ def resolve_project_mapping(
     """
     mapping: dict[str, tuple[Path | None, str]] = {}
 
-    if not CLAUDE_PROJECTS_DIR.is_dir():
-        logger.warning("Claude projects dir not found: %s", CLAUDE_PROJECTS_DIR)
+    if source_pairs is None:
+        source_pairs = iter_source_project_dirs(CLAUDE_PROJECTS_DIR, logger)
+    if not source_pairs:
         return mapping
 
-    for proj_dir in sorted(CLAUDE_PROJECTS_DIR.iterdir()):
-        if not proj_dir.is_dir():
+    for encoded, proj_dir in source_pairs:
+        # The same cwd-key can appear once per machine in a merged snapshot;
+        # the first resolution wins because cwd is a property of the key.
+        if encoded in mapping and mapping[encoded][0] is not None:
             continue
-
-        encoded = proj_dir.name
         project_root: Path | None = None
         project_name: str = "unknown"
 
@@ -254,13 +420,30 @@ def discover_sessions(
     project_mapping: dict[str, tuple[Path | None, str]],
     min_turns: int,
     logger: logging.Logger,
+    source_pairs: list[tuple[str, Path]] | None = None,
+    min_content_tokens: int = 0,
 ) -> list[dict[str, Any]]:
     """
     Scan for unarchived sessions, filter trivials, build a manifest.
 
+    Deduplicates against archived session ids read from disk (see
+    :func:`archived_session_ids_on_disk`) rather than from CATALOG.json, and
+    against itself when the same session exists on more than one machine.
+
+    **Triviality test.** When ``min_content_tokens`` is positive, a session is
+    trivial if its *distilled transcript* falls below that many tokens;
+    otherwise the legacy turn-count test (``min_turns``) applies. Prefer the
+    token test. Measured on the 2026-07-28 backfill set, ``min_turns=5``
+    discarded 56 of 77 substantive sessions — including a 205,848-token
+    session that happened to have **two** turns, and 16 others above 50,000
+    tokens. Turn count is a poor proxy for substance because one long
+    analytical exchange is a single turn, so the turn test silently drops
+    exactly the sessions whose metadata is most worth having.
+
     Returns:
         List of session manifest entries, sorted by project then session ID.
     """
+    distilled_tokens = _make_token_counter(logger) if min_content_tokens else None
     # Add cc-session-toolkit to path for imports
     toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
     if str(toolkit_src) not in sys.path:
@@ -273,21 +456,47 @@ def discover_sessions(
         is_trivial_session,
     )
 
-    # Load already-archived session IDs for deduplication
-    archived_ids: set[str] = set()
+    # Load already-archived session IDs for deduplication. Disk is
+    # authoritative; the catalogue is merged in only as a belt-and-braces
+    # superset in case an entry exists in the index but not (yet) on disk.
+    archived_ids: set[str] = archived_session_ids_on_disk(
+        DEFAULT_ARCHIVE_ROOT, logger
+    )
     if CATALOGUE_FILE.exists():
-        archived_ids = get_archived_session_ids(CATALOGUE_FILE)
-        logger.info("Found %d already-archived sessions", len(archived_ids))
+        catalogued = get_archived_session_ids(CATALOGUE_FILE)
+        only_in_catalogue = catalogued - archived_ids
+        if only_in_catalogue:
+            logger.warning(
+                "%d session ids in CATALOG.json have no metadata on disk",
+                len(only_in_catalogue),
+            )
+        archived_ids |= catalogued
+        logger.info(
+            "Deduplicating against %d archived session ids "
+            "(%d on disk, %d catalogued)",
+            len(archived_ids), len(archived_ids - only_in_catalogue),
+            len(catalogued),
+        )
 
     manifest: list[dict[str, Any]] = []
     total_skipped_trivial = 0
     total_skipped_archived = 0
     total_skipped_agent = 0
+    total_skipped_duplicate = 0
+    # session_id -> index into `manifest`, so a duplicate found on a second
+    # machine can replace the first when its transcript is larger.
+    seen: dict[str, int] = {}
 
-    for encoded, (project_root, project_name) in sorted(
-        project_mapping.items()
-    ):
-        proj_dir = CLAUDE_PROJECTS_DIR / encoded
+    if source_pairs is None:
+        source_pairs = [
+            (encoded, CLAUDE_PROJECTS_DIR / encoded)
+            for encoded in project_mapping
+        ]
+
+    for encoded, proj_dir in sorted(source_pairs):
+        project_root, project_name = project_mapping.get(
+            encoded, (None, "unknown")
+        )
 
         for jsonl_file in sorted(proj_dir.glob("*.jsonl")):
             # Skip orphaned flat agent files at root level
@@ -311,7 +520,13 @@ def discover_sessions(
                 )
                 continue
 
-            if is_trivial_session(stats, min_turns=min_turns):
+            content_tokens = 0
+            if distilled_tokens is not None:
+                content_tokens = distilled_tokens(jsonl_file)
+                if content_tokens < min_content_tokens:
+                    total_skipped_trivial += 1
+                    continue
+            elif is_trivial_session(stats, min_turns=min_turns):
                 total_skipped_trivial += 1
                 continue
 
@@ -329,7 +544,7 @@ def discover_sessions(
                 if subagent_dir.is_dir():
                     subagent_count = len(list(subagent_dir.glob("*.jsonl")))
 
-            manifest.append({
+            entry = {
                 "session_id": session_id,
                 "session_path": str(jsonl_file),
                 "encoded_dir": encoded,
@@ -345,14 +560,35 @@ def discover_sessions(
                 "duration_minutes": stats.get("duration_minutes", 0),
                 "subagent_count": subagent_count,
                 "subagent_dir": str(subagent_dir) if subagent_count > 0 else None,
-            })
+                "source_machine": _source_machine_of(jsonl_file),
+                "content_tokens": content_tokens,
+            }
+
+            # Same session on a second machine: keep the larger transcript.
+            if session_id in seen:
+                total_skipped_duplicate += 1
+                incumbent = manifest[seen[session_id]]
+                if entry["size_bytes"] > incumbent["size_bytes"]:
+                    logger.info(
+                        "Session %s: preferring %s copy (%d bytes) over "
+                        "%s (%d bytes)",
+                        session_id[:8], entry["source_machine"],
+                        entry["size_bytes"], incumbent["source_machine"],
+                        incumbent["size_bytes"],
+                    )
+                    manifest[seen[session_id]] = entry
+                continue
+
+            seen[session_id] = len(manifest)
+            manifest.append(entry)
 
     logger.info(
         "Discovery complete: %d sessions to archive, "
         "%d skipped (trivial), %d skipped (already archived), "
-        "%d skipped (flat agents)",
+        "%d skipped (flat agents), %d skipped (cross-machine duplicate)",
         len(manifest), total_skipped_trivial,
         total_skipped_archived, total_skipped_agent,
+        total_skipped_duplicate,
     )
 
     return manifest
@@ -360,8 +596,13 @@ def discover_sessions(
 
 def cmd_discover(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the discover mode: scan, filter, report, save manifest."""
-    project_mapping = resolve_project_mapping(logger)
-    manifest = discover_sessions(project_mapping, args.min_turns, logger)
+    source_root = getattr(args, "source_root", CLAUDE_PROJECTS_DIR)
+    source_pairs = iter_source_project_dirs(source_root, logger)
+    project_mapping = resolve_project_mapping(logger, source_pairs)
+    manifest = discover_sessions(
+        project_mapping, args.min_turns, logger, source_pairs,
+        min_content_tokens=getattr(args, "min_content_tokens", 0),
+    )
 
     # Save manifest
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -508,6 +749,77 @@ def archive_subagents(
     return count
 
 
+def relocate_to_legacy_precedent(
+    archived_dirs: list[Path],
+    archive_root: Path,
+    logger: logging.Logger,
+    dry_run: bool = False,
+) -> int:
+    """Move freshly archived entries under ``_legacy/`` where precedent exists.
+
+    Sessions launched from outside a project tree — cwd ``/home/shawn`` or
+    ``/home/shawn/Code`` — were historically filed under
+    ``_legacy/<project_name>/`` (9 ``Code`` entries, 3 ``shawn``, plus
+    ``gemma-project``, ``sciphi-project`` and ``llm_models``). The archiver
+    derives the destination directory from ``project_name``, so without this
+    step those sessions land in *new* top-level directories and the same
+    project ends up split across ``_legacy/shawn/`` and ``shawn/`` — which is
+    the cross-location fragmentation the archive was just repaired for.
+
+    Only ``project_name`` values that **already** have a ``_legacy``
+    subdirectory are moved, so this cannot invent new legacy projects. Metadata
+    is deliberately left untouched: ``project.name`` is already correct (the
+    existing ``_legacy`` entries carry the same plain names), and
+    ``archive.jsonl_path`` is relative to the entry directory, so relocation
+    does not invalidate it.
+
+    Returns the number of entries moved.
+    """
+    legacy_root = archive_root / "_legacy"
+    if not legacy_root.is_dir():
+        return 0
+
+    moved = 0
+    for entry_dir in archived_dirs:
+        if not entry_dir.is_dir() or entry_dir.parent == legacy_root:
+            continue
+        project_name = entry_dir.parent.name
+        target_parent = legacy_root / project_name
+        if not target_parent.is_dir():
+            continue
+
+        target = target_parent / entry_dir.name
+        if target.exists():
+            logger.warning(
+                "Legacy target already exists, leaving in place: %s", target
+            )
+            continue
+
+        if dry_run:
+            logger.info("[DRY RUN] Would move %s -> %s", entry_dir, target)
+            moved += 1
+            continue
+
+        entry_dir.rename(target)
+        logger.info(
+            "Relocated %s to _legacy/%s/ (matching existing precedent)",
+            entry_dir.name, project_name,
+        )
+        moved += 1
+
+        # Remove the now-empty top-level directory this run created, but never
+        # a directory that already held other entries.
+        try:
+            entry_dir.parent.rmdir()
+            logger.info("Removed empty directory %s", entry_dir.parent)
+        except OSError:
+            pass
+
+    if moved:
+        logger.info("Relocated %d entries under _legacy/", moved)
+    return moved
+
+
 def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the archive mode: compress and archive sessions."""
     # Add cc-session-toolkit to path
@@ -520,8 +832,12 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     # Load manifest
     if not MANIFEST_FILE.exists():
         logger.info("No manifest found — running discovery first...")
-        project_mapping = resolve_project_mapping(logger)
-        manifest = discover_sessions(project_mapping, args.min_turns, logger)
+        source_root = getattr(args, "source_root", CLAUDE_PROJECTS_DIR)
+        source_pairs = iter_source_project_dirs(source_root, logger)
+        project_mapping = resolve_project_mapping(logger, source_pairs)
+        manifest = discover_sessions(
+            project_mapping, args.min_turns, logger, source_pairs
+        )
         MANIFEST_FILE.write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
@@ -569,6 +885,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     # Archive each session
     archived_count = 0
     subagent_count = 0
+    archived_dirs: list[Path] = []
 
     for i, entry in enumerate(to_archive, 1):
         session_path = Path(entry["session_path"])
@@ -639,6 +956,8 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
 
             archived_count += 1
             subagent_count += sa_count
+            if archive_dir_str:
+                archived_dirs.append(Path(archive_dir_str))
 
         except Exception as exc:
             logger.error(
@@ -647,6 +966,10 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
             )
             checkpoint["failed_ids"][session_id] = str(exc)
             _save_checkpoint(checkpoint)
+
+    relocate_to_legacy_precedent(
+        archived_dirs, DEFAULT_ARCHIVE_ROOT, logger
+    )
 
     logger.info(
         "\nArchive complete: %d sessions, %d subagents archived",
@@ -841,9 +1164,469 @@ def _find_unenriched_sessions(
     return results
 
 
+# -- Terra (OpenAI GPT-5.6) enrichment ------------------------------------
+
+# Structured-output schema. The bake-off ran Terra on free-form JSON so that
+# it faced the same parsing burden as the Gemini and Haiku arms — a fairness
+# constraint for measurement, and one its own docstring flagged should be
+# dropped in production. Here it is dropped: `text.format` makes the provider
+# guarantee schema-valid JSON, which removes parse failure as a defect class
+# rather than detecting it after the fact.
+TERRA_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "purpose", "tags", "three_ps"],
+    "properties": {
+        "title": {"type": "string"},
+        "purpose": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "three_ps": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "prompt_summary", "process_summary", "provenance_summary",
+            ],
+            "properties": {
+                "prompt_summary": {"type": "string"},
+                "process_summary": {"type": "string"},
+                "provenance_summary": {"type": "string"},
+            },
+        },
+    },
+}
+
+TERRA_MAX_OUTPUT_TOKENS = 1024
+TERRA_RETRY_WAITS = (30, 60, 120)
+
+
+def _terra_call(
+    user_message: str,
+    system_prompt: str,
+    *,
+    service_tier: str = "flex",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One Responses-API call against Terra. Returns ``(parsed, usage)``.
+
+    Mirrors the vetted bake-off adapter (``scripts/bake-off-metadata.py``)
+    with two deliberate production changes:
+
+    - ``text.format`` pins the JSON schema, so the response cannot be
+      unparseable prose.
+    - ``reasoning.effort`` stays ``"none"``: reasoning tokens bill at the
+      output rate, and the bake-off scored Terra 27/30 on long sessions with
+      reasoning off, so paying for it buys nothing measured.
+
+    ``store=False`` keeps transcript content out of OpenAI's retained storage.
+    """
+    import urllib.request
+
+    api_key = os.environ.get("OPENAI_API_KEY_PA_AMDT")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY_PA_AMDT not set (expected in personal-assistant/.env)"
+        )
+
+    body = {
+        "model": TERRA_MODEL,
+        "store": False,
+        "service_tier": service_tier,
+        "reasoning": {"effort": "none"},
+        "instructions": system_prompt,
+        "input": user_message,
+        "max_output_tokens": TERRA_MAX_OUTPUT_TOKENS,
+        "text": {
+            "verbosity": "low",
+            "format": {
+                "type": "json_schema",
+                "name": "session_metadata",
+                "strict": True,
+                "schema": TERRA_OUTPUT_SCHEMA,
+            },
+        },
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=900) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    text = payload.get("output_text")
+    if not text:
+        chunks: list[str] = []
+        for item in payload.get("output", []):
+            for part in item.get("content", []) or []:
+                if part.get("type") in ("output_text", "text") and part.get("text"):
+                    chunks.append(part["text"])
+        text = "".join(chunks)
+
+    if not text.strip():
+        raise RuntimeError(
+            "empty output "
+            f"(status={payload.get('status')}, "
+            f"incomplete={payload.get('incomplete_details')})"
+        )
+
+    return json.loads(text), payload.get("usage", {})
+
+
+def _terra_call_with_retry(
+    user_message: str,
+    system_prompt: str,
+    logger: logging.Logger,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Call Terra on the Flex tier, backing off then falling back to default.
+
+    Flex is priced at half the standard rate but is preemptible: it returns
+    429/503 under load. Waits are 30/60/120 s, after which the call is retried
+    once on the default tier so a long backfill completes rather than aborting
+    at 90%. The fallback costs 2x for that one session and is logged.
+    """
+    import urllib.error
+
+    for attempt, wait in enumerate(TERRA_RETRY_WAITS, 1):
+        try:
+            return _terra_call(user_message, system_prompt, service_tier="flex")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (429, 503):
+                raise
+            logger.warning(
+                "Flex preempted (HTTP %d), attempt %d/%d — waiting %ds",
+                exc.code, attempt, len(TERRA_RETRY_WAITS), wait,
+            )
+            time.sleep(wait)
+
+    logger.warning("Flex unavailable after retries — falling back to default tier")
+    return _terra_call(user_message, system_prompt, service_tier="default")
+
+
+def _enrich_terra(
+    args: argparse.Namespace, logger: logging.Logger
+) -> None:
+    """Enrich archived sessions with Terra-generated metadata, in place.
+
+    Real-time and sequential: unlike the Haiku path there is no 24-hour batch
+    SLA to wait on, and Flex already buys the batch discount synchronously.
+    """
+    prompt_path = Path(args.prompt).expanduser()
+    if not prompt_path.exists():
+        logger.error("Prompt file not found: %s", prompt_path)
+        sys.exit(1)
+    system_prompt = prompt_path.read_text(encoding="utf-8")
+
+    distilled = _make_token_counter(logger)
+    unenriched = _find_unenriched_sessions(logger)
+    if not unenriched:
+        logger.info("All sessions already have metadata — nothing to enrich")
+        return
+
+    # Only enrich entries that clear the substance floor; below it there is
+    # nothing for a model to summarise (see MIN_CONTENT_TOKENS).
+    jobs: list[tuple[Path, dict[str, Any], str, int]] = []
+    skipped_thin = 0
+    for archive_dir, meta in unenriched:
+        jsonl_gz = archive_dir / "session.jsonl.gz"
+        if not jsonl_gz.exists():
+            logger.warning("No session.jsonl.gz in %s — skipping", archive_dir)
+            continue
+        with tempfile.NamedTemporaryFile(
+            suffix=".jsonl", delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            with gzip.open(jsonl_gz, "rb") as f_in:
+                tmp_path.write_bytes(f_in.read())
+            text = _distil_to_text(tmp_path, logger)
+            tokens = distilled(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        if tokens < MIN_CONTENT_TOKENS:
+            skipped_thin += 1
+            continue
+        jobs.append((archive_dir, meta, text, tokens))
+
+    if skipped_thin:
+        logger.info(
+            "Skipped %d entries below the %d-token substance floor",
+            skipped_thin, MIN_CONTENT_TOKENS,
+        )
+    if args.limit and args.limit > 0:
+        jobs = jobs[:args.limit]
+    if not jobs:
+        logger.info("Nothing to enrich above the substance floor")
+        return
+
+    # Cost projection. chars/4 runs ~11% under a real tokenizer (measured
+    # against the 2026-07-28 Terra usage records), so scale before reporting
+    # rather than quoting a number known to be low.
+    est_input = int(sum(t for *_, t in jobs) * 1.11)
+    in_rate = TERRA_INPUT_PRICE_PER_MTOK * TERRA_FLEX_DISCOUNT
+    out_rate = TERRA_OUTPUT_PRICE_PER_MTOK * TERRA_FLEX_DISCOUNT
+    est_cost = est_input * in_rate / 1e6 + len(jobs) * 280 * out_rate / 1e6
+
+    print("\n" + "=" * 60)
+    print("TERRA ENRICHMENT — API CALL REVIEW")
+    print("=" * 60)
+    print(f"Model            : {TERRA_MODEL} (OpenAI Responses API)")
+    print("Mode             : real-time, sequential, service_tier=flex")
+    print(f"Calls            : {len(jobs)}")
+    print(f"Est. input tokens: {est_input:,} (chars/4 x 1.11 calibration)")
+    print(f"Rates            : ${in_rate}/Mtok in, ${out_rate}/Mtok out (flex)")
+    print(f"ESTIMATED COST   : ${est_cost:.2f}")
+    print("=" * 60)
+
+    if args.dry_run:
+        print("\n[DRY RUN] No API calls made.")
+        return
+
+    if not args.yes:
+        if input("\nProceed with live API calls? [y/N] ").strip().lower() != "y":
+            print("Aborted.")
+            return
+
+    applied = 0
+    failed = 0
+    usage_rows: list[dict[str, Any]] = []
+    responses_dir = Path(args.responses_out).expanduser() / "terra"
+    # A manifest of what was sent, so the validator can check the generated
+    # project tag against ground truth rather than skipping that check.
+    manifest_rows: list[dict[str, Any]] = [
+        {
+            "session_id": (m.get("session") or {}).get("id", "unknown"),
+            "project": (m.get("project") or {}).get("name", "unknown"),
+            "content_tokens": t,
+            "archive_dir": str(d),
+        }
+        for d, m, _, t in jobs
+    ]
+
+    for i, (archive_dir, meta, text, tokens) in enumerate(jobs, 1):
+        session = meta.get("session") or {}
+        session_id = session.get("id", "unknown")
+        project = (meta.get("project") or {}).get("name", "unknown")
+        bin_label = (
+            "short" if tokens < 50_000
+            else "medium" if tokens < 120_000
+            else "long"
+        )
+        user_message = _build_terra_user_message(
+            session_id=session_id,
+            project=project,
+            started_at=session.get("started_at", ""),
+            bin_label=bin_label,
+            content_tokens=tokens,
+            transcript_text=text,
+        )
+
+        logger.info(
+            "[%d/%d] %s (%s, %s, %s tok)",
+            i, len(jobs), session_id[:8], project, bin_label, f"{tokens:,}",
+        )
+        try:
+            parsed, usage = _terra_call_with_retry(
+                user_message, system_prompt, logger
+            )
+        except Exception as exc:
+            logger.error("  FAILED %s: %s", session_id[:8], exc)
+            failed += 1
+            continue
+
+        usage_rows.append({
+            "session_id": session_id,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        })
+
+        # Persist the raw generated object next to the run, in the per-arm
+        # layout `scripts/validate-session-metadata.py --responses-dir`
+        # expects. Enrichment writes into the archive, so without this there
+        # would be nothing for the deterministic validator to gate on, and no
+        # record of what the model actually returned versus what was merged.
+        responses_dir.mkdir(parents=True, exist_ok=True)
+        (responses_dir / f"{session_id}.json").write_text(
+            json.dumps(parsed, indent=2), encoding="utf-8"
+        )
+
+        if _write_enriched_meta(archive_dir, parsed, logger):
+            applied += 1
+        else:
+            failed += 1
+
+    total_in = sum(r["input_tokens"] for r in usage_rows)
+    total_out = sum(r["output_tokens"] for r in usage_rows)
+    actual = total_in * in_rate / 1e6 + total_out * out_rate / 1e6
+
+    usage_path = LOG_DIR / "terra-enrich-usage.json"
+    usage_path.write_text(
+        json.dumps({
+            "model": TERRA_MODEL,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "applied": applied,
+            "failed": failed,
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "actual_cost_usd": round(actual, 4),
+            "sessions": usage_rows,
+        }, indent=2),
+        encoding="utf-8",
+    )
+
+    logger.info(
+        "\nTerra enrichment complete: %d applied, %d failed", applied, failed
+    )
+    logger.info(
+        "Billed tokens: %s in, %s out  ->  ACTUAL COST $%.2f "
+        "(estimated $%.2f)",
+        f"{total_in:,}", f"{total_out:,}", actual, est_cost,
+    )
+    logger.info("Usage detail: %s", usage_path)
+
+    if applied:
+        manifest_path = responses_dir.parent / "run-manifest.json"
+        manifest_path.write_text(
+            json.dumps({"sessions": manifest_rows}, indent=2), encoding="utf-8"
+        )
+        logger.info("Run manifest: %s", manifest_path)
+        print(
+            "\nNext:\n"
+            f"  ./venv/bin/python scripts/validate-session-metadata.py \\\n"
+            f"      --responses-dir {responses_dir.parent} \\\n"
+            f"      --manifest {manifest_path} --fail-on error\n"
+            "  ./venv/bin/python scripts/bulk-archive.py verify --fix-catalogue"
+        )
+
+
+def _distil_to_text(jsonl_path: Path, logger: logging.Logger) -> str:
+    """Distil a raw transcript to the text the extractor model is shown."""
+    extractor_path = Path(__file__).with_name("extract-transcript-text.py")
+    spec = importlib.util.spec_from_file_location(
+        "extract_transcript_text", str(extractor_path)
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {extractor_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.extract_transcript_text(str(jsonl_path))
+
+
+def _build_terra_user_message(
+    *,
+    session_id: str,
+    project: str,
+    started_at: str,
+    bin_label: str,
+    content_tokens: int,
+    transcript_text: str,
+) -> str:
+    """Session header + delimited transcript + output reminder.
+
+    Kept byte-identical in structure to the bake-off's ``_build_user_message``
+    so the arm that won on quality is the arm that actually runs. The
+    postamble repeats the output contract *after* the transcript because the
+    transcript can be 100K+ tokens and recency dominates.
+    """
+    header = (
+        "## Session metadata header (not authoritative — transcript wins)\n"
+        f"- Session ID: {session_id}\n"
+        f"- Project: {project}\n"
+        f"- Started at: {started_at}\n"
+        f"- Length bin: {bin_label}\n"
+        f"- Distilled content tokens (chars/4): {content_tokens:,}\n"
+    )
+    postamble = (
+        "## Output reminder\n\n"
+        "You have now read the complete transcript. Return a single JSON "
+        "object with keys ``title``, ``purpose``, ``tags``, and "
+        "``three_ps`` (an object with ``prompt_summary``, "
+        "``process_summary``, ``provenance_summary``). Field contracts "
+        "and anti-satisficing rules are in the system prompt; apply them.\n\n"
+        "You are an outside observer summarising the transcript. You are "
+        "not a participant. Do not continue the conversation."
+    )
+    return (
+        f"{header}\n"
+        f"<transcript>\n"
+        f"{transcript_text}\n"
+        f"</transcript>\n\n"
+        f"{postamble}\n"
+    )
+
+
+def _write_enriched_meta(
+    archive_dir: Path,
+    parsed: dict[str, Any],
+    logger: logging.Logger,
+) -> bool:
+    """Merge generated metadata into ``session.meta.json``.
+
+    Writes the three-Ps summaries in **both** places the schema carries them —
+    nested under ``auto_generated`` and at the top level — because the two are
+    read by different consumers and the legacy Haiku path populated neither.
+    ``extractor_model_id`` is corrected too: the archiver stamps a default of
+    ``gemini-3.5-flash``, which would otherwise misattribute this metadata to
+    a model that never saw the transcript.
+
+    Written via a temporary file and atomic replace, so an interrupted run
+    cannot leave a half-written metadata file behind.
+    """
+    meta_path = archive_dir / "session.meta.json"
+    if not meta_path.exists():
+        logger.warning("Meta file not found: %s", meta_path)
+        return False
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Cannot read %s: %s", meta_path, exc)
+        return False
+
+    three_ps = parsed.get("three_ps") or {}
+    normalised = {
+        "prompt_summary": three_ps.get("prompt_summary", ""),
+        "process_summary": three_ps.get("process_summary", ""),
+        "provenance_summary": three_ps.get("provenance_summary", ""),
+    }
+
+    existing = meta.get("auto_generated") or {}
+    meta["auto_generated"] = {
+        **existing,
+        "title": parsed.get("title", "Untitled Session"),
+        "purpose": parsed.get("purpose", ""),
+        "tags": parsed.get("tags", []),
+        "three_ps": normalised,
+    }
+    meta["three_ps"] = normalised
+    meta["extractor_model_id"] = TERRA_MODEL
+
+    try:
+        tmp = meta_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        tmp.replace(meta_path)
+    except OSError as exc:
+        logger.warning("Cannot write %s: %s", meta_path, exc)
+        return False
+    return True
+
+
 def cmd_enrich(args: argparse.Namespace, logger: logging.Logger) -> None:
-    """Run the enrich mode: batch submit or batch apply."""
+    """Run the enrich mode: Terra in-place, or Haiku batch submit/apply."""
     load_env()
+
+    if args.provider == "terra":
+        if args.batch_submit or args.batch_apply:
+            logger.error(
+                "--provider terra runs real-time; it takes neither "
+                "--batch-submit nor --batch-apply"
+            )
+            sys.exit(1)
+        _enrich_terra(args, logger)
+        return
 
     if args.batch_apply:
         _enrich_apply(args.batch_apply, logger)
@@ -1214,6 +1997,26 @@ def main() -> None:
         "--min-turns", type=int, default=5,
         help="Minimum turns to keep (default: 5)",
     )
+    p_discover.add_argument(
+        "--min-content-tokens", type=int, default=0,
+        help=(
+            "Keep sessions whose DISTILLED transcript is at least N tokens, "
+            "instead of filtering on turn count. Strongly preferred: "
+            f"--min-content-tokens {MIN_CONTENT_TOKENS} is the vetted floor. "
+            "The turn-count default discards long single-exchange sessions "
+            "(measured: 56 of 77 substantive sessions lost at --min-turns 5)."
+        ),
+    )
+    p_discover.add_argument(
+        "--source-root", type=Path, default=CLAUDE_PROJECTS_DIR,
+        help=(
+            "Transcript store to scan. Accepts the live layout "
+            "(<root>/<cwd-key>/*.jsonl) or a merged multi-machine snapshot "
+            "(<root>/<machine>/<cwd-key>/*.jsonl). Default: "
+            "~/.claude/projects. Use the snapshot when sessions from another "
+            "machine must be included — the two stores are disjoint."
+        ),
+    )
 
     # archive
     p_archive = subparsers.add_parser(
@@ -1227,6 +2030,14 @@ def main() -> None:
     p_archive.add_argument(
         "--min-turns", type=int, default=5,
         help="Minimum turns for discovery fallback (default: 5)",
+    )
+    p_archive.add_argument(
+        "--source-root", type=Path, default=CLAUDE_PROJECTS_DIR,
+        help="As for `discover` (used only by the discovery fallback).",
+    )
+    p_archive.add_argument(
+        "--min-content-tokens", type=int, default=0,
+        help="As for `discover` (used only by the discovery fallback).",
     )
 
     # enrich
@@ -1244,6 +2055,38 @@ def main() -> None:
     p_enrich.add_argument(
         "--limit", type=int, default=0,
         help="Enrich at most N sessions (0 = all)",
+    )
+    p_enrich.add_argument(
+        "--provider", choices=("haiku", "terra"), default="haiku",
+        help=(
+            "Extractor to use. 'terra' (OpenAI GPT-5.6 Terra, real-time Flex) "
+            "is the model chosen by the 2026-07-28 blinded bake-off; 'haiku' "
+            "is the legacy Anthropic Batch path and writes no three-Ps "
+            "summaries. Default 'haiku' for backwards compatibility."
+        ),
+    )
+    p_enrich.add_argument(
+        "--prompt", type=Path,
+        default=(
+            PA_DIR / "data/experiments/bake-off-metadata-2026-05-18/prompt.md"
+        ),
+        help="System prompt for the extractor (terra provider).",
+    )
+    p_enrich.add_argument(
+        "--dry-run", action="store_true",
+        help="Report the cost projection and make no API calls.",
+    )
+    p_enrich.add_argument(
+        "--yes", action="store_true",
+        help="Skip the interactive confirmation before live API calls.",
+    )
+    p_enrich.add_argument(
+        "--responses-out", type=Path,
+        default=LOG_DIR / "terra-enrich-responses",
+        help=(
+            "Directory for raw generated objects, written in the per-arm "
+            "layout validate-session-metadata.py expects."
+        ),
     )
 
     # verify

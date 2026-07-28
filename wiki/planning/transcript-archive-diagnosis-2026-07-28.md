@@ -181,6 +181,11 @@ two divergently-titled copies of one session, of which the metadata may differ.
 
 ## 7. Error shape 4 — the genuine gap
 
+> **CORRECTION (2026-07-28, later session — backfill run).** The 224 figure and the
+> table below **overcount, by 147**. Two filters were missing; the corrected count of
+> sessions actually warranting a backfill is **77**. Details in §7a. The table below is
+> left unedited as the original record; read §7a before using any number in it.
+
 **224 raw sessions have no archive entry anywhere** (of 951 distinct raw sessions across
 both machines). By cwd-key:
 
@@ -231,6 +236,85 @@ Dates from JSONL content, not mtime:
 **Twelve form a contiguous 4–15 February cluster.** Sixteen of the nineteen exist only on
 zbook — so an amd-tower-only re-archive would recover three of them and silently miss the
 rest. The 2026-07-27 entry is yesterday's and may simply not have been archived yet.
+
+---
+
+## 7b. The gap, corrected: 224 → 77 (backfill session, 2026-07-28)
+
+Re-derived from the same snapshot with the same method, immediately before spending on
+the backfill. Every subtraction below is reproducible from
+`~/backups/claude-raw-transcripts-2026-07-28/` and `~/cc-archives/`.
+
+| Step | N | Why |
+|---|--:|---|
+| Gap entries at re-derivation | 223 | 951 raw − 728 archived |
+| − subagent transcripts | −75 | `agentId` + `isSidechain: true` + a *parent* `sessionId` |
+| − below the substance floor | −71 | distilled transcript < 1,000 tokens |
+| **Backfillable sessions** | **77** | 4,705,367 distilled tokens |
+
+**224 → 223.** Not a discrepancy: the session that produced this document archived
+itself at its own `/handoff` (`archived_at 2026-07-28T17:22:34`, filed as
+`personal-assistant/2026-07-27T03-04_consolidate-map-reader-archives-run-5-arm`).
+
+**The 75 subagent transcripts.** §2's method excludes the `subagents/` *directory*, but
+agent transcripts also sit at the **top level** as `agent-*.jsonl`, and those were
+counted as sessions. They are not sessions: each carries an `agentId`, `isSidechain:
+true`, and a `sessionId` pointing at its parent — they are archived *inside* the parent
+entry, so they can never have an archive entry of their own. This wholly accounts for
+two rows of the §7 table: the external drive (**55**, i.e. every one of them) and
+`trap-extraction` (**14**, likewise every one). Neither row represents a missing session,
+and the external-drive layout question those 55 appeared to raise does not exist.
+
+**The 71 below the floor.** Verified by inspection, not assumed. A recurring extract of
+*exactly* 64 tokens across unrelated projects looked like extractor failure; it is not.
+Those transcripts contain a `mode` record, a `file-history-snapshot`, an injected
+`attachment` (often ~55 KB, which is why raw byte size misleads), and a single
+`<command-name>/clear</command-name>` or `/exit` — the only "user text" is the
+local-command caveat boilerplate. The remainder are one- or two-turn exchanges
+("can you pull this repo?"). The distiller is correct and the floor is doing its job.
+
+**Disposition of the 71: skipped, deliberately** (Shawn, 2026-07-28). They stay
+un-archived. This is recorded here so a future source↔destination reconciliation check
+(§9.5) does not re-flag them as a gap: **archive ⊊ raw is the intended steady state**,
+and the floor is the reason. A reconciliation check should compare against
+*substantive* raw sessions, not all raw sessions, or it will report 71 false positives
+forever.
+
+**Turn count is not a substance proxy.** `bulk-archive.py` filtered triviality on
+`--min-turns 5`, which discarded **56 of the 77** — including a 205,848-token
+`llm-reproducibility` session with **two** turns, and 15 others above 50,000 tokens. One
+long analytical exchange is a single turn, so the turn test drops exactly the sessions
+whose metadata is most worth having. Replaced with `--min-content-tokens`, measured on
+the distilled text.
+
+**Corrected breakdown of the 77** (`project.name` as filed):
+
+| n | Project | | n | Project |
+|--:|---|---|--:|---|
+| 19 | fieldmark-docs-staging | | 2 | gemma-project → `_legacy/` |
+| 12 | personal-assistant | | 2 | Code → `_legacy/` |
+| 10 | llm-reproducibility | | 2 | LLM-History-Paper |
+| 8 | map-reader-llm | | 1 | inscriptions |
+| 8 | 2026-mq-llm-dh-judgement-paper-b | | 1 | client-materials |
+| 6 | shawn → `_legacy/` | | 1 | Groundsite-EFN-Planning |
+| 3 | ANU-HUMN8031-2026 | | 1 | FAIMS3 |
+| | | | 1 | vivienne |
+
+**theseus-ship contributes zero.** Its 60 entries and LLM-History-Paper's 12 already sit
+in a single `LLM-History-Paper/` directory; the split is the `project.name` *field*, not
+the location — an archive-side question this backfill does not touch, consistent with
+Shawn's ruling that the fragmentation is user confusion over repo boundaries, not a
+rename. LLM-History-Paper's 8 gap sessions reduce to **2** above the floor.
+
+**Machine skew — the operational trap.** **55 of the 77 exist only on zbook.** Discovery
+run against amd-tower's live `~/.claude` would have archived 22 of 77, including 1 of
+map-reader's 8, and reported success. `bulk-archive.py` hardcoded `~/.claude/projects`
+with no override; it now takes `--source-root` and detects the merged-snapshot layout.
+**Raw-first is not a preference here, it is a correctness requirement.**
+
+**Audit relevance (map-reader).** 19 gap sessions → 8 substantive. Seven fall in the
+contiguous 4–15 Feb cluster (~373K distilled tokens); the eighth is 2026-07-27. Every
+map-reader gap session from March onward is below the floor.
 
 ---
 
@@ -313,5 +397,15 @@ depend on the index at all.
    recovery, and not a pipeline fix.
 5. **For Thursday's class-fix:** the target is now specified rather than symptomatic. A
    source↔destination reconciliation check (the same fix shape already identified for the
-   memory JSONL) would have caught all 224 gap sessions and all 77 double-archives at the
-   moment they occurred.
+   memory JSONL) would have caught the gap sessions and all 77 double-archives at the
+   moment they occurred. **Two design constraints, learned from §7b:** it must compare
+   *substantive* sessions only (top-level `agent-*.jsonl` are not sessions, and sessions
+   below the distilled-token floor are skipped by design), and it must read the **union
+   of both machines' raw stores** — a single-machine check would have reported the archive
+   complete while 55 of 77 sessions were missing.
+6. **The catalogue must never be the dedup key.** On 2026-07-28 `CATALOG.json` held 539
+   entries against 728 session ids on disk. `bulk-archive.py` deduplicated discovery
+   against the catalogue, so a backfill run would have **re-archived 189 already-archived
+   sessions** — manufacturing precisely the double-archiving-with-divergent-titles defect
+   of §6. Discovery now walks `session.meta.json` on disk; the catalogue is a derived
+   index, regenerated by `verify --fix-catalogue`.
