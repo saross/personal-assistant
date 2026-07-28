@@ -316,6 +316,53 @@ with no override; it now takes `--source-root` and detects the merged-snapshot l
 contiguous 4–15 Feb cluster (~373K distilled tokens); the eighth is 2026-07-27. Every
 map-reader gap session from March onward is below the floor.
 
+### 7c. Backfill outcome (same session)
+
+**Archived: 77 of 77, zero failures**, 146 subagents alongside. Ten entries were
+relocated to `_legacy/{shawn,Code,gemma-project}/` to match existing precedent rather
+than opening new top-level directories.
+
+**Enriched with Terra: 80 of 83** (the 77 plus 6 pre-existing unenriched archives that
+also clear the floor, minus 3 blocked). **Actual cost $8.45** against an $8.58 estimate;
+the chars/4 × 1.11 calibration held to 1.5%.
+
+**Three sessions were refused by OpenAI's content filter** (`invalid_prompt`, "Request
+blocked") and remain unenriched: `6dacb961`, `f6b6552b`, `176e00cb`, all under
+`_legacy/shawn/`. Their content is entirely benign — locating an Ollama Modelfile for
+`gpt-oss:20b`, editing it in place, and inventorying ten locally installed models for
+archaeology and digital-humanities research. The likeliest trigger is the local-model /
+Modelfile subject matter. **This is a standing cost of a third-party extractor over a
+corpus about LLM experimentation**, which is a substantial share of this one: budget for
+a small refusal rate (here 3.6%) and a fallback provider, and note that the failure is
+deterministic, so retrying is pointless. The adapter now surfaces the API's own
+`code` rather than a bare `HTTP 400`, which is what made this diagnosable at all.
+
+**Validator gate: 6 errors → 1**, and the survivor is a true positive that needs no
+regeneration. Of the six `tag-project` errors, four were cross-reference tags on sessions
+that *also* carried their own project tag (a time-tracking session naming the projects
+whose hours it logged; a standup naming the paper it protected time for), and one was the
+Fieldmark/FAIMS3 synonym. Both were validator gaps, now fixed: severity turns on whether
+the session's own project tag is present, per the check's own stated harm, and
+`fieldmark-docs-staging ↔ faims3` is aliased like `map-reader-llm ↔
+vlm-burial-mound-detection`. The remaining error, `922bf6ff`, is **not a metadata
+defect** — the metadata correctly describes a personal-assistant standup; the session was
+merely *launched* from `~/Code/ANU-HUMN8031-2026` and is archived there. That is error
+shape 2, and relocating it is a deliberate migration decision, not a validator fix.
+
+**Catalogue rebuild is depth-2 only — B6, now measured exactly.** After
+`verify --fix-catalogue`, `CATALOG.json` holds 739 entries: precisely the number of
+`session.meta.json` files at depth 2. All 267 nested metas (246 at depth 3, 21 at depth
+4) are invisible to it, leaving **95 on-disk sessions uncatalogued**, chiefly
+`LLM-History-Paper/theseus-ship` (59) and the `_legacy/` subtree. Consequence for this
+backfill: the 10 entries relocated into `_legacy/` are archived but uncatalogued until
+B6 is fixed. Following precedent was still right — retrieval is raw-first and the
+catalogue is a derived index — but the trade is real and should not be rediscovered.
+
+**Postgres re-index deliberately NOT run.** `verify` recommends
+`sync-sessions-to-postgres.py --full-resync`, but the B7 indexer defect
+(`scripts/index-session-content.py:105`) is still unfixed, so a re-index now would bake
+the role mislabelling back into `session_chunks`. Re-index after B7, not before.
+
 ---
 
 ## 7a. Error shape 5 — role mislabelling is an INDEXER defect (B7, characterised)

@@ -1218,6 +1218,7 @@ def _terra_call(
 
     ``store=False`` keeps transcript content out of OpenAI's retained storage.
     """
+    import urllib.error
     import urllib.request
 
     api_key = os.environ.get("OPENAI_API_KEY_PA_AMDT")
@@ -1253,8 +1254,20 @@ def _terra_call(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=900) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=900) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Re-raise with the API's own explanation attached. A bare
+        # "HTTP Error 400: Bad Request" is indistinguishable between a
+        # malformed request and a moderation block, and the two need
+        # completely different responses — the body carries `code`, e.g.
+        # `invalid_prompt` for a content-filter refusal.
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            detail = "<no body>"
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
 
     text = payload.get("output_text")
     if not text:
@@ -1287,17 +1300,19 @@ def _terra_call_with_retry(
     once on the default tier so a long backfill completes rather than aborting
     at 90%. The fallback costs 2x for that one session and is logged.
     """
-    import urllib.error
-
     for attempt, wait in enumerate(TERRA_RETRY_WAITS, 1):
         try:
             return _terra_call(user_message, system_prompt, service_tier="flex")
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (429, 503):
+        except RuntimeError as exc:
+            # Only Flex preemption is worth retrying. A moderation block
+            # (`invalid_prompt`) is deterministic — retrying it just burns
+            # three waits to fail identically.
+            message = str(exc)
+            if not (message.startswith("HTTP 429") or message.startswith("HTTP 503")):
                 raise
             logger.warning(
-                "Flex preempted (HTTP %d), attempt %d/%d — waiting %ds",
-                exc.code, attempt, len(TERRA_RETRY_WAITS), wait,
+                "Flex preempted, attempt %d/%d — waiting %ds",
+                attempt, len(TERRA_RETRY_WAITS), wait,
             )
             time.sleep(wait)
 

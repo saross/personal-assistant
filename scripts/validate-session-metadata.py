@@ -175,6 +175,14 @@ def load_truth(manifest_path: Path | None) -> dict[str, SessionTruth]:
         # (2026-07-28) means older metadata may legitimately carry either name.
         if project == "map-reader-llm":
             aliases.add("vlm-burial-mound-detection")
+        # Fieldmark is the product name for FAIMS3; the documentation repo and
+        # the software it documents are the same subject, so a session tagged
+        # `faims3` is correctly, not wrongly, tagged. Without this, accurate
+        # metadata is reported as a misfile.
+        if project == "fieldmark-docs-staging":
+            aliases.update({"faims3", "fieldmark"})
+        elif project == "FAIMS3":
+            aliases.update({"fieldmark", "fieldmark-docs-staging"})
         truth[entry["session_id"]] = SessionTruth(
             session_id=entry["session_id"],
             project=project,
@@ -301,12 +309,38 @@ def check_tags(
         own = {a.lower() for a in truth.aliases}
         foreign = sorted((set(normalised) & known_projects) - own)
         if foreign:
-            out.append(Finding(
-                arm, sid, "tag-project", "error",
-                f"tags name a different project than the session's "
-                f"({truth.project}) — misfiles the session",
-                foreign,
-            ))
+            # Severity turns on whether the session's OWN project is also
+            # tagged, because that is what the check's stated harm depends on:
+            # "a session tagged with the wrong project is effectively
+            # invisible in the project it belongs to."
+            #
+            # Own tag present -> the session IS findable under its own
+            # project, and the extra names are cross-references. Measured on
+            # the 2026-07-28 backfill, every such case was legitimate: a
+            # multi-project time-tracking session tagging the projects whose
+            # hours it logged, a standup tagging the paper it protected time
+            # for. Erroring on these would train readers to ignore the check.
+            #
+            # Own tag absent -> the stated harm is real, and it is worth an
+            # error even though the *metadata* may be accurate: on this
+            # corpus the true positive was a session launched from one repo
+            # whose work belonged entirely to another, i.e. genuine
+            # cross-project misfiling of the archive entry itself.
+            if own & set(normalised):
+                out.append(Finding(
+                    arm, sid, "tag-project", "warning",
+                    f"tags name other projects alongside the session's own "
+                    f"({truth.project}) — cross-reference, not a misfile",
+                    foreign,
+                ))
+            else:
+                out.append(Finding(
+                    arm, sid, "tag-project", "error",
+                    f"tags name a different project than the session's "
+                    f"({truth.project}) and omit its own — misfiles the "
+                    f"session",
+                    foreign,
+                ))
     return out
 
 
