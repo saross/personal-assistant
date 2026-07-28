@@ -95,6 +95,55 @@ review of Brian Ballsun-Stanton's
   canonical layout, migrate, confirm `/search-sessions` indexes the
   lot. (~1–2 h)
 
+- [ ] **B7. Role/speaker mislabelling in archived transcripts.** *(Added
+  2026-07-28, Shawn — found in use, severity: serious.)* Archived
+  transcripts carry **incorrect metadata on who said what** — e.g. an
+  **agent output labelled as `user`**. Distinct from B3 (which verifies
+  *identifiers inside* content); this is wrong **role attribution on the
+  turn itself**, so it corrupts the record at a more basic level.
+  Downstream blast radius is wide and mostly silent: memory extraction
+  attributes Claude's statements to Shawn (and vice versa),
+  `/search-sessions` returns misattributed hits, and the Three Ps audit's
+  attribution dimension was scored against data that may itself be wrong.
+  **Scope first, then fix:** how many archives are affected, is the bug
+  ongoing or historical, and can it be corrected in place from the raw
+  JSONL. (Estimate unknown until scoped.)
+- [ ] **B8. Un-archived transcript batches (source→destination gap).**
+  *(Added 2026-07-28, Shawn — found in use, severity: serious.)* Batches
+  of transcripts exist in the raw `~/.claude` JSONL but are **absent from
+  cc-archives entirely**. **Not the same as B6** — B6 is archived-but-
+  mis-filed (257 metas in nested locations the catalogue misses); this is
+  **never archived at all**.
+  **This is the third system in this repo to exhibit the same failure
+  class:** a pipeline where the source holds records the destination
+  does not, with **no reconciliation check to detect the gap**. The other
+  two are the memory JSONL's pre-commit losses (three instances, one
+  recovered PG→JSONL 2026-07-23) and the below-cursor splice problem
+  (two instances). The fix already identified for memories — **fix (b), a
+  periodic source↔destination id-diff integrity check** (`tasks/inbox.md`,
+  2026-07-15 row) — is the *same fix shape* here. Strong candidate to
+  build once as a general reconciliation pattern and apply to both,
+  rather than twice bespoke.
+  **PRIORITY RAISED 2026-07-28 (Shawn): B7 + B8 are URGENT and blocking, not
+  Thursday work.** The triage question below was answered by use, not by
+  inspection:
+  - **They block the map-reader audit.** The audit is finding
+    **confabulations in the reasoning/explanation recorded in intermediate
+    documentation**. Per Paper B's own finding, the **external grounding
+    exists only in the transcripts** — so the transcript archive *is* the
+    audit's evidence base. B7's mislabelling blocks *retrieving* the
+    relevant transcripts; B8's gap means some grounding may be unreachable.
+  - **Data-loss risk is live.** The raw JSONL survives only because Shawn
+    has held off purging old transcripts and has not shortened the
+    retention period. That is luck, not a safeguard, and it argues for
+    **containment (snapshot the raw JSONL) before any repair touches
+    anything**.
+
+  *(Original triage note, now superseded by the above: is anything being
+  LOST, or only un-archived? If raw JSONL were intact and guaranteed, this
+  would be a data-quality problem with no clock. It is neither guaranteed
+  nor clock-free.)*
+
 ## C. Extractor quality fixes (auto_metadata prompt + pipeline)
 
 Audit baseline (40 entries): zero extractor confabulation (125/126
