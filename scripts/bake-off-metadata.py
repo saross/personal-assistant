@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import hashlib
 import json
 import os
 import sys
@@ -62,7 +63,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
-GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
+LUNA_MODEL = "gpt-5.6-luna"
 MAX_OUTPUT_TOKENS = 1024  # JSON object — well under any provider ceiling.
 
 # Anthropic Haiku 4.5 list price (USD per million tokens). Batch is -50%.
@@ -70,15 +72,60 @@ HAIKU_INPUT_PRICE_PER_MTOK = 1.00
 HAIKU_OUTPUT_PRICE_PER_MTOK = 5.00
 HAIKU_BATCH_DISCOUNT = 0.50
 
-# Gemini Flex list price (USD per million tokens). Values below are the
-# 2026-05-17-verified Gemini 3 Flash Preview numbers; Shawn confirmed
-# 2026-05-23 that Gemini 3.5 Flash is ~3× the Preview rate (so input
-# ~0.75, output ~4.50). **Re-verify against
-# https://ai.google.dev/gemini-api/docs/pricing#flex before any live
-# bake-off run** — preview-tier prices have shifted on short notice in
-# the past, and these constants drive every cost estimate in this file.
-GEMINI_FLEX_INPUT_PRICE_PER_MTOK = 0.25
-GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK = 1.50
+# Gemini 3.6 Flash, Flex tier (USD per million tokens).
+# **Re-verified 2026-07-28** against https://ai.google.dev/gemini-api/docs/pricing
+# — Flex and Batch are priced identically for this model (both 50% off the
+# standard $1.50 / $7.50), so Flex buys the batch discount at real-time latency.
+#
+# NOTE — these constants were previously 0.25 / 1.50, the Gemini 3 Flash
+# *Preview* rate. The prior comment already recorded that the real rate was
+# ~3× that and the code was never updated to match, so every cost estimate this
+# file produced before today under-counted by roughly 3×. Corrected here.
+GEMINI_FLEX_INPUT_PRICE_PER_MTOK = 0.75
+GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK = 3.75
+
+# OpenAI GPT-5.6 Luna list price (USD per million tokens), verified 2026-07-28
+# against https://developers.openai.com/api/docs/pricing. Batch is -50%; this
+# arm runs real-time, so the standard rate applies and the comparison against
+# Gemini Flex is deliberately conservative *against* Luna.
+LUNA_INPUT_PRICE_PER_MTOK = 1.00
+LUNA_OUTPUT_PRICE_PER_MTOK = 6.00
+LUNA_BATCH_DISCOUNT = 0.50
+
+# OpenAI GPT-5.6 Terra, verified 2026-07-28 (same source as Luna). 2.5x Luna
+# on both input and output — the mid-tier of the 5.6 family.
+TERRA_MODEL = "gpt-5.6-terra"
+TERRA_INPUT_PRICE_PER_MTOK = 2.50
+TERRA_OUTPUT_PRICE_PER_MTOK = 15.00
+
+# Anthropic Claude Sonnet 5, verified 2026-07-28 against the Anthropic model
+# reference. List price is 3.00/15.00, but INTRODUCTORY pricing of 2.00/10.00
+# runs through 2026-08-31 -- the rates below are the intro rates, so they go
+# STALE on 1 Sep 2026 and must be raised to 3.00/15.00 then. Batch is -50%;
+# this arm runs real-time like the Haiku arm, so the standard rate applies.
+SONNET_MODEL = "claude-sonnet-5"
+SONNET_INPUT_PRICE_PER_MTOK = 2.00
+SONNET_OUTPUT_PRICE_PER_MTOK = 10.00
+
+# Provider -> (model id, input $/MTok, output $/MTok) at the discounted tier
+# each provider can actually reach for this workload. Haiku is listed at its
+# STANDARD rate because the 2026-07-28 four-arm run used the real-time
+# Messages API, not Batch: a 24-hour Batch SLA would have made the Haiku arm
+# non-comparable with three same-day real-time arms, and at this volume the
+# 50% discount is worth well under a dollar. Haiku's Batch rate (0.50/2.50)
+# remains available for production backfills.
+PROVIDER_SPECS: dict[str, tuple[str, float, float]] = {
+    "luna": (LUNA_MODEL, LUNA_INPUT_PRICE_PER_MTOK * LUNA_BATCH_DISCOUNT,
+             LUNA_OUTPUT_PRICE_PER_MTOK * LUNA_BATCH_DISCOUNT),
+    "terra": (TERRA_MODEL, TERRA_INPUT_PRICE_PER_MTOK * LUNA_BATCH_DISCOUNT,
+              TERRA_OUTPUT_PRICE_PER_MTOK * LUNA_BATCH_DISCOUNT),
+    "gemini": (GEMINI_MODEL, GEMINI_FLEX_INPUT_PRICE_PER_MTOK,
+               GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK),
+    "haiku-rt": (HAIKU_MODEL, HAIKU_INPUT_PRICE_PER_MTOK,
+                 HAIKU_OUTPUT_PRICE_PER_MTOK),
+    "sonnet-5": (SONNET_MODEL, SONNET_INPUT_PRICE_PER_MTOK,
+                 SONNET_OUTPUT_PRICE_PER_MTOK),
+}
 
 # Wait pattern for Flex preemption (HTTP 503) retries.
 FLEX_RETRY_WAITS_SECONDS = (30, 60, 120)
@@ -286,6 +333,11 @@ def estimate_cost_usd(
     elif provider == "gemini":
         in_rate = GEMINI_FLEX_INPUT_PRICE_PER_MTOK
         out_rate = GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK
+    elif provider in PROVIDER_SPECS:
+        # Flex tier is priced identically to Batch on OpenAI (0.5x standard),
+        # so the OpenAI arms get the batch discount at real-time latency —
+        # the same bargain the Gemini arm takes via Google's Flex tier.
+        _, in_rate, out_rate = PROVIDER_SPECS[provider]
     else:
         raise ValueError(f"unknown provider: {provider}")
 
@@ -517,12 +569,25 @@ def gemini_call_once(
             "service_tier": "flex",
             "max_output_tokens": MAX_OUTPUT_TOKENS,
             "system_instruction": system_prompt,
-            # Gemini 3 Flash is a reasoning model — without this, thinking
+            # Gemini 3.6 Flash is a reasoning model — without this, thinking
             # tokens consume the output budget before any visible JSON is
-            # emitted. ``thinking_budget=0`` disables thinking, giving us
-            # straight JSON output and a closer apples-to-apples match with
-            # Haiku 4.5 (which has no thinking mode).
-            "thinking_config": {"thinking_budget": 0},
+            # emitted (observed directly: max_output_tokens=64 with default
+            # thinking returns empty text).
+            #
+            # **API CHANGE, found 2026-07-28.** The previous
+            # ``{"thinking_budget": 0}`` is REJECTED by gemini-3.6-flash with
+            # 400 INVALID_ARGUMENT — thinking can no longer be switched off
+            # outright. Probed the alternatives on the live API:
+            #   thinking_level=minimal  -> no thinking tokens reported
+            #   thinking_level=low      -> ~80 thinking tokens
+            #   thinking_budget=128     -> ~59 thinking tokens
+            #   default (unset)         -> ~82 thinking tokens
+            # ``minimal`` is therefore the closest available equivalent to the
+            # old budget=0 and is what keeps this arm comparable with the Luna
+            # arm (reasoning.effort="none"). It also matters for cost: Gemini
+            # bills thinking at the OUTPUT rate, so an unset thinking config
+            # silently inflates the bill.
+            "thinking_config": {"thinking_level": "minimal"},
         },
     )
     return response.text
@@ -606,6 +671,269 @@ def gemini_run(
             json.dumps(parsed, indent=2) + "\n"
         )
     print(f"[gemini] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI GPT-5.6 Luna adapter (Responses API, Flex tier)
+# ---------------------------------------------------------------------------
+
+
+def luna_call_once(
+    user_message: str, system_prompt: str, *, service_tier: str = "flex",
+    model: str = LUNA_MODEL,
+) -> tuple[str, dict[str, Any]]:
+    """Single Responses-API call. Returns ``(text, usage)``.
+
+    Uses the **Responses API** (``POST /v1/responses``) rather than Chat
+    Completions: OpenAI's guidance is that "Responses is recommended for all
+    new projects", and reasoning models behave better on it. Verified
+    2026-07-28 against developers.openai.com/api/docs/guides/migrate-to-responses.
+
+    Deliberate parameter choices, each with a reason:
+
+    - ``store=False`` — every call is independent; nothing is retained
+      server-side. Keeps the arm stateless and avoids leaving transcript
+      content in OpenAI's storage.
+    - ``reasoning.effort="none"`` — **symmetry with the Gemini arm**, which
+      sets ``thinking_budget=0``. Reasoning tokens bill at the *output* rate,
+      so leaving the default ``medium`` would both inflate cost and give Luna
+      a capability the Gemini arm was denied. Fair comparison requires both
+      reasoning modes off.
+    - ``text.verbosity="low"`` — fewer output tokens for schema-shaped output.
+    - **No ``text.format`` JSON schema.** OpenAI can *guarantee* schema-valid
+      JSON via structured outputs, but the Gemini and Haiku arms parse
+      free-form JSON out of prose. Handing Luna a hard guarantee the others
+      lack would measure the feature, not the model. Production should switch
+      the winner to ``text.format`` — it eliminates parse failures outright.
+    - ``service_tier="flex"`` — priced identically to Batch (0.5x standard)
+      but synchronous, matching the Gemini Flex arm. Flex is in beta and may
+      return 429; the caller falls back to the default tier.
+
+    No SDK dependency: the toolkit deliberately avoids extra packages, so this
+    speaks HTTP directly like the rest of the file's minimal-dependency style.
+    """
+    import urllib.error
+    import urllib.request
+
+    api_key = os.environ.get("OPENAI_API_KEY_PA_AMDT")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY_PA_AMDT not set (expected in personal-assistant/.env)"
+        )
+    body = {
+        "model": model,
+        "store": False,
+        "service_tier": service_tier,
+        "reasoning": {"effort": "none"},
+        "instructions": system_prompt,
+        "input": user_message,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "text": {"verbosity": "low"},
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=900) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    # Responses returns a typed output array; prefer the convenience field.
+    text = payload.get("output_text")
+    if not text:
+        chunks: list[str] = []
+        for item in payload.get("output", []):
+            for part in item.get("content", []) or []:
+                if part.get("type") in ("output_text", "text") and part.get("text"):
+                    chunks.append(part["text"])
+        text = "".join(chunks)
+    return text, payload.get("usage", {})
+
+
+def luna_call_with_retry(
+    user_message: str, system_prompt: str, *, model: str = LUNA_MODEL
+) -> tuple[str, dict[str, Any]]:
+    """Flex call with backoff on 429, falling back to the default tier.
+
+    OpenAI documents Flex as returning ``429 Resource Unavailable`` under
+    contention, explicitly *without* charging for the failed call. We retry on
+    the same waits the Gemini arm uses, then degrade to the default tier so a
+    busy Flex pool cannot stall the bake-off. The tier actually used is
+    reported so the cost estimate can be corrected afterwards.
+    """
+    import urllib.error
+
+    last_exc: Exception | None = None
+    for attempt, wait_seconds in enumerate((0,) + FLEX_RETRY_WAITS_SECONDS):
+        if wait_seconds:
+            print(
+                f"[openai] flex unavailable; waiting {wait_seconds}s before retry "
+                f"(attempt {attempt + 1}/{len(FLEX_RETRY_WAITS_SECONDS) + 1})"
+            )
+            time.sleep(wait_seconds)
+        try:
+            return luna_call_once(user_message, system_prompt, service_tier="flex", model=model)
+        except urllib.error.HTTPError as exc:  # noqa: PERF203
+            last_exc = exc
+            if exc.code != 429:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+                raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    print("[openai] flex exhausted; falling back to default service tier")
+    return luna_call_once(user_message, system_prompt, service_tier="default", model=model)
+
+
+def luna_run(
+    requests: list[SessionRequest],
+    out_dir: Path,
+    system_prompt: str,
+    *,
+    model: str = LUNA_MODEL,
+    tag: str = "luna",
+) -> None:
+    """Run all requests sequentially against Luna; persist responses + usage.
+
+    Sequential by design, matching the Gemini arm: at ten requests the
+    wall-clock saving from concurrency is irrelevant, and sequential execution
+    keeps the two arms' timing comparable. For the production backfill this
+    should become the Batch API (same 50% discount, 24h window) — see the
+    plan doc; Tier-1 batch queue limits are 5M tokens, so a large run needs
+    splitting into waves.
+    """
+    n_ok = 0
+    n_fail = 0
+    usage_log: list[dict[str, Any]] = []
+    for i, r in enumerate(requests, 1):
+        print(
+            f"[{tag}] {i}/{len(requests)}  {r.session_id[:8]}  "
+            f"({r.bin}, {r.content_tokens:,} tokens) …"
+        )
+        try:
+            raw_text, usage = luna_call_with_retry(
+                r.user_message, system_prompt, model=model
+            )
+        except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
+            (out_dir / f"{r.session_id}.json").write_text(
+                json.dumps({"error": str(exc)}, indent=2) + "\n"
+            )
+            n_fail += 1
+            print(f"[{tag}]   failed: {exc}")
+            continue
+        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        usage_log.append({"session_id": r.session_id, **usage})
+        try:
+            parsed = parse_response_json(raw_text)
+            n_ok += 1
+        except ValueError as exc:
+            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            n_fail += 1
+        (out_dir / f"{r.session_id}.json").write_text(
+            json.dumps(parsed, indent=2) + "\n"
+        )
+    # Real billed usage beats any estimate — record it for the cost comparison.
+    (out_dir / "_usage.json").write_text(json.dumps(usage_log, indent=2) + "\n")
+    print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    billed_in = sum(u.get("input_tokens", 0) for u in usage_log)
+    billed_out = sum(u.get("output_tokens", 0) for u in usage_log)
+    reasoning = sum(
+        (u.get("output_tokens_details") or {}).get("reasoning_tokens", 0)
+        for u in usage_log
+    )
+    print(
+        f"[{tag}] billed: {billed_in:,} input, {billed_out:,} output "
+        f"({reasoning:,} of which reasoning)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Haiku adapter — REAL-TIME (Messages API)
+# ---------------------------------------------------------------------------
+
+
+def haiku_rt_run(
+    requests: list[SessionRequest],
+    out_dir: Path,
+    system_prompt: str,
+    *,
+    model: str = HAIKU_MODEL,
+    tag: str = "haiku-rt",
+    disable_thinking: bool = False,
+) -> None:
+    """Run all requests sequentially against Haiku 4.5 via the Messages API.
+
+    **Why real-time rather than the existing Batch adapter.** ``haiku_submit``
+    uses the Message Batches API for its 50% discount, but that carries a 24h
+    SLA. In a same-day four-arm comparison that would leave one arm's results
+    arriving a day after the other three, confounding "which model is better"
+    with "which model answered today". At this volume the discount is worth
+    well under a dollar, so latency parity is the better trade. The Batch
+    adapter remains the right choice for production backfills.
+
+    Haiku has no thinking mode, so no reasoning-suppression parameter is
+    needed — it is natively in the same configuration the other three arms
+    were forced into.
+    """
+    from anthropic import Anthropic  # type: ignore[import-not-found]
+
+    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    n_ok = n_fail = 0
+    usage_log: list[dict[str, Any]] = []
+    for i, r in enumerate(requests, 1):
+        print(
+            f"[{tag}] {i}/{len(requests)}  {r.session_id[:8]}  "
+            f"({r.bin}, {r.content_tokens:,} tokens) …"
+        )
+        try:
+            # Claude Sonnet 5 runs ADAPTIVE THINKING BY DEFAULT (a change from
+            # Sonnet 4.6, where omitting the field meant no thinking), and
+            # max_tokens caps thinking + visible output *together*. At
+            # MAX_OUTPUT_TOKENS=1024 the thinking consumed the whole budget on
+            # the two longest sessions and the arm returned EMPTY text -- no
+            # error, just nothing to parse. Disabling thinking both fixes that
+            # and matches the other arms, which all run reasoning off.
+            # Haiku 4.5 has no thinking mode, so the flag stays off for it.
+            extra = {"thinking": {"type": "disabled"}} if disable_thinking else {}
+            resp = client.messages.create(
+                model=model,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                system=system_prompt,
+                messages=[{"role": "user", "content": r.user_message}],
+                **extra,
+            )
+            raw_text = "".join(
+                b.text for b in resp.content if getattr(b, "type", "") == "text"
+            )
+            usage_log.append({
+                "session_id": r.session_id,
+                "input_tokens": resp.usage.input_tokens,
+                "output_tokens": resp.usage.output_tokens,
+            })
+        except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
+            (out_dir / f"{r.session_id}.json").write_text(
+                json.dumps({"error": str(exc)}, indent=2) + "\n"
+            )
+            n_fail += 1
+            print(f"[{tag}]   failed: {exc}")
+            continue
+        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        try:
+            parsed = parse_response_json(raw_text)
+            n_ok += 1
+        except ValueError as exc:
+            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            n_fail += 1
+        (out_dir / f"{r.session_id}.json").write_text(
+            json.dumps(parsed, indent=2) + "\n"
+        )
+    (out_dir / "_usage.json").write_text(json.dumps(usage_log, indent=2) + "\n")
+    print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    print(
+        f"[{tag}] billed: {sum(u['input_tokens'] for u in usage_log):,} input, "
+        f"{sum(u['output_tokens'] for u in usage_log):,} output"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -697,18 +1025,58 @@ def build_rubric(
         )
 
     blocks: list[str] = []
+    blind_key: dict[str, dict[str, str]] = {}
     for i, entry in enumerate(manifest["sessions"], 1):
         sid = entry["session_id"]
-        haiku_path = out_dir / "haiku" / f"{sid}.json"
-        gemini_path = out_dir / "gemini" / f"{sid}.json"
-        haiku_text = (
-            haiku_path.read_text() if haiku_path.exists()
-            else '{"error": "no response file — provider not yet run"}'
+        # Which providers actually have output for this run? Discovered from
+        # the filesystem rather than hardcoded, so the rubric works for any
+        # pair (haiku/gemini, luna/gemini, …) without further edits.
+        available = sorted(
+            d.name for d in out_dir.iterdir()
+            if d.is_dir() and (d / f"{sid}.json").exists()
         )
-        gemini_text = (
-            gemini_path.read_text() if gemini_path.exists()
-            else '{"error": "no response file — provider not yet run"}'
-        )
+        # BLINDING. Scoring is the whole point of the rubric, and a visible
+        # provider label anchors the scorer before they have read a word of
+        # output. Assign each provider a neutral letter, with the assignment
+        # *flipped per session* so a scorer cannot learn "A is always the
+        # OpenAI one" halfway through and back-fill their earlier scores.
+        #
+        # The flip is derived by hashing the session id against a fixed salt
+        # rather than drawn at random: identical inputs regenerate an
+        # identical rubric, so a re-run is comparable with the first. The key
+        # is written to a sidecar file, NOT into the rubric.
+        order = list(available)
+        if int(
+            hashlib.sha256(f"bakeoff-blind-2026-07-28:{sid}".encode()).hexdigest(), 16
+        ) % 2:
+            order.reverse()
+        labelled = list(zip(("A", "B", "C", "D"), order))
+        blind_key[sid] = {letter: prov for letter, prov in labelled}
+        provider_blocks = []
+        for letter, prov in labelled:
+            text = (out_dir / prov / f"{sid}.json").read_text()
+            # Sanitise failures. A raw provider error leaks the vendor — an
+            # Anthropic context-limit message names "200000 maximum", which
+            # identifies the arm instantly and unblinds every other session
+            # for that model too. The *fact* of failure is legitimate signal
+            # and is kept; the vendor-identifying detail is moved to the key.
+            try:
+                parsed_obj = json.loads(text)
+            except ValueError:
+                parsed_obj = None
+            if isinstance(parsed_obj, dict) and "error" in parsed_obj:
+                blind_key.setdefault("_redacted_errors", {}).setdefault(
+                    prov, {}
+                )[sid] = parsed_obj["error"]
+                text = json.dumps(
+                    {"error": "[redacted to preserve blinding — see key]"},
+                    indent=2,
+                )
+            provider_blocks.append(
+                f"#### Model {letter} output\n\n```json\n{text.rstrip()}\n```\n"
+            )
+        provider_section = "\n".join(provider_blocks)
+        score_header = " / ".join(letter for letter, _ in labelled)
 
         # Distil and preview the first ~500 tokens (~2,000 chars).
         try:
@@ -737,19 +1105,8 @@ def build_rubric(
 {preview}
 ```
 
-#### Haiku output
-
-```json
-{haiku_text.rstrip()}
-```
-
-#### Gemini output
-
-```json
-{gemini_text.rstrip()}
-```
-
-#### Scores (H / G / T)
+{provider_section}
+#### Scores ({score_header} / T for tie)
 
 - title (pithy + accurate): [ ]
 - purpose (captures "why" not just "what"): [ ]
@@ -772,6 +1129,24 @@ def build_rubric(
     rubric_out.write_text(populated)
     print(f"Wrote populated rubric to {rubric_out}")
 
+    # The blinding key goes in a SIDECAR, never in the rubric — a scorer who
+    # can see the mapping is not blind. Written next to the rubric so it is
+    # trivially findable after scoring, and deliberately named so it is
+    # obvious what not to open first.
+    key_path = rubric_out.with_name(rubric_out.stem + ".blind-key.json")
+    key_path.write_text(json.dumps({
+        "note": (
+            "Model-letter -> provider mapping for the blinded rubric. "
+            "Assignment is flipped per session (sha256 of session id against "
+            "a fixed salt), so it is deterministic and re-generable but not "
+            "guessable from the rubric itself. DO NOT read before scoring."
+        ),
+        "salt": "bakeoff-blind-2026-07-28",
+        "redacted_errors": blind_key.pop("_redacted_errors", {}),
+        "mapping": blind_key,
+    }, indent=1) + "\n")
+    print(f"Wrote blinding key to {key_path} (do not open before scoring)")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -782,7 +1157,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--provider",
-        choices=("haiku", "gemini"),
+        choices=("haiku", "haiku-rt", "sonnet-5", "gemini", "luna", "terra"),
         required=False,
         help="Which provider adapter to exercise (omit for --build-rubric).",
     )
@@ -908,6 +1283,20 @@ def main() -> int:
         haiku_submit(requests, provider_dir, system_prompt)
     elif args.provider == "gemini":
         gemini_run(requests, provider_dir, system_prompt)
+    elif args.provider == "luna":
+        luna_run(requests, provider_dir, system_prompt)
+    elif args.provider == "terra":
+        luna_run(
+            requests, provider_dir, system_prompt,
+            model=TERRA_MODEL, tag="terra",
+        )
+    elif args.provider == "haiku-rt":
+        haiku_rt_run(requests, provider_dir, system_prompt)
+    elif args.provider == "sonnet-5":
+        haiku_rt_run(
+            requests, provider_dir, system_prompt,
+            model=SONNET_MODEL, tag="sonnet-5", disable_thinking=True,
+        )
     return 0
 
 
