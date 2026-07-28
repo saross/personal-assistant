@@ -1988,7 +1988,9 @@ Shawn's own framing of why articulating it mattered: being forced to state it cl
 had actually happened on a day he was disappointed by, and converted it from a private
 frustration into a system parameter.
 
-## 2026-07-28 (PA-hub / transcript-archive forensics + metadata bake-off, session close) — Drafted candidates (pending review)
+## 2026-07-28 (PA-hub / transcript-archive forensics + metadata bake-off, session close) — ACCEPTED 2026-07-28
+
+*All four candidates accepted in full by Shawn at handoff, without edits. The 2026-07-24 and 2026-07-27 batches remain pending review — deferred by Shawn, not discarded.*
 
 ### Candidate 1: You reframed the evaluation by naming the consumer, and it changed the answer
 
