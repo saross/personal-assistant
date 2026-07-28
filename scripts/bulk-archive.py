@@ -31,6 +31,7 @@ import re
 import sys
 import tempfile
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -820,6 +821,180 @@ def relocate_to_legacy_precedent(
     return moved
 
 
+def _parent_session_of(agent_file: Path) -> str | None:
+    """Read the parent session id recorded inside a subagent transcript.
+
+    Every subagent record carries ``sessionId`` pointing at the session that
+    spawned it. This is what makes flat ``agent-*.jsonl`` files at the root of
+    a project directory recoverable: they carry no directory context, but they
+    do carry their parentage.
+    """
+    try:
+        with agent_file.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    parent = json.loads(line).get("sessionId")
+                except json.JSONDecodeError:
+                    continue
+                if parent:
+                    return str(parent)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def discover_orphan_subagents(
+    source_root: Path,
+    archive_root: Path,
+    logger: logging.Logger,
+) -> tuple[list[tuple[Path, Path]], list[tuple[Path, str | None]]]:
+    """Find subagent transcripts that exist in raw but not in the archive.
+
+    Subagent transcripts are **research records in their own right** and are
+    archived inside their parent session's entry, as
+    ``<entry>/subagents/<agent-id>.jsonl.gz``. They are deliberately given no
+    metadata of their own — they are not sessions — but they must still be
+    captured, and two layouts were being missed:
+
+    **Flat** ``<cwd-key>/agent-*.jsonl`` — the older on-disk layout. Discovery
+    skips these when scanning for *sessions* (correctly, they are not
+    sessions), and nothing else picked them up, so they were never archived.
+
+    **Nested** ``<cwd-key>/<session-uuid>/subagents/*.jsonl`` — captured at
+    archive time, but only for sessions archived *after* their subagents ran.
+    A session archived earlier, or archived by a path that predates subagent
+    capture, keeps an entry with no ``subagents/`` directory.
+
+    Returns ``(attachable, unattachable)`` where attachable is a list of
+    ``(agent_file, destination_entry_dir)`` pairs.
+    """
+    archived_names = {
+        p.name.replace(".jsonl.gz", "")
+        for p in archive_root.rglob("subagents/*.jsonl.gz")
+    }
+    session_to_entry: dict[str, Path] = {}
+    for meta_path in archive_root.rglob("session.meta.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        session_id = (meta.get("session") or {}).get("id")
+        if session_id:
+            session_to_entry[session_id] = meta_path.parent
+
+    candidates: list[Path] = []
+    for machine_dir in sorted(source_root.iterdir()):
+        if not machine_dir.is_dir():
+            continue
+        # Both layouts, from either a live store or a merged snapshot.
+        candidates.extend(machine_dir.glob("*/agent-*.jsonl"))
+        candidates.extend(machine_dir.glob("*/*/subagents/*.jsonl"))
+        candidates.extend(machine_dir.glob("agent-*.jsonl"))
+        candidates.extend(machine_dir.glob("*/subagents/*.jsonl"))
+
+    attachable: list[tuple[Path, Path]] = []
+    unattachable: list[tuple[Path, str | None]] = []
+    seen: set[str] = set()
+    for agent_file in sorted(set(candidates)):
+        name = agent_file.stem
+        if name in archived_names or name in seen:
+            continue
+        seen.add(name)
+        parent = _parent_session_of(agent_file)
+        entry = session_to_entry.get(parent) if parent else None
+        if entry is None:
+            unattachable.append((agent_file, parent))
+        else:
+            attachable.append((agent_file, entry))
+
+    logger.info(
+        "Orphan subagents: %d attachable, %d unattachable "
+        "(parent session not archived)",
+        len(attachable), len(unattachable),
+    )
+    return attachable, unattachable
+
+
+def cmd_subagents(args: argparse.Namespace, logger: logging.Logger) -> None:
+    """Backfill subagent transcripts into their parent archive entries."""
+    attachable, unattachable = discover_orphan_subagents(
+        args.source_root, DEFAULT_ARCHIVE_ROOT, logger
+    )
+
+    if unattachable:
+        logger.warning(
+            "%d subagent transcripts have no archived parent session",
+            len(unattachable),
+        )
+        # These are still research records, and some have no parent transcript
+        # anywhere in raw — the subagent outlived its session file. Dropping
+        # them would lose the only surviving trace of that work, so they are
+        # held under a clearly-named quarantine keyed by parent session id
+        # rather than discarded. If the parent is ever archived, they can be
+        # moved into it; the naming makes that a mechanical step.
+        holding = DEFAULT_ARCHIVE_ROOT / "_legacy" / "_orphan-subagents"
+        for agent_file, parent in unattachable:
+            dest_dir = holding / (parent or "unknown-parent") / "subagents"
+            logger.warning(
+                "  %s (parent %s) -> %s",
+                agent_file.name, (parent or "unreadable")[:8],
+                dest_dir.relative_to(DEFAULT_ARCHIVE_ROOT),
+            )
+            if args.dry_run:
+                continue
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"{agent_file.stem}.jsonl.gz"
+            if dest.exists():
+                continue
+            try:
+                tmp = dest.with_suffix(".gz.tmp")
+                with open(agent_file, "rb") as f_in, gzip.open(tmp, "wb") as f_out:
+                    while True:
+                        chunk = f_in.read(8192)
+                        if not chunk:
+                            break
+                        f_out.write(chunk)
+                tmp.replace(dest)
+            except Exception as exc:
+                logger.error("Failed to hold %s: %s", agent_file.name, exc)
+
+    if not attachable:
+        logger.info("No orphan subagents to archive")
+        return
+
+    if args.dry_run:
+        by_entry = Counter(str(entry) for _, entry in attachable)
+        logger.info("[DRY RUN] Would archive %d subagents:", len(attachable))
+        for entry, count in by_entry.most_common(15):
+            logger.info("  %3d -> %s", count, entry)
+        return
+
+    written = 0
+    for agent_file, entry in attachable:
+        dest_dir = entry / "subagents"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{agent_file.stem}.jsonl.gz"
+        if dest.exists():
+            continue
+        try:
+            # Write via a temporary name and rename, so an interrupted run
+            # cannot leave a truncated archive that later looks complete.
+            tmp = dest.with_suffix(".gz.tmp")
+            with open(agent_file, "rb") as f_in, gzip.open(tmp, "wb") as f_out:
+                while True:
+                    chunk = f_in.read(8192)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+            tmp.replace(dest)
+            written += 1
+        except Exception as exc:
+            logger.error("Failed to archive %s: %s", agent_file.name, exc)
+
+    logger.info("Archived %d orphan subagent transcripts", written)
+    print(f"\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
+
+
 def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the archive mode: compress and archive sessions."""
     # Add cc-session-toolkit to path
@@ -1407,6 +1582,7 @@ def _enrich_terra(
 
     applied = 0
     failed = 0
+    fell_back = 0
     usage_rows: list[dict[str, Any]] = []
     responses_dir = Path(args.responses_out).expanduser() / "terra"
     # A manifest of what was sent, so the validator can check the generated
@@ -1443,17 +1619,39 @@ def _enrich_terra(
             "[%d/%d] %s (%s, %s, %s tok)",
             i, len(jobs), session_id[:8], project, bin_label, f"{tokens:,}",
         )
+        extractor_used = TERRA_MODEL
         try:
             parsed, usage = _terra_call_with_retry(
                 user_message, system_prompt, logger
             )
         except Exception as exc:
-            logger.error("  FAILED %s: %s", session_id[:8], exc)
-            failed += 1
-            continue
+            # A moderation refusal is deterministic and provider-specific, so
+            # the only useful response is a different provider. Other failures
+            # (network, malformed request) are not helped by a fallback and
+            # are recorded as failures.
+            blocked = "invalid_prompt" in str(exc)
+            if not (blocked and args.fallback_gemini):
+                logger.error("  FAILED %s: %s", session_id[:8], exc)
+                failed += 1
+                continue
+            logger.warning(
+                "  %s refused by Terra content filter — falling back to %s",
+                session_id[:8], GEMINI_MODEL,
+            )
+            try:
+                parsed, usage = _gemini_call(user_message, system_prompt)
+                extractor_used = GEMINI_MODEL
+                fell_back += 1
+            except Exception as exc2:
+                logger.error(
+                    "  FAILED %s on fallback too: %s", session_id[:8], exc2
+                )
+                failed += 1
+                continue
 
         usage_rows.append({
             "session_id": session_id,
+            "model": extractor_used,
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
         })
@@ -1468,14 +1666,30 @@ def _enrich_terra(
             json.dumps(parsed, indent=2), encoding="utf-8"
         )
 
-        if _write_enriched_meta(archive_dir, parsed, logger):
+        if _write_enriched_meta(archive_dir, parsed, logger, extractor_used):
             applied += 1
         else:
             failed += 1
 
     total_in = sum(r["input_tokens"] for r in usage_rows)
     total_out = sum(r["output_tokens"] for r in usage_rows)
-    actual = total_in * in_rate / 1e6 + total_out * out_rate / 1e6
+    # Rates differ per provider, so bill each row at its own model's rate
+    # rather than assuming the whole run was Terra.
+    rates = {
+        TERRA_MODEL: (
+            TERRA_INPUT_PRICE_PER_MTOK * TERRA_FLEX_DISCOUNT,
+            TERRA_OUTPUT_PRICE_PER_MTOK * TERRA_FLEX_DISCOUNT,
+        ),
+        GEMINI_MODEL: (
+            GEMINI_FLEX_INPUT_PRICE_PER_MTOK,
+            GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK,
+        ),
+    }
+    actual = 0.0
+    for row in usage_rows:
+        r_in, r_out = rates.get(row.get("model", TERRA_MODEL), (in_rate, out_rate))
+        actual += row["input_tokens"] * r_in / 1e6
+        actual += row["output_tokens"] * r_out / 1e6
 
     usage_path = LOG_DIR / "terra-enrich-usage.json"
     usage_path.write_text(
@@ -1484,6 +1698,7 @@ def _enrich_terra(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "applied": applied,
             "failed": failed,
+            "fell_back_to_gemini": fell_back,
             "total_input_tokens": total_in,
             "total_output_tokens": total_out,
             "actual_cost_usd": round(actual, 4),
@@ -1515,6 +1730,63 @@ def _enrich_terra(
             f"      --manifest {manifest_path} --fail-on error\n"
             "  ./venv/bin/python scripts/bulk-archive.py verify --fix-catalogue"
         )
+
+
+GEMINI_MODEL = "gemini-3.6-flash"
+# Gemini 3.6 Flash, Flex tier (USD per million tokens), verified 2026-07-28.
+# Flex and Batch are priced identically for this model.
+GEMINI_FLEX_INPUT_PRICE_PER_MTOK = 0.75
+GEMINI_FLEX_OUTPUT_PRICE_PER_MTOK = 3.75
+
+
+def _gemini_call(
+    user_message: str, system_prompt: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One Gemini Flex call, used as the fallback when Terra refuses.
+
+    Exists because OpenAI's content filter returns ``invalid_prompt`` on a
+    small number of entirely benign transcripts — on the 2026-07-28 backfill,
+    three sessions about locating and editing an Ollama Modelfile and taking
+    stock of locally installed models. The refusal is deterministic, so the
+    only remedy is a different provider.
+
+    ``thinking_level: "minimal"`` rather than the older ``thinking_budget: 0``,
+    which gemini-3.6-flash now rejects with 400 INVALID_ARGUMENT. Thinking
+    bills at the output rate, so leaving it unset silently inflates cost.
+    """
+    from google import genai
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
+        "GOOGLE_API_KEY"
+    )
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set (expected in .env)")
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_message,
+        config={
+            "service_tier": "flex",
+            "max_output_tokens": TERRA_MAX_OUTPUT_TOKENS,
+            "system_instruction": system_prompt,
+            "thinking_config": {"thinking_level": "minimal"},
+            # Unlike the bake-off arm, production pins the schema so the
+            # response cannot come back as unparseable prose.
+            "response_mime_type": "application/json",
+            "response_json_schema": TERRA_OUTPUT_SCHEMA,
+        },
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("empty output from Gemini")
+
+    usage_meta = getattr(response, "usage_metadata", None)
+    usage = {
+        "input_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
+        "output_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
+    }
+    return json.loads(text), usage
 
 
 def _distil_to_text(jsonl_path: Path, logger: logging.Logger) -> str:
@@ -1577,6 +1849,7 @@ def _write_enriched_meta(
     archive_dir: Path,
     parsed: dict[str, Any],
     logger: logging.Logger,
+    extractor_model: str = TERRA_MODEL,
 ) -> bool:
     """Merge generated metadata into ``session.meta.json``.
 
@@ -1617,7 +1890,7 @@ def _write_enriched_meta(
         "three_ps": normalised,
     }
     meta["three_ps"] = normalised
-    meta["extractor_model_id"] = TERRA_MODEL
+    meta["extractor_model_id"] = extractor_model
 
     try:
         tmp = meta_path.with_suffix(".json.tmp")
@@ -2092,6 +2365,15 @@ def main() -> None:
         help="Report the cost projection and make no API calls.",
     )
     p_enrich.add_argument(
+        "--fallback-gemini", action="store_true",
+        help=(
+            "When Terra's content filter refuses a transcript "
+            "(invalid_prompt), retry that session on Gemini 3.6 Flash. The "
+            "refusal is deterministic, so a different provider is the only "
+            "remedy. Only moderation refusals fall back."
+        ),
+    )
+    p_enrich.add_argument(
         "--yes", action="store_true",
         help="Skip the interactive confirmation before live API calls.",
     )
@@ -2103,6 +2385,17 @@ def main() -> None:
             "layout validate-session-metadata.py expects."
         ),
     )
+
+    # subagents
+    p_subagents = subparsers.add_parser(
+        "subagents",
+        help="Backfill orphan subagent transcripts into parent entries",
+    )
+    p_subagents.add_argument(
+        "--source-root", type=Path, default=CLAUDE_PROJECTS_DIR,
+        help="Transcript store to scan (as for `discover`).",
+    )
+    p_subagents.add_argument("--dry-run", action="store_true")
 
     # verify
     p_verify = subparsers.add_parser(
@@ -2122,6 +2415,8 @@ def main() -> None:
         cmd_archive(args, logger)
     elif args.mode == "enrich":
         cmd_enrich(args, logger)
+    elif args.mode == "subagents":
+        cmd_subagents(args, logger)
     elif args.mode == "verify":
         cmd_verify(args, logger)
 
