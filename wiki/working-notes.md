@@ -1642,3 +1642,42 @@ completion message); backup at `/tmp/claude_memories-pre-rebuild-20260715.sql.gz
 on amd-tower (ephemeral); zbook precedent in the 2026-07-05 continuity
 entry. Accepted at the 2026-07-15 handoff review (Shawn: "please keep the
 working-notes candidates").
+
+## 2026-07-28: Transcript-archive forensics — three measurements that overturned the prior diagnosis
+
+Investigating archive fragmentation ahead of the map-reader audit (transcripts are
+the audit's external grounding), three cheap measurements each contradicted an
+accepted belief. All are re-runnable.
+
+**1. Archive ⊆ raw, always.** Of 727 distinct archived session IDs, **0 had no raw
+JSONL counterpart** across amd-tower + zbook. The raw store is a strict superset of
+the archive. Consequence: nothing has ever been lost to rotation, every archive
+defect is reconstructible from raw, and **retrieval should go raw-first** — it needs
+no metadata to be correct and sidesteps every archive defect at once. Corollary:
+224 raw sessions have no archive entry anywhere (map-reader's share: 19, twelve of
+them a contiguous 4–15 Feb cluster, 16 of 19 zbook-only).
+
+**2. `cwd` in the raw transcript is the authoritative project signal — not the
+project key, not the archive path.** The `-home-shawn-Code-map-reader-llm-archive-
+cc-sessions-vlm-burial-mound-detection` project key *looks* like a nested-launch
+artefact. Tracing the 149 sessions in that archive location back to their raw
+`cwd`: **139 = `/home/shawn/Code/map-reader-llm`** (the repo root), 3 nested, 7 no
+cwd — back to 2025-12-22. The fork came from the **archiver's `project.name`
+changing**, not from launch discipline. Corpus-wide, 781 of 923 sessions with a
+recorded cwd launched from a clean repo root and exactly **1** was a genuine nested
+launch. Method: read the first ~40 JSONL lines per session for the `cwd` field.
+
+**3. Catalogue counts under-report by a third.** `CATALOG.json` reported 538
+sessions against **804 archive entries on disk**, and listed `map-reader-llm: 73`
+where the union across its (then) three locations was **196 distinct sessions**. Any
+coverage statistic derived from the catalogue is suspect until recomputed by
+walking `session.meta.json` corpus-wide. The earlier "April = 0 archived" finding
+was a complete count of an incomplete search — 27 April sessions existed in a
+location the catalogue never descended into.
+
+**Method note.** All three took minutes and needed no model. The generalisable move:
+when a corpus statistic disagrees with expectation, **recompute it from the primary
+artefacts before theorising about the cause** — two of the three prior beliefs here
+were wrong not because the reasoning was bad but because the count was drawn from a
+derived index that silently omitted rows. Full write-up:
+`wiki/planning/transcript-archive-diagnosis-2026-07-28.md`.

@@ -376,3 +376,83 @@ said it. **How to apply.** When annotating a user's terse statement with an iden
 detail they did not supply, mark it as inference in the same sentence — or ask — before
 it enters a tracked record; the waiting-for correction cost three edits, the Drive
 audit cost none because the provenance question was asked first.
+
+## Obs 32 — 2026-07-28 — `[you]` The consumer-of-the-artefact question, asked late, would have reordered the whole exercise
+
+**Pattern.** Four arms into a metadata bake-off scored on prose quality, Shawn
+asked: *"which output helps you most when retrieving transcripts? Most
+interactions are going to be mediated through you rather than me reading
+directly."* That single question reframed the evaluation — the rubric had been
+implicitly scoring for a human skim-reader, and the actual consumer is an LLM
+doing lookup. Later he declined to score the rubric at all on exactly that
+ground ("I'm rarely the consumer"), and redirected to four decision questions.
+
+**Lesson.** The criteria were never wrong in themselves — they were unanchored.
+Asking *who reads this artefact, and to do what* is a cheap question that
+reorders every downstream judgement, and it is easiest to skip precisely when
+the evaluation apparatus already looks rigorous. A blinded rubric with an
+adversarial validator still measures the wrong thing if nobody named the reader.
+
+**How to apply.** Before building any evaluation harness, state the consumer and
+the task in one sentence and put it at the top of the rubric. When the consumer
+is an LLM doing retrieval, the ranking is: tags → identifiers → numbers →
+provenance pointers → prose. Prose quality, which rubrics naturally reward, is
+last.
+
+## Obs 33 — 2026-07-28 — `[me]` Self-critique: I built a validator that contradicted his own documented rule, and only caught it by running it
+
+**Pattern.** My first `tag-project` check flagged any session whose tags didn't
+name its own project — 6 findings, 5 of them well-tagged sessions. But upgrade-
+plan item C1 (written by us in July) explicitly bans "project-name echoes",
+because project is already a structured field and shouldn't consume a tag slot.
+I had read that plan item earlier the same session and still encoded its
+inverse. The corrected check — flag a tag naming a *different* project — dropped
+errors from 7 to 3 and matched the real defect.
+
+**Lesson.** I derived the check from the defect I'd personally found rather than
+from the project's stated policy, and the two diverged. Reading a spec is not the
+same as checking new work against it; the check felt obviously right because it
+caught the thing I'd been looking at.
+
+**How to apply.** When writing a validator for a system that already has written
+rules, grep the rules file for the property being checked *before* implementing,
+and state in the code comment which documented rule each check enforces. A check
+that can't cite a rule is a check encoding my own assumption.
+
+## Obs 34 — 2026-07-28 — `[me]` Self-critique: I inferred a pattern from blinded labels that could not carry that inference
+
+**Pattern.** In the four-arm scorecard I wrote that a project mis-tag was "the
+same underlying arm, so this is now a repeated, not one-off, failure" — and used
+"repeated" to argue the defect was systematic. But the blinding **flips labels
+per session** by design (I implemented that myself, hours earlier), so "D" in
+session 7 and "D" in session 1 need not be the same arm. The validator later
+confirmed a single occurrence.
+
+**Lesson.** I built the per-session flip specifically to prevent cross-session
+inference, then made exactly that inference. Having designed a safeguard makes
+its constraints *less* salient later, not more — the mechanism was familiar
+enough to stop being visible.
+
+**How to apply.** After any deliberate blinding or randomisation, write the
+constraint it imposes as an explicit line in the analysis notes ("labels are not
+comparable across sessions"), so downstream reasoning has to read past it.
+
+## Obs 35 — 2026-07-28 — `[you]` Two silent-failure bugs found by running, not reading — and both were default changes, not code errors
+
+**Pattern.** Two arms failed in ways no code review would surface. Gemini 3.6
+rejected `thinking_budget: 0` outright (the API changed under a working script;
+`thinking_level: "minimal"` replaces it). Sonnet 5 returned **empty output** on
+the two longest sessions — adaptive thinking is now on by default and consumed
+the whole `max_tokens` budget before any JSON was emitted. No error, no warning,
+just nothing to parse.
+
+**Lesson.** Both were *defaults shifting beneath unchanged code* — the highest-
+value class of bug to catch by execution, and the one static review is worst at.
+Shawn's instinct to run all arms live rather than reason about them paid for
+itself twice in one session.
+
+**How to apply.** When a provider ships a new model generation, assume every
+inference-control parameter is a candidate breaking change and probe them
+one-at-a-time on a trivial prompt before a real run. Cost: seconds. The Gemini
+probe (five configs, one-word prompt) resolved in under a minute what a config
+diff never would have.

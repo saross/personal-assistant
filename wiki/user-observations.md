@@ -1987,3 +1987,43 @@ the intellectual intensity of the push**, not its calendar length — which make
 Shawn's own framing of why articulating it mattered: being forced to state it clarified what
 had actually happened on a day he was disappointed by, and converted it from a private
 frustration into a system parameter.
+
+## 2026-07-28 (PA-hub / transcript-archive forensics + metadata bake-off, session close) — Drafted candidates (pending review)
+
+### Candidate 1: You reframed the evaluation by naming the consumer, and it changed the answer
+
+Four arms in, scored on a blinded rubric, you asked which output helps *me* retrieve
+— "most interactions are going to be mediated through you rather than me reading
+directly" — and later declined to score the rubric at all on the same ground. The
+rubric had been implicitly scoring for a human skim-reader. Naming the actual
+consumer reordered every criterion (tags and provenance pointers up, prose down) and
+turned four open questions into a decision. Candidate practice: before building an
+evaluation harness, state who reads the artefact and to do what, in one line, at the
+top of the rubric.
+
+### Candidate 2: "It's urgent, it's blocking the audit" was the correction that mattered most
+
+I had classified the transcript-archive problems as Thursday infra work and offered a
+triage question. You overrode with the reason: the audit is finding confabulations in
+intermediate documentation, and per Paper B the external grounding exists *only* in
+transcripts — so the archive is the audit's evidence base, not infrastructure
+supporting it. That reclassification changed the whole session's shape. I had the
+Paper B finding available and did not connect it; you did.
+
+### Candidate 3: Insisting on running all arms live caught two bugs review would have missed
+
+You asked for the four-arm bake-off run rather than reasoned about. Two arms failed
+silently on *default changes beneath unchanged code* — Gemini rejecting
+`thinking_budget: 0`, Sonnet 5 returning empty output because adaptive thinking now
+defaults on and ate the token budget. Neither produces an error; both would have
+survived a config review. Candidate practice: when a provider ships a new model
+generation, probe inference-control parameters live before a real run.
+
+### Candidate 4: Deferring the LLM verifier on evidence rather than on principle
+
+You agreed to build the deterministic validator now and defer the LLM verifier
+pending results — then held that line when the validator caught 3 of 3
+code-checkable defect classes and Terra returned zero findings. The sequencing
+(cheap deterministic half first, expensive half gated on whether it is still needed)
+is the same shape as the map-reader targeted-audit-before-full-audit call earlier in
+the week. Worth noting as a repeated pattern rather than two coincidences.

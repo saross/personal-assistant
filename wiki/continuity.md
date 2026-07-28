@@ -2359,6 +2359,76 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-07-28 (Tue, latest PA-hub) — SESSION CLOSE (/handoff): transcript archive diagnosed + consolidated; deterministic validator shipped; 5-arm metadata bake-off → TERRA CHOSEN, LLM verifier deferred
+
+Full-day PA-hub session (amd-tower), resumed from the 2026-07-27 beacon. **The
+transcript archive turned out to be the map-reader audit's evidence base, not
+infrastructure** — the audit is finding confabulations in intermediate documentation,
+and per Paper B the external grounding exists only in transcripts (Shawn's
+reclassification; I had filed it as Thursday drain work).
+
+**Forensics — three prior beliefs overturned, all re-runnable
+(`wiki/planning/transcript-archive-diagnosis-2026-07-28.md`):** (1) **archive ⊆ raw
+always** — 0 of 727 archived session IDs lack a raw counterpart, so nothing was ever
+lost to rotation and retrieval should go **raw-first**; 224 raw sessions have no
+archive entry anywhere (map-reader: 19, twelve a contiguous 4–15 Feb cluster, 16 of 19
+zbook-only). (2) **No cwd-forking and no repo rename** — 139 of the 149 nested-location
+sessions record `cwd = ~/Code/map-reader-llm` back to 2025-12-22; the fork came from the
+archiver's `project.name` changing. Corpus-wide 781/923 sessions launched from a clean
+repo root, exactly 1 genuine nested launch — **Shawn's "I always start at the root"
+belief was correct and my first diagnosis was wrong**. (3) **CATALOG.json under-reports
+by a third** (538 vs 804 entries on disk); the earlier "April = 0 archived" was a
+complete count of an incomplete search. **B7 relocated**: role mislabelling is an
+*indexer* defect (`scripts/index-session-content.py:105`, the `or record.get("type")`
+fallback), not an archive one — archives and raw are sound; 40% of indexed `user` chunks
+are not Shawn's words, 87.5% for chunks >2,000 chars. Memory extraction is the
+highest-risk consumer.
+
+**Containment + consolidation (reversible, verified):** both machines' raw stores
+snapshotted (`~/backups/claude-raw-transcripts-2026-07-28/`, amd 2,005 + zbook 2,267
+files, merged 951 distinct sessions); `~/cc-archives` snapshotted pre-change. map-reader
+consolidated A+B+C → one `map-reader-llm/` location: 123 moved, 51 quarantined
+(manifest at `~/backups/cc-archives-consolidation-quarantine-2026-07-28/`), **196 entries
+= 196 distinct sessions, 0 lost**; DB `sessions.project` updated 151 rows → 196/0.
+Dedupe rule was evidence-based (A won all 28 overlaps; 14 of C's copies had 0-byte
+transcripts). **LLM-History-Paper / theseus-ship / paper-b left untouched** per Shawn —
+that fragmentation is user confusion over repo boundaries, not a rename.
+
+**Metadata bake-off, 5 arms × 10 sessions, blinded (labels flipped per session):**
+Terra 38/60, Haiku 15, Luna 4, Gemini 3 — **Terra 27 of 30 on long sessions**, which is
+where the corpus lives. Two silent failures found only by running: Gemini 3.6 rejects
+`thinking_budget: 0` (use `thinking_level: "minimal"`), Sonnet 5 returns **empty output**
+on long inputs because adaptive thinking now defaults on and `max_tokens` caps thinking
++ output together. Haiku 4.5 **rejected 5 of 10 sessions on its 200K window** —
+disqualifying regardless of quality. Sonnet 5's tokenizer billed 2.71M tokens where
+OpenAI billed 1.81M on identical text (+50%), making it 6× Luna's cost. Costs this run:
+Haiku $0.91 · Luna $0.91 · Gemini $1.37 · Terra $2.28 · Sonnet 5 $5.48.
+
+**DECISIONS: (1) TERRA for the backfill and production** (~$12 for 224 sessions);
+Luna is mechanically clean but substantively thin (4/60) and **not worth migrating to
+from Gemini**. (2) **LLM verifier DEFERRED** — the deterministic validator caught 3 of 3
+code-checkable defect classes and Terra returned zero findings; revisit if retrieval
+actually fails. (3) The archive project name is an identity — renaming it forks the
+archive silently; renames need an explicit migration step.
+
+- Public repo: `scripts/validate-session-metadata.py` (new — 6 checks, milliseconds,
+  zero cost; `--fail-on` gates a pipeline); `scripts/bake-off-metadata.py` (+3 arms,
+  2 thinking-config fixes, **corrected a 3× cost under-estimate** — Gemini constants were
+  the Preview rate the file's own comment had flagged and nobody acted on);
+  `wiki/planning/transcript-archive-diagnosis-2026-07-28.md`;
+  `session-archiving-upgrade-plan-2026-07-21.md` (B7/B8 added + priority raised);
+  `wiki/working-notes.md`; `wiki/claude-observations.md` (Obs 32–35);
+  `wiki/user-observations.md` (4 candidates pending); `notes/_inbox.md` (3 flags).
+- Data: bake-off artefacts (5 arms × 10, 2 blinded rubrics + key sidecars, 2 Claude
+  scorecards, dated manifest with paths re-resolved by session id).
+- **Open / carry-forward:** 2026-07-28 time log EMPTY (full day untracked);
+  `CATALOG.json` stale (538 vs 804; map-reader 73 vs 196) — regenerate after backfill;
+  `session_chunks` still 4,691 rows under the old project name (rebuilt at re-index);
+  **Sonnet 5 price constants go stale 2026-08-31** when intro pricing ends;
+  canonical-layout decision still unmade beyond map-reader (blocks a clean backfill);
+  Zotero write-key test still untried; user-obs candidates 2026-07-24 + 07-27 + 07-28
+  all pending review.
+
 ### 2026-07-27 (Mon, latest PA-hub) — SESSION CLOSE (/handoff): the three-submission week ran through this session; W30 review + pace ratified; RDA Drive mis-pair found and fixed; memory-integrity trilogy
 
 Six-day arc as the PA-hub coordination layer (amd-tower; resumed 2026-07-21 from the
