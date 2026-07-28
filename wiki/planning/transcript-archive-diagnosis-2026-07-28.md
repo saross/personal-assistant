@@ -316,6 +316,40 @@ with no override; it now takes `--source-root` and detects the merged-snapshot l
 contiguous 4–15 Feb cluster (~373K distilled tokens); the eighth is 2026-07-27. Every
 map-reader gap session from March onward is below the floor.
 
+### 7d. theseus-ship resolved: succession, not rename (2026-07-28, later session)
+
+The `LLM-History-Paper/theseus-ship` fragmentation was earlier deferred as "user confusion
+over repo boundaries". Checked against the repos themselves, it is neither confusion nor a
+rename — it is a **succession of three separate repositories**, and the archive nesting was
+an archiving artefact reflecting no filesystem or git relationship.
+
+| Repo | Remote | Sessions | Date range |
+|---|---|--:|---|
+| `theseus-ship` | `saross/theseus-ship` | 60 | 2025-12-05 → 2026-02-03 |
+| `LLM-History-Paper` | `Denubis/LLM-History-Paper` | 14 | 2026-03-06 → 2026-04-23 |
+| `2026-mq-llm-dh-judgement-paper-b` | own | 30 | 2026-04-25 → 2026-07-27 |
+
+Evidence: both repos exist on disk with **different GitHub owners** (LLM-History-Paper is
+Brian's), both are live (last commits 2026-07-01 and 2026-07-28), neither contains the
+other as a subdirectory, and every session records its own repo root as `cwd` — never a
+nested path. **The date ranges are contiguous and non-overlapping**, which is the signature
+of sequential repos, not of a rename or a fork.
+
+**Resolution (Shawn): promote, do not collapse.** `LLM-History-Paper/theseus-ship/` →
+top-level `theseus-ship/`. All 60 entries already carried `project.name: theseus-ship`
+unanimously, so this was a directory move with **zero metadata edits** — the identity was
+already correct, only the placement was wrong. Collapsing the two would have destroyed a
+real distinction, including which collaborator's repository the work happened in.
+
+Effect: `CATALOG.json` 739 → **799** entries, uncatalogued 95 → **47**. All 60 verified
+present, catalogued, and with transcripts intact after the move.
+
+**The remaining 47 are all under `_legacy/` and should stay there.** That nesting is
+deliberate — it is the established location for sessions launched outside a project tree —
+so the fix is B6 (make the catalogue builder recurse), not more moves. Distinguish the two
+cases: `theseus-ship` was a real project *accidentally* nested; `_legacy/Code` and friends
+are *intentionally* nested and merely invisible to a depth-2 indexer.
+
 ### 7c. Backfill outcome (same session)
 
 **Archived: 77 of 77, zero failures**, 146 subagents alongside. Ten entries were
