@@ -196,6 +196,17 @@ standard rates; estimated **~US$10–45 total for 700 calls** depending on promp
 reasoning effort. Cost is not a design constraint here — reasoning-effort choice
 dominates it.
 
+> **Pricing verified at source (2026-07-29, map-reader GATE 0).** Official page
+> `https://developers.openai.com/api/docs/pricing` (PI-supplied): `gpt-5.6-sol`
+> standard **$5.00 / $0.50 / $6.25 / $30.00 per M tokens** (input / cached read /
+> cache write / output); **Batch is 50% off all four token types**, and the Batch
+> table itself prices cached input — batch + cache-read discounts stack. Stacked:
+> **$2.50 / $0.25 / $3.125 / $15.00 per M**. Long-context columns ($10/$1/$12.50/$45)
+> don't trigger at verification call sizes. Empirical per-call model (map-reader
+> `reports/verification/phase0-scope.md` § 4.3): ~$0.02 medium effort, ~$0.05 high,
+> **~$0.10 absolute worst case** (fat source context + long reasoning). Re-verify at
+> each API review gate before spend.
+
 **Do NOT upgrade the ChatGPT subscription for this.** A consumer subscription does not
 grant API access (separate billing; Tier 1 needs US$5 paid), and subscription-metered
 access is throttled per-window — 700 calls through it would take tens of hours of
