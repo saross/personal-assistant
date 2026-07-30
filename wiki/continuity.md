@@ -2359,6 +2359,91 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-07-30 (Wed→Thu 00:xx, latest PA-hub) — SESSION CLOSE (/handoff): 224-session backfill EXECUTED (real number 77), subagent gap found + closed, theseus-ship resolved; Wed rituals run
+
+Long PA-hub session (amd-tower) spanning Tue evening → Thu small hours, resumed from the
+2026-07-28 beacon below. Job was to run the metadata backfill on Terra. **It ran, but the
+brief's central number was wrong and finding that out was most of the value.**
+
+**Scope corrected before spending — 224 → 77.** Re-derived the gap set from the raw
+snapshot rather than trusting the diagnosis table. Three subtractions, all reproducible:
+223 gap entries today (224 at diagnosis; the delta is that session archiving *itself* at
+its own handoff, `archived_at 2026-07-28T17:22:34`) − **75 top-level `agent-*.jsonl`
+subagent transcripts** miscounted as sessions (`agentId` + `isSidechain: true` + a *parent*
+`sessionId`) − **71 below a 1,000-token substance floor** (`/clear`, `/exit`, aborted
+starts; verified by inspection after a suspicious *exact* 64-token extract recurred across
+projects — it is the local-command caveat boilerplate). The 75 wholly account for two rows
+of §7's table: the external drive (**55**, i.e. all of them) and `trap-extraction` (**14**,
+likewise) — so **the external-drive layout question never existed**.
+
+**Four archiver defects, each of which would have corrupted the run** (all fixed,
+`scripts/bulk-archive.py`): discovery read a hardcoded `~/.claude/projects` while **55 of
+the 77 exist only on zbook** — it would have archived 22 and reported success; dedup used
+`CATALOG.json` (539 entries against 728 ids on disk) and would have **re-archived 189**
+sessions, manufacturing the very double-archiving defect just repaired; `--min-turns 5`
+discarded **56 of 77** substantive sessions including a **205,848-token session with two
+turns**; and `shawn`/`Code`/`gemma-project` would have opened new top-level directories
+beside their existing `_legacy/` homes.
+
+**Executed:** 77 archived (0 failures, 146 subagents), **84 enriched with Terra**,
+validator-gated, catalogue rebuilt **539 → 799**. **Actual cost US$8.49** against an $8.58
+estimate — the chars/4 × 1.11 calibration held to 1.5%.
+
+**Shawn's challenge changed the outcome twice.** (1) *"Don't we need to archive the
+subagent transcripts?"* — he was right and I was wrong: **247 were genuinely unarchived**
+(63 flat `agent-*.jsonl`, 184 nested), recoverable because every subagent record carries
+its parent `sessionId`. Subagent coverage now **3,175 / 3,175**; 13 orphans whose parent
+transcript does not exist anywhere are held at `_legacy/_orphan-subagents/<parent-id>/`
+rather than dropped. (2) *"Shall we fall back to Gemini?"* — **OpenAI's content filter
+refused 3 entirely benign transcripts** (`invalid_prompt`; Ollama Modelfiles for
+`gpt-oss:20b`, a local-model inventory). Deterministic, so retrying is pointless.
+`enrich --fallback-gemini` added; all three enriched for $0.04. **Zero archived sessions
+now lack metadata.**
+
+**theseus-ship resolved from evidence, not guesswork.** Not a rename and not user error: a
+**succession of three separate repositories** — `saross/theseus-ship` (60 sessions,
+2025-12-05→2026-02-03), **`Denubis/`**`LLM-History-Paper` (14, 2026-03-06→04-23), paper-b
+(30, 2026-04-25→07-27). Different GitHub owners, both live, neither nested in the other,
+**contiguous non-overlapping date ranges**. Promoted to top-level `theseus-ship/` with
+**zero metadata edits** (all 60 already carried the right `project.name`); collapsing would
+have erased which collaborator's repo the work happened in.
+
+**Validator over-strictness fixed rather than metadata regenerated.** The gate returned 6
+`tag-project` errors; all six checked against transcripts, **none was a metadata defect**.
+Four were cross-references on sessions that also carried their own project tag; one was the
+Fieldmark≡FAIMS3 synonym. Severity now turns on whether the session's own tag is present —
+tied to the check's own stated harm. The survivor (`922bf6ff`) is a true positive whose
+*metadata is correct*: a PA standup archived under `ANU-HUMN8031-2026` because it was
+launched there. Placement, not content. **Deliberate deviation from the brief's "regenerate
+any flagged records" instruction, stated as such.**
+
+**B6 measured exactly:** `rebuild_catalogue` is **depth-2 only** — 799 catalogued equals
+precisely the depth-2 meta count; 47 sessions remain invisible, all under deliberate
+`_legacy/` nesting. **Postgres re-index deliberately NOT run**: B7
+(`scripts/index-session-content.py:105`) plus a depth-2 + `_`-prefix exclusion at :132/:137
+means re-indexing now would re-bake the role mislabelling and skip `_legacy/` entirely.
+
+**Wednesday rituals** (data submodule): standup, recap, seven time entries (5.5h Wed;
+one 0.25h meta-tracking entry logged then reversed on the 2026-07-06 convention), inbox
+**29 → 24 → 25**, weekend infra session bundled to backlog, RDA captures + the Kiera-nudge
+sequencing decision (first touch → 6 Aug send; 12 Aug demoted to backstop), Adela
+disclosure **RESOLVED both sides**, and **Slot 2's target restated** as a staged charter
+programme after a wall-clock rescope Shawn asked for.
+
+- Public repo: `scripts/bulk-archive.py` (`--source-root` + merged-snapshot detection,
+  disk-based dedup, `--min-content-tokens`, `_legacy` relocation, `subagents` mode,
+  `enrich --provider terra` with `--fallback-gemini`, per-provider cost accounting);
+  `scripts/validate-session-metadata.py` (severity by own-tag presence; Fieldmark/FAIMS3
+  alias); `wiki/planning/transcript-archive-diagnosis-2026-07-28.md` (§7b corrected gap,
+  §7c outcome, §7d theseus-ship). Commits `9012e7d`, `a843b3d`, `38af0ac`, `87a6d3e`.
+- Data: standup/recap for 2026-07-29, time log, inbox/backlog/waiting-for, FOCUS Slot 2.
+- **Open / carry-forward:** **47 uncatalogued under `_legacy/` — review together
+  (Shawn's ask) before assuming B6 recursion is the whole fix**; **~201 double-archived
+  entries** (1,006 metas vs 805 distinct ids, error shape 3, untouched); `922bf6ff`
+  placement decision; the two `index-session-content.py` fixes gating re-index; Sonnet 5
+  price constants stale **2026-08-31**; Zotero write-key test still untried; user-obs
+  batches **2026-07-24 + 2026-07-27 still pending** (2026-07-28 accepted).
+
 ### 2026-07-28 (Tue, latest PA-hub) — SESSION CLOSE (/handoff): transcript archive diagnosed + consolidated; deterministic validator shipped; 5-arm metadata bake-off → TERRA CHOSEN, LLM verifier deferred
 
 Full-day PA-hub session (amd-tower), resumed from the 2026-07-27 beacon. **The
