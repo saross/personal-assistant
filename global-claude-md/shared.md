@@ -37,6 +37,16 @@ Standard directories: `scripts/`, `docs/`, `data/`, `tests/`, `reports/`, `plann
 
 **Before any API call** (batch or real-time), stop and get explicit approval. Present: (1) model being called (e.g., "Gemini 2.5 Flash"), (2) batch vs real-time, (3) number of calls in the procedure, (4) estimated cost. Approval for one batch does not imply approval for subsequent batches — confirm each stage of chained runs.
 
+## Subagent Model Policy (top-tier-credit conservation)
+
+Shawn drives interactive sessions with the top-tier Claude model (currently Fable) by preference; its credits on the Max plan are limited. Subagents inherit the session model by default, so an unspecified agent silently spends top-tier credits. Standing rule (set 2026-07-30):
+
+- **Default every subagent to the current Opus-class model** — pass the `opus` tier alias explicitly on Agent tool spawns and Workflow `agent()` calls (aliases track the latest model of each tier, so this stays current across releases); never let an agent silently inherit the session model.
+- **Drop lower for mechanical work**: searches, file sweeps, extraction, and reformatting can run the `sonnet` alias (or `haiku` for the truly trivial).
+- **Use the top tier only when the subtask genuinely needs frontier-level reasoning** (subtle adversarial verification, hard multi-document synthesis, gnarly debugging) — and say so in one line when doing it, so the spend is visible and deliberate.
+- **Caveats:** `fork`-type subagents always inherit the parent model and cannot be downgraded — prefer a fresh agent over a fork when fork context isn't needed; agent definitions with explicit `model:` frontmatter keep their own deliberate setting.
+- **Review trigger:** revisit this policy when the model-tier structure changes (new tier above/below, top-tier pricing or limits change) — not on a calendar.
+
 ## AI use in teaching contexts
 
 In any teaching project (course convening, marking, student feedback, curriculum design), before uploading content to AI tools, ask: **"Is anyone other than me identifiable in or attributable to what I'm about to upload?"**
