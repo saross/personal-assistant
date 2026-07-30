@@ -1681,3 +1681,94 @@ artefacts before theorising about the cause** — two of the three prior beliefs
 were wrong not because the reasoning was bad but because the count was drawn from a
 derived index that silently omitted rows. Full write-up:
 `wiki/planning/transcript-archive-diagnosis-2026-07-28.md`.
+
+## 2026-07-30: Two filters that decide whether an archive gap is real — and a machine-skew trap
+
+**Context.** Executing the backfill the 2026-07-28 diagnosis specified. Its
+figure was **224 un-archived sessions**; the real number is **77**. Both
+subtractions are mechanical, cheap, and were absent from the original method.
+
+**Filter 1 — top-level `agent-*.jsonl` are not sessions.** §2's method excluded
+the `subagents/` *directory*, but agent transcripts also sit flat at the root of
+a project directory. Each carries `agentId`, `isSidechain: true`, and a
+`sessionId` pointing at its **parent** — so they can never hold an archive entry
+of their own. **75 of the 224.** They wholly account for two rows of the gap
+table: the external drive (55, every one) and `trap-extraction` (14, likewise) —
+so a layout question that looked like 25% of the problem did not exist.
+
+**Filter 2 — a distilled-token floor, not a turn count.** 71 more fell below
+1,000 distilled tokens. Verified by inspection rather than assumed: a suspicious
+**exact 64-token** extract recurred across unrelated projects, which looked like
+extractor failure. It is not — those transcripts hold a `mode` record, a
+`file-history-snapshot`, an injected `attachment` (often ~55 KB, which is why
+*raw bytes* mislead badly), and one `<command-name>/clear</command-name>`. The
+only "user text" is local-command caveat boilerplate.
+
+**The turn-count trap.** `bulk-archive.py` filtered triviality on
+`--min-turns 5`. That discarded **56 of the 77 substantive sessions**, including
+a **205,848-token session with two turns** and 15 others above 50,000 tokens.
+One long analytical exchange is a single turn, so a turn filter drops precisely
+the sessions whose metadata is most worth having. Replaced with
+`--min-content-tokens`, measured on the distilled text the extractor will see.
+
+**Machine skew — the operational trap.** **55 of the 77 exist only on zbook.**
+Discovery against the local `~/.claude` would have archived 22 of 77, including
+1 of map-reader's 8, and **reported success**. Raw-first is not a preference
+here; it is a correctness requirement, and a reconciliation check that reads one
+machine will certify a complete archive while a third of it is missing.
+
+**Transferable rule.** Before costing a gap, apply the two filters and check
+whether the source is machine-complete. A gap figure is three numbers —
+*entries*, *substantive sessions*, and *sessions visible from here* — and only
+the third is what a local run can act on.
+
+## 2026-07-30: Subagent transcripts are archived inside the parent, and the pointer is in the record
+
+**Context.** Shawn asked whether subagent transcripts needed archiving; I had
+written them off as "not sessions, so not missing". Half right — they are not
+sessions and correctly get no metadata of their own, but they **are** research
+records and belong in the archive.
+
+**Measurement.** 247 were absent: 63 flat `<cwd-key>/agent-*.jsonl` (the older
+layout, skipped by session discovery and collected by nothing else) and 184
+nested `<session>/subagents/*.jsonl` (captured at archive time, but only for
+sessions archived *after* their subagents ran — an earlier-archived parent keeps
+an entry with no `subagents/` directory).
+
+**What made recovery mechanical.** Every subagent record carries `sessionId`
+pointing at its parent, so a flat file with no directory context is still
+placeable. 234 of 247 attached to an existing parent entry on that basis.
+
+**The residue is the interesting part.** 13 could not be placed, and for **three
+parents no session transcript exists anywhere in raw** — the subagent outlived
+its session file. Held at `_legacy/_orphan-subagents/<parent-id>/` rather than
+discarded, keyed so reuniting them is mechanical if the parent ever appears.
+
+**Transferable rule.** When a record type is "not the primary unit", ask
+separately whether it is *captured* — being the wrong unit for metadata does not
+make it disposable. And prefer parentage recorded *in* the record over parentage
+implied by directory position: the former survives a layout change.
+
+## 2026-07-30: A third-party extractor will refuse a small share of benign corpus
+
+**Measurement.** GPT-5.6 Terra refused **3 of 83** sessions (3.6%) with
+`invalid_prompt` / "Request blocked". Content: locating and editing an Ollama
+Modelfile for `gpt-oss:20b`, and inventorying ten locally installed models for
+archaeology research. Entirely benign; the likeliest trigger is the
+local-model/Modelfile subject matter.
+
+**Two properties that matter.** The refusal is **deterministic** — retrying
+burns the backoff waits to fail identically, so the only remedy is a different
+provider. And it is **invisible without the response body**: a bare
+`HTTP 400: Bad Request` cannot distinguish a moderation block from a malformed
+request. Surfacing the API's own `code` is what made this diagnosable at all.
+
+**Consequence for a corpus about LLM experimentation** — which is a large share
+of this one: budget a refusal rate and a fallback provider. Gemini 3.6 Flash
+handled all three for $0.04, and `extractor_model_id` records which model
+actually produced each record so provenance stays honest.
+
+**Transferable rule.** Any single-vendor extraction pass over a personal corpus
+needs (a) the error body logged, (b) a second-vendor fallback for
+policy-deterministic failures only, and (c) per-record model attribution — not a
+run-level assumption that one model produced everything.
