@@ -2029,3 +2029,48 @@ code-checkable defect classes and Terra returned zero findings. The sequencing
 (cheap deterministic half first, expensive half gated on whether it is still needed)
 is the same shape as the map-reader targeted-audit-before-full-audit call earlier in
 the week. Worth noting as a repeated pattern rather than two coincidences.
+
+## 2026-07-30 (PA-hub / 224→77 backfill execution + Wed rituals, session close) — Drafted candidates (pending review)
+
+### Candidate 1 — Challenging a dismissal, not a claim: "don't we need to archive the subagents?"
+
+I had reported the 75 `agent-*.jsonl` files as *not missing* — "never meant to be
+archived". Shawn's question did not dispute a number; it disputed the **framing** I had
+used to make a category disappear. That reopened it and found **247 genuinely unarchived
+subagent transcripts**. The useful shape: he asked about the thing I had explained away,
+not the thing I had measured. Measurements invite checking; dismissals don't, which is
+exactly why they need it.
+
+### Candidate 2 — Asking for the wall-clock aggregate rather than accepting a plan
+
+At the rescope he said plainly *"I hadn't paid enough attention to wall-clock"* — but the
+prompt that surfaced it was his asking me to read the two phase reports and give a scope
+read, rather than accepting "will be clean by CoB Friday" as settled. That converted a
+per-unit-plausible plan into an aggregate-impossible one: Phase 4's ≤24h batch turnaround
+through staged gates cannot close by Friday at any effort level. **The ask that produced
+this was "get an idea of scope", not "check my plan"** — an open read beat a targeted one.
+
+### Candidate 3 — Overruling my instrument-first scepticism by building the instrument
+
+The Wednesday standup pressed hard for an error-density threshold before the read-out —
+"attach a number or Friday resolves by feel". Shawn's answer was to build the measuring
+apparatus instead, and the scope then shrank on contact: 22 FALSE / 12 UNLICENSED → 13
+unlicensed → three study families. **He was right and the standup was wrong**, and the
+distinction is worth keeping: I was defending against deciding by feel, but a measured
+number beats both a threshold and a guess.
+
+### Candidate 4 — Correcting an unfair accountability read, twice, with cause
+
+Twice he pushed back on my framing and both times he was right: the EFN overrun was ~2h of
+externally-scheduled meetings, not discretionary allocation; and the infrastructure work
+was a *blocker* for the audit's evidence base, not displacement of it. Both corrections
+were factual rather than defensive. **The pattern for me: I priced "time spent away from
+research" without first asking whether the time was his to allocate.**
+
+### Candidate 5 — Reversing a tracked entry on being reminded of his own convention
+
+He asked to log 0.25h of meta-work, I flagged the 2026-07-06 no-meta-tracking convention,
+and he reversed it immediately — *"I'd forgotten about the convention"*. Small, but it is
+the system working in the direction it is usually weakest: a convention he set surviving a
+moment when he had forgotten it, because it was written down and surfaced at the point of
+use rather than at review.

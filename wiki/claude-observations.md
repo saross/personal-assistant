@@ -456,3 +456,98 @@ inference-control parameter is a candidate breaking change and probe them
 one-at-a-time on a trivial prompt before a real run. Cost: seconds. The Gemini
 probe (five configs, one-word prompt) resolved in under a minute what a config
 diff never would have.
+
+## Obs 36 — 2026-07-30 — `[you]` Shawn challenges dismissals, not measurements — and it paid twice in one session
+
+**Pattern.** Two of the session's three biggest corrections came from Shawn
+questioning something I had *explained away* rather than something I had counted.
+"Don't we need to archive the subagent transcripts?" targeted a category I had
+declared non-missing; it found **247 genuinely unarchived records**. "Shall we
+try a fallback to Gemini?" targeted my acceptance of three refusals as
+irreducible; all three enriched for $0.04. Neither question disputed a number.
+
+**Lesson.** My measurements get scrutinised because they present as checkable.
+My *framings* — "not missing", "deterministic, so no remedy" — slide past,
+because they read as conclusions rather than claims. Those are precisely where
+error concentrates, and Shawn's instinct goes to them.
+
+**How to apply.** When I write a sentence that makes a category disappear
+("these were never meant to be X", "this is out of scope", "nothing to do here"),
+mark it as a claim needing the same evidence as a count. Prefer "I checked and
+found none" over "there are none by definition".
+
+## Obs 37 — 2026-07-30 — `[me]` Self-critique: I wrote off 247 records with a definitional argument instead of a query
+
+**Pattern.** I correctly established that top-level `agent-*.jsonl` files are not
+sessions (`agentId`, `isSidechain: true`, parent `sessionId`) — then drew the
+wrong conclusion: that they therefore were not missing. Two different questions.
+"Is this the right unit for metadata?" and "is this record captured anywhere?"
+have different answers, and I collapsed them because the first one had a
+satisfying technical answer. One `set` difference against the archive would have
+settled it in seconds; I had already written that exact query for sessions.
+
+**Lesson.** A crisp taxonomy is seductive enough to substitute for a check. The
+failure was not analytical — the analysis was right — it was **stopping at the
+analysis when the query was already in hand**.
+
+**How to apply.** After classifying records out of a set, run the coverage check
+on the excluded class anyway. Cost is near zero when the machinery exists, and
+"correctly classified but never captured" is a real and silent state.
+
+## Obs 38 — 2026-07-30 — `[me]` Self-critique: I pressed for a threshold when the right move was to build the measure
+
+**Pattern.** The Wednesday standup made "attach a number to error density" its
+Hard Question, on the reasoning that an unquantified criterion resolves by feel
+on Friday afternoon. Shawn instead built the claim-checking instrument, and the
+scope resolved itself: 22 FALSE / 12 UNLICENSED → 13 unlicensed → three study
+families. The instrument produced a better number than any threshold I could have
+extracted, and produced it in a day.
+
+**Lesson.** I was defending a real failure mode — deciding by feel — but proposed
+the *cheap* remedy (commit to a number now) when the *correct* remedy was
+available (measure it). Estimating under uncertainty and removing the uncertainty
+are not the same move, and I reached for the first because it fit the ritual's
+shape.
+
+**How to apply.** When about to demand a threshold, ask first whether the
+quantity is *measurable this week*. If yes, the ask is "build the measure", not
+"name the number". Reserve threshold-forcing for quantities that genuinely cannot
+be measured before the decision.
+
+## Obs 39 — 2026-07-30 — `[me]` Self-critique: I priced his time without asking whose it was to allocate
+
+**Pattern.** The standup framed a 3h EFN day as the largest slice on a
+research-nominal day, and the evening infrastructure work as displacing rest.
+Shawn corrected both: ~2h were externally-scheduled meetings, and the
+infrastructure was a blocker for the audit's own evidence base. Both corrections
+were factual. I had written an allocation critique about hours that were not
+discretionary.
+
+**Lesson.** Confrontational tone is licensed here, but it is only *accurate* when
+the thing being confronted is a choice. Treating fixed commitments and
+prerequisite work as discretionary spend produces criticism that is not merely
+unwelcome but wrong — and it costs credibility for the cases where the
+confrontation is warranted.
+
+**How to apply.** Before flagging a time allocation, classify each block:
+externally fixed / prerequisite to a committed goal / discretionary. Confront
+only the third. Say the classification out loud so it can be corrected.
+
+## Obs 40 — 2026-07-30 — `[you]` Evidence over inference on the theseus-ship question — and the collapse he proposed was the wrong one
+
+**Pattern.** Shawn asked whether theseus-ship sessions ran in that repo, in
+LLM-History-Paper, or whether he had renamed it — and offered his own inclination
+to *collapse* them into one project. The evidence said neither: three separate
+repos with **different GitHub owners**, both live, neither nested, with
+**contiguous non-overlapping date ranges**. He accepted the promote-don't-collapse
+recommendation immediately.
+
+**Lesson.** He framed the question as "which of these three explanations", which
+made it answerable from the repos rather than from memory — and he held his own
+proposed remedy loosely enough to drop it when the evidence pointed elsewhere.
+Collapsing would have erased which collaborator's repository the work happened
+in, on a project with two active participants.
+
+**How to apply.** When a user offers both a question and a preferred answer, keep
+them separate. Answer the question from evidence first, then test the preferred
+remedy against that answer — rather than looking for support for the remedy.
