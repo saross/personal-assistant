@@ -26,7 +26,32 @@ state, mid-grained, serves continuity for the next session).
 ritual is doing too much — recalibrate by deferring some steps to
 `/weekly-review`.
 
-### The six steps
+### The steps (0–6)
+
+#### 0. Context-residue sweep (added 2026-08-02)
+
+Before the ritual proper, ask one question distinct from "are we done?":
+**"Is there anything that can only be done — or only remembered — with this
+session's context?"** Sweep the session for residue no artefact holds yet:
+
+- actions promised for another machine or another session (e.g. "zbook must
+  run the hook installer");
+- risks or defects noticed incidentally while working on something else and
+  recorded nowhere;
+- in-flight state that evaporates with the context window (a running
+  process, an unsaved decision rationale, a half-verified hypothesis).
+
+Anything surfaced either gets done now or written into the artefact where
+the next session will look for it (continuity carry-forward, working-notes,
+a queue file). Runs every handoff regardless of session weight — in a light
+session it is a ten-second "nothing".
+
+Provenance: Shawn asks this manually when he suspects loose ends; encoded
+2026-08-02 (from llm-reproducibility user-obs 2026-07-27 candidate C,
+discarded as routine-for-him and systematised here instead) so the check no
+longer depends on a human remembering to ask. The 2026-07-27 instance
+surfaced two items that would otherwise have been lost silently — a
+cross-machine hook reinstall and an unrelated secret-safety gap.
 
 #### 1. Update `continuity.md`
 
@@ -253,8 +278,9 @@ Carry-forward: <key in-flight state / gotcha / decision — omit if none>.
   warranted (4a + 4b both); expect the full 10 minutes.
 - **Verification-only session** (read state, confirm something, leave):
   often no continuity update needed at all.
-- **Step 6 (resume prompt) always runs**, regardless of session weight — even
-  a light or verification-only session ends with at least a one-line pointer to
+- **Steps 0 and 6 always run**, regardless of session weight — the
+  context-residue sweep is a ten-second "nothing" in a light session, and
+  even a verification-only session ends with at least a one-line pointer to
   the current continuity doc.
 
 If you're tempted to skip continuity entirely after a heavy session,
