@@ -1882,23 +1882,23 @@ projecting it onto future estimates.
    the third hypothesis was only found because the first two were
    checked against his recollection rather than accepted over it.
 
-## 2026-07-24 (AR / adversarial-reviewer kickoff, session close) — Drafted candidates (pending review)
+## 2026-07-24 (AR / adversarial-reviewer kickoff, session close) — REVIEWED 2026-08-03: 1–2 ACCEPTED (2's practice recorded to memory), 3 DROPPED
 
-1. **The non-negotiable /audit rule earned its keep on freshly "verified" code.**
+1. **(ACCEPTED 2026-08-03) The non-negotiable /audit rule earned its keep on freshly "verified" code.**
    You invoked /audit on code that had already passed its test suite and a
    live smoke test — and it found 5 Critical defects, all in the untested
    live paths (phantom POST successes, mid-run aborts, duplicate-minting on
    transient errors). If accepted, the sharpening is: tests + smoke prove
    the happy path; the audit's value concentrates precisely where execution
    hasn't reached yet.
-2. **"What do I need to check before merge?" produced a better review than
+2. **(ACCEPTED 2026-08-03; practice → memory + wiki tray) "What do I need to check before merge?" produced a better review than
    an open-ended one.** Asking me to enumerate the judgement calls I had
    made on your behalf (stamp wording, baked-in default model, PDF-over-HTML
    preference) turned PR review from diff-reading into decision-ratifying —
    and it surfaced the requirements.txt gap neither of us had listed.
    Candidate practice: for any Claude-authored PR, ask for the
    judgement-call inventory first.
-3. **Mid-turn steering messages worked well for parallel work.** You dropped
+3. **(DROPPED 2026-08-03) Mid-turn steering messages worked well for parallel work.** You dropped
    corrections and new tasks into running turns (Ronin, tags, Böckeler,
    uncommitted code) rather than waiting for clean boundaries; the session
    absorbed them without losing the main thread. If that matched your
@@ -1906,9 +1906,9 @@ projecting it onto future estimates.
    long agent-heavy sessions.
 
 
-## 2026-07-27 (PA-hub / six-day coordination arc Tue 21 → Mon 27, session close) — Drafted candidates (pending review)
+## 2026-07-27 (PA-hub / six-day coordination arc Tue 21 → Mon 27, session close) — REVIEWED 2026-08-03: 1–3 ACCEPTED (4 already ratified 2026-07-27 as milestone_recovery_budget)
 
-### Candidate 1: The two-stage verification you designed caught the verifier itself
+### Candidate 1 (ACCEPTED 2026-08-03): The two-stage verification you designed caught the verifier itself
 
 You mandated the claim-by-claim Cosmos verification at Tuesday's standup, then a
 clean-context adversarial re-check. The second stage corrected three pointer errors in
@@ -1917,7 +1917,7 @@ Verification notes are claims too — your architecture, not my diligence, is wh
 it. Candidate practice: any high-stakes verification ledger gets its own fresh-context
 pass before it's relied on.
 
-### Candidate 2: The resource-competition reframe unlocked a stuck prioritisation
+### Candidate 2 (ACCEPTED 2026-08-03): The resource-competition reframe unlocked a stuck prioritisation
 
 At the Slot-2 conversation you brought a large decision space ("which llm-repro thing?")
 and reacted strongly ("this really clarified my thinking") when it was reframed as: the
@@ -1925,7 +1925,7 @@ JAS run and the wildcard paper consume different resources — the JAS run compe
 nothing, the wildcard competes with map-reader. When a choice feels hard, checking
 whether the options even draw on the same scarce resource may dissolve it.
 
-### Candidate 3: Delegating pace enforcement to Claude worked on night one
+### Candidate 3 (ACCEPTED 2026-08-03): Delegating pace enforcement to Claude worked on night one
 
 You asked for the post-22:00 wind-down reminder (any interaction except /recap) and the
 same evening handed over the cross-machine sync at 22:15 with "the sync is mine to run" —
@@ -2030,9 +2030,9 @@ code-checkable defect classes and Terra returned zero findings. The sequencing
 is the same shape as the map-reader targeted-audit-before-full-audit call earlier in
 the week. Worth noting as a repeated pattern rather than two coincidences.
 
-## 2026-07-30 (PA-hub / 224→77 backfill execution + Wed rituals, session close) — Drafted candidates (pending review)
+## 2026-07-30 (PA-hub / 224→77 backfill execution + Wed rituals, session close) — REVIEWED 2026-08-03: 1, 2, 5 ACCEPTED; 3–4 DROPPED
 
-### Candidate 1 — Challenging a dismissal, not a claim: "don't we need to archive the subagents?"
+### Candidate 1 (ACCEPTED 2026-08-03) — Challenging a dismissal, not a claim: "don't we need to archive the subagents?"
 
 I had reported the 75 `agent-*.jsonl` files as *not missing* — "never meant to be
 archived". Shawn's question did not dispute a number; it disputed the **framing** I had
@@ -2041,7 +2041,7 @@ subagent transcripts**. The useful shape: he asked about the thing I had explain
 not the thing I had measured. Measurements invite checking; dismissals don't, which is
 exactly why they need it.
 
-### Candidate 2 — Asking for the wall-clock aggregate rather than accepting a plan
+### Candidate 2 (ACCEPTED 2026-08-03) — Asking for the wall-clock aggregate rather than accepting a plan
 
 At the rescope he said plainly *"I hadn't paid enough attention to wall-clock"* — but the
 prompt that surfaced it was his asking me to read the two phase reports and give a scope
@@ -2050,7 +2050,7 @@ per-unit-plausible plan into an aggregate-impossible one: Phase 4's ≤24h batch
 through staged gates cannot close by Friday at any effort level. **The ask that produced
 this was "get an idea of scope", not "check my plan"** — an open read beat a targeted one.
 
-### Candidate 3 — Overruling my instrument-first scepticism by building the instrument
+### Candidate 3 (DROPPED 2026-08-03) — Overruling my instrument-first scepticism by building the instrument
 
 The Wednesday standup pressed hard for an error-density threshold before the read-out —
 "attach a number or Friday resolves by feel". Shawn's answer was to build the measuring
@@ -2059,7 +2059,7 @@ unlicensed → three study families. **He was right and the standup was wrong**,
 distinction is worth keeping: I was defending against deciding by feel, but a measured
 number beats both a threshold and a guess.
 
-### Candidate 4 — Correcting an unfair accountability read, twice, with cause
+### Candidate 4 (DROPPED 2026-08-03) — Correcting an unfair accountability read, twice, with cause
 
 Twice he pushed back on my framing and both times he was right: the EFN overrun was ~2h of
 externally-scheduled meetings, not discretionary allocation; and the infrastructure work
@@ -2067,7 +2067,7 @@ was a *blocker* for the audit's evidence base, not displacement of it. Both corr
 were factual rather than defensive. **The pattern for me: I priced "time spent away from
 research" without first asking whether the time was his to allocate.**
 
-### Candidate 5 — Reversing a tracked entry on being reminded of his own convention
+### Candidate 5 (ACCEPTED 2026-08-03) — Reversing a tracked entry on being reminded of his own convention
 
 He asked to log 0.25h of meta-work, I flagged the 2026-07-06 no-meta-tracking convention,
 and he reversed it immediately — *"I'd forgotten about the convention"*. Small, but it is
