@@ -2,8 +2,8 @@
 title: "Wiki tag-vocabulary validation against the memory corpus"
 tags: [memory-system, index, audit-pattern]
 created: 2026-05-29
-updated: 2026-05-29
-status: active
+updated: 2026-08-03
+status: applied  # ratified + fully applied at the 2026-06-01 W22 weekly review (index History entry; both re-tags done). Status flag corrected 2026-08-03 — it sat 'active' for 66 days after application, generating a phantom review-queue item.
 ---
 
 # Wiki tag-vocabulary validation (2026-05-29)
