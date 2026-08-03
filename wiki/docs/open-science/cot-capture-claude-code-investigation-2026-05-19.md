@@ -4,8 +4,8 @@ date: 2026-05-19
 author: Shawn Ross
 audience: open-science / research-transparency / agentic-tooling community
 related:
-  - ./RDA_IG_Statement_of_Work.docx
-  - ./RDA_IG_Summary_and_Description.docx
+  - ../../../data/archive/rda-ig-application-2026-07/RDA_IG_Statement_of_Work.docx  # relocated 2026-08-03, see rda-ig-documents-note.md
+  - ../../../data/archive/rda-ig-application-2026-07/RDA_IG_Summary_and_Description.docx  # relocated 2026-08-03
   - ../../continuity.md (workstream E)
 tags: [open-science, provenance, agents]
 status: complete
