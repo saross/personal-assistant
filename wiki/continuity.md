@@ -2359,7 +2359,76 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
-### 2026-07-30 (Wed→Thu 00:xx, latest PA-hub) — SESSION CLOSE (/handoff): 224-session backfill EXECUTED (real number 77), subagent gap found + closed, theseus-ship resolved; Wed rituals run
+### 2026-08-03 (Thu 30 Jul → Mon 3 Aug, latest PA-hub) — SESSION CLOSE (/handoff): DRAIN COMPLETED in full; W31 review + Jun–Jul retro run; division proposal presented; ARDC ads live → Slot 1
+
+Five-day PA-hub session (amd-tower) spanning the named drain day through Monday's
+carried block. **The clear-all-reviews drain (Slot 1, promoted 27 Jul) finished on
+every term of its original Done criterion**: tasks-inbox 24→7 (all survivors
+deliberate), notes-inbox cluster-and-carried (verification-apparatus.md NEW from 6
+rows; remaining 8 ripe clusters in a dated rotation queue, one per weekly pass),
+user-obs verdicts ZERO across all repos (8 accepted / 3 dropped Mon; paper-b's
+U21–27 + llm-repro + fieldmark were cleared Fri–Sun), the 2026-05-29 vocab report
+resolved as a **phantom** (ratified+applied 1 Jun; only its `status: active` flag
+was stale — fourth stale-row instance of the fortnight), memory-integrity triaged
+into the class-fix row. Scratchpads distilled (global 96→47, map-reader 61→40; 11
+promotions to permanent memories; PR-workflow prune caught a REAL gap → collaborator-
+presence clause added to global CLAUDE.md `de22fd1` — paper-b + LLM-History-Paper
+have no project CLAUDE.md). **Jun–Jul retro** (`reports/retros/2026-07.md`): July =
+~39 closures incl. 3 external submissions in one week, 168h on target, 96% standup
+consistency; one degrading trend (inbox 13→19→25) → **disposition-cadence
+convention ratified** (weekly ~45-min pass bound into /weekly-review + recap
+micro-triage ≤10 min; four-week trial). **Memory archive swept** (4,684 records →
+2026-08 cold partition, invariance held, integrity PASS). **Published-artefacts
+review executed same day** (retro 5c): 2 refreshes + 6 NEW publications (audit,
+improve-prompt, both scout pairs; Pattern-B redactions; re-scan caught 4 residuals
+the mapping missed; sub-READMEs corrected off the retired symlink policy)
+`8915b8c`. Worktrees/branches: all three relics fully merged → removed (repo back
+to single-checkout).
+
+**The week's other arcs, all landed:** division proposal BUILT + PRESENTED Day 1
+(Fri, 7h vs 1h estimate — reconstruction work concealed in "loose ends"; ball with
+Adela; Mon nudge sent, ~$16k gap on ~$360k, one contention point, lawyers hold the
+spreadsheet). Paper B FULLY DISCHARGED (wikis live, FAIR apparatus, continuity
+staged for RSOS cold restart). Penny repaired (sent Sat, reciprocated Sun; ops
+meeting H2 Aug captured). Codex-transcript integration designed + approved
+(`data/notes/codex-transcript-integration-plan-2026-08-01.md`; ~/.codex chmod 700
+— was world-readable holding the most sensitive transcript on the box). Subagent
+model policy shipped both machines (opus default for agents; composed-CLAUDE.md
+arrangement learned + memory-anchored). Cosmos write-like-me pilot measured from
+git: 74% final-side light-edit-or-better (48% verbatim) vs Paper B's 4–12% —
+suggestive, not the efficacy test. W31 review (`reports/weekly/2026-W31.md`):
+16 closures; Next Week = map-reader outline + dated path, llm-repro preliminaries
+→ LAUNCH, drain-to-zero + ARDC readiness; move-window regime restated (3–4h/day;
+EFN web refresh mid-Sept; research side-by-side; Substack = career-stakes
+workstream).
+
+**Monday's rotations:** division-wait vacated Slot 1 (Paper B precedent) →
+**ARDC application in (Day 1): ads LIVE, close ~17 Aug, submit THIS WEEK**; PD at
+`data/notes/career/ardc-pd-program-manager.pdf`. Slot 2 map-reader Day 8: five
+agents in flight, MCC performance finding likely paper-bound; **timeline
+step-back with Shawn pending (reminder delegated: recap or next /track)**. Slot 3
+llm-repro Day 8: **OSF amendment PUBLISHED + prereg amendment ACCEPTED via the
+API workflow** (proven "much easier and more reliable"). Mon 4.75h.
+
+- Public repo: published/ (6 new + 2 refreshed + READMEs), global-claude-md
+  (subagent model policy Thu `00daa82`; collaborator clause `de22fd1`),
+  wiki/user-observations.md verdicts `03571ec`, vocab-report status `7ebd0f5`,
+  RDA .docx → private archive (pointer note), worktree/branch cleanup.
+- Data: W31 `fb4b0a9` + retro `a240629` + drain sweep `c0323ec` + ARDC rotation
+  `34304c7` + verification-apparatus carry `63e5e89` + SYSTEM.md conventions
+  (disposition cadence; PA tracking boundary; excess-pa-admin label) + Codex plan
+  + collaborator reports (Brian/Steve/Penny 2026-W31) + time/work logs.
+- **Open / carry-forward:** map-reader **timeline step-back** (Claude reminds at
+  recap/next-track); **two Gmail drafts residual** — eRA planning-meeting ask to
+  Penny (SEND this week) + Odette-designation draft (DISCARD, superseded); **RDA
+  salience pass TOMORROW first block** (before Wed 6 Aug reminder); tutorial
+  regeneration + Odette script in flight (fieldmark session); disposition-pass
+  FIRST RUN next Monday's weekly review; zbook `~/.codex` check at next sync;
+  Adela mid-week judgement if silent; working-notes candidates from this handoff
+  held over pending verdicts (Cosmos-survival measurement; archive-sweep record;
+  Codex-store findings).
+
+### 2026-07-30 (Wed→Thu 00:xx, prior PA-hub) — SESSION CLOSE (/handoff): 224-session backfill EXECUTED (real number 77), subagent gap found + closed, theseus-ship resolved; Wed rituals run
 
 Long PA-hub session (amd-tower) spanning Tue evening → Thu small hours, resumed from the
 2026-07-28 beacon below. Job was to run the metadata backfill on Terra. **It ran, but the

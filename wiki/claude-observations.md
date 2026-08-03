@@ -551,3 +551,69 @@ in, on a project with two active participants.
 **How to apply.** When a user offers both a question and a preferred answer, keep
 them separate. Answer the question from evidence first, then test the preferred
 remedy against that answer — rather than looking for support for the remedy.
+
+## Obs 41 — 2026-08-03 — `[you]` Ratify-with-exceptions scales: 11 verdicts, 5 disposition sets, 2 refreshes in single messages
+
+**Pattern.** Throughout the drain-completion morning, Shawn processed decision
+batches as wholes with named exceptions ("agree to all five, but…", "Prune: …
+does that cover…?", per-numbered user-obs verdicts). Not one batch was rubber-
+stamped — every exception he named was load-bearing (the PR-prune gap, the
+three-Ps mapping, the practice-recording rider on 07-24 #2).
+
+**Lesson.** The two-register decision calibration (scratchpad 2026-07-31) holds
+at scale: structured batches for the straightforward, but he will find the one
+item in a batch that needs the deeper dive — and the batch format is what makes
+that findable.
+
+**How to apply.** Keep presenting disposition sets as numbered bulk-ratifiable
+lists; make each item's blast radius visible enough that the load-bearing
+exception is spottable in one read.
+
+## Obs 42 — 2026-08-03 — `[me]` Self-critique: the same splice error twice in three days
+
+**Pattern.** I mis-anchored an Edit into the middle of an adjacent row
+(inbox, 2026-08-02) and then consumed a section heading in a continuity insert
+(today) — the same failure shape: anchoring a text insertion on a prefix that
+belongs to the *neighbouring* record. Both caught same-turn by re-verification,
+neither reached a pushed state broken.
+
+**Lesson.** On append-adjacent edits in shared list/log files, the anchor must
+be the complete neighbouring record (or a structural boundary), never its
+opening line; and the post-edit structural count (rows, headings) is the check
+that catches it cheaply.
+
+**How to apply.** Before any insert-before-heading edit: include the full
+heading line in BOTH old and new strings; after: grep-count the structural
+units and compare.
+
+## Obs 43 — 2026-08-03 — `[you]` The hub-session-as-secretary division of labour is now explicit
+
+**Pattern.** Shawn ran ~4.25h of substantive work in parallel sessions while
+this session executed the review, retro, drain, and publications — then
+delivered outcomes in one consolidated report for the record. The PA session's
+job was decisions-and-records; the work happened elsewhere.
+
+**Lesson.** On ritual-heavy days the PA session should optimise for his
+*batched attention*: accumulate decision queues, present them consolidated,
+never interrupt the parallel flow for anything that can wait for his natural
+return.
+
+**How to apply.** When Shawn says he's working in other sessions, hold
+non-urgent questions for his next check-in and present them as one numbered
+set.
+
+## Obs 44 — 2026-08-03 — `[you]` He closes review debt in one deliberate strike when the venue is right
+
+**Pattern.** Three weeks of growing queues (13→19→25) resisted named-day
+treatment, then cleared completely in one morning — because the venue was a
+carried, protected block with the retro's structural decision (disposition
+cadence) made *first*, so the clear ran under a sustainable rule rather than as
+heroics.
+
+**Lesson.** For Shawn, structure-then-execute beats execute-then-structure on
+accumulated debt: settle the recurring mechanism, then the backlog clears with
+conviction because it visibly won't re-accumulate.
+
+**How to apply.** When a queue has grown for weeks, propose the standing
+mechanism BEFORE proposing the clearing session; sequence the retro-level
+decision ahead of the labour.

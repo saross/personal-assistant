@@ -2074,3 +2074,39 @@ and he reversed it immediately — *"I'd forgotten about the convention"*. Small
 the system working in the direction it is usually weakest: a convention he set surviving a
 moment when he had forgotten it, because it was written down and surfaced at the point of
 use rather than at review.
+
+## 2026-08-03 (PA-hub / drain-completion + review-retro session, handoff) — Drafted candidates (pending review)
+
+### Candidate 1 — Your domain question before a prune caught a real coverage gap
+
+Asked to approve pruning the PR-workflow scratchpad entry as "graduated to
+CLAUDE.md", you didn't approve or reject — you asked *"does that cover my own
+research repos, shared repos with Brian, Overleaf submodules, FAIMS3 PRs, or all
+of these?"* The file check that question forced found that the Brian-shared repos
+have no project CLAUDE.md, so the global rule's delegation pointed at nothing for
+exactly them — and the branch-protection prohibition existed nowhere else. The
+prune went ahead only after a clause graduated and a memory landed. Pattern: at
+the moment of information loss, enumerate the cases the replacement must cover.
+
+### Candidate 2 — Protecting your future recall at merge time
+
+On ratifying the three-Ps → provenance tag merge, you added one requirement: a
+recorded mapping, because *you* might /recall against the old term after
+forgetting the merge. That is designing for your own future forgetting — the
+same instinct as the no-silent-discard rule, applied to vocabulary. It converted
+a bookkeeping merge into a durable pointer (gloss + memory), and it cost two
+minutes.
+
+### Candidate 3 — Extending a proposed convention rather than just approving it
+
+Offered the weekly disposition pass, you approved AND extended it in the same
+breath — the nightly recap micro-triage was your addition, cap and all. The
+convention that shipped is better than the one proposed, and the extension came
+from your knowledge of where small dispositions actually fit your evenings.
+
+### Candidate 4 (in-the-moment, relayed) — The OSF API workflow reaction
+
+Your report from the llm-repro session: publishing the amendment via the API was
+*"so much easier and more reliable"* than the form workflow. Relayed here as the
+in-the-moment-reaction exception; the workflow is flagged for the
+open-science-practice wiki carry.
