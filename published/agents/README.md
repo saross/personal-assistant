@@ -1,36 +1,52 @@
 # Published Agents
 
-Subagent definitions recommended for external reuse. Each entry is a symlink
-to the canonical version in `../../agents/`.
+Subagent definitions recommended for external reuse. **Each entry is a
+sanitised copy** of the canonical working version in `../../agents/` —
+copies only, no symlinks, per the 2026-06-15 policy in
+[`../README.md`](../README.md). Local tooling invocations are replaced
+with placeholders (see each file's header note); the empirical findings
+cited (error rates, catch rates) come from real runs in the source
+system.
 
 ## Format
 
-Claude Code agent definitions — Markdown files with YAML frontmatter. Place in
-`~/.claude/agents/` (user-wide) or `.claude/agents/` (project-specific) to make
-available to Claude Code.
+Claude Code agent definitions — Markdown with YAML frontmatter. Place in
+`~/.claude/agents/` (user-wide) or `.claude/agents/` (project-specific).
 
-## Current entries
+## Current entries (all published 2026-08-03)
 
-- **`lit-scout.md`** — Systematic academic literature discovery with bibliography
-  chaining via CrossRef, Semantic Scholar, and OpenAlex. Handles forward and
-  backward citation chaining and checks against a local Zotero library.
-  Produces verified findings tables and optional BibTeX output. Requires
-  companion script `scripts/lit-search.py` and automatically invokes
-  `lit-scout-verifier` as its final phase.
+Two proposer–verifier pairs. In each, the proposer emits a draft with an
+explicit `VERIFICATION PENDING` marker and a machine-readable claims
+block; the verifier runs as a **separate, serially-invoked agent in a
+fresh context**. Proposers must not spawn their own verifiers — nested
+dispatch does not work in this harness; orchestrate the pair from a
+slash command or the parent session.
 
-- **`lit-scout-verifier.md`** — Adversarial verifier for `lit-scout` reports.
-  Runs in a fresh context window to re-query every DOI's authoritative
-  metadata and catch confabulation that the proposer's self-check would
-  miss. Produces a corrections-applied audit trail and a corrected findings
-  table. Invoked automatically by lit-scout; can also run standalone on
-  any prior report.
+- **`lit-scout.md`** — Systematic academic literature discovery with
+  bibliography chaining via CrossRef, Semantic Scholar, and OpenAlex;
+  diversified seeding to counter corpus bias; DOI-first deduplication
+  against a local Zotero library; mandatory per-row metadata
+  verification with length-gated author rendering.
 
-- **`prior-art-scout.md`** — Searches for existing implementations, libraries,
-  tools, and approaches before building something new. Covers GitHub, GitLab,
-  PyPI, Hugging Face, Stack Overflow, and methodological literature.
+- **`lit-scout-verifier.md`** — Adversarial verifier for lit-scout
+  drafts: re-queries every claim against authoritative metadata APIs in
+  a fresh context, produces a corrections-applied audit trail and a
+  verdict, and supports a closed iterate loop via stable claim IDs.
+
+- **`prior-art-scout.md`** — Searches for existing implementations,
+  libraries, tools, and approaches before building something new —
+  GitHub, GitLab, package registries, Hugging Face, and methodological
+  literature.
+
+- **`prior-art-scout-verifier.md`** — Adversarial verifier for
+  prior-art reports: re-checks every cited repository, package, model,
+  and paper against its authoritative source API (existence, stats,
+  activity, licence).
 
 ## Adapting
 
-Both agents reference paths and tools specific to Shawn's setup (e.g.,
-`/home/shawn/personal-assistant/venv/bin/python3`, `~/Zotero/zotero.sqlite`).
-Adapt paths for your environment before use.
+The pairs assume a small API-helper script (rate limiting, provider
+fallback chains) and a reference-manager query module — both replaced
+with placeholders in these copies. Substitute your own; the discovery
+methodology, verification contracts, and claims schemas are the
+portable part.

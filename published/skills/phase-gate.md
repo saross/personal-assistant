@@ -51,7 +51,7 @@ Be exhaustive — include decisions that seem obvious.
 For each assumption, record:
 
 - **What was decided** (e.g., "adversarial verifier is the best strategy")
-- **What evidence supports it** (e.g., "F1=0.80 on a 60-item pilot")
+- **What evidence supports it** (e.g., "F1=0.796 on 60-tile pilot")
 - **What alternatives were considered** (e.g., "brief, checklist, adversarial")
 
 ### Step 2: Power Check
@@ -136,3 +136,8 @@ Present the summary table and recommend:
 - Do not skip steps — even "obvious" assumptions should be listed
 - Flag when statistical power cannot be assessed (e.g., qualitative decisions)
   and note the basis for the decision instead
+- If the phase spawns LLM agents, confirm the model is pinned explicitly and
+  stamped into the phase's artefacts (never session-inherited) — added
+  2026-07-24 after the AB+ provenance forensics showed session metadata and
+  commit trailers both mislabel the executing model across mid-session
+  switches
