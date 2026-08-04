@@ -2415,9 +2415,12 @@ station pickup, one-off).
   and `change-log-addition-2026-08-04.md`; recap + work-log + scratchpad
   (verification-cost pattern); tasks (BolgiaTen closed, Odette waiting-for, move
   trades, Kari ask).
-- **Open / carry-forward:** ⚠ **the live Google Docs are BEHIND the local `.md`
-  by three citation fixes** (Huvila, AID, GAIDeT) applied after the copy-in was
-  verified — apply before 17 Aug; **change-log addition not yet pasted** into
+- **Open / carry-forward:** ⚠ **CORRECTED 2026-08-05:** the live Docs were
+  re-checked and Shawn had already applied the three citation fixes; the earlier
+  carry-forward was written from a stale 22:23 read. **One difference remains:**
+  the live SoW reads "AID Framework" where local reads "Artificial Intelligence
+  Disclosure (AID) Framework", and AID is expanded nowhere else in the live
+  document — one edit, in *Distinction from Other RDA Activities*; **change-log addition not yet pasted** into
   `RDA_IG_change-log_2026-07-23`, and the July section's strike-throughs are
   specified only in this session's chat (reproduced in the resume prompt);
   **Kari Weaver permission ask** (inbox row carries sentence + wording);
