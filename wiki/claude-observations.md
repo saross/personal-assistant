@@ -617,3 +617,35 @@ conviction because it visibly won't re-accumulate.
 **How to apply.** When a queue has grown for weeks, propose the standing
 mechanism BEFORE proposing the clearing session; sequence the retro-level
 decision ahead of the labour.
+
+## claude-obs 27 — 2026-08-05: Shawn treats a cheap external check as the tie-breaker when I reason from a proxy
+
+**Pattern.** I flagged the RDA member table as broken, inferring it from a difference between two Drive Markdown exports of the same document. Shawn did not argue the inference; he sent a screenshot of the rendered table, which settled it in one move. The same shape recurred through the session: when I reported that the Google Docs matched the local files, he had already told me he had made an error copying before, so the check was requested rather than volunteered.
+
+**Lesson.** He reaches for the cheapest artefact that resolves the question at the level the question lives at. A rendering question gets a rendering; a word-count question gets a count; a membership question gets the CSV. My instinct was to reason harder about the export diff instead of asking for the thing itself.
+
+**How to apply.** When a check is mediated by a serialisation, an API, or an export, name the mediation explicitly and say what would settle it directly. Offer the direct check rather than presenting the inferred conclusion as a finding.
+
+## claude-obs 28 — 2026-08-05: he converts a caught error into a document improvement rather than just a fix
+
+**Pattern.** Three times the correction became content. When the tooling scope collided, his clarification ("pilot tooling, not finished, because harnesses are still evolving") became a stated rationale in the deliverable, replacing a bare scope limit with an argument. When the standards-generating overclaim was caught, the fix was not a hedge but a precise account of the take-stock → identify-gap → extend → hand-over sequence. When the Three Ps had no citation, the answer was to claim it as the group's own unpublished contribution and name the deliverable that makes it citable.
+
+**Lesson.** For him a defect is usually a place where the document was vaguer than his actual thinking. The repair is to write down the thinking, not to soften the claim. This is why the document got stronger under criticism rather than more defensive.
+
+**How to apply.** When a review finding lands, ask what he actually believes on that point before proposing hedging language. The stronger fix is often longer and more specific, not shorter and safer.
+
+## claude-obs 29 — 2026-08-05: self-critique — I let a "quick" framing survive four hours of contrary evidence
+
+**Pattern.** The RDA pass was scoped at ~1h. By the third consistency finding it was obvious the session was a verification exercise, not an editing pass, yet I never said so — I kept delivering fixes without re-framing the block. Shawn named it himself at recap ("I thought that RDA would be faster"), and only then did the pattern connect to the 31 July division proposal.
+
+**Lesson.** I track scope creep well at the task level and badly at the block level. Each finding was individually worth doing, which is exactly what made the aggregate invisible.
+
+**How to apply.** When a task's third unplanned finding lands, stop and name the re-frame explicitly: "this is no longer the pass we scoped; it is now X, and the day's other commitments are exposed." That is the moment the human can still choose, and it is well before the 22:00 stop.
+
+## claude-obs 30 — 2026-08-05: self-critique — I reported a defect I had not confirmed at the level that mattered
+
+**Pattern.** I told him the member table was broken and recommended fixing it first. The evidence was a diff between two API reads; the rendering was fine. In a session whose whole discipline was verifying claims at source, I asserted a defect from a proxy.
+
+**Lesson.** The anti-confabulation rule applies to my own findings, not only to inherited claims. "Two reads of the same document differ" is a reason to investigate, not a finding to report.
+
+**How to apply.** Before reporting a defect, ask what artefact would settle it and whether I have looked at that artefact. If I have not, report it as a question rather than a finding.

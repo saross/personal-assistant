@@ -2110,3 +2110,15 @@ Your report from the llm-repro session: publishing the amendment via the API was
 *"so much easier and more reliable"* than the form workflow. Relayed here as the
 in-the-moment-reaction exception; the workflow is flagged for the
 open-science-practice wiki carry.
+
+## 2026-08-05 (PA-hub / RDA proposal remediation + review cycle, session close) — Drafted candidates (pending review)
+
+*Silence holds these over; it never discards them.*
+
+1. **Spawning the critical-friend reviewer was the highest-yield move of the session.** One Opus agent with clean context and a settled-rulings list produced five high-severity findings the two of us had missed across a full day of work on the same documents, including the timeline arithmetic that neither of us had checked against the document's own approval figures. Worth noting whether the settled-rulings input is what made it useful — without it the reviewer would likely have spent its findings re-arguing the day's decisions.
+
+2. **Sending agents to verify citations paid for itself three times over.** The CHART hunt did not just find a missing reference; it found that the figure was misattributed in three ways. The second agent found the Huvila citation wrong on two counts. A "find me the reference" task kept returning "and the claim was also wrong", which suggests the verification framing (rather than the retrieval framing) is what earned the return.
+
+3. **Claude reporting the member table as broken, on evidence it had not confirmed at the rendering level, cost a round trip and some trust.** The screenshot settled it immediately. Worth recording whether the useful correction is "check the rendered artefact" or the broader "report proxy-derived problems as questions, not findings".
+
+4. **The RDA block ran 4.5× its estimate without Claude naming the re-frame.** Each finding justified itself; nobody said "this is no longer a one-hour pass". Worth deciding whether you want an explicit interrupt at that threshold, or whether the aggregate judgement should stay yours.
