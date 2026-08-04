@@ -2359,6 +2359,73 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-05 (Tue 4 Aug → Wed 5 Aug, latest PA-hub) — SESSION CLOSE (/handoff): RDA IG PROPOSAL REMEDIATED AND CIRCULATED; ARDC still at zero
+
+Two-day PA-hub session (amd-tower) that began as a one-hour RDA salience pass and
+became a full verification and remediation cycle on both proposal documents.
+**The proposal is now submission-ready and the comment window is live: comments
+close Fri 14 Aug, submission Mon 17 Aug.**
+
+**What the pass actually found.** The salience diagnosis held (purpose and
+activities were buried in template detail), but almost everything else came from
+checking. A pre-flight found the live Google Docs had drifted from the archive
+copies in three substantive ways (Kiera named in the STM clause, an editorial
+note removed, Christina Drummond's email changed). A consistency check found
+eight issues; a **critical-friend review** (one Opus agent, fresh context, a
+settled-rulings list so it would not re-argue the day's decisions) found five
+high-severity findings on top. The largest: **the 12-month timeline was anchored
+to a start date the document's own approval arithmetic excluded.** Working
+forward from a mid-August submission and the stated 10–12 week cycle, endorsement
+lands ~November 2026, so month 1 is November, P27 carries no formal session,
+VP28 is month 5, P29 (month 11) is where the WG proposal is presented, and the WG
+launches at **P30 (2028)**. The success criterion changed from *launching* a
+Working Group within twelve months to *submitting an application*.
+
+**Corrections of substance.** The proposal had read in places as though the
+Interest Group would produce standards itself, contradicting its own Primary
+Objective and its twice-stated anti-proliferation position; all three framing
+statements now describe take-stock → identify-gap → extend the Three Ps →
+hand to Working Groups. Two questions a TAB reviewer asks first are now answered
+in new subsections (*Why an Interest Group rather than a Working Group*; *Beyond
+the first twelve months*). **Exemplar tooling** became a real IG deliverable with
+an owner, a supporting objective, and a stated reason for staying unfinished
+(harnesses are still evolving). **All six July verification flags are discharged,
+three of which held real errors**: the CHART statistics were misstated in three
+ways and are now cited to Huo et al. (JAMA Netw Open 2025,
+doi:10.1001/jamanetworkopen.2024.57879); "Huvila et al." was wrong on two counts
+(edited collection, three editors); AID and GAIDeT were asserted but uncited.
+Also corrected: CSC removed (no such member), the GRS consortium is four partners
+convened with WCRIF (singular Conference), and "STM Association" is the correct
+name.
+
+**Other arcs.** BolgiaTen contract **signed and executed** — the one-week poke
+trigger discharged without firing, ending the arc that ran from the 2026-06-02
+ETL sign-off. **Odette fully unblocked** (script delivered, test server fixed
+after Steve's upgrade, invites passed on); ball with her, monitored on Slack.
+Kiera confirmed the STM attribution, and it turned out to be public anyway. Move
+works captured with their dependency chain (move out → re-grout → clean → paint)
+and a gated backlog row for the works schedule. **9.5h logged Tue** (rda 4.5,
+personal 3.5, map-reader 1.25, efn 0.25); 22:00 stop breached with cause (22:45
+station pickup, one-off).
+
+- Public repo: `wiki/claude-observations.md` (obs 27–30), `wiki/user-observations.md`
+  (2026-08-05 candidates, pending), `notes/_inbox.md` (2 wiki candidates).
+- Data: `archive/rda-ig-application-2026-07/` — both documents remediated end to
+  end, plus `critical-friend-review-2026-08-04.md`, `salience-pass-drafts-2026-08-04.md`,
+  and `change-log-addition-2026-08-04.md`; recap + work-log + scratchpad
+  (verification-cost pattern); tasks (BolgiaTen closed, Odette waiting-for, move
+  trades, Kari ask).
+- **Open / carry-forward:** ⚠ **the live Google Docs are BEHIND the local `.md`
+  by three citation fixes** (Huvila, AID, GAIDeT) applied after the copy-in was
+  verified — apply before 17 Aug; **change-log addition not yet pasted** into
+  `RDA_IG_change-log_2026-07-23`, and the July section's strike-throughs are
+  specified only in this session's chat (reproduced in the resume prompt);
+  **Kari Weaver permission ask** (inbox row carries sentence + wording);
+  **ARDC had two consecutive days at zero** against ads closing ~17 Aug;
+  map-reader **timeline step-back still unscheduled** (twice deferred);
+  conveyancer email forgotten twice; co-chair count and member-table Title
+  column still open before submission.
+
 ### 2026-08-03 (Thu 30 Jul → Mon 3 Aug, latest PA-hub) — SESSION CLOSE (/handoff): DRAIN COMPLETED in full; W31 review + Jun–Jul retro run; division proposal presented; ARDC ads live → Slot 1
 
 Five-day PA-hub session (amd-tower) spanning the named drain day through Monday's
