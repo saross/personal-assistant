@@ -2415,12 +2415,23 @@ station pickup, one-off).
   and `change-log-addition-2026-08-04.md`; recap + work-log + scratchpad
   (verification-cost pattern); tasks (BolgiaTen closed, Odette waiting-for, move
   trades, Kari ask).
-- **Open / carry-forward:** ⚠ **CORRECTED 2026-08-05:** the live Docs were
-  re-checked and Shawn had already applied the three citation fixes; the earlier
-  carry-forward was written from a stale 22:23 read. **One difference remains:**
-  the live SoW reads "AID Framework" where local reads "Artificial Intelligence
-  Disclosure (AID) Framework", and AID is expanded nowhere else in the live
-  document — one edit, in *Distinction from Other RDA Activities*; **change-log addition not yet pasted** into
+- **Open / carry-forward (updated 2026-08-05 midday — the RDA document work is
+  DONE):** all three documents are synced and archived
+  (`RDA_IG_change-log_2026-08-05.md`, renamed from the July date). The AID
+  expansion, the co-chair resolution, and the July strike-throughs are all
+  applied; the comment cycle is running. **Closed since the handoff:** co-chair
+  count (seven is fine — two IGs on the first page of listings have seven, so
+  the template's 2–4 is guidance); the Kari Weaver permission ask (she is on
+  vacation through 24 Aug, past both the comment close and submission, so the
+  membership-connection sentence is dropped, and the AID citation stays).
+  **Still open before submission:** member-table Title column, GRS Round 2
+  decision, Commitment column from replies. **First substantive member comment
+  in** (Gnana Bharathy): are the existing proof-of-concept tools going to seed
+  the Working Group? The Exemplar Tooling deliverable already answers yes, but
+  the question is itself evidence that the tooling reads as less mature than it
+  is. Tooling links now in a `reference` memory; new inbox row to get them
+  publishable. **Unresolved:** what Gnana means by "queries" — possibly a third
+  artefact neither repo covers; **change-log addition not yet pasted** into
   `RDA_IG_change-log_2026-07-23`, and the July section's strike-throughs are
   specified only in this session's chat (reproduced in the resume prompt);
   **Kari Weaver permission ask** (inbox row carries sentence + wording);
