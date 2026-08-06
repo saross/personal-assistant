@@ -2359,6 +2359,70 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-06 (Wed 5 Aug → Thu 6 Aug, latest PA-hub) — SESSION CLOSE (/handoff): CV REBUILT AND VERIFIED END TO END; Seek format resolved; letters still unwritten
+
+Two-day PA-hub session (amd-tower) that began as a standup and became a full
+verification and reconstruction of the CV, plus the infrastructure to keep it
+honest. **The CV is submission-ready; no cover letter is written.**
+
+**What the verification found.** Nothing was fabricated — but the CV was wrong in
+both directions, and the errors that mattered were *understatements*. Four places
+undersold Shawn: the funding total (the summary printed the Lead-CI subtotal as
+if it were the total, a **\$1.8M** understatement), the deployment and workflow
+counts, and the generative-AI contribution. Against that, two real
+overstatements: the ALTC "After Standards" grant at **A\$294,000 against a
+funder-recorded A\$172,000 ex GST**, and the America for Bulgaria award, whose
+**administering body names three investigators and Shawn is not among them** —
+removed on his ruling (*"if the public record diverges, then it's safest to
+remove it"*). **Total moved A\$4,399,690 → A\$4,208,062**; twenty-one grants
+attested at funder level.
+
+**The worst defect was invisible.** `biblatex-apa` source-maps both
+`@incollection` and `@inproceedings` to `inbook`, so two `\printbibliography`
+filters matched nothing. **The CV claimed 41 publications and printed 27** —
+eleven chapters and three proceedings papers absent, under a heading reading
+*Publications*, not *Selected*. A filter matching nothing leaves no gap, so
+neither of us would have caught it by reading. Found by an agent instructed to
+*count what appears against what the source asks for*; verified in the `.bbl`
+before fixing. All 41 now print.
+
+**Apparatus built — the durable output.** A private repo,
+**`saross/cv-and-applications`** (`~/Code/cv-and-applications`), holding the
+source, an empirically-derived **register note** for CV and application prose
+(measured from 3,666 words of Shawn's own letters — he uses **zero em-dashes**
+in letters against 2–3/1k in policy documents), a **claim audit** giving every
+assertion a source and a status (VERIFIED / ATTESTED / PRIOR-DOC /
+NEEDS-VERIFY), and an **interview capability inventory** from two agent audits of
+his repositories. Evidence and provenance live in `data/notes/career/`.
+
+**Zotero corrected as source of truth** — 72 field corrections across 25 items
+plus name normalisation on 14 creator entries, over two agent passes, **180
+independent assertions, zero failures**. Every write asserted its expected
+current value first and carried a version number.
+
+**Seek's format resolved at the end:** a **prose cover letter** (the cheaper
+shape — the DCCEEW register applies), then **employer questions not visible until
+the letter is uploaded**. Brian pre-cleared moving Friday to beer/dinner only,
+taking Friday from ~4h to ~7h.
+
+- Public repo: `wiki/` (continuity, working-notes, both observation registers),
+  `notes/_inbox.md`.
+- New repo: `saross/cv-and-applications` — `src/`,
+  `docs/register-cv-and-applications.md`, `docs/interview-capability-inventory.md`.
+- Data: `notes/career/` — `ardc-application-evidence-2026-08-05.md`,
+  `cv-blocks-claim-audit-2026-08-05.md` (now §§1–20),
+  `ai-upskilling-plan-2026-08-06.md`, `external-funding-2026-08-06.xlsx`;
+  `tasks/backlog.md` (Zotero dedup; AI upskilling weekend); FOCUS Slot 1.
+- **Open / carry-forward:** ⚠ **the Overleaf master is now badly stale** — every
+  change of the last two days is local and in the new repo, and editing Overleaf
+  next would silently discard a day's work. **Waiting on people:** Bree Kelly's
+  conferral date (colleague asked); whether the ARDC's GenAI policy and staff
+  guidelines were one document or two (can only let Shawn claim *more*).
+  **Deferred by ruling:** do not regenerate the `.bib` from Zotero before the
+  applications go in — a fresh export adds three items and changes name
+  rendering; dedup first (backlog row). **Next:** three brief cover letters,
+  Program Manager first so its employer questions reveal the scope early.
+
 ### 2026-08-05 (Tue 4 Aug → Wed 5 Aug, latest PA-hub) — SESSION CLOSE (/handoff): RDA IG PROPOSAL REMEDIATED AND CIRCULATED; ARDC still at zero
 
 Two-day PA-hub session (amd-tower) that began as a one-hour RDA salience pass and
