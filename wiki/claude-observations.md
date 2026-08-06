@@ -649,3 +649,78 @@ decision ahead of the labour.
 **Lesson.** The anti-confabulation rule applies to my own findings, not only to inherited claims. "Two reads of the same document differ" is a reason to investigate, not a finding to report.
 
 **How to apply.** Before reporting a defect, ask what artefact would settle it and whether I have looked at that artefact. If I have not, report it as a question rather than a finding.
+
+## claude-obs 31 — 2026-08-06: Shawn treats an accuracy correction that lowers a number as a win
+
+**Pattern.** Told the CV overstated a grant by \$122,000 and claimed
+investigator status on an award whose administrator names three other people, his
+reply was *"I'd rather have an accurate CV than a higher headline number"* — and
+he removed the award outright rather than defending it. Later, offered a
+\$1.8M correction in his favour, he treated it with exactly the same
+matter-of-factness.
+
+**Lesson.** He is not optimising the artefact's impressiveness; he is optimising
+its defensibility. That is why the guards work — an over-claim guard is not a
+constraint he tolerates, it is the thing he asked for.
+
+**How to apply.** Present downward corrections plainly and without cushioning.
+Do not lead with the favourable finding to soften the unfavourable one; he reads
+that as spin. State what is wrong, what it costs, and what the corrected figure
+is.
+
+## claude-obs 32 — 2026-08-06: I flattened two correctly-scoped agent findings into one wrong claim
+
+**Pattern.** Two agents audited different repository sets. One reported "no local
+or open-weight models" (true of the *research* repos); the other found Qwen
+models running via Ollama (true of *fieldmark*). I relayed the first as though it
+were global, and told Shawn he had no local-model experience. He corrected me
+from memory. The same error recurred a second time when a later agent read the
+inventory's research-scoped do-not-say list as universal and flagged an accurate
+CV claim as an overclaim.
+
+**Lesson.** A finding inherits the scope of the search that produced it. When
+several agents cover different territory, the union of their reports is not a
+single picture, and collapsing them loses exactly the qualifier that made each
+one true.
+
+**How to apply.** When synthesising multiple agents, carry the scope into the
+claim itself — "no local models *in the research repos*" — and write the scope
+into any artefact the findings land in, or a later reader will flatten it again,
+as one did here.
+
+## claude-obs 33 — 2026-08-06: my helper functions failed silently and I did not check
+
+**Pattern.** A `setfield` helper appended a field when its match failed instead of
+replacing, producing duplicate `pages`, `volume` and `pmc` keys in four
+bibliography entries. A line-rewrapping pass split `%` comment markers from the
+`\cvitem` macros they were suppressing, nearly uncommenting three referees'
+names into a CV about to be uploaded; LaTeX only errored because one entry
+happened to carry a second inline comment. Neither was caught by me — the first
+by an agent, the second by a build failure.
+
+**Lesson.** Scripted edits to a structured document need assertions on *both*
+sides: that the intended change landed, and that nothing else moved. I asserted
+the first and not the second.
+
+**How to apply.** After any scripted edit to a document with structure —
+comments, nested delimiters, repeated keys — re-parse and check invariants:
+duplicate keys, comment integrity, delimiter balance. Cheap, and it catches the
+class of failure that produces a plausible-looking file.
+
+## claude-obs 34 — 2026-08-06: the arithmetic that "worked out" was a coincidence
+
+**Pattern.** Seeing a 0.8 FTE directorship and a 0.2 FTE advisory role, I reasoned
+they summed to 1.0 and therefore ran concurrently, and offered that as the likely
+resolution of a date conflict. They were sequential; the advisory role followed
+the directorship after a restructure, and the arithmetic was an accident of a
+shrinking appointment.
+
+**Lesson.** A tidy numerical explanation is seductive precisely because it feels
+like evidence. It is not evidence about employment history, and offering it
+invited Shawn to accept a wrong reading because it looked reasoned.
+
+**How to apply.** When a plausible mechanism presents itself for someone's own
+history, ask rather than propose. The cost of asking is one line; the cost of a
+confidently-wrong reading being accepted is a factual error in a submitted
+document.
+

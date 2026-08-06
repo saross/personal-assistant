@@ -1772,3 +1772,47 @@ actually produced each record so provenance stays honest.
 needs (a) the error body logged, (b) a second-vendor fallback for
 policy-deterministic failures only, and (c) per-record model attribution — not a
 run-level assumption that one model produced everything.
+
+## 2026-08-06: A filter that matches nothing leaves no gap
+
+**Observation.** `biblatex-apa` source-maps both `@incollection` and
+`@inproceedings` to `inbook`. Two `\printbibliography[type=…]` filters in the CV
+therefore matched zero entries and printed **no heading and no content**. The
+document claimed 41 publications and printed 27; fourteen works were absent with
+no visual trace.
+
+**Why it survived several readings.** Both of us read the rendered PDF
+repeatedly. A missing *section* is invisible in a way a missing *entry* is not —
+there is no blank, no orphaned heading, nothing to catch the eye. It was found
+only because an agent was instructed to **count what appears on the page against
+what the source asks for**, rather than to read for errors.
+
+**Lesson.** For any generated or filtered content, a read-through cannot
+establish completeness. The check has to be a count against an independent
+expectation. Corollary: keep a claimed total (here, the Publication Summary's
+41) somewhere in the document — it is what made the discrepancy detectable at
+all.
+
+## 2026-08-06: Measuring the register beat asking for one
+
+**Observation.** Asked to build a prose style for CV and cover letters, the
+useful move was not to write rules but to **measure Shawn's own corpus**: 3,666
+words of cover letters, two RDA policy documents, against the existing
+corpus-derived scholarly register.
+
+**What it showed.** Across 3,666 words of cover letter he used **zero
+em-dashes**, against 2.06–2.82 per thousand in the policy documents. Semicolons
+split the same way (≈2/1k vs 6–9/1k). Hedging runs 0.00 in letters and 0.72 per
+100 words in his papers — **an inversion**, not a variation. Four rules of the
+scholarly register flip outright in the application register.
+
+**Lesson.** Where a corpus of the person's own writing exists, deriving the
+register empirically produces rules that are *checkable* and *surprising*. The
+gate it yields then caught a real defect: the CV prose I had drafted punctuated
+like the policy documents (6.8 em-dashes/1k) rather than like his letters —
+diagnosis was punctuation, not substance, and no content changed.
+
+**Caveat recorded.** The sentence-length band derived from continuous prose does
+**not** transfer to a telegraphic `\cvitem` list; applying it there would be
+gaming a metric borrowed from the wrong genre.
+

@@ -2120,3 +2120,39 @@ open-science-practice wiki carry.
 3. **Claude reporting the member table as broken, on evidence it had not confirmed at the rendering level, cost a round trip and some trust.** The screenshot settled it immediately. **Direction settled 2026-08-05:** take the broad rule as the principle and the narrow one as its trigger. *Principle:* a problem derived from an indirect signal is reported as a question, not a finding — the same shape recurs with API responses, cached values, and summaries, not only renderings. *Trigger:* when the evidence is a difference between two indirect reads of the same artefact, that is the moment to name the mediation and ask for the direct view rather than to conclude. The narrow rule alone would not have generalised; the broad rule alone is too abstract to fire in the moment.
 
 4. **The RDA block ran 4.5× its estimate without Claude naming the re-frame.** Each finding justified itself; nobody said "this is no longer a one-hour pass". **Resolved 2026-08-05: a soft check-in, not an interrupt.** When a block passes roughly twice its estimate, note it once and ask whether the time is still worth it. Not a brake and not repeated — a confirmation. The calibration point is that yesterday's answer was an unambiguous **yes**: the RDA overrun produced a much better application, and a hard interrupt would have been wrong. The check-in exists so the answer is *chosen* rather than defaulted, and so the day's other commitments are visible at the moment the choice is still live.
+
+## 2026-08-06 (PA-hub / ARDC CV rebuild + verification apparatus, handoff) — Drafted candidates (pending review)
+
+**Candidate 1 — "ground every claim in a source" was the instruction that made the day work.**
+Shawn asked for provenance on CV claims early, before there was any evidence it
+was needed. That instruction is what produced the claim audit, which then
+surfaced a \$122k overstatement, a contested authorship claim, four
+understatements, and fourteen publications that were not printing. None of those
+were visible to reading. **The generalisable form:** when a document is assembled
+from earlier documents, ask for provenance *before* looking for errors — the
+taxonomy finds them, reading does not.
+
+**Candidate 2 — pushing back on the agent's compression advice was correct, and I
+should have caught it myself.** An agent recommended compressing Key Skills
+because "Key Skills asserts, Employment evidences". Shawn's counter — *"people
+will read key skills, less sure about all the employment bullet points"* —
+inverts the model: Key Skills is the **read** layer, Employment the
+**verification** layer, and redundancy between them is a feature. I had relayed
+the agent's reasoning without testing it against how the document is actually
+used.
+
+**Candidate 3 — supplying an old CV settled two disputes that neither of us could
+have resolved by reasoning.** The NeCTAR and LP0989901 amounts disagreed between
+the CV and the spreadsheet, and they resolved in *opposite* directions. No amount
+of internal consistency-checking would have got there. **Worth noting as a
+pattern:** when two of your own records disagree, a third older record is often
+decisive, and is cheaper to find than to reason around.
+
+**Candidate 4 — "don't worry about it" was used well, twice.** On the LP0989901
+author order and on the SURF/DataCite entry, Shawn closed lines of enquiry that
+were consuming attention without changing the artefact. Both were legitimate
+findings; neither was worth the time. I would have kept working them.
+
+*(Pending Shawn's review — accept / edit / discard / replace. Silence holds these
+over; it does not discard them.)*
+
