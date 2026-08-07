@@ -46,6 +46,30 @@ if [[ -f "$GATE_FILE" ]]; then
     fi
 fi
 
+# Syncthing mesh gate (2026-08-07): the four-device mesh sat dead for three
+# months — rpi-server's container had exited and never restarted, and
+# amd-tower's had come up on a detached bind mount with the WRONG DEVICE ID,
+# so it connected to nobody while `docker ps` reported it healthy. Nothing
+# anywhere reported either fault. Same remedy as the cc-archives gate: check
+# often, and say something at every session start until it is fixed.
+#
+# Re-checked at most every 15 minutes so session start stays snappy (the
+# check SSHes to rpi-server); otherwise the cached verdict is surfaced.
+SYNCTHING_GATE="${HOME}/.cache/syncthing-gate"
+SYNCTHING_CHECK="${SCRIPT_DIR}/syncthing-health.sh"
+if [[ -x "$SYNCTHING_CHECK" ]]; then
+    if [[ ! -f "$SYNCTHING_GATE" ]] || [[ -n "$(find "$SYNCTHING_GATE" -mmin +15 2>/dev/null)" ]]; then
+        "$SYNCTHING_CHECK" --quiet >/dev/null 2>&1
+    fi
+    if [[ -f "$SYNCTHING_GATE" ]]; then
+        ST_COUNT="$(head -1 "$SYNCTHING_GATE" 2>/dev/null)"
+        if [[ "$ST_COUNT" =~ ^[0-9]+$ ]] && [[ "$ST_COUNT" -gt 0 ]]; then
+            echo "[syncthing gate] ${ST_COUNT} problem(s) with the Syncthing mesh:" >&2
+            tail -n +3 "$SYNCTHING_GATE" | sed 's/^/  /' >&2
+        fi
+    fi
+fi
+
 # Already ran today? Exit silently — dominant path on every session after the
 # first of the day.
 if [[ -f "$LOCK_FILE" ]] && [[ "$(cat "$LOCK_FILE" 2>/dev/null)" == "$TODAY" ]]; then
