@@ -204,6 +204,45 @@ print('%s|%s|%s|%s' % (d.get('state',''), d.get('errors',0), d.get('pullErrors',
         fi
     fi
 
+    # --- G. discovery health ------------------------------------------------
+    # Added 2026-08-08 after a failure this gate missed entirely: zbook's
+    # container was still holding the DNS server from the network Shawn had
+    # been on the day before (Docker writes resolv.conf once, at container
+    # start, and a roaming laptop's containers never see the new resolver).
+    # Announcement to the global discovery servers failed on DNS timeout, so
+    # no peer could find zbook — while the container ran happily, the folder
+    # reported zero errors, and every check above passed. Discovery errors are
+    # the only place that failure is visible.
+    #
+    # IPv6 entries are excluded: there is no IPv6 on this network, so they
+    # error permanently. An alert that is always firing trains you to ignore
+    # the gate, which is worse than no alert.
+    local disco
+    disco="$(run_on "$host" "docker exec $container sh -c '
+        KEY=\$(sed -n \"s|.*<apikey>\\(.*\\)</apikey>.*|\\1|p\" /config/config.xml)
+        curl -sk -H \"X-API-Key: \$KEY\" https://localhost:8384/rest/system/status
+    ' 2>/dev/null")"
+    if [[ -n "$disco" ]]; then
+        local disco_bad
+        disco_bad="$(python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+bad = []
+for name, v in (d.get('discoveryStatus') or {}).items():
+    if 'v6' in name.lower() or 'ipv6' in name.lower():
+        continue
+    if v.get('error'):
+        bad.append(name)
+print(', '.join(bad))
+" <<<"$disco" 2>/dev/null)"
+        if [[ -n "$disco_bad" ]]; then
+            note_problem "$prefix discovery is FAILING ($disco_bad) — peers cannot find this node even though it looks healthy. If it is a roaming machine, the container may be holding a stale DNS server: restart it so Docker rewrites /etc/resolv.conf"
+        fi
+    fi
+
     conns="$(run_on "$host" "docker exec $container syncthing cli --home /config show connections 2>/dev/null")"
     if [[ -n "$conns" ]]; then
         local offline
@@ -222,6 +261,61 @@ print(', '.join(bad))
 " <<<"$conns" 2>/dev/null)"
         if [[ -n "$offline" ]]; then
             note_problem "$prefix cannot reach always-on peer(s): $offline"
+        fi
+    fi
+
+    # --- H. long-absent roaming peers --------------------------------------
+    # Laptops are allowed to be away, so check E deliberately ignores them —
+    # but "away" and "quietly broken for a week" look identical from here.
+    # This is the difference: flag a machine listed in `hosts` that has not
+    # connected within peer_offline_hours.
+    #
+    # Scoped to hosts entries on purpose. Bare devices (zbook-windows) are
+    # excluded — that install is rarely booted, so alerting on it would fire
+    # forever and teach you to ignore the gate. Local-node run only, so the
+    # same absence is not reported once per checking node.
+    if [[ -z "$host" ]]; then
+        local stats threshold_h
+        threshold_h="$(read_expected thresholds peer_offline_hours)"
+        stats="$(run_on "$host" "docker exec $container sh -c '
+            KEY=\$(sed -n \"s|.*<apikey>\\(.*\\)</apikey>.*|\\1|p\" /config/config.xml)
+            curl -sk -H \"X-API-Key: \$KEY\" https://localhost:8384/rest/stats/device
+        ' 2>/dev/null")"
+        if [[ -n "$stats" && -n "$threshold_h" ]]; then
+            local absent
+            absent="$(python3 -c "
+import sys, json, datetime
+exp = json.load(open('$EXPECTED_FILE'))
+names = exp['devices']
+me = '$expected_id'
+# Only devices that have their own hosts entry, excluding this machine.
+tracked = {h['expected_device_id'] for h in exp['hosts'].values()
+           if h.get('expected_device_id') and h['expected_device_id'] != me}
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+out = []
+for dev, s in d.items():
+    if dev not in tracked:
+        continue
+    seen = s.get('lastSeen', '')
+    if not seen or seen.startswith('1970'):
+        out.append('%s (never)' % names.get(dev, dev[:7]))
+        continue
+    try:
+        ts = datetime.datetime.fromisoformat(seen.replace('Z', '+00:00'))
+    except ValueError:
+        continue
+    hours = (now - ts).total_seconds() / 3600
+    if hours >= $threshold_h:
+        out.append('%s (%dh ago)' % (names.get(dev, dev[:7]), int(hours)))
+print(', '.join(out))
+" <<<"$stats" 2>/dev/null)"
+            if [[ -n "$absent" ]]; then
+                note_problem "$prefix peer(s) absent beyond ${threshold_h}h: $absent — away, or quietly broken"
+            fi
         fi
     fi
 }
