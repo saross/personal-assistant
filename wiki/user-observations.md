@@ -2156,3 +2156,37 @@ findings; neither was worth the time. I would have kept working them.
 *(Pending Shawn's review — accept / edit / discard / replace. Silence holds these
 over; it does not discard them.)*
 
+
+## 2026-08-07 (PA-hub / ARDC letter re-scope + Fable handover, recap) — Drafted candidate (pending review)
+
+**Candidate 1 — a measured estimation multiplier for verification-heavy work,
+volunteered twice in one day and now evidenced twice in one week.** At the
+morning standup Shawn diagnosed the CV overrun himself: *"this seems to happen
+whenever I deal with a new...thing that needs verification"*, noting he had
+manually curated the CV for decades and it still held a few moderate errors and
+many small ones. At the recap he supplied the numbers: **CV ≈ 2× estimate,
+cover letter ≈ 1.5×**. Two independent data points on the same class of work,
+both self-reported without prompting, plus a stated mechanism.
+
+**Why this is worth keeping.** Most estimation misses arrive as a feeling
+("everything is slow this week") that the time log then contradicts — and it did
+contradict it: W32 closed at **35.75h against a 35h target**, *up* on W31's
+34.25h. The slowness was not in the hours. It was in a specific class of task
+running long, which is a far more actionable finding than a bad week, and Shawn
+identified the class before I did.
+
+**Candidate rule, if accepted:** when scoping work whose substance is
+**verification of existing material against sources** (CV audits, claim audits,
+reference reconciliation, provenance checks), **apply a ~1.75× multiplier to the
+first estimate**, and say so at scoping time rather than discovering it at the
+deadline. Distinguish this from *generative* work, which has no evidence of the
+same bias.
+
+**Counter-consideration to test before adopting:** two points is a thin base,
+and both fall inside a single high-pressure application push. The multiplier may
+be measuring the deadline, not the task class. Worth checking against the
+`interpretive-field-validation` work when it runs, which is verification-heavy
+and *not* deadline-compressed.
+
+*(Pending Shawn's review — accept / edit / discard / replace. Silence holds this
+over; it does not discard it.)*
