@@ -2359,6 +2359,55 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-09 (Fri 7 Aug → Sun 9 Aug, latest PA-hub) — SESSION CLOSE: ARDC PACK BUILT — CV, COMBINED LETTER, SEEK PROFILE; THREE CRITERIA STATEMENTS DRAFTED
+
+Three-day session on zbook (the CV work had been amd-tower-only; `moderncv`
+and nine other TeX packages had to be installed here before anything would
+build). **The application is assembled but not submitted.**
+
+**The deliverable changed twice, both times discovered rather than planned.**
+Seek's upload stage turned out to be a single *National Recruitment Campaign*,
+so three differentiated cover letters became **one combined letter** — evidence
+file §8's three-letter allocation is superseded as an architecture. Then a
+re-read of the applicant instructions found a **third requirement**: a response
+to the Key Selection Criteria as a separate document, max 2pp, per position.
+The employer questions, which drove the whole week's sequencing, turned out to
+be pro forma.
+
+**My worst error was measuring the wrong thing.** I repeatedly told Shawn the
+letter was "30% over" and needed ~250–300 words cut, from a word ceiling in the
+file's own frontmatter — when that same frontmatter says the ceiling is
+*rendered page count*. He asked to stop guessing; I built `render-letter.py`,
+and it fitted 2 pages with ~152 words to spare. Two cutting passes were spent
+on a constraint that was never binding. **Anything gated on a rendered artefact
+must be measured by rendering it.**
+
+**Verification that paid.** A fresh-context proofreader caught *San Diego
+Supercomputing Center* (it is **Supercomputer**) — the second misspelt
+institution after *Research Space* → *ResearchSpace*. A bounded criteria-coverage
+audit against all three PDs found 28 criteria, nothing absent, and one thin:
+people leadership on the **preferred** role, because the letter's
+"influence rather than authority" framing had crowded out the fact that he had
+line-managed. Under-claiming again. And compressing three named skill areas to
+"data management" had re-attached the **70%** to the construct that carries
+~50% in the ARDC's own published case study — §13's exact warning.
+
+- **`saross/cv-and-applications`** — `src/CV-ARDC-main.{tex,pdf}` (19pp, 41
+  publications verified printing, month+year dates, director roles split);
+  `src/letters/ardc-national-campaign.{md,pdf}` (2pp, signed);
+  `src/criteria/` (three 2pp KSC statements, DRAFT); `scripts/register-gate.py`,
+  `render-letter.py`, `render-criteria.py`, `extract-for-seek.py`; repo
+  `CLAUDE.md`. Head `8a54b80`.
+- **Seek profile** complete: 15 roles, 3 qualifications. Job title caps at 100
+  characters; the Company/Job-title autocompletes swallow the next click, so
+  descriptions silently save empty unless verified visually.
+- **Open:** revise the three statements (PM → ProjM → BA) in a Fable session —
+  prompt at session scratchpad `fable-criteria-session-prompt.md`. Treat them as
+  **three variations on one letter**; shared paragraphs verbatim are fine.
+  Re-upload the CV (the copy on Seek predates the date fixes). Still waiting on
+  the ARDC GenAI one-document-or-two question. `seek-month-overrides.txt` is
+  superseded by the 2026-08-09 dates.
+
 ### 2026-08-06 (Wed 5 Aug → Thu 6 Aug, latest PA-hub) — SESSION CLOSE (/handoff): CV REBUILT AND VERIFIED END TO END; Seek format resolved; letters still unwritten
 
 Two-day PA-hub session (amd-tower) that began as a standup and became a full
