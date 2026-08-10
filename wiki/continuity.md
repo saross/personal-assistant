@@ -2359,6 +2359,72 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-10 (Mon, latest PA) — SESSION CLOSE (/handoff): SYNCTHING MESH REPAIRED + HEALTH GATE; W32 REVIEW; MOVE WORKSTREAM SCAFFOLDED
+
+Long multi-strand session on amd-tower spanning infrastructure, the weekly
+ritual, and the opening of a new move workstream. Three substantive threads.
+
+**1. Syncthing — a three-month silent outage found and fixed.** The four-device
+mesh had been dead since early May and nothing reported it. Two independent
+failures: rpi-server's container exited cleanly 2026-05-06 with `restart: 'no'`
+and never came back; amd-tower's came up 2026-07-14 on a **detached bind mount**,
+booting a stale 2025 config and advertising the wrong device ID (`7OXIKQ7…`
+instead of `TNOT4GW…`) while `docker ps` reported it healthy. Root cause of the
+May outage later confirmed from container timestamps: a `docker.service` restart
+killed all three containers; the two with restart policies came back, Syncthing
+did not. Both repaired; rpi-server drained a 298-file backlog. **LAN addresses
+then pinned** (`PATCH /rest/config/devices/<id>`) — the mesh had been relaying
+through a public server even between machines on the same switch, because both
+daemons run in Docker bridge networks and announce their container IP. All links
+now `tcp-*` on `192.168.1.x`.
+
+**2. `scripts/syncthing-health.sh` — the gate that would have caught it.** Checks
+container state, bind liveness (host vs container `/config` inode), device
+identity against `data/config/syncthing-expected.json`, folder errors, always-on
+peer reachability, stalled transfers, **discovery/announce failures**, and
+**peers absent beyond threshold**. Surfaced at every session start via
+`daily-sync-trigger.sh`, mirroring the cc-archives gate. **Every check was
+fault-injected and observed to fire** — the folder-health check was vacuous on
+first write (it called a `syncthing cli` subcommand that does not exist in v1.29)
+and was rebuilt on the REST endpoint. The last two checks were added *after* the
+gate missed a live failure: zbook's container held a stale DNS server from
+another network, so it could not announce and no peer could find it.
+
+**3. W32 weekly review + the move workstream.** Review found the "16h deficit"
+was `move_contents_daily_target`, not the work target — 1.5h against 17.5h,
+exactly 16.0, while work hours were *exceeded* at 45.00h. Deficit written off,
+parameter re-expressed as a weekly floor, promoted to a named deliverable.
+`working-with-claude.md` carried from stub to seed (17 rows, seven themes) —
+first wiki curation in four weeks. New `data/notes/move/` workstream scaffolded:
+nine-bucket destination taxonomy, selling-channel framework, box inventory.
+
+**Held over / open:**
+
+- **Books climate decision UNRESOLVED** — three boxes packed, destination
+  deliberately open. Three options live: container with mitigations, small
+  climate-controlled unit for a valuable subset, or a colleague's office
+  (waiting-for row, Shawn following up).
+- **Today has no recap** — Shawn deferred it; time tracking also pending.
+- `notes/_inbox.md` carries one row from a concurrent llm-reproducibility
+  session, committed here rather than left stranded.
+
+**Artefacts touched:**
+
+- Scripts: `scripts/syncthing-health.sh` (new), `scripts/daily-sync-trigger.sh`
+- Data config: `data/config/syncthing-expected.json` (new)
+- Docs: `data/global-claude-md/network-resources.md` (Syncthing section, failure
+  modes, compose-v2 provenance), `notes/working-with-claude.md` (stub → seed),
+  `notes/working-practices.md` (two estimation entries), `data/scratchpad.md`
+  (three self-corrections)
+- Move: `data/notes/move/{index,selling-channels}.md`,
+  `{selling,box}-inventory.csv` (all new)
+- Reports: `reports/weekly/2026-W32.md`, three W32 collaborator reports,
+  `standups/2026-08-10.md`
+- Tasks: FOCUS Slots 1–3, `waiting-for.md` (3 new rows), `inbox.md`,
+  `SYSTEM.md` (move parameter tuned, standing report added)
+- Infra changed outside git: compose v2 installed on rpi-server (apt),
+  Syncthing configs on all three nodes (`config.xml.bak-2026-08-08` for rollback)
+
 ### 2026-08-09 (Fri 7 Aug → Sun 9 Aug, latest PA-hub) — SESSION CLOSE: ARDC PACK BUILT — CV, COMBINED LETTER, SEEK PROFILE; THREE CRITERIA STATEMENTS DRAFTED
 
 Three-day session on zbook (the CV work had been amd-tower-only; `moderncv`
