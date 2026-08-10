@@ -2194,37 +2194,44 @@ over; it does not discard it.)*
 
 ---
 
-## Candidates — 2026-08-10 session (pending review)
+## 2026-08-10 (PA-hub / Syncthing repair + W32 review + move workstream, handoff) — REVIEWED 2026-08-10: 1 AND 4 ACCEPTED; 2–3 DROPPED
 
-**Candidate 1 — Fault-injecting the monitor was worth more than writing it.**
-The Syncthing health gate contained a check that could never fire (a CLI
-subcommand that does not exist in this version); it was found only because every
-check was deliberately broken and watched. If that habit is worth making
-standing for monitoring/verification code generally, it belongs in the register
-rather than in one session's luck.
+Both accepted observations are **provisional by Shawn's framing** — "let's try it
+as a habit and see if it pays off", "let's see if it's a useful pattern". They
+are adopted as experiments with a review trigger, not as settled practice.
 
-**Candidate 2 — Correcting the record loudly, three times, on the same line.**
-The "16h deficit" was rewritten in FOCUS.md three times before it was right, each
-time with the prior reading explicitly marked wrong rather than quietly replaced.
-Useful, or noise? The alternative — silent replacement — would have left no trace
-that the figure had been misread twice, but the audit trail now costs several
-lines in a file read under time pressure.
+**1 — Fault-inject the monitor before believing it. ACCEPTED as a habit to trial.**
+The Syncthing health gate shipped with a check that could never fire: it called
+`syncthing cli operations folder-status`, which does not exist in v1.29, so it
+returned nothing and passed silently. It was found only because all six checks
+were deliberately broken and watched. The same pass later caught
+`peer_offline_hours` sitting in the config file as a key the script never read —
+decoration that reads as coverage. **Generalisable form:** for verification and
+monitoring code, construct each failure and observe it fire before trusting the
+green result; for any config key, grep that something reads it. A check that has
+only ever passed is an untested claim.
+**Review trigger:** revisit after the next two monitoring or verification builds
+— does the habit catch anything, or is it ceremony? Cost is roughly 10–15 minutes
+per gate, so it pays for itself if it catches one vacuous check in three builds.
 
-**Candidate 3 — Withdrawing the "third consecutive Monday" pattern claim.**
-An accountability observation was made from a calendar count without checking
-what preceded each Monday; when Shawn supplied the context (4.5h on ARDC the day
-before, plus the Fable drafting session) it was withdrawn in the standup file.
-Question worth his verdict: is a withdrawn-in-writing wrong call better than a
-more cautious one that would not have been made? The confrontational brief
-invites the former.
+**4 — Offer to execute the research task, not just structure it. ACCEPTED as a
+pattern to trial.** Shawn said "I should look into what I need to do to get police
+checks"; the offer to run the audit produced a table of five countries, relocated
+the binding constraint from geography (his framing) to validity windows (the
+actual one), and reduced the next action to a single email to the Czech consulate.
+The generalisable shape: when he names a *research* task he intends to do himself,
+and it is bounded and source-checkable, offering to run it converts a vague
+intention into a decision-ready artefact — and the reframing tends to come from
+doing the work, not from planning it.
+**Boundary to respect:** this applies to bounded research with verifiable sources,
+not to judgement calls or anything requiring his standing. The audit was honest
+about what it could not verify (Home Affairs blocks automated fetching; USA,
+Bulgaria and Greece marked search-derived and unconfirmed), which is what made
+it usable rather than misleading.
+**Review trigger:** revisit if a run of these produces work he does not use, or
+if the unverifiable share climbs high enough that the output needs redoing anyway.
 
-**Candidate 4 — Doing the location audit rather than advising on it.**
-Shawn said "I should look into what I need to do to get police checks"; the offer
-to run the audit turned a vague task into a table plus a named next action (one
-email to the Czech consulate), and relocated the binding constraint from
-geography to validity windows. Whether that is a pattern to repeat — offering to
-*execute* the research task rather than structure it — or a one-off that
-happened to fit, is his call.
+**2 — Loud triple-correction of the same line. DROPPED** (Shawn, 2026-08-10).
 
-*(Pending Shawn's review — accept / edit / discard / replace. Silence holds these
-over; it does not discard them.)*
+**3 — Withdrawing the "third consecutive Monday" pattern claim. DROPPED**
+(Shawn, 2026-08-10).
