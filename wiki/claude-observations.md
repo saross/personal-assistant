@@ -724,3 +724,81 @@ history, ask rather than propose. The cost of asking is one line; the cost of a
 confidently-wrong reading being accepted is a factual error in a submitted
 document.
 
+
+
+## claude-obs 35 — 2026-08-10: "The process is running" is not a health signal, and neither is a check that has never been seen to fail
+
+**Pattern.** Two failures in one session had the same shape. Syncthing's outage
+survived three months because every available signal — `docker ps`, an open
+port, a container uptime of "3 weeks" — reported health while the daemon
+advertised the wrong identity and synced nothing. Then the health check I wrote
+to catch it contained a check that could never fire: it called
+`syncthing cli operations folder-status`, which does not exist in v1.29, so it
+silently returned nothing and passed forever.
+
+**Lesson.** A monitor's value is in the checks that have been *observed* failing.
+Fault-injecting all six before commit found the vacuous one immediately; without
+that step it would have shipped as coverage that wasn't. The same logic applied
+later: `peer_offline_hours` sat in the config file as a key the script never
+read — decoration that reads as capability.
+
+**How to apply.** For any check: construct the failure and watch it fire before
+believing it. For any config key: grep that something reads it. When a gate says
+"OK", ask when it last said anything else.
+
+## claude-obs 36 — 2026-08-10: I recorded the same figure wrongly twice before doing the arithmetic
+
+**Pattern.** Shawn said he was "16 hours in deficit". I wrote that into FOCUS.md
+as outstanding house work; corrected to a tracked-hours shortfall when he
+clarified; and only at the weekly review computed that it was
+`move_contents_daily_target` — 1.5h logged against 17.5h, exactly 16.0. His work
+hours had in fact been *exceeded* that week (45.00h), so the record briefly
+asserted close to the opposite of the truth, twice, in the file that drives
+planning.
+
+**Lesson.** The system defines its targets in `SYSTEM.md`. A stated number
+"under target" is a lookup, not an interpretation, and two minutes of arithmetic
+would have pre-empted two rounds of confident correction. I treated an ambiguous
+phrase as something to reason about rather than something to check.
+
+**How to apply.** When a figure is quoted against a named parameter, resolve
+which parameter *before* writing it anywhere. If the arithmetic does not
+reproduce the number, that mismatch is the finding.
+
+## claude-obs 37 — 2026-08-10: Shawn's estimation errors are directional by task shape, and he diagnosed his own
+
+**Pattern.** Five consecutive blowouts on verification-heavy work (1h→4.5h,
+0.75h→3.25h, 1h→7h) — then the same day, a 4× *over*-estimate: eight manual
+decisions scoped at 2h from a 20–25 minute first item, completed in 0.5h. Asked
+about it, Shawn immediately supplied the mechanism: the first decision carried
+the framing cost, the rest fell quickly once it did.
+
+**Lesson.** Two opposite biases with different causes — hidden work in
+verification, one-off setup cost in list-of-decisions work. A single "pad your
+estimates" heuristic would have made one worse. Worth noting the *cost profile*
+differs too: under-estimating spends unplanned hours, but over-estimating caused
+a **deferral** — automated work in two projects waited on a number that was 4×
+too high.
+
+**How to apply.** Ask which shape the task is before offering an estimate.
+Verification-heavy: scope the verification as its own line. List of similar
+decisions: time the second item, not the first.
+
+## claude-obs 38 — 2026-08-10: Shawn routinely converts my flags into scoped commitments rather than accepting or dismissing them
+
+**Pattern.** Three times in one session. I flagged that "no further verification
+risk" on RDA resembled the blowout pattern; he answered with a mechanism
+(feedback shifts emphasis, not content — no new claims, so no new verification
+surface) and *then* added a read-through and a pre-day estimate confirmation. I
+flagged the books/climate question; he neither over-committed nor waved it off,
+but left it explicitly unresolved with a lean recorded. I flagged that a
+colleague's office might defer rather than solve the storage problem; he took it
+as something to check.
+
+**Lesson.** The useful move with him is to name the risk *and* its mechanism,
+then stop. He does the converting. Repeating a flag after it has been answered
+is the failure mode, not under-flagging — and I said as much once ("that's the
+last I'll say on it"), which seemed the right register.
+
+**How to apply.** State the concern once with its reasoning, offer the cheap
+insurance, and let him scope it. Do not re-raise unless new evidence arrives.

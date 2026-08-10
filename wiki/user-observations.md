@@ -2190,3 +2190,41 @@ and *not* deadline-compressed.
 
 *(Pending Shawn's review — accept / edit / discard / replace. Silence holds this
 over; it does not discard it.)*
+
+
+---
+
+## Candidates — 2026-08-10 session (pending review)
+
+**Candidate 1 — Fault-injecting the monitor was worth more than writing it.**
+The Syncthing health gate contained a check that could never fire (a CLI
+subcommand that does not exist in this version); it was found only because every
+check was deliberately broken and watched. If that habit is worth making
+standing for monitoring/verification code generally, it belongs in the register
+rather than in one session's luck.
+
+**Candidate 2 — Correcting the record loudly, three times, on the same line.**
+The "16h deficit" was rewritten in FOCUS.md three times before it was right, each
+time with the prior reading explicitly marked wrong rather than quietly replaced.
+Useful, or noise? The alternative — silent replacement — would have left no trace
+that the figure had been misread twice, but the audit trail now costs several
+lines in a file read under time pressure.
+
+**Candidate 3 — Withdrawing the "third consecutive Monday" pattern claim.**
+An accountability observation was made from a calendar count without checking
+what preceded each Monday; when Shawn supplied the context (4.5h on ARDC the day
+before, plus the Fable drafting session) it was withdrawn in the standup file.
+Question worth his verdict: is a withdrawn-in-writing wrong call better than a
+more cautious one that would not have been made? The confrontational brief
+invites the former.
+
+**Candidate 4 — Doing the location audit rather than advising on it.**
+Shawn said "I should look into what I need to do to get police checks"; the offer
+to run the audit turned a vague task into a table plus a named next action (one
+email to the Czech consulate), and relocated the binding constraint from
+geography to validity windows. Whether that is a pattern to repeat — offering to
+*execute* the research task rather than structure it — or a one-off that
+happened to fit, is his call.
+
+*(Pending Shawn's review — accept / edit / discard / replace. Silence holds these
+over; it does not discard them.)*
