@@ -226,6 +226,21 @@ Identify each row's source type from its URL pattern and emit only the categorie
 Emission rules:
 
 - Emit claims in row order (row 1 first, then row 2, etc.). Within a row, emit `url_resolves` first.
+- **Every direct quotation is a claim.** Any string you render inside
+  quotation marks and attribute to a source — in the candidates table,
+  per-item findings, synthesis, anywhere in the report — MUST be emitted
+  as a claim: `claim_id` `cand-<row-N>-quote-<k>` (k = order of appearance
+  within the row's material), `category` `quotation`, `value` = the exact
+  quoted string, `source_method` = the fetch command plus the URL where
+  the verifier can re-locate the string. If you cannot emit the claim
+  (you did not fetch the source, or cannot reproduce the exact string),
+  do not use quotation marks — state it as paraphrase, explicitly
+  labelled. Rationale: on 2026-08-10 a report passed its claims ledger
+  65/68 while four quoted strings did not exist at their sources and one
+  inverted the source's meaning — every fabricated quote sat outside the
+  emitted claim set, because claims were emitted only for mechanically
+  queried fields. A claims-ledger audit clears exactly the prose it never
+  covers.
 - Skip claims for rows where the proposer could not even verify URL existence at proposing time — those should not be in the candidates table in the first place.
 - In iterate mode (see below), re-emit every PASS claim verbatim (same `claim_id`, same `value`) and re-emit corrected FAIL claims with the substituted `value`. Removed rows (URL doesn't resolve and the proposer is removing them per V1 policy) drop all their claim_ids from the block.
 
