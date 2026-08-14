@@ -48,6 +48,19 @@ answer each question from the artefacts, not from familiarity.
   stop conditions are
 - **Proactively** at the boundary — do not wait to be asked
 
+## Future Work (noted 2026-08-14, PI)
+
+An automated clean-context agent pass (Opus-class) as a *standing
+complement* to the operator's review — never a replacement for it.
+Rationale: the first external Opus review of a pre-run stack returned
+three actionable gaps (verifier denominator, disagreement rule, cold
+derivation) that neither the drafting agent nor the operator had
+surfaced, precisely because a clean context has no stake in the
+draft's framing. Design sketch when this gets built: run the agent
+review AFTER the operator dialogue (so it audits the hardened
+contract, not the draft), brief it with the naive-reviewer stance,
+and require it to report its denominator like any other verifier.
+
 ## Relationship to Sibling Skills
 
 - `/phase-gate` asks whether the *decisions feeding* the next phase
