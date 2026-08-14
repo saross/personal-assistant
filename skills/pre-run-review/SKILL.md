@@ -21,6 +21,23 @@ one-commit-per-document rule, a countable completeness gate against
 mixed-vintage artefacts, and a layered verification stack calibrated
 to the project's measured claim-defect rate (~8% of decisively
 recomputable claims mismatched; 619 of 7,894 in the C4 programme).
+Refined the same day from an external Opus review: the verifier
+denominator requirement, the disagreement rule, cold derivation for
+answer-shaped claims, and the naive-reviewer stance.
+
+## The Naive-Reviewer Stance
+
+The questions that produce hardenings come from ignorance, not
+expertise. "Does item 3 depend on item 2?" is askable only by someone
+who does not already believe they know — a reviewer with full project
+context tends to nod at the dependency structure, which is the one
+section where nodding is most expensive. So: **ask the obvious
+question anyway, including questions whose answers you believe you
+already know.** The cost of asking is one sentence; the cost of
+assuming is a re-run. When this review is conducted by a
+project-embedded agent rather than the human operator, either hand
+§§ 4–5 to a fresh-context reviewer or adopt the stance explicitly and
+answer each question from the artefacts, not from familiarity.
 
 ## When to Use
 
@@ -112,14 +129,38 @@ numbers flowing from computation into prose — typically runs ~1 in 10
 and deserves the heaviest layer):
 
 - **Layer 0**: machine-readable results first; prose cites them; every
-  checkable specific carries a source anchor
+  checkable specific carries a source anchor. This layer reads like a
+  preliminary; it is the foundation, and the one to protect under time
+  pressure — without anchors, Layer 2 has nothing to re-derive against
+  and Layer 3 has nothing to sweep
 - **Layer 1**: code-level — tests, linters, audit pass on new scripts
 - **Layer 2**: blind fresh-context verification — an agent that has
   not seen the drafting reasoning re-derives every checkable claim
-  from committed artefacts and returns a corrections table. Brief it
-  explicitly on directionality claims and comparison tables, the two
-  highest-risk shapes. Non-negotiable for the block's highest
-  synthesis-density item; proportionate elsewhere
+  from committed artefacts and returns a corrections table.
+  Non-negotiable for the block's highest synthesis-density item;
+  proportionate elsewhere. Three requirements that keep it
+  verification rather than confirmation:
+  - **Report the denominator.** A clean pass and a lazy pass produce
+    the same empty corrections table. The verifier must report what it
+    checked — claims identified, claims re-derived, artefacts opened.
+    "0 corrections across 34 re-derived claims" is evidence; "no
+    corrections found" is not. (Precedent: a folder-health gate that
+    called a nonexistent CLI subcommand and reported clean; only fault
+    injection exposed that it was checking nothing.)
+  - **Corrections are claims, not verdicts.** The ~1-in-10 rate
+    applies to the verifier too, and a wrong correction that lands
+    automatically carries the verification layer's authority, making
+    it harder to catch than the original error. Name the disagreement
+    rule up front: a correction that conflicts with the draft triggers
+    a third re-derivation from the data (or operator adjudication) —
+    never "the verifier wins" by default.
+  - **Ask answer-shaped questions cold.** Directionality and
+    winner claims are put to the verifier as questions ("which
+    configuration wins on each metric?"), derived cold from the metric
+    files and then diffed against the prose — never handed over as
+    statements to check. A verifier anchored on the answer before it
+    starts is confirming, not verifying. Same pattern for comparison
+    tables: rebuild independently from the sources, then diff
 - **Layer 3**: mechanical cross-document consistency — drift checks,
   citation-site sweeps for every number that moved
 - **Layer 4**: operator gates — sign-off fields, accept/edit/discard
