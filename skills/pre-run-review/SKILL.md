@@ -48,18 +48,46 @@ answer each question from the artefacts, not from familiarity.
   stop conditions are
 - **Proactively** at the boundary — do not wait to be asked
 
-## Future Work (noted 2026-08-14, PI)
+## The Clean-Context Agent Pass (codified 2026-08-17)
 
-An automated clean-context agent pass (Opus-class) as a *standing
-complement* to the operator's review — never a replacement for it.
-Rationale: the first external Opus review of a pre-run stack returned
-three actionable gaps (verifier denominator, disagreement rule, cold
-derivation) that neither the drafting agent nor the operator had
-surfaced, precisely because a clean context has no stake in the
-draft's framing. Design sketch when this gets built: run the agent
-review AFTER the operator dialogue (so it audits the hardened
-contract, not the draft), brief it with the naive-reviewer stance,
-and require it to report its denominator like any other verifier.
+A standing complement to the operator's review — never a replacement
+for it. Run it **after** the operator dialogue, against the
+**committed** contract, so it audits the hardened text rather than the
+draft. The pass:
+
+- **Who:** one Opus-class fresh-context agent (general-purpose, full
+  read tools), briefed with the naive-reviewer stance and zero
+  drafting context.
+- **What it audits:** the contract's controlling document plus every
+  artefact the contract makes claims about — scripts, hooks, schemas,
+  registries. Instruct it to open the code, not reason from the
+  contract's own assertions, and to prefer live fault-injection probes
+  (run the tool on an empty input; delete a sidecar; reconstruct a
+  regex target character-for-character) over reading alone.
+- **Required output:** a denominator (files opened with line counts,
+  claims checked, probes actually run, an explicit NOT-checked list);
+  findings as severity-ranked CLAIMS with file:line evidence and a
+  concrete failure scenario each; clean probes reported per probe — a
+  clean probe with its denominator is a result, an unexamined area is
+  not.
+- **Adjudication:** the drafting session proposes a disposition per
+  finding (fix / accept-with-rationale / dispute), lands the
+  mechanical fixes before go/no-go, and records the audit outcome +
+  contract amendments in the controlling document. Judgement calls go
+  to the operator. Findings never land automatically — the
+  disagreement rule applies to the auditor too.
+
+Evidence base for codification (two runs, both valuable): the Phase C
+PoC (llm-reproducibility, 2026-08-14) returned 4 blockers, all
+confirmed — headline: a receipt gate that had "blocked" 39/45 spawns
+with zero downstream consequence. The D3 pre-run audit (2026-08-17)
+returned 19 findings — 5 blockers pre-spend, including an empty-set
+reconciliation that reported clean (found by live execution), a
+self-matching verification agent, and an unreproducible spend metric —
+against a 17-file, 11-probe denominator; all 19 confirmed on
+adjudication. Both runs caught classes of defect the drafting agent
+and operator dialogue had each missed, precisely because a clean
+context has no stake in the draft's framing.
 
 ## Relationship to Sibling Skills
 
