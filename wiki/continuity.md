@@ -2359,6 +2359,61 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-17 (Mon 10 Aug → Mon 17 Aug, latest PA) — SESSION CLOSE (/handoff): ARDC SUBMITTED; MOVE INSTRUMENT REPLACED; SELLING INVENTORY 1 → 50; HOUSE-SALE ARITHMETIC
+
+Eight-day session spanning W33 and the start of W34. **Three things closed, one
+instrument was replaced, and one decision was analysed to a conclusion.**
+
+**1. ARDC application SUBMITTED (Thu 13 Aug, Day 11)** — a day ahead of the internal
+target, four days before the hard close, email confirmation filed as the external witness.
+**25.25h of tracked `career` time across eleven days.** The 2026-08-09 prediction — *"one
+strong response plus two adaptations"* — was recorded as a hope and delivered almost
+exactly: **3.75h for the Program Manager statement, then 1h, 1h, 1h.** Register §9, itself
+a by-product of that overrun, is why. **The tail is open**: interview prep if he advances,
+on his own 70–80% estimate, landing early–mid September inside the move window.
+
+**2. The move-tracking instrument was replaced (ratified Tue 11 Aug).** The 3-day rolling
+average is **retired**; a **task burn-down** is primary; the 17.5h weekly floor is demoted
+to a reported-not-graded diagnostic. The argument came from the parameter's own stated
+purpose — load-shifting, i.e. volume out of September — for which hours were a proxy
+chosen when no inventory existed. **W33 move hours: 13.50h against W32's 1.50h.** Causation
+not claimed (the CleanOut deadline and better weather pushed the same way), but the
+instrument stopped producing a false negative every day and the work went up.
+
+**3. The census ran and the selling inventory went 1 → 50 rows.** Two zones (garden shed,
+garage). **One zone flipped the moving-sale decision**: the sub-$50 count went from three
+items to ~26 after the shed alone, and that count *is* the go/no-go. Chemical CleanOut
+**delivered Sun 16 Aug** — the single-occurrence event the whole week's sequencing was
+built around.
+
+**4. The house-sale decision was analysed to a conclusion** (`notes/move/off-market-vs-campaign.md`).
+Brent (gardener, mother financing) offered $1.00M against a $1.03M floor. **The analysis
+was wrong twice before it was right and both corrections are kept in the file** — the
+avoided works are not pure saving, and "walking away loses money" reversed once a real
+comparable existed. **Deposit decision: PAY** ($5k deposits, ~$10k works, break-even 68–81%
+against Shawn's own 50-50 read).
+
+**Held over / open:**
+
+- **⏳ IN FLIGHT AT HANDOFF:** the **ALA application** (2h box, closes today, Shawn
+  reporting time all at once — **not yet in the log**); **llm-repro's large automated run**
+  and **map-reader's automated work**, both launched today and running unattended.
+- **Slot 2 has produced 0 listings in 8 days** — the census is done, the listing step has
+  not started. Three planned for this afternoon (drill press, Privia PX-850, mitre saw),
+  **to be individually timed** so "all listings posted" acquires a rate.
+- **Wiki curation deferred a fifth time**; `notes/_inbox.md` holds 186+ rows.
+- **Anchor drift trend has no fresh point since 2026-06-06** (18.4%); active memory
+  retrieval is 36 against 858 digest exposures.
+
+**Artefacts touched:**
+
+- Task system: `tasks/SYSTEM.md` (instrument change), `tasks/FOCUS.md` (Slot 1 closed and
+  twice rotated), `tasks/{inbox,waiting-for,backlog}.md`
+- Move: `notes/move/{selling-inventory.csv,box-inventory.csv,selling-channels.md,photo-checklist.md,fallback-bank.md,off-market-vs-campaign.md,index.md}`
+- Reports: `reports/weekly/2026-W33.md`, `reports/work-log.md`, `reports/time-log.csv`
+- Standups: `standups/2026-08-1{0,1,2,3,4,7}.md`
+- Memories: personal-calendar architecture entry; RSpace partnership + Rob Day contacts
+
 ### 2026-08-10 (Mon, latest PA) — SESSION CLOSE (/handoff): SYNCTHING MESH REPAIRED + HEALTH GATE; W32 REVIEW; MOVE WORKSTREAM SCAFFOLDED
 
 Long multi-strand session on amd-tower spanning infrastructure, the weekly

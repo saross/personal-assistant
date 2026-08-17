@@ -2235,3 +2235,30 @@ if the unverifiable share climbs high enough that the output needs redoing anywa
 
 **3 — Withdrawing the "third consecutive Monday" pattern claim. DROPPED**
 (Shawn, 2026-08-10).
+
+## 2026-08-17 (PA-hub / W33→W34: ARDC submitted, move instrument replaced, house-sale arithmetic, handoff) — Drafted candidates (pending review)
+
+**Candidate 1 — the pre-run review was worth its cost and generalised immediately.**
+Claude's questioning of the map-reader run plan before launch (dependency ordering,
+partial-completion semantics, the verification stack) caught or hardened four things in one
+sitting, and Shawn applied the same protocol to llm-repro the same day. It is now a skill.
+*Shawn's in-the-moment reaction, relayed: "the close review with Fable has hardened the
+automated run and been very informative for me... thank you!"*
+
+**Candidate 2 — the arithmetic conversions changed decisions, but the recommendations ran
+ahead of the inputs.** Converting off-market price to market-equivalent, and deposits to
+expected cost, made two decisions tractable that were being carried as feelings. But Claude
+twice recommended firmly on invented figures and had to reverse — once in a direction that
+would have cost ~$30k. *Was the analysis net-useful despite the reversals, or should Claude
+have withheld the recommendation until the figures were real?*
+
+**Candidate 3 — instrument change over exhortation.** When move hours were persistently
+short, Claude proposed replacing the measuring instrument rather than pushing harder on the
+target, on evidence that the instrument was producing false negatives. Move hours went 1.5h
+→ 13.5h the following week. *Right call, or did the CleanOut deadline and the weather do
+the work?*
+
+**Candidate 4 — flag density.** This session produced a large number of "worth noticing"
+flags (bundling rules, seasonality, both ends of the move, box-numbering collisions, car
+timing). Most were acted on. *Is the flag rate calibrated, or does it need thinning to keep
+the important ones visible?*

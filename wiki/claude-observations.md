@@ -802,3 +802,79 @@ last I'll say on it"), which seemed the right register.
 
 **How to apply.** State the concern once with its reasoning, offer the cheap
 insurance, and let him scope it. Do not re-raise unless new evidence arrives.
+
+## claude-obs 39 — 2026-08-17: Shawn corrects my analyses by supplying the real number, not by arguing with the model
+
+**Pattern.** Three times this session I built an analysis on an assumed figure and Shawn
+replaced the assumption rather than the reasoning. Deposits: I modelled $1–6k, he said
+"about half the works cost", then corrected again to $5k on $10k of works — the conclusion
+flipped twice and settled. Works: I assumed ~$20k. The pole trimmer: I inferred Ryobi and
+corded from a generalisation; it was an Aldi Ferex cordless. **Each time he said "it's
+actually X" and left the framework alone** — including explicitly, on the deposits: *"I
+think that your framework for analysis is correct."*
+
+**Lesson.** He separates structure from inputs cleanly, which means **the highest-value
+thing I can do is make the assumptions visible and labelled**, so they are cheap for him
+to correct. The off-market analysis ends with an explicit "Assumptions — correct any of
+these and the conclusion moves" section; that is what made three corrections fast rather
+than three arguments.
+
+**How to apply.** When modelling anything with unknowns, state the assumed value *inline*
+and flag which one would flip the answer if wrong. Say "the one number that could change
+this is X" — twice this session that sentence produced the number within minutes.
+
+## claude-obs 40 — 2026-08-17: I twice built confident analysis on a figure I could have asked for
+
+**Pattern.** Self-critique, and it is the mirror of obs 39. I ran the deposit
+expected-value model to a firm recommendation — *"pay across almost the whole range"* —
+on a deposit size I had invented. Shawn then supplied the real figure and the conclusion
+reversed, then reversed again. Same shape in the property analysis: I treated $42–44k as
+pure saving without asking what the works returned, and concluded his walk-away was too
+high. **It wasn't. I nearly talked him into conceding $30k.**
+
+**Lesson.** The failure was not the modelling, it was the *ordering*. I produced a
+recommendation before asking a question I knew mattered — and in both cases I had already
+written down that the missing number was decisive. **Flagging an unknown and then
+recommending anyway is worse than not flagging it**, because the flag makes the
+recommendation look considered.
+
+**How to apply.** When I catch myself writing "the one number that would change this",
+**stop and ask for it before giving a recommendation** — not after. A one-line question
+costs a turn; a reversed recommendation costs trust, and in this case could have cost real
+money.
+
+## claude-obs 41 — 2026-08-17: Shawn's own account of a stall beat my diagnosis of it
+
+**Pattern.** The W33 review diagnosed five days of zero listings as *displacement* —
+physical work losing to desk work on shared days. The table supported it. Shawn's response
+named something better: *"I'm not familiar with Facebook Marketplace or the specialised
+venues, so there's a learning curve for each listing."* **Both readings fit the data; only
+his implies the right fix.** Displacement says *protect the time*; a learning curve says
+*front-load and batch*, which is the opposite of even pacing.
+
+**Lesson.** I diagnosed from the pattern of outcomes; he diagnosed from the experience of
+doing it. **On questions about why he did or did not do something, his introspective
+account is primary evidence and my behavioural inference is secondary** — I had been
+treating them the other way round because the behavioural data was tabulated and his
+wasn't.
+
+**How to apply.** When a pattern of non-completion appears, present it as an observation
+and **ask what it felt like from inside** before offering a mechanism. The tabulation earns
+its keep by making the question askable, not by answering it.
+
+## claude-obs 42 — 2026-08-17: he converts analysis into leverage without being prompted
+
+**Pattern.** Given the finding that the discount Brent is being offered *is* the avoided
+works and commission, Shawn immediately turned it outward: *"I will raise this as leverage
+with Brent and his mom, that I can only offer them a discount this deep if I can avoid the
+works."* Same move with the deposits — the moment they were confirmed non-refundable he
+identified them as a credible, verifiable deadline to give the buyer.
+
+**Lesson.** He treats an internal analysis as **negotiating material by default**, which
+means the *framing* of a finding matters as much as its correctness. "Your floor is
+$1.03M" is a decision input; "the floor is the point where off-market stops beating a
+campaign" is a sentence he can say to a buyer.
+
+**How to apply.** When an analysis produces a threshold he will have to defend to someone
+else, **write the explaining sentence as well as the number** — the version that makes the
+threshold legible to the counterparty rather than arbitrary.
