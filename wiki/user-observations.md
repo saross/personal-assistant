@@ -2236,7 +2236,7 @@ if the unverifiable share climbs high enough that the output needs redoing anywa
 **3 — Withdrawing the "third consecutive Monday" pattern claim. DROPPED**
 (Shawn, 2026-08-10).
 
-## 2026-08-17 (PA-hub / W33→W34: ARDC submitted, move instrument replaced, house-sale arithmetic, handoff) — Drafted candidates (pending review)
+## 2026-08-17 (PA-hub / W33→W34: ARDC submitted, move instrument replaced, house-sale arithmetic, handoff) — REVIEWED 2026-08-17: ALL FOUR KEPT (2 and 3 refined by Shawn)
 
 **Candidate 1 — the pre-run review was worth its cost and generalised immediately.**
 Claude's questioning of the map-reader run plan before launch (dependency ordering,
@@ -2262,3 +2262,40 @@ the work?*
 flags (bundling rules, seasonality, both ends of the move, box-numbering collisions, car
 timing). Most were acted on. *Is the flag rate calibrated, or does it need thinning to keep
 the important ones visible?*
+
+### Verdicts — 2026-08-17
+
+**1. ACCEPTED as drafted.** The pre-run review earned its cost and generalised to a second
+project the same day.
+
+**2. ACCEPTED, REFINED.** Shawn: *"I don't mind the iteration, but proactively pressing me
+for hard numbers earlier would be ideal."* **So the corrective is not "withhold the
+recommendation until the figures are real" — it is "ask for the figure sooner."** Iterating
+in public is fine and the reversals were not the problem; the problem was that Claude
+identified the decisive unknown, wrote it down, and then modelled around it instead of
+asking. **The fix is one turn earlier, not one recommendation fewer.** Cross-reference
+`claude-obs 40`, whose "withhold" framing is superseded by this.
+
+**3. ACCEPTED, AND THE MECHANISM CORRECTED — this is the substantive one.** Shawn confirms
+the instrument change was *"definitely the right call"*, and that failing the hours every
+day *"didn't help"*. **But his account of WHY it worked differs from Claude's, and his is
+better:**
+
+> *"Measuring against tasks required the definition of the tasks (which clarified the work
+> and surfaced decisions / dependencies / deadlines) and genuinely helped get things
+> moving."*
+
+**Claude's account was that removing a daily false negative restored the instrument's
+authority.** That is at most half of it. **The larger effect was that the burn-down needed
+a denominator, and producing the denominator WAS the valuable work** — the census, the
+nine-bucket routing, the split/bundle decisions, the dated singletons, the two-ends-of-the-
+move discovery. None of that existed before the instrument demanded it.
+
+**Generalises, and worth carrying:** *a measurement change that requires new structure
+delivers most of its value through the structure, not the measurement.* The corollary is a
+selection rule — **when choosing between candidate metrics, prefer the one whose denominator
+you do not yet have**, because building it is where the thinking happens.
+
+**4. KEEP AS IS.** Shawn did not experience the flag rate as excessive; he will monitor and
+say if it changes. **No thinning for now** — but the offer stands, and this row is the
+record that it was asked rather than assumed.
