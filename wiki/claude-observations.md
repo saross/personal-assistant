@@ -878,3 +878,78 @@ campaign" is a sentence he can say to a buyer.
 **How to apply.** When an analysis produces a threshold he will have to defend to someone
 else, **write the explaining sentence as well as the number** — the version that makes the
 threshold legible to the counterparty rather than arbitrary.
+
+## claude-obs 43 — 2026-08-19: he audits the instrument, not just the output
+
+**Pattern.** Mid-standup, given "50 rows · 1 listed", Shawn did not ask how to list faster. He
+asked **whether the denominator was real**: *"Are there really 50 things that need posting, or
+are some of those for the moving sale?"* It was not — 17 rows were moving-sale, 4 were keeps.
+The same instinct fired twice more in two days: he ruled the garage census **not done** after a
+single item turned up in an unchecked cabinet, and he corrected the packing-week anchor I had
+been quoting without verifying.
+
+**Lesson.** He treats a metric as a claim to be checked, not a reading to be accepted — and he
+does it **while the metric is being used against him**, which is the hardest moment to do it.
+Three of my numbers were wrong this session and he caught the first one; I caught the other two
+only because his catch made me re-derive the rest.
+
+**How to apply.** **Re-derive any denominator, anchor, or baseline from source data before
+quoting it in an accountability context.** A number that pressures him is exactly the number
+that must be right, and "it was right when I first computed it" is not a defence — the
+sell-online set changed four times in a single day.
+
+## claude-obs 44 — 2026-08-19: the diagnosis he offered beat the plan I built on it
+
+**Pattern.** EFN produced zero on Monday. I recorded the cause as a category error he had named
+himself — a new project cannot run on drive-bys — and Tuesday's plan put EFN **first** to
+protect it. **It produced zero again.** His account of *why* was better than mine: *"too
+stressed by the list of small but time-sensitive things, and then those took longer than
+expected."*
+
+**Lesson.** I had modelled the small-items list as a **competitor for hours**, so I solved it by
+ordering. He was describing it as a **concentration blocker** — an open list of externally-dated
+obligations that makes deep work impossible regardless of where it sits in the day. **Those two
+models prescribe opposite remedies**: mine says protect the block, his says clear the list
+first.
+
+**How to apply.** When a protected block fails twice, **stop re-protecting it and ask what makes
+it unavailable** — the constraint may not be time. And note the meta-pattern: this is the second
+consecutive session where **his account of his own behaviour outperformed my inference from the
+evidence** (cf. claude-obs 41). Weight the self-report above the trace.
+
+## claude-obs 45 — 2026-08-19: I ran three corrections in one day and only one was cheap
+
+**Self-critique.** Three claims of mine needed retracting within hours of being made: (1) I told
+him the later departure **lengthened the listing window** — it did not, because packing stayed
+anchored and I had drawn a consequence from a premise he then resolved the other way; (2) I
+recorded that **the web form beat the abandoned phone queue** on the car service, when he had in
+fact called back and held; (3) I read Sol's illustrative *"late September"* as **a brief he had
+issued**, and wrote it up as an error to fix.
+
+**Lesson.** All three share a shape: **I asserted causation or state from partial evidence when
+asking would have cost one line.** The second and third are the worse pair, because both were
+*recorded in files* before being checked — a wrong claim in a note outlives a wrong claim in
+chat.
+
+**How to apply.** **Before writing a causal or state claim into a durable file, ask whether I
+observed it or inferred it.** If inferred, either mark it as inference or ask. The cost
+asymmetry is stark: one clarifying question versus a correction commit plus a note that now
+carries a strike-through forever.
+
+## claude-obs 46 — 2026-08-19: the rules that stuck came from cases, not from design
+
+**Pattern.** Four durable rules were added to the move framework this session, and **none was
+designed**. Each fell out of a specific item resisting the existing rules: the vice in an
+unchecked cabinet produced *a zone is not censused until every enclosed container is opened*;
+the guitars produced *routing an item away can be cheaper than unblocking it* (five blockers
+discharged by one destination change); a $40 homebrew fitting exposed a genuine collision
+between *specific buyer type* and *under $50* and produced **the lot listing** as a third route;
+and the drill-press vice versus the Fender case produced the sharper test — **not "does it have
+separate value" but "does it have a separate BUYER who would otherwise never see it".**
+
+**Lesson.** The framework improved fastest at the points where a real item **would not fit it**.
+Sitting down to improve the framework in the abstract would have produced none of these.
+
+**How to apply.** When an item resists the framework, **treat the resistance as the finding** —
+write the rule the item implies, and name the case in the rule so the reasoning survives.
+Corollary for review: the rules most worth re-reading are the ones with a named case attached.

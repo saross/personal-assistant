@@ -2299,3 +2299,53 @@ you do not yet have**, because building it is where the thinking happens.
 **4. KEEP AS IS.** Shawn did not experience the flag rate as excessive; he will monitor and
 say if it changes. **No thinning for now** — but the offer stands, and this row is the
 record that it was asked rather than assumed.
+
+---
+
+## 2026-08-19 — candidates (PENDING REVIEW)
+
+Four candidates from the 17–19 Aug move session. **Accept / edit / discard / replace.**
+Silence holds them over; it does not discard them.
+
+### Candidate A — the pricing checks were worth more than the listings they served
+
+Two comparables checks ran this session and **both moved a number I had guessed materially, in
+opposite directions**: the Privia's floor went **up $125** from a $400 estimate, and the drill
+press's ask came **down $100** from my $495 suggestion. **Neither would have happened without a
+five-minute check**, and the second was Sol's, not mine.
+
+*Possible framing:* the useful output was not the two prices but the discovery that **estimates
+here are wrong in both directions**, which is a reason to check everything above ~$150 rather
+than only the items that feel undervalued. **Was this worth the interruption, or did it slow the
+listing work more than it was worth?**
+
+### Candidate B — I was too confident about the campaign before you supplied the timeline
+
+I built a decay analysis on the agent's $1.05–1.09M and presented a conclusion, and then **you
+supplied the family-court timeline and the conclusion got materially stronger** — 19% of the
+range beating Brent became 0%. **The analysis was directionally right but its central input was
+missing and I had not asked for it.**
+
+*Possible framing:* a version of this where I asked *"what actually sets the campaign start
+date?"* before running the numbers would have been shorter and better. **Did the two-pass
+version cost you anything, or was seeing the analysis move usefully informative?**
+
+### Candidate C — writing decisions into files as we went, not at the end
+
+Almost everything from this session landed in `notes/move/` **while we were talking** rather
+than being written up afterwards — which is why the handoff cost so little and why you could ask
+for the storage note to be updated four times without repeating context.
+
+*Possible framing:* worth keeping as a default, or does the running commit stream get in the way
+when you are thinking out loud and not yet decided? **You corrected me once for treating an
+illustrative brief as a decision** — that is the failure mode of writing early.
+
+### Candidate D — the gym question was answered with a rule rather than a recommendation
+
+You asked for help thinking through the home gym. **What came back was a decision rule** — *keep
+what you would rebuy identically, sell what you would rebuy differently* — rather than a list of
+verdicts, and the verdicts then fell out of it.
+
+*Possible framing:* did the rule do the work, or would a straight recommendation have been
+faster? **This is a reusable question**: the same shape is available for the brewing gear, the
+books, and the furniture, and it is worth knowing whether you want it applied that way again.
