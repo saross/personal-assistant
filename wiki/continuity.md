@@ -2359,6 +2359,90 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-19 (Mon 17 Aug → Wed 19 Aug, latest PA) — SESSION CLOSE (/handoff): SLOT 2 BROKE ITS ZERO AND ACQUIRED A RATE; THE DENOMINATOR WAS WRONG; THE HOUSE DECISION HARDENED ON TIME
+
+Three-day session, almost entirely move workstream. **Two listings posted, one reporting
+error caught by Shawn, and a decision that had been open for two weeks closed on an argument
+about time rather than price.**
+
+**1. Slot 2 broke an eight-day zero and, on the second listing, produced a rate.** The
+**Privia PX-850** went up 17 Aug at **$695** (comparables-checked; the check moved its floor
+**up** $125 from a $400 guess). The **Carbatec DP4116F drill press** went up 18 Aug at
+**$395 the pair** — the specs pass that produced the model number also turned up **a heavy
+matched vice, oiled, in original packaging, never used**, and a comparables check moved the
+ask **down** $100 from Claude's $495 suggestion. **0.75h end to end, the first item listed
+*within* a batch, which is what makes it a measurement rather than a data point.** Extrapolated:
+**~14–15h for the remainder, ~5.5 h/week against a 17.5 h/week floor.** **Slot 2 was never a
+capacity problem — it was a start problem**, exactly as the first-unit-expensive pattern
+predicted and as nine confrontational-band standups disguised.
+
+**2. ⚠ The burn-down denominator was wrong, and Shawn caught it.** *"Are there really 50 things
+that need posting, or are some of those for the moving sale?"* — the listing target is the
+`sell-online` subset. **50 → 24** on correction, then **→ 21** as the instruments were
+withdrawn, then **→ 23** as the keg fridge, fermenters and gym rows were added. The standing
+rule now in `tasks/SYSTEM.md`: **recompute the denominator from the data at each report; never
+carry it forward as a remembered number.** This is the third instance in two days of *a partial
+count presented as a total* — the others being the unverified packing-week anchor and the
+visual-sweep census.
+
+**3. The house decision hardened, and time decided it.** Shawn got the agent's number
+first-hand: **$1.05–1.09M if going to market today**, unchanged from the ≈3 Aug forecast, with
+the caveat *"4–6 weeks might make a difference."* **But the campaign cannot transact for 10–12
+weeks** — the separation went to family court late in the week of 11 Aug with a **~6-week
+settlement estimate**, and no sale completes before it. Decayed to a realistic exchange,
+**0% of the agent's range beats Brent at $1.03M** at any decay rate. **An agreed off-market
+price is fixed today; a campaign price is set by a market twelve weeks away.** The off-market
+route is a hedge; the campaign is an unhedged exposure.
+
+**4. The move date moved and the spine was rebuilt.** **~15 Sept was over-optimistic — the slip
+is external (court disclosure paperwork), not move work.** Now **25–30 Sept conservative,
+20–21 Sept hoped**; packing stays anchored **14–20 Sept**; works run the week of the 21st with
+nobody in the house (contractors have worked unattended before). **Kerbside 7 Sept does not
+move**, so the moving sale can shift **one week at most** — two weeks would put kerbside after
+departure, which is a hard stop.
+
+**5. Two new batches, a keep/sell decision, and the storage question re-scoped.** **Batch G
+(homebrew)** — a **10 L small-batch, all-ball-lock system** with a keg fridge as its anchor;
+**Batch H (home gym)** — resolved by a rule that generalises: ***keep what you would rebuy
+identically, sell what you would rebuy differently.*** ATX Power Rack 520 + Lat Option stay
+($1,285 current replacement, matched pair, intermittent supply); bar, 120 kg plates, plate tree,
+dumbbells, kettlebells and both benches go. Storage research (Sol) landed a shortlist —
+**Portabox Large 25 m³ @ $219/mo provisional first, PODS Large as the competing quote** — plus
+the **3,400 kg payload limits**. **Books turn out not to be the constraint** (20–25 banker's
+boxes ≈ 300–500 kg), so **volume is the sole open constraint**, and **capacity is a step
+function**: breaching volume *or* weight costs the same **~$5,256** second container.
+
+**Held over / open:**
+
+- **⏸ EFN (Slot 1) produced ZERO on both days**, and the cause is structural rather than
+  avoidance: **sequencing it first was not enough.** Shawn's account — *"too stressed by the
+  list of small but time-sensitive things, and then those took longer than expected and then
+  the tax matter arose."* **An open list of small externally-dated items acts as a
+  concentration blocker, not merely a competitor for hours.** That list is now largely cleared,
+  so **Wed 19 tests the diagnosis directly** — if EFN produces nothing with a clear list, the
+  diagnosis is wrong. ⚠ It gates the **Rainer follow-up, dated Wed 19**.
+- **⏸ CLAUDE OWES A CONTAINER CALL PLAN at the Wed 19 standup** (inbox row). **Prerequisite
+  not yet supplied: a rough inventory of the largest items** — Shawn offered it; volume is the
+  only open constraint and without it the plan can only say *ask for 25 m³ and hope*.
+  ⏰ Three-week notice line: **Mon 24 Aug**.
+- **⚠ THE LISTING STEP-DOWN CALENDARS HAVE NO TRIGGER** — both live rows carry dated price
+  reductions (Privia $695→$650 ~24 Aug; drill press $395→$360 after a quiet week) and nothing
+  surfaces them. Inbox row created this handoff.
+- **Deposits (~$5k) decided but unexecuted** — held to end of week pending Brent's draft
+  contract, which was due Mon/Tue and has not arrived. **The two clocks are independent.**
+- **Garage census formally REOPENED** — not done until every enclosed container is swept; the
+  vice was found in an unchecked cabinet. Brewing gear (wardrobe + tubs) is the known gap.
+- **Working-notes candidates HELD OVER** (no verdict given): the auto-gamma clamp, and
+  comparables-checks-correct-in-both-directions. Re-surface at the next `/handoff` or `/recap`.
+
+**Artefacts touched:**
+
+- Move (new): `notes/move/{home-gym-decision,storage-container-options,listing-copy}.md`
+- Move (updated): `notes/move/{index,selling-channels,photo-checklist,off-market-vs-campaign,fallback-bank}.md`, `selling-inventory.csv` (50 → 58 rows)
+- Tasks: `tasks/{SYSTEM,inbox,waiting-for,backlog,FOCUS}.md`
+- Reports: `reports/{time-log.csv,work-log.md}`; standups `2026-08-1{7,8}.md`
+- Practices: `notes/working-practices.md` (lodgement entry)
+
 ### 2026-08-17 (Mon 10 Aug → Mon 17 Aug, latest PA) — SESSION CLOSE (/handoff): ARDC SUBMITTED; MOVE INSTRUMENT REPLACED; SELLING INVENTORY 1 → 50; HOUSE-SALE ARITHMETIC
 
 Eight-day session spanning W33 and the start of W34. **Three things closed, one
