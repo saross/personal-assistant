@@ -2302,10 +2302,10 @@ record that it was asked rather than assumed.
 
 ---
 
-## 2026-08-19 — candidates (PENDING REVIEW)
+## 2026-08-19 — ALL FOUR ACCEPTED (reviewed same day)
 
-Four candidates from the 17–19 Aug move session. **Accept / edit / discard / replace.**
-Silence holds them over; it does not discard them.
+Four candidates from the 17–19 Aug move session. **Shawn's verdicts and reasoning are recorded
+with each; two of them changed the rule rather than merely confirming it.**
 
 ### Candidate A — the pricing checks were worth more than the listings they served
 
@@ -2349,3 +2349,50 @@ verdicts, and the verdicts then fell out of it.
 *Possible framing:* did the rule do the work, or would a straight recommendation have been
 faster? **This is a reusable question**: the same shape is available for the brewing gear, the
 books, and the furniture, and it is worth knowing whether you want it applied that way again.
+
+
+---
+
+### Verdicts — 2026-08-19
+
+**A — KEEP. *"Yes, worth it."*** The pricing checks earned their interruption. **So the rule is
+now unqualified: run a comparables check on anything above ~$150 before setting a number**, and
+do not weigh it against listing momentum — this session's evidence is two for two on materially
+wrong guesses, in opposite directions.
+
+**B — KEEP.** *"Better to preemptively ask clarifying questions, but this was fine, not a
+problem."* **The preference is real but the instance was not a failure**, and both halves matter:
+he wants the clarifying question asked *first* where one exists, and he is not troubled by an
+analysis that improves when a missing input arrives. **Apply: ask for the input that could
+invalidate the analysis before running it — but do not withhold the analysis waiting for
+perfect inputs.**
+
+**C — KEEP, and it resolved into a sharper rule than the candidate proposed.** *"Write into
+files as we go I think is best, so long as you don't mind re-writing as thinking evolves; if
+that's annoying for you, we can save writing out / externalisation until things are more
+settled, your call."*
+
+**Claude's answer, recorded because he asked directly: keep writing as we go, and rewriting is
+not a cost worth optimising away.** Two reasons. **Rewriting is cheap and the evolution is often
+the valuable part** — `off-market-vs-campaign.md` deliberately keeps two superseded conclusions
+*because the corrections are the instructive content*, and the same is true of the container test
+that was superseded within an hour of being written. **And deferring the write until things
+settle would lose exactly the material that makes the notes useful later**: what was believed,
+why it changed, and which input changed it.
+
+**But the failure mode he caught this session is the real one, and it is not solved by writing
+later — it is solved by labelling state.** Treating Sol's illustrative date as an issued brief
+was not a *timing* error, it was a *status* error. **⇒ THE RULE: write early, but mark every
+claim's status explicitly — decided / proposed / assumed / observed / inferred.** A provisional
+note labelled provisional costs nothing to revise; one labelled as settled has to be retracted.
+
+**D — KEEP, with a stated strong preference.** *"The decision rule is more valuable than a
+verdict list (strong preference on my side, although I'm then happy for you to* suggest *a
+verdict list as a function of the rule)."*
+
+**⭐ This is a general working preference, not a move-specific one, and it has a precise shape:
+lead with the rule, then derive the verdicts from it and offer them as a suggestion.** Not rule
+*instead of* verdicts — **rule first, verdicts as a visible consequence.** The reason it matters
+is that he then owns the rule and can apply it himself to the next case: the home-gym rule
+already generalises to the books, the furniture and the brewing gear, none of which were in the
+question that produced it. **A verdict list answers one question; a rule answers the class.**
