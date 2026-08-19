@@ -2359,6 +2359,123 @@ D governance); inbox item created pointing at it.
   skill + output style shipped; denubis-plugins PRs #8–#10; Paper B
   register note + delta mining — logged in those repos' commits.)
 
+### 2026-08-19/20 (Wed 19 Aug → Thu 20 Aug, latest PA) — SESSION CLOSE (/handoff): THE EFN ZERO BROKE AND THE DIAGNOSIS HELD; A "QUICK LOOK AT A DOWNLOADS FOLDER" BECAME THE BRANDING PACKAGE; THE HOUSE GREW A THIRD BRANCH
+
+Long single-day session. **A structural claim was tested and passed, a routine consolidation
+turned into a full brand audit, and the house decision acquired an option nobody had costed.**
+
+**1. ⭐ EFN produced 3.75h after two consecutive zeros, and that is a confirmed prediction, not
+a good day.** The 2026-08-19 handoff recorded the cause of the zeros as *structural rather than
+avoidance* — **an open list of small externally-dated items acts as a concentration blocker, not
+merely a competitor for hours** — and named Wed 19 as the direct test, since the list had been
+cleared. **It produced.** ⇒ **Clearing dated small items is a PREREQUISITE for EFN blocks, not
+housekeeping to fit around them.** Carry this into sequencing.
+
+**2. The container question closed, and the answer came from measurement.** Shawn measured 22
+large items into **`notes/move/volume-inventory.csv`**; known subtotal **9.79–10.36 m³ raw**
+against a 25 m³ container, leaving **~80 large cartons** of headroom. **One container fits, with
+real margin but not enough to stop culling.** PODS quoted **$349/mo + $1,956** to Melbourne;
+**Portabox is $219/mo — $130/mo cheaper on rental alone**, so **Portabox Large is decided** and
+the PODS quote became beat-guarantee leverage. ⏰ **That quote expires Wed 26 Aug.** ⚠ **The
+Medium was declined on arithmetic:** it saves $60/mo and risks a second container at 5–7× that,
+on a load whose largest unknown — the dismantled rack — cannot be measured until the final day.
+
+**3. ⭐⭐ THE HOUSE DECISION HAS A THIRD BRANCH, and the file that concluded otherwise is now
+banner-flagged.** The agent recommends **listing NOW, no repairs, shown with contents** — the
+falling market outweighing both the repairs and the empty-house premium. **That deletes the $10k
+works term and shortens the 10–12 week wait, which are the two inputs the *"0% of the agent's
+range beats Brent"* finding rests on.** Shawn's works split: keep exterior clean + functional
+plumbing, cancel re-grout + interior paint (~⅓ of cost). **⇒ Checkable consequence, taken from
+the waiting-for rows rather than inferred: BOTH surviving items are already recorded as
+date-independent, so the cosmetic chain WAS the entire reason the works needed an empty house
+and a September window. Cancel it and the 28 Sept ready-date dissolves.** ⚠ **The deposits are
+therefore not simply cancelled — the scope changed, so both quotes need re-quoting before any
+non-refundable money moves.**
+
+**4. ⚠ Brent's contract is six days late and the accountability is INVERTED.** It was ordered
+*from our conveyancers*; Brent and his mother will not negotiate before seeing it. **So the
+delay is ours, and the deposit-pressure play cannot be used honestly until it lands.** The
+Sun Legal Norwest row also carried a *"call if nothing by ~Fri 15 Aug"* trigger that **fired and
+went unactioned for four days**. Emailed 19 Aug; **call escalation set for the morning of 20 Aug,
+before Shawn leaves at ~10:30**.
+
+**5. ⭐ THE BRANDING PACKAGE — scoped as "check what's in ~/Downloads", delivered as a corrected,
+documented, version-controlled brand system.** Eleven-plus commits in `fieldmark-docs-staging`
+under `brand/`. **It expanded because every check found a real defect.** The findings, all
+measured rather than asserted:
+
+- **The green was wrong in every asset.** Specs say **`#669911`**; all artwork said `#559A00`
+  (established from a flat fill of **421,665 fully-opaque pixels, no ICC profile**). **The
+  layered `backgrounds.psd` holds `#669911` across 100.0% of 3.45M pixels and the live site's
+  CSS uses `#691`** — so the designer worked to spec and only the *exports* drifted. Corrected
+  throughout; **residual old-green after correction: zero pixels.**
+- **The Fieldmark favicons were the mark stretched vertically ~1.38×** to force a square
+  (content aspect 1.012 against a true 1.395). **Shipping distorted since 2023.** Now letterboxed.
+- **⭐ EFN's canonical artwork is Steve's production site, adopted on Shawn's ruling that
+  `www.fieldnote.au` breaks ties** (Steve maintains it; the original designer is his brother).
+  **EFN's grey is `#444939`** — neither candidate — and it is **olive-toned, sitting with
+  `#324C08`/`#141E03` rather than beside Fieldmark's neutral `#5C5A5A`. Deliberate, not drift.**
+- **A horizontal EFN lock-up was reconstructed — and already existed in production.** Built
+  independently by reusing the designer's own 29.11-unit gap, it came out at 4.05:1 against
+  production's 4.67:1. **The method validated; the artefact was redundant.** ⚠ **Self-critique:
+  the site's CSS was fetched for colour and font but its LOGO FILES were not — one obvious step
+  further would have found it.**
+- **Typography settled on production**: Playfair Display (SIL OFL) + Arial, **superseding the
+  style guide's "Archive"**, whose licence is disputed across the aggregators that distribute it.
+- **`#A4A4A4` resolved: it is the ™ glyph and nothing else** — 1,581 px in one 90×43 block.
+- **The letterhead was rebuilt**: superseded Macquarie Park address → Surry Hills, stale
+  *"© Penny Crook et al 2021"* → EFN, three Roboto variants → Arial/Playfair, `.dotm` → `.dotx`
+  (**no VBA project at all**), and **the embedded signature removed entirely** at Shawn's
+  instruction. A Google Docs master was added alongside; **the Doc is canonical, the `.dotx`
+  mirrors it.**
+
+**6. Google Drive reorganised** — 14 items suffixed **OLD**, a **`2026-branding-assets-CURRENT`**
+folder created with a START-HERE README, and 32 asset files uploaded by Shawn. ⚠ **One upload
+converted silently:** Drive's *convert-uploads* setting turned the `.dotx` into a Google Doc and
+**flattened its date field to static text**; caught on verification and re-uploaded natively.
+**FAIMS3 was deliberately left untouched** — separate project, not ours to supersede.
+
+**7. RDA displaced to Fri 21 Aug, and the reasoning is consistent rather than convenient.**
+Shawn: *"it's still August, and the people at RDA who would be reviewing it are almost certainly
+on summer vacation"* — **the same population argument recorded on 2026-08-10** to justify
+silence-is-consent. ⚠ **Logged as a SECOND slip against a stated one-day tolerance.** **Francis
+P. Crawley left NINE suggestions at 05:16 on 19 Aug**; the relationship cost is covered by
+Shawn's standing Thursday practice of thanking contributors, which is independent of submission.
+
+**Held over / open:**
+
+- **⏰ RESIDUE — Playfair Display is NOT installed system-wide, so OnlyOffice cannot see it.**
+  Shawn uses OnlyOffice almost exclusively; **it is a snap, and its `$HOME` is redirected, so
+  `~/.local/share/fonts` is invisible to it** (verified inside the sandbox — `fc-list` returns
+  nothing). **12 static instances are staged at `~/Downloads/playfair-display-static/`** and need
+  a `sudo cp` into `/usr/local/share/fonts/`, which the snap *can* see. **Needs Shawn's password
+  — cannot be done for him.**
+- **⚠ The Fieldmark `.ai` masters still carry `#559A00`** and need a designer to reissue. **SVG
+  has no CMYK model, so print is the one place the downstream fix could not reach.**
+- **The favicon distortion is fixed for Fieldmark but the square-variant question stands** —
+  letterboxing is the honest interim; a purpose-drawn square mark is the real answer.
+- **⚠ The Substack is on its THIRD date** (w/c 3 Aug → weekend 15–16 Aug → Fri 21 Aug with
+  Brian). **Shawn's own diagnosis names a decaying asset, not a missed date: *"that keeps
+  slipping and the preprint is cooling."*** Backlog row updated; **if it moves a fourth time it
+  needs a different mechanism, not a fourth date.**
+- **Working-notes candidates STILL HELD OVER from the 2026-08-19 handoff** (no verdict given
+  across two sessions now): the **auto-gamma clamp**, and
+  **comparables-checks-correct-in-both-directions**. Per no-silent-discard, re-surfaced again.
+- **Deposits (~$5k) still unexecuted**, and now possibly unnecessary on *both* branches.
+- **Garage census remains formally REOPENED.**
+
+**Hours: 7.75h** — efn 3.75 · personal/move 2.00 · map-reader 1.75 · llm-repro 0.25. **Corrected
+down from a 9.25h estimate on Shawn's own reckoning** (PA-system time folds into his standing
+admin hour; the container discussion was already inside the move block).
+
+**Artefacts touched:**
+
+- Move: `notes/move/{volume-inventory.csv,container-call-plan.md,storage-container-options.md,off-market-vs-campaign.md,index.md}`
+- Branding (in `fieldmark-docs-staging`): `brand/` — README, `colours.md`, `copy/`, `efn/`, `fieldmark/`, `efn/letterhead/`, `efn/logo/production-reference/`; `.gitattributes` LFS additions
+- Tasks: `tasks/{inbox.md,backlog.md,FOCUS.md}`
+- Reports: `reports/time-log.csv`; standup+recap `standups/2026-08-19.md`
+- Google Drive: `Branding/` renames + `2026-branding-assets-CURRENT/`
+
 ### 2026-08-19 (Mon 17 Aug → Wed 19 Aug, latest PA) — SESSION CLOSE (/handoff): SLOT 2 BROKE ITS ZERO AND ACQUIRED A RATE; THE DENOMINATOR WAS WRONG; THE HOUSE DECISION HARDENED ON TIME
 
 Three-day session, almost entirely move workstream. **Two listings posted, one reporting
