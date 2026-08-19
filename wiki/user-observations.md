@@ -2396,3 +2396,36 @@ lead with the rule, then derive the verdicts from it and offer them as a suggest
 is that he then owns the rule and can apply it himself to the next case: the home-gym rule
 already generalises to the books, the furniture and the brewing gear, none of which were in the
 question that produced it. **A verdict list answers one question; a rule answers the class.**
+
+## 2026-08-19/20 (PA-hub / move + branding package, handoff) — Drafted candidates (pending review)
+
+**Candidate 1 — the tie-break rule you supplied was better than the analysis it replaced.**
+I had measured three greys across the assets and written up the discrepancy carefully. Your
+reply — *"can Steve's website decide the issue? … his brother was our graphic designer, so Steve
+has an inside track, plus he's usually careful with branding"* — **replaced a measurement problem
+with a provenance question**, and the provenance question had a single, checkable answer. It
+generalised immediately: adopting *production decides ties* then settled the artwork, the
+horizontal lock-up, and the typography in one move. **The useful thing was not the answer but
+the reframe** — I was treating the archive as authoritative because it was the thing in front
+of me.
+
+**Candidate 2 — you caught the hours before I did, and the correction was downward.**
+I proposed a 9.25h reconstruction from the commit trail. You corrected it to 7.75h on grounds I
+had no way to see: PA-system time folds into your standing admin hour, and the container
+discussion was already inside the logged move block. **The commit trail overstates because it
+cannot see what a block already contains.** Worth my knowing that the evidence base I reach for
+in `/recap` is systematically biased upward.
+
+**Candidate 3 — "no follow-ups" given twice, pre-empting the probe.**
+On both `/track` calls you volunteered *"no new follow-ups"* before I asked. That saved a round
+trip each time and made the recap's probe block redundant. **Unclear whether this is worth
+generalising** — the probes exist because under-capture was a diagnosed failure mode, so a habit
+of pre-empting them could be efficiency or could be the failure mode reasserting itself in a
+politer form. **Flagging it as a question rather than an observation.**
+
+**Candidate 4 — you stopped me building the wrong thing twice by naming a boundary.**
+"FAIMS3 shouldn't be touched at this juncture" and "remove my signature, I'll sign fresh each
+time" both arrived as one-line boundaries rather than discussions. Each **prevented a
+plausible-looking action that would have been wrong** — marking a live project's branding
+superseded, and committing a reusable signature graphic to a repository. **I had flagged both
+as concerns but had not resolved them; you resolved them instantly.**

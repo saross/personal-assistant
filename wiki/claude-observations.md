@@ -953,3 +953,76 @@ Sitting down to improve the framework in the abstract would have produced none o
 **How to apply.** When an item resists the framework, **treat the resistance as the finding** —
 write the rule the item implies, and name the case in the rule so the reasoning survives.
 Corollary for review: the rules most worth re-reading are the ones with a named case attached.
+
+## claude-obs 47 — 2026-08-20: the scope he accepted was the one that kept finding defects
+
+**Pattern.** "Check what's in `~/Downloads/EFN-branding`" ran to roughly 4.5h and eleven
+commits. **Shawn never once asked why it was taking so long**, and when I flagged the overrun at
+recap he supplied the reason himself: *"I thought it would be a quick consolidation until we
+found inconsistencies — important and necessary work, but took extra time."* The tolerance was
+not indulgence: **each expansion was licensed by a defect that had already been demonstrated**,
+never by a proposal to look further. The green was measured before it was corrected; the favicon
+distortion was measured before it was fixed; the letterhead address was found in the file, not
+suspected.
+
+**Lesson.** **Evidence buys scope; intention does not.** A session can grow far past its stated
+size without friction *provided each increment opens with a demonstrated fault rather than a
+hypothesis about one.* The failure mode this avoids is the open-ended audit that keeps looking
+because looking feels responsible.
+
+**How to apply.** When a small task starts expanding, **lead each next step with the defect just
+found, in measured terms** — "the PNGs are `#559A00` across 421,665 opaque pixels, and the spec
+says `#669911`" — rather than with the plan to investigate further. If a step cannot be opened
+that way, it is speculative and should be offered as a question instead of taken as scope.
+
+## claude-obs 48 — 2026-08-20: I inspected the file when I should have rendered it
+
+**Pattern.** Three defects in one session were invisible in the source and obvious in the
+output. I stripped Inkscape namespaces from an SVG and left `<sodipodi:guide>` *elements*
+behind — valid-looking, structurally identical on every count I checked (27 paths, 87 groups,
+identical transforms and path data), and it **rendered completely blank**. I replaced "Roboto
+Condensed" in a Word template and declared the fonts fixed; the rendered PDF still embedded
+Roboto, because two further variants lived in `styles.xml`. And inkscape-as-snap **exited 0
+while writing nothing**, twice, on paths outside its confinement.
+
+**Lesson.** **Inspecting an artefact is not the same as rendering it, and a zero exit code is
+not a product.** Every one of these passed the check I chose and failed the check I skipped.
+
+**How to apply.** For any generated binary or markup artefact: **render it and inspect the
+output**, and where a property is claimed, measure it in the output rather than the source —
+`pdffonts` after a font substitution, an XML parse before shipping an SVG, a file-size and
+content check after any tool that can fail silently. **Cheap, and it caught all three.**
+
+## claude-obs 49 — 2026-08-20: he settles ownership questions faster than technical ones
+
+**Pattern.** Across the session the technical questions took analysis and the ownership
+questions took a sentence. Which green is canonical: settled by ruling that the earlier specs
+were right. Which grey: settled by *"can Steve's website decide the issue? … his brother was our
+graphic designer, so Steve has an inside track."* Whether to touch FAIMS3: *"shouldn't be
+touched at this juncture, it's a separate project."* Whether the signature stays: *"I'll sign
+fresh each time."* **Each answer named an authority or a boundary rather than weighing options**
+— and each unblocked work that had been genuinely stuck on my side.
+
+**Lesson.** **He is fast at deciding who decides.** When I present a technical fork, the useful
+framing is often not the trade-off table but the question of which source or person is
+authoritative — he answers that immediately and the technical question frequently dissolves.
+
+**How to apply.** When two artefacts disagree, **ask which one governs before analysing the
+difference**. The `#444939` grey took a paragraph of my measurement and one line of his ruling;
+the ruling would have been available first.
+
+## claude-obs 50 — 2026-08-20: I duplicated work that was one fetch away
+
+**Pattern.** I built an EFN horizontal lock-up by repositioning the original glyphs, and
+documented the method carefully. **It already existed in production.** I had fetched
+`www.fieldnote.au`'s CSS earlier in the same session — for colours and fonts — and did not fetch
+its logo files. The reconstruction came out at 4.05:1 against production's 4.67:1, so the method
+was sound and the artefact was redundant.
+
+**Lesson.** **When a source has already answered one question, ask it the others before building
+around it.** I treated the site as a stylesheet rather than as an asset repository, and the
+distinction was arbitrary.
+
+**How to apply.** On fetching any external source for a fact, **enumerate what else it plausibly
+holds** — a site that carries brand CSS almost certainly carries brand artwork. One extra
+request would have replaced an hour of reconstruction.
