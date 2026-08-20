@@ -223,10 +223,139 @@ HOST="$(hostname -s)"
 log "=== daily-sync start on $HOST (dry-run=$DRY_RUN) ==="
 
 # ---------------------------------------------------------------------------
+# Append-only memory files.
+#
+# These are dirty on essentially every run (the extraction hook appends to
+# them continuously), which is why the stash below exists at all. They are
+# append-only, so committing them is always safe — unlike prose files such
+# as wiki/continuity.md or tasks/inbox.md, which a concurrent Claude session
+# may be part-way through editing and which must never be swept into an
+# automatic commit (see CLAUDE.md, "Concurrent sessions").
+# ---------------------------------------------------------------------------
+MEMORY_APPEND_FILES=(memories/memories.jsonl memories/tag-vocabulary.txt)
+
+# ---------------------------------------------------------------------------
+# resolve_rebase_conflicts — shared conflict partitioning for rebase paths.
+#
+# Routes memories.jsonl / tag-vocabulary.txt to the append-safe resolver and
+# the `data` submodule pointer to trust-ours; ANY other conflicted path is
+# unsupported and aborts, because silently guessing on a prose file is how
+# a concurrent session's work gets destroyed.
+#
+# Returns 0 if the rebase was carried to completion, non-zero after aborting.
+# Must be called from inside the repository being rebased.
+# ---------------------------------------------------------------------------
+resolve_rebase_conflicts() {
+    local context="$1"
+    local -a conflicts=() jsonl=() submodule=() unknown=()
+    local _line _f
+    while IFS= read -r _line; do
+        if [[ "$_line" =~ ^(UU|AA|DD|AU|UA|DU|UD)\ (.+)$ ]]; then
+            conflicts+=("${BASH_REMATCH[2]}")
+        fi
+    done < <(git status --porcelain)
+    if [[ ${#conflicts[@]} -eq 0 ]]; then
+        git rebase --abort >>"$LOG_FILE" 2>&1 || true
+        log "$context: rebase failed with no unmerged paths — aborted"
+        return 1
+    fi
+    for _f in "${conflicts[@]}"; do
+        case "$_f" in
+            memories/memories.jsonl|memories/tag-vocabulary.txt) jsonl+=("$_f") ;;
+            data) submodule+=("$_f") ;;
+            *) unknown+=("$_f") ;;
+        esac
+    done
+    if [[ ${#unknown[@]} -gt 0 ]]; then
+        git rebase --abort >>"$LOG_FILE" 2>&1 || true
+        log "$context: rebase conflicts on unsupported paths (${unknown[*]}) — aborted"
+        return 1
+    fi
+    if [[ ${#jsonl[@]} -gt 0 ]]; then
+        local -a paths=()
+        for _f in "${jsonl[@]}"; do paths+=("$(pwd)/$_f"); done
+        if ! "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
+                "${paths[@]}" >>"$LOG_FILE" 2>&1; then
+            git rebase --abort >>"$LOG_FILE" 2>&1 || true
+            log "$context: resolver failed during rebase — aborted"
+            return 1
+        fi
+        git add "${jsonl[@]}" >>"$LOG_FILE" 2>&1 || {
+            git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }
+    fi
+    for _f in "${submodule[@]}"; do
+        git checkout --ours -- "$_f" >>"$LOG_FILE" 2>&1 && \
+            git add "$_f" >>"$LOG_FILE" 2>&1 || {
+                git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }
+    done
+    GIT_EDITOR=true git rebase --continue >>"$LOG_FILE" 2>&1 || {
+        git rebase --abort >>"$LOG_FILE" 2>&1 || true
+        log "$context: rebase --continue failed — aborted"; return 1; }
+    log "$context: rebase conflicts resolved (${conflicts[*]})"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# reconcile_orphaned_stashes — CRASH-SAFE recovery, runs at START of a run.
+#
+# ⚠ THIS IS THE LOAD-BEARING FIX (2026-08-20). daily-sync runs as a child of
+# a Claude Code SessionStart hook with a 90s timeout, so it can be killed
+# mid-run — and a killed shell does not run its EXIT trap. The existing
+# `restore_stash_on_exit` trap is therefore necessary but NOT sufficient:
+# on 2026-08-19 a run stashed at 10:20:34, died before its pop, released
+# the flock (fd closed on process death), and a second run started at
+# 10:20:37 onto the now-clean tree. 41 memory records were orphaned that
+# way across two incidents (2026-07-18 and 2026-08-19).
+#
+# Nothing the dying process does can be relied upon, so recovery must
+# happen at the START of the NEXT run. That is what this does.
+# ---------------------------------------------------------------------------
+reconcile_orphaned_stashes() {
+    # Ask the drift detector which stashes still hold records found nowhere
+    # else. This is deliberately NOT "pop every daily-sync stash": once a
+    # stash has been recovered by other means its records are already in the
+    # canonical file, and re-applying it would either conflict or duplicate.
+    # The detector owns that judgement because it is the thing that can see
+    # all three stores. If it cannot run (PostgreSQL down), it exits non-zero
+    # and prints nothing — and "unknown" must mean "touch nothing".
+    local -a orphans=()
+    local ref
+    while IFS= read -r ref; do
+        [[ -n "$ref" ]] && orphans+=("$ref")
+    done < <("$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-memory-drift.py" \
+                 --list-recoverable-stashes 2>>"$LOG_FILE" || true)
+    [[ ${#orphans[@]} -eq 0 ]] && return 0
+
+    log "ORPHANED STASH: ${#orphans[@]} stash(es) hold memory records found"
+    log "  nowhere else — from a previous run killed before it could pop."
+    local i
+    # Oldest last in `git stash list`, so walk backwards to replay in order.
+    for (( i=${#orphans[@]}-1 ; i>=0 ; i-- )); do
+        ref="${orphans[i]}"
+        if [[ $DRY_RUN -eq 1 ]]; then
+            log "  [dry-run] would pop $ref"
+            continue
+        fi
+        if git stash pop "$ref" >>"$LOG_FILE" 2>&1; then
+            log "  recovered $ref"
+        else
+            # A conflicted pop leaves the tree half-merged and preserves the
+            # stash. Do NOT try to tidy up: `git checkout -- .` here would
+            # destroy a concurrent session's uncommitted prose edits. Stop
+            # and let a human resolve it — the stash is still intact.
+            fail "ORPHANED STASH $ref did not apply cleanly; tree is conflicted and the stash is preserved. Resolve by hand: git -C $DATA_DIR stash show -p $ref"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Data submodule sync
 # ---------------------------------------------------------------------------
 
 cd "$DATA_DIR"
+
+# Crash-safe recovery FIRST — before anything reads or writes the tree.
+reconcile_orphaned_stashes
 
 # Stash local changes FIRST (typically memories.jsonl + tag-vocabulary.txt
 # from extraction hooks). Stashing works on any ref including detached
@@ -255,6 +384,32 @@ restore_stash_on_exit() {
     fi
 }
 trap restore_stash_on_exit EXIT
+# Commit the append-only memory files BEFORE considering a stash. They are
+# dirty on nearly every run, so this usually empties the tree and no stash
+# is taken at all — which removes the failure mode rather than handling it.
+# A commit survives a kill; an un-popped stash is invisible until someone
+# goes looking. Explicit pathspec, so a concurrent session's edits to any
+# other file are untouched.
+committed_memory_appends=0
+if [[ $DRY_RUN -eq 0 ]]; then
+    memory_dirty=()
+    for _mf in "${MEMORY_APPEND_FILES[@]}"; do
+        if [[ -n "$(git status --porcelain -- "$_mf")" ]]; then
+            memory_dirty+=("$_mf")
+        fi
+    done
+    if [[ ${#memory_dirty[@]} -gt 0 ]]; then
+        log "data submodule: committing append-only memory files (${memory_dirty[*]})"
+        git add -- "${memory_dirty[@]}" >>"$LOG_FILE" 2>&1 || fail "git add of memory files failed"
+        if git commit -q -m "chore(memories): append-only capture from $HOST $(date +'%Y-%m-%d %H:%M')" \
+                -- "${memory_dirty[@]}" >>"$LOG_FILE" 2>&1; then
+            committed_memory_appends=1
+        else
+            log "data submodule: nothing to commit for memory files (raced)"
+        fi
+    fi
+fi
+
 if [[ -n "$(git status --porcelain)" ]]; then
     has_local_changes=1
     log "data submodule has local changes; stashing for pull"
@@ -277,11 +432,20 @@ if [[ "$current_branch" != "main" ]]; then
     fi
 fi
 
-# Pull remote. After stashing, this should fast-forward.
+# Pull remote. Fast-forward is still the expected case and is tried first.
+# It is no longer guaranteed: committing the memory appends above can leave
+# a local commit, so origin having moved makes this a divergence rather than
+# a fast-forward. Fall back to a rebase, which is the correct operation for
+# an append-only file, and reuse the append-safe resolver on conflict.
 log "data submodule: pulling origin/main"
 if [[ $DRY_RUN -eq 0 ]]; then
-    git pull --ff-only origin main >>"$LOG_FILE" 2>&1 \
-        || fail "data submodule pull failed (not fast-forwardable)"
+    if ! git pull --ff-only origin main >>"$LOG_FILE" 2>&1; then
+        log "data submodule: not fast-forwardable — rebasing local commits onto origin"
+        if ! GIT_EDITOR=true git pull --rebase origin main >>"$LOG_FILE" 2>&1; then
+            resolve_rebase_conflicts "data submodule" \
+                || fail "data submodule pull failed (rebase unresolvable — manual resolution required)"
+        fi
+    fi
 fi
 
 # Pop stash and resolve conflicts if they arise.

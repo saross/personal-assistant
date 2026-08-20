@@ -352,6 +352,15 @@ def main() -> int:
         "--quiet-if-clean", action="store_true",
         help="print nothing when there is no drift (for cron)",
     )
+    parser.add_argument(
+        "--list-recoverable-stashes", action="store_true",
+        help=(
+            "print one stash ref per line for stashes that still hold records "
+            "found nowhere else, and nothing for stashes already accounted "
+            "for. Used by daily-sync.sh so it never re-pops a stash whose "
+            "contents have already been recovered."
+        ),
+    )
     args = parser.parse_args()
 
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -365,7 +374,14 @@ def main() -> int:
 
     result = check_drift(log)
     if result is None:
+        # Cannot tell. Emit nothing: for --list-recoverable-stashes the safe
+        # reading of "unknown" is "do not touch any stash".
         return 2
+
+    if args.list_recoverable_stashes:
+        for ref, _lines in result.stash_only:
+            print(ref)
+        return 0
 
     if result.is_clean:
         log.info("Clean — no drift (jsonl=%d archive=%d pg=%d)",
