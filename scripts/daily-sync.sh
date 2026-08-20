@@ -660,4 +660,36 @@ if [[ $DRY_RUN -eq 0 ]]; then
         || fail "sync-symlinks.sh failed (symlink drift NOT healed this run)"
 fi
 
+# ---------------------------------------------------------------------------
+# Memory-store drift check (added 2026-08-20)
+#
+# This script stashes uncommitted data-submodule changes before pulling and
+# pops them afterwards. The extraction hook appends to memories.jsonl
+# continuously, so there are almost always uncommitted appends inside that
+# window. If a run does not reach its pop -- on 2026-08-19 a second
+# daily-sync started mid-run and the first never popped -- those appends are
+# orphaned into a stash nobody looks at. 41 records were lost that way (38
+# surviving only in PostgreSQL, 3 surviving only in a July stash).
+#
+# The check is read-only and never recovers automatically: recovery appends
+# to the canonical store, which is a human decision. It only reports.
+# ---------------------------------------------------------------------------
+
+if [[ $DRY_RUN -eq 0 ]]; then
+    if "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-memory-drift.py" \
+            --quiet-if-clean >>"$LOG_FILE" 2>&1; then
+        log "memory drift check: clean"
+    else
+        rc=$?
+        if [[ $rc -eq 2 ]]; then
+            log "memory drift check: COULD NOT RUN (rc=2; see memory-drift.log)"
+        else
+            log "memory drift check: *** DRIFT DETECTED *** — canonical memory"
+            log "  records survive in only one store. See logs/memory-drift.log."
+            log "  Recover: venv/bin/python3 scripts/check-memory-drift.py --recover"
+            log "  DO NOT run rebuild-postgres.py until this is clean."
+        fi
+    fi
+fi
+
 log "=== daily-sync complete on $HOST ==="
