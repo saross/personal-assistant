@@ -160,9 +160,19 @@ git commit -m "docs(reflection): Obs N — <headline>
 <5–12 line body explaining what this Obs captures, the headline
 result if numerical, and the cross-references it makes>
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: <model trailer — see below> <noreply@anthropic.com>"
 git push origin main
 ```
+
+**Co-author trailer rule (2026-08-21, after a stale-trailer incident):**
+never hardcode a model name here. Use, in priority order: (1) the
+trailer text supplied in your dispatch prompt, if the orchestrator
+provided one; (2) the model named in your own environment/system
+context, if stated; (3) the dominant `Co-Authored-By: Claude …`
+trailer across the repo's last ~20 commits (`git log -20 --format=%b |
+grep Co-Authored-By | sort | uniq -c | sort -rn | head -1`). The
+trailer records which model wrote the entry, so a wrong name corrupts
+the provenance record the user relies on.
 
 Match the project's commit-message style. Some projects use
 `docs(reflection):`; others use `docs(working-notes):` or just
