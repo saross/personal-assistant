@@ -322,3 +322,39 @@ Zotero UI before the user moves them to a working collection.
 in `GET /keys/<key>` and dumps it into traceback strings on 403. Exception
 output from this script is **not safe** to forward into shared logs
 without redaction.
+
+## Write permissions — where a write may land (Shawn's ruling, 2026-08-21)
+
+**Having an API key that *can* write to a shared group library is not
+authorisation to use it.** Several keys carry write scope on groups
+shared with collaborators; scope is a capability, not a permission.
+
+| Situation | Where it goes |
+| --- | --- |
+| **New discovery** — an item found by a search, sweep, or agent | **A staging collection in My Library** (personal, `libraryID 1`). Initial writes go here by default, whoever asked for them |
+| **Correction to an item in a shared group library** — metadata fix, item-type change, collection move, re-filing | **Ask Shawn first.** Articulate what will change and why; wait for approval |
+| **Bulk or agent-driven writes to a shared library** | **Ask first, always.** Volume raises the cost of a wrong call and makes it harder to unpick |
+
+**Why.** Group libraries are shared with collaborators who did not
+consent to an automated pass over their records, and a batch correction
+is hard to reverse item by item. Discovery is cheap to redo in a staging
+collection; a bad write in a shared library is someone else's problem
+before it is ours.
+
+**Provenance.** Encoded after the 2026-08-21 Fieldmark session, where an
+agent made sixteen metadata corrections in the shared `FAIMS-Project`
+group on Claude's instruction rather than Shawn's. The corrections were
+sound and each was individually justified, but the pattern was not
+authorised: Shawn had approved *populating* two collections, and the
+improvement pass was generalised from that. His ruling: *"For
+corrections, if it's in a shared library please ask first… we need to
+exercise somewhat more caution — clear articulation between us and
+approval by me — before modifying shared libraries."* Recorded as
+user-obs 23 in `fieldmark-docs-staging`.
+
+**Group IDs are not local library IDs**, and the two are easy to confuse
+because both are small integers. Translate explicitly when moving
+between the SQLite database and the web API. Verified 2026-08-21:
+FAIMS-Project = local library 9 = group **2542876**; SDAM-AU = local 6 =
+group **2366083**; FAIMS-internal = local 2 = group **525489**;
+TRAP = local 5 = group **2275173**.
