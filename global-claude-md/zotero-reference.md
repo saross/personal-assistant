@@ -179,7 +179,8 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 | `ZOTERO_PAPER_B_COLLECTION` | Collection key `H6KXYXKX` = `Paper-B` (171 items) in **group** 5861859, not My Library | — | no script yet |
 | `ZOTERO_SPA_COLLECTION` | Collection key `PZN5ATJK` = `SPA` (61 items) in **group** `SDAM-AU` (2366083) | — | no script yet |
 | `ZOTERO_API_KEY_TRAP` | Group write for `TRAP` (2275173); minted 2026-08-21, scope verified via `/keys/current` (`library: True, write: True`) and a live collection create | narrow | no script yet |
-| `ZOTERO_TRAP_COLLECTION` | Collection key `BTKV5ZIF` = `vlm-burial-mound-detection` in **group** `TRAP` (2275173) — the map-reader/VLM paper's canonical bibliography collection (created 2026-08-21) | — | no script yet |
+| `ZOTERO_TRAP_COLLECTION` | Collection key `BTKV5ZIF` = `vlm-burial-mound-detection` in **group** `TRAP` (2275173) — the map-reader/VLM paper's canonical bibliography collection (created 2026-08-21). **Default-target pointer only, not an access control**: `ZOTERO_API_KEY_TRAP` grants write to the whole TRAP library, every collection included. Other TRAP collections as of 2026-08-21: `TRAP-outputs` `TQT5AAJS`, `LP2019` `IF7J3SQI`, `Oxbow-volume` `SPP4ZUU6`, `Complexity` `HZWI96K9` (snapshot — enumerate live via the API when it matters) | — | no script yet |
+| `ZOTERO_TRAP_GROUP_ID` | `2275173` | — | no script yet |
 | `ZOTERO_FAIMS_INTERNAL_GROUP_ID` | `525489` | — | no script yet |
 | `ZOTERO_FAIMS_PROJECT_GROUP_ID` | `2542876` | — | no script yet |
 
