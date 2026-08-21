@@ -3,11 +3,20 @@
 Run `lit-scout` + `lit-scout-verifier` as a closed loop: the proposer
 drafts; the verifier audits; if any claim fails, the proposer re-applies
 the verifier's `true_value` to the affected rows and removes rows whose
-DOIs do not resolve; repeat. Cap N=5 iterations. Terminate on PASS, on
-PARTIAL (flag to user), on cap, or on no-progress (FAIL claim_id set
-unchanged between iterations).
+DOIs the registry has authoritatively reported as not existing; repeat.
+Cap N=5 iterations. Terminate on PASS, on PARTIAL (flag to user), on
+UNVERIFIABLE (flag to user), on cap, or on no-progress (FAIL claim_id
+set unchanged between iterations).
 
 Always runs the verifier on every iteration. There is no bypass.
+
+**A row is only ever removed on an authoritative negative.** A lookup
+that did not complete — HTTP 429, a 5xx, a timeout, an exhausted API
+budget — is `unverifiable`, and unverifiable rows are preserved and
+flagged, never removed. Without this rule a throttled run deletes
+genuine citations and reports them as confabulations, which is the
+opposite of what the loop is for. See
+`~/personal-assistant/wiki/planning/api-politeness-audit-2026-08-21.md`.
 
 ## Usage
 
@@ -102,7 +111,9 @@ For `N` in 0..5:
 
   Original user query (do not re-run discovery; preserve PASS
   claims; substitute true_value for FAIL claims; remove rows
-  whose doi_resolves is fail):
+  whose doi_resolves is fail; preserve rows whose claims are
+  unverifiable — an unverifiable claim means the check did not
+  complete, not that the row is wrong):
 
   [original query verbatim]
   ```
@@ -175,27 +186,67 @@ the aggregate verdict from `corrections.jsonl` directly:
 PASS_CT=$(grep -c '"status":"pass"' "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" || true)
 PARTIAL_CT=$(grep -c '"status":"partial"' "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" || true)
 FAIL_CT=$(grep -c '"status":"fail"' "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" || true)
-UNVER_CT=$(grep -c '"status":"unverifiable"' "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" || true)
+UNVER_CT=$(grep '"status":"unverifiable"' "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" \
+  | grep -vc '"claim_id":"_legacy"' || true)
 LEGACY_CT=$(grep -c '"claim_id":"_legacy"' "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" || true)
+TOTAL_CT=$(grep -c . "${ITERATE_ROOT}/iter-${N}/corrections.jsonl" || true)
 ```
 
-Three cases:
+`UNVER_CT` excludes the `_legacy` sentinel, which also carries
+`status: unverifiable` but means something else entirely (see G.5).
 
-##### G.1 — PASS (`FAIL_CT == 0 && PARTIAL_CT == 0 && LEGACY_CT == 0`)
+Five cases, evaluated in order:
+
+##### G.1 — PASS (`FAIL_CT == 0 && PARTIAL_CT == 0 && UNVER_CT == 0 && LEGACY_CT == 0`)
 
 Loop terminates successfully. Skip to "Final reporting".
 
-##### G.2 — PARTIAL (`FAIL_CT == 0 && PARTIAL_CT > 0 && LEGACY_CT == 0`)
+##### G.2 — PARTIAL (`FAIL_CT == 0 && PARTIAL_CT > 0 && UNVER_CT == 0 && LEGACY_CT == 0`)
 
 Loop terminates with the PARTIAL flag. The driver does not iterate.
 Skip to "Final reporting".
 
-##### G.3 — FAIL (`FAIL_CT > 0`) — continue to no-progress check
+##### G.3 — UNVERIFIABLE (`FAIL_CT == 0 && UNVER_CT > 0 && LEGACY_CT == 0`)
 
-##### G.4 — Legacy / structural failure (`LEGACY_CT > 0`)
+Some claims could not be checked. The driver does **not** iterate:
+iterating cannot fix a claim whose problem is that the registry did
+not answer, and re-running the verifier under the same throttle just
+produces the same result more slowly.
+
+Terminate with status `UNVERIFIABLE`. This is deliberately not
+reported as PASS — the run established nothing about those rows, and
+calling it PASS would assert a verification that did not happen.
+Skip to "Final reporting".
+
+##### G.4 — FAIL (`FAIL_CT > 0`) — continue to the throttle check
+
+Any unverifiable claims in the same iteration ride through untouched.
+Iterate on the `fail` claims only.
+
+##### G.5 — Legacy / structural failure (`LEGACY_CT > 0`)
 
 Proposer did not emit a `claims.jsonl` block. The closed loop cannot
 operate. Skip to "Final reporting" with status `LEGACY_PROPOSER`.
+
+#### Step H0 — Throttle check (FAIL only)
+
+Before spending another iteration, check whether the registries were
+actually answering:
+
+```bash
+# Terminate rather than iterate if a third or more of the claims
+# could not be checked at all.
+if [ "${TOTAL_CT}" -gt 0 ] && [ $(( UNVER_CT * 3 )) -ge "${TOTAL_CT}" ]; then
+  STATUS=THROTTLED
+fi
+```
+
+If `STATUS=THROTTLED`, terminate and skip to "Final reporting". A run
+this heavily throttled has not tested the table, and each further
+iteration costs several minutes of retry backoff to learn the same
+nothing. The `fail` claims found so far remain valid — under the
+verifier's rules a FAIL requires a status code it actually saw — so
+report them, but do not act on the table until it can be re-verified.
 
 #### Step H — No-progress check (FAIL only)
 
@@ -223,7 +274,7 @@ Always return:
 ```markdown
 # /lit-scout-iterate result: <query>
 
-**Status:** <PASS | PARTIAL | FAIL | NO_PROGRESS | CAP_REACHED | LEGACY_PROPOSER>
+**Status:** <PASS | PARTIAL | UNVERIFIABLE | THROTTLED | FAIL | NO_PROGRESS | CAP_REACHED | LEGACY_PROPOSER>
 **Iterations run:** <0..5>
 **Workspace:** ${ITERATE_ROOT}
 
@@ -236,6 +287,12 @@ Always return:
 | 2    | PASS    | 30   | 0       | 0    | 0             | final |
 
 (Generate from each iter's corrections.jsonl counts.)
+
+**Rows removed, if any, must be listed explicitly** with the status
+code that justified each removal, carried up from the proposer's
+"## Rows removed in iterate mode" section. A removal with no observed
+status code behind it is a defect in the run, not a finding — report
+it as such and restore the row.
 
 ## Outcome detail
 
@@ -273,6 +330,24 @@ wants.)
   `${ITERATE_ROOT}/iter-{N}/corrections.jsonl` and decide whether
   to (a) accept the report as-is, (b) re-invoke with a stricter
   tolerance, or (c) manually re-run on specific rows."
+
+- **UNVERIFIABLE** — Header: "**⚠ VERIFICATION INCOMPLETE — DRIVER
+  DID NOT ITERATE.** K claims across R rows could not be checked;
+  the registries did not answer. No claim failed. **Those rows are
+  preserved in the table below and flagged, not removed** — an
+  unanswered lookup is not evidence against a citation. The
+  observed cause for each row is in
+  `${ITERATE_ROOT}/iter-{N}/corrections.jsonl` under
+  `source_method`. If the cause is an exhausted OpenAlex budget it
+  resets at midnight UTC; re-run `/lit-scout-verify` on the final
+  report then, rather than editing the table now."
+
+- **THROTTLED** — Header: "**⚠ RUN THROTTLED — LOOP STOPPED EARLY.**
+  A third or more of the claims could not be checked, so the loop
+  terminated rather than spending iterations on retry backoff. The
+  K FAIL claims listed below were each confirmed against a status
+  code and stand. The rest of the table is untested. Re-run once
+  the rate limit resets."
 
 - **FAIL** (only via CAP_REACHED) — Header: "**⚠ ITERATION CAP
   REACHED.** Five iterations did not produce a PASS or PARTIAL

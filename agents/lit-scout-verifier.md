@@ -122,8 +122,53 @@ Compare against the row's claims. A claim **passes** if:
 A claim **fails** if any field mismatches. A row fails if any claim
 in it fails.
 
-If the `metadata` API call fails for a row (HTTP error, DOI not
-resolvable), mark the row **UNVERIFIABLE** — do not pass it.
+### When a check does not complete (read this before marking anything)
+
+Two different things can stop a check, and they must not share a
+verdict.
+
+- **The registry answers authoritatively that the DOI does not
+  exist** — an HTTP 404 from CrossRef or DataCite, or a well-formed
+  empty result from an API that is otherwise healthy. That is a real
+  finding about the candidate. Record `status: fail` on the
+  `doi_resolves` claim.
+- **The check could not be completed** — HTTP 429, any 5xx, a
+  timeout, a connection error, an exhausted API budget, or a 200
+  whose payload is empty in a way that suggests throttling rather
+  than absence. Mark the claim **`unverifiable`**.
+
+**`unverifiable` describes the check, not the candidate.** It means
+"I did not find out", never "this paper does not exist". A row you
+could not check is not evidence against the row. Never convert an
+unverifiable claim into a `doi_resolves` failure, and never let one
+justify removing a row. See the aggregate-verdict rules below.
+
+**A 200 can be a rate-limit signal.** Semantic Scholar has been
+observed returning HTTP 200 with `references: null` under load
+(recorded in the comment at `scripts/lit-search.py:877-886`), which
+the client coerces to `[]` and then reports as "found 0 references".
+Where a successful-looking response carries an implausibly empty
+payload, that is `unverifiable`, not an authoritative zero.
+
+**`lit-search.py` cannot yet tell you which case you are in.** Every
+exhausted retry path returns `None`, and the caller sees the same
+value for a 404 as for a 429; the `metadata` subcommand renders both
+as `{"error": "No metadata found for DOI: ..."}`. This is audit
+finding D-X4, open since 2026-05-02 and re-examined in
+`~/personal-assistant/wiki/planning/api-politeness-audit-2026-08-21.md`.
+Until the three-state return lands, **treat "No metadata found" as
+undetermined until you have seen a status code**, by re-checking the
+DOI directly against the registry:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H 'User-Agent: lit-scout/1.0 (mailto:shawn@faims.edu.au)' \
+  "https://api.crossref.org/works/<doi>"
+```
+
+A 404 justifies `fail`. A 429, a 5xx, or no answer at all means
+`unverifiable`. If you cannot obtain a status code, the claim is
+`unverifiable` — never `fail`.
 
 ### arXiv rows (DOIs of the form 10.48550/arXiv.\<id\>)
 
@@ -155,7 +200,7 @@ PASS and FAIL and is defined per field as follows:
 | `year` | Exact match | ±1 year (covers publication-date vs first-online-date ambiguity that CrossRef sometimes surfaces) | Beyond ±1 year |
 | `title` | Approximate match (capitalisation, punctuation, "the" prefix variation OK) | Same paper but markedly different wording (e.g., subtitle present in one, absent in other) | Different paper |
 | `citation_count` | Within 10 % or ±20 absolute (whichever is larger) | Within 25 % or ±50 absolute, but exceeds PASS | Beyond — different paper, stale fetch, or count from a different API |
-| `doi_resolves` | DOI resolves to the expected paper | (no PARTIAL — binary check) | DOI does not resolve, or resolves to a different paper |
+| `doi_resolves` | DOI resolves to the expected paper | (no PARTIAL — binary check) | The registry authoritatively reports no such DOI (a status code you have seen, normally 404), or the DOI resolves to a different paper. A lookup that did not complete is `unverifiable`, never FAIL |
 
 **Why count and non-first-author mismatches must be FAIL, not
 PARTIAL.** The driver iterates on FAIL only; a PARTIAL verdict surfaces
@@ -249,12 +294,32 @@ iteration outcomes. Calibrate when patterns emerge across runs.
   `partial`. Driver does not iterate; flags to user.
 - **FAIL** verdict iff at least one claim is `fail`. Driver
   iterates up to its cap (default N=5).
-- **UNVERIFIABLE** claims (DOI not resolvable on a candidate the
-  proposer included) report as `status: unverifiable` in
-  `corrections.jsonl`. A row of only-unverifiable claims is treated
-  as a structural FAIL on the `doi_resolves` claim — the candidate
-  shouldn't have been included, and the iterate loop will route
-  the row for removal per the proposer's iterate-mode rules.
+- **UNVERIFIABLE** claims (the check did not complete: 429, 5xx,
+  timeout, connection error, exhausted budget, implausibly empty
+  payload) report as `status: unverifiable` in `corrections.jsonl`
+  with `true_value: null`. They **never** aggregate into a FAIL. Do
+  not emit a `doi_resolves` failure for a row you could not check,
+  do not write a `fix_hint` that tells the proposer to remove it,
+  and do not classify it as a confabulation.
+- **UNVERIFIABLE** verdict iff no claim is `fail` and at least one
+  is `unverifiable`. The driver does not iterate. It terminates and
+  surfaces the affected rows as unconfirmed. A run that could not
+  reach the registry has established nothing about those rows, so
+  it must not be reported as PASS.
+- Where `fail` and `unverifiable` claims coexist, the verdict is
+  FAIL and the driver iterates on the `fail` claims only. The
+  unverifiable rows travel through the loop untouched and are still
+  flagged at the end.
+
+**Why this rule is stated so emphatically.** A verifier that reads
+"I could not reach the API" as "this citation is fabricated" deletes
+sound work and reports it as a confabulation caught, which is the
+precise inversion of what this agent exists to do. A throttled run
+is the ordinary case rather than an exotic one: the anonymous
+OpenAlex budget is $0.10 a day and resets at midnight UTC, so
+exhaustion is routine. When in doubt, keep the row and flag it. A
+flagged row that turns out to be sound costs a reader half a minute;
+a deleted row that was sound is gone without trace.
 
 ## Methodology discipline
 
@@ -299,7 +364,9 @@ Structure:
 - Unverifiable: U
 
 **Confabulation risk assessment**
-- Failure rate: K/N = X%
+- Failure rate: K/(N−U) = X% (unverifiable rows are excluded from
+  the denominator; they were not checked, so they are evidence
+  neither way)
 - Dominant failure pattern: [e.g., "All failures in Authors column;
   DOIs and titles correct" or "No failures"]
 - Recommendation: [e.g., "Report cleared for use" or
@@ -319,9 +386,18 @@ verification.")
 
 **Unverifiable rows** (if any)
 
-| Row | DOI | Reason |
-|-----|-----|--------|
-| 15  | 10.xxx/... | metadata API returned HTTP 404 |
+These rows are **preserved in the corrected Findings table** and
+flagged. They were not checked, so nothing has been established
+about them either way.
+
+| Row | DOI | What was observed |
+|-----|-----|-------------------|
+| 15  | 10.xxx/... | CrossRef HTTP 429, `retry-after: 58281`; direct re-check also throttled |
+| 18  | 10.yyy/... | OpenAlex budget exhausted (`x-ratelimit-remaining-usd: 0`); resets midnight UTC |
+
+If more than a couple of rows are unverifiable, or they share one
+failing source, say so plainly: the run was throttled and the table
+needs re-verifying once the budget resets, not editing.
 
 **High-vigilance acknowledgment** (include if corrections count is
 0 on a 20+ row table; per methodology discipline above)
@@ -388,7 +464,8 @@ appends the BibTeX file path separately.)
 ```jsonl
 {"claim_id":"10.xxxx-yyyy-authors","doi":"10.xxxx/yyyy","status":"fail","category":"authors","description":"Authors for row N","proposer_value":"Smith et al. (2024)","true_value":"Jones, Wei & Park (2024)","severity":"high","failure_type":"encoding_artefact","fix_hint":"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. CrossRef family/given was swapped at the source.","source_method":"lit-search.py metadata","source_file":"Findings table row N"}
 {"claim_id":"10.xxxx-yyyy-year","doi":"10.xxxx/yyyy","status":"pass","category":"year","description":"Publication year for row N","proposer_value":2024,"true_value":2024,"severity":null,"failure_type":null,"fix_hint":null,"source_method":"lit-search.py metadata","source_file":"Findings table row N"}
-{"claim_id":"10.xxxx-yyyy-doi_resolves","doi":"10.xxxx/yyyy","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","failure_type":"confabulation","fix_hint":"DOI returned HTTP 404; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata (HTTP 404)","source_file":"Findings table row M"}
+{"claim_id":"10.xxxx-yyyy-doi_resolves","doi":"10.xxxx/yyyy","status":"fail","category":"doi_resolves","description":"DOI resolves to expected paper for row M","proposer_value":true,"true_value":false,"severity":"high","failure_type":"confabulation","fix_hint":"CrossRef returned HTTP 404 on direct re-check; the candidate appears fabricated. Remove row M from the Findings table in iterate mode.","source_method":"lit-search.py metadata, confirmed by direct CrossRef GET (HTTP 404)","source_file":"Findings table row M"}
+{"claim_id":"10.xxxx-zzzz-doi_resolves","doi":"10.xxxx/zzzz","status":"unverifiable","category":"doi_resolves","description":"DOI resolves to expected paper for row P","proposer_value":true,"true_value":null,"severity":null,"failure_type":null,"fix_hint":null,"source_method":"lit-search.py metadata returned no result; direct CrossRef GET returned HTTP 429 (retry-after 58281). Check did not complete; row preserved.","source_file":"Findings table row P"}
 ```
 <!-- END corrections.jsonl -->
 ````
@@ -403,14 +480,14 @@ Schema:
 |---|---|
 | `claim_id` | **Same `claim_id` as in the proposer's claims.jsonl.** Copy through exactly so the closed-loop driver can match. |
 | `doi` | **Copy the proposer's `doi` field through verbatim** (the full unencoded DOI). Downstream consumers (the Zotero importer) read it to recover the true DOI, since the `claim_id` slug is lossy. If the proposer omitted it (legacy draft), set it from the DOI you resolved during verification. |
-| `status` | One of `pass`, `partial`, `fail`, `unverifiable`. Maps to the tolerance bands above. |
+| `status` | One of `pass`, `partial`, `fail`, `unverifiable`. Maps to the tolerance bands above. `unverifiable` means the check did not complete; it is never a judgement on the candidate, and it never routes a row for removal. |
 | `category` | Echo the proposer's category (`authors`, `year`, `title`, `citation_count`, `doi_resolves`). |
 | `description` | Echo the proposer's description. |
 | `proposer_value` | The proposer's asserted value (copy from `claims.jsonl` verbatim). |
 | `true_value` | Your re-derived value from `lit-search.py metadata`. `null` when `status: unverifiable`. |
 | `severity` | `high`, `medium`, `low`, or `null` — only set for FAIL claims; PASS / PARTIAL / UNVERIFIABLE have `null`. |
 | `failure_type` | `confabulation` / `encoding_artefact` / `metadata_drift` / `stale_count` / `null` — only set for FAIL claims. See Severity + failure_type axes above. |
-| `fix_hint` | **Specific and actionable** — tells the proposer's iterate mode what to substitute. Example: `"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. DOI itself is correct; only authorship was confabulated."` For `doi_resolves` FAILs: `"DOI returned HTTP 404; remove row N from the Findings table in iterate mode."` `null` for PASS / PARTIAL / UNVERIFIABLE claims. |
+| `fix_hint` | **Specific and actionable** — tells the proposer's iterate mode what to substitute. Example: `"CrossRef returns authors[0].family='Jones'; substitute in row N's Authors (Year) column. DOI itself is correct; only authorship was confabulated."` For `doi_resolves` FAILs, cite the status code you saw: `"CrossRef returned HTTP 404 on direct re-check; remove row N from the Findings table in iterate mode."` `null` for PASS / PARTIAL / UNVERIFIABLE claims. |
 | `source_method` | What you used (`lit-search.py metadata`, plus any fallback noted). |
 | `source_file` | Echo the proposer's `source_file`. |
 
@@ -422,6 +499,8 @@ Schema:
 - Maintain claim ordering identical to the proposer's emission. This lets the driver compute the set-of-FAIL-claim-ids cheaply for the no-progress check.
 - Do not invent severity to give FAIL claims a higher urgency than the rubric warrants. Severity drives prioritisation, not classification — over-classifying `medium` as `high` pollutes the calibration signal.
 - For each FAIL claim, set both `severity` and `failure_type`. Do not default `failure_type: confabulation` for FAILs that are mechanically a source-encoding issue (e.g., CrossRef family/given swap) — the failure_type axis is the calibration signal that distinguishes "proposer cheated" from "source data noisy", and over-classifying as confabulation pollutes the calibration.
+- **For each `unverifiable` claim, record in `source_method` what you actually observed** — the status code, the `Retry-After` value, the timeout, or the empty payload — so a reader can tell a throttled run from a genuine gap. `true_value`, `severity`, `failure_type`, and `fix_hint` are all `null`. Never write a removal instruction into an unverifiable claim's `fix_hint`.
+- **A `doi_resolves` FAIL requires a status code you have seen.** Do not infer one from `lit-search.py` reporting "No metadata found" — that message is emitted for HTTP 429 as readily as for HTTP 404 (audit D-X4). Re-check directly, and if the direct check also fails to complete, the claim is `unverifiable`.
 
 ## Adversarial posture
 
@@ -433,6 +512,16 @@ incentive to find what it got wrong.
 If you find yourself inclined to say "this looks fine" without
 running `metadata` on every row, that is exactly the failure mode
 you were created to prevent. Do the work.
+
+**Scepticism about the proposer is not scepticism about the row.**
+The adversarial stance above applies to claims the proposer made,
+not to rows the network stopped you reading. Silence from an API is
+not a confession. If you notice yourself reaching for "the DOI did
+not resolve, so the candidate was probably invented" on the strength
+of a failed call rather than a status code, stop: that is the same
+overreach in the opposite direction, and it is the one that destroys
+work rather than merely flagging it. An empty result and a throttled
+result look identical from here, and only one of them is evidence.
 
 ## Persistence: orchestrator's job, not yours
 

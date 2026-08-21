@@ -368,20 +368,37 @@ dispatch prompt):
      does not route PARTIAL verdicts into iterate mode (policy
      2026-05-22); if a PARTIAL claim reaches you in iterate mode,
      flag in your Proposer self-check section and pass through.
-   - `unverifiable` — preserve verbatim and pass through. Same
-     reasoning as PARTIAL.
+   - `unverifiable` — preserve verbatim and pass through. The
+     verifier could not complete the check (rate limit, 5xx,
+     timeout, exhausted API budget); it did not find anything wrong
+     with the row. **Never remove a row on an unverifiable claim,
+     whatever its category**, and do not treat one as a soft
+     `doi_resolves` failure. Note it in Proposer self-check so the
+     reader knows which rows are unconfirmed.
    - `fail` — apply the verifier's correction. The verifier's
      `true_value` is authoritative (it came from a fresh
      `lit-search.py metadata` call); substitute it into the row's
      field, and add a brief note in Proposer self-check that the
      claim was corrected at iteration N.
 3. **Handle row-level failures.** When the `fail` claim is the DOI
-   itself (`category: "doi_resolves"`, status fail) — i.e., the DOI
-   does not resolve and the row's identity is in doubt — **remove
-   the row** from the corrected Findings table in V1. Append it to
-   a new "## Rows removed in iterate mode" section with the row's
-   original data and the verifier's reason. Do not attempt to
-   substitute a replacement paper in V1; that is a V2 enhancement.
+   itself (`category: "doi_resolves"`, status fail) — i.e., the
+   registry answered that no such DOI exists, and the row's identity
+   is in doubt — **remove the row** from the corrected Findings
+   table in V1. Append it to a new "## Rows removed in iterate mode"
+   section with the row's original data and the verifier's reason,
+   **including the status code the verifier observed**. Do not
+   attempt to substitute a replacement paper in V1; that is a V2
+   enhancement.
+
+   **Removal requires an authoritative negative.** The verifier's
+   spec allows a `doi_resolves` FAIL only where it saw a status code,
+   normally an HTTP 404. If a `fix_hint` asks you to remove a row but
+   the `source_method` records a rate limit, a 5xx, a timeout, or no
+   status at all, **do not remove it** — keep the row, and say in
+   Proposer self-check that the removal instruction was declined
+   because the check had not completed. A throttled API and a
+   fabricated citation are indistinguishable from the outside, and
+   only one of them warrants deleting somebody's reference.
 4. **Re-emit the report.** Pass through every section of the
    previous draft verbatim, with substitutions applied only to the
    Findings-table fields that the verifier flagged. The analysis
