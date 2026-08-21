@@ -36,6 +36,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Per-machine OpenAI key resolution (2026-08-22): paid keys are issued per
+# machine, so the variable name carries a host suffix.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _openai_key import resolve_openai_key  # noqa: E402
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -1396,11 +1401,7 @@ def _terra_call(
     import urllib.error
     import urllib.request
 
-    api_key = os.environ.get("OPENAI_API_KEY_PA_AMDT")
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY_PA_AMDT not set (expected in personal-assistant/.env)"
-        )
+    api_key = resolve_openai_key("PA")
 
     body = {
         "model": TERRA_MODEL,
