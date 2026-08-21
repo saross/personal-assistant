@@ -616,6 +616,118 @@ OPENALEX_SEARCH_RESPONSE = {
 }
 
 
+class TestOpenAlexApiKey:
+    """Tests for OpenAlex key attachment (`_with_openalex_key`).
+
+    A free OpenAlex key raises the daily budget from $0.10 to $1.00. It is
+    attached per request rather than as a client header because one
+    `httpx.Client` serves five APIs; sending Shawn's credential to the
+    other four would be a leak, so `test_key_not_sent_to_other_hosts` is
+    the load-bearing case here.
+    """
+
+    OPENALEX_URL = "https://api.openalex.org/works"
+    CROSSREF_URL = "https://api.crossref.org/works"
+
+    def test_no_key_leaves_params_untouched(self):
+        """Absent a key, params pass through unchanged — same object."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", ""):
+            params = {"filter": "doi:10.1234/x"}
+            result = lit_search._with_openalex_key(
+                "api.openalex.org", params
+            )
+            assert result is params
+
+    def test_no_key_leaves_none_as_none(self):
+        """Absent a key, a None params stays None (no empty dict)."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", ""):
+            assert lit_search._with_openalex_key(
+                "api.openalex.org", None
+            ) is None
+
+    def test_key_attached_for_openalex_host(self):
+        """With a key, OpenAlex requests carry it as `api_key`."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", "secret-key"):
+            result = lit_search._with_openalex_key(
+                "api.openalex.org", {"filter": "doi:10.1234/x"}
+            )
+            assert result["api_key"] == "secret-key"
+            assert result["filter"] == "doi:10.1234/x"
+
+    def test_key_attached_when_params_is_none(self):
+        """A keyed request with no other params still gets the key."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", "secret-key"):
+            assert lit_search._with_openalex_key(
+                "api.openalex.org", None
+            ) == {"api_key": "secret-key"}
+
+    def test_caller_params_not_mutated(self):
+        """The caller's dict is copied, not modified in place."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", "secret-key"):
+            params = {"filter": "doi:10.1234/x"}
+            lit_search._with_openalex_key("api.openalex.org", params)
+            assert "api_key" not in params
+
+    def test_explicit_api_key_wins(self):
+        """A caller-supplied api_key is left alone."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", "env-key"):
+            result = lit_search._with_openalex_key(
+                "api.openalex.org", {"api_key": "caller-key"}
+            )
+            assert result["api_key"] == "caller-key"
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "api.crossref.org",
+            "api.datacite.org",
+            "api.semanticscholar.org",
+            "export.arxiv.org",
+        ],
+    )
+    def test_key_not_sent_to_other_hosts(self, host):
+        """The key never travels to a non-OpenAlex host."""
+        with patch.object(lit_search, "OPENALEX_API_KEY", "secret-key"):
+            params = {"query": "archaeology"}
+            result = lit_search._with_openalex_key(host, params)
+            assert result is params
+            assert "api_key" not in result
+
+    @patch.object(lit_search, "_rate_limit")
+    def test_safe_get_sends_key_to_openalex(self, mock_rl):
+        """End to end: `_safe_get` puts the key on an OpenAlex call."""
+        client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.json.return_value = {"results": []}
+        client.get.return_value = resp
+        with patch.object(lit_search, "OPENALEX_API_KEY", "secret-key"):
+            lit_search._safe_get(
+                client, self.OPENALEX_URL, "openalex",
+                params={"filter": "doi:10.1234/x"},
+            )
+        sent = client.get.call_args.kwargs["params"]
+        assert sent["api_key"] == "secret-key"
+
+    @patch.object(lit_search, "_rate_limit")
+    def test_safe_get_withholds_key_from_crossref(self, mock_rl):
+        """End to end: a CrossRef call carries no OpenAlex key."""
+        client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.json.return_value = {"message": {}}
+        client.get.return_value = resp
+        with patch.object(lit_search, "OPENALEX_API_KEY", "secret-key"):
+            lit_search._safe_get(
+                client, self.CROSSREF_URL, "crossref",
+                params={"query": "archaeology"},
+            )
+        sent = client.get.call_args.kwargs["params"]
+        assert "api_key" not in sent
+
+
 class TestSearch:
     """Tests for the search subcommand."""
 

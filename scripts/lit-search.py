@@ -147,6 +147,18 @@ S2_API_KEY = (
     or ""
 ).strip()
 
+# Optional OpenAlex API key. Free to register at
+# https://openalex.org/settings/api; it raises the daily budget from the
+# anonymous $0.10 to $1.00, both resetting at midnight UTC. Absent a key,
+# behaviour is identical to before — the anonymous tier. Verified against
+# help.openalex.org on 2026-08-21; note the GitHub docs mirror still
+# describes the retired pre-2026 "100,000 credits, no key needed" model.
+OPENALEX_API_KEY = (
+    os.environ.get("OPENALEX_API_KEY")
+    or os.environ.get("OPENALEX_KEY")
+    or ""
+).strip()
+
 # Default result limits
 DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_CITATION_LIMIT = 50
@@ -178,6 +190,10 @@ def _get_client() -> httpx.Client:
     the `x-api-key` header (used only by S2; harmless to CrossRef/OpenAlex,
     which ignore unknown headers). Absent a key, behaviour is identical to
     before — the public unauthenticated tier.
+
+    The OpenAlex key is deliberately *not* set here. This client is shared
+    by five services, so a client-wide credential would be sent to all of
+    them; see `_with_openalex_key`, which attaches it per request.
     """
     headers = {
         "User-Agent": USER_AGENT,
@@ -195,6 +211,36 @@ def _get_client() -> httpx.Client:
 def _host_of(url: str) -> str:
     """Extract the hostname from a URL for per-host pacing."""
     return urllib.parse.urlsplit(url).hostname or ""
+
+
+def _with_openalex_key(host: str, params: dict | None) -> dict | None:
+    """Attach the OpenAlex API key to OpenAlex-bound requests only.
+
+    OpenAlex accepts the key either as an `api_key` query parameter or as
+    an `Authorization: Bearer` header, and treats the two identically. The
+    parameter is used here because `_get_client` builds a single
+    `httpx.Client` shared by CrossRef, DataCite, Semantic Scholar, arXiv,
+    and OpenAlex: a key set as a client-wide header would be sent to all
+    five. Gating on the hostname keeps it going only where it belongs.
+
+    The key does not reach the logs. `_safe_get` logs the bare `url`
+    argument rather than the composed request URL, so query parameters are
+    never written to stderr.
+
+    Args:
+        host: hostname of the outbound request, from `_host_of`.
+        params: the caller's query parameters, possibly None.
+
+    Returns:
+        The parameters unchanged for any non-OpenAlex host, or when no key
+        is configured; otherwise a copy carrying `api_key`. An explicit
+        `api_key` supplied by the caller is left alone.
+    """
+    if host != OPENALEX_HOST or not OPENALEX_API_KEY:
+        return params
+    merged = dict(params or {})
+    merged.setdefault("api_key", OPENALEX_API_KEY)
+    return merged
 
 
 def _pace_host(host: str) -> None:
@@ -410,6 +456,7 @@ def _safe_get(
     leaving the remaining sources to answer, rather than crashing.
     """
     host = _host_of(url)
+    params = _with_openalex_key(host, params)
     try:
         resp = _request_with_retry(
             lambda: client.get(url, params=params),
