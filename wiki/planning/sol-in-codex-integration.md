@@ -257,9 +257,22 @@ consistency passes; anything high-volume and verifiable.
 where being confidently wrong is expensive; adversarial verification; the
 judgement calls.
 
-**Repository allow-list — proposed, for Shawn's ruling:**
+**Repository allow-list — ruled by Shawn, 2026-08-21 (in the substack repo
+session):** *"the only project/repo where I wanted to restrict (not
+necessarily bar) Sol was personal-assistant"*. **⇒ Collaborator presence is
+NOT a Sol gate.** Collaborative repos are open to Sol subject to each repo's
+own discipline (branch + PR, `CLAUDE.md`/`AGENTS.md`). The pre-ruling rows,
+which gated on collaborators, are corrected below.
 
-⚠ **AND IT IS A SNAPSHOT, NOT A STANDING FACT.** `substack` went from solo to collaborative **within 24 hours of this list being drafted** — which is the general case rather than a fluke: repositories acquire collaborators, and nothing notifies this table. **⇒ Re-derive the gate from the repository's own state — a project-level `CLAUDE.md`, or collaborators on the remote — rather than trusting the rows below.** Same failure class as the stale `FOCUS.md` heading and the ten stale `planning/` paths corrected on 2026-08-20: **a prescriptive record read as an authority.**
+⚠ **AND IT IS A SNAPSHOT, NOT A STANDING FACT.** Repositories change state,
+and nothing notifies this table. **⇒ Re-derive working discipline from the
+repository's own state — a project-level `CLAUDE.md`, or collaborators on
+the remote — rather than trusting the rows below.** Same failure class as
+the stale `FOCUS.md` heading and the ten stale `planning/` paths corrected
+on 2026-08-20: **a prescriptive record read as an authority.** (The original
+instance: `substack` went from solo to collaborative within 24 hours of this
+list being drafted — and then the collaborator gate itself was overruled the
+same day.)
 
 | Repo | Sol | Note |
 |---|---|---|
@@ -267,10 +280,10 @@ judgement calls.
 | `map-reader-llm` | ✅ worktree | solo repo |
 | `fieldmark-docs-staging` | ✅ worktree | solo repo |
 | `llm-reproducibility` | ✅ worktree | solo repo |
-| `personal-assistant` | ❌ **never** | Claude-only (decision 1); memory via MCP only |
-| `FAIMS3` | ❌ | collaborative, branch+PR gated, has its own `AGENTS.md` |
-| `paper-b`, `LLM-History-Paper` | ❌ default | shared with Brian; collaborator presence is the gate |
-| `substack` | ❌ **added 2026-08-21** | **⚠ Was going to be solo and is not.** Created 2026-08-21 as a drafting workspace, then made collaborative with Brian (`Denubis`) the same day. Collaborator presence is the gate. |
+| `personal-assistant` | ⚠ **restricted** | the one restricted repo (ruled 2026-08-21: restrict, not necessarily bar — scope of the restriction TBD by Shawn); memory via MCP only. Earlier "❌ never / Claude-only" stands until Shawn defines the scope. |
+| `FAIMS3` | ✅ worktree | collaborative: its branch+PR gate and own `AGENTS.md` govern conduct, not Sol access (corrected 2026-08-21) |
+| `paper-b`, `LLM-History-Paper` | ✅ worktree | shared with Brian; branch + PR discipline applies (corrected 2026-08-21) |
+| `substack` | ✅ worktree | shared with Brian; branch + PR per its `CLAUDE.md`, which was corrected 2026-08-21 to lift the bar recorded there |
 
 ---
 
@@ -327,7 +340,11 @@ with how you actually run.**
 2. **Does Sol get memory *write* access at all**, or is read-only the durable
    answer? Read-only is available almost immediately; writes need `memory_lib.py`
    extracted first.
-3. **Ratify the repository allow-list in §7.**
+3. **Ratify the repository allow-list in §7.** — ✅ **Ruled in part,
+   2026-08-21** (substack repo session): collaborator presence is not a
+   gate; `personal-assistant` is the only restricted repo (restrict, not
+   necessarily bar). **Still open: the scope of the `personal-assistant`
+   restriction.**
 4. **Does Sol run its own daily-sync equivalent?** If it commits to repos on this
    machine, something has to push. ⚠ **Note that the crash-safety work of
    2026-08-20 is specific to `daily-sync.sh`; a second sync mechanism would need
