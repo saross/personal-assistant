@@ -259,6 +259,8 @@ judgement calls.
 
 **Repository allow-list — proposed, for Shawn's ruling:**
 
+⚠ **AND IT IS A SNAPSHOT, NOT A STANDING FACT.** `substack` went from solo to collaborative **within 24 hours of this list being drafted** — which is the general case rather than a fluke: repositories acquire collaborators, and nothing notifies this table. **⇒ Re-derive the gate from the repository's own state — a project-level `CLAUDE.md`, or collaborators on the remote — rather than trusting the rows below.** Same failure class as the stale `FOCUS.md` heading and the ten stale `planning/` paths corrected on 2026-08-20: **a prescriptive record read as an authority.**
+
 | Repo | Sol | Note |
 |---|---|---|
 | `gpt-hub` | ✅ owner | home base |
@@ -268,6 +270,7 @@ judgement calls.
 | `personal-assistant` | ❌ **never** | Claude-only (decision 1); memory via MCP only |
 | `FAIMS3` | ❌ | collaborative, branch+PR gated, has its own `AGENTS.md` |
 | `paper-b`, `LLM-History-Paper` | ❌ default | shared with Brian; collaborator presence is the gate |
+| `substack` | ❌ **added 2026-08-21** | **⚠ Was going to be solo and is not.** Created 2026-08-21 as a drafting workspace, then made collaborative with Brian (`Denubis`) the same day. Collaborator presence is the gate. |
 
 ---
 
