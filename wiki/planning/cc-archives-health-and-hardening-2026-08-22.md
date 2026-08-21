@@ -80,6 +80,29 @@ an invariant exists.
 and a one-off pass to normalise the 122 stragglers. **The 88 raw-only files are also ~1.1 GB
 that compression has never touched.**
 
+### A4. ⭐⭐ The same root cause again — one project, two archive slugs
+
+**map-reader's sessions are archived under TWO project names:**
+
+| Archive slug | sessions | range |
+|---|---:|---|
+| `map-reader-llm` | 204 | 2025-12-22 → **2026-07-27** |
+| `vlm-burial-mound-detection` | 46 | 2026-05-23 → **2026-08-19** |
+
+They **overlap from 23 May**, and the newer slug carries everything after 27 July. **Combined,
+coverage runs to 2026-08-19 and is current.**
+
+⚠ **Look at only `map-reader-llm` and the archive appears to stop dead on 27 July.** I nearly
+reported that as a genuine archive gap. **This is the same defect as A2 in a different
+dimension:** a population silently split by a naming assumption, where the partial view is
+plausible enough to be believed. **The repo's own `CLAUDE.md` uses the `vlm-burial-mound-detection`
+name while the working directory is `map-reader-llm`** — so both names are "correct" and
+nothing reconciles them.
+
+**⇒ Any hardening needs a project-identity map**, not just a storage invariant. Two of the
+three false alarms in this document come from the same failure: **a partial view of a split
+population, mistaken for the whole.**
+
 ---
 
 ## Part B — replication: two of three paths are down, and the canonical copy is the stalest
@@ -150,6 +173,89 @@ the most valuable thing here.
 
 ---
 
+## Part C — the map-reader provenance trail (from the parallel session, verified here)
+
+**Context.** The *"12-week hole"* originated in a provenance agent that **never looked at
+`~/cc-archives`**. It followed map-reader's own documentation to `archive/cc-sessions/`, found
+it absent, and fell back to the live store at `~/.claude/projects/…` — **a different population
+entirely.** Everything below was re-verified on 2026-08-22.
+
+### C1. ✅ CONFIRMED — the repo documents a location that no longer exists
+
+- `map-reader-llm/CLAUDE.md:19` — *"`archive/cc-sessions/` — Claude Code session archives"*
+- `map-reader-llm/CLAUDE.md:25` — *"Sessions are archived to `archive/cc-sessions/vlm-burial-mound-detection/`"*
+- Also `docs/methodology/transparency/cc-session-archiving-specification.md:47` and
+  `…-addendum.md:383`
+- **`archive/` exists; `archive/cc-sessions/` does not.** It is gitignored (`.gitignore:176`).
+
+**⭐ AND THE MIGRATION WAS DELIBERATE AND RECORDED — in the least discoverable place in the
+repo.** `.gitignore:56–58`, as a comment:
+
+> *"Worktree-archive transcripts that were canonical under LFS pointer-stub conditions are now
+> resolved into the per-project `archive/cc-sessions/` (**verified via SHA-256 parity,
+> 2026-05-21**) and **will move to the consolidated rpi-shares store in Phase 0**."*
+
+**⇒ This is not documentation drift through neglect. A verified migration was planned, executed,
+and minuted in a `.gitignore` comment, while `CLAUDE.md` and the transparency spec — the files
+an agent is told to read — were never updated.** Any agent following the project's own docs
+reproduces the wrong turn.
+
+**Decision for Fable:** restore a repo-local export step **if the paper's transparency claims
+depend on in-repo, browsable archives**, or amend the spec and `CLAUDE.md` to point at the
+canonical store. ⚠ **The transparency spec is a published methodological commitment, so this is
+a research-integrity question, not just a docs tidy-up.**
+
+### C2. ✅ CONFIRMED — live stores are partial populations; never use them for provenance
+
+`~/.claude/projects/` holds each machine's *own* sessions. amd-tower has 2,792 transcript
+files, zbook 2,336 — **overlapping but not identical**, because sessions ran wherever Shawn
+was sitting. **⇒ Standing rule worth stating wherever the hardening lands: provenance, audit
+and attribution work reads the ARCHIVE, never a live store.** A live store cannot answer a
+completeness question about anything.
+
+### C3. ⚠ CORRECTED — the gap is not one gap, and the dates do not match
+
+Measured on amd-tower's live store for map-reader (range 2026-03-14 → 2026-08-19, 74 active
+days), the gaps over 7 days are:
+
+| Gap | Days missing |
+|---|---:|
+| 2026-04-02 → 2026-04-14 | 11 |
+| 2026-05-04 → 2026-05-28 | 23 |
+| 2026-06-13 → 2026-06-23 | 9 |
+| 2026-06-23 → 2026-07-27 | 33 |
+
+**Four gaps, not one, and none of them is the reported 2026-05-13 → 2026-08-06.**
+
+### C4. ✅ The largest gap is a QUIET PERIOD, not a hole — and this is provable
+
+The 24 Jun → 26 Jul window is empty for map-reader in **both** live stores (zbook has a single
+file, 2026-07-02) **and** in both archive slugs. That looks alarming until you ask whether the
+archiver was running:
+
+**It was. 62 sessions were archived in that exact window** — paper-b 23, personal-assistant 22,
+llm-reproducibility 16, voice-assistant 1.
+
+**⇒ The archiver was healthy and map-reader simply was not worked on.** ⭐ **Independent stores
+agreeing that a period is empty is evidence that the period was empty.** It is only a hole if
+one store has what another lacks — and here none do.
+
+### C5. What this means for the provenance draft
+
+The parallel session is already correcting its draft, and the correction should go further than
+"the hole was a wrong-store artefact":
+
+- **The operative claim — *"attribution for 2026-05-13→08-06 rests permanently on trailers and
+  prose; Opus 4.8 has no corroborating API id anywhere"* — is wrong**, and recoverable evidence
+  exists. ⚠ **But it must be read from BOTH archive slugs** (A4), or the recovery will itself
+  come up short after 27 July.
+- **Model IDs are in the archived transcripts** and the `.gz` files are verified intact (A1), so
+  the MEDIUM/LOW-confidence eras should be upgradeable **by reading, with no backfill and no
+  writes.**
+- ⛔ **Still no backfill** — confirmed correct, for the reasons in A2.
+
+---
+
 ## Prior work — read before proposing
 
 | Document | Why it matters |
@@ -183,6 +289,12 @@ the most valuable thing here.
    memory drift detector shipped 2026-08-20 has exactly the same weakness.
 7. **What is the verification story?** Presence was checked here; integrity was only *sampled*
    (80 of 763). A full `gzip -t` sweep is cheap and would close it properly.
+8. **⭐ Is there a project-identity map?** (A4, C1.) Repo directory, archive slug and documented
+   path are three different names for map-reader, and nothing reconciles them. **This is the
+   single highest-leverage fix in the document: it removes the failure mode behind two of the
+   three false alarms**, and it is what makes any future completeness check trustworthy.
+9. **Does the transparency spec's in-repo-archive commitment still bind?** (C1.) A published
+   methodological claim now points at a path that does not exist.
 
 ---
 
