@@ -238,53 +238,57 @@ def days_in_focus(started_str: str | None) -> int | None:
 # ============================================================================
 
 
-def main() -> None:
+class TaskFilesMissing(Exception):
+    """Raised when every task file the banner depends on is absent.
+
+    Audit C-M5 (2026-05-02): with all three files missing — typically a
+    fresh clone whose ``data/`` submodule has not been pulled — the
+    parsers each return an empty result, and the banner renders "No
+    items in focus" plus zero counts. That is **indistinguishable from a
+    genuinely clear desk**, so it must be surfaced as a failure rather
+    than reported as state.
+
+    Raised from :func:`build_banner` rather than checked in ``main`` so
+    that every consumer inherits the guard. A second renderer that
+    forgot the check would publish a confidently empty dashboard, which
+    is the same false-absence failure in a more durable place.
     """
-    SessionStart hook entry point.
 
-    Reads task state and outputs a brief accountability banner
-    via stdout (plain text, injected as additionalContext).
+
+def all_task_files_missing() -> bool:
+    """True when none of the three task files exists."""
+    return not any(
+        p.exists() for p in (FOCUS_FILE, INBOX_FILE, WAITING_FILE)
+    )
+
+
+def build_banner() -> list[str]:
     """
-    # Consume stdin (required by hook protocol)
-    try:
-        json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
-        pass
+    Build the accountability banner as a list of lines.
 
-    # Audit C-M5 (2026-05-02): if every input file the banner depends
-    # on is missing — typically a fresh clone where the ``data/``
-    # submodule has not yet been pulled — the previous behaviour was to
-    # emit a banner reading "No items in focus" and "Inbox: 0 items |
-    # Waiting for: 0 items", which is indistinguishable from a clean
-    # slate. Surface the failure visibly instead so the user knows the
-    # banner is uninformative and why.
-    missing = [
-        p for p in (FOCUS_FILE, INBOX_FILE, WAITING_FILE)
-        if not p.exists()
-    ]
-    if len(missing) == 3:
-        msg = (
-            "[accountability] WARN: task files missing — "
-            "FOCUS.md, inbox.md, and waiting-for.md not found "
-            f"under {PA_DIR / 'tasks'} "
-            "(is the data/ submodule pulled?)"
-        )
-        print(msg, file=sys.stderr)
-        print(
-            "# Task Status\n\n"
-            "Task files not found — could not load FOCUS.md, "
-            "inbox.md, or waiting-for.md. Check that the data/ "
-            "submodule is initialised and pulled."
-        )
-        return
+    Separated from :func:`main` (2026-08-22) so that other renderers —
+    currently ``scripts/publish-dashboard.py`` — emit exactly what the
+    session banner says instead of reimplementing the formatting and
+    drifting from it.
 
-    # Parse state — degrade gracefully if files are missing
+    Returns:
+        The banner lines, without trailing newlines.
+
+    Raises:
+        TaskFilesMissing: none of the source files exist.
+    """
+    if all_task_files_missing():
+        raise TaskFilesMissing(
+            "FOCUS.md, inbox.md, and waiting-for.md not found under "
+            f"{PA_DIR / 'tasks'} (is the data/ submodule pulled?)"
+        )
+
+    # Parse state — degrade gracefully if *some* files are missing
     slots = parse_focus_slots()
     inbox_count = count_inbox_items()
     waiting_count = count_waiting_items()
     focus_limit = get_focus_limit()
 
-    # Build banner
     lines = ["# Task Status", ""]
 
     if not slots:
@@ -314,6 +318,35 @@ def main() -> None:
     )
     lines.append("")
     lines.append("Run /standup for full accountability check.")
+
+    return lines
+
+
+def main() -> None:
+    """
+    SessionStart hook entry point.
+
+    Reads task state and outputs a brief accountability banner
+    via stdout (plain text, injected as additionalContext).
+    """
+    # Consume stdin (required by hook protocol)
+    try:
+        json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    try:
+        lines = build_banner()
+    except TaskFilesMissing as exc:
+        print(f"[accountability] WARN: task files missing — {exc}",
+              file=sys.stderr)
+        print(
+            "# Task Status\n\n"
+            "Task files not found — could not load FOCUS.md, "
+            "inbox.md, or waiting-for.md. Check that the data/ "
+            "submodule is initialised and pulled."
+        )
+        return
 
     print("\n".join(lines))
 
