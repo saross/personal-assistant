@@ -2293,6 +2293,32 @@ films excluded from AB+ by ruling. Next session: build the apparatus itself
   (per-message transcript > commit trailer = session metadata > artefact).
 - Session id: a5a760a8-01d0-499d-bad1-f702289ebae8.
 
+### 2026-08-22 (Fri, latest SA) — HARDENING SESSION: false 12-week hole closed at the defect class; storage invariant normalised; reconciliation check shipped (caught 2 live leaks); gates moved to a channel that is read
+
+Fable session responding to the health brief
+(`wiki/planning/cc-archives-health-and-hardening-2026-08-22.md`); full
+record + the brief's nine questions answered in
+`wiki/planning/cc-archives-hardening-outcomes-2026-08-22.md`. Highlights:
+storage invariant ruled + normalised to gz-only on local AND canonical
+(157 compressed, 35 identical duals removed, 0 divergent; full 6,278-file
+`gzip -t` sweep 0 corrupt); toolkit archives gz-by-default with round-trip
+verification and an identity guard (`a5f4680`); daily-sync **self-mounts**
+rpi-shares (the "dead path" was manual-mount-dependence: 25 successes /
+30 skips, not 4); `check-archive-drift.py` = the source↔destination
+class-fix, first run caught **2 leaked substantive sessions** (archived
+same day, --stats-only); B7 indexer fix landed (re-index still
+double-gated); Syncthing repaired AND its recurrence closed (eCryptfs
+boot race → login-time bind-heal user unit) — and corrected on the
+record: **Syncthing never replicated cc-archives** (personal docs only).
+Shawn's rulings: map-reader-llm canonical (CLAUDE.md fork source fixed,
+map-reader `703c28af`; alias map `data/config/project-identities.json`);
+transparency spec AMENDED not restored (Amendment 1); gates surface via
+session-start **stdout** relay (stderr provably never reached anyone).
+Six inbox rows dispositioned; archive-integrity session agenda shrunk to
+the placement/duplicate rulings that are genuinely Shawn's. Residuals in
+the outcomes doc §Residuals — zbook normalisation is the load-bearing one
+(new inbox row). Commits: PA `e6ccfef` batch, data `3a4aea6` batch.
+
 ### 2026-07-22/23 (Wed/Thu, latest SA) — reflect schema 2; abductive corpus anchored 29/30; convergence repair; sync pass 4 + completeness gate; system wiki page
 
 Continuation of the SA session. /reflect review → **schema 2**
