@@ -183,11 +183,27 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 | `ZOTERO_TRAP_GROUP_ID` | `2275173` | — | no script yet |
 | `ZOTERO_FAIMS_INTERNAL_GROUP_ID` | `525489` | — | no script yet |
 | `ZOTERO_FAIMS_PROJECT_GROUP_ID` | `2542876` | — | no script yet |
+| `ZOTERO_API_KEY_SUBSTACK_AI` | Added by Shawn 2026-08-22 for the Substack-AI work. **Scope not yet verified** — run `key_info()` against `/keys/current` and record what it actually grants before relying on it, as `ZOTERO_API_KEY_SDAM_AU` above shows a declared scope need not hold in practice | unverified | no script yet |
+| `ZOTERO_SUBSTACK_AI_GROUP_ID` | Group library ID paired with the key above. **Renamed from `ZOTERO_SUBSTACK_AI_COLLECTIONS` on 2026-08-22 (both machines)**: the plural name said collection keys whilst the value is a 7-digit group ID, which would have failed at the first call site as a puzzling API error. Group name not yet recorded here | — | no script yet |
 
 All key scopes above re-verified against `/keys/current` on 2026-07-27; all
 four keys read both the personal library (user 3097511) and group 5861859
 successfully. `ZOTERO_API_KEY_PAPER_B` confirmed still personal-read-only
-with group-5861859 write, exactly as this table has described it.
+with group-5861859 write, exactly as this table has described it. The two
+Substack-AI rows postdate that sweep and are the only ones not yet checked.
+
+**Name the value's form, and the form will police the name.** Every
+`*_COLLECTION` in this table holds an 8-character upper-alphanumeric
+collection key; every `*_GROUP_ID` and `*_LIBRARY_ID` holds a 6-or-7-digit
+number. That regularity is what caught the mislabelled Substack-AI variable
+on 2026-08-22 from its shape alone, before anything read it. Keep new
+variables inside the convention so the same check keeps working.
+
+**Zotero credentials are shared across machines, not per-machine.** Every
+key in this table holds the same value on zbook and amd-tower, unlike the
+paid-service credentials, which are deliberately issued per machine. So a
+new Zotero key is copied to the other machine rather than reissued, and a
+rename has to land on both. See `wiki/docs/env-cross-machine-reference.md`.
 
 ### Target-suffixed naming convention (adopted 2026-05-22)
 

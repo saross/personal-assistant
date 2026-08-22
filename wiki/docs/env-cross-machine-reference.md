@@ -126,15 +126,22 @@ name implies is worth querying before it reaches a call site, where it
 surfaces as a baffling API error rather than a naming problem. See the
 open question about `ZOTERO_SUBSTACK_AI_COLLECTIONS` below.
 
-**Open question, raised 2026-08-22, not resolved.**
-`ZOTERO_SUBSTACK_AI_COLLECTIONS` holds a 7-digit all-numeric value,
-which is the shape of a group or library ID rather than of a collection
-key, despite the plural `_COLLECTIONS` name. It duplicates no other
-value in the file, so it is a distinct identifier rather than a stray
-copy. Nothing reads it yet and it is not in
-`global-claude-md/zotero-reference.md`, so nothing is broken today.
-Flagged to Shawn; either the name or the value wants correcting before
-something depends on it, and the correction must land on both machines.
+**Resolved 2026-08-22, and worth keeping as the worked example.**
+`ZOTERO_SUBSTACK_AI_COLLECTIONS` held a 7-digit all-numeric value: the
+shape of a group ID, not of a collection key, despite the plural
+`_COLLECTIONS` name. Shawn confirmed it is a group ID, and it was
+**renamed to `ZOTERO_SUBSTACK_AI_GROUP_ID` on both machines**. The value
+was untouched, confirmed by its fingerprint being identical before and
+after on both hosts.
+
+Two things this is a reminder of. **The mismatch was detectable from
+the value's shape alone**, without reading it and before any code
+touched it; a name that misdescribes its value otherwise surfaces at the
+call site as a puzzling API error rather than as a naming problem.
+**And a rename is a two-machine operation** for anything in the shared
+set, exactly as an addition is. Both keys are now recorded in
+`global-claude-md/zotero-reference.md`, where their scope is flagged as
+unverified.
 
 ## Two operational notes
 
