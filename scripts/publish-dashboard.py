@@ -237,50 +237,58 @@ def render_canvas(state: dict, *, now: datetime, revision: str) -> str:
     Returns:
         Canvas markdown, without a title (the canvas carries its own).
     """
-    out: list[str] = ["## Focus", ""]
+    # ONE table, and nothing else. This is a durability constraint, not a
+    # layout preference.
+    #
+    # A refresh must delete the previous body, and the only way to find
+    # sections is `canvases.sections.lookup`, which filters by type. Measured
+    # against the live canvas on 2026-08-22, that filtering is not dependable:
+    # a rendered provenance line matched *no* type — not `blockquote`, not
+    # anything in the documented enum — whilst `contains_text` found it
+    # perfectly well, and `list` returned four times the sections actually
+    # present. A multi-block body therefore leaves residue on every run, and
+    # the canvas grows. Observed: 9 → 11 → 13 operations across three
+    # publishes, with four provenance lines stacked up.
+    #
+    # `table`, by contrast, matched exactly the one table present after each
+    # refresh, so tables are reliably found and deleted. Collapsing the whole
+    # body into a single table reduces the refresh to *find one section,
+    # replace it*, which is both verifiable and idempotent. The cost is a
+    # plainer layout; the benefit is a dashboard that cannot accumulate.
+    rows: list[str] = ["| | |", "|---|---|"]
+
+    def row(label: str, value: str) -> str:
+        # Escape pipes so content containing one cannot break the table.
+        return f"| {label.replace('|', '\\|')} | {value.replace('|', '\\|')} |"
 
     if not state["slots"]:
-        out.append("No items in focus. Run `/standup` or `/focus add`.")
+        rows.append(row("**Focus**", "No items in focus — run `/standup`"))
     else:
-        out.append("| Slot | Work | Day | Deadline |")
-        out.append("|---|---|---|---|")
         by_number = {s["slot_number"]: s for s in state["slots"]}
         for number in range(1, state["focus_limit"] + 1):
             slot = by_number.get(number)
             if slot is None:
-                out.append(f"| {number} | _empty_ |  |  |")
+                rows.append(row(f"**Slot {number}**", "_empty_"))
                 continue
             days = accountability.days_in_focus(slot["started"])
-            day_cell = f"day {days}" if days is not None else ""
             deadline = accountability.format_deadline_status(slot["deadline"])
-            # Escape pipes so a title containing one cannot break the table.
-            work = slot["name"].replace("|", "\\|")
-            out.append(f"| {number} | {work} | {day_cell} | {deadline} |")
+            suffix = " · ".join(x for x in (
+                f"day {days}" if days is not None else "", deadline) if x)
+            value = f"{slot['name']}{f' ({suffix})' if suffix else ''}"
+            rows.append(row(f"**Slot {number}**", value))
 
-    out += ["", "## Queues", "",
-            f"- Inbox: **{state['inbox']}** items",
-            f"- Waiting for: **{state['waiting']}** items"]
+    rows.append(row("**Inbox**", f"{state['inbox']} items"))
+    rows.append(row("**Waiting for**", f"{state['waiting']} items"))
 
-    if state["anomalies"]:
-        out += ["", "::: {.callout}", "**FOCUS.md needs attention**", ""]
-        out += [f"- {a}" for a in state["anomalies"]]
-        out.append(":::")
+    for anomaly in state["anomalies"]:
+        rows.append(row("⚠ **FOCUS.md**", anomaly))
 
-    # The footer is a blockquote, not a paragraph, and that is load-bearing
-    # rather than stylistic. A refresh deletes the old body by looking sections
-    # up by type, and `canvases.sections.lookup` cannot filter on plain
-    # paragraphs — the documented enum omits them, and the docs note further
-    # unfilterable types exist. A paragraph footer would therefore survive
-    # every delete and the canvas would accumulate one stale provenance line
-    # per run: the artefact whose job is to reveal staleness would become the
-    # thing displaying it. Every block emitted here must be a filterable type.
     stamp = now.strftime("%Y-%m-%d %H:%M UTC")
-    out += ["", "---", "",
-            f"> Generated {stamp} from `data/tasks/` at `{revision}`. "
-            f"Regenerated in full on every run — if this line is old, the "
-            f"publisher stopped running; the contents are never hand-edited."]
+    rows.append(row("_generated_",
+                    f"_{stamp} · `data/tasks/` @ `{revision}` · "
+                    f"regenerated in full each run; never hand-edited_"))
 
-    return "\n".join(out)
+    return "\n".join(rows)
 
 
 def render_plain(state: dict, *, now: datetime, revision: str) -> str:
@@ -378,16 +386,29 @@ def create_canvas(title: str, markdown: str, token: str) -> str:
     return body["canvas_id"]
 
 
-# Every block type render_canvas emits, and nothing else. `h1` is deliberately
-# absent: it is the canvas title, which the refresh preserves.
-#
-# There is no way to ask for "all sections" — `canvases.sections.lookup`
-# requires a filter, and its documented enum cannot express plain paragraphs.
-# So the contract runs the other way: the renderer may only emit types that
-# appear here, because anything else becomes undeletable and accumulates.
-BODY_SECTION_TYPES = [
+# `render_canvas` emits exactly one table and nothing else, so the refresh
+# needs to find exactly one type. Every other type is listed for the *cleanup*
+# sweep, which removes residue left by earlier multi-block renders. `h1` is
+# excluded throughout: it is the canvas title and must survive.
+BODY_SECTION_TYPES = ["table"]
+
+CLEANUP_SECTION_TYPES = [
     "h2", "h3", "table", "list", "callout", "horizontal_line", "blockquote",
+    "chart", "citation", "flexbox",
 ]
+
+# Residue that matches no type filter at all is still reachable by text. This
+# phrase appears in every provenance row this script has ever rendered, and the
+# canvas is bot-owned and never hand-edited, so matching on it is precise.
+CLEANUP_SENTINELS = ["generated", "Generated"]
+
+
+# Slack rejects a lookup carrying more than three section types, with
+# `invalid_arguments` and the message "no more than 3 items allowed
+# [json-pointer:/criteria/section_types]". That cap is not in the method
+# reference; it was found by calling the API on 2026-08-22. Hence the chunking
+# below rather than one request.
+MAX_SECTION_TYPES_PER_LOOKUP = 3
 
 
 def read_section_ids(canvas_id: str, token: str) -> list[str]:
@@ -396,14 +417,47 @@ def read_section_ids(canvas_id: str, token: str) -> list[str]:
     Read immediately before planning an edit and never cached: **section ids
     change after every update**, so a stored mapping is stale by the second
     refresh and fails with ``section_not_found``.
+
+    Issued as several lookups because of the three-type cap, with the results
+    unioned. Order is not meaningful — every id returned is deleted — so the
+    only requirement is that the set be complete, and de-duplication guards
+    against a section matching in two chunks.
     """
-    body = _call(
-        "canvases.sections.lookup",
-        {"canvas_id": canvas_id,
-         "criteria": {"section_types": BODY_SECTION_TYPES}},
-        token,
-    )
-    return [s["id"] for s in body.get("sections", [])]
+    return _lookup(canvas_id, token, BODY_SECTION_TYPES, [])
+
+
+def read_cleanup_ids(canvas_id: str, token: str) -> list[str]:
+    """Return every section reachable by any filter, for a one-off purge.
+
+    Used by ``--cleanup`` to clear residue from the earlier multi-block layout.
+    Sweeps every filterable type *and* text sentinels, because measurement
+    showed some rendered blocks match no type at all.
+    """
+    return _lookup(canvas_id, token, CLEANUP_SECTION_TYPES, CLEANUP_SENTINELS)
+
+
+def _lookup(
+    canvas_id: str, token: str, types: list[str], sentinels: list[str],
+) -> list[str]:
+    """Union section ids across chunked type lookups and text lookups."""
+    seen: dict[str, None] = {}
+
+    for start in range(0, len(types), MAX_SECTION_TYPES_PER_LOOKUP):
+        chunk = types[start:start + MAX_SECTION_TYPES_PER_LOOKUP]
+        body = _call("canvases.sections.lookup",
+                     {"canvas_id": canvas_id,
+                      "criteria": {"section_types": chunk}}, token)
+        for section in body.get("sections", []):
+            seen[section["id"]] = None
+
+    for text in sentinels:
+        body = _call("canvases.sections.lookup",
+                     {"canvas_id": canvas_id,
+                      "criteria": {"contains_text": text}}, token)
+        for section in body.get("sections", []):
+            seen[section["id"]] = None
+
+    return list(seen)
 
 
 def _post(payload: dict, token: str) -> dict:
@@ -492,6 +546,10 @@ def main() -> int:
                         help="POST to Slack (needs SLACK_BOT_TOKEN)")
     parser.add_argument("--create", action="store_true",
                         help="create a new canvas owned by the bot and print its id")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="with --publish, sweep every filterable section and "
+                             "text sentinel first (clears residue from the older "
+                             "multi-block layout)")
     parser.add_argument("--title", default="Work Dashboard",
                         help="canvas title, used with --create")
     parser.add_argument("--canvas-id", default=os.environ.get("SLACK_DASHBOARD_CANVAS_ID"))
@@ -544,7 +602,8 @@ def main() -> int:
 
         # Section ids change after every edit, so the plan must be built from a
         # mapping read in the same breath as the write — never from a stored one.
-        sections = read_section_ids(args.canvas_id, token)
+        reader = read_cleanup_ids if args.cleanup else read_section_ids
+        sections = reader(args.canvas_id, token)
         plan = build_edit_plan(args.canvas_id, body, sections)
         applied = publish(plan, token)
         print(f"published to Slack ({applied} operations)", file=sys.stderr)

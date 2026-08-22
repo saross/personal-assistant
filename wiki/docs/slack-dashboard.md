@@ -100,37 +100,44 @@ ships no Lists tools**, so Claude cannot maintain a List; it would need a
 bespoke bot-token integration. Canvas is where the API and the agent tooling
 actually meet.
 
-## Cost and shape, measured not assumed
+## Shape, measured not assumed
 
-Two design assumptions were falsified by checking the live API and the method
-reference, and both changed the implementation.
+Four assumptions failed against the live API. Each is recorded because the
+documentation would not have told us.
 
-**"One `replace` call against one body section."** Wrong: Slack splits a canvas
-into **one section per markdown block**, so this dashboard arrives already split
-into eight. The refresh is therefore *delete every body section, then append the
-new body* — `n+1` calls, converging whatever the previous section count was (a
-warning callout adds one). Against a Tier 3 limit of 50/min that is ample daily
-and wrong for anything live. `canvas_editing_locked` is retried; it means a
-human has the document open.
+**"One `replace` against one body section."** Slack splits a canvas into **one
+section per markdown block**, so the first render arrived as eight sections.
 
-**"Read all the sections, then delete them."** Also wrong, and this one dictates
-the document's shape. `canvases.sections.lookup` **requires a filter** — an
-empty `criteria` is rejected — and its documented enum (`any_header`,
-`blockquote`, `callout`, `chart`, `citation`, `flexbox`, `h1`–`h3`,
-`horizontal_line`, `list`, `table`, the unfurl and mention types) **cannot
-express a plain paragraph**. The docs add that further unfilterable types exist.
+**"Look up all sections, then delete them."** `canvases.sections.lookup`
+**requires** a filter, and its enum cannot express a plain paragraph.
 
-So there is no "all sections" query, and the contract runs backwards: **the
-renderer may only emit block types that appear in `BODY_SECTION_TYPES`**,
-because anything else is undeletable and accumulates. That is why the
-provenance footer is a blockquote rather than italic paragraph text — as a
-paragraph it would survive every delete, and the canvas would grow one stale
-provenance line per run. The artefact whose whole job is to reveal staleness
-would have become the thing exhibiting it. A test pins the footer as a
-blockquote so a later cosmetic edit cannot quietly reintroduce the bug.
+**"At most, chunk the type list."** Slack rejects more than **three**
+`section_types` per call — `invalid_arguments`, with *"no more than 3 items
+allowed [json-pointer:/criteria/section_types]"*. **That cap is not in the
+method reference.** Hence `MAX_SECTION_TYPES_PER_LOOKUP`.
 
-`h1` is excluded from `BODY_SECTION_TYPES` on purpose: it is the canvas title,
-and the refresh preserves it.
+**"Filter by type and every block is reachable."** The one that mattered.
+Measured against a live canvas: the rendered provenance line matched **no type
+at all** — not `blockquote`, not anything in the enum — whilst `contains_text`
+found it immediately; and `list` returned four times the sections present. So
+a multi-block body leaves residue every run. Observed directly: publishes cost
+**9 → 11 → 13 operations** and stacked up four provenance lines.
+
+**The fix was to shrink the document, not to chase the API.** `table` matched
+exactly the one table present after each refresh, so the whole body is now a
+single markdown table: find one section, replace it. Measured after the change,
+five consecutive publishes each cost **2 operations** with the section count
+constant. A test asserts every rendered line is a table row, so reintroducing a
+heading or a bullet list would fail rather than silently start accumulating.
+
+The cost is a plainer layout. The benefit is a dashboard that provably cannot
+grow — which for an artefact whose entire job is to be trustworthy at a glance
+is the right trade.
+
+**Residue is not recoverable by cleanup alone.** `--cleanup` sweeps every
+filterable type plus text sentinels, but blocks matching no filter survive it.
+The canvas from the multi-block era was deleted and recreated rather than
+repaired. If the layout ever changes again, recreate rather than migrate.
 
 ## Canvas ownership
 

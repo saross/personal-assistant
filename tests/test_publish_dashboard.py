@@ -45,14 +45,13 @@ def state(**overrides):
 class TestCanvasRendering:
     def test_slots_render_as_table_rows(self):
         out = publish.render_canvas(state(), now=NOW, revision="abc1234")
-        assert "| 1 | EFN — website content |" in out
-        assert "## Focus" in out
+        assert "| **Slot 1** | EFN — website content |" in out
 
     def test_empty_slots_are_shown_explicitly(self):
         """A gap in the focus set must be visible, not merely absent."""
         out = publish.render_canvas(state(), now=NOW, revision="abc1234")
-        assert "| 2 | _empty_ |" in out
-        assert "| 3 | _empty_ |" in out
+        assert "| **Slot 2** | _empty_ |" in out
+        assert "| **Slot 3** | _empty_ |" in out
 
     def test_no_slots_at_all_gives_guidance(self):
         out = publish.render_canvas(state(slots=[]), now=NOW, revision="abc1234")
@@ -60,8 +59,8 @@ class TestCanvasRendering:
 
     def test_counts_appear(self):
         out = publish.render_canvas(state(), now=NOW, revision="abc1234")
-        assert "Inbox: **33** items" in out
-        assert "Waiting for: **46** items" in out
+        assert "| **Inbox** | 33 items |" in out
+        assert "| **Waiting for** | 46 items |" in out
 
     def test_pipe_in_a_title_cannot_break_the_table(self):
         s = state(slots=[{"slot_number": 1, "name": "a | b",
@@ -75,15 +74,15 @@ class TestCanvasRendering:
         assert "2026-08-22 04:55 UTC" in out
         assert "e268e29+dirty" in out
 
-    def test_anomalies_render_as_a_callout(self):
+    def test_anomalies_render_as_rows(self):
         out = publish.render_canvas(
             state(anomalies=["Slot 1 appears 2 times"]), now=NOW, revision="x")
-        assert "::: {.callout}" in out
         assert "Slot 1 appears 2 times" in out
+        assert "FOCUS.md" in out
 
-    def test_no_callout_when_clean(self):
+    def test_no_warning_row_when_clean(self):
         out = publish.render_canvas(state(), now=NOW, revision="x")
-        assert ".callout" not in out
+        assert "FOCUS.md" not in out
 
 
 class TestPlainRendering:
@@ -220,16 +219,43 @@ class TestRenderedTypesAreDeletable:
     the renderer emits that is not a listed body type would survive every
     refresh and accumulate. This is the guard on that contract."""
 
-    def test_footer_is_a_blockquote_not_a_paragraph(self):
+    def test_body_is_exactly_one_table(self):
+        """Every line must be a table row: a second block type would leave
+        residue on refresh, because type filtering proved unreliable."""
+        out = publish.render_canvas(
+            state(anomalies=["something"]), now=NOW, revision="abc1234")
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        assert all(ln.startswith("|") and ln.endswith("|") for ln in lines), \
+            f"non-table line rendered: {[l for l in lines if not l.startswith('|')]}"
+
+    def test_provenance_is_a_table_row(self):
         out = publish.render_canvas(state(), now=NOW, revision="abc1234")
-        footer = [ln for ln in out.splitlines() if "Generated" in ln]
-        assert footer, "no provenance footer rendered"
-        assert footer[0].startswith("> "), \
-            "footer must be a blockquote; a paragraph cannot be deleted on refresh"
+        prov = [ln for ln in out.splitlines() if "generated" in ln]
+        assert prov and prov[0].startswith("| _generated_ |")
 
     def test_body_types_exclude_h1(self):
         """h1 is the canvas title and must survive a refresh."""
         assert "h1" not in publish.BODY_SECTION_TYPES
+        assert "h1" not in publish.CLEANUP_SECTION_TYPES
+
+    def test_body_lookup_is_just_the_table(self):
+        """The render emits one table, so the refresh looks for one type."""
+        assert publish.BODY_SECTION_TYPES == ["table"]
+
+    def test_lookup_chunks_below_the_three_type_cap(self, monkeypatch):
+        """Slack rejects more than 3 section_types per call."""
+        calls = []
+
+        def fake_call(method, payload, token):
+            types = payload["criteria"].get("section_types")
+            if types:
+                calls.append(types)
+            return {"ok": True, "sections": []}
+
+        monkeypatch.setattr(publish, "_call", fake_call)
+        publish.read_cleanup_ids("F1", "tok")
+        assert calls, "no type lookups issued"
+        assert all(len(c) <= 3 for c in calls), f"chunk too large: {calls}"
 
     def test_lookup_sends_a_filter(self, monkeypatch):
         """criteria requires at least one filter; an empty object is rejected."""
