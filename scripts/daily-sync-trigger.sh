@@ -95,6 +95,53 @@ if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Slack dashboard refresh (added 2026-08-22)
+#
+# Runs on EVERY session start, ahead of the once-per-day gate below. The canvas
+# is the away-from-desk surface, so staleness is the exact failure being
+# designed against — it is how the GitHub Projects board came to contradict
+# FOCUS.md. Two API calls against a 50/min limit is a cheap price for a
+# dashboard that always matches the banner.
+#
+# Non-fatal by construction: a Slack outage, an expired token, or a revoked
+# scope must never break SessionStart. The accountability banner is the primary
+# surface and depends on none of this.
+#
+# ⚠ Failures are reported through GATE_LINES, i.e. STDOUT, NOT stderr. This
+# script's own channel-fix note above is explicit that SessionStart stderr never
+# reaches the session context, and that a signal emitted but not surfaced is
+# indistinguishable from no signal — a trap this repo has now hit three times.
+# A dashboard that silently stopped refreshing would be precisely that trap
+# again, and worse, because the artefact would still be sitting there looking
+# authoritative. Success stays silent; only failure is worth anyone's attention.
+#
+# Skipped silently when the Slack variables are unset, so an unconfigured
+# machine is not nagged.
+# ---------------------------------------------------------------------------
+DASHBOARD_SCRIPT="${SCRIPT_DIR}/publish-dashboard.py"
+PA_ENV_FILE="$(dirname "$SCRIPT_DIR")/.env"
+
+if [[ -f "$PA_ENV_FILE" ]] && [[ -f "$DASHBOARD_SCRIPT" ]]; then
+    # Subshell so sourced credentials never reach the caller's environment or
+    # anything spawned later in the session. Exit status carries the verdict:
+    # 0 = refreshed or deliberately skipped, 1 = attempted and failed.
+    if ! (
+        set -a
+        # shellcheck disable=SC1090
+        . "$PA_ENV_FILE"
+        set +a
+        if [[ -z "${SLACK_BOT_TOKEN:-}" ]] || [[ -z "${SLACK_DASHBOARD_CANVAS_ID:-}" ]]; then
+            exit 0
+        fi
+        PY="$(dirname "$SCRIPT_DIR")/venv/bin/python3"
+        [[ -x "$PY" ]] || PY=python3
+        "$PY" "$DASHBOARD_SCRIPT" --publish >/dev/null 2>&1
+    ); then
+        GATE_LINES+=("[slack-dashboard gate] refresh FAILED — the canvas is stale and still looks authoritative. Run scripts/publish-dashboard.py --publish to see the error (expired token? revoked scope?)")
+    fi
+fi
+
 if [[ ${#GATE_LINES[@]} -gt 0 ]]; then
     # STDOUT, deliberately: this block lands in the session context.
     echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"

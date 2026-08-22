@@ -69,14 +69,19 @@ SLACK_BOT_TOKEN=xoxb-…
 SLACK_DASHBOARD_CANVAS_ID=F0BRV9LUBRT
 ```
 
-Then wire `scripts/publish-dashboard.py --publish` into the once-per-day
-`scripts/daily-sync-trigger.sh`, which is the established automation point here
-— that wrapper deliberately replaced cron in order to inherit the interactive
-SSH agent and avoid cron-environment auth problems.
+**Done 2026-08-22.** The token exists, both machines carry it, and
+`scripts/daily-sync-trigger.sh` refreshes the canvas on **every** session
+start — deliberately ahead of its once-per-day gate, because the canvas is the
+away-from-desk surface and staleness is the whole failure being designed
+against. Two API calls against a 50/min limit buys a dashboard that always
+matches the banner.
 
-Until the token exists, Claude can refresh the canvas in-session via the Slack
-MCP tools. **That is a stopgap, not the design**: a refresh that depends on
-someone remembering is the failure this replaced.
+⚠ **Failures surface through `GATE_LINES`, i.e. stdout, never stderr.** That
+script's own channel-fix note records that SessionStart stderr never reaches
+the session context, and that this repo has hit the emitted-but-not-surfaced
+trap three times. A dashboard that quietly stopped refreshing would be that
+trap again and worse, because the artefact would still sit there looking
+authoritative. Success is silent; only failure is worth attention.
 
 ## Usage
 
