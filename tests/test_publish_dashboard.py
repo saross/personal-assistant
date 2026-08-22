@@ -160,19 +160,14 @@ class TestEditPlan:
     """Slack splits a canvas into one section per markdown block, so a full
     refresh is delete-the-rest-then-append, not a single replace."""
 
-    SECTIONS = ["title", "s1", "s2", "s3"]
+    SECTIONS = ["s1", "s2", "s3"]
 
     def test_one_operation_per_call(self):
         """The API accepts only one operation per canvases.edit call."""
         plan = publish.build_edit_plan("F123", "# body", self.SECTIONS)
         assert all(len(p["changes"]) == 1 for p in plan)
 
-    def test_title_is_preserved(self):
-        plan = publish.build_edit_plan("F123", "# body", self.SECTIONS)
-        deleted = [p["changes"][0].get("section_id") for p in plan]
-        assert "title" not in deleted
-
-    def test_every_other_section_is_deleted_then_body_appended(self):
+    def test_every_section_deleted_then_body_appended(self):
         plan = publish.build_edit_plan("F123", "# body", self.SECTIONS)
         assert len(plan) == 4  # 3 deletes + 1 insert
         assert [p["changes"][0]["operation"] for p in plan[:3]] == ["delete"] * 3
@@ -181,8 +176,8 @@ class TestEditPlan:
 
     def test_converges_regardless_of_previous_section_count(self):
         """Section count varies with content (a warning callout adds one)."""
-        for n in (1, 2, 9):
-            plan = publish.build_edit_plan("F", "b", ["title"] + [f"s{i}" for i in range(n)])
+        for n in (0, 1, 9):
+            plan = publish.build_edit_plan("F", "b", [f"s{i}" for i in range(n)])
             assert len(plan) == n + 1
             assert plan[-1]["changes"][0]["operation"] == "insert_at_end"
 
@@ -218,3 +213,32 @@ class TestProvenance:
         """Never invent a revision — an unknown anchor is better than a wrong one."""
         monkeypatch.setattr(publish, "DATA_DIR", Path("/nonexistent"))
         assert publish.data_revision() == "unknown"
+
+
+class TestRenderedTypesAreDeletable:
+    """`canvases.sections.lookup` cannot filter plain paragraphs, so anything
+    the renderer emits that is not a listed body type would survive every
+    refresh and accumulate. This is the guard on that contract."""
+
+    def test_footer_is_a_blockquote_not_a_paragraph(self):
+        out = publish.render_canvas(state(), now=NOW, revision="abc1234")
+        footer = [ln for ln in out.splitlines() if "Generated" in ln]
+        assert footer, "no provenance footer rendered"
+        assert footer[0].startswith("> "), \
+            "footer must be a blockquote; a paragraph cannot be deleted on refresh"
+
+    def test_body_types_exclude_h1(self):
+        """h1 is the canvas title and must survive a refresh."""
+        assert "h1" not in publish.BODY_SECTION_TYPES
+
+    def test_lookup_sends_a_filter(self, monkeypatch):
+        """criteria requires at least one filter; an empty object is rejected."""
+        captured = {}
+
+        def fake_call(method, payload, token):
+            captured.update(payload)
+            return {"ok": True, "sections": [{"id": "a"}]}
+
+        monkeypatch.setattr(publish, "_call", fake_call)
+        assert publish.read_section_ids("F1", "tok") == ["a"]
+        assert captured["criteria"]["section_types"] == publish.BODY_SECTION_TYPES

@@ -100,17 +100,58 @@ ships no Lists tools**, so Claude cannot maintain a List; it would need a
 bespoke bot-token integration. Canvas is where the API and the agent tooling
 actually meet.
 
-## Cost, measured not assumed
+## Cost and shape, measured not assumed
 
-The design intent was one `replace` call against one body section. **The live
-API falsified that**: Slack splits a canvas into one section per markdown block,
-so this dashboard arrives already split into eight, and `canvases.edit` accepts
-one operation per call. The refresh is therefore *delete every section but the
-title, then append the new body* — `n+1` calls, which converges regardless of
-how many sections the previous render produced (a warning callout adds one).
-Against a Tier 3 limit of 50/min that is ample daily and wrong for anything
-live. `canvas_editing_locked` is retried; it means a human has the document
-open.
+Two design assumptions were falsified by checking the live API and the method
+reference, and both changed the implementation.
+
+**"One `replace` call against one body section."** Wrong: Slack splits a canvas
+into **one section per markdown block**, so this dashboard arrives already split
+into eight. The refresh is therefore *delete every body section, then append the
+new body* — `n+1` calls, converging whatever the previous section count was (a
+warning callout adds one). Against a Tier 3 limit of 50/min that is ample daily
+and wrong for anything live. `canvas_editing_locked` is retried; it means a
+human has the document open.
+
+**"Read all the sections, then delete them."** Also wrong, and this one dictates
+the document's shape. `canvases.sections.lookup` **requires a filter** — an
+empty `criteria` is rejected — and its documented enum (`any_header`,
+`blockquote`, `callout`, `chart`, `citation`, `flexbox`, `h1`–`h3`,
+`horizontal_line`, `list`, `table`, the unfurl and mention types) **cannot
+express a plain paragraph**. The docs add that further unfilterable types exist.
+
+So there is no "all sections" query, and the contract runs backwards: **the
+renderer may only emit block types that appear in `BODY_SECTION_TYPES`**,
+because anything else is undeletable and accumulates. That is why the
+provenance footer is a blockquote rather than italic paragraph text — as a
+paragraph it would survive every delete, and the canvas would grow one stale
+provenance line per run. The artefact whose whole job is to reveal staleness
+would have become the thing exhibiting it. A test pins the footer as a
+blockquote so a later cosmetic edit cannot quietly reintroduce the bug.
+
+`h1` is excluded from `BODY_SECTION_TYPES` on purpose: it is the canvas title,
+and the refresh preserves it.
+
+## Canvas ownership
+
+Ownership is per identity. The first canvas was created through the Slack MCP
+integration, which acts as **Shawn's user**; a bot token is a different
+principal and can be refused on it. Rather than granting cross-identity access
+with `canvases.access.set`, `--create` has the bot make and own the canvas it
+maintains — one principal, nothing to re-grant if the token is reissued.
+
+Run once after installing the app:
+
+```bash
+scripts/publish-dashboard.py --create      # prints the new canvas id
+```
+
+The Slack CLI was considered and rejected (2026-08-22). It exists to scaffold
+and deploy apps that *run code* — Bolt servers, Deno functions on Slack's
+platform. This is a Python script making one class of Web API call; the web
+app-creation flow at `api.slack.com/apps` remains fully supported and ends at
+the same token. Revisit if something is ever built that runs *inside* Slack: a
+slash command, an interactive step, an agent.
 
 ## Kill criterion
 

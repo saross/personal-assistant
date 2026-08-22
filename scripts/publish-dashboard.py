@@ -266,11 +266,19 @@ def render_canvas(state: dict, *, now: datetime, revision: str) -> str:
         out += [f"- {a}" for a in state["anomalies"]]
         out.append(":::")
 
+    # The footer is a blockquote, not a paragraph, and that is load-bearing
+    # rather than stylistic. A refresh deletes the old body by looking sections
+    # up by type, and `canvases.sections.lookup` cannot filter on plain
+    # paragraphs — the documented enum omits them, and the docs note further
+    # unfilterable types exist. A paragraph footer would therefore survive
+    # every delete and the canvas would accumulate one stale provenance line
+    # per run: the artefact whose job is to reveal staleness would become the
+    # thing displaying it. Every block emitted here must be a filterable type.
     stamp = now.strftime("%Y-%m-%d %H:%M UTC")
     out += ["", "---", "",
-            f"_Generated {stamp} from `data/tasks/` at `{revision}`. "
-            f"Regenerated in full on every run — if this footer is old, the "
-            f"publisher stopped running; the contents are never edited by hand._"]
+            f"> Generated {stamp} from `data/tasks/` at `{revision}`. "
+            f"Regenerated in full on every run — if this line is old, the "
+            f"publisher stopped running; the contents are never hand-edited."]
 
     return "\n".join(out)
 
@@ -295,7 +303,7 @@ def render_plain(state: dict, *, now: datetime, revision: str) -> str:
 
 
 def build_edit_plan(
-    canvas_id: str, markdown: str, existing_section_ids: list[str],
+    canvas_id: str, markdown: str, body_section_ids: list[str],
 ) -> list[dict]:
     """Build the ordered ``canvases.edit`` payloads for a full-body refresh.
 
@@ -319,14 +327,14 @@ def build_edit_plan(
     Args:
         canvas_id: Target canvas.
         markdown: Freshly rendered body.
-        existing_section_ids: Sections from ``slack_read_canvas``, **title
-            first**. The title is preserved and everything after it replaced.
+        body_section_ids: From :func:`read_section_ids` — body sections only.
+            The title is an ``h1`` and is never returned, so it survives.
 
     Returns:
         Payloads to POST in order.
     """
     plan: list[dict] = []
-    for section_id in existing_section_ids[1:]:
+    for section_id in body_section_ids:
         plan.append({
             "canvas_id": canvas_id,
             "changes": [{"operation": "delete", "section_id": section_id}],
@@ -341,10 +349,72 @@ def build_edit_plan(
     return plan
 
 
+def create_canvas(title: str, markdown: str, token: str) -> str:
+    """Create a canvas owned by the calling identity and return its id.
+
+    Needed because ownership is per-identity. The first dashboard canvas was
+    created through the Slack MCP integration, which acts as *Shawn's user*; a
+    bot token is a different principal and can be refused on it. Rather than
+    granting cross-identity access with ``canvases.access.set``, the bot
+    creates and owns the canvas it maintains — one principal, no sharing, and
+    nothing to re-grant if the token is ever reissued.
+
+    Args:
+        title: Canvas title. Kept out of the body so a refresh never has to
+            rewrite it — see :func:`build_edit_plan`, which preserves section
+            zero.
+        markdown: Initial body.
+        token: Slack bot token with ``canvases:write``.
+
+    Returns:
+        The new canvas id, for ``SLACK_DASHBOARD_CANVAS_ID``.
+    """
+    body = _call(
+        "canvases.create",
+        {"title": title,
+         "document_content": {"type": "markdown", "markdown": markdown}},
+        token,
+    )
+    return body["canvas_id"]
+
+
+# Every block type render_canvas emits, and nothing else. `h1` is deliberately
+# absent: it is the canvas title, which the refresh preserves.
+#
+# There is no way to ask for "all sections" — `canvases.sections.lookup`
+# requires a filter, and its documented enum cannot express plain paragraphs.
+# So the contract runs the other way: the renderer may only emit types that
+# appear here, because anything else becomes undeletable and accumulates.
+BODY_SECTION_TYPES = [
+    "h2", "h3", "table", "list", "callout", "horizontal_line", "blockquote",
+]
+
+
+def read_section_ids(canvas_id: str, token: str) -> list[str]:
+    """Return the ids of every body section, excluding the title.
+
+    Read immediately before planning an edit and never cached: **section ids
+    change after every update**, so a stored mapping is stale by the second
+    refresh and fails with ``section_not_found``.
+    """
+    body = _call(
+        "canvases.sections.lookup",
+        {"canvas_id": canvas_id,
+         "criteria": {"section_types": BODY_SECTION_TYPES}},
+        token,
+    )
+    return [s["id"] for s in body.get("sections", [])]
+
+
 def _post(payload: dict, token: str) -> dict:
     """POST one ``canvases.edit`` payload. Raises on a Slack-level failure."""
+    return _call("canvases.edit", payload, token)
+
+
+def _call(method: str, payload: dict, token: str) -> dict:
+    """POST to a Slack Web API method, raising on a Slack-level failure."""
     req = urllib.request.Request(
-        f"{SLACK_API}/canvases.edit",
+        f"{SLACK_API}/{method}",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {token}",
@@ -362,8 +432,15 @@ def _post(payload: dict, token: str) -> dict:
             "canvas_too_large": " (body exceeds the 1 MiB per-change limit)",
             "section_not_found": " (section ids go stale after every edit —"
                                  " re-read the canvas before planning)",
+            "access_denied": " (the canvas is owned by another identity — run"
+                             " with --create so the bot owns its own)",
+            "missing_scope": f" (needed: {body.get('needed', '?')}; app has:"
+                             f" {body.get('provided', '?')} — add the scope and"
+                             f" reinstall the app)",
+            "not_authed": " (SLACK_BOT_TOKEN missing or malformed)",
+            "invalid_auth": " (token rejected — was the app reinstalled?)",
         }.get(error, "")
-        raise RuntimeError(f"canvases.edit failed: {error}{hint}")
+        raise RuntimeError(f"{method} failed: {error}{hint}")
     return body
 
 
@@ -413,6 +490,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, help="write to this path instead of stdout")
     parser.add_argument("--publish", action="store_true",
                         help="POST to Slack (needs SLACK_BOT_TOKEN)")
+    parser.add_argument("--create", action="store_true",
+                        help="create a new canvas owned by the bot and print its id")
+    parser.add_argument("--title", default="Work Dashboard",
+                        help="canvas title, used with --create")
     parser.add_argument("--canvas-id", default=os.environ.get("SLACK_DASHBOARD_CANVAS_ID"))
     parser.add_argument("--section-id", default=os.environ.get("SLACK_DASHBOARD_SECTION_ID"))
     args = parser.parse_args()
@@ -440,16 +521,33 @@ def main() -> int:
     for anomaly in state["anomalies"]:
         print(f"WARN: {anomaly}", file=sys.stderr)
 
+    if args.create:
+        token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+        if not token:
+            print("ERROR: --create needs SLACK_BOT_TOKEN", file=sys.stderr)
+            return 2
+        canvas_id = create_canvas(args.title, body, token)
+        # Printed to stdout so it can be captured; the id is not a secret.
+        print(f"\nCreated canvas {canvas_id}", file=sys.stderr)
+        print(f"Add to .env on both machines:\n"
+              f"  SLACK_DASHBOARD_CANVAS_ID={canvas_id}", file=sys.stderr)
+        return 0
+
     if args.publish:
         token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
         missing = [n for n, v in (("SLACK_BOT_TOKEN", token),
-                                  ("--canvas-id", args.canvas_id),
-                                  ("--section-id", args.section_id)) if not v]
+                                  ("--canvas-id", args.canvas_id)) if not v]
         if missing:
-            print(f"ERROR: --publish needs {', '.join(missing)}", file=sys.stderr)
+            print(f"ERROR: --publish needs {', '.join(missing)}"
+                  f" (no canvas yet? run --create first)", file=sys.stderr)
             return 2
-        publish(args.canvas_id, args.section_id, body, token)
-        print("published to Slack", file=sys.stderr)
+
+        # Section ids change after every edit, so the plan must be built from a
+        # mapping read in the same breath as the write — never from a stored one.
+        sections = read_section_ids(args.canvas_id, token)
+        plan = build_edit_plan(args.canvas_id, body, sections)
+        applied = publish(plan, token)
+        print(f"published to Slack ({applied} operations)", file=sys.stderr)
 
     return 0
 
