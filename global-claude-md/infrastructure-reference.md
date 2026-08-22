@@ -184,10 +184,28 @@ Located in `scripts/`.
 
 **Session archives (`~/cc-archives/`):**
 
-- 334+ sessions archived and enriched with Haiku-generated metadata
-- `CATALOG.json` index
-- Subagent archives nested under parent sessions
-- 1,093 subagent sessions
+- ~850 distinct sessions (2026-08-22; ~1,120 metas on disk including
+  duplicate and nested entries), most enriched with generated metadata
+- Storage invariant (2026-08-22): transcript form is `session.jsonl.gz`;
+  resolve via `cc_session_toolkit.transcript_text.resolve_transcript()`
+- `CATALOG.json` is a **derived index and under-reports** (depth-2
+  rebuild; plan item B6) — never use it as a dedup key or for counts;
+  walk `session.meta.json` on disk instead
+- Subagent archives nested under parent sessions (5,300+ transcripts)
+
+**Replication & integrity (see network-resources.md "Session-archive
+stores" for the full topology):**
+
+- `daily-sync.sh` cc-archives passes 1–4 converge local mirrors with the
+  canonical union on rpi-server (SSHFS; **self-mounting** since
+  2026-08-22), then amd-tower pushes to Cloudflare R2 (additive-only)
+- Four session-start gates, all surfaced on hook **stdout** so they land
+  in the assistant's context: `cc-archives-gate` (meta without local
+  transcript), `syncthing-gate` (personal-docs mesh — NOT archives),
+  `memory-drift-gate` (memory records in only one store),
+  `cc-archive-drift-gate` (substantive raw sessions never archived)
+- ⛔ Rebuild preconditions for `--full-resync` / `rebuild-postgres.py`
+  are in `postgresql-reference.md` — drift check first, always
 
 ### Searching past sessions — the escalation ladder
 
@@ -221,6 +239,12 @@ Four rungs, cheapest first. **Never grep raw `.gz` ad hoc** — a
 */5 * * * * venv/bin/python3 scripts/sync-to-postgres.py   # memory sync + auto-embed
 0 3 * * 0   venv/bin/python3 scripts/apply-decay.py         # weekly decay
 ```
+
+`daily-sync.sh` is NOT cron — it runs once per calendar day from the
+SessionStart hook via `daily-sync-trigger.sh` (first session of the day;
+retries next session on failure). It carries the git sync, the
+cc-archives convergence passes, the R2 push, the symlink refresh, and
+both drift checks.
 
 ### Test Suite
 

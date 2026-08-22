@@ -249,8 +249,13 @@ paper-b's record.
   older `agent-*` meta-only cohort was NOT lost — zbook's archive
   store held those transcripts and the zbook→local pass recovered
   them; the completeness gate now reads 0 across the corpus.)
-- [x] **B7. Transcript-pull posture: DECIDED + IMPLEMENTED
-  (2026-07-22).** Full mirrors on all working machines (zbook LUKS
+- [x] **E4. Transcript-pull posture: DECIDED + IMPLEMENTED
+  (2026-07-22).** *(Renumbered 2026-08-22 — this item was originally
+  labelled "B7", colliding with the unrelated B7 added to section B on
+  2026-07-28. External references to "the B7 decision (2026-07-22)" —
+  e.g. `network-resources.md` store roles, `daily-sync.sh` pass-4
+  comments, the completeness gate — mean THIS item; "B7+B8 URGENT"
+  (2026-07-28) means the section-B pair.)* Full mirrors on all working machines (zbook LUKS
   full-disk encryption confirmed by Shawn). daily-sync gains pass 4
   (append-only transcript pull canonical → local) and a
   **completeness gate**: metas recording a `jsonl_sha256` with no
@@ -277,7 +282,9 @@ paper-b's record.
   Remaining sub-items: (c) optional Entry 14 reconstruction
   (inscriptions); (d) pre-research audit of contemporaneous
   session ids.
-- [ ] **B8. Snapshot-supersede handling** (new, from E3b): archives
+- [ ] **E5. Snapshot-supersede handling** (new, from E3b; renumbered
+  2026-08-22, originally mislabelled "B8" — the un-archived-batches B8
+  lives in section B): archives
   created mid-session (pre-compact or early Stop) can fossilise a
   truncated transcript that later looks complete. Toolkit should
   re-archive (or flag needs_review) when the raw session grew after

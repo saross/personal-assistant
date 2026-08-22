@@ -32,29 +32,36 @@ SYNC_SCRIPT="${SCRIPT_DIR}/daily-sync.sh"
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 
-# cc-archives completeness gate (B7, 2026-07-22): surface transcript-
-# partial state at EVERY session start, not just on sync days. The gate
-# file is written by daily-sync.sh's cc-archives pass; a non-zero first
-# line means that many session.meta.json files record a transcript hash
-# whose transcript is absent locally (and not written off). Silence on
-# this state is how meta-only shells went unnoticed for weeks.
+# ---------------------------------------------------------------------------
+# Infra gates — checked at EVERY session start.
+#
+# ⚠ CHANNEL FIX (2026-08-22). These gates used to print to stderr, and
+# SessionStart-hook stderr NEVER REACHES THE SESSION CONTEXT — only stdout
+# does. The Syncthing gate reported 3 problems to stderr at every session
+# start for two weeks and nobody (human or Claude) ever saw one. That is
+# the general failure this repo has now hit three times: a signal that is
+# emitted but not surfaced is indistinguishable from no signal. Gates now
+# print to STDOUT under an explicit surface-this header, so the assistant
+# sees them in context and relays them to Shawn.
+#
+# Four gates, same format (first line = problem count, rest = detail):
+#   cc-archives-gate      metas whose transcript is absent locally (E4)
+#   syncthing-gate        mesh health (identity, binds, folder, peers)
+#   memory-drift-gate     memory records surviving in only one store
+#   cc-archive-drift-gate substantive raw sessions never archived
+# ---------------------------------------------------------------------------
+GATE_LINES=()
+
 GATE_FILE="${HOME}/.cache/cc-archives-gate"
 if [[ -f "$GATE_FILE" ]]; then
     GATE_COUNT="$(head -1 "$GATE_FILE" 2>/dev/null)"
     if [[ "$GATE_COUNT" =~ ^[0-9]+$ ]] && [[ "$GATE_COUNT" -gt 0 ]]; then
-        echo "[cc-archives gate] ${GATE_COUNT} archived session(s) lack a local transcript — run daily-sync at home to pull, or see plan B7/B6 (${GATE_FILE} lists them)" >&2
+        GATE_LINES+=("[cc-archives gate] ${GATE_COUNT} archived session(s) lack a local transcript — run daily-sync at home to pull (${GATE_FILE} lists them)")
     fi
 fi
 
-# Syncthing mesh gate (2026-08-07): the four-device mesh sat dead for three
-# months — rpi-server's container had exited and never restarted, and
-# amd-tower's had come up on a detached bind mount with the WRONG DEVICE ID,
-# so it connected to nobody while `docker ps` reported it healthy. Nothing
-# anywhere reported either fault. Same remedy as the cc-archives gate: check
-# often, and say something at every session start until it is fixed.
-#
-# Re-checked at most every 15 minutes so session start stays snappy (the
-# check SSHes to rpi-server); otherwise the cached verdict is surfaced.
+# Syncthing: re-checked at most every 15 minutes so session start stays
+# snappy (the check SSHes to rpi-server); otherwise the cached verdict.
 SYNCTHING_GATE="${HOME}/.cache/syncthing-gate"
 SYNCTHING_CHECK="${SCRIPT_DIR}/syncthing-health.sh"
 if [[ -x "$SYNCTHING_CHECK" ]]; then
@@ -64,10 +71,34 @@ if [[ -x "$SYNCTHING_CHECK" ]]; then
     if [[ -f "$SYNCTHING_GATE" ]]; then
         ST_COUNT="$(head -1 "$SYNCTHING_GATE" 2>/dev/null)"
         if [[ "$ST_COUNT" =~ ^[0-9]+$ ]] && [[ "$ST_COUNT" -gt 0 ]]; then
-            echo "[syncthing gate] ${ST_COUNT} problem(s) with the Syncthing mesh:" >&2
-            tail -n +3 "$SYNCTHING_GATE" | sed 's/^/  /' >&2
+            GATE_LINES+=("[syncthing gate] ${ST_COUNT} problem(s) with the Syncthing mesh (personal-docs sync, NOT cc-archives):")
+            while IFS= read -r _gl; do
+                GATE_LINES+=("  ${_gl}")
+            done < <(tail -n +3 "$SYNCTHING_GATE")
         fi
     fi
+fi
+
+DRIFT_GATE="${HOME}/.cache/memory-drift-gate"
+if [[ -f "$DRIFT_GATE" ]]; then
+    DRIFT_COUNT="$(head -1 "$DRIFT_GATE" 2>/dev/null)"
+    if [[ "$DRIFT_COUNT" =~ ^[0-9]+$ ]] && [[ "$DRIFT_COUNT" -gt 0 ]]; then
+        GATE_LINES+=("[memory-drift gate] $(tail -n +2 "$DRIFT_GATE" | head -1)")
+    fi
+fi
+
+ARCHIVE_DRIFT_GATE="${HOME}/.cache/cc-archive-drift-gate"
+if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
+    AD_COUNT="$(head -1 "$ARCHIVE_DRIFT_GATE" 2>/dev/null)"
+    if [[ "$AD_COUNT" =~ ^[0-9]+$ ]] && [[ "$AD_COUNT" -gt 0 ]]; then
+        GATE_LINES+=("[archive-drift gate] ${AD_COUNT} substantive raw session(s) not archived — run scripts/bulk-archive.py (${ARCHIVE_DRIFT_GATE} lists them)")
+    fi
+fi
+
+if [[ ${#GATE_LINES[@]} -gt 0 ]]; then
+    # STDOUT, deliberately: this block lands in the session context.
+    echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
+    printf '%s\n' "${GATE_LINES[@]}"
 fi
 
 # Already ran today? Exit silently — dominant path on every session after the

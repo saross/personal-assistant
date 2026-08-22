@@ -682,6 +682,37 @@ if [[ $DRY_RUN -eq 0 ]]; then
     CC_ARCHIVES_LOCAL="$HOME/cc-archives"
     CC_ARCHIVES_CANONICAL="$HOME/mnt/rpi-shares/cc-archives-consolidated"
 
+    # Self-healing mount (2026-08-22). The mount was manual (an interactive
+    # alias), so this pass silently skipped on every day nobody mounted by
+    # hand — 30 skips vs 25 successes between 2026-06-08 and 2026-08-20,
+    # leaving the canonical store the STALEST of the three copies. Attempt
+    # the mount ourselves before deciding to skip: fast SSH probe first so
+    # an away-from-home machine skips in ~5s instead of hanging, then the
+    # same sshfs invocation as the `mount-rpi-shares` alias (reconnect
+    # keeps it healthy across suspends; leave it mounted afterwards).
+    if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]] \
+            || ! df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+        if command -v sshfs >/dev/null 2>&1 \
+                && ssh -o BatchMode=yes -o ConnectTimeout=5 rpi-server true >/dev/null 2>&1; then
+            log "cc-archives sync: rpi-shares not mounted — attempting self-mount"
+            # A dead FUSE endpoint (laptop suspended past the reconnect
+            # window) blocks a fresh mount — lazily unmount it first.
+            if mount | grep -q "$HOME/mnt/rpi-shares"; then
+                fusermount -uz "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1 || true
+            fi
+            mkdir -p "$HOME/mnt/rpi-shares"
+            if timeout 20 sshfs -o compression=no,ServerAliveInterval=15,reconnect \
+                    shawn@rpi-server:/opt/encrypted/workspace/shares \
+                    "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1; then
+                log "cc-archives sync: self-mount succeeded"
+            else
+                log "cc-archives sync: self-mount FAILED (see log) — will skip"
+            fi
+        else
+            log "cc-archives sync: rpi-server unreachable (away from home?) — will skip"
+        fi
+    fi
+
     # rsync filter for the metadata-convergence passes: descend into all
     # directories, transfer only the in-place-mutable files, exclude
     # everything else (transcripts, subagents — handled by the append-only
@@ -840,18 +871,55 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ $DRY_RUN -eq 0 ]]; then
+    # Gate file mirrors the cc-archives / syncthing gates: first line is a
+    # problem count (0 = clean), remaining lines describe the problem.
+    # daily-sync-trigger.sh surfaces a non-zero count at EVERY session
+    # start — a detector that reports only into a log nobody reads is
+    # indistinguishable from no detector (2026-08-20 incident; inbox row
+    # "Surface drift at SESSION START").
+    MEMORY_DRIFT_GATE="$HOME/.cache/memory-drift-gate"
     if "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-memory-drift.py" \
             --quiet-if-clean >>"$LOG_FILE" 2>&1; then
         log "memory drift check: clean"
+        printf '0\n' > "$MEMORY_DRIFT_GATE"
     else
         rc=$?
         if [[ $rc -eq 2 ]]; then
             log "memory drift check: COULD NOT RUN (rc=2; see memory-drift.log)"
+            # Unknown is not clean: surface it rather than staying silent.
+            printf '1\nmemory drift check COULD NOT RUN (PostgreSQL down?) — state unknown; see logs/memory-drift.log\n' \
+                > "$MEMORY_DRIFT_GATE"
         else
             log "memory drift check: *** DRIFT DETECTED *** — canonical memory"
             log "  records survive in only one store. See logs/memory-drift.log."
             log "  Recover: venv/bin/python3 scripts/check-memory-drift.py --recover"
             log "  DO NOT run rebuild-postgres.py until this is clean."
+            printf '1\nmemory records survive in only ONE store — run scripts/check-memory-drift.py (then --recover); do NOT rebuild-postgres until clean\n' \
+                > "$MEMORY_DRIFT_GATE"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Archive drift check (added 2026-08-22) — the transcript instance of the
+# source↔destination reconciliation class-fix. Compares this machine's raw
+# ~/.claude/projects sessions (substantive only, 48h grace) against the
+# archive mirror and writes ~/.cache/cc-archive-drift-gate; the trigger
+# surfaces a non-zero count at session start. Read-only; the remedy is
+# bulk-archive.py, run by a human. First run (2026-08-22) found two
+# substantive sessions that had leaked — the class is live, not historical.
+# ---------------------------------------------------------------------------
+
+if [[ $DRY_RUN -eq 0 ]]; then
+    if "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-archive-drift.py" \
+            --quiet-if-clean >>"$LOG_FILE" 2>&1; then
+        log "archive drift check: clean"
+    else
+        rc=$?
+        if [[ $rc -eq 2 ]]; then
+            log "archive drift check: COULD NOT RUN (rc=2)"
+        else
+            log "archive drift check: *** DRIFT DETECTED *** — un-archived raw sessions; see ~/.cache/cc-archive-drift-gate"
         fi
     fi
 fi

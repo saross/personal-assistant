@@ -122,4 +122,4 @@ At natural stopping points (milestones, long conversations, before session end),
 | PostgreSQL query layer | `~/personal-assistant/global-claude-md/postgresql-reference.md` | Querying memories DB, running sync |
 | Zotero integration | `~/personal-assistant/global-claude-md/zotero-reference.md` | `/read`, `/cite`, `/synthesise`, `/cite-new` |
 | Network & servers | `~/personal-assistant/data/global-claude-md/network-resources.md` | SSH, Ollama, server operations, cross-machine |
-| Session transcripts | `~/.claude/` (JSONL); project exports in `archive/cc-sessions/` | Context from prior sessions |
+| Session transcripts | `~/cc-archives/` (full local mirror; canonical union on rpi-server; see network-resources.md store roles). Live `~/.claude/` holds only THIS machine's working transcripts — never use it for provenance, audit, or completeness questions | Context from prior sessions; provenance and attribution work |

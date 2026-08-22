@@ -22,9 +22,14 @@ Usage:
     venv/bin/python3 scripts/index-session-content.py --force
     venv/bin/python3 scripts/index-session-content.py --include-subagents
 
-Scope note: by default only main session transcripts (session.jsonl.gz) are
-indexed — that is the human↔assistant conversation. Subagent transcripts are
-mostly tool work; include them with --include-subagents.
+Scope note: by default only main session transcripts are indexed — that is
+the human↔assistant conversation. Both storage forms (session.jsonl.gz and
+raw session.jsonl) are handled. Subagent transcripts are mostly tool work;
+include them with --include-subagents.
+
+⛔ A `--force` full re-index feeds `session_chunks`, and the same gates as
+`sync-sessions-to-postgres.py --full-resync` apply: see the rebuild
+preconditions in global-claude-md/postgresql-reference.md.
 """
 
 from __future__ import annotations
@@ -56,11 +61,27 @@ def extract_turn_text(record: dict) -> str | None:
     thinking, tool_use, tool_result blocks, and all non-message record types
     (permission-mode, attachment, system, …). This keeps the index prose-only,
     so searches match conversation, not tool noise or base64.
+
+    B7 fix (2026-08-22): also drops machine-generated records that travel in
+    the `user` transport envelope but are not the human speaking. Measured on
+    2026-07-28 (transcript-archive-diagnosis §7a): 40.0% of indexed `user`
+    chunks were not the user's words — `isMeta` records (41.2% of the false
+    population), compact summaries (25.0%), and subagent task-notification
+    reports (20.0%). A long articulate "user" turn was ~7× more likely to be
+    machine text than human. These are skipped, never mislabelled.
     """
     if record.get("type") not in ("user", "assistant"):
         return None
+    # Machine-injected records: not conversational turns, skip entirely.
+    if record.get("isMeta") or record.get("isCompactSummary"):
+        return None
     message = record.get("message")
     if not isinstance(message, dict):
+        return None
+    # Authorship must be explicit. The old fallback promoted the transport
+    # envelope (`type: "user"`) to a speaker attribution for any record
+    # lacking message.role — the root of the one-directional mislabelling.
+    if message.get("role") not in ("user", "assistant"):
         return None
 
     content = message.get("content")
@@ -79,18 +100,37 @@ def extract_turn_text(record: dict) -> str | None:
     if not parts:
         return None
     text = "\n".join(parts)
+    # Harness-injected notifications ride the user envelope with a real
+    # message.role but are not the human speaking either (B7, third
+    # category). Content-shaped check because they carry no flag.
+    head = text[:200]
+    if head.startswith("[SYSTEM NOTIFICATION") or "<task-notification>" in head:
+        return None
     return text[:MAX_CHUNK_CHARS] if len(text) > MAX_CHUNK_CHARS else text
 
 
-def iter_turns(gz_path: Path):
+def open_transcript(path: Path):
+    """Open a transcript for text reading, resolving gzip vs plain form.
+
+    The archive holds both forms (729 gz-only, 88 raw-only, 34 dual as of
+    2026-08-22) — any consumer that assumes one form silently drops the
+    other population, which is the defect class behind the false "12-week
+    hole" alarm. Suffix-based, with errors="replace" both ways.
+    """
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", errors="replace")
+    return open(path, "rt", errors="replace", encoding="utf-8")
+
+
+def iter_turns(transcript_path: Path):
     """Yield (turn_idx, role, text) for each prose turn in one transcript.
 
-    Streams the gzip one line at a time; a malformed line is skipped, never
-    fatal. turn_idx is the ordinal of the source record in the file, so it is a
+    Streams one line at a time; a malformed line is skipped, never fatal.
+    turn_idx is the ordinal of the source record in the file, so it is a
     stable handle for later retrieval of the exact turn.
     """
     try:
-        with gzip.open(gz_path, "rt", errors="replace") as handle:
+        with open_transcript(transcript_path) as handle:
             for idx, line in enumerate(handle):
                 line = line.strip()
                 if not line:
@@ -102,10 +142,12 @@ def iter_turns(gz_path: Path):
                 text = extract_turn_text(record)
                 if text is None:
                     continue
-                role = (record.get("message") or {}).get("role") or record.get("type")
+                # extract_turn_text has already required message.role —
+                # never fall back to the transport envelope (B7).
+                role = record["message"]["role"]
                 yield idx, role, text
     except (OSError, EOFError, gzip.BadGzipFile) as exc:
-        logger.warning("  skipped %s (%s)", gz_path.name, exc)
+        logger.warning("  skipped %s (%s)", transcript_path.name, exc)
 
 
 # --- Archive discovery ------------------------------------------------------
@@ -123,24 +165,49 @@ def session_id_for(session_dir: Path) -> str | None:
 
 
 def discover(archive_root: Path, project: str | None, include_subagents: bool):
-    """Yield (gz_path, project, session_dir) for transcripts to index.
+    """Yield (transcript_path, project, session_dir) for transcripts to index.
 
-    Archive layout: <root>/<project>/<session-dir>/session.jsonl.gz, with
-    subagent transcripts under <session-dir>/subagents/*.jsonl.gz.
+    Rewritten 2026-08-22 (backlog: archive-integrity session, indexer fixes).
+    The old version iterated exactly two directory levels and skipped
+    `_`-prefixed dirs, so the 267 sessions in nested locations
+    (`map-reader-llm/vlm-burial-mound-detection/`, `LLM-History-Paper/
+    theseus-ship/` pre-move, `_legacy/**`) were never indexed — a partial
+    view silently presented as the whole. Discovery now walks
+    session.meta.json recursively (the same rule `bulk-archive.py verify`
+    uses), so placement depth no longer decides visibility.
+
+    The project label prefers the meta's recorded `project.name` (the
+    archive-layer identity) and falls back to the parent directory name.
+    Both raw and gz transcript forms are yielded (gz preferred when both
+    exist).
     """
-    project_roots = [archive_root / project] if project else \
-        [d for d in sorted(archive_root.iterdir()) if d.is_dir() and not d.name.startswith("_")]
-    for proj_root in project_roots:
-        if not proj_root.is_dir():
+    for meta_path in sorted(archive_root.rglob("session.meta.json")):
+        session_dir = meta_path.parent
+        parent_rel = session_dir.parent.relative_to(archive_root)
+        proj_name = None
+        try:
+            meta = json.loads(meta_path.read_text())
+            proj_name = (meta.get("project") or {}).get("name")
+        except (OSError, json.JSONDecodeError):
+            pass
+        if not proj_name:
+            proj_name = session_dir.parent.name
+        if project and project not in (proj_name, str(parent_rel)):
             continue
-        proj_name = proj_root.name
-        for session_dir in sorted(p for p in proj_root.iterdir() if p.is_dir()):
-            main = session_dir / "session.jsonl.gz"
-            if main.is_file():
-                yield main, proj_name, session_dir
-            if include_subagents:
-                for sub in sorted((session_dir / "subagents").glob("*.jsonl.gz")):
-                    yield sub, proj_name, session_dir
+        main = session_dir / "session.jsonl.gz"
+        if not main.is_file():
+            main = session_dir / "session.jsonl"
+        if main.is_file():
+            yield main, proj_name, session_dir
+        if include_subagents:
+            by_stem: dict[str, Path] = {}
+            for sub in (session_dir / "subagents").glob("*.jsonl*"):
+                stem = sub.name.removesuffix(".gz")
+                # gz + raw pair: index one form only, preferring gz.
+                if stem not in by_stem or sub.suffix == ".gz":
+                    by_stem[stem] = sub
+            for stem in sorted(by_stem):
+                yield by_stem[stem], proj_name, session_dir
 
 
 # --- Indexing ---------------------------------------------------------------
@@ -156,10 +223,10 @@ def index_archive(archive_root: Path, project: str | None,
     files_indexed = files_skipped = total_chunks = 0
     try:
         with conn.cursor() as cur:
-            for gz_path, proj_name, session_dir in discover(
+            for transcript_path, proj_name, session_dir in discover(
                     archive_root, project, include_subagents):
-                rel_path = str(gz_path.relative_to(archive_root))
-                mtime = gz_path.stat().st_mtime
+                rel_path = str(transcript_path.relative_to(archive_root))
+                mtime = transcript_path.stat().st_mtime
 
                 # Incremental skip: already indexed at this mtime?
                 if not force:
@@ -174,7 +241,7 @@ def index_archive(archive_root: Path, project: str | None,
                 rows = [
                     (sess_id, proj_name, session_dir.name, rel_path, turn_idx,
                      role, text, len(text), mtime)
-                    for turn_idx, role, text in iter_turns(gz_path)
+                    for turn_idx, role, text in iter_turns(transcript_path)
                 ]
 
                 # Replace this file's rows transactionally (no stale turns).

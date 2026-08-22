@@ -18,10 +18,28 @@ from JSONL at any time.
 | `scripts/sync-to-postgres.py` | JSONL → PostgreSQL sync + auto-embed. P8 (2026-06-06): `is_active` is now included in the INSERT column list so a row forgotten before its first sync lands with `is_active=false` rather than being resurrected by the column default (`ON CONFLICT DO NOTHING` means a subsequent sync will not overwrite it). | Cron every 5 min |
 | `scripts/sync_memory_edit.py` | Surgical `UPDATE` of mutable columns for a single memory (P8, 2026-06-06). Called by `/forget` and `/update` as a **mandatory** step immediately after the JSONL rewrite. Mirrors `is_active`, `content`, `confidence`, `verified`, `anchors`, `revisions` from the edited JSONL record into PG. Idempotent; reports (does not error) if the row is not yet in PG. The helper simply attempts a local connection — on a machine without PG it warns and exits non-zero (recall there reads JSONL, so the edit still lands); a connection that succeeds but whose query fails (schema mismatch) is reported as "query failed", pointing at `schema.sql` + rebuild (labelling fixed 2026-07-04). | On `/forget` and `/update` |
 | `scripts/apply-decay.py` | Mark expired memories inactive | Weekly manual |
-| `scripts/rebuild-postgres.py` | Full rebuild from JSONL | As needed |
+| `scripts/rebuild-postgres.py` | Full rebuild from JSONL | As needed — **see the rebuild preconditions below** |
 | `scripts/schema.sql` | Database schema (tables, indexes, views) | One-time |
+| `scripts/check-memory-drift.py` | Cross-store integrity check: finds records that survive in only one store (PG-only, or stranded in a daily-sync stash) | Daily via `daily-sync.sh`; on demand before any rebuild |
 
 All scripts are in `~/personal-assistant/scripts/`.
+
+### ⛔ Rebuild preconditions (standing rule, 2026-08-22)
+
+**Run `check-memory-drift.py` IMMEDIATELY BEFORE `rebuild-postgres.py` or any
+`sync-sessions-to-postgres.py --full-resync`, and recover anything it finds
+first** (`--recover`). A rebuild treats the canonical JSONL as complete by
+definition, so it cannot see a PG-only record and will silently destroy it —
+on 2026-08-20 a rebuild would have destroyed 38 records that existed only in
+PG (they were recovered first; `data` commit `108d044`).
+
+Two **independent** preconditions gate `--full-resync`, and both must clear:
+
+1. **Drift check clean** (this rule) — protects PG-only memory records.
+2. **The archive-integrity session** (`tasks/backlog.md`, "Archive-integrity
+   session" row) — B6 catalogue recursion, duplicate triage, and the indexer
+   fixes must land first, or the re-index bakes known defects back into
+   `session_chunks`.
 
 ### Why `/forget` and `/update` require the lockstep helper
 
