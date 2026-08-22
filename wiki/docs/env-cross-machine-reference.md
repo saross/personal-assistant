@@ -15,10 +15,16 @@ either direction destroys them.
 `.env` is gitignored on purpose, so the two copies drift silently and
 nothing detects it. To compare without reading secrets into a session,
 fingerprint each assignment as `KEY <salted-sha256-prefix> <length>` and
-diff the fingerprints. The script is
-`scratchpad/env-fingerprint.sh` in the 2026-08-22 session; it is short
-enough to rewrite from this description, and the salt only needs to be
-identical across the two hosts in a single comparison.
+diff the fingerprints. Use **`scripts/env-fingerprint.sh`**, which takes
+an optional path and defaults to `~/personal-assistant/.env`:
+
+```bash
+scripts/env-fingerprint.sh > /tmp/local.txt
+ssh amd-tower 'bash -s' < scripts/env-fingerprint.sh > /tmp/remote.txt
+```
+
+The salt is fixed so both hosts fingerprint a shared value identically;
+it only needs to agree across a single comparison.
 
 Run it on both hosts, then compare three things separately: keys only on
 A, keys only on B, and keys on both whose hashes differ. **The third
@@ -154,14 +160,28 @@ unverified.
   append. Both files were verified before the 2026-08-22 sync, and
   timestamped `.env.bak-YYYYmmdd-HHMMSS` copies were taken on each host
   first.
-- **`~/personal-assistant/.env` is not the only credential store.**
-  `~/Code/blue-mountains/.env` holds two further Zotero API keys and a
-  group ID, all three distinct values that appear nowhere in
-  personal-assistant (compared by salted hash, 2026-08-22). It is
-  gitignored, and its mode was `664` until 2026-08-22, when it was
-  tightened to `600`. **Sweep for `.env` files across `~/Code` when
-  auditing credentials**, not just the personal-assistant one, or the
-  inventory will under-count exactly when it matters, at revocation.
+- **`~/personal-assistant/.env` is not the only credential store.** A
+  sweep to depth 4 under `~/Code` on 2026-08-22 found **six `.env` files**:
+  personal-assistant with 15 credential-shaped variables, and five
+  project-local files holding 8 more between them. `blue-mountains`
+  alone carries two Zotero keys (distinct by hash from anything in
+  personal-assistant) plus an `OMEKA_API_KEY`. **Sweep before trusting
+  any inventory**, or it will under-count exactly when that matters, at
+  revocation. Whether to consolidate is filed in the inbox
+  (2026-08-22) and deliberately undecided.
+- **File modes drift towards `664` and want checking periodically.**
+  Four were found group- and world-readable on 2026-08-22 and set to
+  `600`: `amd-tower:~/personal-assistant/.env`, and the local
+  `blue-mountains`, `fieldmark-docs-staging`, `LLM-History-Paper` and
+  `map-reader-llm` files. The fingerprint script prints the mode in its
+  header for exactly this reason.
+- **`~/Code/FAIMS3/tests/.env` is tracked and not gitignored**, in the
+  shared upstream repo. Harmless as it stands, because every credential
+  field in it is empty and it functions as a committed template. But
+  populating it locally to run the BrowserStack tests would leave real
+  credentials one `git add` from a collaborative repository. Left at
+  `664` deliberately: changing a tracked file's mode shows up as a diff
+  for every collaborator.
 - **amd-tower cannot reach GitHub from a non-interactive SSH session.**
   `git fetch` there over `ssh -o BatchMode=yes` fails with
   `Permission denied (publickey)`, because the GitHub key is only
