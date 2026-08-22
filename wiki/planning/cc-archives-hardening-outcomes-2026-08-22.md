@@ -155,8 +155,17 @@ live-store rule and the read-BOTH-names rule.
    normalisation; migrate opportunistically.
 5. **R2 keeps superseded raw copies** (additive-only by design) —
    acceptable residue, noted here so nobody reads them as divergence.
-6. **GitHub SSH auth from hook/sandbox environments** failed on
-   2026-08-22 (key not in the visible agent; `IdentitiesOnly` +
-   passphrase). Worked around via `gh auth git-credential` over HTTPS for
-   pushes. If it recurs, consider pointing the remotes at HTTPS + gh
-   permanently.
+6. **GitHub SSH auth from hook/sandbox environments** — ~~residual~~
+   **CLOSED same day (Shawn's request).** Root cause: the session ran
+   over SSH from zbook, so hooks inherited a *forwarded* agent holding
+   only zbook's keys, while `IdentitiesOnly yes` pinned github.com to
+   amd-tower's passphrase-protected key — non-interactive processes
+   could neither offer a forwarded key nor unlock the pinned one. Fix:
+   `origin` in personal-assistant AND pa-data switched to HTTPS with a
+   per-repo `credential.helper = !gh auth git-credential` (machine-local
+   config on amd-tower; nothing scripted runs `git submodule sync`, so
+   the SSH URL still recorded in `.gitmodules` cannot silently revert
+   it — left unchanged deliberately so zbook's SSH setup is untouched).
+   Verified end-to-end 2026-08-22 10:58: full daily-sync incl. pull,
+   push, archive passes, R2, gates — zero SSH involvement. Hooks now
+   work identically from desktop and SSH-in sessions.
