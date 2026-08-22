@@ -2377,6 +2377,28 @@ the placement/duplicate rulings that are genuinely Shawn's. Residuals in
 the outcomes doc §Residuals — zbook normalisation is the load-bearing one
 (new inbox row). Commits: PA `e6ccfef` batch, data `3a4aea6` batch.
 
+**Close-out addendum (same day, later).** The residuals shrank to nearly
+nothing before the session ended. (1) **SSH root cause found and wired
+shut**: the session ran over SSH from zbook, so hooks saw a forwarded
+agent without amd-tower's GitHub key (`IdentitiesOnly` + passphrase);
+PA + pa-data remotes switched to HTTPS with per-repo `gh` credential
+helper — full daily-sync verified over it, zero SSH involvement.
+(2) **zbook executed remotely same day, its inbox row dispositioned**:
+mirror normalised (all three stores now identical — 1,133 metas, ZERO
+raw transcripts), self-mount verified live there, and two unplanned
+rescues — **27 stash-only memory records recovered** from July stashes
+via `check-memory-drift.py --recover` (never pop against a moved base),
+and one leaked fieldmark session archived when the new drift gate fired
+on its first zbook run. (3) **amd-tower 26.04 rebuild (weeks away)**:
+full-disk LUKS will dissolve the eCryptfs boot race, so the
+native-Syncthing alternative is DROPPED (Shawn); pre-wipe checklist
+captured as an inbox row — the raw `~/.claude` transcripts are the one
+wipe-time data risk. Lesson banked twice today: a `git pull` that
+prints "Updating x..y" can still have ABORTED on dirty append files —
+read the full output, not the tail, before diagnosing phantom actors.
+Later commits: map-reader `703c28af`, toolkit `a5f4680`, data
+`7bfe268`/`4897d7f`, PA `1d527d5`.
+
 ### 2026-07-22/23 (Wed/Thu, latest SA) — reflect schema 2; abductive corpus anchored 29/30; convergence repair; sync pass 4 + completeness gate; system wiki page
 
 Continuation of the SA session. /reflect review → **schema 2**
