@@ -517,11 +517,11 @@ permanent allow-list.
 Shawn remains the configured Git author. Material Sol assistance uses:
 
 ```text
-Co-Authored-By: Sol (OpenAI Codex) <SHAWN-CONTROLLED-ALIAS>
+Co-Authored-By: Sol (OpenAI Codex) <shawn@faims.edu.au>
 ```
 
-The exact alias must be supplied and verified before this rule is activated.
-Record the final Claude and Sol trailer strings in
+This canonical string uses Shawn's configured primary Git address. Record the
+final Claude and Sol trailer strings in
 `global-claude-md/git-reference.md` and the Codex equivalent.
 
 Do not encode a changing model identifier in hand-authored Git identities.
@@ -580,19 +580,17 @@ Official sources:
 
 These do not reopen the ratified architecture:
 
-1. **Sol email alias:** Shawn supplies the exact controlled address before the
-   first attributed implementation commit.
-2. **`gpt-hub` remote:** default to a private repository under Shawn's GitHub
+1. **`gpt-hub` remote:** default to a private repository under Shawn's GitHub
    account unless Shawn chooses otherwise.
-3. **Guardrail strength:** begin with harness path policies, isolated
+2. **Guardrail strength:** begin with harness path policies, isolated
    worktrees, and tests. Add operating-system isolation only if this proves
    insufficient.
-4. **Trust-profile launcher:** choose whether personal and restricted profiles
+3. **Trust-profile launcher:** choose whether personal and restricted profiles
    use separate `CODEX_HOME` directories, configuration overrides, or a small
    wrapper. The acceptance test, not the mechanism, is authoritative.
-5. **Writer-service host:** test `rpi-server` connectivity and then rule on
+4. **Writer-service host:** test `rpi-server` connectivity and then rule on
    placement using availability, backup, latency, and partition behaviour.
-6. **Maintenance migration:** Claude owns current operations while the service
+5. **Maintenance migration:** Claude owns current operations while the service
    is built. The later administrative interface and cut-over order require a
    dedicated pre-run review.
 
@@ -703,7 +701,7 @@ Git is the historical record for the deliberation that produced this plan:
 - `0b7c7d8` — Fable verifies and reviews Sol's response;
 - `594c2b7` — integrates Shawn's access, trust, attribution, maintenance, and
   body-rewrite rulings into a single current policy; and
-- the current revision — applies Fable's second-round review as ratified by
+- `f0197f6` — applies Fable's second-round review as ratified by
   Shawn: scopes the worktree rule by agent pair and repository, defines the
   stewardship trust test with a world-writable-surface carve-out, records the
   `/process-email` injection guard, assigns repo-local shared-policy
