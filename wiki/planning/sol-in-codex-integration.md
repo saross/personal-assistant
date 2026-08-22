@@ -3,7 +3,7 @@ title: "Sol-in-Codex — integration plan"
 tags: [planning, infrastructure, multi-agent, gpt-hub]
 created: 2026-08-20
 updated: 2026-08-22
-status: reviewed — initial access and role rulings ratified; implementation pending
+status: twice reviewed (Sol §11, Claude §12) — rulings ratified; body revision pass pending, then implementation
 ---
 
 # Sol-in-Codex — integration plan
@@ -794,3 +794,122 @@ specified during implementation.
 [mcp-docs]: https://learn.chatgpt.com/docs/extend/mcp.md
 [memories-docs]: https://learn.chatgpt.com/docs/customization/memories.md
 [skills-docs]: https://developers.openai.com/plugins/concepts/skills.md
+
+---
+
+## 12. Claude's review (2026-08-22, Fable)
+
+Requested by Shawn as a third view on §§1–10, Sol's §11 review, and the
+initial 2026-08-22 rulings.
+
+### Verdict
+
+Sol's review is high quality and materially improves the plan. Proceed with
+Sol's "small first slice", with the additions below. The two most important
+catches are §11.2 and §11.4, and both are correct:
+
+- **§11.2** demolishes the load-bearing claim of the original §3: routing
+  writes through the same Python *module* serialises nothing when each client
+  spawns its own *process*. Write safety needs a single always-on service or
+  cross-process locking. The original "enforced by construction" framing was
+  wrong in a way that would have surfaced as another silent-loss incident.
+- **§11.4** is right that composition must follow refactoring:
+  `global-claude-md/shared.md` carries Claude model-tier policy and
+  `/remember` plumbing, and composing before refactoring would have shipped
+  Claude-only instructions into Sol's 32 KiB budget.
+
+### Verification performed
+
+Per the anti-confabulation rule, Sol's checkable claims were checked rather
+than trusted:
+
+1. **`/recap` writes directly to the canonical store** — confirmed.
+   `commands/recap.md:211` instructs appending to `memories/memories.jsonl`.
+   Sol's warning against importing it unchanged is grounded.
+2. **The Codex documentation citations are real and accurate** — the
+   [hooks][hooks-docs] and [`AGENTS.md`][agents-docs] pages were both fetched
+   on 2026-08-22. The hooks page confirms the lifecycle events and the
+   `SessionEnd` allowance (1 s default, 3 s maximum); the `AGENTS.md` page
+   confirms nested discovery, `AGENTS.override.md` precedence, and the 32 KiB
+   `project_doc_max_bytes` default.
+
+One discovery from the fetched docs, absent from both prior reviews: **the
+byte limit truncates by skipping later files, and later files are the
+nearer, higher-precedence ones** — an oversized global or root `AGENTS.md`
+silently drops repo-local instructions. The composition script needs a size
+budget and an automated check, not an aspiration to stay small.
+
+### Additions
+
+1. **The document contradicts itself, and its own thesis says why that
+   matters.** §1 still opens "these are settled and the rest of the document
+   assumes them", including "Sol does not commit to that repo" — superseded
+   by the 2026-08-22 rulings. Leaving superseded decisions enthroned at the
+   top of the file is exactly the "prescriptive record read as an authority"
+   failure class this document warns about. → Ruled: see below.
+2. **The single-writer service must absorb Claude's writes too — the biggest
+   gap in both prior documents.** Sol's §11.2 says "one always-on service
+   that owns all writes", but revised step 9 does not migrate
+   `hooks/extraction-hook.py` and the `/recap` append path to become clients
+   of that service. The 41-record loss of 2026-08-20 was entirely
+   Claude-side — no second vendor involved. A service that owns only Sol's
+   writes reproduces the incident class one level up. Make "Claude's
+   extraction hook and `/recap` write through the service" an explicit exit
+   criterion of step 9.
+3. **The concrete threat behind §11.5's memory column is indirect prompt
+   injection.** In a collaborative repo, repo content — an issue body, a
+   README, a test fixture — can instruct an agent to query personal memories
+   and leak them into a PR, comment, or commit visible to collaborators.
+   Memory tools should be **default-deny in any repository with
+   collaborators or untrusted inputs**, enabled per-task — for Claude's
+   future MCP registration as much as for Sol's.
+4. **Ruling 3 (gpt-hub is Claude-read-only) needs enforcement, by Sol's own
+   standard.** "An allow-list in prose is not an access control" applies in
+   both directions: add a permissions deny rule for writes under the
+   `gpt-hub` path in Claude's settings when the repo is created.
+5. **Ruling 1's scope was ambiguous** — whether "read access to everything"
+   includes the private `data/` submodule (raw `memories.jsonl`, standups,
+   reports, reflections), given that everything Sol reads transits OpenAI's
+   API. → Ruled: see below.
+6. **Attribution split.** Claude's commits carry a vendor-sanctioned
+   `Co-Authored-By` trailer; Sol proposed an `Agent:` trailer — two formats
+   means two grep patterns for "what did agents change?". → Ruled: see
+   below.
+
+### Endorsed without reservation
+
+Leaving Codex's native memory facility disabled; HTTP migration reframed as
+a write-concurrency prerequisite rather than a sandbox fallback; unique
+branch per session and worktrees outside `gpt-hub`; the pilot acceptance
+tests (test 2's staged-file census is the right regression test for the
+motivating incident); routing review against actual usage telemetry after a
+fortnight, since quota is the driver and nobody currently has a real quota
+figure; and the §11.8 division of labour — Sol arguing for substantive work
+is self-interested, but the argument stands on its merits, and cross-vendor
+"derive cold, then adjudicate from source artefacts" is genuinely valuable
+for high-stakes claims.
+
+Operational note for step 5: LAN connectivity from the Codex sandbox to
+`rpi-server` (192.168.1.100) is untested and now gates the write path — test
+it early; it is a five-minute check gating a whole branch of the sequencing.
+
+### Shawn's further rulings (2026-08-22, after this review)
+
+1. **Body revision pass ratified.** The plan body (§§1–10) is to be
+   rewritten to reflect the §11 and §12 rulings — superseded §1 decisions
+   struck through with pointers to the rulings, and §§3–7 and 10 brought
+   into line. This is the next action on this document, before
+   implementation starts.
+2. **"Read everything" means everything.** Sol's read access includes the
+   private `data/` submodule — raw `memories.jsonl`, standups, reports,
+   reflections. The MCP boundary is a write-side control; reads may bypass
+   it. The OpenAI-transit disclosure implication is understood and accepted.
+3. **Sol uses a `Co-Authored-By` trailer**, matching Claude's convention, so
+   agent attribution has a single grep pattern. This supersedes §11.7's
+   `Agent:` trailer in format while retaining its substance (persona and
+   model are separate fields; no misleading provenance claims). The exact
+   identity string remains to be settled with Sol — default candidate
+   `Co-Authored-By: Sol (GPT via Codex) <noreply@openai.com>` (address not
+   vendor-verified), with an address under a Shawn-controlled domain as the
+   fallback if Sol objects. Record both agents' trailer patterns in
+   `global-claude-md/git-reference.md`.
