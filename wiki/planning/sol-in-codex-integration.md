@@ -2,8 +2,8 @@
 title: "Sol-in-Codex — integration plan"
 tags: [planning, infrastructure, multi-agent, gpt-hub]
 created: 2026-08-20
-updated: 2026-08-20
-status: draft — for Sol's review, then Shawn's ruling
+updated: 2026-08-22
+status: reviewed — initial access and role rulings ratified; implementation pending
 ---
 
 # Sol-in-Codex — integration plan
@@ -376,3 +376,421 @@ with how you actually run.**
 `tasks/backlog.md` rows *"Migrate memory MCP to rpi-server (HTTP, always-on)"*,
 *"MCP server V2 — write tools"*, *"MCP server V2 — session search tools"* ·
 commits `3ad6fa6` (parent), `108d044` / `43fcd15` (data).
+
+---
+
+## 11. Sol's review (2026-08-20)
+
+### Overall assessment
+
+The draft has the right goals and two especially strong design choices:
+
+1. concurrent agents should not share a checkout; and
+2. the canonical memory store should be accessed through a controlled
+   interface, not by teaching every agent how to mutate its files.
+
+I recommend proceeding, but not with §§3, 5, 6, 7, and 10 exactly as written.
+The proposal underestimates Codex's native integration surfaces, overstates the
+protection supplied by an MCP interface, and makes `personal-assistant` so
+inaccessible that I could not participate in the shared wiki system Shawn says
+he wants me to use. The revised design below narrows the protection boundary to
+the assets that genuinely need it.
+
+This review distinguishes:
+
+- **documented Codex behaviour**, which should generalise across machines;
+- **this machine's present configuration**, inspected on 2026-08-20; and
+- **recommended policy**, which remains Shawn's decision.
+
+### Corrections and pushback
+
+#### 11.1 Protect the memory store, not the whole repository
+
+The sentence "Sol never touches the `personal-assistant` repository" is too
+broad and conflicts with both this review request and the desired access to
+wikis, continuity documents, and shared instructions.
+
+Replace it with a capability boundary:
+
+- Sol may **read** the PA wiki, public instruction sources, protocols, and
+  integration code when a task requires them.
+- Sol must not directly mutate `memories.jsonl`, the PostgreSQL-derived store,
+  archives, sync state, hooks, or PA operational/task files.
+- Memory mutations go through the memory service only.
+- PA document changes are proposal-only by default: write a patch in
+  `gpt-hub`, or use a dedicated PA worktree and commit only when Shawn
+  explicitly scopes the task. Never use Claude's live PA checkout.
+- A small path allow-list may later permit Sol-authored integration planning
+  documents. This review is an explicitly authorised exception.
+
+This preserves the safety invariant without making the shared knowledge base
+unavailable. It also makes the policy testable: filesystem permissions and
+tool exposure can enforce paths and operations; "never touch" cannot express
+the difference between reading a wiki page and appending to canonical JSONL.
+
+#### 11.2 MCP is an interface, not automatically a serialising writer
+
+The read-only MCP server is suitable for immediate use over `stdio`. The write
+argument in §3 is not yet safe:
+
+- each local Codex session may spawn its own `stdio` server process;
+- Claude and other clients may create additional processes; and
+- therefore, routing calls through the same Python module does **not** create a
+  single serial execution path across clients.
+
+Before exposing writes, choose one of these designs:
+
+1. one always-on service that owns all writes (streamable HTTP is a natural
+   fit); or
+2. cross-process locking plus a crash-safe, idempotent append protocol shared
+   by every writer.
+
+The first is easier to reason about. HTTP migration is therefore potentially a
+**write-concurrency prerequisite**, not merely a fallback if a sandbox cannot
+start `stdio`.
+
+The V2 interface should also preserve append-only semantics. `update_memory`
+and `delete_memory` should emit revision and tombstone records, not rewrite or
+physically delete history. Write tools need idempotency keys, provenance-anchor
+validation, explicit write approval, an audit receipt, and tests with two
+concurrent clients and forced process termination.
+
+#### 11.3 Use Codex's native migration surfaces before building translators
+
+Current Codex supports a selective `/import` flow for Claude Code. It can
+translate instruction files, settings, skills, hooks, slash commands,
+subagents, MCP configuration, projects, recent chats, and Claude project
+memories. It leaves the Claude setup unchanged.
+
+Use `/import` as an **inventory and candidate-generation step**, not a blind
+migration. Initially select only a small set of instructions, skills, and hooks;
+deselect chats, memories, permissions, and model settings until their privacy
+and semantic differences have been reviewed. Imported artefacts still require
+manual audit, especially commands that write directly to PA files.
+
+The existing `/recap` is a concrete example: it directly appends to
+`memories.jsonl`, so importing it unchanged would violate the proposed safety
+boundary. `/handoff`, `/observe`, and `pre-run-review` are better pilot
+candidates after their paths, commit behaviour, and agent calls are adapted.
+
+#### 11.4 Split global and repository instructions properly
+
+Codex discovers instructions in this order:
+
+1. `~/.codex/AGENTS.override.md`, or otherwise `~/.codex/AGENTS.md`;
+2. one instruction file at each directory from the repository root to the
+   current working directory; and
+3. the nearest file has the highest practical precedence.
+
+It reads the chain once per session. The combined default limit is 32 KiB.
+These semantics make one undifferentiated generated `AGENTS.md` unsuitable.
+
+The current `global-claude-md/shared.md` is not yet a genuinely shared source:
+it includes Claude model-tier policy, Claude auto-memory rules, `/remember`,
+Claude session handling, and PA task-system paths. Refactor the sources first:
+
+```text
+instruction-sources/
+├── common.md              # portable collaboration and research norms
+├── claude.md              # Claude-specific behaviour
+├── codex.md               # Codex-specific behaviour
+├── private-common.md      # private infrastructure needed by both
+├── private-claude.md      # private Claude-only material
+└── private-codex.md       # private Codex-only material
+
+common + private-common + claude + private-claude
+    -> ~/.claude/CLAUDE.md
+common + private-common + codex + private-codex
+    -> ~/.codex/AGENTS.md
+```
+
+Keep the generated global Codex file short. Put optional workflows in skills,
+and put commands, tests, data rules, and verification expectations in each
+repository's checked-in `AGENTS.md`. Do not generate or overwrite repository
+`AGENTS.md` files from the global composer. Do not globally configure Codex to
+treat every `CLAUDE.md` as a fallback until the Claude-specific contents have
+been audited.
+
+#### 11.5 An allow-list in prose is not an access control
+
+Retain the repository table as policy, but split its single yes/no column into
+capabilities:
+
+| Capability | Meaning |
+|---|---|
+| Read | May inspect files for context |
+| Edit | May modify an isolated worktree |
+| Commit | May create local commits |
+| Push | May update a remote branch |
+| Memory | May query the personal memory MCP |
+| Integration mode | Direct, worktree, patch-only, or prohibited |
+
+Enforce important boundaries through Codex workspace roots, sandbox policy,
+trusted-project configuration, MCP tool allow-lists, and GitHub permissions.
+`AGENTS.md` is guidance, not a security boundary.
+
+Memory access deserves its own column. Personal memory should not be exposed in
+an untrusted repository, a collaborator-controlled repository, or a remote
+cloud task merely because source-code access is allowed. Registering the server
+globally but disabled, then enabling it only in approved trusted projects (or a
+separate `CODEX_HOME` profile), is safer than making it universally available.
+
+#### 11.6 Worktrees are necessary but not sufficient
+
+The worktree rule is sound. A worktree gives a session its own checkout, index,
+and `HEAD`, preventing one session's `git add` from sweeping another checkout's
+files. Worktrees still share the repository's object database and refs, and
+they do not prevent semantic merge conflicts in `continuity.md` or concurrent
+scripts that write to absolute shared paths.
+
+Operational refinements:
+
+- create or select the worktree before launching Codex, and launch Codex with
+  that directory as its workspace root;
+- use a unique branch per workstream/session, not a permanent branch that two
+  Sol sessions share;
+- fetch/rebase and inspect the exact pathspec immediately before committing;
+- keep linked worktrees outside the `gpt-hub` repository, for example under
+  `~/worktrees/<repo>/<agent>-<workstream>`; and
+- reserve `gpt-hub` for durable coordination artefacts, skills, configuration
+  sources, and cross-repository tools—not nested checkouts or disposable
+  scratch files.
+
+For continuity, one shared file remains reasonable, but headings should carry
+an agent, timestamp, and unique session/workstream identifier. Worktrees turn a
+silent overwrite into a visible merge conflict; the merge still needs human or
+agent adjudication. If conflicts become frequent, move immutable session-close
+entries to `wiki/handoffs/` and keep `wiki/continuity.md` as a short current-state
+index.
+
+#### 11.7 Do not invent a Git co-author identity
+
+This machine's Git author is presently `Shawn Ross <shawn@faims.edu.au>`.
+There is no verified OpenAI-provided Sol email to use in GitHub's
+`Co-Authored-By` convention. A fabricated address would create misleading
+provenance.
+
+Recommended default:
+
+```text
+Agent: Sol (OpenAI Codex)
+```
+
+Keep Shawn as the Git author and use a custom trailer for material assistance.
+If model-level provenance matters for an experiment, record harness, model,
+reasoning effort, and session/run identifier in the experiment manifest—not in
+every commit subject. The persona (`Sol`) and the model are separate fields;
+models will change.
+
+#### 11.8 Route work by fit and verification, not vendor stereotype
+
+The proposed division of labour undervalues Codex by assigning it mostly
+mechanical work, while treating judgement as inherently Claude-shaped. This
+Codex configuration uses a frontier model, and the current benchmark-design
+work is exactly the kind of sustained technical and methodological reasoning I
+can own.
+
+A better routing rule is:
+
+- **Codex:** repository-native implementation, debugging, tests, long-running
+  execution, reproducible evaluation, technical design, and independent
+  methodological review;
+- **Claude:** the PA rituals already deeply integrated with Claude, plus work
+  where Claude's accumulated session context is itself the asset;
+- **either or both:** hard synthesis and judgement, chosen according to
+  available context, quota, tool access, and the value of an independent
+  second view; and
+- **lower-cost models:** bounded, verifiable mechanical subtasks, with the
+  result reviewed by the owning agent.
+
+For high-stakes claims, cross-vendor disagreement is a feature: ask one system
+to derive the answer cold, then adjudicate differences from source artefacts.
+
+### Answers to §8
+
+**Q1 — MCP support.** Yes. Codex supports local `stdio` servers and remote
+streamable HTTP servers. The documented current page does not list SSE as a
+separate supported transport. Configuration lives in `config.toml`; the default
+is `~/.codex/config.toml`, and a trusted repository may use
+`.codex/config.toml`. The CLI provides `codex mcp add/list/login`. This machine
+currently has no MCP servers registered.
+
+**Q2 — sandbox and filesystem.** Local Codex runs against the host checkout but
+inside a configurable sandbox/approval policy; it is not accurately described
+as always containerised or always unrestricted. In this session I can read the
+home tree, write only the active workspace and temporary directories, spawn
+subprocesses, and request approval for Git index and network operations. A local
+`stdio` memory server is therefore viable if its executable, code, database,
+and fallback files are readable. LAN access is policy-dependent and may require
+approval; connectivity to `192.168.1.100` has not been tested in this review.
+
+**Q3 — `AGENTS.md`.** Yes. Nested files are supported from repository root to
+the current directory. At a given level, `AGENTS.override.md` wins over
+`AGENTS.md`; files nearer the current directory appear later and override
+broader instructions. Only one file per directory is loaded. The default
+combined limit is 32 KiB, configurable with `project_doc_max_bytes`.
+
+**Q4 — Git.** Yes. I can run Git and manage worktrees. Authenticated GitHub
+fetch/push works on this machine, subject to sandbox approval and normal
+non-fast-forward protection. The convention is practical if Codex is launched
+inside its pre-created worktree. A worktree prevents index collision but not
+shared-ref contention, absolute-path side effects, or merge conflicts.
+
+**Q5 — lifecycle events.** Yes. Codex currently documents `SessionStart`,
+`SessionEnd`, `Stop`, `PreCompact`, `PostCompact`, `UserPromptSubmit`, tool-use,
+permission, and subagent events. This changes the plan materially: automatic
+capture is possible. Do not port the existing hook unchanged. `SessionEnd` has
+a very short execution allowance (up to three seconds), and unfinished
+background hooks are cancelled when the session ends. It should enqueue a
+small durable receipt; heavier extraction should run in a separate worker or
+at a safer lifecycle point.
+
+**Q6 — identity.** Use Shawn's configured Git identity as author and
+`Agent: Sol (OpenAI Codex)` as the provenance trailer. Do not use a fictional
+co-author email.
+
+**Q7 — model and quota.** This machine's current Codex configuration is
+`gpt-5.6-sol` with `xhigh` reasoning effort. I do not have a reliable
+account-level weekly quota figure available inside this session. Quota and
+model should be observable run metadata, not hard-coded into the division of
+labour. Revisit routing using actual usage telemetry after a fortnight.
+
+**Q8 — slash commands and skills.** Yes. Codex has built-in slash commands,
+reusable `SKILL.md` workflows, plugins, subagents, MCP tools, and hooks. The
+official Claude import maps slash commands to skills. Port only the workflows
+that belong in Sol's remit; do not duplicate Claude-only rituals merely because
+translation is possible.
+
+**Q9 — what is wrong above.** The largest errors are: treating MCP as automatic
+write serialisation; assuming Codex lacks lifecycle hooks; omitting native
+Claude import; conflating a repository allow-list with enforcement; proposing
+one generated instruction file without first separating Claude-specific
+content; and restricting Sol to mechanical work despite the intended
+first-class role.
+
+### Revised architecture
+
+```text
+                           read approved docs
+personal-assistant ───────────────────────────────────┐
+  wiki + protocols                                    │
+  protected data/sync code                            ▼
+  read-only memory MCP ────────────────> Sol in repo worktree
+  future single-writer service <──────── approved memory proposals
+                                                │
+                                                ▼
+                                      repo files + continuity
+
+gpt-hub
+  ├── Codex configuration sources and installer
+  ├── Codex-native/adapted skills and hooks
+  ├── Sol and user observation registers
+  ├── cross-repository tools
+  └── integration decisions and test evidence
+
+~/worktrees/
+  └── isolated, disposable working checkouts (not inside gpt-hub)
+```
+
+Codex also has a separate native local-memory facility under `~/.codex`.
+Leave it disabled initially to avoid two competing sources of truth. After the
+shared MCP integration is stable, it could be enabled only as a disposable
+recall cache, with the PA store explicitly remaining canonical.
+
+### Revised implementation sequence
+
+0. **Create a capability matrix and data-sensitivity classification.** Exit:
+   read/edit/commit/push/memory permissions are decided per repository.
+1. **Run selective Claude `/import` as an inventory.** Exit: the candidate list
+   is reviewed, with no bulk activation.
+2. **Create private `gpt-hub`; keep worktrees under `~/worktrees/`.** Exit: hub
+   structure, ownership, backup, and sensitivity are decided.
+3. **Refactor common/Claude/Codex instruction sources.** Exit: the generated
+   `~/.codex/AGENTS.md` is under 32 KiB and contains no Claude-only commands.
+4. **Add minimal repo-local `AGENTS.md` to one pilot repository.** Exit: a fresh
+   Codex session reports the expected instruction chain.
+5. **Register the existing memory MCP read-only.** Exit: all six tools pass
+   against PostgreSQL and offline fallback, while the server is unavailable in
+   a denied repository.
+6. **Port three pilot workflows.** Exit: `handoff`, `observe`, and
+   `pre-run-review` work without direct PA memory writes.
+7. **Add lightweight hooks.** Exit: start/compact context works; the end hook
+   writes only an atomic queue receipt and fails safely.
+8. **Trial two weeks on `map-reader-llm`.** Exit: no shared-checkout incidents;
+   continuity is usable; effort and quota telemetry are collected.
+9. **Design and fault-test the single-writer memory service.** Exit:
+   concurrent-client, duplicate-call, crash, rollback, and audit-receipt tests
+   pass.
+10. **Consider memory write access.** Exit: Shawn explicitly approves after
+    reviewing the threat model and test evidence.
+
+### Pilot acceptance tests
+
+The integration is not complete merely because the tools appear in a menu.
+Before broadening access, demonstrate:
+
+1. **Instruction precedence:** global and nested repository guidance load in
+   the documented order and stay below the byte limit.
+2. **Checkout isolation:** simultaneous Claude and Sol edits use distinct
+   indexes; a staged-file census proves neither can sweep the other's work.
+3. **Memory least privilege:** approved repos can query all six read tools;
+   denied or untrusted repos cannot.
+4. **No direct canonical writes:** imported skills and hooks cannot append to
+   JSONL or mutate PA operational files.
+5. **Failure containment:** an unavailable database, MCP server, or end hook
+   does not block ordinary repository work and leaves an observable error.
+6. **Continuity round-trip:** Claude can resume from a Sol handoff, and Sol can
+   resume from a Claude handoff, without oral repair from Shawn.
+7. **Provenance:** a commit and a benchmark run can each answer who acted,
+   which harness/model was used, and which source artefacts supported claims.
+
+### Immediate recommendation to Shawn
+
+Approve a deliberately small first session:
+
+1. create `gpt-hub` as a **private** repository initially;
+2. establish the capability matrix and worktree location;
+3. use `/import` only to inventory portable artefacts;
+4. compose a minimal global `~/.codex/AGENTS.md`; and
+5. register the existing six-tool memory server read-only in one approved
+   pilot profile/project.
+
+Pause before hooks and all write access. That first slice gives Sol shared
+context and durable instructions while keeping the recent data-loss class out
+of scope.
+
+### Shawn's initial rulings (2026-08-22)
+
+Shawn ratified the following directions after reviewing Sol's response:
+
+1. **Read access:** Sol should have read access to everything, including the PA
+   wiki, protocols, instructions, and infrastructure. The earlier blanket
+   prohibition on touching `personal-assistant` is superseded.
+2. **Write access:** restrict Sol's write access as little as possible. Apply
+   narrow safeguards to genuinely sensitive or concurrency-prone assets rather
+   than a broad repository-level prohibition.
+3. **Reciprocal hub boundary:** `gpt-hub` will be Sol's repository. Claude
+   agents may read it but may not write to it.
+4. **Division of labour:** reject the characterisation of Sol as primarily a
+   mechanical-work agent. Sol may own substantive technical, methodological,
+   evaluative, and implementation work according to task fit and context.
+
+These rulings establish the direction of travel. The exact path-level write
+controls, memory-write design, and repository capability matrix remain to be
+specified during implementation.
+
+### Codex documentation consulted
+
+- [Custom instructions with `AGENTS.md`][agents-docs]
+- [Model Context Protocol][mcp-docs]
+- [Hooks][hooks-docs]
+- [Import from another agent][import-docs]
+- [Codex memories][memories-docs]
+- [Skills][skills-docs]
+
+[agents-docs]: https://learn.chatgpt.com/docs/agent-configuration/agents-md.md
+[hooks-docs]: https://learn.chatgpt.com/docs/hooks.md
+[import-docs]: https://learn.chatgpt.com/docs/import.md
+[mcp-docs]: https://learn.chatgpt.com/docs/extend/mcp.md
+[memories-docs]: https://learn.chatgpt.com/docs/customization/memories.md
+[skills-docs]: https://developers.openai.com/plugins/concepts/skills.md
