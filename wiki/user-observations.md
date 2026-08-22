@@ -2429,3 +2429,40 @@ time" both arrived as one-line boundaries rather than discussions. Each **preven
 plausible-looking action that would have been wrong** — marking a live project's branding
 superseded, and committing a reusable signature graphic to a repository. **I had flagged both
 as concerns but had not resolved them; you resolved them instantly.**
+
+## 2026-08-22 (PA — credential reconciliation + lit-scout fix, handoff) — Drafted candidates (pending review)
+
+### Candidate A — "check first" was the whole instruction, and it was the right one
+
+You asked me to compare the two `.env` files and said you *thought* a clean copy from zbook to
+amd-tower was the answer, "but please check first". The check is what mattered: a straight copy
+would have deleted three keys and clobbered three more, including two Anthropic credentials that
+are the same length and so look identical to any name-based comparison. **The instruction that
+saved it was the hedge, not the plan.** Worth noting because the plan was stated confidently and
+I would have been within instructions to execute it.
+
+### Candidate B — you gave the rule, not the answer, twice
+
+Told the keys diverged, you replied that separate keys for paid services is deliberate *and* that
+the practice needs an audit. Told the variable was misnamed, you replied that it is a group ID
+*and* that the label is loosely coupled to the library name on purpose, because the library will
+be renamed. **Each time the second half was the more valuable half** — it is what stops a later
+session "fixing" the loose coupling or treating the practice as settled. A bare "yes, rename it"
+would have been correct and would have lost that.
+
+### Candidate C — the mid-turn corrections were cheap and well-timed
+
+Twice you corrected me while I was working rather than after: "no, it's Zotero" whilst I was
+reasoning about whether a new key was a paid service, and "yes, it's a group ID" on the shape
+mismatch. Both landed before I had committed anything to a durable artefact. **The cost of a
+correction rises sharply once it is written into a reference doc**, and these arrived on the
+cheap side of that line.
+
+### Candidate D — you stopped the widening at the right point
+
+The credential work kept expanding as each probe exposed the next problem, and you let it run
+through a resolver, a rename, and a documentation audit. Then, when it reached a genuine design
+question — consolidate the stores or not — you stopped it: *"I think I need to give that more
+thought. Can we add the issue to my inbox and leave it for now?"* **The line you drew was between
+work that follows from evidence and work that requires a preference**, which is a cleaner
+boundary than session length or step count.

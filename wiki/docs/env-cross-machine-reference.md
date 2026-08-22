@@ -182,9 +182,23 @@ unverified.
   credentials one `git add` from a collaborative repository. Left at
   `664` deliberately: changing a tracked file's mode shows up as a diff
   for every collaborator.
-- **amd-tower cannot reach GitHub from a non-interactive SSH session.**
-  `git fetch` there over `ssh -o BatchMode=yes` fails with
-  `Permission denied (publickey)`, because the GitHub key is only
-  available in Shawn's interactive session. Anything that must land on
-  amd-tower needs either a pull he runs himself, or a direct file copy.
-  Plan around it rather than rediscovering it.
+- **On amd-tower, git works over SSH — but only if you stop it
+  recursing into the submodule.** A bare `git fetch` there under
+  `ssh -o BatchMode=yes` fails with `Permission denied (publickey)`,
+  which reads as "no GitHub access from a non-interactive session" and
+  is what this note said until it was retested. **It is not true.** The
+  parent repo's remote is HTTPS (`https://github.com/saross/personal-assistant.git`)
+  and fetches fine unattended; the `data` submodule's remote is SSH
+  (`git@github.com:saross/pa-data.git`) and is the only thing that
+  fails. So:
+
+  ```bash
+  ssh amd-tower 'cd ~/personal-assistant && \
+    git -c submodule.recurse=false fetch origin && \
+    git -c submodule.recurse=false merge --ff-only origin/main'
+  ```
+
+  works, and was used on 2026-08-22 to land the OpenAI resolver there
+  without Shawn's involvement. **Read the error's scope before
+  concluding the capability is absent** — the failing component was one
+  submodule, not the connection.
