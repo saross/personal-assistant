@@ -2175,6 +2175,64 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-08-22 (Sat) — Citation-deletion bug fixed; credentials reconciled across machines
+
+Ran from a `fieldmark-docs-staging` session, so the fieldmark-side work
+(Macquarie, BolgiaTen) is logged there; this entry covers the PA work.
+
+**The lit-scout verifier no longer deletes citations it could not
+check** (`cef6a5e`, Tier 1 item 1 of the 2026-08-21 politeness audit,
+and the surviving half of D-X4). The deletion path was narrower than
+the audit described: `agents/lit-scout.md` already preserved
+unverifiable rows, but the verifier was **manufacturing** a
+`doi_resolves` FAIL from an all-unverifiable row, and the proposer then
+correctly removed a row it had been told was fabricated. A
+`doi_resolves` FAIL now requires a status code actually seen and
+re-checked with `curl`, since `lit-search.py metadata` renders 404 and
+429 identically. **The `unverifiable` token was deliberately not
+renamed** to the audit's `undetermined`:
+`scripts/lit-scout-zotero-import.py:1190` and `:1247` membership-test
+the literal tuple, so a rename would have stripped the Zotero review
+tag from exactly the rows needing it. Its definition was fixed instead.
+
+**OpenAI keys resolve from the hostname** (`fb99205`).
+`scripts/_openai_key.py`; `bulk-archive.py` and `bake-off-metadata.py`
+had read `OPENAI_API_KEY_PA_AMDT` unconditionally and so could not run
+on zbook at all. 26 tests, suite at 1143. Verified live on both hosts.
+
+**`.env` reconciled across zbook and amd-tower** at Shawn's request,
+compared by salted value-hash so no secret entered the session. **A
+straight copy would have been destructive** — three keys hold
+deliberately different per-machine values. Both files now hold 26 keys.
+Shawn confirmed the per-machine practice for paid services and asked
+for a rigour audit later. Five machine-agnostic keys synced;
+`ZOTERO_SUBSTACK_AI_COLLECTIONS` renamed to `..._GROUP_ID` on both
+after its 7-digit value contradicted its name.
+
+**A sweep found six `.env` files** under `~/Code` plus PA's, four of
+them mode `664`, now all `600`. `~/Code/FAIMS3/tests/.env` is tracked
+and unignored in the shared upstream repo — currently harmless (all
+credential fields empty) but a hazard if ever populated locally.
+
+- `wiki/docs/env-cross-machine-reference.md` — new; what differs by
+  design, and why a copy is the wrong instinct
+- `scripts/env-fingerprint.sh` — promoted out of the scratchpad; takes
+  an optional path
+- `global-claude-md/zotero-reference.md` — audited complete for PA's
+  `.env` (17/17), and bounded: it describes five of at least seven
+  Zotero keys, the rest being project-local
+- **Correction made at handoff**: I had recorded that amd-tower cannot
+  reach GitHub unattended. Wrong — the parent repo is HTTPS and fetches
+  fine; only the `data` submodule's SSH remote fails. With
+  `-c submodule.recurse=false` the resolver was landed there without
+  Shawn. Doc corrected; `claude-obs 51`.
+- **Observation gate: four user-obs candidates pending** in
+  `wiki/user-observations.md` (2026-08-22 section). `claude-obs 51–53`
+  written. Three wiki candidates in `notes/_inbox.md`.
+- **Left uncommitted deliberately**: the `data` submodule carries a
+  concurrent session's dirty files plus this session's inbox row and
+  wiki candidates. Do not sweep.
+
 ### 2026-07-27 (Mon, latest AR) — WIND-DOWN (light): shared-group write ruling recorded; work moves to amd-tower
 
 Light wind-down by design (full /handoff ran for AR on 2026-07-24, and
