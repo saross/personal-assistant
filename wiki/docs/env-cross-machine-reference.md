@@ -154,6 +154,14 @@ unverified.
   append. Both files were verified before the 2026-08-22 sync, and
   timestamped `.env.bak-YYYYmmdd-HHMMSS` copies were taken on each host
   first.
+- **`~/personal-assistant/.env` is not the only credential store.**
+  `~/Code/blue-mountains/.env` holds two further Zotero API keys and a
+  group ID, all three distinct values that appear nowhere in
+  personal-assistant (compared by salted hash, 2026-08-22). It is
+  gitignored, and its mode was `664` until 2026-08-22, when it was
+  tightened to `600`. **Sweep for `.env` files across `~/Code` when
+  auditing credentials**, not just the personal-assistant one, or the
+  inventory will under-count exactly when it matters, at revocation.
 - **amd-tower cannot reach GitHub from a non-interactive SSH session.**
   `git fetch` there over `ssh -o BatchMode=yes` fails with
   `Permission denied (publickey)`, because the GitHub key is only

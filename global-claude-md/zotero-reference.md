@@ -183,8 +183,8 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 | `ZOTERO_TRAP_GROUP_ID` | `2275173` | — | no script yet |
 | `ZOTERO_FAIMS_INTERNAL_GROUP_ID` | `525489` | — | no script yet |
 | `ZOTERO_FAIMS_PROJECT_GROUP_ID` | `2542876` | — | no script yet |
-| `ZOTERO_API_KEY_SUBSTACK_AI` | Added by Shawn 2026-08-22 for the Substack-AI work. **Scope not yet verified** — run `key_info()` against `/keys/current` and record what it actually grants before relying on it, as `ZOTERO_API_KEY_SDAM_AU` above shows a declared scope need not hold in practice | unverified | no script yet |
-| `ZOTERO_SUBSTACK_AI_GROUP_ID` | Group library ID paired with the key above. **Renamed from `ZOTERO_SUBSTACK_AI_COLLECTIONS` on 2026-08-22 (both machines)**: the plural name said collection keys whilst the value is a 7-digit group ID, which would have failed at the first call site as a puzzling API error. Group name not yet recorded here | — | no script yet |
+| `ZOTERO_API_KEY_SUBSTACK_AI` | **Write to the `ai-transformation` library; read everything else** (Shawn, 2026-08-22). Added 2026-08-22 for the Substack work. Scope as stated by Shawn, **not yet machine-verified** against `/keys/current` — worth doing before a first write, since `ZOTERO_API_KEY_SDAM_AU` above is a standing example of a declared scope that does not hold in practice | narrow (write), broad (read) | no script yet |
+| `ZOTERO_SUBSTACK_AI_GROUP_ID` | Group library ID for `ai-transformation`, paired with the key above. **Renamed from `ZOTERO_SUBSTACK_AI_COLLECTIONS` on 2026-08-22 (both machines)**: the plural name said collection keys whilst the value is a 7-digit group ID, which would have failed at the first call site as a puzzling API error | — | no script yet |
 
 All key scopes above re-verified against `/keys/current` on 2026-07-27; all
 four keys read both the personal library (user 3097511) and group 5861859
@@ -199,11 +199,48 @@ number. That regularity is what caught the mislabelled Substack-AI variable
 on 2026-08-22 from its shape alone, before anything read it. Keep new
 variables inside the convention so the same check keeps working.
 
+**The variable name tracks the *kind* of value, not the library's name.**
+`ZOTERO_SUBSTACK_AI_*` points at a library currently called
+`ai-transformation`, and that mismatch is deliberate: the library will
+probably be renamed once the Substack itself has a name, and Shawn
+loosely coupled the label so a rename there does not force an edit on
+two machines plus every consumer (Shawn, 2026-08-22). **Do not "fix"
+the variable to match the library name.** Distinguish the two axes: the
+value's *form* must match its name's suffix, which is a correctness
+check, whilst the label's *subject* is free, which is a coupling
+choice.
+
 **Zotero credentials are shared across machines, not per-machine.** Every
 key in this table holds the same value on zbook and amd-tower, unlike the
 paid-service credentials, which are deliberately issued per machine. So a
 new Zotero key is copied to the other machine rather than reissued, and a
 rename has to land on both. See `wiki/docs/env-cross-machine-reference.md`.
+
+### What this table covers, and what it does not
+
+**Audited 2026-08-22: complete for `~/personal-assistant/.env`.** All 17
+`ZOTERO_*` variables in that file appear above, and the table names no
+variable that the file lacks. Re-run the audit by diffing the two name
+sets rather than reading by eye.
+
+**Its scope is that one file, which is narrower than "every Zotero key
+Shawn holds".** `~/Code/blue-mountains/.env` carries a further
+`ZOTERO_API_KEY_READONLY` and `ZOTERO_API_KEY_READWRITE`, plus its own
+`ZOTERO_GROUP_ID`. Compared by salted hash on 2026-08-22, **all three
+are distinct values that appear nowhere in personal-assistant** — so
+they are separate credentials, not copies, and this table has never
+described them.
+
+Project-local keys living in the project is a perfectly reasonable
+arrangement and nothing here proposes moving them. But it does mean a
+reader who takes this table as the complete inventory will
+under-count: **at least seven Zotero API keys exist on this machine
+across two stores, and five of them are described here.** That matters
+for revocation, which is the one operation that needs the full list.
+Worth settling during the credential-rigour audit Shawn has flagged
+(`wiki/docs/env-cross-machine-reference.md`): either widen this table
+to carry pointers to project-local keys, or state that it deliberately
+does not and name where else to look.
 
 ### Target-suffixed naming convention (adopted 2026-05-22)
 
