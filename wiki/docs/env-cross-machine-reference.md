@@ -1,7 +1,10 @@
 # `.env` across machines — what is shared, what is not
 
 **Established 2026-08-22** by comparing `~/personal-assistant/.env` on
-zbook-ubuntu and amd-tower-ubuntu. Both files then carried **24 keys**.
+zbook-ubuntu and amd-tower-ubuntu. Both files carried **26 keys** at the
+end of that day. Treat the count as a rough tripwire rather than an
+inventory: it moves whenever a key is added, and the point of the
+fingerprint comparison is that you never need a maintained list.
 
 **Read this before syncing `.env` between machines.** Three keys hold
 deliberately different values on each host, and a straight copy in
@@ -106,6 +109,32 @@ value passed through a model context:
 `GITHUB_API_PUBLIC_REPOS_TOKEN` has **no consumer anywhere in this
 repository**. It is carried on both machines because it is harmless to
 hold and expensive to rediscover, not because anything reads it.
+
+**Zotero keys are shared, not per-machine.** All of them held identical
+values on both hosts before any syncing, so the Zotero family follows
+the shared convention and a new one should be copied rather than
+reissued. `ZOTERO_API_KEY_SUBSTACK_AI` and
+`ZOTERO_SUBSTACK_AI_COLLECTIONS` were added on zbook and copied across
+on 2026-08-22 on that basis.
+
+**Naming convention worth preserving, because it makes shape errors
+visible.** Across the Zotero family the name predicts the value's form
+exactly: every `*_COLLECTION` holds an 8-character upper-alphanumeric
+Zotero collection key, and every `*_GROUP_ID` or `*_LIBRARY_ID` holds a
+6-or-7-digit number. A variable whose value does not match the form its
+name implies is worth querying before it reaches a call site, where it
+surfaces as a baffling API error rather than a naming problem. See the
+open question about `ZOTERO_SUBSTACK_AI_COLLECTIONS` below.
+
+**Open question, raised 2026-08-22, not resolved.**
+`ZOTERO_SUBSTACK_AI_COLLECTIONS` holds a 7-digit all-numeric value,
+which is the shape of a group or library ID rather than of a collection
+key, despite the plural `_COLLECTIONS` name. It duplicates no other
+value in the file, so it is a distinct identifier rather than a stray
+copy. Nothing reads it yet and it is not in
+`global-claude-md/zotero-reference.md`, so nothing is broken today.
+Flagged to Shawn; either the name or the value wants correcting before
+something depends on it, and the correction must land on both machines.
 
 ## Two operational notes
 
