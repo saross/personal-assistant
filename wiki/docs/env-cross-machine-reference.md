@@ -32,12 +32,24 @@ destroys.
 
 Equal lengths with different values is the signature of **separately
 issued per-machine credentials** rather than drift: two distinct
-Anthropic keys, and two distinct Cloudflare R2 token pairs. That is good
-practice — either machine can be revoked without touching the other — so
-the divergence is a feature. **Shawn has not confirmed this reading**
-(flagged to him 2026-08-22); if he ever says they should match, reissue
-rather than copy, so one machine's compromise cannot silently become
+Anthropic keys, and two distinct Cloudflare R2 token pairs.
+
+**Confirmed by Shawn 2026-08-22: for paid services he is deliberately
+maintaining separate keys per machine.** Either machine can then be
+revoked without touching the other. So the divergence is the intended
+posture, and **the correct response to a mismatch is to reissue, never
+to copy** — copying makes one machine's compromise silently become
 both.
+
+He also flagged that **the practice is not yet rigorous and wants an
+audit of it** with Claude at some later point. Two things that audit
+should probably settle, noted here so they are not rediscovered:
+whether every paid service is actually covered (`GEMINI_API_KEY` and
+`OSF_API_KEY` are currently *identical* across machines, so they are
+either unpaid, or exceptions to the rule), and whether there is a record
+anywhere of which key belongs to which machine at the provider end,
+since a key you cannot attribute is a key you cannot confidently
+revoke.
 
 ## Machine-scoped by naming convention
 
@@ -46,15 +58,38 @@ zbook; `OPENAI_API_KEY_MR_AMDT` and `OPENAI_API_KEY_PA_AMDT` only on
 amd-tower. The `_ZBOOK` / `_AMDT` suffix says where the key belongs, so
 absence is correct rather than a gap.
 
-**Latent bug, unfixed as of 2026-08-22.**
-`scripts/bulk-archive.py:1399` and `scripts/bake-off-metadata.py:718`
-both read `OPENAI_API_KEY_PA_AMDT` unconditionally. **Those two scripts
-therefore cannot run on zbook**, which has the equivalent credential
-under `OPENAI_API_KEY_PA_ZBOOK`. Either resolve the suffix from the
-hostname or fall back across both spellings. Left alone deliberately:
-copying the `_AMDT` value onto zbook would paper over it whilst
-duplicating a credential across machines, which is a posture decision
-for Shawn, not a bug fix.
+**Resolution is automatic since 2026-08-22.** `scripts/_openai_key.py`
+derives the suffix from the hostname, so callers ask for a role and get
+the right key wherever they run:
+
+```python
+from _openai_key import resolve_openai_key
+api_key = resolve_openai_key("PA")
+```
+
+Order: an unsuffixed `OPENAI_API_KEY_<ROLE>` override wins outright;
+otherwise the suffix comes from `OPENAI_KEY_SUFFIX` or the hostname;
+otherwise it raises. Matching is case-insensitive and substring-based,
+because amd-tower's actual hostname is the mixed-case
+`AMD-tower-ubuntu` whilst the network doc writes it lowercase, and an
+FQDN must resolve too.
+
+**A new machine needs no code change** — set `OPENAI_KEY_SUFFIX` in its
+environment, or add one row to `_HOST_SUFFIXES`.
+
+This fixed a real bug: `bulk-archive.py` and `bake-off-metadata.py` both
+read `OPENAI_API_KEY_PA_AMDT` unconditionally and so **could not run on
+zbook at all**, despite zbook holding a usable credential. The error
+compounded it by naming the variable it wanted rather than the one
+present, sending the reader after a missing key instead of a mis-resolved
+name. The new error names the suffixes the environment actually holds,
+never a key value, and will not point a missing `PA` lookup at an `MR`
+credential.
+
+Verified live on both hosts 2026-08-22: zbook resolves `ZBOOK`,
+amd-tower resolves `AMDT`, both roles present on both. 26 tests in
+`tests/test_openai_key.py`, each against an injected dict so none can
+touch a real key or depend on its host.
 
 ## Everything else should match
 
@@ -83,3 +118,9 @@ hold and expensive to rediscover, not because anything reads it.
   append. Both files were verified before the 2026-08-22 sync, and
   timestamped `.env.bak-YYYYmmdd-HHMMSS` copies were taken on each host
   first.
+- **amd-tower cannot reach GitHub from a non-interactive SSH session.**
+  `git fetch` there over `ssh -o BatchMode=yes` fails with
+  `Permission denied (publickey)`, because the GitHub key is only
+  available in Shawn's interactive session. Anything that must land on
+  amd-tower needs either a pull he runs himself, or a direct file copy.
+  Plan around it rather than rediscovering it.
