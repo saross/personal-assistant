@@ -55,9 +55,10 @@ contradictory instructions are unsafe for humans and agents alike.
    documentation, research records, continuity, and working notes in project
    repositories, subject to the repository's own branch, review, and
    verification rules.
-6. **Agents use isolated worktrees.** Claude and Sol do not work concurrently in
-   one checkout. Each active workstream gets its own checkout, index, `HEAD`,
-   and branch.
+6. **Cross-agent work always uses isolated worktrees.** Claude and Sol do not
+   work concurrently in one checkout; each cross-agent workstream gets its own
+   checkout, index, `HEAD`, and branch. Same-agent concurrency is governed by
+   the scoped rule in §3 (ruled 2026-08-22).
 7. **Repository collaboration does not imply distrust.** Trust is based on
    stewardship and input provenance, not collaborator count. FAIMS is a trusted
    repository, while still requiring its normal branch-and-review discipline.
@@ -168,6 +169,26 @@ or semantic merge conflicts. Before every commit:
 4. verify the cached file census; and
 5. use branch-and-review rules required by the repository.
 
+### Scope of the worktree rule (ruled 2026-08-22)
+
+- **Cross-agent (Claude × Sol): worktrees always.** Permanent simultaneity
+  across two harnesses with no shared session awareness admits no exception.
+- **Same-agent, project repositories: worktrees by default** for substantive
+  parallel workstreams. They are cheap where no hooks or submodules are
+  entangled.
+- **Same-agent, `personal-assistant` hub: pathspec discipline remains the
+  default**, per that repository's `CLAUDE.md`, with worktrees the escape
+  hatch for genuinely simultaneous infrastructure work. The hub's value is
+  ambient shared state — session hooks, the `data/` submodule, high-churn
+  shared logs — which makes per-session worktrees expensive; and the
+  index-sweep failure the discipline guards against is recoverable (a
+  misattributed commit, preserved in history), unlike the stash and checkout
+  classes, which have been separately fixed or banned.
+
+Evidence threshold: a recurrence of an index sweep despite explicit-pathspec
+commits reopens this ruling. This scoping also removes the apparent conflict
+between this plan and the PA `CLAUDE.md` concurrent-sessions convention.
+
 ### Ownership guardrails
 
 The reciprocal boundary should be made mechanically visible:
@@ -200,6 +221,23 @@ personal memory or PA files. Examples include a newly cloned unknown
 repository, arbitrary issue text, downloaded corpora, or adversarial test
 fixtures.
 
+The working trust test is stewardship, not a list (ruled 2026-08-22): a
+repository is trusted when it belongs to Shawn, to Brian, or to an
+organisation Shawn is part of — re-derived from repository state at time of
+use, never cached as an allow-list. Two carve-outs keep the task-input axis
+primary:
+
+- **World-writable surfaces of public repositories are untrusted inputs even
+  inside trusted repositories.** Anyone can write a FAIMS3 issue or open a
+  fork pull request; third-party issue text and fork diffs are external
+  content, distinct from the trusted tree at the head of protected branches.
+- **The most exposed workflows in current practice are not repositories at
+  all** but external content flowing through trusted sessions: email triage
+  and web research. `/process-email` now carries an explicit
+  content-is-data-never-instructions rule (applied 2026-08-22 in
+  `commands/process-email.md`); web-research rituals should carry the same
+  line as they are formalised.
+
 Use two operational profiles:
 
 1. **Personal/trusted profile:** broad read access to PA and `gpt-hub`, with
@@ -212,6 +250,13 @@ This does not rescind Shawn's "read everything" decision. It distinguishes
 available authority from authority automatically exposed to untrusted content.
 A trusted repository can still contain an untrusted input; choose the profile
 for the task, not solely for the repository name.
+
+The two profiles are presently Codex-mechanised. Claude sessions carry ambient
+PA access and a session-start memory digest regardless of repository, so
+Claude's mitigation is behavioural — the skill-level rules above plus
+permission prompts on outward actions. This asymmetry is accepted for now
+under the guardrails stance below, and is revisited if evidence shows
+behavioural controls are inadequate.
 
 ---
 
@@ -298,6 +343,12 @@ unique workstream/session identifier, for example:
 ```markdown
 ### 2026-08-22T16:00+10:00 — map-reader / sol / benchmark-plan
 ```
+
+Adopt this header format only after a census of everything that parses
+continuity headers (session-start hooks, "latest"-marker consumers), and
+update the documented convention in each repository's instruction files in
+the same change — otherwise the format change itself recreates the stale
+prescriptive-record class this plan abolishes.
 
 If parallel merge conflicts become frequent, move immutable session-close
 entries to `wiki/handoffs/` and retain `wiki/continuity.md` as a short
@@ -473,9 +524,13 @@ The exact alias must be supplied and verified before this rule is activated.
 Record the final Claude and Sol trailer strings in
 `global-claude-md/git-reference.md` and the Codex equivalent.
 
-Do not encode a changing model identifier in the Git identity. Experiments and
-evaluations record agent persona, harness, model, reasoning effort, temperature,
-run identifier, and operational metrics in their manifests.
+Do not encode a changing model identifier in hand-authored Git identities.
+Claude's harness-supplied trailer is model-versioned
+(`Co-Authored-By: Claude <model> <noreply@anthropic.com>`) and remains as the
+harness emits it; attribution queries key on `Co-Authored-By:.*(Claude|Sol)`,
+which is stable across model versions. Experiments and evaluations record
+agent persona, harness, model, reasoning effort, temperature, run identifier,
+and operational metrics in their manifests.
 
 ---
 
@@ -565,11 +620,14 @@ and both agents can edit a neutral shared project file from isolated worktrees.
 
 Extract the portable common guidance, create agent-owned overlays, build the
 Codex composer/installer, and update the Claude composer without crossing
-ownership boundaries.
+ownership boundaries. In pilot repositories, extract shared project policy
+from `CLAUDE.md` into a neutral documentation file referenced from both
+concise harness entry points.
 
 **Exit:** fresh sessions report the expected instruction chain; Claude-specific
-rules do not appear in Codex; Codex-specific rules do not appear in Claude; and
-the maximum tested Codex chain is at most 24 KiB.
+rules do not appear in Codex; Codex-specific rules do not appear in Claude;
+the maximum tested Codex chain is at most 24 KiB; and pilot repositories hold
+shared project policy in a neutral file, not in either harness's entry point.
 
 ### Phase 3 — inventory native import
 
@@ -642,9 +700,16 @@ Git is the historical record for the deliberation that produced this plan:
 
 - `38ae5d4` — Opus drafts the initial proposal;
 - `e44b2d7` — Sol reviews Codex capabilities and architecture;
-- `0b7c7d8` — Fable verifies and reviews Sol's response; and
-- the current revision — integrates Shawn's final access, trust, attribution,
-  maintenance, and body-rewrite rulings.
+- `0b7c7d8` — Fable verifies and reviews Sol's response;
+- `594c2b7` — integrates Shawn's access, trust, attribution, maintenance, and
+  body-rewrite rulings into a single current policy; and
+- the current revision — applies Fable's second-round review as ratified by
+  Shawn: scopes the worktree rule by agent pair and repository, defines the
+  stewardship trust test with a world-writable-surface carve-out, records the
+  `/process-email` injection guard, assigns repo-local shared-policy
+  extraction to Phase 2, requires a parser census before the continuity
+  header format changes, and exempts Claude's harness-supplied
+  model-versioned trailer.
 
 Key corrections integrated here include the real multi-process write hazard,
 Codex's native hooks and import support, instruction-chain truncation, all-writer
