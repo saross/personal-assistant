@@ -108,6 +108,24 @@ Memories are extracted from sessions via hooks and stored in `~/personal-assista
 - Never commit secrets, API keys, .env files.
 - Test destructive operations before executing.
 
+## Agent Ownership Boundaries (Sol integration)
+
+Sol (GPT, running in OpenAI Codex) is a first-class agent in this
+infrastructure. Canonical policy:
+`~/personal-assistant/wiki/planning/sol-in-codex-integration.md`.
+
+- **Sol-owned surfaces are read and proposal-only for Claude:** `~/gpt-hub/`,
+  all `AGENTS.md`/`AGENTS.override.md` files, and `.codex/` directories.
+  Settings-level deny rules enforce this for the file tools. Do not bypass
+  them via Bash — they are guardrails against mistakes, not obstacles.
+- **Proposal route for a blocked path:** draft the exact change (diff or full
+  text) in the current conversation or in a `~/personal-assistant/wiki/`
+  planning document, and hand it to Sol or Shawn to apply. Never write the
+  change into a Sol-owned path.
+- **Cross-agent concurrency:** never share a checkout with Sol. Cross-agent
+  work uses worktrees under `~/worktrees/<repo>/<agent>-<workstream>` (plan
+  §3); same-agent concurrency follows the scoped rule there.
+
 ## Session Summaries
 
 At natural stopping points (milestones, long conversations, before session end), offer a session summary as a numbered list with bold action verbs.
