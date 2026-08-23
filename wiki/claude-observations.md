@@ -1088,3 +1088,36 @@ appending keys, tightening modes, writing docs. Stop at anything **destructive o
 I copied the shared Zotero keys without asking and left the three divergent paid credentials
 alone, and that line held all session. The signal to stop is the character of the action, not the
 number of steps taken.
+
+### claude-obs 54 — Shawn's corrections beat my inferences every time there was a physical object involved (2026-08-23)
+
+Across one afternoon I was wrong about the throat plate (read *"I do have"* as *"I don't"*), the
+chipper count (4 from a photo, 3 by hand), the saw's blade size (255 vs 260mm) and the collection
+weight (*"one fit person"* vs 59kg). **He was at the item; I was at a photograph.** Each of my
+errors then propagated into a chain of reasoning before he caught it. ⇒ **Where a physical fact
+is checkable by the person in the room, propose the check rather than the conclusion.**
+
+### claude-obs 55 — his own ad copy outperformed mine, and in ways worth naming (2026-08-23)
+
+The piano ad's *"the piano player in the household moved out at the end of 2018"* converts a
+13-year-old instrument's age from liability into low-hours evidence, with a specific ordinary
+reason rather than an assertion. The drill press ad replaced my *"it's heavy, bring two people"*
+with 1,580 × 340 × 630mm and 60kg plus *"can be partially dismantled"*. **Both do work my drafts
+could not: one reframes the objection, the other removes friction.** ⇒ **He writes better sales
+prose than I do; my value here is structure, verification and the rules — not the sentences.**
+
+### claude-obs 56 — SELF-CRITIQUE: I priced from qualities, not from ceilings, three times out of four (2026-08-23)
+
+Drill press 25% over, dado 47%, GRR-RIPPERs 42% **and above new retail**. Each estimate was built
+from a *reason the thing should be worth more* — the vice's presence, scarcity, "boxed unused".
+**The one I got right, the saw, is the only one where I started from what it costs new.**
+⇒ **A qualitative reason a thing should be worth more is not a price.** Recorded as settled, not
+provisional, because the counter-example is in the same dataset.
+
+### claude-obs 57 — SELF-CRITIQUE: I broke a table by writing prose into it, and only noticed via a count (2026-08-23)
+
+Multi-line content inserted into a markdown table cell terminated the row and spilled 32 lines out
+of `waiting-for.md`, inflating the open count 26 → 34. **I did not notice while writing it; I
+noticed the next morning because the number jumped.** ⇒ **Structural edits to tabular files need a
+structural check afterwards — the count, not the eye.** The same class as the ad bodies I
+hard-wrapped, which pasted into web forms as ragged columns.

@@ -2466,3 +2466,25 @@ question — consolidate the stores or not — you stopped it: *"I think I need 
 thought. Can we add the issue to my inbox and leave it for now?"* **The line you drew was between
 work that follows from evidence and work that requires a preference**, which is a cleaner
 boundary than session length or step count.
+
+## 2026-08-20→23 (PA-hub / move, memory repair, listings, handoff) — Drafted candidates (pending review)
+
+**Candidate A — the pre-posting verification gate earned its place.** I built a
+"verify before you claim it" step into the GRR-RIPPER ad rather than asserting *"both unused"*.
+That gate caught a claim that would have been wrong at handover. **Worth knowing whether the
+gate felt useful or like friction**, since I now apply it by default to condition claims.
+
+**Candidate B — correcting my own recommendation within the hour.** I said *"take the Privia
+step-down on schedule"*, then reversed it ten minutes later once the insights data arrived
+(5 clicks). **Was the reversal useful, or did it read as churn?** I would rather change a
+recommendation on evidence than defend it, but the cost is that advice feels unstable.
+
+**Candidate C — the delegation to Sol worked as a check on me.** Three of four of my prices were
+too high and Sol's comparables corrected them. **Did routing pricing to Sol feel like a good
+division of labour, or like an extra round-trip?** It changes how much I should propose numbers
+at all versus flagging that a number is needed.
+
+**Candidate D — writing the rules down as they emerged.** Several general rules were extracted
+mid-task (new-price-first, view-gated step-downs, split-the-singles, both-forms model numbers).
+**Useful, or did it slow the actual work?**
+

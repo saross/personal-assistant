@@ -2175,6 +2175,88 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-08-20→23 (Thu 20 → Sun 23 Aug, latest PA) — SESSION CLOSE (/handoff): THE MOVE SPINE MOVED FIVE TIMES AND THE FIFTH ONE HAS A REASON; 41 MEMORY RECORDS WERE RECOVERED FROM A LOSS NOBODY HAD NOTICED; THREE FALSE ALARMS TURNED OUT TO BE THE SAME MISTAKE
+
+Four-day session across two standups and two recaps. **Three things were repaired that nobody
+knew were broken, and the week's biggest finding is a shape rather than an incident.**
+
+**1. ⭐⭐ THE MEMORY SYSTEM HAD SILENTLY LOST 41 RECORDS AND ITS OWN GATE READ CLEAN.** Opened as
+*"I think the postgres datastore is broken?"* — it was not; **it was the only surviving copy**.
+38 records existed in PostgreSQL and nowhere else, 3 more in a July stash and nowhere at all.
+**Cause: `daily-sync.sh` stashes uncommitted data-submodule changes before pulling, the
+extraction hook appends continuously, and on 2026-08-19 a run was killed between stash and pop.**
+It runs as a **SessionStart hook child with a 90s timeout**, so ⚠ **the existing `EXIT` trap could
+never have saved it** — a killed shell runs no trap. **⇒ Recovery had to move to the START of the
+next run**, which is what shipped: `scripts/check-memory-drift.py` (two loss paths, PG-only and
+stash-only) wired read-only into daily-sync, plus append-only files now **committed rather than
+stashed**. Parent `3ad6fa6`; recoveries `data` **108d044** and **43fcd15**.
+⚠ **The rebuild the backlog prescribes would have destroyed all 38** — a rebuild treats JSONL as
+complete by definition. That trap is now recorded.
+
+**2. ⭐⭐ THREE "FINDINGS" THIS WEEK WERE THE SAME ERROR: A PARTIAL VIEW OF A SPLIT POPULATION,
+MISTAKEN FOR THE WHOLE.** (a) A reported **12-week hole in the session archive did not exist** —
+a `*.jsonl` glob missed every `*.jsonl.gz`, and map-reader is archived under **two slugs**
+(`map-reader-llm` to 27 Jul, `vlm-burial-mound-detection` from 23 May). **I made the same error
+first and was one command from reporting a SEVEN-month hole.** (b) The memory drift signal was
+buried under **4,684 legitimately archived records**. (c) **Two different settlements** — family
+court (~25 Sept, the gate) and property settlement (12–30 Oct) — were being treated as one, and
+Shawn caught it. **⇒ Brief for Fable: `wiki/planning/cc-archives-health-and-hardening-2026-08-22.md`,
+since acted on.** ⭐ **The generalisation is the valuable part: a signal emitted but not surfaced
+is indistinguishable from no signal** — both gates were working and reporting to stderr nobody
+reads.
+
+**3. ⏰ THE MOVE SPINE MOVED FIVE TIMES, THREE OF THEM IN ONE DAY, AND THE FIFTH HAS ITS REASON ON
+FILE.** ~15 Sept → 25–30 Sept → Mon 21 → Sat 19 → **Sun 27 Sept**. Reason (Shawn): the extra week
+is nearly free because **the cancelled cosmetic works had already booked it**, and a Sunday start
+makes the drive an easy multi-day run with Lishan on cheaper Sun–Wed lodging. **Whole spine
+shifted a week; packing Mon 21 – Sun 27 Sept; new `notes/move/{timeline,packing-week-plan,contacts}.md`,
+with `timeline.md` canonical for dates.** ⚠ **The weekend slack protects the DRIVE, not the
+container load** — the container leaves Friday, so the Mon 28 unattended-collection request is the
+only slack in that chain.
+
+**4. ⭐ THE CONVEYANCER RESOLVED, AND THE CONTRACT CARRIES THE HEDGE THE FILE HAD WANTED SINCE
+19 AUG.** Presence **not required** for completion; contract **prepared**, held on one NSW
+document. **The title-clearance clause lets exchange happen before the title clears, so the
+42-day completion clock runs IN PARALLEL with the court process — worth 18–28 days**, and it
+answers *"can Brent exchange now and settle later?"*, which the file had carried unasked.
+⏰ **Exchange is "free" until ~4 Sept.**
+
+**5. ⭐ SLOT 2 BROKE ITS FLAT LINE: 2 → 5 OF 30, three listings in one day, $2,075 live.** Freud
+dado $170, MICROJIG GRR-RIPPERs $120, Makita saw + WST03 $695. ⚠ **And my price estimates ran
+high on 3 of 4** — drill press 25% over, dado 47%, GRR-RIPPERs 42% **and above new retail**; the
+saw exact. **The saw is the only one anchored to NEW PRICE rather than to the item's qualities.**
+**⇒ Rule now settled: establish the new price first — it is the ceiling.**
+
+**6. Substack: the blocker was composition, not setup, and it broke.** Arc across **six posts**
+(Paper B arc + an intro), quotes pulled, register work begun via lit scouts. **`~/Code/substack`
+created — private, Brian invited, branch+PR gated.** ⚠ **Scoped, not drafted.** **Six is the
+number that covers the move**; the binding deadline is **drafting all six by ~20 Sept**, not
+publishing. **Sol-in-Codex plan drafted** and its allow-list corrected by Shawn's ruling
+(collaborator presence is *not* a Sol gate; only `personal-assistant` is restricted).
+
+**Held over / open:**
+
+- **📋 THE W34 REVIEW HAS NOT RUN** — deferred Fri → Sun, and Sunday closed without it.
+  **Inputs assembled at `reports/weekly/2026-W34-PREP.md` so it need not be rebuilt.**
+- ⚠⚠ **RDA is on its FOURTH date (Mon 24 Aug) and `SYSTEM.md` sets `escalation_abandon_day = 21`.
+  It rotated in 2026-08-07, so it hits Day 21 on Thu 27 Aug** — if Monday slips, the next standup
+  is an abandon conversation by the system's own parameters.
+- ⏰ **Mon 24:** RDA **first thing** → **council call** (kerbside 7 → 21 Sept **and** the container
+  road-occupancy permit — **gates advertising the moving sale**) → **packers** (notice line
+  Thu 3 Sept). **Mon/Tue/Wed are the ENTIRE EFN runway** to the ~26 Aug commitment.
+- **⭐ AFCA re-sequenced BEFORE Arcadia** — undated rolling posting; Arcadia's 31 Aug is safe to
+  defer, an invisible deadline is not. Proposed **Thu/Fri, 2–3h**.
+- **Facebook groups requested; Gumtree cross-posts live.** ⏱ **Re-check insights ~5 days after
+  the GROUP posts appear, not 5 days from now**; step-downs stay gated on **≥50 clicks**.
+- ⚠ **STILL AWAITING A VERDICT, carried since 2026-08-19 across four sessions now: four user-obs
+  candidates and two working-notes candidates** (auto-gamma clamp; comparables-checks-correct-in-
+  both-directions). Per no-silent-discard, re-surfaced again.
+- ⏰ **Playfair Display still needs `sudo cp ~/Downloads/playfair-display-static/* /usr/local/share/fonts/`**
+  — needs Shawn's password; carried since 2026-08-19.
+
+**Hours: 46.75h over the week** (move 16.00 · efn 10.00 · map-reader 7.50 · career 4.50 ·
+substack 4.50 · llm-repro 1.75 · personal 1.25 · personal-assistant 1.25).
+
 ### 2026-08-22 (Sat) — Citation-deletion bug fixed; credentials reconciled across machines
 
 Ran from a `fieldmark-docs-staging` session, so the fieldmark-side work
