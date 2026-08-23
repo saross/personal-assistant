@@ -209,6 +209,29 @@ is clean ownership rather than adversarial isolation. Operating-system users,
 read-only mounts, or separate credentials are deferred unless evidence shows
 the lighter controls are inadequate.
 
+### Ownership policy file (ruled 2026-08-23)
+
+- The machine-readable ownership policy lives at
+  `personal-assistant/global-agent-guidance/ownership.toml` — the
+  agent-neutral shared-source directory that §6 designates. It encodes both
+  agents' deny lists and is the single source both enforcement layers derive
+  from.
+- Changes to it always go branch + pull request, reviewed by the other party:
+  Sol reviews Claude-authored changes and vice versa; Shawn may author,
+  reviewed by either agent. On disagreement, the agents attempt consensus;
+  anything unresolved goes to Shawn.
+- Asymmetry: a change that **loosens** a boundary (expands a write surface,
+  removes a deny) requires Shawn's sign-off even when both agents agree.
+  Purely tightening or self-restricting changes may merge on other-party
+  approval alone.
+- The ownership-policy test **reads `ownership.toml`** and attempts the
+  operations it declares denied, so the file is a checked source rather than
+  a description that can drift from the machine-local enforcement (Claude's
+  rules live in gitignored `settings.json`; Sol's in Codex configuration).
+- This gate is behavioural — Git cannot branch-protect a single path in a
+  direct-push repository — consistent with the guardrails stance above.
+  Revisit if anyone is unhappy with it after a few weeks of operation.
+
 ### Trusted and untrusted contexts
 
 **Trusted** means the repository and active inputs are maintained by known
@@ -607,12 +630,15 @@ superseded prose remains available through Git, not inline.
 
 ### Phase 1 — establish Sol's home and ownership policy
 
-Create `gpt-hub`, its wiki registers, instruction/skill directories, and a
-machine-readable ownership policy. Keep linked worktrees under `~/worktrees/`.
+Create `gpt-hub`, its wiki registers, instruction/skill directories, and the
+machine-readable ownership policy at `global-agent-guidance/ownership.toml`
+in `personal-assistant` (ruled 2026-08-23; protocol in §3). Keep linked
+worktrees under `~/worktrees/`.
 
 **Exit:** Claude can read but cannot accidentally write representative
 `gpt-hub` paths; Sol has an explicit proposal route for Claude-owned PA paths;
-and both agents can edit a neutral shared project file from isolated worktrees.
+the ownership-policy test derives its cases from `ownership.toml`; and both
+agents can edit a neutral shared project file from isolated worktrees.
 
 ### Phase 2 — refactor and compose instructions
 
@@ -707,7 +733,13 @@ Git is the historical record for the deliberation that produced this plan:
   `/process-email` injection guard, assigns repo-local shared-policy
   extraction to Phase 2, requires a parser census before the continuity
   header format changes, and exempts Claude's harness-supplied
-  model-versioned trailer.
+  model-versioned trailer;
+- `3fba09e` — finalises Sol's attribution string; and
+- the current revision — records the ownership-policy rulings of 2026-08-23:
+  canonical location at `global-agent-guidance/ownership.toml`, the
+  PR-with-other-party-review protocol with Shawn as tie-break, the
+  loosening-needs-Shawn asymmetry, and the requirement that the
+  ownership-policy test read the file it enforces.
 
 Key corrections integrated here include the real multi-process write hazard,
 Codex's native hooks and import support, instruction-chain truncation, all-writer

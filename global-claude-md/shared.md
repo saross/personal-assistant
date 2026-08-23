@@ -125,6 +125,10 @@ infrastructure. Canonical policy:
 - **Cross-agent concurrency:** never share a checkout with Sol. Cross-agent
   work uses worktrees under `~/worktrees/<repo>/<agent>-<workstream>` (plan
   §3); same-agent concurrency follows the scoped rule there.
+- **`ownership.toml` changes go branch + PR**, reviewed by the other party;
+  Shawn adjudicates disagreement, and loosening any boundary needs Shawn's
+  sign-off even with agent consensus. Canonical file:
+  `~/personal-assistant/global-agent-guidance/ownership.toml`.
 
 ## Session Summaries
 
