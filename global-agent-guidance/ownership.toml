@@ -1,0 +1,251 @@
+schema_version = 2
+policy_date = "2026-08-24"
+policy_status = "active"
+purpose = "Owner-first agent guardrails with credential read isolation and proposal-only non-owner writes."
+
+[semantics]
+read_access = "allow-except-declared-denials"
+non_owner_declared_operations = "deny"
+denied_agent = "optional-narrowing-only"
+write_includes = ["create", "modify", "rename", "delete", "stage", "commit"]
+path_globs_are_home_relative = true
+repo_relative_globs_apply_to_worktrees = true
+resolve_symlinks_for_matching = true
+home_repository_owned_globs = ["scripts/**"]
+
+[change_control]
+required_process = "branch-and-pull-request"
+required_reviewer = "other-agent"
+disagreement = "agents-attempt-consensus-then-shawn-decides"
+loosening_requires = "shawn-sign-off"
+tightening_requires = "other-agent-approval"
+
+[[agents]]
+id = "claude"
+name = "Claude"
+home_repository = "~/personal-assistant"
+proposal_routes = ["~/gpt-hub/integration-records/", "a shared planning document", "the current conversation"]
+
+[[agents]]
+id = "codex"
+name = "Sol"
+home_repository = "~/gpt-hub"
+proposal_routes = ["~/gpt-hub/integration-records/", "a shared planning document", "the current conversation"]
+
+[[denials]]
+id = "claude-sol-home"
+owner = "codex"
+operations = ["write"]
+path_globs = ["~/gpt-hub/**", "~/.codex/**"]
+
+[[denials]]
+id = "claude-codex-repository-surfaces"
+owner = "codex"
+operations = ["write"]
+scope_repo = "*"
+repo_relative_globs = ["AGENTS.md", "**/AGENTS.md", "AGENTS.override.md", "**/AGENTS.override.md", ".codex/**", "**/.codex/**"]
+
+[[denials]]
+id = "codex-claude-global"
+owner = "claude"
+operations = ["write"]
+path_globs = ["~/.claude/**"]
+
+[[denials]]
+id = "codex-claude-repository-surfaces"
+owner = "claude"
+operations = ["write"]
+scope_repo = "*"
+repo_relative_globs = ["CLAUDE.md", "**/CLAUDE.md", ".claude/**", "**/.claude/**"]
+
+[[denials]]
+id = "codex-pa-harness"
+owner = "claude"
+operations = ["write"]
+scope_repo = "personal-assistant"
+repo_relative_globs = [
+  ".claude/**",
+  "CLAUDE.md",
+  "agents/**",
+  "commands/**",
+  "global-claude-md/**",
+  "hooks/**",
+  "output-styles/**",
+  "settings.json",
+  "settings-template.json",
+  "skills/**",
+  "scripts/**",
+  "setup.sh",
+  ".env*",
+]
+
+[[denials]]
+id = "codex-pa-operations"
+owner = "claude"
+operations = ["write"]
+scope_repo = "personal-assistant"
+repo_relative_globs = [
+  "archive/**",
+  "data/**",
+  "logs/**",
+  "memories/**",
+  "notes/**",
+  "reports/**",
+  "standups/**",
+  "tasks/**",
+  "wiki/claude-observations.md",
+  "wiki/continuity.md",
+  "wiki/user-observations.md",
+]
+
+[[denials]]
+id = "credential-material"
+owner = "shawn"
+operations = ["read"]
+path_globs = ["~/.env*", "~/**/.env*", "~/secrets/**", "~/**/secrets/**"]
+scope_repo = "*"
+repo_relative_globs = [".env*", "**/.env*", "secrets/**", "**/secrets/**"]
+
+[[verification_cases]]
+id = "claude-gpt-hub"
+rule_id = "claude-sol-home"
+agent = "claude"
+operation = "create"
+path = "~/gpt-hub/.ownership-guard-claude-test"
+expected = "deny"
+enforcement = "tool-layer"
+
+[[verification_cases]]
+id = "claude-codex-home"
+rule_id = "claude-sol-home"
+agent = "claude"
+operation = "create"
+path = "~/.codex/.ownership-guard-claude-test"
+expected = "deny"
+enforcement = "tool-layer"
+
+[[verification_cases]]
+id = "claude-agents-md"
+rule_id = "claude-codex-repository-surfaces"
+agent = "claude"
+operation = "open-write"
+path = "~/gpt-hub/AGENTS.md"
+expected = "deny"
+enforcement = "tool-layer"
+
+[[verification_cases]]
+id = "claude-credential-env-read"
+rule_id = "credential-material"
+agent = "claude"
+operation = "read"
+path = "~/personal-assistant/.env"
+expected = "deny"
+enforcement = "tool-layer"
+
+[[verification_cases]]
+id = "claude-credential-backup-read"
+rule_id = "credential-material"
+agent = "claude"
+operation = "read"
+path = "~/personal-assistant/.env.bak-*"
+expected = "deny"
+enforcement = "tool-layer"
+
+[[verification_cases]]
+id = "codex-claude-home"
+rule_id = "codex-claude-global"
+agent = "codex"
+operation = "create"
+path = "~/.claude/.ownership-guard-codex-test"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-claude-md"
+rule_id = "codex-claude-repository-surfaces"
+agent = "codex"
+operation = "open-write"
+path = "~/personal-assistant/CLAUDE.md"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-nested-claude-md"
+rule_id = "codex-claude-repository-surfaces"
+agent = "codex"
+operation = "open-write"
+path = "~/Code/map-reader-llm/CLAUDE.md"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-pa-memory-symlink"
+rule_id = "codex-pa-operations"
+agent = "codex"
+operation = "create"
+path = "~/personal-assistant/memories/.ownership-guard-codex-test"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-pa-memory-target"
+rule_id = "codex-pa-operations"
+agent = "codex"
+operation = "create"
+path = "~/personal-assistant/data/memories/.ownership-guard-codex-test"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-pa-harness"
+rule_id = "codex-pa-harness"
+agent = "codex"
+operation = "create"
+path = "~/personal-assistant/hooks/.ownership-guard-codex-test"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-pa-scripts"
+rule_id = "codex-pa-harness"
+agent = "codex"
+operation = "open-write"
+path = "~/personal-assistant/scripts/check-credentials.py"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-pa-user-observations"
+rule_id = "codex-pa-operations"
+agent = "codex"
+operation = "open-write"
+path = "~/personal-assistant/wiki/user-observations.md"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-pa-env-write"
+rule_id = "codex-pa-harness"
+agent = "codex"
+operation = "open-write"
+path = "~/personal-assistant/.env"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-credential-env-read"
+rule_id = "credential-material"
+agent = "codex"
+operation = "read"
+path = "~/personal-assistant/.env"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-credential-backup-read"
+rule_id = "credential-material"
+agent = "codex"
+operation = "read"
+path = "~/personal-assistant/.env.bak-*"
+expected = "deny"
+enforcement = "os"

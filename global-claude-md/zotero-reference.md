@@ -171,11 +171,12 @@ All write-side Zotero scripts read credentials from `~/personal-assistant/.env`.
 | `ZOTERO_LIBRARY_ID` | User ID for the personal library | — | personal-library scripts (`add-doi-to-zotero.py`, `lit-scout-zotero-import.py`); `sync-to-zotero.py` only when `ZOTERO_SYNC_LIBRARY_TYPE=user` |
 | `ZOTERO_GROUP_ID` | Group library ID (paper-b group `5861859`) | — | `scripts/sync-to-zotero.py` (default target since the 2026-07-24 ruling) |
 | `ZOTERO_SYNC_LIBRARY_TYPE` | `group` (default) or `user` — which library `sync-to-zotero.py` writes to | — | `scripts/sync-to-zotero.py` |
-| `ZOTERO_API_KEY_PERSONAL` | Personal-library write + all-groups read | broad | `scripts/lit-scout-zotero-import.py` |
+| `ZOTERO_API_KEY_ALL` | **The Tier-1 broad key (minted 2026-08-24; measured via `/keys/current` same day).** Personal library FULL (library/files/notes/write). Groups **default READ-ONLY** (fail-safe: new memberships gain nothing), with explicit WRITE on the owned/stewarded set: FAIMS-internal (525489), Open Research (Archaeology) (1669067), TRAP (2275173), FAIMS-Project (2542876), Munsell-colour-vocab (4438177), Archaeology-reproducibility (5396607), 2025-MQ-LLM-DH (5861859), HAVI (5940452), 2026-ANU-HUMN8031 (6432549), ai-transformation (6644999). Read-only everywhere else, including the three GUEST groups: SDAM-AU (2366083), Perachora (2443170), BMSMC (2258643). First production use 2026-08-24: the two chapter-copy fixes (SRI3YFK5, MMHTRQTA), PATCH 204 + read-back verified. | broad | Claude-mediated curation across Shawn's own libraries |
+| `ZOTERO_API_KEY_PERSONAL` | Personal-library write + all-groups read. **RETIREMENT CANDIDATE (2026-08-24): superseded by `ZOTERO_API_KEY_ALL`; retire after repointing `lit-scout-zotero-import.py`.** | broad | `scripts/lit-scout-zotero-import.py` |
 | `ZOTERO_API_KEY_PAPER_B` | Personal-library **read-only** (library/files/notes, no write — a personal-library DELETE returns 403); group-library write for `2025-MQ-LLM-DH-software-longevity` (groupID 5861859) only; all-groups read (re-verified via the `/keys/current` endpoint, 2026-07-17) | narrow | `scripts/sync-to-zotero.py` |
 | `ZOTERO_STAGING_COLLECTION` | Top-level collection key under My Library where dated subcollections are created (current value: `IX8XR97K` for the `staging` collection) | — | `scripts/lit-scout-zotero-import.py` |
 | `ZOTERO_API_KEY_FAIMS` | Personal-library write; group write for `FAIMS-internal` (525489) and `FAIMS-Project` (2542876); all-groups read | narrow | no script yet |
-| `ZOTERO_API_KEY_SDAM_AU` | Personal-library write; **group write on `all`** plus explicit write on `SDAM-AU` (2366083); all-groups read. **Caveat (2026-08-21): the `all` write scope does NOT hold in practice — item updates in `Archaeology-reproducibility` (5396607) and `HAVI application` (5940452) returned 403, and `/keys/current` reports `write: False` for `TRAP` (2275173) on this key. Treat this key as SDAM-AU-write only; verify per group with `key_info()` before relying on it. Verified working via their dedicated keys: FAIMS-Project (2542876), group 5861859, and — since 2026-08-21 — TRAP via `ZOTERO_API_KEY_TRAP`.** | **broad** | no script yet |
+| `ZOTERO_API_KEY_SDAM_AU` | Personal-library write; **group write on `all`** plus explicit write on `SDAM-AU` (2366083); all-groups read. **Caveat (2026-08-21): the `all` write scope does NOT hold in practice — item updates in `Archaeology-reproducibility` (5396607) and `HAVI application` (5940452) returned 403, and `/keys/current` reports `write: False` for `TRAP` (2275173) on this key. Treat this key as SDAM-AU-write only; verify per group with `key_info()` before relying on it. Verified working via their dedicated keys: FAIMS-Project (2542876), group 5861859, and — since 2026-08-21 — TRAP via `ZOTERO_API_KEY_TRAP`. **REVOCATION CANDIDATE (2026-08-24): the declared scope is known-wrong; revoke and remint a narrow SDAM-write key when SDAM work next needs write.**** | **broad** | no script yet |
 | `ZOTERO_PAPER_B_COLLECTION` | Collection key `H6KXYXKX` = `Paper-B` (171 items) in **group** 5861859, not My Library | — | no script yet |
 | `ZOTERO_SPA_COLLECTION` | Collection key `PZN5ATJK` = `SPA` (61 items) in **group** `SDAM-AU` (2366083) | — | no script yet |
 | `ZOTERO_API_KEY_TRAP` | Group write for `TRAP` (2275173); minted 2026-08-21, scope verified via `/keys/current` (`library: True, write: True`) and a live collection create | narrow | no script yet |
@@ -191,6 +192,33 @@ four keys read both the personal library (user 3097511) and group 5861859
 successfully. `ZOTERO_API_KEY_PAPER_B` confirmed still personal-read-only
 with group-5861859 write, exactly as this table has described it. The two
 Substack-AI rows postdate that sweep and are the only ones not yet checked.
+
+**The three-tier key architecture (Shawn's design, 2026-08-24).**
+Keys are tiered by OWNERSHIP, not one-per-group:
+
+- **Tier 1 — owned solo**: one broad key (`ZOTERO_API_KEY_ALL`) with
+  personal-library write, groups default READ-ONLY (fail-safe on new
+  memberships), and explicit write on the owned/stewarded set. The
+  default for Claude-mediated curation.
+- **Tier 2 — stewarded project groups** (TRAP, paper-B/5861859, the
+  two FAIMS groups, ai-transformation, HUMN8031): keep their dedicated
+  per-project keys for project TOOLING — independent rotation, project
+  lifecycle retirement, and a tooling compromise cannot expose the
+  broad key. The broad key also holds write here for ad-hoc curation.
+- **Tier 3 — guest groups where Shawn is not the owner** (SDAM-AU
+  2366083, Perachora 2443170, BMSMC 2258643): the broad key is
+  READ-ONLY there by construction; write requires a dedicated narrow
+  key minted on need. **Procedural rule: Claude never writes to a
+  Tier-3 group without an explicit per-task instruction naming the
+  group, and only within Shawn's designated collections** (Zotero
+  permissions are group-level, so the collection boundary can only be
+  procedural).
+
+Standing hygiene: every live key has a row here with MEASURED scope
+(`/keys/current`, dated) and a named consumer; a key with neither gets
+revoked. Current retirement list: `ZOTERO_API_KEY_PERSONAL` (after the
+import-script repoint) and `ZOTERO_API_KEY_SDAM_AU` (revoke as
+misdeclared).
 
 **Name the value's form, and the form will police the name.** Every
 `*_COLLECTION` in this table holds an 8-character upper-alphanumeric

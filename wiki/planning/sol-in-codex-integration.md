@@ -281,6 +281,38 @@ permission prompts on outward actions. This asymmetry is accepted for now
 under the guardrails stance below, and is revisited if evidence shows
 behavioural controls are inadequate.
 
+### Credentials (ruled 2026-08-24)
+
+- Both agents carry the same credential read carve-out: no reading of
+  `**/.env*` or `**/secrets/**` — including `personal-assistant/.env` and
+  timestamped backups beside it, where API credentials may live. "No secrets
+  between the agents" governs each other's records, not credential material,
+  which is Shawn-gated (§2).
+- Operating norm: **credentials are used by processes, never read into model
+  context.** Claude's hooks and scripts use credentials at execution time
+  while the harness denies credential-file reads. Codex mirrors that denial at
+  the OS and hook layers and receives any future allow-listed values only from
+  its launcher.
+- Sol currently holds no API credential access, and none is needed in the
+  current phases. When a need arises, access is granted per service through
+  the trust-profile launcher (§9.3): the personal/trusted profile is
+  launched with a filtered subset of `.env` injected as environment
+  variables, per `global-agent-guidance/credential-grants.toml`. The list is
+  initially empty and changes through the ownership-policy PR protocol; adding
+  a grant is a loosening, so Shawn signs off. The restricted-input profile
+  never receives credentials, closing the injection-exfiltration channel where
+  untrusted content is processed.
+- `personal-assistant/.env*` is also write-denied for Sol. The launcher parses
+  the file without shell-sourcing it and never emits values: malformed
+  variable names have caused shell sourcing to echo credential-bearing lines
+  to stderr in two real incidents (2026-05-22 and 2026-07-27). After any
+  credential-file edit, Shawn or Claude runs `scripts/check-credentials.py`
+  outside model context.
+- Grant names map one-to-one to environment-variable names. Credential files
+  use one variable per service and scope, with per-machine variables for paid
+  services. PA loaders use `setdefault`, so launcher-injected variables take
+  precedence without rewriting the credential file.
+
 ---
 
 ## 4. Memory architecture
@@ -608,9 +640,15 @@ These do not reopen the ratified architecture:
 2. **Guardrail strength:** begin with harness path policies, isolated
    worktrees, and tests. Add operating-system isolation only if this proves
    insufficient.
-3. **Trust-profile launcher:** choose whether personal and restricted profiles
-   use separate `CODEX_HOME` directories, configuration overrides, or a small
-   wrapper. The acceptance test, not the mechanism, is authoritative.
+3. **Trust-profile launcher (ruled 2026-08-24):** use one `CODEX_HOME`, two
+   named configuration/permission profiles, and a small wrapper. For the
+   personal/trusted profile only, the wrapper parses `.env` without shell
+   sourcing, validates variable names, injects only names present in
+   `global-agent-guidance/credential-grants.toml`, and never logs values. The
+   restricted-input launch removes any grant-listed variables and disables
+   personal-memory MCP access. The Phase 1 grant list is empty. Acceptance is
+   authoritative: restricted-input can alter only its active repository and
+   receives neither credentials nor personal memory.
 4. **Writer-service host:** test `rpi-server` connectivity and then rule on
    placement using availability, backup, latency, and partition behaviour.
 5. **Maintenance migration:** Claude owns current operations while the service
