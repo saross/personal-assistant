@@ -2,8 +2,8 @@
 title: "Sol/Claude integration — Phase 1 joint exit test"
 tags: [planning, integration, worktrees, ownership]
 created: 2026-08-23
-updated: 2026-08-24
-status: in-progress
+updated: 2026-08-25
+status: passed
 ---
 
 # Phase 1 joint exit test
@@ -27,9 +27,19 @@ neither agent uses Claude's live PA checkout.
 - Claude's re-review of `46b212f` approved R1-R10 with no blockers and recorded
   all five tool-layer cases denied, for 16/16 candidate cases across both
   enforcement layers.
-- Merge status: PR #107 integrated through the adjudicated merge commit with
-  `policy_status = "active"`; Claude's independent worktree lane remains the
-  next integration step.
+- Merge status: PR #107 integrated through `632dd8a` with
+  `policy_status = "active"`; Claude's independent lane was then adjudicated
+  and integrated through `779d6af`.
+- Canonical rerun, 2026-08-25: both generated hook events point to
+  `~/personal-assistant/global-agent-guidance/ownership.toml`, were reviewed
+  individually through `/hooks`, and show active with their new trusted hashes.
+  All 25 Sol guard/profile tests and all three shared-verifier tests pass. The
+  policy validates as schema 2 with 7 rules and 16 cases (11 OS, 5 tool-layer),
+  and all 11 Codex OS attempts pass against the canonical policy.
+- Profile acceptance: `restricted-input` cannot see PA but can write its active
+  repository, while a fresh ordinary Codex session was denied a Claude-home
+  write by the trusted canonical `PreToolUse` hook. No bypass flag was used and
+  no scratch residue remains.
 
 ## Claude lane
 
@@ -55,9 +65,10 @@ neither agent uses Claude's live PA checkout.
 
 - [x] Sol can edit a neutral PA path from an isolated worktree.
 - [x] Claude can edit the same neutral PA path from its isolated worktree.
-- [ ] Both reciprocal machine-local deny layers pass policy-derived attempted
-  write tests. (Held open for S5: Sol repoints its hook to the canonical
-  policy path and reruns the full suite against the merged file.)
+- [x] Both reciprocal machine-local deny layers pass policy-derived attempted
+  write tests. Claude's 5/5 tool-layer results and Sol's 11/11 canonical OS
+  results cover all 16 declared cases; the canonical hook also passed a fresh
+  trusted-session denial proof.
 - [x] The ownership-policy pull request receives other-party review.
 - [x] Both worktree contributions are integrated without using the live shared
   checkout for concurrent work. (Completed by this adjudicated merge.)
