@@ -281,6 +281,28 @@ permission prompts on outward actions. This asymmetry is accepted for now
 under the guardrails stance below, and is revisited if evidence shows
 behavioural controls are inadequate.
 
+### Credentials (ruled 2026-08-24)
+
+- Both agents carry the same credential read carve-out: no reading of
+  `**/.env` or `**/secrets/**` — including `personal-assistant/.env`, where
+  the API credentials live. "No secrets between the agents" governs each
+  other's records, not credential material, which is Shawn-gated (§2).
+- Operating norm: **credentials are used by processes, never read into model
+  context.** Claude's existing pattern is the model — hooks and scripts
+  source `.env` at execution time while the harness denies the Read tool, so
+  secret values never enter a transcript. Codex mirrors the read denial at
+  the OS/hook layer.
+- Sol currently holds no API credential access, and none is needed in the
+  current phases. When a need arises, access is granted per service through
+  the trust-profile launcher (§9.3): the personal/trusted profile is
+  launched with a filtered subset of `.env` injected as environment
+  variables, per a grant list kept beside `ownership.toml` and changed
+  through the same PR protocol (a loosening, so Shawn signs off). The
+  restricted-input profile never receives credentials, closing the
+  injection-exfiltration channel where untrusted content is processed.
+- `personal-assistant/.env` is also write-denied for Sol; it was absent from
+  the repo-root deny list when this was ruled.
+
 ---
 
 ## 4. Memory architecture
