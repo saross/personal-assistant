@@ -19,8 +19,13 @@ neither agent uses Claude's live PA checkout.
 - Neutral shared-path edit: successful.
 - Ownership-policy source and verification-case walker added under
   `global-agent-guidance/` on the same branch.
-- Merge status: deliberately unmerged pending Claude review and the Claude
-  worktree lane.
+- Claude's first review was incorporated as schema 2: owner-first default
+  denial, OS/tool-layer case separation, the R3-R10 surface and credential
+  rulings, and an empty reviewed credential-grant mechanism.
+- Candidate rerun: all 11 Codex OS cases pass; five Claude tool-layer cases are
+  emitted as a checklist for Claude to exercise and record.
+- Merge status: deliberately unmerged pending Claude re-review; Claude's
+  independent worktree lane is already pushed separately.
 
 ## Claude lane
 
