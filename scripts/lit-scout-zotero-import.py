@@ -28,8 +28,9 @@ corrected values (true_value substituted into FAIL claims).
 Environment variables (sourced from ~/personal-assistant/.env)
 --------------------------------------------------------------
     ZOTERO_LIBRARY_ID         User ID for the personal library
-    ZOTERO_API_KEY_PERSONAL   Key with personal-library write +
-                              all-groups read
+    ZOTERO_API_KEY_ALL        The Tier-1 broad key: personal-library
+                              write + all-groups read (see
+                              global-claude-md/zotero-reference.md)
     ZOTERO_STAGING_COLLECTION Top-level collection key under which dated
                               subcollections are created
 
@@ -1347,13 +1348,16 @@ def run_import(args: argparse.Namespace) -> int:
 
     # Required env vars
     library_id = os.environ.get("ZOTERO_LIBRARY_ID")
-    api_key = os.environ.get("ZOTERO_API_KEY_PERSONAL")
+    # ZOTERO_API_KEY_ALL is the Tier-1 broad key (2026-08-24); the
+    # retired ZOTERO_API_KEY_PERSONAL remains a fallback until revoked.
+    api_key = (os.environ.get("ZOTERO_API_KEY_ALL")
+               or os.environ.get("ZOTERO_API_KEY_PERSONAL"))
     staging_key = os.environ.get("ZOTERO_STAGING_COLLECTION")
     missing = [
         n
         for n, v in [
             ("ZOTERO_LIBRARY_ID", library_id),
-            ("ZOTERO_API_KEY_PERSONAL", api_key),
+            ("ZOTERO_API_KEY_ALL", api_key),
             ("ZOTERO_STAGING_COLLECTION", staging_key),
         ]
         if not v
