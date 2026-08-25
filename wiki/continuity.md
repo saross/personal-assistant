@@ -2175,6 +2175,74 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-08-25 (Sat 22 → Tue 25 Aug, latest SOL) — SESSION CLOSE (/handoff): SOL INTEGRATION PHASE 1 CLOSED WITH EVIDENCE; AGENT MAIL DESIGNED, RATIFIED, BUILT, AND LIVE BIDIRECTIONALLY; PHASE 2 ROUTED TO OPUS
+
+The Sol-in-Codex infrastructure workstream ran end to end: Fable reviewed
+the plan and Sol's review (verifying every checkable claim), Shawn's
+rulings were recorded as single current policy, Phase 1 (reciprocal
+ownership guardrails) was implemented and closed with attempted-write
+evidence on both enforcement layers (Claude tool-layer, Codex OS), and
+the agent-mail mailbox went from Shawn's "random thought" to live
+bidirectional infrastructure in one day — proposal, Sol's revisions,
+consensus, Shawn's loosening sign-off, PR #108 merged, activation, seven
+read receipts. The trust norm passed its first live test: a relayed
+request to run an unreviewed /tmp script against Sol's harness config was
+paused, audited (clean), and handed to Shawn to execute — his verdict:
+"that was the right call".
+
+**MODEL-LANE ROUTING (beacon — Shawn's instruction, 2026-08-25; Fable
+credits exhausted until ~27 Aug):**
+
+- **Next session (Opus): execute Phase 2** of
+  `wiki/planning/sol-in-codex-integration.md` §10 — instruction refactor.
+  Split `global-claude-md/shared.md` into portable
+  `global-agent-guidance/common.md` plus a Claude overlay; update
+  `scripts/compose-global-claude-md.sh`; coordinate the Codex composer
+  and the 8/24 KiB budget with Sol (agent mail is live — use it);
+  pilot-repo shared-policy extraction (map-reader-llm). Well-specified,
+  criteria-driven, design decided — deliberately Opus-suitable.
+- **RESERVED FOR FABLE** (queue, do not attempt in Opus sessions):
+  (1) ownership/trust-boundary adjudications and cross-agent disputes;
+  (2) changes to the trust norm, credential grants, or security posture;
+  (3) the Phase 6 routing review and division-of-labour retro;
+  (4) Phases 7–9 single-writer memory-service design review / pre-run
+  review; (5) reviews of Sol proposals where a confidently-wrong verdict
+  is expensive.
+
+Carry-forward:
+
+- [ ] **Sol's agent-mail close-out** (Sol-side, in flight): the
+  `codex-claude-agent-mail` OS case, trusted/restricted profile surfacing
+  attempts, results into
+  `gpt-hub/integration-records/2026-08-25-agent-mail.md`, receipt for the
+  eighth message, and committing `/tmp/sol-agent-mail-activate.py` into
+  `gpt-hub/config/` for provenance.
+- [ ] **`.env.bak` cold-storage decision** parked with Shawn (four
+  timestamped credential backups beside PA/.env; read-fenced for both
+  agents since 2026-08-24, but fencing ≠ shrinking the surface).
+- [ ] **`~/worktrees/personal-assistant/sol-phase1-merge`** still on disk
+  at 632dd8a — Sol's to remove.
+- [ ] **Claude settings are machine-local** (settings.json gitignored):
+  amd-tower now carries Edit-only ownership denies (incl.
+  `~/agent-mail/codex/**`), `.env` variant read denies, and the agent-mail
+  SessionStart hook. **zbook has none of these** — replicate when Claude
+  next runs there.
+- Scratchpad and `notes/_inbox.md` appends left uncommitted in the data
+  submodule for daily-sync (deliberate; other sessions' pending content
+  shares those files).
+- Working-notes candidates from this session held over if ungated at
+  close (see handoff message of 2026-08-25).
+
+Artefacts: plan reviews/rulings `0b7c7d8` `f0197f6` `03cd9b0` `485ce7b`;
+`/process-email` guard `7f20329`; Phase 1 close `c2b10f4` (exit-test merge
+`779d6af`, PR #107 merge `632dd8a`); agent-mail proposal v2 `93dab64`,
+Claude side `7371a84`, policy PR #108 merge `6857ef1`; gpt-hub
+implementation `b010436`; Codex transcript-adapter backlog row (pa-data
+`56471d0`). Governing docs: `wiki/planning/sol-in-codex-integration.md`,
+`wiki/planning/agent-mail-proposal.md`,
+`global-agent-guidance/ownership.toml` (active, schema 2, 9 rules,
+18 cases).
+
 ### 2026-08-20→23 (Thu 20 → Sun 23 Aug, latest PA) — SESSION CLOSE (/handoff): THE MOVE SPINE MOVED FIVE TIMES AND THE FIFTH ONE HAS A REASON; 41 MEMORY RECORDS WERE RECOVERED FROM A LOSS NOBODY HAD NOTICED; THREE FALSE ALARMS TURNED OUT TO BE THE SAME MISTAKE
 
 Four-day session across two standups and two recaps. **Three things were repaired that nobody
