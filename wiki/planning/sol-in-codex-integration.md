@@ -467,6 +467,14 @@ The existing `global-claude-md/shared.md` must first be split because it
 contains both portable norms and Claude-specific model, command, memory, and
 session behaviour.
 
+**Status (2026-08-25, `9786a71`):** the split is done on the Claude side. The
+layout above is the current state, not a target. `shared.md` is archived at
+`archive/global-claude-md/shared.md` with a README recording the mapping. The
+split is verbatim apart from five wordings that de-Claude-ify portable
+sections and the ownership section, which was rewritten because its original
+phrasing was Claude-first and would have read backwards in Sol's
+instructions. The Codex composer/installer remains Sol's to build.
+
 ### Composition and ownership
 
 - PA's composer writes only `~/.claude/CLAUDE.md` from the portable common
@@ -500,6 +508,24 @@ The Codex composer must fail its check if the budget is exceeded. An acceptance
 test starts fresh sessions from a repository root and a nested directory and
 verifies the loaded instruction sources and key sentinel rules. Do not solve
 initial bloat merely by raising the limit.
+
+**Measured against the budget (2026-08-25).** The portable source, once
+extracted, is **11,264 bytes** — over the 8 KiB global target before a single
+line of Sol's overlay. The largest sections are agent ownership boundaries
+(2,433), implementation and methodology review (1,692), git commits (1,582),
+AI use in teaching (1,443), and anti-confabulation (1,241). The budget was set
+before anyone measured the portable core, so this is a finding, not a
+regression.
+
+It is not resolved here, deliberately. Every route to 8 KiB — compressing the
+prose, tiering sections into on-demand reference files, or revising the budget
+against measurement — changes what is always in context, and a rule that is
+not loaded is a rule that is not applied. That is Shawn's call, informed by a
+joint Claude/Sol proposal, not a decision either agent should take alone. Note
+also that the Phase 2 exit criteria name the 24 KiB maximum chain, not the
+8 KiB global target: an oversized common source does not by itself fail the
+gate, it consumes the room that repository-level instructions need, which is
+what the budget exists to protect.
 
 ### Selective Claude import
 

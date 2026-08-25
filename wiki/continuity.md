@@ -2175,6 +2175,60 @@ reopen settled questions:
 
 *Most recent at top. One paragraph + bullets per entry.*
 
+### 2026-08-25 (Tue, latest SOL) — PHASE 2 INSTRUCTION REFACTOR: SHARED.MD SPLIT, PILOT REPO EXTRACTED, AND THE 8 KiB BUDGET TURNS OUT TO BE 11.3
+
+Phase 2 of `wiki/planning/sol-in-codex-integration.md` executed on the
+Claude side. `global-claude-md/shared.md` is split into
+`global-agent-guidance/common.md` (portable, shared editing surface, the
+source Sol's installer composes into `~/.codex/AGENTS.md`) and
+`global-claude-md/claude.md` (Claude-owned overlay). The split is verbatim
+apart from five de-Claude-ification wordings and the ownership section,
+which was rewritten because its original phrasing was Claude-first and
+would have read backwards in Sol's instructions — the reciprocal statement
+now sits in `common.md`, Claude's concrete blocked paths in the overlay. A
+line-level check confirms every other non-heading line of `shared.md`
+survives verbatim across the two files.
+
+**The budget finding is the substantive result.** Plan §6 targets at most
+8 KiB for the whole global `~/.codex/AGENTS.md`. Measured, the portable
+core alone is **11,264 bytes** — over target before a line of Sol's
+overlay. The budget was set before anyone measured the portable core, so
+this is a finding rather than a regression. I did not compress it: every
+route to 8 KiB (compress, tier into on-demand files, or revise the budget)
+changes what is always in context, and a rule that is not loaded is a rule
+that is not applied. Recorded in the plan, and put to Sol as options A–D
+with the content question reserved for Shawn.
+
+- **Composer** (`scripts/compose-global-claude-md.sh`): now layers common +
+  overlay + local, reports byte sizes per source (the cross-harness budget
+  is bytes, not lines), and no longer dies of SIGPIPE in `--dry-run` —
+  piping into `head` closed the pipe early, which under `set -o pipefail`
+  failed the whole script with exit 141. That bug predated this change.
+  Composed output verified idempotent: 212 lines, 17,628 bytes.
+- **Pilot repo** (`map-reader-llm`): shared policy extracted to
+  `docs/agent-guidance.md` (10,653 B, either agent may edit); `CLAUDE.md`
+  11,981 → 2,395 B, keeping only session archiving and the `map-reader` /
+  `/phase-gate` / `/reflect` mechanisms. First commit used a prose "read
+  this first" pointer, which quietly demoted always-loaded rules — among
+  them "archive, never delete" and the sapphire compute rule — to
+  read-if-you-remember. Second commit wires `@docs/agent-guidance.md` as a
+  Claude Code import (verified in `~/.claude-code-docs/docs/memory.md`), so
+  adherence is unchanged from before the split.
+- **Agent mail sent** (two): the composer contract plus the measured budget
+  with options A–D, and the proposed `AGENTS.md` text for `map-reader-llm`
+  — proposal route, since `AGENTS.md` is Sol-owned under `ownership.toml`.
+  Receipt written for Sol's `trusted-surfacing-live` message.
+- **Exit criteria:** pilot-repo criterion met; no Claude-specific rules in
+  `common.md` and no Codex-specific rules in the overlay (grep-checked, the
+  only hits being the deliberate reciprocal naming); Claude-side chain
+  verified. The 24 KiB max-chain and fresh-Codex-session criteria need
+  Sol's installer and stay open.
+- **Not done, deliberately:** no content compression of `common.md`; the
+  Codex composer is Sol's to build; beacon items RESERVED FOR FABLE
+  untouched.
+- 1,170 PA tests pass. Artefacts: PA `9786a71`; map-reader-llm `6e335b52c`,
+  `2bf12c6da`.
+
 ### 2026-08-25 (Sat 22 → Tue 25 Aug, latest SOL) — SESSION CLOSE (/handoff): SOL INTEGRATION PHASE 1 CLOSED WITH EVIDENCE; AGENT MAIL DESIGNED, RATIFIED, BUILT, AND LIVE BIDIRECTIONALLY; PHASE 2 ROUTED TO OPUS
 
 The Sol-in-Codex infrastructure workstream ran end to end: Fable reviewed
