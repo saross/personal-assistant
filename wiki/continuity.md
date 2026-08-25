@@ -2207,7 +2207,7 @@ with the content question reserved for Shawn.
   Composed output verified idempotent: 212 lines, 17,628 bytes.
 - **Pilot repo** (`map-reader-llm`): shared policy extracted to
   `docs/agent-guidance.md` (10,653 B, either agent may edit); `CLAUDE.md`
-  11,981 → 2,395 B, keeping only session archiving and the `map-reader` /
+  11,981 → 2,438 B, keeping only session archiving and the `map-reader` /
   `/phase-gate` / `/reflect` mechanisms. First commit used a prose "read
   this first" pointer, which quietly demoted always-loaded rules — among
   them "archive, never delete" and the sapphire compute rule — to
