@@ -492,40 +492,56 @@ keep `CLAUDE.md` and `AGENTS.md` as concise harness-specific entry points.
 
 ### Instruction-size safety
 
-Codex loads global and nested project instructions until the combined
-`project_doc_max_bytes` limit, 32 KiB by default. Once the limit is reached,
-later, nearer files can be omitted. A large global file can therefore suppress
-the repository-specific instructions that should have higher practical
-precedence.
+Codex assembles instructions global-first: `~/.codex/AGENTS.md`, then one file
+per directory from the repository root down to the working directory
+(`AGENTS.override.md` wins over `AGENTS.md` at each level). It reads the chain
+once per session, and stops once the combined size reaches
+`project_doc_max_bytes`. The default is **32,768 bytes**, verified in the
+installed binary at codex-cli 0.149.1, not merely from documentation.
 
-Initial budget:
+**The hazard is the ordering, not the size.** Because global comes first, the
+content lost when the cap is reached is the *tail* — the nearest, most
+specific repository instructions, which should carry the highest practical
+precedence. Truncation is silent, with no warning in the interface
+(openai/codex#7138). A fat global file therefore does not fail loudly; it
+quietly starves the files that matter most.
 
-- global `~/.codex/AGENTS.md`: target at most 8 KiB;
-- maximum tested global-plus-project chain: at most 24 KiB; and
-- retain at least 8 KiB of headroom below the default limit.
+Budget (revised 2026-08-25, against measurement):
+
+- global `~/.codex/AGENTS.md`: at most **14 KiB**;
+- maximum tested global-plus-project chain: at most **24 KiB**; and
+- retain at least **8 KiB** of headroom below the 32 KiB cap.
 
 The Codex composer must fail its check if the budget is exceeded. An acceptance
 test starts fresh sessions from a repository root and a nested directory and
-verifies the loaded instruction sources and key sentinel rules. Do not solve
-initial bloat merely by raising the limit.
+verifies the loaded instruction sources and key sentinel rules. **Do not raise
+`project_doc_max_bytes` itself** — that hides bloat rather than fixing it, and
+it spends the headroom that keeps truncation from reaching real instructions.
 
-**Measured against the budget (2026-08-25).** The portable source, once
-extracted, is **11,264 bytes** — over the 8 KiB global target before a single
-line of Sol's overlay. The largest sections are agent ownership boundaries
-(2,433), implementation and methodology review (1,692), git commits (1,582),
-AI use in teaching (1,443), and anti-confabulation (1,241). The budget was set
-before anyone measured the portable core, so this is a finding, not a
-regression.
+**Why 14 KiB, and why the earlier 8 KiB is retired.** The original 8 KiB
+target was set at ratification (`594c2b7`) before anyone measured the portable
+core; Sol's capability review had said only that the generated `AGENTS.md`
+should be under 32 KiB. Measured afterwards, the extracted portable source is
+11,264 bytes on its own, so 8 KiB was never reachable without cutting rules.
+The revised figure is set from what the chain actually costs on this machine:
 
-It is not resolved here, deliberately. Every route to 8 KiB — compressing the
-prose, tiering sections into on-demand reference files, or revising the budget
-against measurement — changes what is always in context, and a rule that is
-not loaded is a rule that is not applied. That is Shawn's call, informed by a
-joint Claude/Sol proposal, not a decision either agent should take alone. Note
-also that the Phase 2 exit criteria name the 24 KiB maximum chain, not the
-8 KiB global target: an oversized common source does not by itself fail the
-gate, it consumes the room that repository-level instructions need, which is
-what the budget exists to protect.
+| | bytes |
+|---|---|
+| Cap (`project_doc_max_bytes`) | 32,768 |
+| `~/.codex/AGENTS.md` today | 2,399 |
+| Global with the portable core composed in | 13,663 |
+| Remaining for the whole project chain | 19,105 |
+
+Against real repository files — `gpt-hub/AGENTS.md` at 2,021 bytes, the
+proposed `map-reader-llm/AGENTS.md` at roughly 1.2 KiB — a realistic chain
+spends 4–6 KiB of that. Capacity is therefore not the binding constraint, and
+a budget that implied otherwise was distorting the design.
+
+**Byte pressure and context economy are separate questions.** The portable
+source is loaded into every session on both harnesses, so there is an
+independent argument for keeping it lean that has nothing to do with the cap.
+That argument should be made on its own merits, section by section, and not
+smuggled in under a capacity limit that does not bind.
 
 ### Selective Claude import
 
