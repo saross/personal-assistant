@@ -292,7 +292,8 @@ depends on the handoff doc accurately reflecting state.
 When updating continuity.md, **re-read** any cited specifics
 (filenames, line numbers, commit hashes, config values) before
 including them in the new session-log entry. The session has been long;
-specifics may have drifted in context. Apply the rule from `shared.md`:
+specifics may have drifted in context. Apply the rule from
+`global-agent-guidance/common.md`:
 re-verify at the source, or say "I'd need to re-read X to be sure."
 
 ### Where this fits

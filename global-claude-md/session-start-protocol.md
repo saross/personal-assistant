@@ -54,7 +54,7 @@ blocking. Don't lecture if Shawn declines — defer and move on.
 
 The session-start hook injects a recall memory dump (~17 KB at last
 measurement, pre-Vector 2). Treat it as **pointers, not authority**.
-The read-side rule from `global-claude-md/shared.md` applies in full:
+The read-side rule from `global-agent-guidance/common.md` applies in full:
 
 > Memories, scratchpad entries, session-start summaries, and prior
 > conversation context are **pointers, not authorities** — they go

@@ -101,7 +101,8 @@ Each end-of-session update (via `/handoff`) does five things:
   cross-session state.
 - Citing specifics (file paths, commit hashes, config values) without
   re-verifying — continuity docs go stale. Apply the anti-confabulation
-  rule from `shared.md`: re-read the source before citing.
+  rule from `global-agent-guidance/common.md`: re-read the source before
+  citing.
 
 ### Where this fits in the artefact map
 
