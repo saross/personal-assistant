@@ -2488,3 +2488,22 @@ at all versus flagging that a number is needed.
 mid-task (new-price-first, view-gated step-downs, split-the-singles, both-forms model numbers).
 **Useful, or did it slow the actual work?**
 
+
+## 2026-08-25 (SOL — Phase 1 close + agent mail, handoff) — Drafted candidates (pending review)
+
+- **U-cand-1 (in-the-moment, 2026-08-25):** When Claude paused the /tmp
+  activation script to audit rather than execute, you confirmed "that was
+  the right call, I copy-pasted faster than I read". Candidate
+  observation: Claude declining-to-comply-pending-audit on
+  harness-config requests is behaviour you want preserved and expected,
+  not an obstacle.
+- **U-cand-2:** Evidence-first reviews (fetched documentation URLs,
+  independently rerun tests, attempted-write proofs) let you ratify a
+  dense sequence of rulings quickly and with near-zero re-litigation —
+  the session's decision throughput appeared to depend on verification
+  being already done at each gate.
+- **U-cand-3:** Claude surfacing adjacent gaps unprompted (the
+  proposal-route hole, the .env.bak exposure, the Codex transcript
+  capture gap) converted review sessions into systemic hardening. Useful
+  — with the caveat that it expands scope, and you may want a signal for
+  when to defer such findings instead.
