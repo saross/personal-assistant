@@ -1,5 +1,5 @@
 schema_version = 2
-policy_date = "2026-08-24"
+policy_date = "2026-08-25"
 policy_status = "active"
 purpose = "Owner-first agent guardrails with credential read isolation and proposal-only non-owner writes."
 
@@ -12,6 +12,7 @@ path_globs_are_home_relative = true
 repo_relative_globs_apply_to_worktrees = true
 resolve_symlinks_for_matching = true
 home_repository_owned_globs = ["scripts/**"]
+additional_owned_write_roots_semantics = "owner-grant-subject-to-active-profile-and-matching-non-owner-denial"
 
 [change_control]
 required_process = "branch-and-pull-request"
@@ -24,13 +25,27 @@ tightening_requires = "other-agent-approval"
 id = "claude"
 name = "Claude"
 home_repository = "~/personal-assistant"
-proposal_routes = ["~/gpt-hub/integration-records/", "a shared planning document", "the current conversation"]
+additional_owned_write_roots = ["~/agent-mail/claude"]
+proposal_routes = ["~/agent-mail/claude/outbox/codex/", "a shared planning document", "the current conversation"]
 
 [[agents]]
 id = "codex"
 name = "Sol"
 home_repository = "~/gpt-hub"
-proposal_routes = ["~/gpt-hub/integration-records/", "a shared planning document", "the current conversation"]
+additional_owned_write_roots = ["~/agent-mail/codex"]
+proposal_routes = ["~/gpt-hub/integration-records/", "~/agent-mail/codex/outbox/claude/", "a shared planning document", "the current conversation"]
+
+[[denials]]
+id = "agent-mail-claude"
+owner = "claude"
+operations = ["write"]
+path_globs = ["~/agent-mail/claude/**"]
+
+[[denials]]
+id = "agent-mail-codex"
+owner = "codex"
+operations = ["write"]
+path_globs = ["~/agent-mail/codex/**"]
 
 [[denials]]
 id = "claude-sol-home"
@@ -107,6 +122,15 @@ scope_repo = "*"
 repo_relative_globs = [".env*", "**/.env*", "secrets/**", "**/secrets/**"]
 
 [[verification_cases]]
+id = "claude-codex-agent-mail"
+rule_id = "agent-mail-codex"
+agent = "claude"
+operation = "create"
+path = "~/agent-mail/codex/outbox/claude/.ownership-guard-claude-test"
+expected = "deny"
+enforcement = "tool-layer"
+
+[[verification_cases]]
 id = "claude-gpt-hub"
 rule_id = "claude-sol-home"
 agent = "claude"
@@ -150,6 +174,15 @@ operation = "read"
 path = "~/personal-assistant/.env.bak-*"
 expected = "deny"
 enforcement = "tool-layer"
+
+[[verification_cases]]
+id = "codex-claude-agent-mail"
+rule_id = "agent-mail-claude"
+agent = "codex"
+operation = "create"
+path = "~/agent-mail/claude/outbox/codex/.ownership-guard-codex-test"
+expected = "deny"
+enforcement = "os"
 
 [[verification_cases]]
 id = "codex-claude-home"
