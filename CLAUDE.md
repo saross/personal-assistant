@@ -101,6 +101,16 @@ common case for items with a clear destination on first sight) or directly
 to FOCUS.md (rare; only for unexpected crises). Inbox handles the
 items-needing-decision case, nothing more.
 
+### Dormant policy — AI use in teaching
+
+The teaching AI-use policy is **dormant since 2026-08-25** (no teaching on the
+horizon) and no longer loads into every session. **Reactivate it on first sight
+of teaching work** — a teaching task in `/standup`, `/track`, `/recap`, the
+inbox, or a focus slot; a course repo going active; or anything touching
+student work or a colleague's teaching material. Read
+`global-agent-guidance/ai-use-in-teaching.md`, apply it, and say so. Dormant
+means unloaded, not repealed.
+
 ### Accountability Agreement
 
 I have permission to be confrontational about:
