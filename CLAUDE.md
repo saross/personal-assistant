@@ -118,15 +118,12 @@ All slash commands are loaded as skills at session start — descriptions are vi
 
 ## Reference Docs
 
+The global instructions already carry the reference table for memory, PostgreSQL,
+git, scratchpad, Zotero, and network docs. Only this row is repo-specific:
+
 | Topic | File | Read when… |
 |-------|------|------------|
 | Architecture & data flow | `global-claude-md/infrastructure-reference.md` | Hooks, scripts, integrations |
-| Memory categories & tags | `global-claude-md/memory-system-reference.md` | `/remember`, `/tags`, assigning categories |
-| PostgreSQL & pgvector | `global-claude-md/postgresql-reference.md` | Querying the database, running sync |
-| Git conventions | `global-claude-md/git-reference.md` | Commit types, `.gitignore` |
-| Scratchpad protocol | `global-claude-md/scratchpad-reference.md` | Writing scratchpad entries |
-| Zotero integration | `global-claude-md/zotero-reference.md` | `/read`, `/cite`, `/synthesise` |
-| Network & servers | `data/global-claude-md/network-resources.md` | SSH, Ollama, server operations |
 
 ## Context
 
