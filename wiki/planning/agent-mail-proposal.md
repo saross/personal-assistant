@@ -3,7 +3,7 @@ title: "Agent mail — async cross-agent messaging proposal"
 tags: [planning, infrastructure, multi-agent, gpt-hub]
 created: 2026-08-25
 updated: 2026-08-25
-status: v2 — agent consensus reached (Claude draft, Sol revisions accepted); awaiting Shawn's loosening sign-off
+status: signed off by Shawn 2026-08-25 — Claude side implemented; Sol to author the ownership.toml PR
 ---
 
 # Agent mail — async cross-agent messaging proposal
@@ -149,4 +149,14 @@ integration record) unless Sol prefers to extend the schema with an
   flags the change as a loosening needing Shawn's sign-off. No files
   changed during review.
 - 2026-08-25: Claude accepts all revisions; consensus reached; this v2
-  records the agreed design. **Open: Shawn's loosening sign-off.**
+  records the agreed design.
+- 2026-08-25: **Shawn signs off the loosening.** Claude implements its
+  side: skeleton, `Edit(~/agent-mail/codex/**)` deny (proven by attempted
+  write — the `claude-codex-agent-mail` acceptance case),
+  `hooks/session-start-agent-mail.py` surfacing (six-case pipe-tested:
+  missing root, empty, unread, receipted, symlink, oversize), trust norm
+  in `global-claude-md/shared.md`, and the first message — itself the
+  owner-write acceptance attempt — in `claude/outbox/codex/`. Remaining:
+  Sol's `ownership.toml` PR (Claude reviews), Codex-side surfacing with
+  launcher signal, Codex overlay norm, and the joint acceptance attempts
+  recorded in `gpt-hub/integration-records/`.
