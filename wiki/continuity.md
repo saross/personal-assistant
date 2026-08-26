@@ -2297,6 +2297,71 @@ implementation `b010436`; Codex transcript-adapter backlog row (pa-data
 `global-agent-guidance/ownership.toml` (active, schema 2, 9 rules,
 18 cases).
 
+### 2026-08-23→26 (Sun 23 → Wed 26 Aug, latest PA) — W34 REVIEW RUN AT LAST; ALL THREE OPEN MOVE-PROVIDER QUESTIONS RESOLVED; AN EMAIL REGISTER BUILT FROM SENT MAIL; AND AGENT COMPRESSION FINALLY GOT A NUMBER
+
+Four-day session across two standups, two recaps and the deferred weekly review.
+
+**1. 📋 THE W34 REVIEW RAN** (`reports/weekly/2026-W34.md`) — deferred Fri→Sun and then
+past Sunday. 46.75h, ~22 completions, **zero slot closures**, three collaborator
+reports. **Amended same-day when Shawn caught two closures it had missed.**
+
+**2. ⏰ RDA IS FULLY STAGED AND HAS A BLOCK.** Feedback enumerated from **31 emails plus
+the Drive suggestions**; accept/reject calls on all nine of Crawley's items; a reader's
+pass over the Statement of Work; **blocking work separated from improvements in §G**.
+**Both emails sent Tue.** ⭐ **Everything is in `data/notes/rda-ig/` — `index.md` is the
+pick-up point and assumes no prior context.** **Crawley accepted as an eighth
+co-chair.** The GCPA-SIDCER claim resolved via Sol (deposited on Zenodo 16–22 Aug,
+which is why it was unfindable on the 24th). ⏰ **Block: Sat 29 Aug 10:00–13:30.**
+Day 21 fell Thu 27 under the **progress exception** — confrontational, not abandon.
+
+**3. ⭐⭐ ALL THREE OPEN MOVE-PROVIDER QUESTIONS RESOLVED.** **Container:** Portabox
+**Medium 19 m³ @ $289/mo** local (Blacktown depot), **swap rights to Large**,
+deliverability confirmed **with the driveway measured during the call** (4 × 8 m),
+fee-free unlimited access, **~$6,007 committed**. ⚠ **Its quote proved LINE-FOR-LINE
+IDENTICAL to PODS**, voiding the 19 Aug decision that had compared Portabox's
+*advertised* $219 against PODS' *quoted* $349. **Kerbside MOVED to Mon 28 Sept and is
+the ONLY pickup** ⇒ the sale reverts to **19–20 Sept**, undoing a 12-day compression.
+**Sixth departure date: drive 29–30 Sept BY VAN**; car handover Mon 28. **Redbox
+estimator visits Thu 27** to size the container — retiring the volume problem that
+four successive checks kept enlarging.
+
+**4. ⭐ EFN DELIVERED.** No page copy on Sunday → a built Astro site, curation closed,
+agenda built, leadership meeting held Wed. ⚠ **Steve is AI-sceptical and attributes
+delays to the LLM-intermediated approach** ⇒ the site is **evidence in a live argument
+about the method**, not just a deliverable.
+
+**5. ⭐ AN EMAIL REGISTER, DERIVED FROM SENT MAIL** —
+`data/notes/style-guides/email/reference_register-email.md`. Two load-bearing rules:
+**draft at the FLOOR** (adding warmth takes seconds; removing hedges takes minutes),
+and a **three-way hedge test** — epistemic and cost-of-no hedges stay, status-lowering
+ones go.
+
+**6. ⭐⭐ AGENT COMPRESSION MEASURED: 16–24× on drafting** (8–12h → 0.5h), **confirmed
+twice in one day in unrelated projects.** **Principle: compression is available where
+the SPECIFICATION ALREADY EXISTS and the work is mechanical execution against it — not
+where the specification is what you are producing.** ⇒ **Curation is not overhead; it
+is what turns work into a compressible step.**
+
+**Held over / open:**
+
+- ⚠ **`scripts/daily-sync.sh:500` does `git add -A`**, sweeping prose files into
+  generic auto-commits **against the script's own documented invariant**. Captured;
+  Shawn wants it fixed as drive-bys after EFN.
+- ⚠ **Slot 2 burn-down stuck: 5 of 30 listed, ZERO sold, since Sun 23.** The car —
+  worth more than the other 29 rows combined — was carried four days.
+- **Sol ↔ Claude agent-mail COMPLETE**, the same day Fable credit ran out; it
+  immediately carried three research tasks. Credit exhaustion costs **1–2 working
+  days a week**.
+- ⚠ **Contract did not arrive** as promised Tue. **Packers still unbooked**; notice
+  line **Thu 3 Sept**.
+- **Paywalled retrieval diagnosed as EZproxy hostname rewriting** — the backlog row
+  carries the rule and the routes.
+- ⚠ **Verdict backlog untouched** — user-obs and working-notes candidates carried since
+  2026-08-19; **wiki curation deferred a sixth time**, with a ~20-row llm-craft cluster
+  now the ripest the notes inbox has held.
+
+**Hours: 7.5h Mon 24 + 10.0h Tue 25 + 3.75h Wed 26 (partial).**
+
 ### 2026-08-20→23 (Thu 20 → Sun 23 Aug, latest PA) — SESSION CLOSE (/handoff): THE MOVE SPINE MOVED FIVE TIMES AND THE FIFTH ONE HAS A REASON; 41 MEMORY RECORDS WERE RECOVERED FROM A LOSS NOBODY HAD NOTICED; THREE FALSE ALARMS TURNED OUT TO BE THE SAME MISTAKE
 
 Four-day session across two standups and two recaps. **Three things were repaired that nobody
