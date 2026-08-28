@@ -103,6 +103,75 @@ listed above are the ones the paper must differentiate itself from explicitly, b
 efforts and here is the specific thing none of them does"* is far stronger than *"we found
 nothing comparable"*, and the 105 items are the evidence for it.
 
+## ⭐⭐ THE CLAIM, STATED PROPERLY — and the F1 is NOT the contribution
+
+**Shawn's actual claim, 2026-08-28** (which is far more specific than *"nothing comparable"*):
+**nobody is reaching F1 ~0.85, on a large-scale (Belgium-sized) corpus of maps, with a
+preregistered instrument, using TEXT-ONLY prompts, at a cost of about USD$100 in credits** —
+**and on DEGRADED HISTORICAL maps, not modern born-digital ones.**
+
+### ⚠ Six conjuncts is trivially true, and a reviewer will say so
+
+**You can always add conjuncts until a claim is unique.** ⇒ **The paper must name WHICH ONE
+carries the weight.** **That is the §K1 discipline, and this collection settles it.**
+
+### What the corpus says about the F1 itself
+
+**Of 105 items, 65 have abstracts, and only FOUR report an F1 figure:**
+
+| Work | F1 | Method | Input |
+|---|---|---|---|
+| Historical geologic maps (DARPA AI4CMA) | **0.91** polygon / 0.73 point | trained | historical |
+| Kenya historical road network | **0.84** | deep learning | historical |
+| Historical map vectorisation | 0.713 → **0.871** | trained pipeline | historical |
+
+⇒ ⚠⚠ **F1 ~0.85 IS NOT REMARKABLE AS A NUMBER. It sits inside the band trained
+deep-learning pipelines already achieve.** ⇒ **The F1 is the BAR BEING MATCHED, not the
+contribution.**
+
+### ⭐⭐ AND ALL THREE COMPARATORS ARE ON HISTORICAL MAPS — which is what makes the comparison LEGITIMATE
+
+**Shawn's qualifier — degraded historical, not born-digital — does not separate him from these
+three. It ALIGNS him with them, and that is the point.** ⚠ **If the comparators had worked on
+clean modern data, a reviewer could dismiss the whole comparison as apples-to-oranges**: 0.85
+on hard input is not measurable against 0.9 on easy input.
+
+⇒ ⭐ **The collection does not merely supply comparators. It supplies comparators AT THE SAME
+DIFFICULTY.** **That is what turns *"we match trained performance"* from an assertion into a
+defensible one.**
+
+### ⇒ The claim to make
+
+> **We match trained deep-learning performance (F1 ~0.85, against 0.84–0.91 reported for
+> trained pipelines on comparably degraded historical maps) using TEXT-ONLY prompting, no
+> training, and ~USD$100 of API credits — at Belgium scale, preregistered.**
+
+**Each conjunct has a different job, and the paper should make that explicit:**
+
+| Conjunct | Role in the argument |
+|---|---|
+| F1 ~0.85 | ⚠ **The bar being matched.** Not novel alone |
+| Degraded historical input | ⭐ **What makes the comparison like-for-like** |
+| **Text-only prompts** | ⭐⭐ **THE MECHANISM — this is the contribution** |
+| **~USD$100** | ⭐⭐ **THE CONSEQUENCE THAT MATTERS** — orders of magnitude against GPU time, annotation and engineering |
+| Belgium-sized corpus | Evidence it is robust, not cherry-picked |
+| Preregistered instrument | Evidence it is honest, and genuinely rare in this literature |
+
+⇒ **The empty layer is not "high F1". It is "high F1 WITHOUT TRAINING, AT TRIVIAL COST".**
+**Name that, and the six adjacent papers become the evidence for the claim rather than threats
+to it.**
+
+### ⚠ Method caveats on the above, stated so they are not forgotten
+
+- **I read ABSTRACTS, not papers.** **Only 4 of 65 abstracts carry a number**, so this is a
+  signal that reframes the claim, **not** a comparison table.
+- **The tasks differ** — polygon segmentation on geologic maps is not burial-mound detection.
+  ⚠ **The F1s are not directly comparable and the paper must not pretend they are.**
+- ⏰ **The real table needs the papers read.** ⭐ **But that is paper work which ALSO answers
+  the scoop question, so it is not a detour.**
+- ⏰ **CartoMapQA (Nov 2025) — Shawn to check.** His read is that they test something else.
+  **Confirm before the benchmark ambition is framed publicly.**
+
 ## The two goals are sequenced, not opposed
 
 **A published benchmark in AI evaluation is a credential for exactly the roles being applied
