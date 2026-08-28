@@ -2297,6 +2297,78 @@ implementation `b010436`; Codex transcript-adapter backlog row (pa-data
 `global-agent-guidance/ownership.toml` (active, schema 2, 9 rules,
 18 cases).
 
+### 2026-08-26→28 (Wed 26 → Fri 28 Aug, latest PA) — THE FIRST SALE, THE SLOT THAT WAS NAMED WRONG, AND A NOVELTY CLAIM I HAD BACKWARDS TWICE
+
+Three-day session across two standups, a recap and a re-plan. **Slot 2's flat line broke and
+the instrument measuring it turned out to be the problem.**
+
+**1. ⭐⭐ FIRST SALE OF THE INVENTORY, AND THE BURN-DOWN MOVED 5 → 7 LISTED / 1 SOLD.**
+GRR-RIPPERs at **$120, full posted price, no counter**, buyer paid $20 postage. ⭐ **The ask had
+been corrected DOWN from my $170 — 42% too high, above the price of a new pair — and the
+corrected figure sold to the first serious enquirer.** *Establish the new price first* now has
+a transaction behind it. **The car went live on all channels including Carsales; the mitre saw
+was identified, drafted and listed, completing BATCH A.** **Two offers arrived at 72–77% of
+ask, which brackets the pricing: too high yields 50% offers or silence, too low yields instant
+full-price takes.**
+
+**2. ⭐⭐ SLOT 2 WAS RESCOPED, AND THE OLD NAME HAD BEEN HIDING THE MOST VALUABLE WORK IN THE
+PROJECT.** Named *"everything that sells online is POSTED FOR SALE ONLINE"*, it could not see
+4.0h spent on a **~$1.0M house decision**. ⇒ Now **"Move — HOUSE SOLD AND CONTENTS GONE, by
+~1 Oct."** **Not a repeal of the name-per-task convention** — the move has a hard end date and
+a definite completion state, so the project *is* the deliverable. ⚠ **Cost named in FOCUS.md:
+a broader slot is easier to feel busy inside, so the burn-down stays as the sub-metric admin
+cannot satisfy.**
+
+**3. ⏰ THE HOUSE. Karen will not discuss price before her solicitor's review**, despite Shawn
+conceding in writing that a material contract issue would adjust it; **the agent does not
+understand it either.** ⇒ **RULING: if she will not talk by Mon 31 Aug, go to market with
+Bart.** ⚠⚠ **That obligates $5,300 — and Monday is effectively the LAST START DATE at which a
+26-day campaign completes before the 29–30 Sept departure.** A week's slip moves the outcome
+from ~$1,019k net to ~$982k or ~$945k. ⏰ **Ask Bart whether the fee triggers on SIGNING or on
+PUBLISHING.**
+
+**4. ⭐⭐ MAP-READER: I HAD THE NOVELTY CLAIM BACKWARDS TWICE, AND SHAWN WAS ABOUT TO SOFTEN A
+STRONG RESULT ON MY ANALYSIS.** I compared his **point-feature** F1 ~0.85 against **polygon and
+line** numbers and called it unremarkable. **The only comparable point-feature figure in his
+105-item corpus is 0.73** — which itself required *"abundant annotated data"* and a
+human-in-the-loop. ⇒ **He is ~12 points above it, calibrating on 20 tiles in a couple of hours
+with no weight updates.** **Held-out evaluation CONFIRMED**, so forking-paths is answered not
+merely disclosed. ⚠ **The $100 is deployment cost; discovery was a $6k preregistered search —
+which is the contribution, not the embarrassment.** Full note:
+`wiki/planning/map-reader-priority-and-scoop-risk-2026-08-28.md`.
+
+**5. ⭐ RDA §K STAGED, AND THE SIXTH DATE IS TUE 1 SEPT.** Crawley's reply folded in; **six asks
+reduced to THREE EDITS, one check, one email.** **K1 raised to blocking** — the *"no shared
+cross-domain standard"* claim is wrong as written and he predicts TAB will catch it; **the fix
+is to SHARPEN, not soften.** ⚠ **The calendar block existed from Mon 24 and I called it
+unevidenced twice while holding the calendar tool.** ⏰ **Tue 1 Sept IS the secretariat
+premise's expiry date — the block sits on its last day, and there is no seventh date with a
+reason.**
+
+**Held over / open:**
+
+- ⏰ **Both Friday triggers fired and produced nothing: the Redbox quote never arrived and
+  Mohan never replied.** ⇒ **Phone calls early next week.** ⭐ **Third instance of the same
+  lesson — the accountant row already records that PHONE WORKED WHERE EMAIL DID NOT.**
+- ⚠⚠ **The container is now TIME-BOXED: Portabox's quote lapses ~1 Sept, Redbox's has not
+  arrived, and Monday carries applications plus the house.** **A lapsed Portabox with no Redbox
+  leaves NO priced option — the PODS quotes died exactly that way.**
+- ⏰ **Both applications due COB Mon 31.** **Sequenced by COMPRESSIBILITY, not speed**: AFCA is
+  compressible (AI allowed, ground covered) so it goes LAST; Arcadia's no-AI reading is
+  incompressible. **Reading Sat evening → draft Sun → revise Mon.** Three calendar blocks
+  created.
+- **US taxes: 2023–24 done and paid; 2025 input sent; the Oct extension CONFIRMED from Shawn's
+  own IRS account to cover 2025.** ⚠ **Real deadline ~25 Sept, not 15 Oct — the statutory date
+  falls a fortnight into Melbourne, mid-unpacking.**
+- ⚠ **EFN's fine-grained website pass still unscheduled** — planned three times. **It is the
+  only thing between Slot 1 and closing.**
+- **Redbox: 20' container, ~30 m³, $12/day, boxing at an hourly rate.** **Cheaper per m³
+  ($250 vs $390), dearer in total.** ⭐ **Included loading may close the packers row — the most
+  exposed dated item in the move.**
+
+**Hours: 6.5h Wed 26 · 6.5h Thu 27 · 5.75h Fri 28. W35 to date 36.25h** (move 16.25 · efn 8.25
+· map-reader 5.75 · rda 2.5 · pa 1.75 · career 1.0 · personal 0.75).
+
 ### 2026-08-23→26 (Sun 23 → Wed 26 Aug, latest PA) — W34 REVIEW RUN AT LAST; ALL THREE OPEN MOVE-PROVIDER QUESTIONS RESOLVED; AN EMAIL REGISTER BUILT FROM SENT MAIL; AND AGENT COMPRESSION FINALLY GOT A NUMBER
 
 Four-day session across two standups, two recaps and the deferred weekly review.
