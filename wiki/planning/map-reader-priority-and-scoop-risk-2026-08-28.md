@@ -187,8 +187,11 @@ different currency.**
 
 ⇒ **The strongest framing available: HE SPENT $6,000 SO NOBODY ELSE HAS TO.** **The published
 configuration IS the artefact, and its value is precisely that it cost $6k to find and costs
-$30–300 to use.** ⚠ **Hiding the $6k would be both dishonest and strategically foolish** — it
-is the thing that makes the paper worth reading rather than a trick that makes it fragile.
+$30–300 to use.**
+
+✅ **DISCLOSURE IS ALREADY DONE — Shawn, 2026-08-28: *"we walk through this process in methods, also it's in the disclosed prereg."*** ⚠ **So *"declare it"* was the wrong advice; it is declared.**
+
+⇒ ⭐⭐ **THE REMAINING POINT IS DIFFERENT AND SHARPER: DISCLOSING IN METHODS IS NECESSARY; LEADING WITH IT IN THE ABSTRACT IS THE STRATEGIC MOVE.** **Plenty of papers bury the true cost in Methods, where nobody reads it, and headline the cheap number** — which is both weaker and more fragile. **Here the $6k is not a caveat to be survived, it is the reason the paper is worth reading**: *a $6,000 preregistered search, published, so your deployment costs $30–300.* ⇒ **Check that the ABSTRACT carries it, not only the Methods.**
 
 ### ⚠⚠ BUT IT INVITES ONE SERIOUS OBJECTION, AND THE PREREGISTRATION IS THE ANSWER
 
@@ -211,8 +214,7 @@ several hundred configurations?**
 **If the Belgium-scale evaluation is held out from the search, the result stands and the
 generalisation claim is strong.** ⛔ **If the same data both selected the configuration and
 produced the headline number, the F1 is a selection artefact and the paper does not survive
-review.** ⇒ **This is the single most important verification in the whole project, and it is
-answerable from the preregistration.**
+review.** ⇒ **This is the single most important verification in the whole project.** ✅ **The process is walked through in Methods and is in the disclosed preregistration, so the answer should be readable off the existing documents rather than reconstructed.** ⚠ **Documenting a process is not the same as the split being clean — worth confirming explicitly ONCE, in writing, because it is the one finding that would not survive being wrong**, and every other strength in the paper rests on it.
 
 ### ⚠ And the generalisation limit is Shawn's own, correctly stated
 
