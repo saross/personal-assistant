@@ -170,6 +170,61 @@ the objection *"you trained too, you just call it something else."*
 plainly as a development set for prompt and threshold selection** — the preregistration should
 already carry this, and declaring it is stronger than minimising it.
 
+### ⚠⚠ THE $100 IS THE DEPLOYMENT COST, NOT THE DISCOVERY COST — and this must be declared
+
+**Shawn, unprompted, 2026-08-28:** *"to FIND the optimal configuration, I went through a
+preregistered tree of several hundred combinations and spent $6k in Gemini credits, but the
+RESULT is a narrow range of optimal configurations… all of which cost between ca. $30–300."*
+
+⇒ **The honest cost claim is NOT "$100".** ⇒ **It is: $30–300 PER DEPLOYMENT, after a one-time
+$6,000 preregistered search.**
+
+### ⭐⭐ AND THE $6k IS THE CONTRIBUTION, NOT THE EMBARRASSMENT
+
+**This is exactly the training-cost / inference-cost split that the comparators also have** —
+they pay annotation + training compute + engineering once, then infer cheaply. **Same shape,
+different currency.**
+
+⇒ **The strongest framing available: HE SPENT $6,000 SO NOBODY ELSE HAS TO.** **The published
+configuration IS the artefact, and its value is precisely that it cost $6k to find and costs
+$30–300 to use.** ⚠ **Hiding the $6k would be both dishonest and strategically foolish** — it
+is the thing that makes the paper worth reading rather than a trick that makes it fragile.
+
+### ⚠⚠ BUT IT INVITES ONE SERIOUS OBJECTION, AND THE PREREGISTRATION IS THE ANSWER
+
+**Searching several hundred configurations and reporting the best is a garden-of-forking-paths
+problem.** ⚠ **A reviewer WILL raise it, and it is the strongest attack available on this
+paper.**
+
+⇒ ⭐⭐ **THE PREREGISTERED TREE IS THE DEFENCE, AND IT UPGRADES THAT CONJUNCT'S ROLE.** **Earlier
+in this note I filed preregistration as *"evidence it is honest, and rare in this
+literature"* — a credibility flourish. IT IS NOT. It is the specific, load-bearing rebuttal to
+the multiple-comparisons objection that a several-hundred-config search necessarily invites.**
+**A declared search space searched exhaustively is optimisation. An undeclared one is
+p-hacking. The preregistration is what makes it the former.**
+
+### ⏰ THE ONE QUESTION THAT MUST BE ANSWERED BEFORE PUBLICATION
+
+⚠⚠ **Was the reported F1 ~0.85 measured on data that played NO ROLE in selecting among the
+several hundred configurations?**
+
+**If the Belgium-scale evaluation is held out from the search, the result stands and the
+generalisation claim is strong.** ⛔ **If the same data both selected the configuration and
+produced the headline number, the F1 is a selection artefact and the paper does not survive
+review.** ⇒ **This is the single most important verification in the whole project, and it is
+answerable from the preregistration.**
+
+### ⚠ And the generalisation limit is Shawn's own, correctly stated
+
+*"I've generalised to ONE large and not atypical historical map set, but NOT to arbitrary
+historical maps."* ⭐ **That is the right scope and it should appear in the abstract, not
+buried in limitations.** ⇒ **Claiming one map set and delivering it beats claiming generality
+and being asked for a second corpus in review.**
+
+⭐ **The precision/recall dial is a strength, not a hedge** — *"you can change parameters to
+dial towards precision or recall"* means the method exposes an operating curve rather than a
+single point, which is what a practitioner actually needs. **Report the curve.**
+
 ### ⭐ And this gives the Belgium-scale conjunct a SECOND job
 
 ⚠ **A reviewer's obvious objection to a 20-tile calibration set is overfitting to those 20
@@ -213,8 +268,10 @@ defensible one.**
 > **On degraded historical maps, we detect POINT features at F1 ~0.85 — against 0.73, the
 > only comparable published figure, which required abundant annotated data and a
 > human-in-the-loop system. We calibrate on 20 tiles in a couple of hours, update no model
-> weights, prompt in text only, and spend ~USD$100 — evaluated at Belgium scale under a
-> preregistered instrument.**
+> weights, prompt in text only, and spend **USD$30–300 per deployment — after a one-time,
+> preregistered $6,000 configuration search that we publish so it need not be repeated.**
+> Evaluated at Belgium scale on one large, not-atypical historical map set; **generalisation
+> to arbitrary historical maps is not claimed.**
 
 **Each conjunct has a different job, and the paper should make that explicit:**
 
@@ -224,7 +281,9 @@ defensible one.**
 | **20-tile calibration, no weight updates** | ⭐⭐ **The mechanism, and the sharpest contrast with 0.73's "abundant annotated data"** |
 | Degraded historical input | ⭐ **What makes the comparison like-for-like** |
 | **Text-only prompts** | ⭐⭐ **THE MECHANISM — this is the contribution** |
-| **~USD$100** | ⭐⭐ **THE CONSEQUENCE THAT MATTERS** — orders of magnitude against GPU time, annotation and engineering |
+| **USD$30–300 per deployment** | ⭐⭐ **THE CONSEQUENCE THAT MATTERS** — orders of magnitude against GPU time, annotation and engineering |
+| **One-time $6,000 preregistered search** | ⭐⭐ **THE ARTEFACT. He paid it so nobody else has to — declare it, it is the reason to read the paper** |
+| **Preregistered tree** | ⭐⭐ **UPGRADED: not a credibility flourish but the specific rebuttal to the multiple-comparisons objection a several-hundred-config search invites** |
 | Belgium-sized corpus | Evidence it is robust, not cherry-picked |
 | Preregistered instrument | Evidence it is honest, and genuinely rare in this literature |
 
