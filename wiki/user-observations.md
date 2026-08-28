@@ -2507,3 +2507,28 @@ mid-task (new-price-first, view-gated step-downs, split-the-singles, both-forms 
   capture gap) converted review sessions into systemic hardening. Useful
   — with the caveat that it expands scope, and you may want a signal for
   when to defer such findings instead.
+
+## 2026-08-26→28 (PA-hub / move, listings, map-reader claim, handoff) — Drafted candidates (pending review)
+
+**Candidate A — the compressibility argument changed the weekend plan.** Shawn's instinct was
+AFCA first *because it is faster*. Claude argued the reverse: AFCA is the *compressible* task
+(AI allowed, ground covered), Arcadia's no-AI reading is incompressible, so the compressible
+one goes last where it can absorb an overrun. Shawn agreed and then improved it — read Friday,
+**draft Sunday, revise Monday** — which Claude had not proposed and which makes Monday an
+editing block rather than a producing one.
+
+**Candidate B — the $5,300 reframe turned a stressful decision into an arithmetic one.** Shawn
+raised the fee as an objection to going to market Monday. Claude's response — that at Bart's
+26-day time-to-sale, Monday is the last start date at which the campaign completes before
+departure, so $5,300 insures against a $9–37k shift — appeared to settle it. *(Claude's read;
+Shawn did not comment directly, so this may be wrong.)*
+
+**Candidate C — the point-feature correction was caused by Claude and caught by Shawn.** Claude
+told him F1 ~0.85 was unremarkable; he supplied the qualifier that inverted it. ⚠ **Worth
+recording whether the initial wrong analysis was costly (he nearly softened the claim) or
+cheap (he caught it immediately) — those imply different lessons.**
+
+**Candidate D — "lock everything else in" produced calendar blocks rather than a list.** Three
+FOCUS_TIME events with briefs, thresholds and submit-first ordering. ⚠ **Did that help, or was
+it more structure than the weekend needed?** The RDA precedent says a plan without a block
+slips; this weekend will test whether that generalises to a plan with four of them.

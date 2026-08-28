@@ -1171,3 +1171,78 @@ one turn and converted a risk into an informed green light.
 default regardless of source trust; verify the payload, not the
 messenger. Never let an established assist pattern (the git relays)
 grandfather a categorically different request (harness-config writes).
+
+## claude-obs 57 — 2026-08-28: I compared point features against polygons and nearly caused an under-claim
+
+**Pattern.** Shawn said map-reader's F1 ~0.85 "appears unprecedented". I searched his 105-item
+Zotero corpus, found F1 figures of 0.84–0.91, and told him the number was unremarkable — "the
+bar you are matching, not the contribution". He then said *"it's point-features, not lines or
+areas."* The only point-feature figure in the corpus is **0.73**, from the same paper that
+reports 0.91 for polygons. He was about to soften a claim that is ~12 points above the state
+of the art.
+
+**Lesson.** I compared across a variable I had not held constant, and I did it while sounding
+precise — tables, percentages, a named rule. **The confident presentation made the error
+harder for him to catch, not easier.** The corpus had the right comparator in it the whole
+time; I extracted the numbers without extracting the conditions they were measured under.
+
+**How to apply.** When comparing a result against literature values, **enumerate the axes
+before the numbers** — task, object class, input quality, method, feature type. If any axis is
+unstated in the source I am comparing against, say so rather than compare. And when the
+comparison flatters my own prior framing ("the F1 isn't the contribution"), that is the moment
+to check the axes, not to write the table.
+
+## claude-obs 58 — 2026-08-28: Shawn tightens claims; I loosen them, and the asymmetry is consistent
+
+**Pattern.** Four times in three days, Shawn moved a claim toward what is defensible and I had
+moved it away. The clutch paragraph — I stacked three individually-true sentences that together
+implied the clutch was fine; he cut all three (*"I don't want to imply that the clutch isn't
+worn, we don't know"*). The mitre saw — he graded it "good, not excellent" unprompted. The
+GRR-RIPPER sale — I marked it SOLD on "it looks like"; he said *"don't confirm that yet until I
+actually get paid!"* The $6k search — he volunteered the cost that complicates his own headline
+number.
+
+**Lesson.** My failure mode is not fabrication; it is **accumulation**. Each addition is true
+and each makes the case slightly stronger, and the sum overstates. His instinct is to subtract.
+**On this evidence his judgement about what a claim can carry is better than mine, and the
+right posture is to draft and let him cut rather than to pre-emptively hedge** — hedging
+everything would be its own distortion.
+
+**How to apply.** After drafting anything that makes a case — ad copy, a novelty claim, a
+recommendation — **re-read it asking what a reader would conclude, not what each sentence
+asserts.** Rule 7 governs implication, not just assertion. And when he cuts something, record
+the *reason* rather than just the cut, because the reason generalises and the cut does not.
+
+## claude-obs 59 — 2026-08-28: I made the write-back error in both directions in two days
+
+**Pattern.** Thursday: the car had been listed on the 26th and the inventory still said
+unlisted, so the standing report quoted 5-of-30 when the truth was 6 — I had recorded the event
+too late. Friday: I marked the GRR-RIPPERs SOLD before payment landed — too early. **Same
+instrument, opposite errors, thirty hours apart.**
+
+**Lesson.** The burn-down's value is entirely in its correspondence to reality, and both errors
+broke that. The early error is worse: a late record is a stale number that self-corrects, while
+an early one corrupts the single figure the instrument exists to produce and would have
+survived if the sale had fallen through. **"Sold" means money received, not agreement reached.**
+
+**How to apply.** Record an event when it has actually happened — neither before nor after —
+and when the user's own words are hedged (*"it looks like"*), carry the hedge into the record
+rather than resolving it. The write-back is the step with no deadline attached, which is why it
+needs a rule instead of a habit.
+
+## claude-obs 60 — 2026-08-28: Fourth false-absence, and the first I made after documenting the pattern
+
+**Pattern.** I told Shawn twice — at Wednesday's recap and Thursday's standup — that there was
+"no evidence" the RDA weekend block existed in his calendar. It had been there since Monday
+24 August, with a full brief. **I had the calendar tool loaded the entire time.** What I meant
+was "I have not looked"; what I said was a finding.
+
+**Lesson.** This project has recorded three prior instances (the GCPA-SIDCER deposits, the
+12-week archive hole that did not exist, memory drift buried under archived records) and
+written the rule down: *absence from search is not evidence of absence.* **I made the fourth
+after helping write the third.** Knowing a failure mode does not prevent it; only a check does.
+
+**How to apply.** Before reporting an absence, name the search that would have found the thing
+and confirm I ran it. If I have not, the honest sentence is *"I have not checked X"* — which is
+a request, not a finding. This applies with most force in standups, where an unchecked absence
+becomes an accusation.
