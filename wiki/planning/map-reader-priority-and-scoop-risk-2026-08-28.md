@@ -214,7 +214,7 @@ several hundred configurations?**
 **If the Belgium-scale evaluation is held out from the search, the result stands and the
 generalisation claim is strong.** ⛔ **If the same data both selected the configuration and
 produced the headline number, the F1 is a selection artefact and the paper does not survive
-review.** ⇒ **This is the single most important verification in the whole project.** ✅ **The process is walked through in Methods and is in the disclosed preregistration, so the answer should be readable off the existing documents rather than reconstructed.** ⚠ **Documenting a process is not the same as the split being clean — worth confirming explicitly ONCE, in writing, because it is the one finding that would not survive being wrong**, and every other strength in the paper rests on it.
+review.** ✅✅ **CONFIRMED BY SHAWN, 2026-08-28: the reported F1 WAS measured on data that played no role in selecting among the configurations.** ⇒ **The garden-of-forking-paths objection is ANSWERED, not merely disclosed.** ⭐ **This was the single load-bearing verification — every other strength in the paper rested on it, and it holds.** **Process is walked through in Methods and in the disclosed preregistration.**
 
 ### ⚠ And the generalisation limit is Shawn's own, correctly stated
 
@@ -323,3 +323,58 @@ base that makes the NEXT round of applications easier to write than this one.** 
    Slot 1 (EFN) is close to closeable.
 5. **Re-run the survey near submission.** ⚠ **The population it cannot see today becomes
    visible later, and 2026 already has 7 items by August.**
+
+---
+
+## 🔭 FUTURE WORK — automating configuration discovery, and the trap it walks into
+
+**Shawn, 2026-08-28:** *"I want to automate the discovery of optimal configurations, it's just
+an F1 hill-climb."* **Proposed pipeline: give a model the map LEGEND TARGETS → (annotated)
+CALIBRATION TILES → (annotated) TEST MAPS, with OFAT variation from the current optimal
+configs → TARGET MAPS.**
+
+### ⭐⭐ THE 5% FIGURE IS THE ONE TO REPORT — better than "20 tiles"
+
+*"In our runs the annotated 'gold standard' calibration and test maps were about **5% of the
+target corpus**."*
+
+⇒ ⭐ **REPORT THE ANNOTATION BUDGET AS A FRACTION, NOT A COUNT.** **"20 tiles" is an absolute
+number that means nothing without the corpus size; "5% annotated" is a ratio a practitioner
+can apply to their own problem, and it is directly comparable to the 0.73 paper's "abundant
+annotated data".** ⚠ **It is also the HONEST figure** — 5% is the total annotation burden
+including test maps, and it is larger than "20 calibration tiles" implies. **Stating the
+bigger, comparable number is stronger than the smaller, incomparable one.**
+
+### ⚠⚠ AUTOMATING THE SEARCH REINTRODUCES THE FORKING-PATHS PROBLEM, IN A HARDER FORM
+
+**The current work is safe because THE SEARCH TREE WAS PREREGISTERED — a declared space,
+exhaustively searched, with a held-out evaluation.** ⚠ **An automated hill-climb is ADAPTIVE:
+the path taken depends on results seen.** ⇒ **You cannot preregister a path that does not exist
+until the search runs.**
+
+⇒ ⭐⭐ **THE FIX, AND IT IS A CONTRIBUTION IN ITSELF: PREREGISTER THE ALGORITHM, NOT THE PATH.**
+**A declared hill-climb procedure + declared stopping rules + declared search space + a final
+evaluation held out from the entire search is defensible, and it is standard practice in
+AutoML.** ⭐ ***"How to preregister an adaptive configuration search"* is a methods
+contribution that fits the AI-evaluation credibility play exactly** — and it is the natural
+second paper after this one.
+
+### ⚠ OFAT will find a local optimum, and that should be said rather than discovered
+
+**One-factor-at-a-time variation cannot see interactions.** ⚠ **If configuration parameters
+interact — and tile size × prompt detail × confidence threshold almost certainly do — OFAT
+converges to a LOCAL optimum and reports it as the optimum.**
+
+⇒ **Not a reason to abandon it: OFAT is cheap, interpretable, and its steps are individually
+explainable, which matters for a preregistered instrument.** ⇒ **But name the limitation
+rather than let a reviewer name it**, and note the alternatives (factorial designs, Bayesian
+optimisation) with the reason for not choosing them. ⭐ **"We chose an interpretable search
+over an optimal one, and here is what that costs" is a strong sentence; being asked why you
+used OFAT is a weak position.**
+
+### ⭐ And the automation has a second payoff worth stating up front
+
+**If discovery is automated, the $6,000 one-time cost becomes a REPEATABLE PROCEDURE rather
+than a sunk expense** — ⇒ **which is what would let the method generalise beyond the one
+large, not-atypical historical map set it is currently claimed for.** **That is the honest
+route to the generality this paper deliberately does not claim.**
