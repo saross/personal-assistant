@@ -115,6 +115,69 @@ preregistered instrument, using TEXT-ONLY prompts, at a cost of about USD$100 in
 **You can always add conjuncts until a claim is unique.** ⇒ **The paper must name WHICH ONE
 carries the weight.** **That is the §K1 discipline, and this collection settles it.**
 
+### ⚠⚠ CORRECTION 2026-08-28 — I COMPARED AGAINST THE WRONG NUMBERS, AND IT MATTERS
+
+**I first told Shawn: *"F1 ~0.85 is not remarkable as a number — it is the bar you are
+matching, not the contribution."* THAT WAS WRONG**, and he was on the point of softening the
+claim on the strength of it.
+
+**The error: I compared a POINT-FEATURE result against POLYGON and LINE numbers.** Once the
+feature type is held constant the picture inverts. ⚠ **Shawn supplied the qualifier; I did not
+ask for it.**
+
+### What the corpus actually says, with feature type held constant
+
+**Of 105 items, 65 have abstracts, and only FOUR report an F1:**
+
+| Work | F1 | Feature type | Method | Input |
+|---|---|---|---|---|
+| Historical geologic maps (DARPA AI4CMA) | 0.91 | **polygon** | trained, one-shot + human-in-loop | historical |
+| **Historical geologic maps — SAME PAPER** | **0.73** | ⭐ **POINT** | **as above** | historical |
+| Kenya historical road network | 0.84 | **line** | deep learning | historical |
+| Historical map vectorisation | 0.871 | line/area | trained pipeline | historical |
+
+⇒ ⭐⭐ **THE ONLY POINT-FEATURE NUMBER IN THE ENTIRE CORPUS IS 0.73.** **Shawn is at ~0.85.**
+
+⭐ **And the 0.91-vs-0.73 gap is INSIDE ONE PAPER** — same authors, same maps, same pipeline.
+⇒ **That is direct evidence, from a comparator rather than from us, that POINT DETECTION IS
+THE HARDER TASK.** **It is the strongest single sentence available for the paper's framing.**
+
+### ⚠ And read their qualifiers, because they are the contribution
+
+**`10.3390/geosciences14110305`, 2024-11-13:** *"achieved a median F1 score of 0.91 for polygon
+feature segmentation and 0.73 for point feature detection **when such features had abundant
+annotated data**"* — via **one-shot segmentation using legend prompts** and **a
+human-in-the-loop system** letting geologists refine results.
+
+**Against which Shawn's method:**
+
+| | Comparator (0.73) | Map-reader (~0.85) |
+|---|---|---|
+| Annotated data | **"abundant"** | ⭐ **20 tiles, 512×512 px** |
+| Setup time | not stated; pipeline + annotation | ⭐ **"a couple of hours"** |
+| Human in the loop | **yes, by design** | no |
+| Model weights updated | yes | ⭐⭐ **NO** |
+| Cost | GPU + annotation + engineering | ⭐⭐ **~USD$100** |
+
+### ⭐⭐ "CALIBRATED", NOT "TRAINED" — fight for the word, it is load-bearing
+
+**Shawn's term, and it is the correct one.** **20 tiles used to select prompts and thresholds
+is CALIBRATION; no model weights are updated.** ⇒ **That distinction is what separates this
+from every trained pipeline in the corpus**, and using the loose word would hand a reviewer
+the objection *"you trained too, you just call it something else."*
+
+⭐ **The defensible line is concrete: NO MODEL WEIGHTS WERE UPDATED.** **Declare the 20 tiles
+plainly as a development set for prompt and threshold selection** — the preregistration should
+already carry this, and declaring it is stronger than minimising it.
+
+### ⭐ And this gives the Belgium-scale conjunct a SECOND job
+
+⚠ **A reviewer's obvious objection to a 20-tile calibration set is overfitting to those 20
+tiles.** ⇒ **The Belgium-scale evaluation is the answer.** **A tiny calibration set against a
+very large held-out evaluation is not a weakness — it is the generalisation result.**
+⇒ **The conjuncts support each other: scale is no longer merely "not cherry-picked", it is the
+evidence that 20 tiles did not overfit.**
+
 ### What the corpus says about the F1 itself
 
 **Of 105 items, 65 have abstracts, and only FOUR report an F1 figure:**
@@ -142,15 +205,23 @@ defensible one.**
 
 ### ⇒ The claim to make
 
-> **We match trained deep-learning performance (F1 ~0.85, against 0.84–0.91 reported for
-> trained pipelines on comparably degraded historical maps) using TEXT-ONLY prompting, no
-> training, and ~USD$100 of API credits — at Belgium scale, preregistered.**
+> ⚠ **SUPERSEDED — this version compared against polygon and line results. See the correction
+> above.** ~~We match trained deep-learning performance (F1 ~0.85, against 0.84–0.91)…~~
+
+**⇒ THE CLAIM, WITH FEATURE TYPE HELD CONSTANT:**
+
+> **On degraded historical maps, we detect POINT features at F1 ~0.85 — against 0.73, the
+> only comparable published figure, which required abundant annotated data and a
+> human-in-the-loop system. We calibrate on 20 tiles in a couple of hours, update no model
+> weights, prompt in text only, and spend ~USD$100 — evaluated at Belgium scale under a
+> preregistered instrument.**
 
 **Each conjunct has a different job, and the paper should make that explicit:**
 
 | Conjunct | Role in the argument |
 |---|---|
-| F1 ~0.85 | ⚠ **The bar being matched.** Not novel alone |
+| **F1 ~0.85 on POINT features** | ⭐⭐ **~12 points above the only comparable figure. This IS a contribution** |
+| **20-tile calibration, no weight updates** | ⭐⭐ **The mechanism, and the sharpest contrast with 0.73's "abundant annotated data"** |
 | Degraded historical input | ⭐ **What makes the comparison like-for-like** |
 | **Text-only prompts** | ⭐⭐ **THE MECHANISM — this is the contribution** |
 | **~USD$100** | ⭐⭐ **THE CONSEQUENCE THAT MATTERS** — orders of magnitude against GPU time, annotation and engineering |
