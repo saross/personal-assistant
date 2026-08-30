@@ -2347,11 +2347,11 @@ reason.**
 
 **Held over / open:**
 
-- ⏰ **Both Friday triggers fired and produced nothing: the Redbox quote never arrived and
+- ⏰ **Both Friday triggers fired and produced nothing: the Red Truck quote never arrived and
   Mohan never replied.** ⇒ **Phone calls early next week.** ⭐ **Third instance of the same
   lesson — the accountant row already records that PHONE WORKED WHERE EMAIL DID NOT.**
-- ⚠⚠ **The container is now TIME-BOXED: Portabox's quote lapses ~1 Sept, Redbox's has not
-  arrived, and Monday carries applications plus the house.** **A lapsed Portabox with no Redbox
+- ⚠⚠ **The container is now TIME-BOXED: Portabox's quote lapses ~1 Sept, Red Truck's has not
+  arrived, and Monday carries applications plus the house.** **A lapsed Portabox with no Red Truck
   leaves NO priced option — the PODS quotes died exactly that way.**
 - ⏰ **Both applications due COB Mon 31.** **Sequenced by COMPRESSIBILITY, not speed**: AFCA is
   compressible (AI allowed, ground covered) so it goes LAST; Arcadia's no-AI reading is
@@ -2362,7 +2362,7 @@ reason.**
   falls a fortnight into Melbourne, mid-unpacking.**
 - ⚠ **EFN's fine-grained website pass still unscheduled** — planned three times. **It is the
   only thing between Slot 1 and closing.**
-- **Redbox: 20' container, ~30 m³, $12/day, boxing at an hourly rate.** **Cheaper per m³
+- **Red Truck: 20' container, ~30 m³, $12/day, boxing at an hourly rate.** **Cheaper per m³
   ($250 vs $390), dearer in total.** ⭐ **Included loading may close the packers row — the most
   exposed dated item in the move.**
 
@@ -2393,7 +2393,7 @@ fee-free unlimited access, **~$6,007 committed**. ⚠ **Its quote proved LINE-FO
 IDENTICAL to PODS**, voiding the 19 Aug decision that had compared Portabox's
 *advertised* $219 against PODS' *quoted* $349. **Kerbside MOVED to Mon 28 Sept and is
 the ONLY pickup** ⇒ the sale reverts to **19–20 Sept**, undoing a 12-day compression.
-**Sixth departure date: drive 29–30 Sept BY VAN**; car handover Mon 28. **Redbox
+**Sixth departure date: drive 29–30 Sept BY VAN**; car handover Mon 28. **Red Truck
 estimator visits Thu 27** to size the container — retiring the volume problem that
 four successive checks kept enlarging.
 
