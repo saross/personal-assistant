@@ -1069,6 +1069,44 @@ prior-art report, PASS).
 
 Read these *before* starting new work. Most should take <5 min each.
 
+### ⚠ From the 2026-08-22 session, closed 2026-09-03 — three items it could not safely close
+
+1. **`FOCUS.md` still announces a closed item as Slot 1, on every machine but
+   this one.** `## Slot 1: ✅ CLOSED — ARDC application SUBMITTED 2026-08-13`
+   never received the `(record)` prefix that marks a retired section, so the
+   parser returns **two Slot 1s** and every session banner has listed a closed
+   application as current work since 13 August — now three weeks. The one-line
+   fix was made on 2026-08-22 but **was never committed**, and upstream
+   (`data` @ `ca3689d`) still carries the unfixed heading. Apply on a machine
+   whose `data` submodule is current:
+
+   ```bash
+   sed -i 's|^## Slot 1: ✅ CLOSED — ARDC|## (record) Slot 1: ✅ CLOSED — ARDC|' \
+     ~/personal-assistant/data/tasks/FOCUS.md
+   ```
+
+2. **Do not update the `data` submodule on zbook without rescuing its
+   uncommitted work first.** The checkout sits at `e268e29`, **254 commits
+   behind** what the parent records, because this session pulled repeatedly with
+   `submodule.recurse=false` to avoid sweeping a concurrent session's files. It
+   holds **68 uncommitted memory records** plus edits to `tag-vocabulary.txt`,
+   two `logs/*.json`, and the `FOCUS.md` fix above. This repo has lost memory
+   records to stash operations before (`5defc3e`, "recover 3 stash-only memory
+   records"), which is why the session declined to touch it. Commit
+   `memories/memories.jsonl` first, then update.
+
+3. **The Slack dashboard has been publishing twelve-day-old figures on zbook**,
+   for the same reason: it renders from the submodule working tree, so a stale
+   checkout yields a stale canvas. **The provenance footer caught this** — it
+   reads `data/tasks/ @ e268e29+dirty` — which is exactly what that footer was
+   built for, and is the first live evidence the design works. Two follow-ups
+   worth considering: have the publisher **refuse to publish, or mark the canvas
+   degraded, when the submodule is behind the pointer its parent records**,
+   since a stale dashboard that looks authoritative is the failure being
+   designed against; and note that other machines are unaffected only if their
+   submodules are current.
+
+
 - [ ] 2026-07-27 **Zotero shared-group write-back — RULED, awaiting keys
   (work package, ready to execute on amd-tower).** Shawn's ruling
   (2026-07-27): Claude notes ALWAYS allowed in FAIMS-Project (he owns the
@@ -2174,6 +2212,60 @@ reopen settled questions:
 ## Recent session logs
 
 *Most recent at top. One paragraph + bullets per entry.*
+
+### 2026-08-22 (Sat), recorded late on 2026-09-03 — SLACK DASHBOARD BUILT AND RUNNING; THE GITHUB BOARD DIAGNOSED AS A MANUAL-REFRESH CASUALTY
+
+**Out of date order deliberately.** The work happened on 22 August; the session
+stayed open and only closed on 3 September, by which point five later entries
+sat above this one. Recording it late is better than not recording it: nothing
+in this entry appears anywhere else in the continuity.
+
+**The GitHub Projects board was diagnosed, not fixed.** `commands/sync-board.md`
+renders `data/tasks/*.md` to the board one-way and declares its trigger
+**"Manual only — no automatic sync."** By 22 August the board's Focus column
+named *"Marketing / outreach strategy session"* and *"EFN — BolgiaTen arc"*
+whilst `FOCUS.md` and every banner said EFN / Move / RDA, and it showed 1
+waiting-for item against 46. **Two independent failures**: wrong because
+refresh was manual, unvisited because Shawn works through `gh`, git, and Claude
+rather than boards. Automating the sync fixes only the first, which is why it
+was rejected.
+
+**A Slack canvas replaced it**, refreshed from the same markdown on every
+session start via `scripts/daily-sync-trigger.sh`, ahead of its once-per-day
+gate. No new store: `data/tasks/` stays canonical and the canvas holds nothing
+not re-derived each run. `hooks/session-start-accountability.py` gained
+`build_banner()` and `all_task_files_missing()`;
+`scripts/publish-dashboard.py` reuses its parsers so the two surfaces cannot
+disagree. Full detail and the Slack API findings:
+**`wiki/docs/slack-dashboard.md`**.
+
+**Four API assumptions were falsified by building it**, none documented: Slack
+splits a canvas into one section per markdown block; `canvases.sections.lookup`
+requires a filter and cannot express plain paragraphs; it rejects more than
+three `section_types` per call; and **type filtering is simply unreliable** — a
+rendered provenance line matched no type at all whilst `contains_text` found it,
+and `list` returned four times the sections present. Publishes were measured
+growing 9 → 11 → 13 operations with four provenance lines stacked up. The fix
+was to shrink the document to a single table, after which five consecutive
+publishes each cost 2 operations with the section count constant.
+
+**Verified still healthy on 2026-09-03**, twelve days and 279 commits later: one
+table, three sections, no accumulation. Script, tests, doc, and trigger wiring
+all survived.
+
+- `scripts/publish-dashboard.py`, `tests/test_publish_dashboard.py` (27 tests),
+  `wiki/docs/slack-dashboard.md`, `scripts/daily-sync-trigger.sh`
+- Canvas `F0BRX9EPY0N`; **bot-owned**, because canvas ownership is per identity
+  and the bot got `canvas_not_found` on the MCP-created one
+- `SLACK_BOT_TOKEN` and `SLACK_DASHBOARD_CANVAS_ID` on both machines
+- **Kill criterion falls due 2026-09-05**: if Shawn has not opened the canvas
+  unprompted in the second week, delete it and stop solving this with surfaces
+- `claude-obs 61–63`; four user-obs candidates pending from 2026-08-22 and four
+  more from today, all in `wiki/user-observations.md`
+
+⚠ **Three carry-forwards this session could not safely close** — see the
+"Things to verify" queue.
+
 
 ### 2026-08-25 (Tue, latest SOL) — PHASE 2 INSTRUCTION REFACTOR: SHARED.MD SPLIT, PILOT REPO EXTRACTED, AND THE 8 KiB BUDGET TURNS OUT TO BE 11.3
 
