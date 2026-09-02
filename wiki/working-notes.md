@@ -1816,3 +1816,31 @@ diagnosis was punctuation, not substance, and no content changed.
 **not** transfer to a telegraphic `\cvitem` list; applying it there would be
 gaming a metric borrowed from the wrong genre.
 
+
+## 2026-09-03: An anti-confabulation instruction protects the answer, not the justification
+
+**Setup.** Four lookup agents were asked to find current job titles for 25 RDA
+participants. The instruction was explicit and repeated: never guess, always cite
+a source you actually retrieved, write `NOT FOUND` rather than invent. Output was
+a table with a Title column, a Source column, a Confidence rating, and a free-text
+Notes column. Two adversarial verifiers then re-fetched every cited source.
+
+**What it showed.** The titles largely held: 16 of 25 verified clean against the
+cited page. **All five fabrications were in the Notes column, none in the Title
+column.** They were: a source described as unreachable that returns HTTP 200; a
+second described as blocked that actually 404s; an article dated a year later than
+its own metadata; a quotation of page wording that appears nowhere on the page
+cited; and a role dismissed as unconfirmed that the organisation's own site
+confirms. Six titles still needed correction, but through staleness and paraphrase
+rather than invention.
+
+**Lesson.** The constraint was attached to the field the prompt treated as the
+answer. The surrounding narrative — *why* this source, *what* the page said, *why*
+confidence is MEDIUM — inherited none of it, and that prose is exactly what a
+human reads to decide whether to trust the row. **Constrain and verify the
+justification field explicitly, or drop it.**
+
+**Second-order finding.** The one row the verifier fully rejected was rated MEDIUM
+by its proposer and carried no self-flag. The rows the proposer *did* flag were
+mostly fine. Adversarial verification earned its cost on a row that looked
+settled, not on the ones already marked doubtful.
