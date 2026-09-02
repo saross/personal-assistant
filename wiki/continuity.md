@@ -1071,7 +1071,11 @@ Read these *before* starting new work. Most should take <5 min each.
 
 ### ⚠ From the 2026-08-22 session, closed 2026-09-03 — three items it could not safely close
 
-1. **`FOCUS.md` still announces a closed item as Slot 1, on every machine but
+1. [x] 2026-09-03 **DONE** — fixed on amd-tower in submodule commit `eb04150`
+   (`fix(focus): mark the closed ARDC slot as a record heading`) by a concurrent
+   session and pushed. Original text follows.
+
+   **`FOCUS.md` still announces a closed item as Slot 1, on every machine but
    this one.** `## Slot 1: ✅ CLOSED — ARDC application SUBMITTED 2026-08-13`
    never received the `(record)` prefix that marks a retired section, so the
    parser returns **two Slot 1s** and every session banner has listed a closed
@@ -1085,7 +1089,19 @@ Read these *before* starting new work. Most should take <5 min each.
      ~/personal-assistant/data/tasks/FOCUS.md
    ```
 
-2. **Do not update the `data` submodule on zbook without rescuing its
+2. ⚠⚠ **THIS HAS NOW BITTEN — 2026-09-03, Shawn's `git submodule update` on
+   zbook failed and the RDA folder is absent there.** The refusal is almost
+   certainly protective: `git submodule update` will not overwrite uncommitted
+   changes, and zbook holds 68 uncommitted memory records. **Do not force it,
+   and do not stash** — this repo has lost memory records to stash before.
+   Commit `memories/memories.jsonl` on zbook first, then update. A second,
+   independent cause may also apply: `.gitmodules` declares the submodule over
+   **SSH** (`git@github.com:saross/pa-data.git`) while amd-tower's checkout
+   actually uses **HTTPS** with `gh auth git-credential`, so a machine without
+   a registered SSH key will fail to fetch it at all. Diagnose which before
+   acting. Original text follows.
+
+   **Do not update the `data` submodule on zbook without rescuing its
    uncommitted work first.** The checkout sits at `e268e29`, **254 commits
    behind** what the parent records, because this session pulled repeatedly with
    `submodule.recurse=false` to avoid sweeping a concurrent session's files. It
@@ -2210,6 +2226,66 @@ reopen settled questions:
 ---
 
 ## Recent session logs
+
+### 2026-09-02→03 (Tue 2 → Wed 3 Sep, latest RDA) — THE PROPOSAL FOLD-IN LANDED, AN EMAIL WENT OUT THAT SHOULD NOT HAVE, AND A VERIFIER CAUGHT FIVE FABRICATIONS IN ITS OWN AGENTS' NOTES
+
+Two days on the RDA Interest Group proposal, ending with both documents
+edit-complete but **not submitted** and **not yet pasted back**. The fold-in
+itself went to plan once a structural surprise was cleared: Crawley's nine
+suggested edits were still *pending* in the Google Doc, so the Drive text view
+showed them as body text while the saved document did not contain them, and two
+of the three planned edits were targeting passages that did not exist. Accepting
+the nine first, then editing on top, resolved it. The three edits landed as
+specified — the gap claim sharpened rather than softened, the checking paragraph
+rewritten once to close four separate items, and the jurisdiction-to-description
+register sweep — plus four repairs that acceptance itself created. The ICMJE
+Methods requirement was re-verified against the current Recommendations before
+being asked to carry evidential weight, and all eleven cited DOIs resolved.
+
+**The session's own failure was an email.** "ONE EMAIL" appeared in the task
+brief and was read as authorisation to send; the reply to Crawley went out and
+cannot be recalled. Shawn's correction was immediate and became a standing rule
+plus, at his request, a hard enforcement layer. Both are now in place.
+
+The last stretch produced local Markdown copies of both documents, annotated
+review copies, and a verified participant-titles worksheet for the Title column
+the template requires. **Verification changed roughly a third of the title
+results**, and the durable finding is about method rather than people: the lookup
+agents' *Notes* column carried five false statements while their *titles* largely
+held. An anti-confabulation instruction aimed at the answer field did not protect
+the prose explaining it.
+
+Session ends mid-handoff on a cross-machine blocker: zbook cannot pull the work,
+see priority-queue item 2.
+
+**Artefacts touched**
+
+- Live Google Docs (both) edited in place — nine suggestions accepted, three
+  edits, four repairs. Still **stale on four roster and arithmetic items** until
+  Shawn pastes the Markdown back.
+- `data/notes/rda-ig/` — five new files: two clean Markdown exports
+  (`3dd6fb1`), two annotated review copies (`404f9eb`, `d222737`), and
+  `participant-titles.md` (`404f9eb` → `8e5a680`).
+- `global-claude-md/claude.md` (`08e8311`) — standing rule: Claude never sends
+  outbound messages; drafting is the deliverable.
+- `settings.json` (untracked, per-machine) and `settings-template.json`
+  (`2f6709f`) — deny rules on the Gmail send, reply, and forward tools. The
+  three tools left this session's tool list immediately.
+- `data/scratchpad.md` — four entries: two on Google Docs mechanics, two on
+  proposer/verifier behaviour.
+- Email sent to Crawley, thread `1a031cbff4661b6e`, message `1a06102d6cac604d`.
+
+**Decisions made**
+
+- Markdown round-trip with paste-back into the existing Doc becomes the working
+  method for these documents, because it preserves version history and gives a
+  diffable local copy. The Drive connector cannot edit document bodies at all —
+  its only write paths are create, rename/move, copy, share, and trash.
+- The Google Docs API is the right long-term tool and is **not set up**: no
+  client library, no credentials, no existing Google API code anywhere in the
+  repo. Shawn will set it up, but not now.
+- Section C roster and arithmetic fixes were applied to the **Markdown only**,
+  deliberately, so a single paste closes the gap.
 
 *Most recent at top. One paragraph + bullets per entry.*
 
