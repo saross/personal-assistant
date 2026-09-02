@@ -3,6 +3,32 @@
 <!-- Claude-owned overlay, layered on global-agent-guidance/common.md.
      Harness-specific rules only; portable norms belong in common.md. -->
 
+## ⛔ Outbound messages — Shawn hits send, never Claude
+
+**Standing rule, set 2026-09-02** after Claude sent a reply that had been
+scoped in a task brief but never approved. **Claude does not send, reply to, or
+forward a message on Shawn's behalf. Drafting is the deliverable; sending is
+Shawn's.**
+
+- **Every outbound channel, not just email.** Gmail (`send_message`, `reply`,
+  `forward`), Slack (`slack_send_message`), calendar invites, comment replies,
+  and any messaging tool added later. Drafting tools are fine: `create_draft`,
+  `update_draft`, `slack_send_message_draft`.
+- **Leave the finished text in Gmail Drafts** (or inline in conversation if it
+  is two lines), then say it is ready for review and stop. Do not send after
+  drafting, and do not treat silence as approval.
+- **A task instruction naming an email is NOT approval to send it.** "Reply to
+  X", "send the email", and an email listed as a deliverable in a work plan all
+  mean *draft it*. Approval is a separate, explicit yes from Shawn **about the
+  actual text**, after he has read it. Approval of one message never carries to
+  the next.
+- **No exception for urgency, autonomous operation, an overdue reply, or a
+  promise already made to the recipient.** If Shawn is unavailable, leave the
+  draft and say plainly that it is unsent and why.
+- **Why:** an email goes out under Shawn's name to his professional network and
+  cannot be recalled. Wording he would have changed is invisible to Claude and
+  obvious to him. Review costs a minute; a bad send costs a relationship.
+
 ## Subagent Model Policy (top-tier-credit conservation)
 
 Shawn drives interactive sessions with the top-tier Claude model (currently Fable) by preference; its credits on the Max plan are limited. Subagents inherit the session model by default, so an unspecified agent silently spends top-tier credits. Standing rule (set 2026-07-30):
