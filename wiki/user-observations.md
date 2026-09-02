@@ -2562,11 +2562,20 @@ candidate dates and **choosing between them is a judgement about what you are ac
 to** — something I would have had to guess. Taking the diagnosis and reserving the decision kept
 a wrong date out of a file the accountability system trusts.
 
-### Candidate D — a possible cost of the long session
+### Candidate D — a forgotten close, not a long session (revised on Shawn's account)
 
-This session ran from 21 August to 3 September. The dashboard work was genuinely load-bearing,
-but it also meant the `data` submodule sat 254 commits behind on this machine for twelve days,
-the `FOCUS.md` fix stayed uncommitted that whole time, and the dashboard published stale figures
-throughout. **None of that would have survived a session close on the 22nd.** Worth your view on
-whether the long-running session is worth its residue, or whether a hard close after a build
-lands is the better default.
+The `data` submodule sat 254 commits behind on this machine for twelve days, the `FOCUS.md` fix
+stayed uncommitted throughout, and the dashboard published stale figures the whole time. **None
+of it would have survived a close on the 22nd.**
+
+I first drafted this as a question about whether long-running sessions are worth their residue.
+Shawn's own account is simpler and different: *"it was late when I finished on this computer week
+before last, and I forgot to handoff."* **The cause was a forgotten close at the end of a late
+day, not session duration** — and the two imply different fixes. A hard-close-after-a-build
+default addresses the wrong one. What would actually have caught this is a prompt at the point of
+walking away, or a check on the *next* session start that notices an unclosed session left
+uncommitted work behind.
+
+Worth noting the residue was invisible from inside the session: everything I had built was
+committed and pushed, and only the submodule and one uncommitted line were not. A close-time
+check that looks at submodule state, not just the working tree, would have flagged it.
