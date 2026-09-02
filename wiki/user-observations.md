@@ -2532,3 +2532,41 @@ cheap (he caught it immediately) — those imply different lessons.**
 FOCUS_TIME events with briefs, thresholds and submit-first ordering. ⚠ **Did that help, or was
 it more structure than the weekend needed?** The RDA precedent says a plan without a block
 slips; this weekend will test whether that generalises to a plan with four of them.
+
+## 2026-09-03 (PA — Slack dashboard build, session close) — Drafted candidates (pending review)
+
+*(The four candidates from the 2026-08-22 section above are still unruled and hold over
+alongside these. Silence never discards.)*
+
+### Candidate A — "shall we set that up?" was worth more than instructing it
+
+Slack recommended its CLI and you asked whether we should, rather than telling me to. That
+invited the check, which found the CLI exists to scaffold apps that *run code* whilst ours is a
+script making one API call — so we skipped a toolchain install and landed at the same token via
+the web flow. **A flatter instruction would have got the CLI installed.** The question form is
+what left room for the answer to be no.
+
+### Candidate B — you stopped the credential work at exactly the right boundary
+
+You let it widen through a resolver, a rename, a documentation audit, and a six-file sweep
+without once scoping it, then stopped it dead at the consolidation question: *"I think I need to
+give that more thought. Can we add the issue to my inbox and leave it for now?"* The line you
+drew was **between work that follows from evidence and work that requires a preference**, which
+is a cleaner criterion than effort or elapsed time, and I would not have found it myself.
+
+### Candidate C — accepting the finding without asking me to guess the date
+
+Told all three focus slots state deadlines in prose so the escalation had never fired, you said
+you would add ISO dates yourself next time you were in personal-assistant. Slot 1 names two
+candidate dates and **choosing between them is a judgement about what you are actually committed
+to** — something I would have had to guess. Taking the diagnosis and reserving the decision kept
+a wrong date out of a file the accountability system trusts.
+
+### Candidate D — a possible cost of the long session
+
+This session ran from 21 August to 3 September. The dashboard work was genuinely load-bearing,
+but it also meant the `data` submodule sat 254 commits behind on this machine for twelve days,
+the `FOCUS.md` fix stayed uncommitted that whole time, and the dashboard published stale figures
+throughout. **None of that would have survived a session close on the 22nd.** Worth your view on
+whether the long-running session is worth its residue, or whether a hard close after a build
+lands is the better default.

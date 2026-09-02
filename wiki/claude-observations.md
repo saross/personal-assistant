@@ -1246,3 +1246,65 @@ after helping write the third.** Knowing a failure mode does not prevent it; onl
 and confirm I ran it. If I have not, the honest sentence is *"I have not checked X"* — which is
 a request, not a finding. This applies with most force in standups, where an unchecked absence
 becomes an accusation.
+
+## claude-obs 61 — 2026-09-03: I built the staleness detector, then became its first catch
+
+**Pattern.** The Slack dashboard carries a provenance footer naming the `data` submodule commit
+it rendered from, with a `+dirty` marker. I argued for it on the grounds that *"a stale canvas is
+detectable by reading it, which is exactly what the GitHub board lacked."* Closing the session
+twelve days later, the footer read `e268e29+dirty` — the same revision as the day it was built.
+**The checkout was 254 commits behind**, because I had pulled repeatedly with
+`submodule.recurse=false` to avoid sweeping a concurrent session's files, and the dashboard had
+been publishing three-week-old figures ever since.
+
+**Lesson.** The instrument worked, and it caught me. That is the good outcome, but note what
+made it work: the footer names a *commit*, not a timestamp. A timestamp would have looked
+perfectly healthy — the publisher ran on schedule every session and stamped the current time
+over unchanged data. **Freshness of the render and freshness of the source are different
+properties, and only one of them was ever in doubt.**
+
+**How to apply.** When a derived artefact stamps its provenance, **stamp the input's identity,
+not the run's**. And where a script reads from a submodule, treat "is the submodule at the
+commit its parent records?" as part of the health check, not an environmental assumption. Filed
+as a follow-up: the publisher should refuse, or mark the canvas degraded, rather than publish
+confidently from a stale tree.
+
+## claude-obs 62 — 2026-09-03: Four documented facts about one API were all wrong
+
+**Pattern.** Building against Slack's canvas API, four assumptions failed in sequence, each
+surviving until it was executed rather than read. Canvases split into one section per markdown
+block. `canvases.sections.lookup` requires a filter. It rejects more than three `section_types`
+per call — **a cap absent from the method reference**. And type filtering is unreliable outright:
+a rendered provenance line matched *no* type whilst `contains_text` found it immediately, and
+`list` returned four times the sections actually present.
+
+**Lesson.** I had already fetched the documentation and quoted its enum. That was not enough, and
+the failure was not a documentation gap so much as a **category error about what documentation
+is** — a description of intent, not a report of behaviour. The cheapest possible probe, one live
+call, falsified more than an hour of careful reading.
+
+**How to apply.** Against an unfamiliar API, **spend the first call on a probe rather than the
+implementation**. Here that would have been one create-and-read round trip, which would have
+revealed the section splitting immediately and saved two redesigns. And when the fix is
+available, **shrink the document rather than out-clever the API**: collapsing the body to a
+single table made the whole class of problem disappear, where each earlier fix had only moved it.
+
+## claude-obs 63 — 2026-09-03: Shawn declines the recommended path when it does not fit the shape of the work
+
+**Pattern.** Told Slack was recommending the CLI, Shawn asked *"shall we set that up?"* rather
+than doing it. The check showed the CLI exists to scaffold and deploy apps that run code, whilst
+this is a script making one class of Web API call, and the web flow still ends at the same token.
+He took the recommendation against. The same shape appeared earlier: on the credential-store
+question he stopped a widening piece of work at *"I think I need to give that more thought"*, and
+on the deadline formats he took the finding without asking me to guess which of two dates was
+binding.
+
+**Lesson.** He treats a vendor's recommended path as one input rather than a default, and the
+deciding question is consistently **whether the tool matches the shape of the work** rather than
+whether it is endorsed. Worth noticing that he asks rather than assumes: "shall we?" invited the
+argument, and a flatter answer would have installed a toolchain neither of us needed.
+
+**How to apply.** When a vendor or a doc recommends a path, **say plainly whether it fits, and
+name the condition under which it would**. I flagged that the CLI becomes right the moment
+something runs *inside* Slack — a slash command, an interactive step, an agent — which converts a
+"no" into a dated trigger rather than a dead end.
