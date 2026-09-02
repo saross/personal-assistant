@@ -2612,6 +2612,22 @@ removes any incentive to shade the report toward whichever option sounds better.
 **Worth noticing as a technique, because the same question asked as "you did edit
 the live ones, right?" would have invited a different kind of answer.**
 
+### Candidate E — you thought you were caught up, and the system never told you otherwise
+
+Your words on seeing the count: *"I'm happy you did a comprehensive scan, I thought I
+was caught up except for a few recent sessions."* The gap between that belief and 18
+pending sections dating back to May is the finding, and it is not about diligence.
+
+**Nothing surfaces the number anywhere you look.** Pending sections sit interleaved
+with accepted ones inside a 2,600-line file, and the hold-over rule that protects them
+from silent discard also makes them silent. Meanwhile the session-start banner already
+counts exactly this kind of backlog — `Inbox: 44 items | Waiting for: 53 items`, built
+in `hooks/session-start-accountability.py` around line 316. **The queue that has an
+invisible backlog is the one register the banner does not count.**
+
+Flagging it here rather than acting on it, because adding a third counter is a change
+to what every session sees, and that is yours to decide.
+
 ### Candidate D — the scope instruction did real work, and then I overrode part of it
 
 Your brief cut the day to three edits and warned twice against re-expansion. That
