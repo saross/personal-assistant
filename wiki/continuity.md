@@ -1296,6 +1296,17 @@ Read these *before* starting new work. Most should take <5 min each.
 
 ## Pending tasks (cross-session)
 
+- [ ] 2026-09-03 **Shawn committed to clearing all pending observation sections
+  by end of week.** Recorded so the next `/handoff` and `/recap` do not
+  re-surface them before then. **Scale worth knowing before planning the
+  sitting: 14 pending sections in `wiki/user-observations.md` alone**, plus 4
+  across `cv-and-applications` (2), `fieldmark-docs-staging` (1), and
+  `map-reader-llm` (1) — 18 in total, oldest dated 2026-05-18. The protocol's
+  hold-over rule has worked as designed (nothing was silently discarded) but the
+  queue has never been drained, which is a different failure from the one the
+  rule prevents. Worth deciding at the sitting whether the older sections are
+  still worth reviewing or should be closed unread with a note.
+
 These survive across sessions. Mark `[x]` with date when done.
 
 ### Post-Phase-0 + Step-2 cleanup register (added 2026-05-22)
