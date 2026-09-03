@@ -2379,6 +2379,9 @@ request.
 - Still Shawn's: re-paste the Statement of Work Doc (Kumar row, participant
   sentence), the change-log Doc (roster item 5, status items 1 and 5, new items 7
   and 8), the sheet row, the form HTML; send the group email; submit.
+- **4 Sep, morning: Shawn confirms all pastes and the group email are done and
+  he submits this afternoon.** On his word "submitted": `/done` Slot 3, set the
+  waiting-for row's Since to the submission date, and note the RDA confirmation.
 
 ### 2026-09-02→03 (Tue 2 → Wed 3 Sep, latest RDA) — THE PROPOSAL FOLD-IN LANDED, AN EMAIL WENT OUT THAT SHOULD NOT HAVE, AND A VERIFIER CAUGHT FIVE FABRICATIONS IN ITS OWN AGENTS' NOTES
 
