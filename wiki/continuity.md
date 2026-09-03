@@ -2332,10 +2332,10 @@ request.
 2. Any change to roster or text: edit the Markdown, mirror the annotated copy,
    rebuild the HTML, add a change-log line, and Shawn re-pastes. Never write to
    the Docs or the form.
-3. Four replies pending (Drummond email and title; Seal and Wharton titles;
-   Sangtani name, affiliation, location, title). Apply on arrival to both
-   Statement of Work copies, the sheet, and the HTML. Drummond's address is
-   the only one still unconfirmed; a bounce is her answer.
+3. Three replies pending (Drummond email and title; Seal and Wharton titles);
+   Klump, Meyers, and Kumar replied on 3 September and are applied. Apply
+   later ones to both Statement of Work copies, the sheet, and the HTML.
+   Drummond's address is the only one still unconfirmed; a bounce is her answer.
 4. RDA cycle after submission: community review about four weeks, TAB four to
    six, Council two; endorsement about November 2026 = month 1. If submission
    slips past mid-September, re-anchor the plenary ladder (the 5 August
@@ -2352,6 +2352,33 @@ request.
    push); the 2026-08-24 inbox row on `daily-sync.sh` covers it. A Drive
    connector search that returns nothing is not evidence of absence (it missed
    the 17 August group send).
+
+**Evening addendum (3 Sep, after the close-out above)**
+
+- **Gnana's final-review requests, both applied.** The Tier 2 candidate output
+  *Research Grimoires Framework* now defines a research grimoire in its first
+  sentence (a curated, tested collection of prompts and GenAI workflows; the Three
+  Ps record what happened, a grimoire captures what is worth repeating) and the
+  scope clause reads "including multi-modal models". Shawn applied both to the
+  Doc and the Markdown; mirrored into the annotated copy, the HTML, and change-log
+  items 7 and 8 (`5109cfc`). Gnana approved the definition.
+- **Kumar's reply.** Haresh Kumar, Researcher, University of Vaasa, Finland replaces
+  the H.K. Sangtani placeholder row (same email); Europe 6, no affiliation left to
+  confirm; participant sentence and change-log roster item recomputed. Three replies
+  pending: Drummond, Seal, Wharton.
+- **Change-log status section rewritten with names** (`d5d7f93`) after Shawn's trim
+  and a Claude insertion had merged into "two have replied" with three entries.
+  Shawn's ruling: record names properly; **a co-chair's forthcoming move stays out**
+  of the circulated log because its publicness is unknown, and it was scrubbed from
+  this public file too (history left alone, by his ruling). Scratchpad rule added
+  (`0949c33`).
+- **Sheet rows paste from the TSV**, not the CSV (Sheets splits on tabs; the title
+  cells contain commas).
+- **An accidental paste into a generated HTML file** (wrong window in focus) was
+  repaired by rebuilding; `build.py --check` is the guard.
+- Still Shawn's: re-paste the Statement of Work Doc (Kumar row, participant
+  sentence), the change-log Doc (roster item 5, status items 1 and 5, new items 7
+  and 8), the sheet row, the form HTML; send the group email; submit.
 
 ### 2026-09-02→03 (Tue 2 → Wed 3 Sep, latest RDA) — THE PROPOSAL FOLD-IN LANDED, AN EMAIL WENT OUT THAT SHOULD NOT HAVE, AND A VERIFIER CAUGHT FIVE FABRICATIONS IN ITS OWN AGENTS' NOTES
 
