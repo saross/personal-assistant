@@ -2341,8 +2341,9 @@ request.
    slips past mid-September, re-anchor the plenary ladder (the 5 August
    change-log entry shows the arithmetic). Community-review comments become
    amendments; the comment set closed 24 August.
-5. Still open, none gating: GRS Round 2 consultation response; Kiera McNeice's
-   move to Australia in November 2026 (amend then); the timeline proposal (an
+5. Still open, none gating: GRS Round 2 consultation response; a co-chair's forthcoming
+   institutional change, recorded only in the private notes
+   (`actions-2026-08-24.md` §H1), to be reflected by amendment when it happens; the timeline proposal (an
    amendment if adopted after submission); Google Docs API access, which Shawn
    will set up and which would let Claude edit Docs under the same ownership
    rule.
