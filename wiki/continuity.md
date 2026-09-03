@@ -603,20 +603,22 @@ Bake-off artefacts (all in `data/experiments/bake-off-metadata-2026-05-18/`):
 
 Bake-off spend: ~$1.45 across 5 Gemini rounds + 2 Haiku batches (29% of $5 cap).
 
-### E. Open-science / RDA IG (Documenting GenAI Interactions in Research)
+### E. Open-science / RDA IG (Documenting GenAI Interactions in Research) — *application EDIT-COMPLETE 2026-09-03; submission expected 4 Sep 2026; then RDA's 10–12 week cycle*
 
-Shawn co-chairs an RDA Interest Group with Brian Ballsun-Stanton.
-Target IG submission August 2026; first formal meeting RDA P26; WG
-launch target RDA P28 (2027). Framework: Three Ps (Prompt, Process,
-Provenance), extending FAIR / RO-Crate. Candidate Tier 2 output
-"Research Grimoires Framework" maps directly onto the `notes/<topic>.md`
-wiki pattern (workstream D).
+Shawn co-chairs an RDA Interest Group (eight co-chairs; Brian
+Ballsun-Stanton and Shawn proposing). Framework: Three Ps (Prompt,
+Process, Provenance), extending FAIR / RO-Crate. **All working material is
+in `data/notes/rda-ig/` — start at `index.md` ("State as at 2026-09-03"),
+then `change-log.md`.** The docx files under `docs/open-science/` are the
+July originals and are superseded. Anchoring: month 1 = November 2026
+(expected endorsement), VP28 (March 2027) = month 5, P29 (September
+2027) = month 11, Working Group launch P30 (2028); 25 participants.
+Resume checklist for when RDA responds: the 2026-09-03 session log entry.
 
-The PA system is plausibly a proof-of-concept implementation of the
-IG framework. Reference docs:
-`~/personal-assistant/docs/open-science/RDA_IG_Statement_of_Work.docx`
-and `RDA_IG_Summary_and_Description.docx`. Provenance audit
-(workstream D) was first concrete alignment action.
+The PA system is plausibly a proof-of-concept implementation of the IG
+framework (cc-session-toolkit is cited in the Statement of Work as
+exemplar tooling). Provenance audit (workstream D) was the first concrete
+alignment action.
 
 ### G. Style-guide construction (multi-genre, academic kick-off) — *v2 Phases 1–5 all done 2026-05-30 (Phase 1 legacy+clean+Stream A; Phase 2 Biber; Phase 3 Kumar+bimodality+verifier; Phase 4 Panickssery; Phase 5 Mahalanobis evaluator + 8-metric gate); v2.3 agent ready. **Workstream G core complete.** Remaining: multi-genre runs (Substack/business/teaching — agent re-invocations, not phase dev) + one deferred future refinement (8-metric gate tolerance review, see table)*
 
@@ -1089,7 +1091,16 @@ Read these *before* starting new work. Most should take <5 min each.
      ~/personal-assistant/data/tasks/FOCUS.md
    ```
 
-2. ⚠⚠ **THIS HAS NOW BITTEN — 2026-09-03, Shawn's `git submodule update` on
+2. [x] 2026-09-03 **DONE** — cleared on zbook the same morning: **78** records (not
+   68) committed as `0519e6a` before any merge, backed up outside the repo at
+   `~/pa-rescue-2026-09-03/` (`memories-added-78.jsonl`, `full-working-tree.diff`),
+   then merged (`b323978`) and pushed. Post-merge: 40,931 records, none
+   unparseable, all ids unique, all 78 present. The SSH-vs-HTTPS theory was
+   **disproved**: the fetch succeeded once the records were committed. Residual:
+   six duplicate lines in `tag-vocabulary.txt`, three pre-existing. Original
+   text follows.
+
+   ⚠⚠ **THIS HAS NOW BITTEN — 2026-09-03, Shawn's `git submodule update` on
    zbook failed and the RDA folder is absent there.** The refusal is almost
    certainly protective: `git submodule update` will not overwrite uncommitted
    changes, and zbook holds 68 uncommitted memory records. **Do not force it,
@@ -2229,7 +2240,7 @@ reopen settled questions:
 | Vector 2 design (parked) | `planning/vector-2-design.md` | Considering implementation of session-start payload reduction |
 | Continuity-doc protocol | `global-claude-md/continuity-protocol.md` | Updating continuity.md; deciding what belongs in it |
 | `/handoff` protocol | `global-claude-md/handoff-protocol.md` | End-of-session ritual; deciding which observations to capture |
-| RDA IG context (Three Ps framework) | `docs/open-science/RDA_IG_Statement_of_Work.docx`, `RDA_IG_Summary_and_Description.docx` | Aligning system with research-data standards; provenance audit |
+| RDA IG context (Three Ps framework) | `data/notes/rda-ig/` (start at `index.md`; `statement-of-work.md`, `summary-and-description.md`, `change-log.md`); the July docx originals under `docs/open-science/` are superseded | Aligning system with research-data standards; provenance audit |
 | Cap-analysis findings (850K decision basis) | `data/experiments/transcript-cap-analysis-2026-05-19/findings.md` | Why the cap is 850K; what middle-truncate sacrifices on outliers; the framing-strip correction note |
 | CoT capture investigation (RDA IG-relevant) | `docs/open-science/cot-capture-claude-code-investigation-2026-05-19.md` | Why thinking blocks are empty in CC JSONLs; survey of community capture tools; recommendations across short / medium / long horizons |
 | Current FOCUS slots | `tasks/FOCUS.md` | Knowing whether to mention slot pressure (don't if PA work is deliberate background) |
@@ -2237,6 +2248,137 @@ reopen settled questions:
 ---
 
 ## Recent session logs
+
+### 2026-09-03 (Wed, latest RDA) — SESSION CLOSE: THE APPLICATION IS EDIT-COMPLETE AND IN SHAWN'S HANDS; A CHANGE LOG THAT "WAS UP TO DATE" NEEDED SIX CORRECTIONS; A SECOND OWNERSHIP-OF-ACTION ERROR GOT AN INBOX ROW
+
+The RDA Interest Group application is edit-complete and everything left is
+Shawn's: paste the Markdown into the two Google Docs, paste the HTML into the
+RDA web form, paste the membership sheet into Drive, send the group email
+(drafted: To Brian, 24 BCC, empty body), and submit, expected 4 September,
+which keeps month 1 at November 2026. **Not submitted at close.** The day
+opened by clearing the zbook blocker (78 uncommitted memory records committed
+before any merge; see priority-queue item 2) and then produced this lane's
+second ownership-of-action error in two days: a paste into the live Summary
+Doc that was Shawn's step after his review. He named the error class and asked
+for an inbox row, not a fix now. The roster gained a Title column (Sol's list
+cross-checked against the verified worksheet; member-supplied titles preferred;
+one title each), a Chair-or-Member Commitment column ordered chairs first, and
+the Karlsruhe, SDSC, and TBC corrections. Asked whether the change log was
+fully up to date, a re-check of every claim against the files found six wrong
+(24 cited DOIs, not eleven; two SPEC DOIs, not four; no full reader's pass was
+folded in; member-supplied titles unmentioned; emails drafted, not sent; two
+addresses under confirmation), which became a scratchpad rule: re-derive every
+count in a shared document from the artefact. Shawn sent the six confirmation
+emails; Klump and Meyers replied within the day and their rows are applied. A
+re-spaced deliverable timeline answering the Month 6 collision is written up
+as a proposal only, with explicit plenary anchoring and P29 outputs at Shawn's
+request.
+
+**Artefacts touched** (data submodule unless noted)
+
+- `notes/rda-ig/statement-of-work.md` + annotated copy: Title column and
+  Chair/Member Commitment column, chairs-first order, Klump's division,
+  Meyers's SDSC address (`5554bb8` → `03e32e9`, `d011e1f`). The annotated body
+  strips to the clean file byte-for-byte.
+- `notes/rda-ig/summary-and-description.md` + annotated copy: four local
+  corruptions repaired against the live Doc (`b8a3728`); draft H1 dropped by
+  Shawn (`10dee6f`).
+- `notes/rda-ig/change-log.md` (new; from the Doc's docx export via pandoc):
+  the 3 September section, corrected twice (`8d57b84`, `03e32e9`, `ede4cd1`).
+  Paste boundary: from its heading to the rule before the 17 August heading.
+- `notes/rda-ig/form-html/` (new): one HTML file per web-form field, tag-set
+  checked; `build.py --check` proves the HTML was built from the current
+  Markdown (`03b95f3`, `a9c591f`).
+- `notes/rda-ig/ig-membership-2026-09-03.csv` / `.tsv` (new): the full sheet in
+  the Drive sheet's row order (`5b379f5`, `d011e1f`).
+- `notes/rda-ig/participant-titles.md` (verified; Sol cross-check reconciled),
+  `email-drafts-2026-09-03.md` (sent; two replies), `timeline-proposal-2026-09-03.md`
+  (new, `cfd1f92`, `43cd337`), `index.md` (state block current).
+- `tasks/inbox.md`: ownership-of-action design row (`8b3b018`) and the RDA
+  titles-run observation candidates (`07c7d8c`). `tasks/waiting-for.md`: four
+  pending replies; the RDA decision row. `tasks/FOCUS.md`: Slot 3 current-state
+  block, slot stays open until submission.
+- `data/scratchpad.md`: paste-into-Docs is Shawn's step; oversized MCP results
+  live on disk; re-derive counts from the artefact (`bf8cf06`).
+- `memories/`: 78 zbook records rescued (`0519e6a`), merged (`b323978`).
+- Gmail Drafts (unsent): the group email, To Brian, 24 BCC, subject "RDA IG -
+  Documenting Generative AI Interactions in Research", empty body for Shawn.
+- Public repo: this file; `global-claude-md/claude.md` unchanged today.
+
+**Decisions made**
+
+- **Ownership of action.** "Paste into Google Docs" and "send" in a brief are
+  Shawn's steps. Claude reads Docs through the Drive connector only; no UI
+  writes as a work-around. Repo changes stay autonomous (recoverable, bounded).
+  The design work (markup in continuity and handoff prompts; lanes per model;
+  workstreams per parallel session; beacon by default, prompt only on model
+  change; narrow public-facing exclusion class) is an inbox row until after
+  submission.
+- **Titles.** One per person; member-supplied wording wins unless there is
+  evidence of a recent change; short-form affiliations. Sangtani TBC (not
+  "determined"); Bharathy stays ARDC in an individual capacity; Lane Senior
+  Lecturer.
+- **Commitment column.** Chair or Member only in the Statement of Work; the
+  availability statements stay in the membership sheet.
+- **Timeline.** Proposal only. Shawn rules with "apply it", with or without the
+  Supporting Output clause in the month 12 milestone.
+
+**Resume when RDA responds, or if anything changes before submission**
+
+1. Start at `data/notes/rda-ig/index.md` ("State as at 2026-09-03"), then the
+   top of `change-log.md`. Once Shawn has pasted, the live Docs, the form, and
+   the Markdown are the same text; `python3 form-html/build.py --check` proves
+   Markdown↔HTML sync; the annotated copies strip to the clean files.
+2. Any change to roster or text: edit the Markdown, mirror the annotated copy,
+   rebuild the HTML, add a change-log line, and Shawn re-pastes. Never write to
+   the Docs or the form.
+3. Three replies pending (Drummond email and title; Seal and Wharton titles);
+   Klump, Meyers, and Kumar replied on 3 September and are applied. Apply
+   later ones to both Statement of Work copies, the sheet, and the HTML.
+   Drummond's address is the only one still unconfirmed; a bounce is her answer.
+4. RDA cycle after submission: community review about four weeks, TAB four to
+   six, Council two; endorsement about November 2026 = month 1. If submission
+   slips past mid-September, re-anchor the plenary ladder (the 5 August
+   change-log entry shows the arithmetic). Community-review comments become
+   amendments; the comment set closed 24 August.
+5. Still open, none gating: GRS Round 2 consultation response; a co-chair's forthcoming
+   institutional change, recorded only in the private notes
+   (`actions-2026-08-24.md` §H1), to be reflected by amendment when it happens; the timeline proposal (an
+   amendment if adopted after submission); Google Docs API access, which Shawn
+   will set up and which would let Claude edit Docs under the same ownership
+   rule.
+6. Infra to remember: the auto-sync on both machines pushed a parent pointer
+   before its data commit twice today (dangling pointer until the next data
+   push); the 2026-08-24 inbox row on `daily-sync.sh` covers it. A Drive
+   connector search that returns nothing is not evidence of absence (it missed
+   the 17 August group send).
+
+**Evening addendum (3 Sep, after the close-out above)**
+
+- **Gnana's final-review requests, both applied.** The Tier 2 candidate output
+  *Research Grimoires Framework* now defines a research grimoire in its first
+  sentence (a curated, tested collection of prompts and GenAI workflows; the Three
+  Ps record what happened, a grimoire captures what is worth repeating) and the
+  scope clause reads "including multi-modal models". Shawn applied both to the
+  Doc and the Markdown; mirrored into the annotated copy, the HTML, and change-log
+  items 7 and 8 (`5109cfc`). Gnana approved the definition.
+- **Kumar's reply.** Haresh Kumar, Researcher, University of Vaasa, Finland replaces
+  the H.K. Sangtani placeholder row (same email); Europe 6, no affiliation left to
+  confirm; participant sentence and change-log roster item recomputed. Three replies
+  pending: Drummond, Seal, Wharton.
+- **Change-log status section rewritten with names** (`d5d7f93`) after Shawn's trim
+  and a Claude insertion had merged into "two have replied" with three entries.
+  Shawn's ruling: record names properly; **a co-chair's forthcoming move stays out**
+  of the circulated log because its publicness is unknown, and it was scrubbed from
+  this public file too (history left alone, by his ruling). Scratchpad rule added
+  (`0949c33`).
+- **Sheet rows paste from the TSV**, not the CSV (Sheets splits on tabs; the title
+  cells contain commas).
+- **An accidental paste into a generated HTML file** (wrong window in focus) was
+  repaired by rebuilding; `build.py --check` is the guard.
+- Still Shawn's: re-paste the Statement of Work Doc (Kumar row, participant
+  sentence), the change-log Doc (roster item 5, status items 1 and 5, new items 7
+  and 8), the sheet row, the form HTML; send the group email; submit.
 
 ### 2026-09-02→03 (Tue 2 → Wed 3 Sep, latest RDA) — THE PROPOSAL FOLD-IN LANDED, AN EMAIL WENT OUT THAT SHOULD NOT HAVE, AND A VERIFIER CAUGHT FIVE FABRICATIONS IN ITS OWN AGENTS' NOTES
 
