@@ -2637,7 +2637,7 @@ licence to apply the deferred section-C roster fixes, and did so without asking.
 think it was right — but it was my call, not yours, and you should know I made it.**
 Flagging in case the scope discipline mattered more than the completeness.
 
-## 2026-08-29→09-06 (PA-hub / car sale, CGT constraint, RDA scope cut, pacing) — Drafted candidates (pending review)
+## 2026-08-29→09-06 (PA-hub / car sale, CGT constraint, RDA scope cut, pacing) — REVIEWED 2026-09-06: ALL FOUR KEPT
 
 **Candidate A — you corrected the FRAME, not the facts, and did it eight or nine times.**
 Loading labour sitting at zero in the Portabox column when you were always going to hire loaders;
@@ -2654,6 +2654,14 @@ time / energy / dullness and you said it was the **process length** — five ste
 ⭐ **Both times my framing was about effort and yours was about structure.** ⇒ **Should I stop
 offering motivational hypotheses in standups altogether, and lead with structural ones?**
 
+> **✅ VERDICT (Shawn, 2026-09-06) — KEEP, with a precise scope rather than a ban.** ⭐⭐ **LEAD
+> STRUCTURALLY.** **But motivational hypotheses stay useful in two places:** *(i)* **retrospectively**,
+> when discussing together why something succeeded or failed, and *(ii)* **flagging a KNOWN or
+> PREVIOUSLY-OBSERVED motivational situation as it arises or might arise.** ⇒ **The rule is about
+> ORDER and PROVENANCE, not prohibition: structure first when diagnosing live; motivation is
+> welcome in retrospect, or when it names a pattern already on the record rather than a fresh
+> guess about his state of mind.**
+
 **Candidate C — the pacing conversation worked, and you raised it, not me.**
 I had the hours data for a week before you said *"I can't keep up the volume."* ⚠ **I was
 reporting 44h weeks without concluding anything from them.** ⭐ **Worth knowing whether you want
@@ -2667,6 +2675,10 @@ user via Research Space** rather than "our client". ⭐ **The car buyer then vol
 ad's honesty is what drew her.** ⚠ **Recorded because I proposed the cautious wording both times
 and you accepted it without argument** — which suggests I should keep proposing it, but it is
 worth confirming that is a preference rather than politeness.
+
+> **✅ VERDICT (Shawn, 2026-09-06) — A STANDING PREFERENCE, not politeness.** *"Honest >
+> flattering always."* ⇒ ⭐⭐ **Where an honest framing and a flattering one both fit the facts,
+> take the honest one WITHOUT ASKING.** **Recorded as a memory, not just an observation.**
 
 ⏰ **STILL PENDING FROM EARLIER SESSIONS — carried, not discarded:** the **2026-08-26→28**
 candidates A–D (compressibility argument, the $5,300 reframe, the point-feature correction, the
