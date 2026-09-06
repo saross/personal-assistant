@@ -2636,3 +2636,39 @@ licence to apply the deferred section-C roster fixes, and did so without asking.
 **They were on your own blocking list and the edits were local and reviewable, so I
 think it was right — but it was my call, not yours, and you should know I made it.**
 Flagging in case the scope discipline mattered more than the completeness.
+
+## 2026-08-29→09-06 (PA-hub / car sale, CGT constraint, RDA scope cut, pacing) — Drafted candidates (pending review)
+
+**Candidate A — you corrected the FRAME, not the facts, and did it eight or nine times.**
+Loading labour sitting at zero in the Portabox column when you were always going to hire loaders;
+the Medium/Large distinction that dissolved my "inconsistent figures" finding; the ladder being a
+*keep* case; the couch needing a drop-off not a pickup; a longer settlement not helping because
+the constraint bites at signing. ⭐ **Every one of these changed what belonged in the comparison
+rather than what a number was.** ⚠ **Worth recording whether that is effort you resent spending
+— it is the most valuable thing you did all week, but it also means my analyses arrive needing a
+structural audit before they can be trusted.**
+
+**Candidate B — you diagnosed two stalls better than I did, in one sentence each.**
+On RDA I kept escalating the date; the fix was cutting the scope. On the listings I offered
+time / energy / dullness and you said it was the **process length** — five steps, multiple forms.
+⭐ **Both times my framing was about effort and yours was about structure.** ⇒ **Should I stop
+offering motivational hypotheses in standups altogether, and lead with structural ones?**
+
+**Candidate C — the pacing conversation worked, and you raised it, not me.**
+I had the hours data for a week before you said *"I can't keep up the volume."* ⚠ **I was
+reporting 44h weeks without concluding anything from them.** ⭐ **Worth knowing whether you want
+me to escalate that pattern unprompted** — i.e. treat a sustained-hours trend as something a
+standup must confront, the way it confronts a stalled slot — **or whether that is your call to
+make and mine to stay out of.**
+
+**Candidate D — you took the honest option over the flattering one, twice, and it worked both
+times.** The battery disclosure before any price was discussed; describing Flinders as an **end
+user via Research Space** rather than "our client". ⭐ **The car buyer then volunteered that the
+ad's honesty is what drew her.** ⚠ **Recorded because I proposed the cautious wording both times
+and you accepted it without argument** — which suggests I should keep proposing it, but it is
+worth confirming that is a preference rather than politeness.
+
+⏰ **STILL PENDING FROM EARLIER SESSIONS — carried, not discarded:** the **2026-08-26→28**
+candidates A–D (compressibility argument, the $5,300 reframe, the point-feature correction, the
+calendar-blocks question) were surfaced at the start of this session and never adjudicated.
+Also pending: **2026-08-25 (SOL)**, **2026-09-03 (Slack dashboard)**, **2026-09-02→03 (RDA IG)**.

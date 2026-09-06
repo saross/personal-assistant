@@ -1844,3 +1844,20 @@ justification field explicitly, or drop it.**
 by its proposer and carried no self-flag. The rows the proposer *did* flag were
 mostly fine. Adversarial verification earned its cost on a row that looked
 settled, not on the ones already marked doubtful.
+
+## Obs — 2026-09-06: three measured figures from the move, worth keeping as planning inputs
+
+**1. Bulky second-hand items take ~2 weeks to produce a serious enquiry.** Privia PX-850 listed
+17 Aug, first real enquiry 31 Aug (**14 days**); Carbatec drill press listed 18 Aug, first offer
+30 Aug (**12 days**). ⚠ **Consequence for a dated clearance: anything not listed ~2 weeks before
+the deadline will not have time to sell.** Source: `notes/move/selling-inventory.csv`.
+
+**2. An opening offer at 72–77% of ask is a market convention, not a price signal.** Three items
+in eight days: Makita $500 on $695 (**72%**), AEG $250 (**77%**), Privia $500 on $695 (**72%**).
+⭐ **Treat it as an opening bid and counter; do not read it as evidence the ask is wrong.**
+
+**3. First-event costs mislead in a campaign.** Open-home preparation cost **6.0h across two
+days** (2.0h Fri 4 Sept + 4.0h Sat 5 Sept), but most of it was one-off — pressure-washing the
+entryway and fences, plus a shower scrub good for a fortnight. ⇒ **The marginal open home is
+~1–1.5h.** ⭐ **Same shape as the car detail: a one-off investment that makes every later event
+cheap, so the first instance is not a guide to the rest.**

@@ -1384,3 +1384,78 @@ by anxiety rather than by measurement.**
 that opens asynchronously, and click the target field explicitly rather than trusting default
 focus. For undo, step and check rather than batching. More generally: when recovering from a
 mistake, size the recovery to the damage you have confirmed, not to the damage you fear.
+
+## claude-obs 68 — 2026-09-06: Shawn's corrections were consistently structural, not factual
+
+**Pattern.** Across nine days he corrected me eight or nine times, and almost none were
+"that fact is wrong". They were *"you have the wrong frame"*: loading labour sitting at zero in
+the Portabox column when he was always going to hire loaders; the Medium/Large rate distinction
+that made my "inconsistent figures" finding evaporate; the ladder being a *keep* case rather than
+a low-priority sell; the couch needing a drop-off rather than a pickup, which dissolved a booking
+urgency I had flagged hard; a longer settlement not helping because the constraint bites at
+signing rather than at completion.
+
+**Lesson.** My factual discipline is holding — the anti-confabulation habit of re-reading source
+files caught real errors this session. **But a correctly-sourced number in the wrong column is
+still wrong, and no amount of re-reading finds that.** The failures were all in *what belongs in
+the comparison*, not in *what the values are*.
+
+**How to apply.** Before presenting any comparison, ask explicitly: what cost is sitting at zero
+in one column, and was it ever going to be zero? What am I treating as a fixed category
+(sell/keep, pickup/drop-off, now/later) that is actually a decision? State the framing
+assumptions alongside the numbers so they are as easy to attack as the arithmetic is.
+
+## claude-obs 69 — 2026-09-06: he answers "why is this stuck" better than I diagnose it
+
+**Pattern.** Twice I framed a stall as a scheduling or discipline problem and he named the real
+mechanism in one sentence. RDA: six dates and seven intentions had failed, and what worked was
+cutting the scope on 31 Aug — 19.00h logged across five weeks for a task that finished in ~4.5h.
+The listings: I asked whether it was time, energy, or dullness, and the answer was none of those
+in isolation — *"the length and attention required by the process… multiple steps… really tedious
+and takes forever"*, which is a process-shape problem with a delegation fix, not a willpower one.
+
+**Lesson.** My standup escalations reach for *effort* explanations (avoidance, competing
+priorities, insufficient protection of a block) when the better first hypothesis is often
+*structure*: too many steps, too large a scope, too many counterparties. **Effort framings also
+land as accusations, which makes them expensive when wrong.**
+
+**How to apply.** When something has missed three dates, stop rescheduling and ask what would
+make the task smaller. Offer the structural hypothesis before the motivational one — and when
+asking a hard question, offer the candidate mechanisms rather than a bare "what's stopping you",
+because he picks the right one immediately from a list.
+
+## claude-obs 70 — 2026-09-06: I over-flagged twice on the same axis and under-flagged once
+
+**Pattern.** Self-critique. I told him the charity booking had a 2–4 week fuse and was urgent;
+he pointed out the couch disassembles into his car, so the lead time attached to a *pickup* he
+did not need. I then swung the other way and said the constraint was "car runs, not the cap" —
+and he corrected that too: the marble table genuinely cannot be carted, so one item *does* need a
+pickup. Separately I under-flagged the Flinders artwork: I drafted an email saying "we'll use the
+master logo in EPS" as though he held it, and he had to ask whether we did. We did not.
+
+**Lesson.** Two distinct failures with one root: **I generalised from a single item to the whole
+category, in both directions.** And in the Flinders case I wrote a commitment into
+correspondence without checking whether the asset behind it existed.
+
+**How to apply.** Before asserting a category-wide constraint, name the exception and check it —
+"everything can be carted" needed one counter-example to fall. And before any draft commits to
+supplying, using, or attaching an artefact, verify the artefact exists at the path it would come
+from.
+
+## claude-obs 71 — 2026-09-06: the guardrails earned their keep, including against me
+
+**Pattern.** Three separate protections fired this session and each prevented a real loss. Git
+refused to merge `pa-data` while `memories.jsonl` was dirty, rather than stashing — the operation
+that lost three records in `5defc3e`; committing first and merging rather than rebasing became
+the standing move, used four times. rpi-server's deliberate no-auto-restart on Syncthing meant it
+stayed down through a power cut instead of starting against a locked volume and syncing an empty
+folder. And the outbound-message rule now exists precisely because a parallel session read a
+beacon item — *"send email to Crawley"* — as authorisation and sent it unreviewed.
+
+**Lesson.** The rules that fired hardest were written *after* a prior failure, and every one of
+them cost something to obey in the moment. **The email guardrail is the sharpest: it exists
+because an agent did the thing, not because someone imagined it might.**
+
+**How to apply.** Treat a refusal — git's, a permission's, an odd-looking policy — as information
+before treating it as an obstacle, and go and read why it exists. And on any planning document:
+an imperative describes outstanding work. It never authorises an outward-facing action.
