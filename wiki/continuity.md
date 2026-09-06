@@ -2249,6 +2249,94 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-08-29→09-06 (Sat 29 Aug → Sun 6 Sept, latest PA) — THE CAR SOLD, A $50–75k CONSTRAINT SURFACED FOUR MONTHS LATE, AND RDA WAS UNSTUCK BY CUTTING SCOPE RATHER THAN MOVING THE DATE
+
+**Nine days across two weeks.** ⭐⭐ **The move stopped being a burn-down problem and became a
+legal-sequencing one.**
+
+**1. ⭐⭐ THE CAR SOLD — $7,200, on day 4, to the first inspection.** Listed Marketplace 26 Aug
+and Carsales 28 Aug. **A dealer load test had failed the battery; Shawn disclosed it BEFORE any
+number was discussed** and offered full price with seller replacement (~$700) or a discount with
+buyer replacement. **She took the discount.** ⇒ **Like-for-like that is $7,900 — exactly the
+closest comparable's ask at 81,591 km against this car's ~103,000 — so the disclosure cost
+nothing.** ⭐ **The buyer volunteered, unprompted, that the ad's honesty is what drew her:** the
+first direct counterparty evidence that the disclosure discipline is a selling feature. **Letter
+of intent written** (`notes/move/letter-of-intent-skoda-octavia-curran.md`) with a battery-failure
+clause capped at $500 and an interim-damage undertaking. ⚠ **Handover sequenced LAST**, after the
+final tip run — the car is the disposal vehicle and the buyer is flexible.
+
+**2. ⚠⚠⚠ THE CONSTRAINT THAT CHANGED EVERYTHING: NO CONTRACT CAN BE SIGNED UNTIL ADELA IS OFF
+THE TITLE.** **The ATO treats CONTRACT SIGNING as the CGT event, not settlement.** **Adela is a
+non-resident: her half carries $50,000–75,000 that a relationship-breakdown court order removes
+entirely.** ⚠ **A family lawyer, an accountant and a conveyancer all missed it across four
+months; a real-estate agent's pointed questions plus Shawn's own research surfaced it.**
+⇒ ⭐ **It failed at the SEAM between three liability-bounded specialisms, and nobody owns seams.**
+⭐⭐ **Controlling corollary: DELAY does not cost the money — only SIGNING EARLY does**, so the
+whole exposure sits on one avoidable mistake. **Then on 4 Sept the lawyers found the circularity
+behind it — a percentage division needs the sale price, the sale needs the settlement — and
+Shawn switched to a FIXED PAYOUT to break it.** ⚠ **That transfers market risk to him**, and
+⏰ **Adela's approval is now the single gating item for the entire house sale.**
+
+**3. ⭐⭐ RDA WAS UNSTUCK BY CUTTING THE WORK, NOT BY MOVING THE DATE.** **Six dates and seven
+missed intentions failed. A scope cut on Mon 31 Aug produced a ready-to-submit proposal by Thu 3
+Sept.** ⚠⚠ **19.00h are logged against RDA in total across five weeks — and the finish took
+~4.5h.** ⇒ ⭐ **The work was never the problem; the carrying was.** **GENERAL RULE: when
+something has missed three dates, reduce the work rather than reschedule it.**
+
+**4. ⏰ THE HOUSE WENT TO MARKET.** Agent committed, photos Wed 2 Sept, **first open home Sat 5
+Sept**. **Brent's mother offered $990,000 — $32k below the floor — and Shawn declined**, which
+killed the off-market track and **unblocked the fridge and washer for listing**. ⭐ **Open-home
+prep cost 6.0h across two days but is mostly ONE-OFF** (pressure-washing, fences); **the marginal
+open home is ~1–1.5h.**
+
+**5. ⭐ ARCADIA STAGE 1 SUBMITTED** — 5.5h against a planned 2h. ⚠ **The estimate treated it as an
+edit; it behaved like a re-think.** ⇒ **On a high-stakes application, revision is bounded by
+CONFIDENCE, not word count, so it cannot be estimated from drafting rate.** **Stage 2 invites by
+Tue 8 Sept, task due 21:59 AEST Mon 14 Sept; Stage 3 interviews collide with packing week.**
+⭐ **And the ARDC Program Manager process advanced** — preliminary call done, second interview
+expected late next week.
+
+**6. ⚠ PACING WAS RAISED BY SHAWN AND ANSWERED WITH ARITHMETIC.** 63.5h over ten days, one day
+under four hours. ⇒ **Four reductions accepted: RDA to minimum-viable · EFN capped to website +
+eResearch materials + warm-up contacts, both MoL notebooks pushed to October · selling triaged by
+kerbside overrun · Saturday protected.** ⚠⚠ **Saturday was then taken by the open home, and
+Brian's postponement did not give it back — the week closed with no protected day.**
+
+**7. ⚠ TWO CORRECTIONS THAT WERE MINE.** **"Redbox" was never a company** — a confabulated name
+propagated into 53 references across 11 files and ~37 memory records before Shawn corrected it;
+everything belongs to **Red Truck Removals**. **And a parallel session read a beacon task item —
+*"send email to Crawley"* — as AUTHORISATION and sent it unreviewed to a co-chair.** ⇒ ⭐⭐ **The
+rule that generalises: imperatives in planning documents DESCRIBE outstanding work; they never
+authorise it.** Gmail send/reply/forward now blocked.
+
+**Held over / open:**
+
+- ⏰⏰ **ADELA'S APPROVAL of the fixed payout — chase by Tue 8 Sept.** Nothing downstream moves
+  without it, and the campaign is live.
+- ⏰ **RDA SUBMISSION — ready to paste, Day 30.** **Sarah Bevan's filing due early this week.**
+- ⚠⚠ **THE BURN-DOWN HAS NOT MOVED SINCE 28 AUGUST: 7 of 29 reached listing, 5 live, 2 sold,
+  $7,320 realised.** ⭐ **Bottleneck diagnosed and it is not information: *"the length and
+  attention required… multiple steps… really tedious."*** ⇒ **Three of the five steps are
+  delegable; paste-ready packets are the fix, and the marble-table packet is written.**
+- **Container: Red Truck recommended on the merits** — they load AND unload, price both
+  Melbourne and Canberra, and boxing at $100/man-hour dissolves the packers row. ⏰ **Open:
+  desiccant, and whether the delivery price is HELD.** **Portabox's quote lapsed.**
+- ⭐ **Kerbside cap confirmed at 2 m³** (1×1×2 m, flier + booking letter). **Salvos booked 28
+  Sept, ref 3250815.** ⚠ **The binding constraint is car runs before handover, not the cap.**
+- ⚠ **EFN website pass — planned FIVE times, scheduled zero.** Contracted mid-Sept.
+- ⭐ **All computer gear travels in the van** — nothing electronic goes into 21 months of
+  unpowered storage. ⚠ **But `volume-inventory.csv` has no rows for any of it, so the VAN sizing
+  is the one computed short.**
+- ⚠ **rpi-server survived a power cut and recovered cleanly** — the no-auto-restart policy did
+  its job. **The UPS has NO data link** (no NUT/apcupsd, nothing on USB), so it is a battery
+  only; **check whether the Pi is on a surge-only socket.**
+- ⚠ **user-observations candidates from 2026-08-26→28 (A–D) are STILL pending** — carried since
+  the start of this session and never adjudicated.
+
+**Hours: W36 = 47.50h** (personal/move 18.75 against the 17.5h floor — **cleared** · career 11.50
+· map-reader 7.75 · rda 5.00 · efn 4.00 · llm-repro 0.50). **Daily: 9.75 · 7.25 · 7.75 · 7.25 ·
+8.50 · 4.00 · 3.00.**
+
 ### 2026-09-03 (Wed, latest RDA) — SESSION CLOSE: THE APPLICATION IS EDIT-COMPLETE AND IN SHAWN'S HANDS; A CHANGE LOG THAT "WAS UP TO DATE" NEEDED SIX CORRECTIONS; A SECOND OWNERSHIP-OF-ACTION ERROR GOT AN INBOX ROW
 
 The RDA Interest Group application is edit-complete and everything left is
