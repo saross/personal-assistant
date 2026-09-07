@@ -1,5 +1,5 @@
 schema_version = 2
-policy_date = "2026-08-25"
+policy_date = "2026-09-07"
 policy_status = "active"
 purpose = "Owner-first agent guardrails with credential read isolation and proposal-only non-owner writes."
 
@@ -13,6 +13,17 @@ repo_relative_globs_apply_to_worktrees = true
 resolve_symlinks_for_matching = true
 home_repository_owned_globs = ["scripts/**"]
 additional_owned_write_roots_semantics = "owner-grant-subject-to-active-profile-and-matching-non-owner-denial"
+# Admitted independent clones (ruled 2026-09-07; plan §3 "Codex Git lanes").
+# Only an [[admitted_clones]] entry makes a lane's Git metadata writable for
+# its agent; a ~/worktrees/<repo>/<agent>-* directory name confers nothing.
+# The list is empty until the disposable-repository acceptance in the plan
+# has passed; map-reader-llm is the designated pilot lane.
+admitted_clone_semantics = "explicit-list-only; directory name confers nothing; exact lane .git grant; trusted profile only"
+admitted_clone_required_fields = ["id", "agent", "repository", "lane_path", "remote", "branch_namespace", "storage", "clone_mode", "admitted_on", "admitted_by"]
+admitted_clone_lane_layout = "~/worktrees/<repo>/<agent>-<workstream>"
+admitted_clone_storage = "independent-clone"
+admitted_clone_clone_modes = ["full-single-branch", "full"]
+admitted_clone_git_metadata_grant = "exact-lane-dot-git"
 
 [change_control]
 required_process = "branch-and-pull-request"
@@ -34,6 +45,21 @@ name = "Sol"
 home_repository = "~/gpt-hub"
 additional_owned_write_roots = ["~/agent-mail/codex"]
 proposal_routes = ["~/gpt-hub/integration-records/", "~/agent-mail/codex/outbox/claude/", "a shared planning document", "the current conversation"]
+
+# Example admission (commented; the first real entry follows the pilot
+# acceptance in its own PR). Field rules are enforced by
+# verify-ownership-policy.py.
+# [[admitted_clones]]
+# id = "codex-map-reader-llm-phase2"
+# agent = "codex"
+# repository = "~/Code/map-reader-llm"
+# lane_path = "~/worktrees/map-reader-llm/sol-phase2-codex-entry"
+# remote = "https://github.com/saross/map-reader-llm.git"
+# branch_namespace = "sol/*"
+# storage = "independent-clone"
+# clone_mode = "full-single-branch"
+# admitted_on = "2026-09-07"
+# admitted_by = "shawn"
 
 [[denials]]
 id = "agent-mail-claude"

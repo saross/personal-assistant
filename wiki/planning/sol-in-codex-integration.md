@@ -189,6 +189,54 @@ Evidence threshold: a recurrence of an index sweep despite explicit-pathspec
 commits reopens this ruling. This scoping also removes the apparent conflict
 between this plan and the PA `CLAUDE.md` concurrent-sessions convention.
 
+### Codex Git lanes: admitted independent clones (ruled 2026-09-07)
+
+The Codex sandbox cannot write the Git metadata of a linked worktree: that
+metadata lives under the primary checkout's `.git/worktrees/<lane>`, which the
+profile keeps read-only, and an explicit grant on the parent `.git` does not
+help (openai/codex#27418; readiness review 2026-09-07). A credential does not
+change this. Shawn approved the following exception to the worktree rule on
+2026-09-07, on Sol's proposal
+(`gpt-hub/integration-records/2026-09-07-git-lane-proposal.md`) and Claude's
+review.
+
+- **Storage.** A Codex source or document lane may be an **independent
+  clone** at the ruled path `~/worktrees/<repo>/sol-<workstream>`, with its
+  own real `.git` directory: no external git-dir, no shared object
+  alternates, no hard-linked or shared-object clone modes, no symlinked
+  metadata. Default is a full-history `git clone --single-branch`. Partial
+  or blobless clones are allowed only for lanes that will only ever run
+  trusted, because restricted-input has no network and a lazy fetch fails at
+  checkout.
+- **Admission is explicit.** Only an `[[admitted_clones]]` entry in
+  `ownership.toml` (repository, lane path, HTTPS remote, branch namespace
+  `sol/*`, admitted by Shawn, dated) makes a lane's `.git` writable. A
+  directory name under `~/worktrees` confers nothing. Adding an entry is a
+  loosening: branch + PR, other-agent review, Shawn's sign-off.
+- **The grant is exact.** The trusted profile grants that clone's own `.git`
+  directory and nothing else: never `~/Code/<repo>/.git`, never the PA
+  primary store, never a parent containing other lanes. The existing
+  explicit-write-directory validator applies.
+- **Carve-outs must follow the clone.** The renderer's PA-specific denials
+  are derived from `git worktree list` on the primary checkout; an
+  independent clone is invisible to that. The renderer must enumerate
+  admitted clones before any grant is rendered, or PA read denials would not
+  follow a PA clone. This is a correctness precondition, not a refinement.
+- **Unchanged.** All Claude-owned, Shawn-owned, and credential denials;
+  hooks and executable Git configuration under the same review discipline;
+  no automatic submodule initialisation, LFS download, or data sync; fetch
+  and divergence check before every commit; PRs where the repository
+  requires them; the agent never switches or refreshes the primary checkout.
+- **Acceptance before the first real lane.** On disposable repositories:
+  isolated commits, ownership denials, no cross-lane ref or index change,
+  restricted-mode exclusion, safe failure on invalid admission, then one
+  reviewed branch push and PR. `map-reader-llm` is the designated pilot; its
+  existing linked worktree is replaced by an admitted clone only after this
+  passes, in its own admission PR. Storage cost is measured on the pilot
+  before any second lane.
+- **Division.** Claude owns the policy schema and its verifier; Sol owns
+  renderer discovery, the lane grant, and the acceptance run in `gpt-hub`.
+
 ### Ownership guardrails
 
 The reciprocal boundary should be made mechanically visible:
