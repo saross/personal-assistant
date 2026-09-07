@@ -2298,12 +2298,32 @@ more than one OpenAI model, hence the token name `GPT_GH_TOKEN`, not
   sync command handed to Shawn to run when it is back; Claude settings there
   still lack the ownership/`.env` denies and the mail hook (carry-forward).
 
+**Evening, same day — Astra picked up and the loop closed twice.** Astra
+(Codex side) reviewed PR #109 by mail and asked for two corrections
+(identifier pattern `[A-Z_][A-Z0-9_]*`; qualify `verified_by`) — applied
+(`06b2a26`, checker aligned in `798bbc4`). Astra also implemented the
+launcher injection in `gpt-hub` (`config/launch_codex.py`, uncommitted,
+70/70 tests): runtime allowlist plus an explicit `shell_environment_policy`
+table using the real `filters=` keyed form (struct with seven fields
+confirmed in the 0.153.4 binary). Reviewed and **approved for host
+acceptance** with four non-blocking notes (trailing-comment semantics,
+whole-file fail-closed, override-merge check, dropped host names). Astra's
+Git-lane proposal (independent clone per Codex lane, exact `.git` grant,
+explicit admission list) endorsed clone-first with three conditions —
+**decision put to Shawn**; the plan §3 / `ownership.toml` PR is Claude's
+to draft after the ruling. Queued items closed: `b49713d` re-review (all
+four findings and three notes addressed); installed Claude hooks
+confirmed (mail hook present; enforcement is deny rules, not a hook);
+mail-hook parity shipped (`f6aaee8`, 10 tests, suite 1,183). Submodule
+`.gitmodules` PRs opened on the two Brian-shared repos (paper-b #23,
+ideation-writing #1). The two zero-byte stubs in `gpt-hub` removed
+(Claude-owned). Checker now also flags trailing comments in values.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
-- [ ] Follow-up review of gpt-hub `b49713d` against the four 26 Aug findings.
-- [ ] Confirm installed Claude ownership + mail hooks on amd-tower.
-- [ ] Mail-hook validation parity: From/To header check and symlinked-ancestor
-  rejection in `hooks/session-start-agent-mail.py` (Sol's hook has both).
+- [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
+- [x] 2026-09-07 Installed Claude mail hook + deny rules confirmed on amd-tower (zbook still bare).
+- [x] 2026-09-07 Mail-hook validation parity shipped (`f6aaee8`).
 - [ ] Review Sol's Git-lane design (narrow mediator vs isolated clone) when
   proposed — the token does not make linked-worktree metadata writable
   (openai/codex#27418).
