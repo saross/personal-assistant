@@ -312,6 +312,19 @@ behavioural controls are inadequate.
   use one variable per service and scope, with per-machine variables for paid
   services. PA loaders use `setdefault`, so launcher-injected variables take
   precedence without rewriting the credential file.
+- **First grant proposed 2026-09-07** (branch `claude/credential-grants`,
+  schema 2): a fine-grained GitHub personal access token, resource owner
+  `saross`, selected repositories, Contents and Pull requests read/write, so
+  the Codex sandbox can push branches and open pull requests over HTTPS. The
+  variable is stored as `GPT_GH_TOKEN` and injected as `GH_TOKEN`: one grant
+  is still one variable, but the source name and the injected name may now
+  differ, because Claude's hooks shell-source `.env` and a variable literally
+  named `GH_TOKEN` there would silently override Shawn's keyring-backed `gh`
+  login in every hook. Adding the grant is a loosening, so it lands only with
+  Shawn's sign-off after Sol's review. Implementation constraints for the
+  launcher are in the grant record and the accompanying agent-mail proposal;
+  the token is verified by `scripts/check-credentials.py`, which now reports
+  each GitHub token's account, kind, expiry, and push access to `gpt-hub`.
 
 ---
 
