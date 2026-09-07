@@ -2319,14 +2319,30 @@ mail-hook parity shipped (`f6aaee8`, 10 tests, suite 1,183). Submodule
 ideation-writing #1). The two zero-byte stubs in `gpt-hub` removed
 (Claude-owned). Checker now also flags trailing comments in values.
 
+**Later still — Git-lane ruling, zbook parity, submodule PRs merged.**
+Shawn approved the Git-lane exception ("yes, I approve"). **PR #110**
+(`claude/git-lanes`, worktree `~/worktrees/personal-assistant/claude-git-lanes`,
+`0e2eeaf` + `5514e9d`): `ownership.toml` gains `admitted_clone_*` semantics
+and a documented, still-empty `[[admitted_clones]]` schema (schema_version
+stays 2 so Sol's renderer keeps loading); plan §3 gains "Codex Git lanes:
+admitted independent clones"; the verifier rejects fourteen malformed
+admission shapes. Astra reviews by mail; Shawn merges; then Sol implements
+renderer discovery + exact lane grant + disposable-repo acceptance; then a
+separate admission PR for the map-reader pilot. **zbook Claude settings
+brought to parity over SSH** (machine-local file, so neither git nor
+Syncthing carries it): 11 deny rules (`.env` variants, six ownership Edit
+denies, three Gmail send denies), three SessionStart hooks (code-state,
+heartbeat, agent-mail), both archive hooks moved to the `set -a` sourcing
+form with `index-session-content.py`; backup beside the file; deny set and
+every hook list now identical to amd-tower. Submodule PRs merged with merge
+commits: paper-b #23 (`af0f4cb`), ideation-writing #1 (`3f219cb`).
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
-- [x] 2026-09-07 Installed Claude mail hook + deny rules confirmed on amd-tower (zbook still bare).
+- [x] 2026-09-07 Installed Claude mail hook + deny rules confirmed on amd-tower; zbook brought to parity the same evening.
 - [x] 2026-09-07 Mail-hook validation parity shipped (`f6aaee8`).
-- [ ] Review Sol's Git-lane design (narrow mediator vs isolated clone) when
-  proposed — the token does not make linked-worktree metadata writable
-  (openai/codex#27418).
+- [x] 2026-09-07 Git-lane design reviewed (clone-first endorsed), Shawn approved, policy PR #110 open.
 - [ ] Decide (Shawn): is `personal-assistant` in the token's repo list? A
   repo-level write token there is broader than Sol's local ownership
   boundary.
