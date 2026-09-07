@@ -3,7 +3,7 @@
 
 Three passes, cheapest first:
 
-1. **Name hygiene.** Every variable name must match ``[A-Z0-9_]+``. Hyphenated
+1. **Name hygiene.** Every variable name must match ``[A-Z_][A-Z0-9_]*``. Hyphenated
    or lowercase names are not valid shell identifiers, so ``set -a && . .env``
    parses the line as a *command* and bash echoes the whole word — including
    the secret — to stderr. ``~/.claude/settings.json`` sources this file in
@@ -58,7 +58,7 @@ import tomllib
 import urllib.error
 import urllib.request
 
-VALID_NAME = re.compile(r"^[A-Z0-9_]+$")
+VALID_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
 GITHUB_API = "https://api.github.com"
