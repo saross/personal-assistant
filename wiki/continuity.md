@@ -2265,8 +2265,11 @@ more than one OpenAI model, hence the token name `GPT_GH_TOKEN`, not
   `scripts/check-credentials.py` (`8c9eeb4`) now authenticates every GitHub
   token, reports account, kind, expiry, and push access to `saross/gpt-hub`,
   and cross-checks `credential-grants.toml` grants against `.env`. Result:
-  account saross, push to gpt-hub OK, **no expiry set** — flagged as a
-  finding, recorded in the grant, Shawn's call whether to regenerate.
+  account saross, push to gpt-hub OK, **no expiry set** — Shawn's choice
+  (rotates by hand; 90 days too short, GitHub has no 180-day option).
+  The checker now treats it as a record-consistency check, not a fault.
+  `.env` merged to zbook (names-only diff, two variables appended,
+  checker clean there; the `_AMDT`/`_ZBOOK` OpenAI keys are per-machine).
 - **Policy PR #109** (branch `claude/credential-grants`, worktree
   `~/worktrees/personal-assistant/claude-credential-grants`, `eebab1d`):
   `credential-grants.toml` → schema 2 with grant `github-pat-gpt`
