@@ -2386,6 +2386,16 @@ config keys pass their screen (`core.askPass`, `remote.origin.vcs`,
 `submodule.*.update`, `uploadpack.*`, `http.*`); recommended an allowlist.
 Evidence-log row six added. Scratch clone lives in the session scratchpad.
 
+**Live mail — built and armed.** Shawn asked whether the agents could be
+woken by new mail mid-session and iterate until his input is needed;
+approved. Claude half shipped: `scripts/agent-mail-watch.py` under the
+harness's persistent Monitor, armed by `/mail-watch`, with the operating
+rules (authority unchanged; escalation list; six-round / sixty-minute cap;
+one-paragraph note per event) in `commands/mail-watch.md`. Armed for the
+rest of this session. Proposal to Astra by mail with two candidate
+mechanisms for their side (in-session blocking wait; host watcher driving
+`codex exec resume --last` through their launcher), unverified by me.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
