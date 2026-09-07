@@ -151,3 +151,19 @@ out to be non-empty.
   worth running as a control arm, to separate "a second reader helps" from
   "a *different vendor* helps". Without it, a positive result is ambiguous.
 - Review depth: full diff versus changed-behaviour summary, for large changes.
+
+## Evidence log
+
+One line per reviewed change, in the format above. Costs are rough
+wall-clock for the reviewer.
+
+    Sol authors, Claude reviews | gpt-hub sol/phase2-instruction-composer (26 Aug) | Claude | yes: 4 findings, all adopted in b49713d | 1 blind-spot (post-write check did not reach bwrap), 3 ordinary | ~1 h
+    Claude authors, Sol reviews | personal-assistant #109 credential grant (7 Sep) | Astra | yes: identifier pattern admitted a leading digit; verified_by overstated | ordinary defect + precision | ~0.5 h
+    Claude states, Sol checks | agent-mail claim that Codex strips *TOKEN* by default (7 Sep) | Astra | yes: claim retracted; docs say the default is off | factual error caught (blind-spot: stated from memory, cited binary strings as if they showed a default) | ~0.2 h
+    Sol authors, Claude reviews | gpt-hub launcher injection + activator (7 Sep) | Claude | no code change before acceptance; 4 non-blocking notes, README updated | ordinary / style | ~1.5 h
+    Claude authors, Sol reviews | personal-assistant #110 admission validator (7 Sep) | Astra | yes: traversal paths, home alias, empty and credentialed remotes accepted; author's 6 tests passed; reviewer's patch applied verbatim (5aea7ec) | ordinary defect; blind-spot undetermined (a second same-vendor pass might have caught it; the author's tests did not) | ~1 h
+
+Reading so far (five rows, one day): both directions have changed code; the
+one factual catch was an unverified default stated from memory, which is the
+class of error the trial was most worried about. Too early for the Phase 6
+verdict.
