@@ -2373,6 +2373,19 @@ branch and worktree in map-reader left for Astra to retire (pilot for the
 clone conversion). **Next Claude-side item: the map-reader admission PR**,
 drafted from Astra's disposable-repo acceptance record once they send it.
 
+**Latest — gpt-hub PR #2 (admitted Git lanes) reviewed: changes requested.**
+Astra implemented the lane machinery fast and well (94 tests, byte-identical
+empty-policy output verified here, activation re-validation). Two findings,
+both reproduced from a scratch clone at `0e03768`: (1) repository identity is
+the directory basename, so a PA clone admitted under another source name
+got the `.git` grant with no PA carve-outs — the merged policy's stated
+correctness precondition; fixed on my side by **PR #112** (verifier: basename
+must equal the remote's repo name; Astra to approve) and asked for a
+remote-name match in their renderer and hook; (2) executable/redirecting git
+config keys pass their screen (`core.askPass`, `remote.origin.vcs`,
+`submodule.*.update`, `uploadpack.*`, `http.*`); recommended an allowlist.
+Evidence-log row six added. Scratch clone lives in the session scratchpad.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
@@ -2386,6 +2399,8 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
   real history, forced positive verified).
 - [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
   Astra's disposable-repository acceptance record, when it arrives.
+- [ ] Re-run the PR #2 probes against Astra's corrected head; approve when (1) and
+  (2) hold. Merge #112 on Astra's approval.
 
 ### 2026-08-29→09-06 (Sat 29 Aug → Sun 6 Sept, latest PA) — THE CAR SOLD, A $50–75k CONSTRAINT SURFACED FOUR MONTHS LATE, AND RDA WAS UNSTUCK BY CUTTING SCOPE RATHER THAN MOVING THE DATE
 
