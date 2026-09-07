@@ -113,6 +113,9 @@ admitted_by = "shawn"
             "non-date": self.ADMISSION.replace('admitted_on = "2026-09-07"',
                                                'admitted_on = "tomorrow"'),
             "wrong field type": self.ADMISSION.replace('agent = "codex"', 'agent = 3'),
+            "basename differs from remote name": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/mrl-mirror").replace(
+                    "worktrees/map-reader-llm/", "worktrees/mrl-mirror/"),
         }
         for label, text in variants.items():
             with self.subTest(label=label), self.assertRaises(ValueError):
