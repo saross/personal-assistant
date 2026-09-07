@@ -2637,6 +2637,41 @@ licence to apply the deferred section-C roster fixes, and did so without asking.
 think it was right — but it was my call, not yours, and you should know I made it.**
 Flagging in case the scope discipline mattered more than the completeness.
 
+## 2026-09-06→08 (PA — RDA submission, five listings, August retro) — Drafted candidates (pending review)
+
+**Candidate A — you overruled a recommendation with a reason I could not have reached.**
+I recommended Stream C (container, packers, van) for Slot 2 on cost-of-failure grounds: three
+unbooked bookings against fixed dates, one notice line already passed. You overruled it because
+**the sale might not happen** — a ~$1.04M floor with a 12–24 month hold option — and therefore
+storage is an expensive commitment that may never be exercised. **The information was entirely
+yours and the reasoning was better than mine.** ⇒ The general shape: my recommendations optimise
+within the frame I can see, and the frame is often the thing that has moved.
+
+**Candidate B — "what do you think?" produced better decisions than instructions would have.**
+Three times you asked rather than directed: whether to leave the washer, whether to pull the
+self-citation, whether the marble was *good* or *fair*. **Each time you had already half-decided
+and were testing the reasoning, not outsourcing it** — and each time the answer changed
+something (the washer came off the board entirely; the citation was pulled for a better reason
+than the one you had; *fair* filtered rather than merely disclosed). ⭐ **Worth noting because
+the alternative — telling me the answer — would have produced the same outcome with none of the
+reasoning attached to it.**
+
+**Candidate C — you caught two of my errors by asking a question, not by checking my work.**
+*"You generated html before, are you using the right venv?"* found a pandoc that had been inside
+Quarto all along, and refuted my claim that something had changed on the machine. *"Is the
+separate listing for the keg ready?"* surfaced three things that had gone stale the moment the
+kegerator was posted. ⇒ **Both were ordinary questions rather than audits, and both were faster
+than any review I would have run on myself.**
+
+**Candidate D — you sent the conveyancer email at 5pm rather than deferring the whole thing.**
+The call was lost to a viewing; the obvious move is to roll it all to tomorrow. Instead you asked
+for text you could send immediately and refer to on the call. ⇒ ⭐ **That converts a missed
+action into a partially-completed one and gives tomorrow's call an agenda it would not otherwise
+have had** — and it is the second time this week you have salvaged a displaced task by changing
+its form rather than its date.
+
+---
+
 ## Verdicts — 2026-09-07 (Group 2: giving the rule rather than the answer)
 
 | # | Candidate | Verdict |

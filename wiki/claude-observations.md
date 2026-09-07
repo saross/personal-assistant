@@ -1459,3 +1459,72 @@ because an agent did the thing, not because someone imagined it might.**
 **How to apply.** Treat a refusal — git's, a permission's, an odd-looking policy — as information
 before treating it as an obstacle, and go and read why it exists. And on any planning document:
 an imperative describes outstanding work. It never authorises an outward-facing action.
+
+## claude-obs 72 — 2026-09-07: I applied an absolute-dollar threshold where the test is a ratio
+
+**Pattern.** I flagged the 10 L keg's $110 ask as band-derived and unanchored, then wrote that
+checking it was *"optional rather than blocking"* because it is a low-value item. Sol did the
+check: new equivalents are $95–98. **The ask was above new retail.** Every other price in the
+same two days was anchored and every one of them was right.
+
+**Lesson.** The threshold for verifying a price is **ratio to replacement cost, not absolute
+size**. A $110 ask on a $95 item is not a small error on a small item — it is an ask above new,
+which returns no enquiries and, worse, teaches a buyer who checks that nothing else in the
+listing can be trusted. **The same shape applies past prices: the cost of checking scales with
+effort, but the cost of being wrong scales with how easily the reader can check.**
+
+**How to apply.** Before waving a check through as not-worth-it, ask what fraction of the
+defensible value the claim represents, not what the claim is worth. **And when the reader can
+verify in ten seconds — a retail page, a DOI, a catalogue — the check is never optional.**
+
+## claude-obs 73 — 2026-09-07: I destroyed a section by slicing between headings, and only an assertion caught it
+
+**Pattern.** Applying a ruling to the kegerator packet, I replaced a section by taking
+`s[:i] + new + s[j:]` between two heading indices. The Title and Body blocks sat between them and
+were deleted. **I did not notice.** It surfaced only when a later edit's `assert` failed to find
+a sentence that should have been there — and the recovery cost three minutes because git had it.
+
+**Lesson.** A slice is blind to what it swallows. **Two habits saved this and both should be
+kept: asserting before every replace, and Shawn's reversibility ruling from the same morning.**
+Without the assertion I would have reported success on a gutted packet; without git I would have
+rewritten it from memory, badly.
+
+**How to apply.** **Never replace a file section by slicing between two anchors.** Anchor on the
+section's own opening and closing text, or rebuild it explicitly. And keep asserting — the
+assertion is not ceremony, it is the only thing standing between a silent no-op and a false
+report of success.
+
+## claude-obs 74 — 2026-09-07: I read an absence as evidence, twice, in different registers
+
+**Pattern.** Twice I turned a missing thing into a conclusion. **`git log` on
+`fieldmark-docs-staging` returned zero commits, so I told Shawn Slot 1 had never had a work
+block** — the website is in `fieldmark-product-website`, which had taken 26 of its 35 lifetime
+commits that fortnight. **And a Gmail draft search returned empty, so I said the Drummond reply
+had never been sent** — empty means sent, because sending removes the draft.
+
+**Lesson.** **An absence is only evidence once you have established that presence was the right
+place to look.** Both errors had the same structure: I inferred the search location, got a null,
+and reported the null as a finding rather than as a question about my search.
+
+**How to apply.** When a query returns nothing, the first hypothesis is that the query is wrong,
+not that the thing is missing. **Locate the artefact from a record that names it** — the time log
+named the Astro site; the Sent folder would have named the reply — **before drawing anything from
+a zero.**
+
+## claude-obs 75 — 2026-09-07: Shawn's corrections arrived as questions, and were faster than my reviews
+
+**Pattern.** Three of the session's corrections came from him asking something ordinary rather
+than auditing me. *"Are you using the right venv?"* → the pandoc had been inside Quarto all
+along, and my claim that the machine had changed was unfounded. *"Is the separate listing for the
+keg ready?"* → three things had gone stale the instant the kegerator posted. *"What MD file did
+you change the label in?"* → I had stripped one stale word-count and left another.
+
+**Lesson.** **He debugs by asking what I did, not by checking what I produced** — and it is
+consistently faster than the self-review I would have run, because it targets the assumption
+rather than the output. **My reviews check whether the work is internally consistent; his
+questions check whether the premise was right.**
+
+**How to apply.** When reporting a result that rests on a location, a tool, or a default I chose,
+**say which one I chose and why** — that is the sentence his question would have asked for, and
+volunteering it converts a later correction into an earlier one.
+

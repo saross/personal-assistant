@@ -1861,3 +1861,31 @@ days** (2.0h Fri 4 Sept + 4.0h Sat 5 Sept), but most of it was one-off — press
 entryway and fences, plus a shower scrub good for a fortnight. ⇒ **The marginal open home is
 ~1–1.5h.** ⭐ **Same shape as the car detail: a one-off investment that makes every later event
 cheap, so the first instance is not a guide to the rest.**
+
+## Obs — 2026-09-07: anchored prices beat banded ones, and the threshold for anchoring is a ratio, not a dollar figure
+
+**Measurement.** Five items were priced in two days. **Four against published anchors, one
+against a band.** The four anchored: shelving $595 (HSW easy-build bundle, 16 pieces $851),
+wardrobe $120 (Domayne, $699 in the 2012 AU catalogue), kegerator $495 (Keg King refurb fridge
+$350 + two equivalent Perlick faucets $274 − a $39.95 display PCB), keg $80 (new equivalents
+$95–98). **The one banded: the keg at $110, before anchoring.**
+
+**Finding.** ⛔ **$110 was ABOVE new retail.** It was also the only price that was wrong, and it
+was wrong because I explicitly ruled the anchoring check *"optional rather than blocking"* on
+the grounds that it was a low-value item.
+
+⇒ ⭐⭐ **The threshold for anchoring a price is its RATIO TO REPLACEMENT COST, not its absolute
+size.** **A $110 ask on a $95 item is not a small error on a small item — it is an ask above new,
+which returns no enquiries and teaches any buyer who checks that the rest of the listing is
+unreliable.** **Homebrewers, tool buyers and cyclists all check.**
+
+**Second finding, on where the anchors came from.** ⭐ **Three of the four anchors were supplied
+by Shawn or Sol, not derived by me** — the Domayne catalogue, the Keg King and iBrew prices, the
+new-keg comparison. **My contribution was the *form* of the argument** (state the comparison as a
+fact, let the buyer do the arithmetic, never state a percentage) **and their contribution was the
+evidence.** ⇒ **The division held up well and is worth repeating: I draft the frame, they supply
+the checkable number.**
+
+**Applies to.** Any listing, and more broadly any claim where a published figure exists and the
+reader can reach it faster than we can defend an estimate.
+
