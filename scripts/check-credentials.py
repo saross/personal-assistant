@@ -90,6 +90,14 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             continue
         name, value = m.group(1).strip(), m.group(2).strip().strip('"').strip("'")
         out[name] = value
+        if " #" in value or value.startswith("#"):
+            # bash sourcing drops an unquoted trailing comment; the Codex launcher
+            # and this parser keep it as part of the value. One of them would
+            # hand a process the wrong secret, so the line must be unambiguous.
+            note(
+                f"line {lineno}: {name} has a '#' in its value — a trailing comment "
+                "is dropped by shell sourcing but kept by the Codex launcher. Remove it."
+            )
         if not VALID_NAME.match(name):
             note(
                 f"line {lineno}: variable name {name!r} is not a valid shell "
