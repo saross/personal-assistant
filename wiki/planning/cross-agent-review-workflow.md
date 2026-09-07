@@ -163,8 +163,14 @@ wall-clock for the reviewer.
     Sol authors, Claude reviews | gpt-hub launcher injection + activator (7 Sep) | Claude | no code change before acceptance; 4 non-blocking notes, README updated | ordinary / style | ~1.5 h
     Claude authors, Sol reviews | personal-assistant #110 admission validator (7 Sep) | Astra | yes: traversal paths, home alias, empty and credentialed remotes accepted; author's 6 tests passed; reviewer's patch applied verbatim (5aea7ec) | ordinary defect; blind-spot undetermined (a second same-vendor pass might have caught it; the author's tests did not) | ~1 h
     Sol authors, Claude reviews | gpt-hub #2 admitted Git lanes (7 Sep, late) | Claude | yes: changes requested — repository identity by directory basename let a renamed PA clone escape its carve-outs (reproduced); executable/redirecting git config keys (core.askPass, remote.origin.vcs, submodule.*.update, uploadpack.*, http.*) not screened | ordinary defects, both found by probing beyond the author's 24 tests; blind-spot undetermined | ~2 h
+    Claude authors, Sol reviews | personal-assistant #112 lane identity (7 Sep, live watch) | Astra | yes: raw basename admitted Personal-Assistant / personal%2Dassistant aliases (GitHub-verified); decode + case-fold applied | ordinary defect; found within minutes via the live watch | ~0.3 h
+    Sol authors, Claude reviews | gpt-hub #2 corrected head 8654cd9 (7 Sep, live watch) | Claude | no: both findings closed; probes re-run and pass; approved | verification | ~0.5 h
 
-Reading so far (six rows, one day): both directions have changed code; the
+Reading so far (eight rows, one day): both directions have changed code; the
 one factual catch was an unverified default stated from memory, which is the
 class of error the trial was most worried about. Too early for the Phase 6
 verdict.
+
+The live mail watch (armed 7 Sep, evening) turned the last three rows into a
+cycle of roughly an hour with no human input: finding, fix, re-review,
+approval, in both directions, with Shawn needed only for merges.

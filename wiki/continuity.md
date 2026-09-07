@@ -2396,6 +2396,14 @@ rest of this session. Proposal to Astra by mail with two candidate
 mechanisms for their side (in-session blocking wait; host watcher driving
 `codex exec resume --last` through their launcher), unverified by me.
 
+**Live watch, rounds 1–3 (no Shawn input):** Astra found a URL-alias hole
+in #112 (`Personal-Assistant`, `personal%2Dassistant`), fixed at `3c18b3b`,
+approved by Astra; **#112 awaits Shawn's merge** (tightening; I do not
+merge policy-apparatus PRs while armed). Astra corrected gpt-hub PR #2
+(config allowlist; remote-name identity in renderer and hook) at `8654cd9`;
+all my probes re-run and pass; **approved**. Astra will raise the Codex-side
+watcher proposal with Shawn directly. Evidence-log rows seven and eight.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
@@ -2409,8 +2417,8 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
   real history, forced positive verified).
 - [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
   Astra's disposable-repository acceptance record, when it arrives.
-- [ ] Re-run the PR #2 probes against Astra's corrected head; approve when (1) and
-  (2) hold. Merge #112 on Astra's approval.
+- [x] 2026-09-07 PR #2 probes re-run at `8654cd9`; approved.
+- [ ] Merge #112 (Shawn's go; approved by Astra at `3c18b3b`).
 
 ### 2026-08-29→09-06 (Sat 29 Aug → Sun 6 Sept, latest PA) — THE CAR SOLD, A $50–75k CONSTRAINT SURFACED FOUR MONTHS LATE, AND RDA WAS UNSTUCK BY CUTTING SCOPE RATHER THAN MOVING THE DATE
 
