@@ -93,6 +93,31 @@ admitted_by = "shawn"
             with self.subTest(label=label), self.assertRaises(ValueError):
                 self.load_with(text)
 
+    def test_traversal_aliases_and_invalid_remote_identity_are_rejected(self) -> None:
+        """Keep lexical aliases, unusable remotes, and invalid dates out of grants."""
+        variants = {
+            "parent traversal": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/..").replace(
+                    "worktrees/map-reader-llm/", "worktrees/../"),
+            "home alias": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/../gpt-hub").replace(
+                    "worktrees/map-reader-llm/", "worktrees/gpt-hub/"),
+            "duplicate alias": self.ADMISSION + self.ADMISSION.replace(
+                "codex-map-reader-llm-phase2", "second-id").replace(
+                    "worktrees/map-reader-llm/", "worktrees/map-reader-llm//"),
+            "empty remote": self.ADMISSION.replace(
+                "https://github.com/saross/map-reader-llm.git", "https://"),
+            "credential remote": self.ADMISSION.replace(
+                "https://github.com/", "https://fixture:fake@github.com/"),
+            "query remote": self.ADMISSION.replace('.git"', '.git?fixture=fake"'),
+            "non-date": self.ADMISSION.replace('admitted_on = "2026-09-07"',
+                                               'admitted_on = "tomorrow"'),
+            "wrong field type": self.ADMISSION.replace('agent = "codex"', 'agent = 3'),
+        }
+        for label, text in variants.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self.load_with(text)
+
     def test_glob_case_resolves_an_existing_backup_without_reading_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backup = Path(directory) / ".env.bak-20260824"

@@ -10,13 +10,15 @@ layout and semantics the policy declares before a renderer may act on it.
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import errno
 import glob
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 import tomllib
+from urllib.parse import urlsplit
 
 
 DENIAL_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -110,6 +112,43 @@ def load_policy(path: Path) -> dict:
     return policy
 
 
+def canonical_home_path(value: str) -> PurePosixPath:
+    """Reject lexical aliases and traversal without consulting live paths.
+
+    Canonical spellings keep duplicate and home-repository checks meaningful.
+    Symlinks and actual Git identity still require renderer-time validation.
+    """
+    path = PurePosixPath(value)
+    if (
+        not value.startswith("~/") or value != path.as_posix()
+        or ".." in path.parts or len(path.parts) < 2
+        or any(character.isspace() or ord(character) < 32 for character in value)
+    ):
+        raise ValueError("admitted clone paths must be canonical and home-relative")
+    return path
+
+
+def validate_clone_remote(value: str) -> None:
+    """Require a usable HTTPS repository URL with no embedded credentials."""
+    try:
+        remote = urlsplit(value)
+        port = remote.port
+        valid = (
+            remote.scheme == "https" and bool(remote.hostname)
+            and bool(remote.path.strip("/"))
+            and remote.username is None and remote.password is None
+            and not remote.query and not remote.fragment
+            and (port is None or port > 0)
+            and not any(character.isspace() or ord(character) < 32 for character in value)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError(
+            "admitted clone remote must be an HTTPS repository URL without credentials"
+        )
+
+
 def validate_admitted_clones(policy: dict) -> None:
     """Check every admitted-clone entry against the declared lane semantics.
 
@@ -121,6 +160,8 @@ def validate_admitted_clones(policy: dict) -> None:
     """
     semantics = policy.get("semantics", {})
     entries = policy.get("admitted_clones", [])
+    if not isinstance(entries, list):
+        raise ValueError("admitted_clones must be a list of tables")
     if not entries:
         return
     required = semantics.get("admitted_clone_required_fields")
@@ -133,6 +174,10 @@ def validate_admitted_clones(policy: dict) -> None:
     seen_ids: set[str] = set()
     seen_lanes: set[str] = set()
     for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("admitted clone entries must be tables")
+        if any(not isinstance(entry.get(field), str) for field in required):
+            raise ValueError("admitted clone fields must be non-empty strings")
         ident = entry.get("id")
         if not ident or ident in seen_ids:
             raise ValueError(f"admitted clone ids must be present and unique: {ident}")
@@ -150,8 +195,10 @@ def validate_admitted_clones(policy: dict) -> None:
         lane = entry["lane_path"]
         if not repository.startswith("~/") or not lane.startswith(f"{LANE_PARENT}/"):
             raise ValueError(f"admitted clone {ident}: paths must be home-relative")
-        repo_name = Path(repository).name
-        parts = Path(lane).parts
+        repository_path = canonical_home_path(repository)
+        lane_path = canonical_home_path(lane)
+        repo_name = repository_path.name
+        parts = lane_path.parts
         # Expected shape: ~ / worktrees / <repo> / <agent>-<workstream>
         if len(parts) != 4 or parts[2] != repo_name or not parts[3].startswith(f"{prefix}-"):
             raise ValueError(
@@ -164,13 +211,18 @@ def validate_admitted_clones(policy: dict) -> None:
             raise ValueError(f"admitted clone {ident}: lane_path admitted twice")
         seen_lanes.add(lane)
         home = agent["home_repository"]
-        if Path(repository) == Path(home):
+        if repository_path == canonical_home_path(home):
             raise ValueError(
                 f"admitted clone {ident}: the agent's home repository needs no lane"
             )
 
-        if not entry["remote"].startswith("https://"):
-            raise ValueError(f"admitted clone {ident}: remote must be HTTPS")
+        validate_clone_remote(entry["remote"])
+        try:
+            admitted_date = date.fromisoformat(entry["admitted_on"])
+        except ValueError:
+            raise ValueError("admitted_on must be a calendar date") from None
+        if admitted_date.isoformat() != entry["admitted_on"]:
+            raise ValueError("admitted_on must use YYYY-MM-DD")
         if entry["branch_namespace"] != f"{prefix}/*":
             raise ValueError(f"admitted clone {ident}: branch_namespace must be {prefix}/*")
         if entry["storage"] != storage:
