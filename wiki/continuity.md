@@ -2249,6 +2249,100 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-06→08 (Sun 6 → Tue 8 Sept, latest PA) — RDA SUBMITTED ON DAY 31, THE BURN-DOWN MOVED 7→12 IN A DAY, AND THE ONE PRICE I WAVED THROUGH WAS THE ONLY ONE THAT WAS WRONG
+
+**Two and a half days across a weekend and a Monday.** ⭐⭐ **The month's two stuck things both
+moved: RDA went in, and the selling board — frozen since 28 August — gained five listings.**
+
+**1. ⭐⭐ RDA IG PROPOSAL SUBMITTED, Day 31.** **Round-2 fold-in applied to the clean Markdown
+(Gnana's method paragraph and instruments table, CoARA-ERIP ×2, Drummond in a personal capacity,
+Wharton's title, the AI-use statement), HTML rebuilt, membership sheet and change log updated,
+audited against Charter Template V4 — all eleven sections present and in order.** **Submitted via
+the web form; success screen only, NO REFERENCE NUMBER, so the screenshot is the sole receipt.**
+⏰ **Two tripwires set: Groups Directory by ~21 Sept, Secretariat by mid-December. Decision
+expected early-to-mid November, which holds month 1 where the timeline assumes.** ⭐ **Slot 3
+CLOSED and reclassified to waiting — the first slot closure in four weeks, ending a
+three-week zero-closure run.** **Notification sent by Shawn to Brian + 24 BCC, asking members to
+post support during Community Review because TAB assesses whether the community wants the group.**
+
+**2. ⭐⭐ FIVE LISTINGS IN A DAY — burn-down 7 → 12 of 29.** **Marble table $250 and Hemnes
+wardrobe $120 (Sun); HSW Easy-Build shelving $595, Keg Master kegerator $495 and a 10 L Corny keg
+$80 (Mon).** ⚠ **Two of those were a CORRECTION: the marble table and wardrobe had been posted
+but never marked listed, so the count was under-reporting by two — found by arithmetic, not
+inspection.** **The washer was WITHDRAWN from sale entirely** (the house came with one, the
+dishwasher is already an inclusion, and a collection on 28–29 Sept puts a stranger in the
+driveway during the worst week for $200).
+
+**3. ⭐⭐ THE PRICING METHOD MATURED, AND THEN CAUGHT ME OUT.** **Four items priced against
+PUBLISHED anchors rather than bands:** shelving (*"16 pieces is $851; there are 91 here"*),
+wardrobe (Domayne $699, 2012 AU catalogue, located by Shawn), kegerator ($350 refurb fridge +
+$274 faucets − a $39.95 fault), keg (new at $95–98). ⛔⛔ **The keg is the lesson: I flagged its
+$110 as unanchored, then ruled the check "optional rather than blocking" because it is a
+low-value item — and $110 turned out to be ABOVE NEW RETAIL.** ⇒ ⭐ **THE RIGHT TEST IS RATIO TO
+REPLACEMENT COST, NOT ABSOLUTE DOLLARS.** **Every price that was anchored was right; the one
+waved through was the only one wrong.**
+
+**4. ⏰ THE HOUSE WENT TO MARKET AND THE DATA IS AMBIGUOUS.** **Week-1: 8,750 exposure, 710
+clicks, 506+204 listing views, 32 enquiries, 9 open-home attendees — and 0 value indications,
+0 offers.** ⚠⚠ **THREE OF NINE ATTENDEES INDEPENDENTLY SAID THE HOUSE OR YARD IS TOO SMALL. That
+is a PRODUCT objection, not a price objection, and a price drop does not fix it.** ⭐ **Shawn's
+counter on the two contingent buyers is sound and I had it backwards: slow buyers SUIT him,
+because the extra time takes pressure off the title timeline.** ⚠ **A ~$1.04M floor now carries
+a 12–24 month HOLD option** — which is why storage is not booked, and the tenanting question
+turns out to need an ACCOUNTANT (does a foreign-resident co-owner's history follow the asset
+through a relationship-breakdown rollover?) and an INSURER (vacancy cover beyond 60–90 days),
+not a bank.
+
+**5. ⚠⚠ THE CAMPAIGN NOW GENERATES INTERRUPTIONS THAT DISPLACE THE LEGAL CHAIN — TWICE IN A
+WEEK.** **Monday's conveyancer call was lost to a 4pm viewing Bart arranged that afternoon; the
+lawyer call reached voicemail.** ⇒ ⭐⭐ **The legal chain has NO flexibility and the campaign has
+ALL of it — an agent will move a viewing, the CGT constraint will not move at all. BOTH CALLS
+BECOME MORNING ITEMS.** ⚠ **And the campaign is running AHEAD of its own precondition: no
+contract can be signed until Adela is off the title, so an offer arriving early is a problem, not
+a win.** **A five-item email went to the conveyancer instead — SC 54's misspelled co-owner name
+(12 days unanswered), the inconsistent vendor naming, SC 35.10's inapplicable strata references,
+SC 54's missing long-stop date, and the washer moving to an inclusion.**
+
+**6. ⭐ AUGUST RETRO RUN (six days late) AND ITS FIVE FOLLOW-UPS CLEARED.** ⭐⭐ **Its central
+finding: the closure metric broke and the system caused it — Slot 2 was rescoped on 27 Aug into
+a five-week project umbrella that CANNOT register a closure, in direct reversal of the 5 Aug
+ruling holding the task-size line.** ⇒ **Three zero-closure weeks were the board failing to
+measure the month, not a stalled month — and I read the zero as a performance signal in the W36
+review before catching it.** **Shawn's ruling constrains the whole retro: *"this is not a normal
+time, and we should be cautious about making structural changes to our systems based on what's
+happening now."*** **Slot 2 restructured into three streams (Selling · Legal & Financial ·
+Logistics) as SCOPING, not redesign.** **Follow-ups done: 808 anchors recovered (verified-false
+1,299 → 709), drift sweep run after three months and BREACHED at 28.2%, wiki cluster-and-carry
+run after seven deferrals.**
+
+**7. ⭐ TWO STANDING INSTRUCTIONS FROM THE USER-OBSERVATION BACKLOG** (Groups 1–2 adjudicated,
+9 of 53 cleared): **reversibility, not scope, sets the bar for acting without asking** —
+git-reversible edits proceed, anything with no git undo keeps its gate; and **ask for the rule,
+not the answer, and draw rules in flight** — *"so we set precedent and are not constantly
+re-adjudicating similar decisions."* ⚠ **Flagged against my own conduct: the same pricing
+question was put to Shawn four times in one day.**
+
+**Held over / open:**
+
+- ⏰⏰ **TUESDAY MORNING, BEFORE THE DAY CAN BE CLAIMED: conveyancer (five items, email sent),
+  then Sarah Bevan (has Adela supplied what is needed; when can consent orders be lodged).**
+- ⏰ **ADELA'S APPROVAL is still the single gating item for the entire sale — four days out, no
+  confirmed movement either side.**
+- ⏰ **EDIT THE LIVE KEGERATOR AD on both sites: the keg is $80/$70, not $110/$90.**
+- **Slot 1 EFN website closes Tue with a showable draft Wed. Slot 3 is EMPTY** — the retro's
+  reading is that the move could take a second slot; Stream C still has container, packers and
+  van unbooked against fixed dates.
+- **Fridge is the last large item unposted** — copy complete, needs four photos.
+- ⚠ **Check the keg's base for a maker's mark** (AEB/Cornelius/Firestone would restore $100–110)
+  and **clear the top shelf before reusing `kegerator-7.jpg`**.
+- ⚠ **The five older live ads may also be missing product tags** — the fault was structural
+  (house style rule 11 now moves tags to third in the posting order).
+- **Lishan's apartment walk-through was not reported at recap** — it sizes the van booking.
+- **W36 review filed; the retro's `focus_churn` redefinition is HELD as a redesign.**
+
+**Hours: 2026-09-06 = 8.0h · 2026-09-07 = 9.5h.**
+
+
 ### 2026-09-07 (Mon, latest SOL) — FIRST CREDENTIAL GRANT: GITHUB PAT VERIFIED BY PROCESS, PR #109 OPENED, 28 REMOTES TO HTTPS, LAUNCHER PROPOSAL TO SOL
 
 Fable session (model restored). Sol's side had been idle since 26 Aug until
