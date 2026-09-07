@@ -28,8 +28,10 @@ Three passes, cheapest first:
 
 4. **Grant cross-check.** Every grant in
    ``global-agent-guidance/credential-grants.toml`` must name a variable
-   that exists in .env, so the Codex launcher never injects an empty value.
-   A grant whose token expires within 14 days is a finding.
+   that exists in .env, so the Codex launcher never injects an empty value,
+   and its recorded ``expires_on`` must match the live token: ``"none"`` for
+   a token rotated by hand, otherwise the date GitHub reports. A grant whose
+   token expires within 14 days is a finding.
 
 Nothing is written, created, or deleted, and no secret value is ever printed
 (only its length, where useful). Run it after editing .env, and on each
@@ -247,14 +249,15 @@ def github_token_vars(env: dict[str, str]) -> list[str]:
         if n in {"GH_TOKEN", "GITHUB_TOKEN"} or n.endswith("_GH_TOKEN"))
 
 
-def check_github(env: dict[str, str]) -> dict[str, dt.date | None]:
+def check_github(env: dict[str, str]) -> dict[str, dt.date | str | None]:
     """Authenticate each GitHub token and report account, kind, expiry, push access.
 
-    Returns a map of variable name to expiry date (None when the token does
-    not expire or the check failed), for the grant cross-check.
+    Returns a map of variable name to live expiry for the grant cross-check:
+    a date, the string "none" for a token created without an expiry, or None
+    when authentication failed.
     """
     print("\n== GitHub tokens ==")
-    expiries: dict[str, dt.date | None] = {}
+    expiries: dict[str, dt.date | str | None] = {}
     names = github_token_vars(env)
     if not names:
         print("  none present")
@@ -284,15 +287,14 @@ def check_github(env: dict[str, str]) -> dict[str, dt.date | None]:
                 expiry = dt.date.fromisoformat(expiry_raw.split(" ")[0])
             except ValueError:
                 pass
-        expiries[name] = expiry
-        # A missing header means the token was created with no expiry.
+        # A missing header means the token was created with no expiry. That is
+        # a choice, not a fault: the grant record must declare it, and the
+        # grant cross-check below reports any disagreement.
+        expiries[name] = expiry if expiry else "none" if not expiry_raw else None
         expires = (expiry.isoformat() if expiry
                    else f"unparseable header {expiry_raw!r}" if expiry_raw
-                   else "never (no expiry set)")
+                   else "none (rotated by hand)")
         print(f"  {name}: OK — account {body.get('login')!r}, {kind}, expires {expires}")
-        if not expiry_raw:
-            note(f"{name}: no expiry — a leaked token stays valid until noticed; "
-                 "regenerate with a 90-day expiry")
 
         # Fine-grained tokens carry no scope header; probe the repository instead.
         st, repo, _ = http_get(f"{GITHUB_API}/repos/{GITHUB_PROBE_REPO}", headers)
@@ -312,8 +314,9 @@ def check_github(env: dict[str, str]) -> dict[str, dt.date | None]:
     return expiries
 
 
-def check_grants(env: dict[str, str], expiries: dict[str, dt.date | None]) -> None:
-    """Every launcher grant must name a variable that exists and is not about to expire."""
+def check_grants(env: dict[str, str], expiries: dict[str, dt.date | str | None]) -> None:
+    """Every launcher grant must name a variable that exists, and its record must
+    agree with the live token about expiry."""
     print(f"\n== Launcher grants ({GRANTS_FILE.name}) ==")
     if not GRANTS_FILE.is_file():
         print(f"  {GRANTS_FILE} absent — skipped")
@@ -338,9 +341,21 @@ def check_grants(env: dict[str, str], expiries: dict[str, dt.date | None]) -> No
         if not VALID_NAME.match(target):
             note(f"grant {label}: inject_as {target!r} is not a valid shell identifier")
         expiry = expiries.get(source)
+        recorded = str(grant.get("expires_on", "")).strip()
         if expiry is None:
+            # Not a GitHub token, or its authentication already failed above.
             print(f"  {label}: present ({len(env[source])} chars)")
             continue
+        if expiry == "none":
+            if recorded == "none":
+                print(f"  {label}: present, no expiry — rotated by hand, as recorded")
+            else:
+                note(f"grant {label}: live token has no expiry but the record says "
+                     f"expires_on = {recorded!r} — fix the record or rotate the token")
+            continue
+        if recorded != expiry.isoformat():
+            note(f"grant {label}: record says expires_on = {recorded!r}, live token "
+                 f"expires {expiry.isoformat()} — update the record")
         days_left = (expiry - today).days
         if days_left < 0:
             note(f"grant {label}: token expired on {expiry.isoformat()}")
