@@ -21,7 +21,15 @@ Three passes, cheapest first:
 3. **Live reads.** Reports each Zotero key's true scope from
    ``/keys/current``, checks the library and group IDs resolve, checks every
    ``*_COLLECTION`` key against the personal library and all accessible
-   groups, and confirms the OSF token authenticates.
+   groups, confirms the OSF token authenticates, and confirms every GitHub
+   token (``GH_TOKEN``, ``GITHUB_TOKEN``, ``*_GH_TOKEN``) authenticates —
+   reporting the account, token kind, expiry, and whether it can push to
+   ``saross/gpt-hub``, the first repository a Codex-side token must reach.
+
+4. **Grant cross-check.** Every grant in
+   ``global-agent-guidance/credential-grants.toml`` must name a variable
+   that exists in .env, so the Codex launcher never injects an empty value.
+   A grant whose token expires within 14 days is a finding.
 
 Nothing is written, created, or deleted, and no secret value is ever printed
 (only its length, where useful). Run it after editing .env, and on each
@@ -38,17 +46,25 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 
 VALID_NAME = re.compile(r"^[A-Z0-9_]+$")
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
+GITHUB_API = "https://api.github.com"
+# The first repository any Codex-side GitHub token must be able to push to.
+GITHUB_PROBE_REPO = "saross/gpt-hub"
+GRANTS_FILE = pathlib.Path(__file__).resolve().parent.parent / (
+    "global-agent-guidance/credential-grants.toml")
+EXPIRY_WARNING_DAYS = 14
 TIMEOUT = 45
 
 findings: list[str] = []
@@ -91,6 +107,22 @@ def http_json(url: str, headers: dict[str, str]) -> tuple[int, object]:
         return exc.code, exc.read()[:200].decode("utf-8", "replace")
     except Exception as exc:  # network, timeout, malformed JSON
         return 0, str(exc)
+
+
+def http_get(url: str, headers: dict[str, str]) -> tuple[int, object, dict[str, str]]:
+    """Like http_json, but also return the response headers (lower-cased keys).
+
+    GitHub reports a fine-grained token's expiry only in a response header,
+    so the body alone is not enough for the GitHub check.
+    """
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return resp.status, json.load(resp), {k.lower(): v for k, v in resp.headers.items()}
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()[:200].decode("utf-8", "replace"), {}
+    except Exception as exc:  # network, timeout, malformed JSON
+        return 0, str(exc), {}
 
 
 def zotero_headers(key: str) -> dict[str, str]:
@@ -137,7 +169,9 @@ def check_zotero(env: dict[str, str]) -> None:
         groups = access.get("groups", {})
         writable = sorted(g for g, p in groups.items() if p.get("write"))
         print(f"  {name}: OK (user {body.get('userID')})")
-        print(f"      personal: {'read+write' if user_access.get('write') else 'read only' if user_access else 'no access'}")
+        personal = ("read+write" if user_access.get("write")
+                    else "read only" if user_access else "no access")
+        print(f"      personal: {personal}")
         print(f"      group write: {writable or 'none'}")
         if "all" in writable:
             note(
@@ -206,6 +240,117 @@ def check_osf(env: dict[str, str]) -> None:
         note(f"OSF_API_KEY: authentication failed ({status})")
 
 
+def github_token_vars(env: dict[str, str]) -> list[str]:
+    """Names of every GitHub token variable, by naming convention."""
+    return sorted(
+        n for n in env
+        if n in {"GH_TOKEN", "GITHUB_TOKEN"} or n.endswith("_GH_TOKEN"))
+
+
+def check_github(env: dict[str, str]) -> dict[str, dt.date | None]:
+    """Authenticate each GitHub token and report account, kind, expiry, push access.
+
+    Returns a map of variable name to expiry date (None when the token does
+    not expire or the check failed), for the grant cross-check.
+    """
+    print("\n== GitHub tokens ==")
+    expiries: dict[str, dt.date | None] = {}
+    names = github_token_vars(env)
+    if not names:
+        print("  none present")
+        return expiries
+
+    for name in names:
+        token = env[name]
+        # Token kind is visible from the prefix alone and never from the value.
+        kind = ("fine-grained PAT" if token.startswith("github_pat_")
+                else "classic PAT" if token.startswith("ghp_")
+                else "OAuth/app token" if token.startswith(("gho_", "ghs_", "ghu_"))
+                else "unrecognised prefix")
+        headers = {"Authorization": f"Bearer {token}",
+                   "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28"}
+        status, body, resp_headers = http_get(f"{GITHUB_API}/user", headers)
+        if status != 200 or not isinstance(body, dict):
+            note(f"{name}: authentication failed ({status})")
+            expiries[name] = None
+            continue
+
+        expiry_raw = resp_headers.get("github-authentication-token-expiration", "")
+        expiry: dt.date | None = None
+        if expiry_raw:
+            # Header form is "2026-12-06 03:14:07 UTC"; keep the date only.
+            try:
+                expiry = dt.date.fromisoformat(expiry_raw.split(" ")[0])
+            except ValueError:
+                pass
+        expiries[name] = expiry
+        # A missing header means the token was created with no expiry.
+        expires = (expiry.isoformat() if expiry
+                   else f"unparseable header {expiry_raw!r}" if expiry_raw
+                   else "never (no expiry set)")
+        print(f"  {name}: OK — account {body.get('login')!r}, {kind}, expires {expires}")
+        if not expiry_raw:
+            note(f"{name}: no expiry — a leaked token stays valid until noticed; "
+                 "regenerate with a 90-day expiry")
+
+        # Fine-grained tokens carry no scope header; probe the repository instead.
+        st, repo, _ = http_get(f"{GITHUB_API}/repos/{GITHUB_PROBE_REPO}", headers)
+        if st == 200 and isinstance(repo, dict):
+            perms = repo.get("permissions", {})
+            access = ("push" if perms.get("push") else
+                      "pull only" if perms.get("pull") else "none")
+            print(f"      {GITHUB_PROBE_REPO}: {access}")
+            if not perms.get("push"):
+                note(f"{name}: cannot push to {GITHUB_PROBE_REPO} — the Codex launcher "
+                     "grant is pointless without Contents: read and write there")
+        elif st == 404:
+            note(f"{name}: {GITHUB_PROBE_REPO} not visible — the token's repository "
+                 "list does not include it")
+        else:
+            note(f"{name}: repository probe failed ({st})")
+    return expiries
+
+
+def check_grants(env: dict[str, str], expiries: dict[str, dt.date | None]) -> None:
+    """Every launcher grant must name a variable that exists and is not about to expire."""
+    print(f"\n== Launcher grants ({GRANTS_FILE.name}) ==")
+    if not GRANTS_FILE.is_file():
+        print(f"  {GRANTS_FILE} absent — skipped")
+        return
+    try:
+        grants = tomllib.loads(GRANTS_FILE.read_text()).get("grants", [])
+    except tomllib.TOMLDecodeError as exc:
+        note(f"{GRANTS_FILE.name} does not parse: {exc}")
+        return
+    if not grants:
+        print("  no grants declared")
+        return
+
+    today = dt.date.today()
+    for grant in grants:
+        source = grant.get("source_name", "")
+        target = grant.get("inject_as", source)
+        label = f"{grant.get('id', '?')} ({source} -> {target})"
+        if source not in env:
+            note(f"grant {label}: {source} is not in .env — the launcher would inject nothing")
+            continue
+        if not VALID_NAME.match(target):
+            note(f"grant {label}: inject_as {target!r} is not a valid shell identifier")
+        expiry = expiries.get(source)
+        if expiry is None:
+            print(f"  {label}: present ({len(env[source])} chars)")
+            continue
+        days_left = (expiry - today).days
+        if days_left < 0:
+            note(f"grant {label}: token expired on {expiry.isoformat()}")
+        elif days_left <= EXPIRY_WARNING_DAYS:
+            note(f"grant {label}: token expires in {days_left} day(s) "
+                 f"({expiry.isoformat()}) — rotate it and update the grant record")
+        else:
+            print(f"  {label}: present, expires {expiry.isoformat()} ({days_left} days)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -227,6 +372,8 @@ def main() -> int:
     check_shell_source(args.env)
     check_zotero(env)
     check_osf(env)
+    expiries = check_github(env)
+    check_grants(env, expiries)
 
     print("\n" + "=" * 60)
     if findings:
