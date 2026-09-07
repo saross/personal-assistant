@@ -2380,8 +2380,10 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
 - [x] 2026-09-07 Mail-hook validation parity shipped (`f6aaee8`).
 - [x] 2026-09-07 Git-lane design reviewed (clone-first endorsed), Shawn approved, policy PR #110 open.
 - [x] 2026-09-07 Decided (Shawn): `personal-assistant` IS in the token's repo
-  list. Consequence and mitigation recorded in plan §Credentials; a
-  Codex-trailer-on-main tripwire offered, not built.
+  list. Consequence recorded in plan §Credentials; **tripwire built on
+  Shawn's say-so** (`1fc788e`, `hooks/session-start-codex-main-tripwire.py`,
+  10 tests, suite 1,197; installed on amd-tower and zbook; calibrated on
+  real history, forced positive verified).
 - [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
   Astra's disposable-repository acceptance record, when it arrives.
 

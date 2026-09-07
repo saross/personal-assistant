@@ -381,10 +381,13 @@ behavioural controls are inadequate.
   Git-lane renderer must carry those carve-outs into any admitted clone),
   but between an admitted PA clone and PA `main` the only barrier is the
   norm: PA changes from Codex go branch + PR, never a direct push to `main`
-  (`ownership.toml` change control; Sol's instructions). Mitigation
-  available on request: a session-start tripwire that flags any commit on PA
-  `main` carrying a Codex co-author trailer that did not arrive through a
-  merge commit.
+  (`ownership.toml` change control; Sol's instructions). **Detection layer
+  built the same day:** `hooks/session-start-codex-main-tripwire.py`, a
+  SessionStart hook on amd-tower and zbook, flags any non-merge commit on
+  the first-parent chain of PA `main` since the ruling that carries a Codex
+  co-author trailer or author identity and was not a GitHub web squash.
+  Silent when clean; a reviewed hit is silenced with `--ack <sha>`. A
+  tripwire, not a control: trailers and dates are forgeable.
 
 ---
 
