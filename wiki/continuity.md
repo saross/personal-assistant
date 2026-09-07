@@ -2364,6 +2364,15 @@ seven tests pass, committed as `5aea7ec` with Astra as co-author. #110 tip
 cross-review caught a defect on the Claude side rather than the reverse** —
 the case the trial was set up to test.
 
+**Close of day — #110 merged (`30d69a8`) on Astra's re-approval at
+`5aea7ec` and Shawn's earlier sign-off; map-reader-llm #11 merged
+(`e0399a18e`) on Shawn's instruction.** Canonical policy validates
+(`clones=0`), seven verifier tests pass on main, git-lanes worktree removed.
+All three PA policy PRs from today (#109, #110, #111) are in. Sol's lane
+branch and worktree in map-reader left for Astra to retire (pilot for the
+clone conversion). **Next Claude-side item: the map-reader admission PR**,
+drafted from Astra's disposable-repo acceptance record once they send it.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
@@ -2372,7 +2381,9 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
 - [x] 2026-09-07 Git-lane design reviewed (clone-first endorsed), Shawn approved, policy PR #110 open.
 - [ ] Decide (Shawn): is `personal-assistant` in the token's repo list? A
   repo-level write token there is broader than Sol's local ownership
-  boundary.
+  boundary. (Still undecided at close of 2026-09-07.)
+- [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
+  Astra's disposable-repository acceptance record, when it arrives.
 
 ### 2026-08-29→09-06 (Sat 29 Aug → Sun 6 Sept, latest PA) — THE CAR SOLD, A $50–75k CONSTRAINT SURFACED FOUR MONTHS LATE, AND RDA WAS UNSTUCK BY CUTTING SCOPE RATHER THAN MOVING THE DATE
 
