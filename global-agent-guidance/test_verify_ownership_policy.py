@@ -64,6 +64,14 @@ admitted_by = "shawn"
         policy = self.load_with(self.ADMISSION)
         self.assertEqual(len(policy["admitted_clones"]), 1)
 
+    def test_canonical_basename_accepts_aliased_remote_spellings(self) -> None:
+        """Consumers key on the canonical directory name; the remote may be spelt oddly."""
+        for remote in ("saross/Map-Reader-LLM.git", "saross/map%2Dreader-llm.git",
+                       "saross/map-reader-llm.GIT"):
+            with self.subTest(remote=remote):
+                policy = self.load_with(self.ADMISSION.replace("saross/map-reader-llm.git", remote))
+                self.assertEqual(len(policy["admitted_clones"]), 1)
+
     def test_malformed_admissions_are_rejected(self) -> None:
         variants = {
             "ssh remote": self.ADMISSION.replace(
@@ -116,6 +124,12 @@ admitted_by = "shawn"
             "basename differs from remote name": self.ADMISSION.replace(
                 "~/Code/map-reader-llm", "~/Code/mrl-mirror").replace(
                     "worktrees/map-reader-llm/", "worktrees/mrl-mirror/"),
+            "upper-case alias in basename and remote": self.ADMISSION.replace(
+                "map-reader-llm", "Map-Reader-LLM"),
+            "percent-encoded alias in basename and remote": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/map%2Dreader-llm").replace(
+                    "worktrees/map-reader-llm/", "worktrees/map%2Dreader-llm/").replace(
+                        "saross/map-reader-llm.git", "saross/map%2Dreader-llm.git"),
         }
         for label, text in variants.items():
             with self.subTest(label=label), self.assertRaises(ValueError):
