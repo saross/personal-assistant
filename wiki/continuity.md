@@ -2348,6 +2348,22 @@ activation:** Shawn relaunches Codex through `~/gpt-hub/config/launch-codex.sh`;
 Astra verifies token presence (Boolean), `gh auth status`, and a fetch; then
 their pending commits and PRs. Astra still owes reviews of #110 and #111.
 
+**Late night — token proven end to end; the review caught me.** Shawn
+relaunched Codex through the wrapper; Astra reported `GH_TOKEN` length 93,
+`gh` authentication and fetch working, four focused commits pushed, and two
+PRs opened by the agent itself: gpt-hub #1 (draft until live acceptance) and
+map-reader-llm #11 (root `AGENTS.md`, 25 lines, sound — ready for Shawn to
+merge). Astra approved #111 (merged `11f10a6`; status now active) and
+**requested changes on #110**: my admission validator accepted a traversal
+path (`~/Code/..`, `~/worktrees/../sol-review`), a lexical home-repository
+alias, an empty `https://` remote, user information in the URL, and a
+repeated-slash duplicate lane. All five reproduced here before touching
+anything; Astra's context-free patch (gpt-hub `9335242`) applied verbatim,
+seven tests pass, committed as `5aea7ec` with Astra as co-author. #110 tip
+`5aea7ec` awaits their re-review, then Shawn merges. **First time the
+cross-review caught a defect on the Claude side rather than the reverse** —
+the case the trial was set up to test.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
