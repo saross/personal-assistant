@@ -2498,6 +2498,17 @@ merge policy-apparatus PRs while armed). Astra corrected gpt-hub PR #2
 all my probes re-run and pass; **approved**. Astra will raise the Codex-side
 watcher proposal with Shawn directly. Evidence-log rows seven and eight.
 
+**8 Sep — step-2 live-acceptance package reviewed and approved** (gpt-hub
+`sol/live-acceptance` at `b0ad240`; 103 tests; harness cannot produce a false
+pass — every check must be literally True, exceptions reduce to a type,
+probe failure is "blocked"; protocol method and parameter names verified
+against the runtime's generated app-server schema). Four non-blocking notes
+sent. **Host checkpoint is Shawn's:** with `~/gpt-hub` at `b0ad240`, from a
+normal terminal, `python3 -B config/activate_ownership_config.py` (expect
+only the runtime read-rule refresh), then `--apply && python3 -B
+scripts/check_live_acceptance.py --host --report /tmp/sol-live-acceptance-host.json`.
+Astra interprets the report. Live watch round 1 since Shawn's last message.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
