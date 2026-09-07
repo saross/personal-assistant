@@ -2637,6 +2637,48 @@ licence to apply the deferred section-C roster fixes, and did so without asking.
 think it was right — but it was my call, not yours, and you should know I made it.**
 Flagging in case the scope discipline mattered more than the completeness.
 
+## Verdicts — 2026-09-07 (Group 1: naming a boundary)
+
+**Reviewed with Shawn 2026-09-07, working through the Aug–Sep backlog in thematic
+groups rather than by session.** ⭐ **Grouping by theme rather than date is what
+made the duplicate visible** — see below.
+
+| # | Candidate | Verdict |
+|---|---|---|
+| ① | **2026-08-19/20 C4** — you stopped me building the wrong thing twice by naming a boundary | ✓ **KEEP** |
+| ② | **2026-08-22 D** — you stopped the widening at the right point | ✓ **MERGED with ③ and kept** |
+| ③ | **2026-09-03 B** — you stopped the credential work at exactly the right boundary | ✓ **MERGED into ② — same event, recorded twice** |
+| ④ | **2026-09-02→03 D** — the scope instruction did real work, and then I overrode part of it | ✓ **KEEP** — and see the ruling below |
+
+⚠ **②/③ WERE THE SAME EVENT WRITTEN UP TWICE**, in two different session sections,
+with the same quote (*"I think I need to give that more thought. Can we add the issue
+to my inbox and leave it for now?"*). ⇒ ⭐ **A duplicate that survived because the
+sections are dated, not themed. Worth knowing for future reviews: read this file by
+theme before ruling, not in session order.**
+
+⭐ **THE GROUP'S COMMON FINDING, which is stronger than any single candidate: Shawn
+resolves in one line what Claude has flagged but left open, and the criterion he uses
+is EVIDENCE vs PREFERENCE — not elapsed time, step count, or effort.** **Work that
+follows from evidence may run; work that requires a preference stops and goes to the
+inbox.**
+
+### ⭐⭐ RULING ARISING FROM ④ — reversibility is the stakes test
+
+**Candidate ④ flagged that Claude had applied deferred roster fixes on its own
+judgement after a "download and update" instruction, and asked whether the scope
+discipline mattered more than the completeness.**
+
+**Shawn's ruling, 2026-09-07:** ***"yes, a call like that is correct — any edits that
+can be reversed from git history is low-stakes, go ahead and generalise."***
+
+⇒ ⭐⭐ **THE GENERAL RULE: REVERSIBILITY, NOT SCOPE, SETS THE BAR FOR ACTING WITHOUT
+ASKING.** **If a change is committed to git and can be reverted from history, it is
+low-stakes and Claude should proceed.** ⚠ **The rule does NOT extend to actions with
+no git undo** — sending mail, publishing, spending, mutating a database or an external
+service, or deleting untracked work. **Those keep their existing gates.**
+
+---
+
 ## 2026-08-29→09-06 (PA-hub / car sale, CGT constraint, RDA scope cut, pacing) — REVIEWED 2026-09-06: ALL FOUR KEPT
 
 **Candidate A — you corrected the FRAME, not the facts, and did it eight or nine times.**
