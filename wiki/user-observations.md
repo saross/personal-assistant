@@ -2637,6 +2637,58 @@ licence to apply the deferred section-C roster fixes, and did so without asking.
 think it was right — but it was my call, not yours, and you should know I made it.**
 Flagging in case the scope discipline mattered more than the completeness.
 
+## Verdicts — 2026-09-07 (Group 2: giving the rule rather than the answer)
+
+| # | Candidate | Verdict |
+|---|---|---|
+| ① | **2026-08-19/20 C1** — the tie-break rule you supplied was better than the analysis it replaced | ✓ **KEEP** |
+| ② | **2026-08-22 A** — "check first" was the whole instruction | ✓ **KEEP** |
+| ③ | **2026-08-22 B** — you gave the rule, not the answer, twice | ✓ **KEEP** |
+| ④ | **2026-08-20→23 D** — writing the rules down as they emerged. *"Useful, or did it slow the actual work?"* | ✓ **KEEP — AND ANSWERED: useful.** *"Please draw general rules in flight when feasible."* |
+| ⑤ | **2026-08-03 C3** — extending a proposed convention rather than just approving it | ✓ **KEEP** |
+
+⭐ **④ had been an open QUESTION, not an observation, since 23 August.** **It is now
+answered, and the answer is an instruction: extract rules mid-task rather than deferring
+them to a retrospective.**
+
+### ⭐⭐ THE GROUP'S GENERAL LESSON — recorded at Shawn's request
+
+**Four distinct forms of the same move appear across five candidates:**
+
+| Form | Instance |
+|---|---|
+| **Reframe the problem into one with a checkable answer** | Three measured greys became *"can Steve's website decide it?"* — a provenance question with one answer. *Production decides ties* then settled artwork, lock-up and typography in one move |
+| **The hedge IS the instruction** | *"but please check first"* — three words that prevented six clobbered credentials, against a confidently-stated plan Claude would have been within instructions to execute |
+| **Give the REASON with the answer** | Not "yes, rename it" but "it is a group ID **and** the label is loosely coupled on purpose, because the library will be renamed" — which is what stops a later session "fixing" a deliberate choice |
+| **Extend rather than approve** | The weekly disposition pass came back approved *and* extended with a nightly recap micro-triage, cap included |
+
+⇒ ⭐⭐ **THE LESSON: THE VALUABLE HALF OF SHAWN'S ANSWER IS USUALLY THE SECOND HALF —
+the rule, the reason, or the reframe, rather than the decision.** **A bare answer is
+correct and disposable; the rule behind it settles cases nobody has asked about yet, and
+survives into sessions that were not there for the conversation.**
+
+### ⭐⭐ STANDING INSTRUCTION ARISING — ask for rules, not answers
+
+**Shawn, 2026-09-07:** ***"Yes, ask for or derive rules where feasible so we set
+precedent and are not constantly re-adjudicating similar decisions."***
+
+**Two obligations for Claude:**
+
+1. ⭐ **DRAW GENERAL RULES IN FLIGHT when feasible** — mid-task, not deferred to a
+   retrospective. **Answered against ④'s own question: this is useful and does not slow
+   the work.**
+2. ⭐ **WHEN A DECISION IS NEEDED, ASK FOR THE RULE RATHER THAN THE INSTANCE** where a
+   rule is derivable. **The point is precedent: a decision answers once, a rule answers
+   the class.**
+
+⚠ **Noticed against this session's own behaviour, and worth the flag: Claude spent the
+day asking for ANSWERS — the collection date, the shelving count, the sale floor.**
+**Reasonable for facts that cannot be derived. But the pricing questions recurred four
+times and were re-adjudicated each time, which is exactly the cost this instruction
+exists to remove.**
+
+---
+
 ## Verdicts — 2026-09-07 (Group 1: naming a boundary)
 
 **Reviewed with Shawn 2026-09-07, working through the Aug–Sep backlog in thematic
