@@ -373,6 +373,18 @@ behavioural controls are inadequate.
   launcher are in the grant record and the accompanying agent-mail proposal;
   the token is verified by `scripts/check-credentials.py`, which now reports
   each GitHub token's account, kind, expiry, and push access to `gpt-hub`.
+- **`personal-assistant` is in the token's repository list (Shawn, ruled
+  2026-09-07).** Consequence, stated plainly: the token acts as Shawn's own
+  account, so nothing on GitHub can tell a Codex push from Shawn's, and PA
+  has no branch protection. The local guardrails still hold inside the
+  sandbox (Claude-owned PA paths are read-only in every Sol lane, and the
+  Git-lane renderer must carry those carve-outs into any admitted clone),
+  but between an admitted PA clone and PA `main` the only barrier is the
+  norm: PA changes from Codex go branch + PR, never a direct push to `main`
+  (`ownership.toml` change control; Sol's instructions). Mitigation
+  available on request: a session-start tripwire that flags any commit on PA
+  `main` carrying a Codex co-author trailer that did not arrive through a
+  merge commit.
 
 ---
 

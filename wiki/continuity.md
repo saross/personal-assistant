@@ -2379,9 +2379,9 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
 - [x] 2026-09-07 Installed Claude mail hook + deny rules confirmed on amd-tower; zbook brought to parity the same evening.
 - [x] 2026-09-07 Mail-hook validation parity shipped (`f6aaee8`).
 - [x] 2026-09-07 Git-lane design reviewed (clone-first endorsed), Shawn approved, policy PR #110 open.
-- [ ] Decide (Shawn): is `personal-assistant` in the token's repo list? A
-  repo-level write token there is broader than Sol's local ownership
-  boundary. (Still undecided at close of 2026-09-07.)
+- [x] 2026-09-07 Decided (Shawn): `personal-assistant` IS in the token's repo
+  list. Consequence and mitigation recorded in plan §Credentials; a
+  Codex-trailer-on-main tripwire offered, not built.
 - [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
   Astra's disposable-repository acceptance record, when it arrives.
 
