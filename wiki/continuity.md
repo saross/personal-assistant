@@ -2286,10 +2286,10 @@ more than one OpenAI model, hence the token name `GPT_GH_TOKEN`, not
 - **Launcher proposal mailed** to Sol
   (`20260907T001931.883363Z-claude-4bfb15-credential-grant-and-launcher.md`):
   parse without sourcing, inject listed names, scrub under restricted-input,
-  tests — and the gotcha that Codex's `shell_environment_policy` strips
-  `*TOKEN*` from tool subprocesses by default (keys verified in the 0.153.4
-  binary), so the trusted launch needs `ignore_default_excludes` or
-  `GH_TOKEN` never reaches `gh`.
+  tests — and a claim, since **retracted**, that Codex strips `*TOKEN*` from
+  tool subprocesses by default. Astra checked the official docs:
+  `ignore_default_excludes` defaults to `true`, so nothing is stripped unless
+  configured. Astra's launcher sets the policy explicitly either way.
 - **26 Aug, previously unrecorded here:** cross-agent review workflow written
   to `wiki/planning/cross-agent-review-workflow.md` (`fff5992`); Sol's
   `sol/phase2-instruction-composer` reviewed (four findings, one blind-spot;
