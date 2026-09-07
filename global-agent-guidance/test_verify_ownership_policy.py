@@ -35,6 +35,89 @@ class OwnershipPolicyVerifierTests(unittest.TestCase):
         self.assertFalse(verifier.rule_denies(rule, "claude", "write"))
         self.assertTrue(verifier.rule_denies(rule, "future-agent", "write"))
 
+    ADMISSION = """
+[[admitted_clones]]
+id = "codex-map-reader-llm-phase2"
+agent = "codex"
+repository = "~/Code/map-reader-llm"
+lane_path = "~/worktrees/map-reader-llm/sol-phase2-codex-entry"
+remote = "https://github.com/saross/map-reader-llm.git"
+branch_namespace = "sol/*"
+storage = "independent-clone"
+clone_mode = "full-single-branch"
+admitted_on = "2026-09-07"
+admitted_by = "shawn"
+"""
+
+    def load_with(self, extra: str) -> dict:
+        """Load the live policy text plus an appended admission block."""
+        text = (ROOT / "ownership.toml").read_text() + extra
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "ownership.toml"
+            candidate.write_text(text)
+            return verifier.load_policy(candidate)
+
+    def test_live_policy_admits_no_clones_yet(self) -> None:
+        self.assertEqual(self.policy.get("admitted_clones", []), [])
+
+    def test_well_formed_admission_is_accepted(self) -> None:
+        policy = self.load_with(self.ADMISSION)
+        self.assertEqual(len(policy["admitted_clones"]), 1)
+
+    def test_malformed_admissions_are_rejected(self) -> None:
+        variants = {
+            "ssh remote": self.ADMISSION.replace(
+                "https://github.com/saross/", "git@github.com:saross/"),
+            "wrong lane prefix": self.ADMISSION.replace("/sol-phase2", "/claude-phase2"),
+            "lane under wrong repo": self.ADMISSION.replace(
+                "worktrees/map-reader-llm/", "worktrees/other-repo/"),
+            "lane without workstream": self.ADMISSION.replace(
+                "sol-phase2-codex-entry", "sol-"),
+            "primary checkout as lane": self.ADMISSION.replace(
+                "~/worktrees/map-reader-llm/sol-phase2-codex-entry", "~/Code/map-reader-llm"),
+            "wrong namespace": self.ADMISSION.replace('"sol/*"', '"main"'),
+            "unknown agent": self.ADMISSION.replace('agent = "codex"', 'agent = "astra"'),
+            "home repository": self.ADMISSION.replace("~/Code/map-reader-llm", "~/gpt-hub"),
+            "not admitted by shawn": self.ADMISSION.replace(
+                'admitted_by = "shawn"', 'admitted_by = "codex"'),
+            "unsupported clone mode": self.ADMISSION.replace(
+                "full-single-branch", "blobless"),
+            "wrong storage": self.ADMISSION.replace("independent-clone", "linked-worktree"),
+            "missing field": self.ADMISSION.replace('admitted_on = "2026-09-07"\n', ""),
+            "duplicate id": self.ADMISSION + self.ADMISSION.replace(
+                "sol-phase2-codex-entry", "sol-second"),
+            "duplicate lane": self.ADMISSION + self.ADMISSION.replace(
+                "codex-map-reader-llm-phase2", "second-id"),
+        }
+        for label, text in variants.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self.load_with(text)
+
+    def test_traversal_aliases_and_invalid_remote_identity_are_rejected(self) -> None:
+        """Keep lexical aliases, unusable remotes, and invalid dates out of grants."""
+        variants = {
+            "parent traversal": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/..").replace(
+                    "worktrees/map-reader-llm/", "worktrees/../"),
+            "home alias": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/../gpt-hub").replace(
+                    "worktrees/map-reader-llm/", "worktrees/gpt-hub/"),
+            "duplicate alias": self.ADMISSION + self.ADMISSION.replace(
+                "codex-map-reader-llm-phase2", "second-id").replace(
+                    "worktrees/map-reader-llm/", "worktrees/map-reader-llm//"),
+            "empty remote": self.ADMISSION.replace(
+                "https://github.com/saross/map-reader-llm.git", "https://"),
+            "credential remote": self.ADMISSION.replace(
+                "https://github.com/", "https://fixture:fake@github.com/"),
+            "query remote": self.ADMISSION.replace('.git"', '.git?fixture=fake"'),
+            "non-date": self.ADMISSION.replace('admitted_on = "2026-09-07"',
+                                               'admitted_on = "tomorrow"'),
+            "wrong field type": self.ADMISSION.replace('agent = "codex"', 'agent = 3'),
+        }
+        for label, text in variants.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self.load_with(text)
+
     def test_glob_case_resolves_an_existing_backup_without_reading_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backup = Path(directory) / ".env.bak-20260824"
