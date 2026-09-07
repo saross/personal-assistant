@@ -2418,7 +2418,7 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
 - [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
   Astra's disposable-repository acceptance record, when it arrives.
 - [x] 2026-09-07 PR #2 probes re-run at `8654cd9`; approved.
-- [ ] Merge #112 (Shawn's go; approved by Astra at `3c18b3b`).
+- [x] 2026-09-08 #112 merged by Shawn himself (first hands-on `gh pr merge`).
 
 ### 2026-08-29→09-06 (Sat 29 Aug → Sun 6 Sept, latest PA) — THE CAR SOLD, A $50–75k CONSTRAINT SURFACED FOUR MONTHS LATE, AND RDA WAS UNSTUCK BY CUTTING SCOPE RATHER THAN MOVING THE DATE
 
