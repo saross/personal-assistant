@@ -2337,6 +2337,17 @@ form with `index-session-content.py`; backup beside the file; deny set and
 every hook list now identical to amd-tower. Submodule PRs merged with merge
 commits: paper-b #23 (`af0f4cb`), ideation-writing #1 (`3f219cb`).
 
+**Night — #109 merged.** Astra's final approval arrived by mail (tip
+`06b2a26`, no blocking findings); Shawn signed off in conversation; merged as
+`8b9911c` (merge commit, three focused commits preserved). Canonical
+`credential-grants.toml` now carries the grant; checker: record matches the
+live token. **PR #111** (one line, `policy_status` → active) opened because
+the file's change control routes every change through a PR; lesson: set the
+status to active inside the proposing PR next time. **Next is host
+activation:** Shawn relaunches Codex through `~/gpt-hub/config/launch-codex.sh`;
+Astra verifies token presence (Boolean), `gh auth status`, and a fetch; then
+their pending commits and PRs. Astra still owes reviews of #110 and #111.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
