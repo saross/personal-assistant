@@ -18,7 +18,7 @@ import os
 from pathlib import Path, PurePosixPath
 import sys
 import tomllib
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 DENIAL_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -217,6 +217,23 @@ def validate_admitted_clones(policy: dict) -> None:
             )
 
         validate_clone_remote(entry["remote"])
+        # Repository identity is judged downstream by directory basename (the
+        # renderer's carve-out projection and the Codex hook's
+        # ~/worktrees/<repo>/ rule). Tie that basename to the remote's
+        # repository name so a clone of one repository cannot be admitted
+        # under another repository's name and escape its carve-outs.
+        # Decode and case-fold the remote name: GitHub resolves Personal-Assistant
+        # and personal%2Dassistant to the same repository, and consumers key on
+        # the canonical lowercase directory name (Codex-side review of #112).
+        remote_name = (
+            PurePosixPath(unquote(urlsplit(entry["remote"]).path))
+            .name.casefold().removesuffix(".git")
+        )
+        if remote_name != repo_name:
+            raise ValueError(
+                f"admitted clone {ident}: repository basename {repo_name!r} must equal "
+                f"the remote's repository name {remote_name!r}"
+            )
         try:
             admitted_date = date.fromisoformat(entry["admitted_on"])
         except ValueError:
