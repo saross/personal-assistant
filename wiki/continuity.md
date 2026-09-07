@@ -2249,6 +2249,65 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-07 (Mon, latest SOL) — FIRST CREDENTIAL GRANT: GITHUB PAT VERIFIED BY PROCESS, PR #109 OPENED, 28 REMOTES TO HTTPS, LAUNCHER PROPOSAL TO SOL
+
+Fable session (model restored). Sol's side had been idle since 26 Aug until
+Shawn resumed it today with a fresh Codex agent (the readiness review in
+`gpt-hub/integration-records/2026-09-07-integration-readiness-review.md`,
+uncommitted there, names the Codex-side agent "Astra"; Shawn intends to use
+more than one OpenAI model, hence the token name `GPT_GH_TOKEN`, not
+`SOL_GH_TOKEN`).
+
+- **Token.** Shawn created a fine-grained PAT (owner saross, selected
+  repos, Contents + PRs read/write) and stored it as `GPT_GH_TOKEN` in
+  `PA/.env` himself — neither agent reads that file, and the deny rule
+  blocks Bash too (a `stat` was refused; not retried). Verified by process:
+  `scripts/check-credentials.py` (`8c9eeb4`) now authenticates every GitHub
+  token, reports account, kind, expiry, and push access to `saross/gpt-hub`,
+  and cross-checks `credential-grants.toml` grants against `.env`. Result:
+  account saross, push to gpt-hub OK, **no expiry set** — flagged as a
+  finding, recorded in the grant, Shawn's call whether to regenerate.
+- **Policy PR #109** (branch `claude/credential-grants`, worktree
+  `~/worktrees/personal-assistant/claude-credential-grants`, `eebab1d`):
+  `credential-grants.toml` → schema 2 with grant `github-pat-gpt`
+  (`GPT_GH_TOKEN` → injected as `GH_TOKEN`, personal-trusted only). Injected
+  name differs from source because Claude hooks shell-source `.env` and a
+  literal `GH_TOKEN` there would override the keyring `gh` login on the host.
+  Loosening: Sol reviews, Shawn merges.
+- **Remotes.** 24 saross origins + 2 upstreams (Denubis, FAIMS) + 2 `paper/`
+  submodule checkouts under `~/Code` switched SSH → HTTPS (config only;
+  tracked `.gitmodules` in paper-b and ideation-writing still say SSH — a
+  `git submodule sync` would revert those two). All 31 HTTPS remotes pass
+  `ls-remote` from the host. FAIMS/, Denubis/, au-research/ origins left on
+  SSH: outside the token's reach.
+- **Launcher proposal mailed** to Sol
+  (`20260907T001931.883363Z-claude-4bfb15-credential-grant-and-launcher.md`):
+  parse without sourcing, inject listed names, scrub under restricted-input,
+  tests — and the gotcha that Codex's `shell_environment_policy` strips
+  `*TOKEN*` from tool subprocesses by default (keys verified in the 0.153.4
+  binary), so the trusted launch needs `ignore_default_excludes` or
+  `GH_TOKEN` never reaches `gh`.
+- **26 Aug, previously unrecorded here:** cross-agent review workflow written
+  to `wiki/planning/cross-agent-review-workflow.md` (`fff5992`); Sol's
+  `sol/phase2-instruction-composer` reviewed (four findings, one blind-spot;
+  mail `100a65`); `codex-own-git-write-proposal.md` (`9e5006e`).
+- **zbook:** unreachable today (no route; Syncthing gate agrees, 63 h). `.env`
+  sync command handed to Shawn to run when it is back; Claude settings there
+  still lack the ownership/`.env` denies and the mail hook (carry-forward).
+
+Carry-forward (Claude-owned, from Sol's readiness review, in order):
+
+- [ ] Follow-up review of gpt-hub `b49713d` against the four 26 Aug findings.
+- [ ] Confirm installed Claude ownership + mail hooks on amd-tower.
+- [ ] Mail-hook validation parity: From/To header check and symlinked-ancestor
+  rejection in `hooks/session-start-agent-mail.py` (Sol's hook has both).
+- [ ] Review Sol's Git-lane design (narrow mediator vs isolated clone) when
+  proposed — the token does not make linked-worktree metadata writable
+  (openai/codex#27418).
+- [ ] Decide (Shawn): is `personal-assistant` in the token's repo list? A
+  repo-level write token there is broader than Sol's local ownership
+  boundary.
+
 ### 2026-08-29→09-06 (Sat 29 Aug → Sun 6 Sept, latest PA) — THE CAR SOLD, A $50–75k CONSTRAINT SURFACED FOUR MONTHS LATE, AND RDA WAS UNSTUCK BY CUTTING SCOPE RATHER THAN MOVING THE DATE
 
 **Nine days across two weeks.** ⭐⭐ **The move stopped being a burn-down problem and became a
