@@ -43,6 +43,7 @@ from _sync_cursor import (  # noqa: E402
     CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
+    read_cursor_file_locked,
     update_cursor_file,
 )
 # Row-level Postgres guards (audit round two, finding P1 / lens A-X1+A-X2).
@@ -810,10 +811,15 @@ def _sync_locked(
     quarantine_cap: int | None = None,
 ) -> None:
     """Core sync cycle, executed under the advisory lock."""
-    since = None if full_resync else load_cursor()
-    # Whether the key existed when we read it, for the compare-and-set at
-    # save time (re-audit finding M3).
-    cursor_key_was_present = cursor_key_present()
+    # One locked read for both facts — the timestamp and whether the key
+    # was there at all (low finding L1). Two unlocked reads leave a window
+    # in which a rebuild lands between them, defeating the compare-and-set
+    # at save time (finding M3).
+    cursor_snapshot = read_cursor_file_locked(CURSOR_FILE)
+    since = None if full_resync else str(
+        cursor_snapshot.get(CURSOR_KEY, "2000-01-01T00:00:00Z")
+    )
+    cursor_key_was_present = CURSOR_KEY in cursor_snapshot
     if since:
         logger.info("Syncing sessions archived after %s", since)
     else:

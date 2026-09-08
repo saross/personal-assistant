@@ -26,6 +26,7 @@ from _sync_cursor import (  # noqa: E402
     CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
+    read_cursor_file_locked,
     update_cursor_file,
 )
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
@@ -1104,12 +1105,19 @@ def _sync_locked(
     quarantine_cap: int | None = None,
 ) -> None:
     """Core sync cycle, executed under the advisory lock."""
-    cursor_line = load_cursor()
-    # Whether the key existed when we read it, for the compare-and-set at
-    # save time (re-audit finding M3). A first-ever run has no key and
-    # must still be able to write one; only a key that *disappears*
-    # mid-run means a rebuild happened.
-    cursor_key_was_present = cursor_key_present()
+    # One locked read for both facts (low finding L1): the position, and
+    # whether the key was there at all. Two unlocked reads leave a window
+    # in which a rebuild lands between them, and the compare-and-set at
+    # save time then concludes the key had always been absent — defeating
+    # the check it was making. A first-ever run has no key and must still
+    # be able to write one; only a key that *disappears* mid-run means a
+    # rebuild happened (finding M3).
+    cursor_snapshot = read_cursor_file_locked(CURSOR_FILE)
+    try:
+        cursor_line = int(cursor_snapshot.get("postgres_sync_line", 0))
+    except (ValueError, TypeError):
+        cursor_line = 0
+    cursor_key_was_present = "postgres_sync_line" in cursor_snapshot
 
     # Read all lines and process from cursor position
     lines = MEMORIES_FILE.read_text(encoding="utf-8").splitlines()

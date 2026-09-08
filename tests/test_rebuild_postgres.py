@@ -767,3 +767,66 @@ class TestRebuildHoldsTheCursorLock:
             )
 
         assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
+
+
+class TestCursorFileDiagnosis:
+    """
+    Low finding L2 — an empty-but-valid cursor file was reported as
+    corrupt, and the check had a time-of-check/time-of-use gap.
+    """
+
+    def test_an_empty_object_is_not_corrupt(
+        self, rebuild_mod, tmp_path, caplog, pinned_log_dir,
+    ):
+        """
+        ``{}`` is exactly what a freshly reset cursor file looks like, so
+        the old "empty dict but non-zero size" heuristic reported every
+        one of them to the operator as corrupt. The mutation this kills:
+        restoring the ``not data and cursor_file.stat().st_size`` test.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text("{}\n", encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+
+        with caplog.at_level(logging.WARNING):
+            rebuild_mod.reset_cursor_key(
+                cursor_file, "postgres_sync_line", logger,
+            )
+
+        assert "corrupt" not in caplog.text.lower()
+        assert cursor_file.read_text(encoding="utf-8").strip() == "{}"
+
+    def test_genuinely_corrupt_is_still_repaired(
+        self, rebuild_mod, tmp_path, caplog, pinned_log_dir,
+    ):
+        """Unparseable content is still rewritten as an empty object."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text('{"postgres_sync_line": ', encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+
+        with caplog.at_level(logging.WARNING):
+            rebuild_mod.reset_cursor_key(
+                cursor_file, "postgres_sync_line", logger,
+            )
+
+        assert "corrupt" in caplog.text.lower()
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == {}
+
+    def test_a_json_array_is_repaired(
+        self, rebuild_mod, tmp_path, pinned_log_dir,
+    ):
+        """A JSON array is not a cursor object."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text("[1, 2, 3]", encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+        rebuild_mod.reset_cursor_key(cursor_file, "postgres_sync_line", logger)
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == {}
+
+    def test_a_missing_file_is_a_no_op(
+        self, rebuild_mod, tmp_path, pinned_log_dir,
+    ):
+        """No file, no work — and no exception from the removed stat()."""
+        cursor_file = tmp_path / "absent.json"
+        logger = rebuild_mod.setup_logging()
+        rebuild_mod.reset_cursor_key(cursor_file, "postgres_sync_line", logger)
+        assert not cursor_file.exists()

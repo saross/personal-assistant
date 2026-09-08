@@ -322,20 +322,41 @@ def reset_cursor_key(
     unlocked primitive: ``flock`` is per open file description, and
     taking it again here would deadlock against the caller's own hold.
     """
-    if not cursor_file.exists():
+    # One read, one decision (low finding L2). The previous shape asked
+    # ``exists()`` and then ``stat()``, a time-of-check/time-of-use gap,
+    # and inferred corruption from "empty dict but non-zero size" — which
+    # is exactly what a legitimate ``{}`` cursor file looks like, so a
+    # freshly reset file was reported to the operator as corrupt every
+    # time.
+    try:
+        raw = cursor_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
         logger.info(
             "Cursor file %s missing — no work for key %r",
             cursor_file, key,
         )
         return
-
-    data = read_cursor_file(cursor_file)
-    if not data and cursor_file.stat().st_size:
-        # read_cursor_file returns {} for a corrupt or non-object file.
-        # Logged at WARNING because operators should know the file was
-        # non-trivially repaired.
+    except OSError as exc:
         logger.warning(
-            "Cursor file %s was corrupt or not an object; rewriting empty",
+            "Cursor file %s unreadable (%s) — skipping key %r",
+            cursor_file, exc, key,
+        )
+        return
+
+    data: Any = {}
+    if raw.strip():
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "Cursor file %s corrupt (%s); rewriting as an empty object",
+                cursor_file, exc,
+            )
+            apply_cursor_update(cursor_file, {})
+            return
+    if not isinstance(data, dict):
+        logger.warning(
+            "Cursor file %s did not contain an object; rewriting empty",
             cursor_file,
         )
         apply_cursor_update(cursor_file, {})

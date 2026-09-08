@@ -17,6 +17,7 @@ No database, no network: these exercise filesystem behaviour only.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import multiprocessing
 import os
@@ -384,4 +385,47 @@ class TestDurability:
 
         assert str(tmp_path) in fsynced_dirs, (
             f"the cursor file's directory was never fsynced: {fsynced_dirs}"
+        )
+
+
+class TestLockedRead:
+    """Low finding L1 — the compare-and-set needs one atomic observation."""
+
+    def test_read_is_taken_under_the_lock(self, tmp_path: Path) -> None:
+        """
+        Reading the position and the key's presence with two unlocked
+        calls leaves a window in which a rebuild lands between them. The
+        mutation this kills: replacing ``read_cursor_file_locked`` with a
+        plain ``read_cursor_file``.
+        """
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(
+            json.dumps({"postgres_sync_line": 7}), encoding="utf-8",
+        )
+        lock_path = cursor.with_name(cursor.name + ".lock")
+        observed = {"locked": None}
+
+        real_read = _sync_cursor.read_cursor_file
+
+        def _probe(path):
+            """Check, from inside the read, that the lock is held."""
+            with open(lock_path, "a", encoding="utf-8") as probe:
+                try:
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    observed["locked"] = True
+                else:
+                    observed["locked"] = False
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+            return real_read(path)
+
+        _sync_cursor.read_cursor_file = _probe
+        try:
+            data = _sync_cursor.read_cursor_file_locked(cursor)
+        finally:
+            _sync_cursor.read_cursor_file = real_read
+
+        assert data == {"postgres_sync_line": 7}
+        assert observed["locked"] is True, (
+            "the cursor was read without holding the lock"
         )

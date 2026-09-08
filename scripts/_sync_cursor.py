@@ -389,6 +389,21 @@ def read_cursor_file(cursor_path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def read_cursor_file_locked(cursor_path: Path) -> dict[str, Any]:
+    """
+    Return the cursor object, read once under the exclusive lock.
+
+    The compare-and-set needs two facts about the same instant — the
+    position, and whether the key was there at all. Reading them with two
+    unlocked calls leaves a window in which a rebuild can land between
+    them, so the run could see a position and then conclude the key had
+    always been absent, defeating the very check it was making (second
+    re-audit, low finding L1).
+    """
+    with cursor_file_lock(cursor_path):
+        return read_cursor_file(cursor_path)
+
+
 def _write_cursor_file(cursor_path: Path, data: dict[str, Any]) -> None:
     """
     Write ``data`` over ``cursor_path`` atomically.

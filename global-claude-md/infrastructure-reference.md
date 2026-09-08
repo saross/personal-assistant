@@ -246,6 +246,55 @@ retries next session on failure). It carries the git sync, the
 cc-archives convergence passes, the R2 push, the symlink refresh, and
 both drift checks.
 
+### Sync exit codes (audit round two, 2026-09-08)
+
+The PostgreSQL sync scripts distinguish "retry later" from "a human must
+do something". Non-zero is not automatically an emergency — read the list.
+
+`sync-to-postgres.py` and `sync-sessions-to-postgres.py`:
+
+- **0** — ran to completion (possibly syncing nothing).
+- **1** — unexpected error.
+- **2** — schema-version mismatch: the script is older or newer than the
+  database.
+- **4** — *environment fault.* PostgreSQL is reachable but not in the
+  expected state: a revoked grant, a missing table or column, an aborted
+  transaction, a full disk. Nothing was quarantined and the cursor did
+  not move. Retrying will not help until someone changes something.
+- **6** — a rebuild cleared this sync's cursor key mid-run, so the
+  position was deliberately not written back. Confirm the rebuild was
+  intended; the next run replays from the canonical.
+
+`index-session-content.py`:
+
+- **0** — ran to completion.
+- **2** — psycopg2 missing, or a schema-version mismatch.
+- **3** — PostgreSQL unreachable, at connect time or mid-run. Not
+  critical: the archive tree is canonical and the index is rebuildable.
+- **4** — environment fault, as above.
+- **5** — completed, but one or more transcripts were REFUSED and are not
+  searchable. Remembered in
+  `~/.cache/index-session-content-refusals.json`, and retried when the
+  file changes or with `--force`.
+
+`backfill-embeddings.py`:
+
+- **0** — ran (possibly embedding nothing).
+- **1** — Ollama unavailable, or the model not pulled.
+- **2** — schema-version mismatch.
+- **3** — the endpoint returned wrong-width vectors. Nothing was written.
+
+Exit 4 and exit 6 also raise `~/.cache/postgres-sync-gate`, which
+`daily-sync-trigger.sh` prints at session start under the "Infra gates —
+RELAY THESE TO SHAWN" header; the next clean run lowers it. An exit code
+that reaches only a log file is a signal nobody sees — that is how the
+sessions table came to sit three weeks stale in September 2026.
+
+Two environment variables tune the syncs: `PA_PG_QUARANTINE_CAP`
+(default 200) caps how many rows one run may quarantine before it stops
+and reports instead, and `OLLAMA_BASE_URL` selects the embedding
+endpoint (an empty value falls back to localhost).
+
 ### Test Suite
 
 Tests in `tests/` covering extraction hook, retrieval hook, fetch-memories,
