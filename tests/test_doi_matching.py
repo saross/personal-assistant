@@ -72,14 +72,18 @@ _LIBRARY = [
         "creators": [("Marek", "Dvorak")],
     },
     # Stored with surrounding whitespace — the shape a paste from a PDF
-    # leaves. Only TRIM on the stored side matches it (round 4d-2).
+    # or a rendered web page leaves. Only TRIM on the stored side matches
+    # it (round 4d-2). Round 4d-3 pads it with EVERY character the trim
+    # expression names — tab, carriage return, newline, space, and
+    # non-breaking space — so dropping any one of them from that
+    # expression fails a test rather than none.
     {
         "key": "PADDEDD1",
         "library_id": 1,
         "fields": {
             "title": "Kiln Waste at the Lower Terrace",
             "date": "2029",
-            "DOI": "  10.6666/padded-doi\n",
+            "DOI": "\t\r\n \u00a010.6666/padded-doi\u00a0 \r\n\t",
         },
         "creators": [("Iva", "Marinova")],
     },

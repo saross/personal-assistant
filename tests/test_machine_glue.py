@@ -413,7 +413,11 @@ class TestSubmoduleUpdateIsGated:
     def test_uninitialised_submodule_is_initialised(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """"-" means no checkout: this is the case the step exists for."""
+        """"-" plus an EMPTY data/ is the case the step exists for."""
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
         _run_sync(
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
@@ -421,20 +425,111 @@ class TestSubmoduleUpdateIsGated:
         recorded = sync_sandbox["log"].read_text(encoding="utf-8")
         assert "git submodule update --init --recursive --quiet" in recorded
 
-    def test_a_stray_file_in_data_does_not_suppress_the_init(
+    def test_a_non_empty_data_reports_rather_than_attempting_the_init(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """The bug the emptiness test had: one stray file blocked bootstrap."""
+        """Round 4d-3 reverses round 4d-2's rule here, and says why.
+
+        Round 4d-2 asserted that a stray file in ``data/`` must not
+        suppress the init. Verified against a throwaway superproject, git
+        refuses to clone into a non-empty directory — "destination path
+        already exists and is not an empty directory" — so that init
+        could only ever fail, and under ``set -e`` it aborted the whole
+        run at step 1. Saying plainly what a human has to clear is the
+        useful behaviour.
+        """
         (sync_sandbox["pa_dir"] / "data" / "README-left-behind.md").write_text(
-            "a stray file in an uninitialised submodule\\n", encoding="utf-8"
+            "a stray file in an uninitialised submodule\n", encoding="utf-8"
         )
 
-        _run_sync(
+        result = _run_sync(
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
 
-        recorded = sync_sandbox["log"].read_text(encoding="utf-8")
-        assert "git submodule update --init --recursive --quiet" in recorded
+        assert result.returncode == 0, result.stderr
+        assert "uninitialised but not empty" in result.stdout
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_linked_worktree_never_initialises_data(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """M1/M2 — a worktree's data/ belongs to the main checkout.
+
+        A linked worktree carries a ``.git`` FILE rather than a directory,
+        holds stub directories under ``data/``, and reports the submodule
+        uninitialised. Round 4d-2 sent exactly that state into an init
+        that git refuses.
+        """
+        (sync_sandbox["pa_dir"] / ".git").write_text(
+            "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
+        )
+
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "belongs to the main checkout" in result.stdout
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_allow_worktree_completes_all_eight_steps(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The escape hatch has to actually work, stub dirs and all.
+
+        Reproduces M1: a worktree of this repository, ``data/`` holding
+        empty stub directories, ``git submodule status`` reporting "-",
+        and ``--allow-worktree`` given. Before this round the run exited 1
+        at step 1 and ~/.claude was never created.
+        """
+        (sync_sandbox["home"] / "personal-assistant").mkdir()
+        (sync_sandbox["pa_dir"] / ".git").write_text(
+            "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
+        )
+        for stub in ("memories", "tasks", "logs"):
+            (sync_sandbox["pa_dir"] / "data" / stub).mkdir()
+
+        result = _run_sync(
+            sync_sandbox,
+            "--allow-worktree",
+            submodule_status="-1234abcd data",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "[8/8]" in result.stdout, result.stdout
+        claude = sync_sandbox["home"] / ".claude"
+        assert (claude / "settings.json").is_symlink()
+        assert (claude / "commands" / "fossick.md").is_symlink()
+        assert (claude / "skills" / "tally-sherds").is_symlink()
+        assert (claude / "agents" / "trench-scribe.md").is_symlink()
+        assert (claude / "output-styles" / "terse.md").is_symlink()
+        assert (claude / "CLAUDE.md").is_file()
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_submodule_line_is_future_tense_under_dry_run(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """"Submodule ready." read as done work in a preview."""
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+
+        # Step 7 legitimately fails here: with data/ genuinely empty the
+        # composer has no local source, which is the correct outcome for
+        # an uninitialised submodule. Step 1's narration is what is under
+        # test, and it has already been emitted.
+        assert "would have the submodule ready" in result.stdout
+        assert "Submodule ready." not in result.stdout
 
     def test_no_submodule_declared_is_a_no_op(
         self, sync_sandbox: dict[str, Path]
@@ -446,7 +541,6 @@ class TestSubmoduleUpdateIsGated:
         assert "submodule update" not in sync_sandbox["log"].read_text(
             encoding="utf-8"
         )
-
 
 class TestSyncSymlinksRefusesFromAWorktree:
     """Round 4d-2 — steps 2-6 relink the LIVE ~/.claude before step 7 dies.
@@ -880,6 +974,57 @@ class TestComposerTargetIdentity:
         assert result.returncode == 2, result.stdout
         assert target.read_text(encoding="utf-8") == "the live instructions\n"
 
+    def test_a_symlink_file_to_the_live_target_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """Round 4d-3 — the LEAF is resolved, not only its directory.
+
+        Resolving the directory alone left a symlink FILE naming the live
+        CLAUDE.md unrecognised: it compared as itself, so the guard did
+        not fire. ``mv`` would then have replaced the operator's symlink
+        with a regular file and left the live instructions stale but
+        present — a quiet failure, and plainly the intent the guard is
+        there to refuse.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        claude = compose_sandbox["home"] / ".claude"
+        claude.mkdir()
+        target = claude / "CLAUDE.md"
+        target.write_text("the live instructions\n", encoding="utf-8")
+        link = compose_sandbox["home"] / "link-to-claude-md"
+        link.symlink_to(target)
+
+        result = _run_compose(compose_sandbox, "--target", str(link))
+
+        assert result.returncode == 2, result.stdout
+        assert "refusing to write" in result.stderr
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_a_symlink_file_elsewhere_is_still_allowed(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The negative half: a link to an ordinary file still composes.
+
+        Note what the atomic write does to it: ``mv`` replaces the link
+        rather than following it, so the composed document lands AT the
+        target path and the link's former destination is untouched. That
+        is pre-existing, and safe — it is why the guard above has to work
+        on identity rather than on where a write would land.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        real = compose_sandbox["home"] / "preview" / "CLAUDE.md"
+        real.parent.mkdir()
+        real.write_text("placeholder\n", encoding="utf-8")
+        link = compose_sandbox["home"] / "link-to-preview"
+        link.symlink_to(real)
+
+        result = _run_compose(compose_sandbox, "--target", str(link))
+
+        assert result.returncode == 0, result.stderr
+        assert "MARKER-LOCAL" in link.read_text(encoding="utf-8")
+        assert not link.is_symlink(), "mv followed the link instead"
+        assert real.read_text(encoding="utf-8") == "placeholder\n"
+
     def test_an_unusable_live_root_is_refused(
         self, compose_sandbox: dict[str, Path]
     ) -> None:
@@ -1285,20 +1430,47 @@ class TestEnvFingerprintAgreesWithItsConsumer:
     def test_an_invalid_byte_is_reported_not_papered_over(
         self, tmp_path: Path
     ) -> None:
-        """`errors="replace"` produced a clean report for an unreadable file."""
+        """`errors="replace"` produced a clean report for an unreadable file.
+
+        The reported offset is asserted exactly (round 4d-3): reporting
+        ``exc.end`` instead of ``exc.start`` points a byte past the
+        offending one, which is precisely the sort of off-by-one that
+        wastes an operator's afternoon in a file they cannot open safely.
+        """
         home = tmp_path / "home"
         home.mkdir()
         env_file = tmp_path / "invalid.env"
-        env_file.write_bytes(
-            b"SYNTHETIC_ONE=ab\xffcd\nSYNTHETIC_TWO=fine\n"
-        )
+        # The 0xff sits at offset 16, counting from zero.
+        payload = b"SYNTHETIC_ONE=ab\xffcd\nSYNTHETIC_TWO=fine\n"
+        assert payload.index(b"\xff") == 16
+        env_file.write_bytes(payload)
 
         result = _run_fingerprint(env_file, home)
 
         assert result.returncode == 3, result.stdout
         assert "INVALID UTF-8" in result.stdout
+        assert "byte 16 is not valid UTF-8" in result.stdout, result.stdout
         # And no per-key line was emitted, which would have read as healthy.
         assert "SYNTHETIC_ONE\t" not in result.stdout
+
+    def test_the_offset_points_at_the_offending_byte_not_past_it(
+        self, tmp_path: Path
+    ) -> None:
+        """A second file puts the bad byte somewhere else, so the number
+        cannot be a coincidence of one fixture."""
+        home = tmp_path / "home"
+        home.mkdir()
+        env_file = tmp_path / "invalid-later.env"
+        payload = b"SYNTHETIC_ONE=fine\nSYNTHETIC_TWO=ab\xffcd\n"
+        offset = payload.index(b"\xff")
+        env_file.write_bytes(payload)
+
+        result = _run_fingerprint(env_file, home)
+
+        assert result.returncode == 3
+        assert f"byte {offset} is not valid UTF-8" in result.stdout, (
+            result.stdout
+        )
 
     def test_the_loader_really_does_raise_on_that_file(
         self, tmp_path: Path
@@ -1329,6 +1501,12 @@ class TestEnvFingerprintAgreesWithItsConsumer:
 
         assert "FIRST assignment wins" in result.stdout
         assert "last wins" not in result.stdout
+        # The header must agree with the code it documents (round 4d-3,
+        # L1): it still said "the last assignment wins" while the warning
+        # it describes had already been corrected.
+        header = ENV_FINGERPRINT.read_text(encoding="utf-8")
+        assert "last assignment wins" not in header
+        assert "FIRST assignment wins" in header
 
     def test_the_loader_really_keeps_the_first_assignment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1665,7 +1843,8 @@ if args and args[0] == "exec":
         if "system" in rest:
             emit({"myID": os.environ["STUB_DEVICE_ID"]})
         if "folders" in rest:
-            print(os.environ["STUB_FOLDER_ID"])
+            # Every configured folder, one per line, as the real CLI does.
+            print(os.environ["STUB_FOLDER_LIST"])
             raise SystemExit(0)
         if "connections" in rest:
             emit({"connections": {}})
@@ -1763,8 +1942,15 @@ def _run_health(
     sandbox: dict[str, Any],
     device_stats: dict,
     folder_id: str = "synthetic-folder",
+    folder_list: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], str]:
-    """Run the monitor against the synthetic mesh; return result and gate."""
+    """Run the monitor against the synthetic mesh; return result and gate.
+
+    ``folder_id`` is what the expectations file declares; ``folder_list``
+    is what the running daemon reports (defaulting to the same single id).
+    They differ only where a test needs the daemon to list a folder whose
+    id merely CONTAINS the expected one.
+    """
     expectations = _mesh_expectations(
         sandbox["tmp"] / "expected.json",
         socket.gethostname(),
@@ -1781,7 +1967,7 @@ def _run_health(
             "SYNCTHING_EXPECTED_FILE": str(expectations),
             "STUB_CONFIG_DIR": str(sandbox["config_dir"]),
             "STUB_DEVICE_ID": _THIS_NODE,
-            "STUB_FOLDER_ID": folder_id,
+            "STUB_FOLDER_LIST": folder_list or folder_id,
             "STUB_DEVICE_STATS": json.dumps(device_stats),
             "STUB_URL_LOG": str(sandbox["url_log"]),
         },
@@ -1843,6 +2029,113 @@ class TestPeerAbsenceAlertActuallyFires:
 
         recorded = health_sandbox["url_log"].read_text(encoding="utf-8")
         assert "synthetic-folder" in recorded, recorded
+
+
+class TestFolderMembershipIsAWholeLineMatch:
+    """Round 4d-3 — ``grep -qxF`` must not relax to ``grep -qF``.
+
+    Without ``-x`` the membership test passes whenever the expected id is
+    a SUBSTRING of any configured folder id. A mesh carrying both
+    ``pa-data`` and ``pa-data-archive`` would then report the folder
+    present when only the archive one existed — the check would pass while
+    nothing was syncing the folder that matters.
+    """
+
+    def test_a_substring_match_is_not_membership(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The daemon lists only a SUPERSTRING of the expected id."""
+        result, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data",
+            folder_list="pa-data-archive",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "is MISSING from the running config" in gate, gate
+
+    def test_a_prefix_in_the_list_does_not_satisfy_a_longer_id(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """And the other direction: a shorter listed id is not a match."""
+        _, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data-archive",
+            folder_list="pa-data",
+        )
+
+        assert "is MISSING from the running config" in gate, gate
+
+    def test_a_metacharacter_in_the_id_is_matched_literally(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """``-F`` matters too: an id is data, not a regular expression.
+
+        The dot in ``pa.data`` matches any character once the id is used
+        as a pattern, so a daemon carrying only ``paXdata`` would report
+        the expected folder present.
+        """
+        _, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa.data",
+            folder_list="paXdata",
+        )
+
+        assert "is MISSING from the running config" in gate, gate
+
+    def test_an_exact_id_among_several_is_membership(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The positive half: the real id listed beside its look-alikes."""
+        _, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data",
+            folder_list="pa-data-archive\npa-data\nother-folder",
+        )
+
+        assert "is MISSING from the running config" not in gate, gate
+        # The run got past check D, so the peer-absence alert still fires.
+        assert "peer(s) absent beyond" in gate, gate
+
+
+class TestSyncthingHealthUnknownArguments:
+    """L4 — a typo'd flag ran the full check in silence."""
+
+    def test_a_typo_warns_and_still_exits_zero(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """`--local-onlt` must say so rather than silently probing SSH."""
+        expectations = _mesh_expectations(
+            health_sandbox["tmp"] / "expected.json",
+            socket.gethostname(),
+            health_sandbox["config_dir"],
+            "synthetic-folder",
+        )
+
+        result = run_script(
+            HEALTH,
+            "--quiet",
+            "--local-onlt",
+            home=health_sandbox["home"],
+            path_prefix=health_sandbox["bin"],
+            extra_env={
+                "SYNTHETIC_UNUSED": "1",
+                "SYNCTHING_EXPECTED_FILE": str(expectations),
+                "STUB_CONFIG_DIR": str(health_sandbox["config_dir"]),
+                "STUB_DEVICE_ID": _THIS_NODE,
+                "STUB_FOLDER_LIST": "synthetic-folder",
+                "STUB_DEVICE_STATS": "{}",
+                "STUB_URL_LOG": str(health_sandbox["url_log"]),
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "unknown argument '--local-onlt'" in result.stderr
+        assert "Usage: syncthing-health.sh" in result.stderr
 
 
 # ---------------------------------------------------------------------------
