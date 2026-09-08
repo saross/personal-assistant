@@ -315,9 +315,18 @@ write_stash_state() {
     if [[ $stash_state_failed -eq 1 ]] \
             || ! mv -f "$stash_state_tmp" "$STASH_STATE_FILE" 2>/dev/null; then
         rm -f "$stash_state_tmp" 2>/dev/null || true
-        log "WARNING: could not write $STASH_STATE_FILE; the next run will not be able to attribute any conflict markers to a stash"
+        # audit L2 (third re-audit): the PREVIOUS sidecar is still in
+        # place, and that is the deliberate choice — a stale row is at
+        # worst a wrong attribution the operator can check, while an
+        # erased one is a stash nothing can explain, which is how an
+        # entry holding the only copy of something gets deleted. The
+        # cost is real, though: a row about a conflict last week can be
+        # matched against a fresh conflict on the same path, so the gate
+        # says the file is stale rather than leaving the next run to
+        # present it as current.
+        log "WARNING: could not write $STASH_STATE_FILE; it still holds the PREVIOUS run's rows, and the next run will read them as if they described this one"
         add_sync_gate_detail \
-            "daily-sync could not write its stash bookkeeping to $STASH_STATE_FILE, so the next run will not be able to say which stash any conflict markers came from. Check that $(dirname "$STASH_STATE_FILE") is writable."
+            "daily-sync could not write its stash bookkeeping to $STASH_STATE_FILE. The file was left as it was, so it now holds an EARLIER run's rows — treat anything the next run attributes to a stash as unverified, and check that $(dirname "$STASH_STATE_FILE") is writable."
         return 0
     fi
     return 0
@@ -478,6 +487,32 @@ render_sync_gate() {
     printf '%s\n' "${#sync_gate_details[@]}" \
         "${sync_gate_details[@]}" \
         > "$SYNC_GATE" 2>/dev/null || true
+}
+
+sweep_orphaned_stash_state_temps() {
+    # Remove `<sidecar>.XXXXXX` files an earlier run left behind.
+    #
+    # audit L3 (third re-audit): write_stash_state builds the sidecar in a
+    # temporary file beside it and renames it into place, so a run killed
+    # in that window — routine, under SessionStart's 90 s budget — leaves
+    # one for ever. Nothing reads them, but they accumulate in ~/.cache
+    # and are indistinguishable from live state to anyone looking.
+    #
+    # Called under the flock, so no other daily-sync is between its
+    # mktemp and its rename. A marker file dated NOW makes that explicit
+    # anyway: only files older than this sweep are touched, so a
+    # concurrent writer this reasoning has not anticipated still cannot
+    # lose its half-built sidecar. The marker's own name is longer than
+    # the six characters mktemp appends, so it never matches the glob.
+    local dir base marker
+    dir="$(dirname "$STASH_STATE_FILE")"
+    base="$(basename "$STASH_STATE_FILE")"
+    [[ -d "$dir" ]] || return 0
+    marker="$(mktemp "${STASH_STATE_FILE}.sweepmark.XXXXXX" 2>/dev/null)" || return 0
+    find "$dir" -maxdepth 1 -type f -name "${base}.??????" \
+        ! -newer "$marker" -delete 2>/dev/null || true
+    rm -f "$marker" 2>/dev/null || true
+    return 0
 }
 
 clear_sync_gate() {
@@ -655,6 +690,15 @@ push_with_retry() {
                 || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: rebase --continue failed"; }
             log "$context: rebase conflicts resolved (${rebase_conflicts[*]})"
         fi
+        # audit L5 (third re-audit): the rebase has just rewritten what
+        # this loop is about to push — it replayed our commits onto a
+        # freshly fetched origin, and the append-safe resolver may have
+        # rewritten the corpus in the process. The shrink guard ran
+        # BEFORE all of that and says nothing about the result. Ask it
+        # again about the range that is now going out.
+        if [[ "$context" == "data submodule" ]]; then
+            abort_on_published_shrink "push retry after rebase"
+        fi
         sleep "$RETRY_BACKOFF"
     done
     # Defensive: loop should have returned or failed by now
@@ -678,6 +722,12 @@ fi
 
 HOST="$(hostname -s)"
 log "=== daily-sync start on $HOST (dry-run=$DRY_RUN) ==="
+
+# audit L3: under the flock, and before anything writes a sidecar of its
+# own, clear out the half-built ones a killed run left behind.
+if [[ $DRY_RUN -eq 0 ]]; then
+    sweep_orphaned_stash_state_temps
+fi
 
 # ---------------------------------------------------------------------------
 # Append-only memory files.

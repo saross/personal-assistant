@@ -1988,3 +1988,86 @@ class TestCorpusLineCountIsBinarySafe:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "0", result.stdout
+
+
+class TestOrphanedSidecarTemps:
+    """write_stash_state builds the sidecar beside itself and renames it
+    into place. A run killed in that window leaves the half-built file
+    for ever."""
+
+    _FUNCTIONS = ("sweep_orphaned_stash_state_temps",)
+
+    def test_a_leftover_temp_is_swept(self, tmp_path: Path) -> None:
+        """Kills DS-L3: no sweep at all. They accumulate in ~/.cache and
+        are indistinguishable from live state to anyone looking."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+        orphan = cache / "daily-sync-stash-state.Ab12Cd"
+        orphan.write_text("half a row\n", encoding="utf-8")
+        unrelated = cache / "daily-sync-gate"
+        unrelated.write_text("0\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not orphan.exists(), "the orphaned temporary file survived"
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/repo\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "the sweep took the sidecar with it"
+        assert unrelated.exists(), "the sweep took an unrelated gate file"
+        assert not list(cache.glob("*sweepmark*")), "the marker was left behind"
+
+
+class TestAppendRowWriteFailure:
+    """The row writer's own failure path -- not a stub standing in for
+    it. A row that never reached the temporary file must stop that file
+    being renamed over a good sidecar."""
+
+    def test_a_real_write_failure_keeps_the_previous_sidecar(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L1: `|| return 1` -> `|| true` in
+        append_stash_state_row. The existing test stubbed the whole
+        function, so the mutation survived and a part-written temp would
+        have been renamed into place -- an empty sidecar over a good one.
+
+        `mktemp` is shadowed to hand back a file it cannot write to,
+        which is what a full disk or a revoked permission looks like from
+        inside the function. `mv` still succeeds on an unwritable source,
+        so without the guard the empty file lands.
+        """
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n", encoding="utf-8"
+        )
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + "mktemp() {\n"
+            '    local made\n'
+            '    made="$(command mktemp "$1")" || return 1\n'
+            '    chmod 0444 "$made"\n'
+            '    printf "%s" "$made"\n'
+            "}\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "notes/b.md"\n'
+            + "write_stash_state\n"
+            + 'printf "%s\\n" "${sync_gate_details[@]}"\n',
+            _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "a sidecar no row reached was renamed over a good one"
+        assert "could not write" in result.stdout, result.stdout
+        # audit L2: and the gate says the kept file is an earlier run's.
+        assert "EARLIER run's rows" in result.stdout, result.stdout
+        assert not list(tmp_path.glob("sidecar.*")), "a temporary file was left"

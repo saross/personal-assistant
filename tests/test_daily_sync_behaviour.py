@@ -3763,3 +3763,68 @@ class TestMergedBulkRewrite:
         assert world.published_data_head() == published_before, (
             "a merge whose own resolution truncated the corpus was published"
         )
+
+
+# ============================================================================
+# The rebase in push_with_retry rewrites what is about to be pushed (L5)
+# ============================================================================
+
+
+class TestShrinkCheckedAfterTheRebase:
+    """push_with_retry fetches, rebases, and re-pushes. The shrink guard
+    ran before all of that and says nothing about the result -- and the
+    rebase is exactly where the append-safe resolver rewrites the
+    corpus."""
+
+    def test_a_shrink_that_appears_only_after_the_rebase_is_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-L5: not re-running abort_on_published_shrink after the
+        rebase.
+
+        The first push is rejected because origin moved. The rebase then
+        runs, and a hook rewrites the corpus down to almost nothing while
+        it does -- the shape a resolver bug would have. Nothing may go out
+        after that without being measured again.
+        """
+        machine = world.add_machine("a")
+        for index in range(4):
+            machine.append_memory(f"2026-09-08-record-{index}")
+        machine.commit_data("real captures", "memories/memories.jsonl")
+        git("push", "-q", "origin", "main", cwd=machine.data)
+
+        # A local commit to push…
+        machine.append_memory("2026-09-08-local")
+        machine.commit_data("local capture", "memories/memories.jsonl")
+        # …and origin moves, so the first push is rejected and a rebase
+        # follows. Origin's head moves with it, so what must be asserted
+        # afterwards is the CONTENT, not the SHA.
+        world.publish_memory_append("2026-09-08-from-elsewhere")
+        published_before = world.published_data_head()
+
+        # The corpus is truncated during the rebase, after every check
+        # this run has already made.
+        hook = machine.data_git_dir / "hooks" / "post-rewrite"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Test hook: a rewrite that loses records, fired by the rebase.\n"
+            'printf \'{"id": "all that is left"}\\n\' > memories/memories.jsonl\n'
+            "git add -- memories/memories.jsonl\n"
+            "git commit -q -m 'a rewrite nobody asked for' -- memories/memories.jsonl\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 4, combined
+        assert world.published_data_head() == published_before, (
+            "a corpus truncated during the rebase was pushed"
+        )
+        published = world.published_data_file("memories/memories.jsonl")
+        for index in range(4):
+            assert f"2026-09-08-record-{index}" in published, published
+        assert "all that is left" not in published, published
+        joined = "\n".join(gate_details(world))
+        assert "SHORTER than origin" in joined, joined
