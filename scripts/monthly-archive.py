@@ -176,9 +176,15 @@ def parse_partition_path(stderr: str) -> str | None:
 
 
 def parse_jsonl_records(text: str) -> list[dict]:
-    """Parse JSONL text into a list of dict records (skips blank/bad lines)."""
+    """Parse JSONL text into a list of dict records (skips blank/bad lines).
+
+    Splits on ``"\n"`` only. ``str.splitlines`` also breaks on U+2028, U+2029
+    and U+0085, which are legal inside a JSON string: a record carrying one
+    would be torn into two unparseable fragments and silently dropped from the
+    invariance gate's view of what the apply actually archived.
+    """
     records: list[dict] = []
-    for line in text.splitlines():
+    for line in text.split("\n"):
         line = line.strip()
         if not line:
             continue

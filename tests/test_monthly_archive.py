@@ -71,6 +71,23 @@ def test_parse_jsonl_records_skips_bad_lines() -> None:
     assert [r.get("id") for r in recs] == ["a", "b"]
 
 
+def test_parse_jsonl_records_does_not_split_on_unicode_separator() -> None:
+    """A raw U+2028 inside a record must not break it into two lines.
+
+    Kills the mutation ``text.split("\\n")`` -> ``text.splitlines()``: that
+    tears the first record into two unparseable fragments, so the invariance
+    gate would silently not see it among the records the apply archived.
+    Audit 2026-09-08, finding A1.
+    """
+    content = "Section one\u2028section two"
+    # Serialised WITHOUT the ASCII escape, i.e. the on-disk shape an older
+    # ``ensure_ascii=False`` rewrite left behind.
+    text = json.dumps({"id": "a", "content": content}, ensure_ascii=False) + "\n"
+    recs = ma.parse_jsonl_records(text)
+    assert [r.get("id") for r in recs] == ["a"]
+    assert recs[0]["content"] == content
+
+
 # ===========================================================================
 # sanity_verdict
 # ===========================================================================

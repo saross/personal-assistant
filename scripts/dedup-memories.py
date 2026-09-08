@@ -95,7 +95,18 @@ def load_records_with_position() -> tuple[list[tuple[int, dict | None, str]], in
         raw = f.read()
     final_bytes = len(raw)
     text = raw.decode("utf-8")
-    for lineno, line in enumerate(text.splitlines(), 1):
+    # Split on "\n" ONLY. ``str.splitlines`` also breaks on U+2028, U+2029,
+    # U+0085 and friends, which are legal INSIDE a JSON string: a record whose
+    # content carries one would be torn into two "lines", each unparseable,
+    # and written back as two malformed records. Every other reader of the
+    # canonical (file-handle iteration, the extraction hook) breaks on "\n"
+    # alone, so this keeps the line numbering they all share.
+    split_lines = text.split("\n")
+    if split_lines and split_lines[-1] == "":
+        # A trailing newline terminates the last record; it does not start a
+        # further empty one. Dropping it keeps the round trip byte-identical.
+        split_lines.pop()
+    for lineno, line in enumerate(split_lines, 1):
         stripped = line.strip()
         if not stripped:
             records.append((lineno, None, line))
@@ -290,7 +301,12 @@ def write_output(
             else:
                 # Strip transient _dedup_origin marker before writing
                 clean = {k: v for k, v in rec.items() if k != "_dedup_origin"}
-                f.write((json.dumps(clean, ensure_ascii=False) + "\n").encode("utf-8"))
+                # ``ensure_ascii`` defaults to True, exactly as the extraction
+                # hook serialises (hooks/extraction-hook.py). Writing with
+                # ensure_ascii=False would UN-escape U+2028/U+2029/U+0085 that
+                # the hook had escaped, planting a real line separator inside a
+                # record for the next reader to split on.
+                f.write((json.dumps(clean) + "\n").encode("utf-8"))
         if new_tail_bytes:
             if not new_tail_bytes.endswith(b"\n"):
                 new_tail_bytes = new_tail_bytes + b"\n"
@@ -298,7 +314,9 @@ def write_output(
         f.flush()
         os.fsync(f.fileno())
 
-    # Re-count before rename
+    # Re-count before rename. Binary-mode iteration breaks on b"\n" and
+    # nothing else, so this count is the one every other reader of the
+    # canonical agrees with (see load_records_with_position).
     with open(tmp_path, "rb") as f:
         line_count = sum(1 for _ in f)
 
@@ -415,7 +433,7 @@ def _run_dedup_and_invariants(
             continue
         try:
             clean = {k: v for k, v in rec.items() if k != "_dedup_origin"}
-            json.dumps(clean, ensure_ascii=False)
+            json.dumps(clean)  # same flags as the write path above
         except (TypeError, ValueError) as exc:
             logger.error("INVARIANT FAILURE: record not serialisable at lineno=%d: %s", lineno, exc)
             sys.exit(1)

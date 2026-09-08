@@ -588,7 +588,7 @@ def cmd_merge(args: argparse.Namespace) -> None:
                     new_tags = list(dict.fromkeys(new_tags))
                     mem[tag_field] = new_tags
                     memories_touched += 1
-                    lines.append(json.dumps(mem, ensure_ascii=False) + "\n")
+                    lines.append(json.dumps(mem) + "\n")
                 else:
                     lines.append(line)
         print(
@@ -643,9 +643,13 @@ def cmd_merge(args: argparse.Namespace) -> None:
                     new_tags = list(dict.fromkeys(new_tags))
                     mem[tag_field] = new_tags
                     memories_touched += 1
-                    lines.append(
-                        json.dumps(mem, ensure_ascii=False) + "\n"
-                    )
+                    # ``ensure_ascii`` defaults to True, matching the
+                    # extraction hook's serialisation. Writing with
+                    # ensure_ascii False would UN-escape a U+2028/U+2029/
+                    # U+0085 inside a record's content, and the next reader
+                    # that splits on Unicode line boundaries would then
+                    # tear that record into two malformed lines.
+                    lines.append(json.dumps(mem) + "\n")
                 else:
                     # Preserve original line to avoid reformatting noise
                     lines.append(line)

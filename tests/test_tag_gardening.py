@@ -94,7 +94,7 @@ def write_sample_jsonl(path: Path, memories: list[dict] | None = None) -> None:
     mems = memories or SAMPLE_MEMORIES
     with open(path, "w", encoding="utf-8") as fh:
         for mem in mems:
-            fh.write(json.dumps(mem, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(mem) + "\n")
 
 
 def write_sample_vocab(path: Path, tags: list[str] | None = None) -> None:
@@ -776,3 +776,60 @@ class TestMergePlanValidation:
                 plan=str(plan_file), dry_run=True,
             )
             tag_gardening.cmd_merge(args)
+
+
+# -------------------------------------------------------------------------
+# Unicode line separators (audit 2026-09-08, finding A1)
+# -------------------------------------------------------------------------
+
+#: A Unicode LINE SEPARATOR — legal inside a JSON string, and a line break to
+#: ``str.splitlines()`` but not to ``"\n"``-splitting or file iteration.
+LINE_SEPARATOR = "\u2028"
+
+
+class TestUnicodeLineSeparators:
+    """A merge must not plant a raw line separator in the canonical."""
+
+    def test_merge_keeps_separator_escaped(self, tmp_path: Path) -> None:
+        """A rewritten record's U+2028 stays ``\\u2028`` on disk.
+
+        Kills the mutation ``json.dumps(mem)`` ->
+        ``json.dumps(mem, ensure_ascii=False)``: that writes the separator
+        raw, and every reader that splits on Unicode line boundaries (the
+        PostgreSQL sync cursor among them) then sees one line more than the
+        file has.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        memories = [
+            {
+                "id": "mem-101",
+                "content": f"Section one{LINE_SEPARATOR}section two.",
+                "research_tags": ["pipelines", "api"],
+            },
+            {"id": "mem-102", "content": "Plain record.",
+             "research_tags": ["api"]},
+        ]
+        write_sample_jsonl(jsonl, memories)
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        raw = jsonl.read_text(encoding="utf-8")
+        assert LINE_SEPARATOR not in raw, "separator must stay escaped"
+        assert raw.count("\n") == 2, "the file must still hold two records"
+        rewritten = json.loads(raw.split("\n")[0])
+        assert rewritten["content"] == f"Section one{LINE_SEPARATOR}section two."
+        assert rewritten["research_tags"] == ["pipeline", "api"]
