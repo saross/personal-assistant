@@ -1705,7 +1705,7 @@ def main() -> None:
             quarantine_entries=count_quarantine_entries(QUARANTINE_FILE),
             quarantine_file=QUARANTINE_FILE,
             degraded_detail=cycle.degraded_detail,
-            script="sync-to-postgres.py",
+            script=SCRIPT_NAME,
         ),
         gate_path=GATE_FILE,
         logger=logger,

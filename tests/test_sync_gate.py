@@ -1448,3 +1448,33 @@ def test_the_refusal_memory_is_also_written_atomically():
     body = ast.unparse(saver)
     assert ".tmp" in body, "save_refusals does not write to a temp file"
     assert "os.replace" in body, "save_refusals does not rename into place"
+
+
+@pytest.mark.parametrize("script_name", GATED_SCRIPTS)
+def test_no_script_names_itself_with_a_literal(script_name):
+    """
+    Every gate problem carries the script it came from, and the name is
+    what Shawn is told to run to clear it. A literal at the call site is
+    a second source of truth that a rename silently leaves behind — the
+    banner then points at a script that no longer exists.
+
+    Eighth re-audit, low. The mutation this kills: putting the literal
+    back at either apply_gate call site.
+    """
+    source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert "SCRIPT_NAME = " in source, f"{script_name} defines no SCRIPT_NAME"
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "script":
+                continue
+            if isinstance(keyword.value, ast.Constant):
+                offenders.append(f"{script_name}:{node.lineno}")
+    assert not offenders, (
+        f"the script names itself with a literal instead of SCRIPT_NAME: "
+        f"{offenders}"
+    )
