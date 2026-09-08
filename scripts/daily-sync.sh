@@ -544,6 +544,39 @@ stash_ref_for() {
     return 1
 }
 
+apply_stash_by_sha() {
+    # apply_stash_by_sha <repo> <sha>
+    # Apply the stash entry named by <sha>. A stash entry is a commit, so
+    # this cannot be aimed at the wrong one — unlike a `stash@{n}`
+    # selector, which is a POSITION and is re-read by git at the moment
+    # the command runs. Returns git's own exit status: non-zero means the
+    # apply conflicted or was refused, and git preserves the entry.
+    git -C "$1" stash apply "$2" >>"$LOG_FILE" 2>&1
+}
+
+drop_stash_by_sha() {
+    # drop_stash_by_sha <repo> <sha>
+    # Drop the entry named by <sha>, resolving its selector IMMEDIATELY
+    # before the drop and never reusing one resolved earlier.
+    #
+    # audit C2 (fourth re-audit): the stash-pop path resolved a selector,
+    # then ran a pop and a resolver subprocess, and only then dropped by
+    # that stale selector. A concurrent session dropping its own stash in
+    # that window renumbered the stack — and this destroyed that session's
+    # stash (an untracked file that was in no commit anywhere), left our
+    # own entry behind, and exited 0.
+    local repo="$1" sha="$2" ref
+    if ! ref="$(stash_ref_for "$repo" "$sha")"; then
+        log "WARNING: stash ${sha:0:8} is no longer on $repo's stack; nothing dropped"
+        return 1
+    fi
+    if ! git -C "$repo" stash drop "$ref" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: could not drop stash ${sha:0:8} ($ref) in $repo"
+        return 1
+    fi
+    return 0
+}
+
 # Recorded stashes are never removed from these lists: a popped entry
 # disappears from the stack, so "still resolvable by SHA" is exactly "still
 # unrecovered". That is what the EXIT handler below checks.
@@ -618,12 +651,18 @@ reconcile_orphaned_stashes() {
         # re-resolve it immediately afterwards, when the window is a
         # single command wide and applying the wrong entry is no longer
         # possible.
-        if git stash apply "$sha" >>"$LOG_FILE" 2>&1; then
-            if ref="$(stash_ref_for "$DATA_DIR" "$sha")"; then
-                git stash drop "$ref" >>"$LOG_FILE" 2>&1 \
-                    || log "  WARNING: applied ${sha:0:8} but could not drop $ref"
+        if apply_stash_by_sha "$DATA_DIR" "$sha"; then
+            if drop_stash_by_sha "$DATA_DIR" "$sha"; then
+                log "  recovered ${sha:0:8}"
+            else
+                # audit (low, fourth re-audit): applied but still on the
+                # stack. Saying "recovered" would be a lie, and the next
+                # run would apply it again and duplicate every record.
+                log "  APPLIED ${sha:0:8} but could not drop it — it will be"
+                log "  applied again next run unless dropped by hand"
+                append_sync_gate_detail \
+                    "daily-sync applied orphaned stash ${sha:0:8} in $DATA_DIR but could not drop it; drop it by hand (git -C $DATA_DIR stash list) or the next run will apply it again and duplicate those records"
             fi
-            log "  recovered ${sha:0:8}"
         else
             # A conflicted pop leaves the tree half-merged and preserves the
             # stash. Do NOT try to tidy up: `git checkout -- .` here would
@@ -723,9 +762,11 @@ restore_stash_on_exit() {
             [[ ${#_shas[@]} -gt 0 ]] || continue
             for (( _i=0; _i<${#_shas[@]}; _i++ )); do
                 _sha="${_shas[_i]}"
-                _ref="$(stash_ref_for "$_repo" "$_sha")" || continue
+                stash_ref_for "$_repo" "$_sha" >/dev/null || continue
                 log "WARNING: aborting before stash pop — restoring ${_sha:0:8} in $_repo"
-                if ! git -C "$_repo" stash pop "$_ref" >>"$LOG_FILE" 2>&1; then
+                if apply_stash_by_sha "$_repo" "$_sha"; then
+                    drop_stash_by_sha "$_repo" "$_sha" || true
+                else
                     log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
                 fi
             done
@@ -882,16 +923,15 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
     # is still resolvable at exit is still unrecovered.
     for (( _si=0; _si<${#data_stash_shas[@]}; _si++ )); do
         _sha="${data_stash_shas[_si]}"
-        if ! _sref="$(stash_ref_for "$DATA_DIR" "$_sha")"; then
+        if ! stash_ref_for "$DATA_DIR" "$_sha" >/dev/null; then
             log "data submodule: stash ${_sha:0:8} is no longer on the stack — skipping"
             continue
         fi
-        if ! git stash pop "$_sref" >>"$LOG_FILE" 2>&1; then
-            # `git stash pop` either applied the stash and left the tree
-            # conflicted (the entry is preserved by git), or refused to
-            # apply it at all. Either way the EXIT handler must not try to
-            # re-pop: into a half-merged tree that corrupts it, and into a
-            # refusal it just fails again.
+        if ! apply_stash_by_sha "$DATA_DIR" "$_sha"; then
+            # The apply either left the tree conflicted (git preserves the
+            # entry) or refused to apply at all. Either way the EXIT
+            # handler must not try again: into a half-merged tree that
+            # corrupts it, and into a refusal it just fails again.
             stash_restore_allowed=0
             log "stash pop raised conflicts — running resolver"
             conflicted_files=()
@@ -914,7 +954,7 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 # untouched and the entry is still on the stack, so the
                 # EXIT handler's stranded-stash check gates it by SHA and
                 # message; do not try to be cleverer than that here.
-                fail "stash pop of $_sref was refused (nothing unmerged) — the stash is preserved; see the gate line for how to recover it"
+                fail "applying stash ${_sha:0:8} was refused (nothing unmerged) — the stash is preserved; see the gate line for how to recover it"
             fi
 
             # audit S3: partition exactly as the rebase path does
@@ -960,11 +1000,10 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             refuse_if_memory_markers "post-resolver stage"
             git add "${resolvable_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "git add after resolver failed"
-            # audit C1: drop the entry we actually popped. A bare
-            # `git stash drop` takes stash@{0}, which after a conflicted
-            # pop of a lower entry is a DIFFERENT stash — this run's
-            # other one, or a concurrent session's.
-            git stash drop "$_sref" >>"$LOG_FILE" 2>&1 || true
+            # audit C1: drop the entry we actually applied, and audit C2:
+            # resolve its selector NOW, not before the resolver ran. A
+            # stale selector here destroyed a concurrent session's stash.
+            drop_stash_by_sha "$DATA_DIR" "$_sha" || true
             # audit M1 (third re-audit): the conflict is resolved, staged,
             # and its stash dropped, so the tree is no longer half-merged
             # and later stashes are safe to restore again. Without this
@@ -973,6 +1012,10 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # any later abort, silently reverting settings.json.
             stash_restore_allowed=1
             log "conflicts resolved: ${conflicted_files[*]}"
+        else
+            # A clean apply. `git stash pop` used to drop the entry for us;
+            # apply does not, so drop it explicitly — by SHA, resolved now.
+            drop_stash_by_sha "$DATA_DIR" "$_sha" || true
         fi
     done
 fi
@@ -1136,11 +1179,11 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
     # handler can gate anything that did not come back.
     for (( _si=0; _si<${#parent_stash_shas[@]}; _si++ )); do
         _sha="${parent_stash_shas[_si]}"
-        if ! _sref="$(stash_ref_for "$PA_DIR" "$_sha")"; then
+        if ! stash_ref_for "$PA_DIR" "$_sha" >/dev/null; then
             log "parent repo: stash ${_sha:0:8} is no longer on the stack — skipping"
             continue
         fi
-        if ! git stash pop "$_sref" >>"$LOG_FILE" 2>&1; then
+        if ! apply_stash_by_sha "$PA_DIR" "$_sha"; then
             # Stash applied but conflicted (or refused); the entry is
             # preserved by git, and the EXIT handler must not re-pop.
             stash_restore_allowed=0
@@ -1152,6 +1195,8 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             write_sync_gate 1 \
                 "daily-sync STOPPED: parent-repo stash pop conflicted in $PA_DIR; conflict markers and the stash are preserved, and every session start will fail here until it is resolved by hand (git -C $PA_DIR status)"
             fail "parent repo: stash pop raised conflicts — manual resolution required"
+        else
+            drop_stash_by_sha "$PA_DIR" "$_sha" || true
         fi
     done
 fi

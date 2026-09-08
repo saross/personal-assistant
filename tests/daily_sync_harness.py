@@ -232,6 +232,38 @@ class Machine:
         where = self.data if repo == "data" else self.pa
         return git("rev-parse", "--abbrev-ref", "HEAD", cwd=where).stdout.strip()
 
+    def racing_resolver(self, drop_selector: str = "stash@{0}") -> None:
+        """
+        Replace the resolver with one that drops a stash while it runs.
+
+        The resolver subprocess is the only thing that runs between the
+        conflicted apply and the drop that follows it, so it is where a
+        concurrent session's `git stash drop` has to be injected to prove
+        that the drop re-resolves its selector (audit C2). It still
+        resolves the conflict, so the run continues normally.
+        """
+        target = self.pa / "scripts" / "resolve-merge-conflicts.py"
+        real = REAL_SCRIPTS / "resolve-merge-conflicts.py"
+        target.unlink()
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""Test stub: a concurrent session drops its stash mid-resolve."""\n'
+            "import runpy\n"
+            "import subprocess\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            f'data = Path(__file__).resolve().parent.parent / "data"\n'
+            f'subprocess.run(["git", "-C", str(data), "stash", "drop", "-q",\n'
+            f'                "{drop_selector}"], check=False)\n'
+            f'sys.argv[0] = "{real}"\n'
+            f'runpy.run_path("{real}", run_name="__main__")\n',
+            encoding="utf-8",
+        )
+        target.chmod(0o755)
+        git("add", "--", "scripts/resolve-merge-conflicts.py", cwd=self.pa)
+        git("commit", "-q", "-m", "racing resolver", "--",
+            "scripts/resolve-merge-conflicts.py", cwd=self.pa)
+
     def stub_resolver(self) -> None:
         """
         Replace this machine's conflict resolver with a no-op.

@@ -642,6 +642,39 @@ class TestDetachedHeadGuard:
         ), "the parent stash was stranded and settings.json left reverted"
         assert not git("stash", "list", cwd=machine.pa).stdout.strip()
 
+    def test_a_concurrent_drop_mid_resolve_does_not_strand_our_stash(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C2 (fourth re-audit): the drop must re-resolve its
+        selector, not reuse one from before the apply and the resolver.
+
+        A concurrent session dropping its own stash in that window
+        renumbers the stack. The stale selector then named the wrong
+        entry: this destroyed a stash holding an untracked file that was
+        in no commit anywhere, left our own entry behind, and exited 0.
+
+        Their stash is pushed mid-run (by the archiver) so it sits ABOVE
+        ours, and dropped mid-resolve (by the resolver), which is the only
+        subprocess running between our apply and our drop.
+        """
+        machine = world.add_machine("a")
+        machine.racing_resolver(drop_selector="stash@{0}")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-c2-ours")
+        world.publish_memory_append("2026-09-08-c2-theirs")
+
+        result = world.run_sync(
+            machine, PA_TEST_ARCHIVER_STASHES="their unfinished note\n"
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        remaining = git("stash", "list", cwd=machine.data).stdout.strip()
+        assert remaining == "", f"our own stash was left behind: {remaining}"
+        published = world.published_data_file("memories/memories.jsonl")
+        assert "2026-09-08-c2-ours" in published
+        assert "2026-09-08-c2-theirs" in published
+
     def test_a_concurrent_sessions_stash_is_never_touched(
         self, world: SyncWorld
     ) -> None:
