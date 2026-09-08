@@ -997,58 +997,69 @@ class TestTheGateReflectsTheWholeMemory:
             "an empty root lowered the gate"
         )
 
-    def test_a_swapped_transcript_form_is_not_pruned(
+    def test_a_gz_swap_does_not_strand_the_refusal(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
     ):
         """
-        Pruning keys on the session DIRECTORY, not the file: a transcript
-        gzipped since the refusal is still there, and forgetting it would
-        silently drop a standing problem.
+        Fifth re-audit: a refusal recorded against ``session.jsonl`` was
+        stranded for ever once the archiver gzipped the transcript. The
+        key never matched again, so the entry was never revisited, the
+        count never fell, and the only documented remedy — ``--force`` —
+        could not reach it. Indexing either form now forgets both. The
+        mutation this kills: dropping ``_forget_transcript``.
         """
-        archive = self._archive(tmp_path, "aaa-poison", "bbb-ok")
+        archive = self._archive(tmp_path, "aaa-ok", "bbb-ok")
         self._wire(indexer, monkeypatch)
         indexer.save_refusals(
-            {"alpha/aaa-poison/session.jsonl": 1.0}, pinned_refusal_file,
+            {"alpha/aaa-ok/session.jsonl": 1.0}, pinned_refusal_file,
         )
-        # The raw form is replaced by a .gz — same directory, new name.
-        (archive / "alpha" / "aaa-poison" / "session.jsonl").unlink()
-        (archive / "alpha" / "aaa-poison" / "session.jsonl.gz").write_bytes(b"")
+        # The archiver converts the raw form to .gz — same directory.
+        raw = archive / "alpha" / "aaa-ok" / "session.jsonl"
+        body = raw.read_bytes()
+        raw.unlink()
+        with gzip.open(
+            archive / "alpha" / "aaa-ok" / "session.jsonl.gz", "wb",
+        ) as handle:
+            handle.write(body)
 
-        indexer.main(["--archive-root", str(archive)])
+        indexer.main(["--archive-root", str(archive), "--force"])
 
-        assert indexer.load_refusals(pinned_refusal_file), (
-            "a transcript that merely changed form was pruned"
+        assert indexer.load_refusals(pinned_refusal_file) == {}, (
+            "the refusal survived the .gz conversion and is unreachable"
         )
 
 
-    def test_a_scoped_run_does_not_clear_an_abort_gate(
+    def test_a_scoped_run_cannot_lower_the_refusals_problem(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
         pinned_gate_file,
     ):
         """
-        The narrow case the scope guard exists for: the gate was raised by
-        an outage abort, the refusal memory is empty, and a run scoped to
-        one project indexes it cleanly. It has still seen only part of the
-        archive, so it must not declare the problem over. The mutation
-        this kills: dropping the ``full_scope`` check.
+        The scope rule, stated per problem: a run scoped to alpha may
+        forget alpha's entries but knows nothing about beta's, so it must
+        not declare the index clean. (A *fault* is different: a scoped run
+        that connects and indexes is real evidence the database is back,
+        and lowers it.) The mutation this kills: dropping
+        ``refusals_authoritative``.
         """
-        archive = self._archive(tmp_path, "aaa-ok", "bbb-ok")
+        archive = self._archive(tmp_path, "aaa-ok", "bbb-poison")
         self._wire(indexer, monkeypatch)
-        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
-        pinned_gate_file.write_text(
-            "1\n[index-session-content.py] exit 3 — the indexer stopped\n",
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_beta
+        )
+        indexer.main(["--archive-root", str(archive), "--force"])
+        assert "NOT in the search index" in pinned_gate_file.read_text(
             encoding="utf-8",
         )
 
-        code = indexer.main([
+        # Now index only alpha, which is fine. Beta is still broken.
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        indexer.main([
             "--archive-root", str(archive), "--force", "--project", "alpha",
         ])
 
-        assert code == 0
-        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1"), (
-            "a run scoped to one project lowered a gate about the whole "
-            "index"
-        )
+        assert "NOT in the search index" in pinned_gate_file.read_text(
+            encoding="utf-8",
+        ), "a run scoped to alpha declared the whole index clean"
 
     def test_a_full_run_does_clear_an_abort_gate(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
@@ -1121,13 +1132,16 @@ class TestIndexerAbortsGate:
         assert f"exit {expected}" in gate
         assert "not searchable" in gate
 
-    def test_an_empty_root_abort_does_not_gate(
+    def test_an_empty_root_raises_the_degraded_problem(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
         pinned_gate_file,
     ):
         """
-        Exit 2 on an empty root is a "cannot tell" state: it must not
-        raise a gate claiming the index is broken, nor lower one.
+        Fifth re-audit: an absent or unpopulated archive root is degraded
+        for the indexer too. It still exits 2 — it cannot scan — but
+        saying nothing about a missing mount is how "every archive is
+        gone" came to look like a clean sweep. The mutation this kills:
+        dropping the empty-root branch from the abort handler.
         """
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -1137,5 +1151,7 @@ class TestIndexerAbortsGate:
         code = indexer.main(["--archive-root", str(empty)])
 
         assert code == 2
-        assert not pinned_gate_file.exists()
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "is empty" in gate
+        assert "check the mount" in gate
 

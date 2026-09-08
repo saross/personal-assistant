@@ -24,6 +24,26 @@ sync_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync_mod)
 
 
+def _seed_gate(gate: Path, detail: str) -> None:
+    """Seed a standing fault through the state machine.
+
+    The gate file is derived from the sidecar state, so a test that writes
+    the file by hand is describing a state that does not exist — the next
+    run would legitimately render it away.
+    """
+    import _sync_gate
+
+    _sync_gate.apply_gate(
+        _sync_gate.GateEvent(
+            outcome=_sync_gate.CYCLE_DEGRADED,
+            fault_detail=detail,
+            script="test",
+        ),
+        gate_path=gate,
+        logger=logging.getLogger("test-seed"),
+    )
+
+
 @pytest.fixture(autouse=True)
 def pinned_gate_file(tmp_path, monkeypatch):
     """Keep the session-start gate inside the test's tmp directory.
@@ -1962,10 +1982,7 @@ class TestMemoriesGatePolicyIsWired:
         cursor_file.write_text(
             json.dumps({"postgres_sync_line": 1}), encoding="utf-8",
         )
-        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
-        pinned_gate_file.write_text(
-            "3\nrows were refused earlier\n", encoding="utf-8",
-        )
+        _seed_gate(pinned_gate_file, "rows were refused earlier")
         monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
         monkeypatch.setattr(
@@ -1986,7 +2003,7 @@ class TestMemoriesGatePolicyIsWired:
         finally:
             logging.getLogger("sync-to-postgres").handlers.clear()
 
-        assert pinned_gate_file.read_text(encoding="utf-8").startswith("3"), (
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1"), (
             "a no-op tick lowered a standing gate"
         )
 
@@ -2062,3 +2079,79 @@ class TestMemoriesGatePolicyIsWired:
 
         assert excinfo.value.code == 2
         assert "exit 2" in pinned_gate_file.read_text(encoding="utf-8")
+
+
+class TestParseLayerQuarantineReachesTheGate:
+    """
+    A poison line is quarantined before any database contact, so the cycle
+    is idle — but rows still left the pipeline, and the gate must say so.
+    """
+
+    def test_a_poison_line_raises_the_quarantine_problem(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: dropping ``quarantined`` from the idle
+        CycleResult, or gating the quarantine problem behind a completed
+        outcome.
+        """
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text("{not valid json\n", encoding="utf-8")
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "1 row(s) have been REFUSED" in gate
+        assert str(quarantine) in gate
+
+    def test_ack_quarantine_clears_it(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The one thing that lowers a quarantine problem is a human saying
+        they have looked. The mutation this kills: ignoring the flag.
+        """
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text("{not valid json\n", encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+        try:
+            sync_mod.main()
+            assert "REFUSED" in pinned_gate_file.read_text(encoding="utf-8")
+
+            monkeypatch.setattr(
+                sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+            )
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"

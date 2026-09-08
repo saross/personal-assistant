@@ -72,9 +72,12 @@ from typing import NamedTuple
 # working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_gate import (  # noqa: E402
+    CYCLE_COMPLETED,
+    CYCLE_DEGRADED,
+    CYCLE_IDLE,
     INDEXER_GATE as _DEFAULT_GATE_FILE,
-    clear_gate,
-    write_gate,
+    GateEvent,
+    apply_gate,
 )
 from _schema_version import (  # noqa: E402
     SchemaVersionError,
@@ -100,6 +103,7 @@ REFUSAL_FILE = Path.home() / ".cache" / "index-session-content-refusals.json"
 # Session-start gate for this script (third re-audit, finding C1). Its own
 # file: sharing one with the syncs meant either could erase the other's
 # alarm. A module constant so tests can pin it to a tmp directory.
+SCRIPT_NAME = "index-session-content.py"
 GATE_FILE = _DEFAULT_GATE_FILE
 
 
@@ -333,6 +337,33 @@ def discover(archive_root: Path, project: str | None, include_subagents: bool):
 
 # --- Refusal memory ---------------------------------------------------------
 
+#: The two forms one session transcript can take on disk. A refusal
+#: recorded against either must be forgotten when the other is indexed.
+TRANSCRIPT_FORMS: tuple[str, ...] = ("session.jsonl", "session.jsonl.gz")
+
+
+def _forget_transcript(
+    refusals: dict[str, float],
+    rel_path: str,
+) -> list[str]:
+    """Drop this transcript's refusal entries, in both storage forms.
+
+    Returns the keys removed. The archive holds transcripts as
+    ``session.jsonl`` and ``session.jsonl.gz``, and the archiver converts
+    between them; keying the memory on the exact filename meant a refusal
+    survived the conversion for ever, unreachable even by ``--force``
+    (fifth re-audit).
+    """
+    directory = str(Path(rel_path).parent)
+    candidates = {rel_path}
+    if Path(rel_path).name in TRANSCRIPT_FORMS:
+        candidates |= {f"{directory}/{form}" for form in TRANSCRIPT_FORMS}
+    removed = [key for key in candidates if key in refusals]
+    for key in removed:
+        del refusals[key]
+    return removed
+
+
 def load_refusals(refusal_file: Path | None = None) -> dict[str, float]:
     """Return ``{archive_path: source_mtime}`` for files PostgreSQL refused.
 
@@ -476,18 +507,19 @@ def index_archive(archive_root: Path, project: str | None,
                 # rather than re-parsing and re-refusing every run. Counted
                 # separately from a refusal that happened THIS run, because
                 # only the latter should fail the run (finding C2).
-                if consult_memory and known_refusals.get(rel_path) == mtime:
+                if (consult_memory
+                        and known_refusals.get(rel_path) == mtime):
                     files_skipped += 1
                     refused_remembered += 1
                     continue
-                if rel_path in known_refusals:
-                    # Either the file changed or --force is retrying it.
-                    # Forget the old verdict before we find out; if it is
-                    # refused again this run, it is recorded again below.
-                    # Only files this run actually VISITS are forgotten,
-                    # so --force --project X leaves other projects' entries
-                    # untouched (finding C2).
-                    del known_refusals[rel_path]
+                # Forget the old verdict for this transcript in EITHER
+                # form before we find out. A refusal recorded against
+                # session.jsonl was stranded for ever once the archiver
+                # gzipped it: the key never matched again, the entry was
+                # never revisited, and the only documented remedy
+                # (--force) could not reach it (fifth re-audit).
+                forgotten = _forget_transcript(known_refusals, rel_path)
+                if forgotten:
                     refusals_changed = True
 
                 # Incremental skip: already indexed at this mtime?
@@ -665,13 +697,36 @@ def main(argv: list[str] | None = None) -> int:
         if exc.exit_code in (3, 4):
             # An unreachable or misconfigured database stopped the run,
             # and nothing said so at session start (fourth re-audit, M1).
-            # Exit 2 is deliberately NOT gated: an empty archive root is a
-            # "cannot tell" state, and a schema mismatch stops before any
-            # scan, so neither is evidence about the index's contents.
-            write_gate(
-                f"[index-session-content.py] exit {exc.exit_code} — the "
-                f"transcript indexer stopped: {exc} Newly archived "
-                f"sessions are not searchable until this is fixed.",
+            apply_gate(
+                GateEvent(
+                    outcome=CYCLE_DEGRADED,
+                    connected=exc.exit_code != 3,
+                    fault_detail=(
+                        f"[{SCRIPT_NAME}] exit {exc.exit_code} — the "
+                        f"transcript indexer stopped: {exc} Newly "
+                        f"archived sessions are not searchable until "
+                        f"this is fixed."
+                    ),
+                    script=SCRIPT_NAME,
+                ),
+                gate_path=GATE_FILE,
+                logger=logger,
+            )
+        elif exc.exit_code == 2 and "is empty" in str(exc):
+            # An absent or unpopulated archive root is a degraded run for
+            # the indexer too (fifth re-audit): it is a missing mount, and
+            # saying nothing about it was how "every archive is gone" came
+            # to look like a clean sweep.
+            apply_gate(
+                GateEvent(
+                    outcome=CYCLE_DEGRADED,
+                    degraded_detail=(
+                        f"[{SCRIPT_NAME}] {exc} No transcript can be "
+                        f"indexed — check the mount or the "
+                        f"--archive-root path."
+                    ),
+                    script=SCRIPT_NAME,
+                ),
                 gate_path=GATE_FILE,
                 logger=logger,
             )
@@ -686,10 +741,8 @@ def main(argv: list[str] | None = None) -> int:
     # scoped to one project has seen only part of the picture.
     outstanding = len(load_refusals())
     _apply_indexer_gate(
-        outstanding, result.refused_now,
-        full_scope=args.project is None,
-        refusal_file=REFUSAL_FILE,
-        logger=logger,
+        outstanding, result.files_indexed,
+        full_scope=args.project is None, logger=logger,
     )
 
     if result.refused_now:
@@ -707,43 +760,32 @@ def main(argv: list[str] | None = None) -> int:
 
 def _apply_indexer_gate(
     outstanding: int,
-    refused_now: int,
+    indexed: int,
     full_scope: bool,
-    refusal_file: Path,
     logger: logging.Logger,
 ) -> None:
     """
-    Raise or lower this script's session-start gate.
+    Report this script's problems through the shared state machine.
 
-    The gate reflects the WHOLE refusal memory, not this run's scope
-    (fourth re-audit, finding C3). ``--project X`` sees only X's
-    transcripts, so a run scoped to X knows nothing about a standing
-    refusal in project Y — and used to clear Y's alarm anyway. A scoped
-    run may therefore RAISE the gate (it has found something) but never
-    LOWER it; only a full-root run that ends with an empty memory has the
-    evidence to say the problem is gone.
-
-    An aborted run raises :class:`IndexerAbort` and never reaches here,
-    so it cannot erase a standing alarm either (finding C1).
+    ``outstanding`` counts the WHOLE refusal memory, not this run's scope
+    (fourth re-audit, finding C3): ``--project X`` has not looked at
+    project Y, so it may raise the problem but not lower it. The state
+    machine enforces that through ``refusals_authoritative``.
     """
-    if not outstanding:
-        if not full_scope:
-            logger.info(
-                "Nothing outstanding in this project, but the run was "
-                "scoped — leaving any standing gate alone.")
-            return
-        clear_gate(gate_path=GATE_FILE, logger=logger)
-        return
-    write_gate(
-        f"[index-session-content.py] {outstanding} transcript(s) are NOT "
-        f"in the search index ({refused_now} refused this run). "
-        f"/search-sessions cannot find them. Listed in {refusal_file}; "
-        f"they are retried when the file changes, or with --force.",
+    apply_gate(
+        GateEvent(
+            # Indexing nothing is idle, not completed: it is no evidence
+            # that a standing fault is resolved.
+            outcome=CYCLE_COMPLETED if indexed else CYCLE_IDLE,
+            connected=True,
+            processed=indexed,
+            refusals=outstanding,
+            refusals_authoritative=full_scope,
+            script=SCRIPT_NAME,
+        ),
         gate_path=GATE_FILE,
-        count=outstanding,
         logger=logger,
     )
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

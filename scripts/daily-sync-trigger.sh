@@ -121,10 +121,17 @@ for _pg_gate_name in postgres-sync-memories-gate \
     [[ -f "$_pg_gate_file" ]] || continue
     _pg_count="$(head -1 "$_pg_gate_file" 2>/dev/null)"
     if [[ "$_pg_count" =~ ^[0-9]+$ ]] && [[ "$_pg_count" -gt 0 ]]; then
-        GATE_LINES+=("[${_pg_gate_name%-gate} gate] $(tail -n +2 "$_pg_gate_file" | head -1)")
+        # EVERY detail line, not just the first: since the fifth re-audit
+        # these gates carry one line per INDEPENDENT problem (an outage,
+        # a fault, quarantined rows, ...), and printing only the first
+        # would silently drop the rest.
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] ${_pg_count} problem(s):")
+        while IFS= read -r _pg_line; do
+            [[ -n "$_pg_line" ]] && GATE_LINES+=("  ${_pg_line}")
+        done < <(tail -n +2 "$_pg_gate_file")
     fi
 done
-unset _pg_gate_name _pg_gate_file _pg_count
+unset _pg_gate_name _pg_gate_file _pg_count _pg_line
 
 # ---------------------------------------------------------------------------
 # Slack dashboard refresh (added 2026-08-22)

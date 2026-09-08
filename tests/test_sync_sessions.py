@@ -121,6 +121,26 @@ def archive_tree(tmp_path, sample_metadata) -> Path:
     return tmp_path
 
 
+def _seed_gate(gate: Path, detail: str) -> None:
+    """Seed a standing fault through the state machine.
+
+    The gate file is derived from the sidecar state, so a test that writes
+    the file by hand is describing a state that does not exist — the next
+    run would legitimately render it away.
+    """
+    import _sync_gate
+
+    _sync_gate.apply_gate(
+        _sync_gate.GateEvent(
+            outcome=_sync_gate.CYCLE_DEGRADED,
+            fault_detail=detail,
+            script="test",
+        ),
+        gate_path=gate,
+        logger=logging.getLogger("test-seed"),
+    )
+
+
 @pytest.fixture(autouse=True)
 def pinned_gate_file(tmp_path, monkeypatch):
     """Keep the session-start gate inside the test's tmp directory.
@@ -1562,8 +1582,7 @@ class TestSessionStartGate:
         A fixed fault must stop reporting itself without anyone deleting a
         file. The mutation this kills: removing the clear_gate call.
         """
-        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
-        pinned_gate_file.write_text("1\nstale problem\n", encoding="utf-8")
+        _seed_gate(pinned_gate_file, "stale problem")
 
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
         monkeypatch.setattr(
@@ -1717,8 +1736,10 @@ class TestCorrelatedRefusalAtTheSyncLevel:
             logging.getLogger("sync-sessions-to-postgres").handlers.clear()
 
         lines = pinned_gate_file.read_text(encoding="utf-8").splitlines()
-        assert lines[0] == "2"
+        assert lines[0] == "1", "one standing problem: the quarantine"
+        assert "2 row(s)" in lines[1]
         assert "REFUSED" in lines[1]
+        assert "--ack-quarantine" in lines[1]
 
     def test_the_escape_hatch_lets_the_batch_through(
         self, monkeypatch, tmp_path, sample_metadata, test_logger,
@@ -1823,9 +1844,24 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
     """
 
     def _standing_gate(self, gate: Path) -> None:
-        """Raise a gate, as a previous refusal would have."""
-        gate.parent.mkdir(parents=True, exist_ok=True)
-        gate.write_text("2\nrows were refused earlier\n", encoding="utf-8")
+        """Seed a standing problem through the state machine.
+
+        The gate file is derived from the sidecar state, so a test that
+        writes the file by hand is describing a state that does not exist
+        — the next run would legitimately render it away.
+        """
+        import _sync_gate
+
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED,
+                fault_detail="rows were refused earlier",
+                script="test",
+            ),
+            gate_path=gate,
+            logger=logging.getLogger("test-seed"),
+        )
+
 
     def test_a_missing_root_does_not_clear_the_gate(
         self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
@@ -1843,12 +1879,22 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
         )
 
         assert cycle.outcome == sync_mod.CYCLE_DEGRADED
-        sync_mod.apply_sync_gate(
-            cycle, script="sync-sessions-to-postgres.py",
-            gate_path=pinned_gate_file,
-            quarantine_file=tmp_path / "q.jsonl", logger=test_logger,
+        sync_mod.apply_gate(
+            sync_mod.GateEvent(
+                outcome=cycle.outcome,
+                connected=cycle.connected,
+                processed=cycle.processed,
+                quarantined=cycle.quarantined,
+                degraded_detail=cycle.degraded_detail,
+                script="sync-sessions-to-postgres.py",
+            ),
+            gate_path=pinned_gate_file, logger=test_logger,
         )
-        assert pinned_gate_file.read_text(encoding="utf-8").startswith("2")
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "rows were refused earlier" in gate, (
+            "the standing problem was cleared by a run that learnt nothing"
+        )
+        assert "archive root" in gate, "the degraded reason is not reported"
 
     def test_an_empty_root_does_not_clear_the_gate(
         self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
@@ -1869,12 +1915,22 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
         )
 
         assert cycle.outcome == sync_mod.CYCLE_DEGRADED
-        sync_mod.apply_sync_gate(
-            cycle, script="sync-sessions-to-postgres.py",
-            gate_path=pinned_gate_file,
-            quarantine_file=tmp_path / "q.jsonl", logger=test_logger,
+        sync_mod.apply_gate(
+            sync_mod.GateEvent(
+                outcome=cycle.outcome,
+                connected=cycle.connected,
+                processed=cycle.processed,
+                quarantined=cycle.quarantined,
+                degraded_detail=cycle.degraded_detail,
+                script="sync-sessions-to-postgres.py",
+            ),
+            gate_path=pinned_gate_file, logger=test_logger,
         )
-        assert pinned_gate_file.read_text(encoding="utf-8").startswith("2")
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "rows were refused earlier" in gate, (
+            "the standing problem was cleared by a run that learnt nothing"
+        )
+        assert "archive root" in gate, "the degraded reason is not reported"
 
     def test_a_populated_root_with_nothing_new_is_idle(
         self, monkeypatch, tmp_path, archive_tree, test_logger,
@@ -1898,12 +1954,22 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
         )
 
         assert cycle.outcome == sync_mod.CYCLE_IDLE
-        sync_mod.apply_sync_gate(
-            cycle, script="sync-sessions-to-postgres.py",
-            gate_path=pinned_gate_file,
-            quarantine_file=tmp_path / "q.jsonl", logger=test_logger,
+        sync_mod.apply_gate(
+            sync_mod.GateEvent(
+                outcome=cycle.outcome,
+                connected=cycle.connected,
+                processed=cycle.processed,
+                quarantined=cycle.quarantined,
+                degraded_detail=cycle.degraded_detail,
+                script="sync-sessions-to-postgres.py",
+            ),
+            gate_path=pinned_gate_file, logger=test_logger,
         )
-        assert pinned_gate_file.read_text(encoding="utf-8").startswith("2"), (
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "rows were refused earlier" in gate, (
+            "the standing problem was cleared by a run that learnt nothing"
+        )
+        assert "rows were refused earlier" in gate, (
             "an idle tick lowered a standing gate"
         )
 
@@ -1922,8 +1988,7 @@ class TestSessionsGatePolicyIsWired:
         not lower a standing gate. The mutation this kills: clearing on
         any outcome in the sessions ``main``.
         """
-        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
-        pinned_gate_file.write_text("1\na standing fault\n", encoding="utf-8")
+        _seed_gate(pinned_gate_file, "a standing fault")
         cursor_file = tmp_path / "cursors.json"
         cursor_file.write_text(
             json.dumps({"sessions_sync_timestamp": "2099-01-01T00:00:00Z"}),
@@ -1955,8 +2020,7 @@ class TestSessionsGatePolicyIsWired:
         self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
     ):
         """The counterpart: work done, nothing refused, gate lowered."""
-        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
-        pinned_gate_file.write_text("1\na standing fault\n", encoding="utf-8")
+        _seed_gate(pinned_gate_file, "a standing fault")
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
         monkeypatch.setattr(
             sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
@@ -2018,3 +2082,38 @@ class TestSessionsGatePolicyIsWired:
 
         assert excinfo.value.code == 8
         assert "did not run" in pinned_gate_file.read_text(encoding="utf-8")
+
+
+class TestPopulatedRootIsPinnedToMetadata:
+    """
+    ``archive_root_is_populated`` must look for ``session.meta.json``
+    specifically. A root full of stray files, or of transcripts whose
+    metadata never landed, is still a root the sessions sync cannot use.
+    """
+
+    def test_only_session_metadata_counts(self, tmp_path):
+        """
+        The mutation this kills: globbing ``*`` (or the transcript name)
+        instead of ``session.meta.json``.
+        """
+        root = tmp_path / "archive"
+        (root / "proj" / "sess").mkdir(parents=True)
+        (root / "proj" / "sess" / "session.jsonl").write_text(
+            "{}\n", encoding="utf-8",
+        )
+        (root / "README.md").write_text("not metadata\n", encoding="utf-8")
+
+        assert sync_mod.archive_root_is_populated(root) is False
+
+        (root / "proj" / "sess" / "session.meta.json").write_text(
+            "{}", encoding="utf-8",
+        )
+        assert sync_mod.archive_root_is_populated(root) is True
+
+    def test_it_finds_metadata_at_any_depth(self, tmp_path):
+        """Discovery walks recursively, so this must too."""
+        root = tmp_path / "archive"
+        deep = root / "a" / "b" / "c" / "sess"
+        deep.mkdir(parents=True)
+        (deep / "session.meta.json").write_text("{}", encoding="utf-8")
+        assert sync_mod.archive_root_is_populated(root) is True

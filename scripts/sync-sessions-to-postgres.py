@@ -31,6 +31,7 @@ Exit codes:
 import argparse
 import json
 import logging
+from dataclasses import dataclass
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -54,11 +55,8 @@ from _sync_gate import (  # noqa: E402
     CYCLE_IDLE,
     CYCLE_OUTAGE,
     SESSIONS_GATE as _DEFAULT_GATE_FILE,
-    CycleResult,
-    apply_sync_gate,
-    clear_gate,
-    raise_fault_gate,
-    write_gate,
+    GateEvent,
+    apply_gate,
 )
 from _pg_row_guard import (  # noqa: E402
     CAP_EXCEEDED,
@@ -100,6 +98,7 @@ DB_NAME = "claude_memories"
 # constant rather than the helper's default so tests can pin it to a tmp
 # directory: a test that writes the real gate would put a fabricated
 # problem in front of Shawn at his next session start.
+SCRIPT_NAME = "sync-sessions-to-postgres.py"
 GATE_FILE = _DEFAULT_GATE_FILE
 
 CURSOR_KEY = "sessions_sync_timestamp"
@@ -136,6 +135,24 @@ def setup_logging() -> logging.Logger:
     logger.addHandler(sh)
 
     return logger
+
+
+@dataclass(frozen=True)
+class CycleResult:
+    """
+    What one sync cycle learnt. Translated into a
+    :class:`_sync_gate.GateEvent` by ``main``.
+
+    ``connected`` is tri-state: True is evidence against an outage, False
+    is evidence for one, and None means the run never tried.
+    """
+
+    outcome: str
+    quarantined: int = 0
+    processed: int = 0
+    connected: bool | None = None
+    #: Why this cycle is degraded, if it is — the text the gate shows.
+    degraded_detail: str | None = None
 
 
 # ============================================================================
@@ -898,14 +915,29 @@ def _sync_locked(
                 "Archive root does not exist: %s — this run learnt "
                 "nothing; leaving any standing gate alone.", archive_root,
             )
-            return CycleResult(CYCLE_DEGRADED)
+            return CycleResult(
+                CYCLE_DEGRADED,
+                degraded_detail=(
+                    f"[sync-sessions-to-postgres.py] the archive root "
+                    f"{archive_root} does not exist. No session can be "
+                    f"synced — check the mount or the --archive-root path."
+                ),
+            )
         if not archive_root_is_populated(archive_root):
             logger.warning(
                 "Archive root %s contains no session.meta.json at all. "
                 "That is a missing mount or the wrong path, not an empty "
                 "week; leaving any standing gate alone.", archive_root,
             )
-            return CycleResult(CYCLE_DEGRADED)
+            return CycleResult(
+                CYCLE_DEGRADED,
+                degraded_detail=(
+                    f"[sync-sessions-to-postgres.py] the archive root "
+                    f"{archive_root} contains no session.meta.json at "
+                    f"all — a missing mount or the wrong path, not an "
+                    f"empty week. No session can be synced."
+                ),
+            )
         logger.info("No new sessions to sync")
         return CycleResult(CYCLE_IDLE)
 
@@ -1002,6 +1034,13 @@ def _sync_locked(
             CYCLE_DEGRADED,
             quarantined=len(result.quarantined),
             connected=True,
+            degraded_detail=(
+                f"[sync-sessions-to-postgres.py] "
+                f"{len(result.unexpected_drops)} session id(s) were "
+                f"silently dropped by the upsert and the cursor is HELD. "
+                f"Nothing new syncs until this is understood; the ids are "
+                f"in logs/sync-sessions.log."
+            ),
         )
     else:
         if result.quarantined:
@@ -1021,6 +1060,33 @@ def _sync_locked(
         quarantined=len(result.quarantined),
         processed=result.inserted,
         connected=result.db_available,
+    )
+
+
+def _gate_fault(
+    args: argparse.Namespace,
+    logger: logging.Logger,
+    detail: str,
+    *,
+    connected: bool | None = None,
+    correlated: bool = False,
+) -> None:
+    """Raise this script's fault (or correlated) problem and render the gate.
+
+    One helper so every exit path goes through the same state machine and
+    none of them can invent its own gate semantics.
+    """
+    apply_gate(
+        GateEvent(
+            outcome=CYCLE_DEGRADED,
+            connected=connected,
+            ack_quarantine=getattr(args, "ack_quarantine", False),
+            correlated_detail=detail if correlated else None,
+            fault_detail=None if correlated else detail,
+            script=SCRIPT_NAME,
+        ),
+        gate_path=GATE_FILE,
+        logger=logger,
     )
 
 
@@ -1050,6 +1116,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ack-quarantine", action="store_true",
+        help=(
+            "Clear the standing quarantine problem from the session-start "
+            "gate. Says you have looked at the quarantined rows; it does "
+            "not replay them."
+        ),
+    )
+    parser.add_argument(
         "--quarantine-anyway", action="store_true",
         help=(
             "Quarantine a batch that was wholly refused with one SQLSTATE "
@@ -1060,132 +1134,132 @@ def main() -> None:
     args = parser.parse_args()
 
     logger = setup_logging()
-    logger.info("Starting session sync (archive_root=%s)", args.archive_root)
+    logger.info("Starting session sync")
     try:
         cycle = sync(
             args.archive_root, args.full_resync, logger,
             args.quarantine_cap, args.quarantine_anyway,
         )
     except QuarantineCapExceeded as exc:
-        # Not an environment fault: the database is fine (finding M2).
+        # Not an environment fault: the database is fine, there are just
+        # too many refusals to skip without someone looking.
         logger.error("QUARANTINE CAP EXCEEDED — %s", exc)
-        raise_fault_gate(
+        _gate_fault(
+            args, logger,
             f"[sync-sessions-to-postgres.py] exit 7 — {exc} Raise the ceiling with "
             f"$PA_PG_QUARANTINE_CAP or --quarantine-cap once you have "
             f"looked at why so many sessions are being refused.",
-            gate_path=GATE_FILE,
-            logger=logger,
+            connected=True,
         )
         sys.exit(7)
     except CorrelatedRefusal as exc:
         # Ambiguous between poison and a schema fault, so it is named as
-        # ambiguous and the escape hatch is spelt out (finding C3).
+        # ambiguous and the escape hatch is spelt out.
         logger.error("CORRELATED REFUSAL — %s", exc)
-        raise_fault_gate(
-            f"[sync-sessions-to-postgres.py] exit 4 — {exc} Either correlated "
-            f"poison or a "
+        _gate_fault(
+            args, logger,
+            f"[sync-sessions-to-postgres.py] exit 4 — {exc} Either correlated poison or a "
             f"schema fault (a migration adding a NOT NULL column, a "
             f"unique index the upsert does not name). Check the schema; "
             f"if the rows really are poison, run exactly: "
             f"~/personal-assistant/venv/bin/python3 "
-            f"~/personal-assistant/scripts/sync-sessions-to-postgres.py "
-            f"--quarantine-anyway",
-            gate_path=GATE_FILE,
-            logger=logger,
+            f"~/personal-assistant/scripts/sync-sessions-to-postgres.py --quarantine-anyway",
+            connected=True, correlated=True,
         )
         sys.exit(4)
     except EnvironmentFault as exc:
         # Reachable database, wrong state: permissions, a missing table or
-        # column, an aborted transaction. Retrying cannot help, so say so
-        # with a distinct exit code rather than reporting success over a
-        # database we never wrote to (re-audit finding C1).
+        # column, an aborted transaction. Retrying cannot help.
         logger.error("ENVIRONMENT FAULT — %s", exc)
         logger.error(
             "Fix the database (grants, schema, migration state) and re-run. "
             "No session was quarantined and the cursor did not move."
         )
-        # Raise the session-start gate: an exit code that reaches only a
-        # log file is a signal nobody sees (re-audit finding C2).
-        raise_fault_gate(
-            f"[sync-sessions-to-postgres.py] exit 4 — environment fault: {exc} "
-            f"Cursor held, nothing quarantined; the sync is making no "
-            f"progress until this is fixed.",
-            gate_path=GATE_FILE,
-            logger=logger,
+        _gate_fault(
+            args, logger,
+            f"[sync-sessions-to-postgres.py] exit 4 — environment fault: {exc} Cursor held, "
+            f"nothing quarantined; the sync is making no progress until "
+            f"this is fixed.",
+            connected=True,
         )
         sys.exit(4)
     except CursorKeyVanished as exc:
         # A rebuild cleared the cursors while this cycle was running.
-        # Writing our timestamp back would mark sessions the rebuild
-        # destroyed as already synced (re-audit finding M3).
         logger.error("CURSOR RESET MID-RUN — %s", exc)
-        logger.error(
-            "Not writing the timestamp back. The next run starts from the "
-            "rebuilt cursor and replays from the archive tree, which is "
-            "what the rebuild intended."
-        )
-        raise_fault_gate(
+        _gate_fault(
+            args, logger,
             f"[sync-sessions-to-postgres.py] exit 6 — a rebuild cleared the sync cursor "
             f"mid-run, so this run's position was deliberately not "
             f"written back. Confirm the rebuild was intended, then let "
             f"the next run replay from the canonical.",
-            gate_path=GATE_FILE,
-            logger=logger,
+            connected=True,
         )
         sys.exit(6)
     except SystemExit as exc:
         # assert_schema_version exits 2 from deep inside the call stack,
-        # and SystemExit is a BaseException, so it sailed past the handler
-        # below and raised no gate at all (fourth re-audit, finding M2).
+        # and SystemExit is a BaseException, so it sails past the handler
+        # below unless it is caught here.
         if exc.code not in (0, None):
-            raise_fault_gate(
+            _gate_fault(
+                args, logger,
                 f"[sync-sessions-to-postgres.py] exit {exc.code} — the sync stopped before "
                 f"doing any work. Exit 2 is a schema-version mismatch: "
                 f"the script and the database disagree about the shape of "
                 f"the tables. Nothing was synced.",
-                gate_path=GATE_FILE,
-                logger=logger,
             )
         raise
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
-        # An unexpected exception is a fault the operator must see: it
-        # means the sync is dead in a way nobody anticipated, and it will
-        # stay dead every five minutes until someone looks (finding M2).
-        raise_fault_gate(
-            f"[sync-sessions-to-postgres.py] exit 1 — UNEXPECTED ERROR: {type(exc).__name__}: "
-            f"{exc} The sync is not running at all; see the traceback in "
-            f"the log. No session was synced.",
-            gate_path=GATE_FILE,
-            logger=logger,
+        # An unexpected exception is a fault the operator must see: the
+        # sync is dead in a way nobody anticipated and will stay dead
+        # every five minutes until someone looks.
+        _gate_fault(
+            args, logger,
+            f"[sync-sessions-to-postgres.py] exit 1 — UNEXPECTED ERROR: "
+            f"{type(exc).__name__}: {exc} The sync is not running at "
+            f"all; see the traceback in the log.",
         )
         sys.exit(1)
+
     if args.quarantine_anyway and cycle.outcome == CYCLE_CONTENDED:
         # The override is per-run and was NOT applied: another instance
-        # held the lock. Reporting "complete" would leave the operator
-        # believing they had cleared the batch (fourth re-audit, low).
+        # held the lock. Reporting success would leave the operator
+        # believing they had cleared the batch.
         logger.error(
             "--quarantine-anyway was requested but another instance held "
             "the advisory lock, so this run did nothing and the override "
             "was not applied. Re-run it."
         )
-        raise_fault_gate(
+        _gate_fault(
+            args, logger,
             "[sync-sessions-to-postgres.py] exit 8 — --quarantine-anyway did not run: another "
             "instance held the advisory lock. The batch is still held; "
             "re-run the override.",
-            gate_path=GATE_FILE,
-            logger=logger,
+            connected=True,
         )
         sys.exit(8)
 
-    apply_sync_gate(
-        cycle,
-        script="sync-sessions-to-postgres.py",
+    apply_gate(
+        GateEvent(
+            outcome=cycle.outcome,
+            connected=cycle.connected,
+            processed=cycle.processed,
+            quarantined=cycle.quarantined,
+            quarantine_file=QUARANTINE_FILE,
+            degraded_detail=cycle.degraded_detail,
+            ack_quarantine=args.ack_quarantine,
+            script="sync-sessions-to-postgres.py",
+        ),
         gate_path=GATE_FILE,
-        quarantine_file=QUARANTINE_FILE,
         logger=logger,
     )
-    logger.info("Session sync complete (outcome=%s)", cycle.outcome)
+    if args.ack_quarantine:
+        logger.warning(
+            "--ack-quarantine: the standing quarantine problem has been "
+            "cleared by hand. The quarantined rows themselves are still "
+            "in %s and still absent from PostgreSQL.", QUARANTINE_FILE,
+        )
+    logger.info("session sync complete (outcome=%s)", cycle.outcome)
 
 
 if __name__ == "__main__":
