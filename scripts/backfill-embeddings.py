@@ -64,6 +64,8 @@ from embed import (  # noqa: E402
 )
 # Schema-version guard (audit IC5 / B-X1).
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+# Outage-vs-refused-row classifier (audit round two, findings P2 and P7).
+from _pg_row_guard import is_outage_error  # noqa: E402
 
 
 # ============================================================================
@@ -133,28 +135,63 @@ def fetch_batch(
 def update_embeddings(
     conn: psycopg2.extensions.connection,
     id_embedding_pairs: list[tuple[str, list[float]]],
+    logger: logging.Logger | None = None,
 ) -> int:
     """
     Update memories with generated embeddings.
 
+    Audit round two, finding P7 (lens A-M5): this used to call
+    ``execute_batch`` and ``commit`` with no ``try``. A single row the
+    database refused propagated out of :func:`backfill` uncaught — the
+    batch's work rolled back, the connection was left in an
+    aborted-transaction state, and the process tracebacked. That
+    contradicted ``--catch-up``'s documented promise to continue past
+    individual batch failures, which only ever covered *embedding*
+    failures, never database ones.
+
     Args:
         conn: PostgreSQL connection.
         id_embedding_pairs: List of (memory_id, embedding_vector) tuples.
+        logger: Optional logger for the refusal message.
 
     Returns:
-        Number of rows updated.
+        Number of rows updated; 0 when the database refused the batch on
+        content grounds, which the caller then handles exactly as it
+        handles an all-failed embedding batch.
+
+    Raises:
+        psycopg2.Error: Re-raised when the failure is an outage
+            (OperationalError / InterfaceError). The run cannot continue
+            without a database, and pretending otherwise would walk the
+            whole table reporting zero progress.
     """
     if not id_embedding_pairs:
         return 0
 
-    with conn.cursor() as cur:
-        psycopg2.extras.execute_batch(
-            cur,
-            "UPDATE memories SET embedding = %s::vector WHERE id = %s",
-            [(json.dumps(emb), mid) for mid, emb in id_embedding_pairs],
-            page_size=100,
-        )
-    conn.commit()
+    try:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_batch(
+                cur,
+                "UPDATE memories SET embedding = %s::vector WHERE id = %s",
+                [(json.dumps(emb), mid) for mid, emb in id_embedding_pairs],
+                page_size=100,
+            )
+        conn.commit()
+    except (psycopg2.Error, ValueError, TypeError) as exc:
+        # Clear the aborted transaction so the *next* batch can proceed.
+        try:
+            conn.rollback()
+        except psycopg2.Error:
+            pass
+        if is_outage_error(exc, psycopg2):
+            raise
+        if logger is not None:
+            logger.error(
+                "PostgreSQL refused the embedding update for %d row(s) "
+                "(%s) — treating the batch as failed and continuing.",
+                len(id_embedding_pairs), str(exc).strip(),
+            )
+        return 0
     return len(id_embedding_pairs)
 
 
@@ -232,7 +269,15 @@ def backfill(
     offset = 0
 
     while total_embedded < to_process:
-        batch = fetch_batch(conn, batch_size, offset=offset)
+        # Clamp the fetch to what is still allowed (audit round two,
+        # finding P6 / lens A-M4). Without this, ``--limit 5
+        # --batch-size 200`` embedded 200 records: the LIMIT sent to
+        # PostgreSQL was the batch size, and the loop only re-checked its
+        # allowance *after* the batch had been embedded and written. The
+        # CLI help says "Process at most N records"; now it is true, and
+        # a `--limit` is a real spend ceiling on Ollama time.
+        this_batch = min(batch_size, to_process - total_embedded)
+        batch = fetch_batch(conn, this_batch, offset=offset)
         if not batch:
             break
 
@@ -268,8 +313,20 @@ def backfill(
             if emb is not None:
                 pairs.append((mid, emb))
 
-        # Update database
-        updated = update_embeddings(conn, pairs)
+        # Update database. A refused batch comes back as 0 and is handled
+        # below exactly like an all-failed embedding batch; only a genuine
+        # outage escapes, and there is nothing useful left to do with the
+        # rest of the table (audit round two, finding P7).
+        try:
+            updated = update_embeddings(conn, pairs, logger=logger)
+        except psycopg2.Error as exc:
+            logger.error(
+                "PostgreSQL became unreachable mid-run (%s) — stopping "
+                "after %d embedded row(s). Re-run once it is back; the "
+                "remaining rows still have NULL embeddings.",
+                str(exc).strip(), total_embedded,
+            )
+            break
         total_embedded += updated
 
         skipped = len(records) - len(pairs)
