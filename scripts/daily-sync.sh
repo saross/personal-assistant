@@ -65,6 +65,14 @@ if [[ -z "${HOME:-}" ]]; then
     echo "[daily-sync] ERROR: HOME is unset; the gate files this script writes have nowhere to go" >&2
     exit 2
 fi
+# audit L2 (third re-audit): a HOME naming a directory that does not
+# exist is as broken as an unset one, and `mkdir -p` below would silently
+# conjure the whole path — writing gate files into a tree nothing else
+# reads, on a machine whose home is (say) not yet mounted.
+if [[ ! -d "$HOME" ]]; then
+    echo "[daily-sync] ERROR: HOME ($HOME) is not a directory; refusing to create it" >&2
+    exit 2
+fi
 CACHE_DIR="$HOME/.cache"
 if ! mkdir -p "$CACHE_DIR" 2>/dev/null || [[ ! -w "$CACHE_DIR" ]]; then
     echo "[daily-sync] ERROR: $CACHE_DIR is missing or not writable; gate files cannot be written" >&2
@@ -482,8 +490,12 @@ resolve_rebase_conflicts() {
 #   - nothing is popped that this run did not push (a plain `git stash pop`
 #     takes whatever is on top, which may be a concurrent session's);
 #   - the index is re-resolved before each pop, because indices shift;
-#   - they are popped oldest-first, so where two of them touch the same
-#     file the most recent state ends up on top.
+#   - they are popped oldest-first, which is the order the changes were
+#     made. Note what this does NOT buy: two stashes that touch the same
+#     file do not merge. The first pop restores the file and git REFUSES
+#     the second ("your local changes would be overwritten"), whichever
+#     order they are tried in. Ordering only decides which of the two is
+#     left on the stack — and the EXIT handler gates that one by SHA.
 # ---------------------------------------------------------------------------
 data_stash_shas=()
 parent_stash_shas=()
@@ -591,8 +603,21 @@ reconcile_orphaned_stashes() {
             log "  ${sha:0:8} is no longer on the stack — skipping"
             continue
         fi
-        if git stash pop "$ref" >>"$LOG_FILE" 2>&1; then
-            log "  recovered ${sha:0:8} ($ref)"
+        # audit L1 (third re-audit): apply by COMMIT, drop by selector.
+        # `git stash pop <selector>` re-reads the selector at pop time, so
+        # a concurrent `git stash push` between the resolution above and
+        # the pop would silently shift it onto somebody else's entry.
+        # A stash entry is a commit: `git stash apply <sha>` cannot be
+        # aimed at the wrong one. The drop still needs a selector, so
+        # re-resolve it immediately afterwards, when the window is a
+        # single command wide and applying the wrong entry is no longer
+        # possible.
+        if git stash apply "$sha" >>"$LOG_FILE" 2>&1; then
+            if ref="$(stash_ref_for "$DATA_DIR" "$sha")"; then
+                git stash drop "$ref" >>"$LOG_FILE" 2>&1 \
+                    || log "  WARNING: applied ${sha:0:8} but could not drop $ref"
+            fi
+            log "  recovered ${sha:0:8}"
         else
             # A conflicted pop leaves the tree half-merged and preserves the
             # stash. Do NOT try to tidy up: `git checkout -- .` here would
@@ -844,10 +869,11 @@ fi
 # to be on top of the stack.
 if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
     log "data submodule: popping ${#data_stash_shas[@]} stashed change set(s)"
-    # Oldest first, so where two of them touch one file the most recent
-    # state ends up on top. The list is NOT cleared here: an entry that
-    # pops leaves the stack, so whatever is still resolvable at exit is
-    # still unrecovered, and the EXIT handler gates exactly that.
+    # Oldest first — the order the changes were made. Two stashes that
+    # touch the same file cannot both apply: the second pop is refused,
+    # and the entry it names is gated by the EXIT handler. The list is
+    # NOT cleared here: an entry that pops leaves the stack, so whatever
+    # is still resolvable at exit is still unrecovered.
     for (( _si=0; _si<${#data_stash_shas[@]}; _si++ )); do
         _sha="${data_stash_shas[_si]}"
         if ! _sref="$(stash_ref_for "$DATA_DIR" "$_sha")"; then

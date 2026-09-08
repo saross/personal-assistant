@@ -1017,6 +1017,24 @@ class TestUnusableHomeIsNotLockContention:
         assert "HOME is unset" in combined
         assert world.published_data_head() == before
 
+    def test_a_nonexistent_home_is_refused_not_created(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit L2: `mkdir -p "$HOME/.cache"` would conjure the whole
+        path, writing gate files into a tree nothing else reads — on a
+        machine whose home is, say, not yet mounted."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-l2")
+        absent = world.root / "no-such-home"
+        before = world.published_data_head()
+
+        result = world.run_sync(machine, HOME=str(absent))
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "not a directory" in combined
+        assert not absent.exists(), "the missing HOME was created anyway"
+        assert world.published_data_head() == before
+
     def test_unwritable_cache_fails_before_any_commit(
         self, world: SyncWorld
     ) -> None:
