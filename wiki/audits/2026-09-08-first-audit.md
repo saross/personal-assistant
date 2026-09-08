@@ -145,6 +145,8 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | **round 2** (branch `claude/audit-hook-tests`) (filter; fixture from a real transcript shape) |
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
+| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
+| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -188,6 +190,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (CONFIRMED by two round-two agents; `rebuild.log` grew during today's runs) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
 `set -u`; raw interpolation into `bash -c`/`ssh`/Python in
@@ -263,12 +266,13 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 - Round 1 (done, 0577648): tranche 0. Re-audited twice: round 1b (06225a0,
   5798dc9) and round 1c (0f94722).
 - Round 2, hooks (done, 300ee10): H2–H4, H8–H13, H15–H18. Re-audit pending.
-- Round 2, remainder (in progress on four branches, each in its own
-  worktree, to be reviewed and merged by PR): hook tests H5–H7, H20–H22 and
-  the checker's tests and two fixes (`claude/audit-hook-tests`); sync S1,
-  S3–S7, S9–S17, S19–S21 (`claude/audit-sync-writers`,
-  `claude/audit-sync-helpers`); Postgres P1–P10, P12, P14, P16
-  (`claude/audit-postgres`). Each branch is re-audited by a fresh agent
-  before merge.
+- Round 2, remainder (four branches, each in its own worktree, reviewed and
+  merged by PR after a fresh-agent re-audit): hook tests H5–H7, H20–H22 and
+  the checker's tests and two fixes (PR #115, `claude/audit-hook-tests`);
+  sync helpers S8, S11, S13–S16, S20 (PR #114, `claude/audit-sync-helpers`);
+  sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (`claude/audit-sync-writers`,
+  in progress); Postgres P1–P10, P12, P14, P16 (`claude/audit-postgres`, in
+  progress).
+- Round 3 (queued, on main after the branches merge): H25, H26, S22.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
