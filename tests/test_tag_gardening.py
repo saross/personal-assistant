@@ -1630,3 +1630,61 @@ class TestMergePreservesEverythingElse:
 
         lines = jsonl.read_text(encoding="utf-8").split("\n")[:-1]
         assert lines[1] == untouched, "an untouched record was re-serialised"
+
+
+class TestMergeHoldsTheCorpusLock:
+    """The merge's read-modify-rename window must exclude the appender."""
+
+    def test_merge_waits_for_a_shared_lock_holder(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """A concurrent ``LOCK_SH`` on memories.jsonl blocks the rewrite.
+
+        Uses the real lock helper from a second process — the extraction
+        hook's append pattern. Kills the mutation that replaces
+        ``lock_jsonl_for_rewrite(MEMORIES_JSONL)`` with a nullcontext: an
+        append landing between the read and the rename is then overwritten.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _SHARED_LOCK_HOLDER, str(jsonl)],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "locked"
+            finished = threading.Event()
+
+            def run_merge() -> None:
+                with (
+                    patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+                    patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+                    patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+                ):
+                    tag_gardening.cmd_merge(
+                        argparse.Namespace(plan=str(plan_file), dry_run=False)
+                    )
+                finished.set()
+
+            worker = threading.Thread(target=run_merge, daemon=True)
+            worker.start()
+            assert not finished.wait(0.5), (
+                "the merge rewrote the corpus while another process held "
+                "LOCK_SH on it"
+            )
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+            if holder.stdout is not None:
+                holder.stdout.close()
+
+        assert finished.wait(10), "the merge must proceed once unlocked"
+        worker.join(timeout=10)
