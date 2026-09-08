@@ -150,6 +150,20 @@ PROBLEM_DEGRADED = "degraded"
 PROBLEM_OUTAGE = "outage"
 PROBLEM_REFUSALS = "refusals"
 
+#: The word the quarantine problem uses for a row PostgreSQL would not
+#: accept. Named, not inlined, because three test modules assert on this
+#: exact spelling: with the word written out in both places, rewording the
+#: message leaves every guard passing against a sentence the code no longer
+#: emits (eleventh re-audit follow-up L1).
+QUARANTINE_REFUSED_WORD = "REFUSED"
+
+#: The fragment that says the acknowledged quarantine position was reset
+#: under the operator's feet, so rows they had already dismissed are being
+#: counted again. Same reason as above: shared by the message and by the
+#: tests that assert it appears — and, just as importantly, by the tests
+#: that assert it does NOT (an ordinary quarantine must not claim a reset).
+CURSOR_RESET_PHRASE = "cursor was reset"
+
 #: Render order, most actionable first. Stable, so the gate text does not
 #: churn between runs for reasons nobody changed.
 PROBLEM_ORDER: tuple[str, ...] = (
@@ -290,14 +304,15 @@ def quarantine_detail(
     """Compose the quarantine problem's text, naming the acknowledgement."""
     where = path if path is not None else "the quarantine file"
     reset_note = (
-        " The sync cursor was reset since these were acknowledged, so rows "
-        "you had already dismissed are being offered again and are counted "
-        "here."
+        f" The sync {CURSOR_RESET_PHRASE} since these were acknowledged, so "
+        f"rows you had already dismissed are being offered again and are "
+        f"counted here."
         if after_reset else ""
     )
     return (
-        f"[{script}] {count} row(s) have been REFUSED by PostgreSQL and "
-        f"quarantined to {where}. They are NOT in the database and the "
+        f"[{script}] {count} row(s) have been {QUARANTINE_REFUSED_WORD} "
+        f"by PostgreSQL and quarantined to {where}. They are NOT in the "
+        f"database and the "
         f"cursor has moved past them.{reset_note} Repair and replay them, "
         f"then clear this with: ~/personal-assistant/venv/bin/python3 "
         f"~/personal-assistant/scripts/{script} --ack-quarantine"

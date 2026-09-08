@@ -32,6 +32,12 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _sync_gate  # noqa: E402
 
+# The message spellings asserted below, shared with the code that writes
+# them (eleventh re-audit follow-up L1). Inlined, a reworded gate message
+# left every one of these guards passing against a sentence the code no
+# longer emits; imported, the rename fails here first.
+from _sync_gate import CURSOR_RESET_PHRASE  # noqa: E402
+
 
 def _ack_worker(gate_path: str) -> None:
     """Acknowledge the quarantine, as `--ack-quarantine` does."""
@@ -2016,7 +2022,7 @@ class TestTheCursorGoingBackwardsIsARebuild:
         )
 
         assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
-        assert "cursor was reset" in state.problems[
+        assert CURSOR_RESET_PHRASE in state.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail
         assert self._state_file(gate)["acked"]["acked_position"] == 0
@@ -2110,7 +2116,7 @@ class TestAnExitSixRecordsWhereTheCursorEndedUp:
             reset_quarantine_ack=True, quarantine_entries=2,
             cursor_seen=True, cursor_position_after=None,
         )
-        assert "cursor was reset" in state.problems[
+        assert CURSOR_RESET_PHRASE in state.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail
 
@@ -2123,7 +2129,7 @@ class TestAnExitSixRecordsWhereTheCursorEndedUp:
             cursor_position=None, cursor_position_after=9,
         )
         assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
-        assert "cursor was reset" not in state.problems[
+        assert CURSOR_RESET_PHRASE not in state.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail, "the reset was announced twice for one rebuild"
 

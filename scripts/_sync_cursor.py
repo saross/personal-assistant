@@ -319,9 +319,20 @@ def read_quarantine_entries(quarantine_path: Path) -> list[dict] | None:
     ``None`` (missing or unreadable) is emphatically not "empty": the
     data submodule being unmounted must not erase a standing alarm
     (ninth re-audit, finding M1).
+
+    Decoded as ``utf-8-sig``, so a leading byte-order mark is consumed
+    rather than glued to the first record's opening brace. With plain
+    ``utf-8`` the mark left ``\ufeff{...}``, which ``json.loads``
+    rejects, and the FIRST quarantined row then vanished from all three
+    readers at once — uncounted by the gate, unmatched by the duplicate
+    check (so re-offered rows appended again), and absent from
+    ``/memory-health``. An editor that saved the file, or any tool that
+    wrote it as UTF-8-with-BOM, was enough (eleventh re-audit follow-up
+    L6). ``utf-8-sig`` is a superset of ``utf-8`` here: a file without a
+    mark decodes exactly as before.
     """
     try:
-        with quarantine_path.open("r", encoding="utf-8") as handle:
+        with quarantine_path.open("r", encoding="utf-8-sig") as handle:
             entries: list[dict] = []
             for line in handle:
                 stripped = line.strip()

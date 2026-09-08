@@ -2391,8 +2391,11 @@ every round with its re-audit outcome, six decisions for Shawn).
   history purge.
 - **Open.** Round 3c (`claude/audit-round3c`, running): the pre-existing
   partial-stash-apply loss (S27), the stash-state sidecar mediums (S28), the
-  shrink detector's coverage (S23). Round 3b: `surfacing_log.py` (S22's
-  third member). Tranches 3b–6 of the original plan not yet run. Astra owes
+  shrink detector's coverage (S23); its re-audit found C1 and M1–M5, fix
+  round running. Round 3b (`surfacing_log.py`, S22's third member; L1 and
+  L6 of PR #117's eleventh re-audit) merged as PR #120 (69a7590); six
+  follow-ups recorded in the audit report. Tranches 3b–6 of the original
+  plan not yet run. Astra owes
   a re-review of PR #113 and a mirror of the slug rule (message of
   02:19Z); gpt-hub PR #3 unreviewed by me.
 

@@ -232,13 +232,13 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | fixed in PR #116 (merged 0d1d391) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | fixed in PR #116 (merged 0d1d391) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
-| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **round 3c** (`claude/audit-round3c`) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — fixed in **PR #120** (round 3b, merged 69a7590: the path resolves at call time, nothing opens at import, the production path is tested in a child process) |
+| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **PR #119** (`claude/audit-round3c`; re-audit running) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
 | S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | fixed in PR #116: every non-zero exit writes a gate line |
-| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **round 3c**: a `partial` outcome — compare the stash's untracked tree (`<sha>^3`) with the worktree before any drop |
-| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **round 3c** |
+| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **PR #119** (`claude/audit-round3c`; re-audit running) |
+| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **PR #119** (`claude/audit-round3c`; re-audit running) |
 | S4 note | Measured on the branch: neither `--ours` nor `--theirs` changes a conflicted gitlink's index entry; the following `git add` records the checked-out HEAD, which is why the live sync resolved these correctly despite the inverted flag. The fix is legibility, not data loss. | recorded |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
@@ -257,7 +257,7 @@ callers.
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| P1 | `scripts/sync-sessions-to-postgres.py:543-552,652-658` — every `psycopg2.Error` is reported as "PostgreSQL may be down" and the cursor held. Two archive metadata files carry a NUL in LLM-generated narrative; Postgres rejects ` ` in jsonb; the `sessions` table has been stale since 2026-08-17 with 48 sessions unsynced and the wrong diagnosis in the log. | CONFIRMED live | fixed in PR #117 (merged 773a0bd) (split outage from data errors; quarantine the row; per-row fallback after a failed batch; sanitise NUL at ingest) |
+| P1 | `scripts/sync-sessions-to-postgres.py:543-552,652-658` — every `psycopg2.Error` is reported as "PostgreSQL may be down" and the cursor held. Two archive metadata files carry a NUL in LLM-generated narrative; Postgres rejects `\x00` in jsonb; the `sessions` table has been stale since 2026-08-17 with 48 sessions unsynced and the wrong diagnosis in the log. | CONFIRMED live | fixed in PR #117 (merged 773a0bd) (split outage from data errors; quarantine the row; per-row fallback after a failed batch; sanitise NUL at ingest) |
 | P2 | `scripts/sync-to-postgres.py:656-665,950-954,312` — same conflation in the memories path; `created_at` unguarded (`TIMESTAMPTZ NOT NULL`); a NUL in content raises `ValueError` outside the handler. | CONFIRMED by reading; free-text dates have reached `deadline_at` repeatedly | fixed in PR #117 (merged 773a0bd). Live confirmation found at merge time: `logs/sync-cron.log` holds 2,527 refusals of one memory (`2026-06-15-46328e405d0c`, no `session_id`, SQLSTATE 23502), each logged as "PostgreSQL may be down"; the merged sync quarantines it on the first tick and raises the quarantine gate, to be acknowledged with `--ack-quarantine` once the record is repaired |
 | P3 | `scripts/embed.py:37` — `OLLAMA_BASE_URL=""` from `ollama-endpoint.sh`'s failure path yields `ValueError: unknown url type` outside the degradation ladder; the documented fallback does not exist. | CONFIRMED by repro | fixed in PR #117 (merged 773a0bd) (`or` default; fix the wrapper's comment) |
 
@@ -284,6 +284,134 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs
 `splitlines()`; id-less stash lines; U+2028 latent; stale comments; docstring
 "bounded memory" claim.
+
+## Tranche 3b — memory-store writers (both lenses, 2026-09-08 evening)
+
+Scope: `dedup-memories.py`, `tag-gardening.py`, `recover_anchors.py`,
+`sync_memory_edit.py`, `archive-memories.py`, `apply-decay.py`
+(PostgreSQL-only), `monthly-archive.py`, `_timestamps.py`,
+`_schema_version.py`, and their tests. Lens A: 3 critical, 10 medium, 8 low.
+Lens B: 63 mutations over 170 tests; 4 critical, 11 medium. Fix round 4a on
+`claude/audit-round4a`.
+
+### Critical (writers)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| W1 | `scripts/dedup-memories.py:293` writes `ensure_ascii=False` and `:98` reads with `splitlines()`: a record holding U+2028/U+2029/U+0085 (escaped by the hook's `json.dumps`) is split into two malformed lines on the second run; same write at `tag-gardening.py:591,647`; the Postgres cursor is a `splitlines()` count, so it drifts from every file-iteration reader | CONFIRMED by repro | **next** (round 4a, `claude/audit-round4a`) |
+| W2 | `scripts/tag-gardening.py:744` — `orphans --action clean` rewrites the protected `tag-vocabulary.txt` with a bare `write_text`: no guard, no lock, no temp-and-rename; the hook appends under a shared lock, `/tags` step 7 runs it routinely | CONFIRMED by repro | **next** (round 4a, `claude/audit-round4a`) |
+| W3 | `scripts/recover_anchors.py:434,302-352` — the plan is built outside the rewrite lock and whole stale records are written back, reverting a `/forget` or `/update` that landed in between (the docstring claims parity with `archive-memories`, which re-reads inside the lock) | CONFIRMED by repro | **next** (round 4a, `claude/audit-round4a`) |
+| WT1 | `scripts/sync_memory_edit.py:107-110` — the UPDATE's WHERE clause is untested (`id != %s` stays green; the test compares the constant with itself); a `/forget` would blank every other Postgres row | CONFIRMED (mutation) | **next** (round 4a, `claude/audit-round4a`) |
+| WT2 | `scripts/recover_anchors.py:333` — the write path is untested: deleting the verbatim `else: out.write(line)` (corpus reduced to the modified records), the guard (:317), the lock (:319), the atomic rename (:320), and the `--apply` gate (:441) all stay green | CONFIRMED (mutation) | **next** (round 4a, `claude/audit-round4a`) |
+| WT3 | `scripts/dedup-memories.py` has no test file; its module constants resolve to the real store from `__file__` | CONFIRMED | **next** (round 4a, `claude/audit-round4a`) |
+| WT4 | A test in `tests/test_tag_gardening.py` that forgets to patch the store path rewrites the REAL canonical store and the suite stays green: the autouse `_bypass_rewrite_guard` (:31-56) noops the one refusing check and the conftest hermeticity guard (`tests/conftest.py:220-260`) watches only `~/.cache` | CONFIRMED by repro in a copy | **next** (round 4a, `claude/audit-round4a`) |
+
+### Medium (writers)
+
+| # | Finding | Disposition |
+|---|---|---|
+| W4 | `tag-gardening.py:676-687,744` — both vocabulary rewrites drop every `#` comment line (eight section headers live) | **next** (round 4a, `claude/audit-round4a`) |
+| W5 | `tag-gardening.py:501` — the bulk guard runs before the `--dry-run` branch: a dry run takes the exclusive daily-sync lock and exits 2 on a dirty tree | **next** (round 4a, `claude/audit-round4a`) |
+| W6 | `dedup-memories.py:383` logs a backup file that nothing creates; the script's only deletion-safety claim is false | **next** (round 4a, `claude/audit-round4a`) |
+| W7 | `recover_anchors.py:233,328` — `json.loads` with no `try`: one malformed line aborts both modes with a traceback and orphans `memories.jsonl.tmp` | **next** (round 4a, `claude/audit-round4a`) |
+| W8 | `tag-gardening.py:692` — a tag merge never reaches Postgres and the printed remedy (`sync-to-postgres.py`, which is insert-only past the cursor) is wrong; `commands/tags.md:167` says a full rebuild | **next** (round 4a, `claude/audit-round4a`) |
+| W9 | Line-position cursor plus mid-file deletion: `archive-memories --apply` or `dedup-memories` run with an unsynced backlog leaves the deleted count of never-synced records below the cursor forever (`sync-to-postgres.py:1354-1382` resets only when the cursor passes the end); `monthly-archive` syncs first (SUSPECTED, no Postgres) | **next** (round 4a, `claude/audit-round4a`) (refuse while a backlog exists) |
+| W10 | `dedup-memories.py:160,292` — the re-id path records no old-to-new mapping; `surfaced.log`, `superseded_by`, and the Postgres row and embedding under the old id are orphaned | **next** (round 4a, `claude/audit-round4a`) |
+| W11 | `sync_memory_edit.py:55,107` — `/update` replaces content but keeps the embedding; refill is `WHERE embedding IS NULL`, so semantic recall matches the old text (SUSPECTED) | **next** (round 4a, `claude/audit-round4a`) (`embedding = NULL` on content change) |
+| W12 | `tag-gardening.py:541,581,634` — plan keys stored raw, matched lower-cased: a loser with any uppercase replaces nothing while reporting "Tags retired: 1" | **next** (round 4a, `claude/audit-round4a`) |
+| W13 | `dedup-memories.py:244,402` — one unclassified group aborts the whole run (invariant exit) though the comment says such groups are kept verbatim | **next** (round 4a, `claude/audit-round4a`) |
+| WT5 | `tag-gardening.py:613` — a malformed line is dropped on decode error and no test notices (`archive-memories` has the equivalent test) | **next** (round 4a, `claude/audit-round4a`) |
+| WT6 | `tag-gardening.py:501-505,603,673,662-664` — guard, both flocks, and the atomic rename unpinned | **next** (round 4a, `claude/audit-round4a`) |
+| WT7 | `apply-decay.py:107,111-112,102` — the decay predicate is asserted by substring: `NOW() + interval`, `<` to `>`, `AND` to `OR` all green | **next** (round 4a, `claude/audit-round4a`) |
+| WT8 | `apply-decay.py:88-93` — the schema-version call is deletable | **next** (round 4a, `claude/audit-round4a`) |
+| WT9 | `archive-memories.py:337,372,534` — JSONL flock, atomic rename, and `--apply` gate unpinned (a dry run that archives, rewrites, and commits stays green) | **next** (round 4a, `claude/audit-round4a`) |
+| WT10 | `archive-memories.py:427-430` — the `Rewrite-Class: bulk` trailer (what stops the daily sync's shrink detector resetting the commit) is droppable | **next** (round 4a, `claude/audit-round4a`) |
+| WT11 | `archive-memories.py:441-442` — `git add --literal-pathspecs -- <paths>` to `add -A` stays green (sweeps unstaged work) | **next** (round 4a, `claude/audit-round4a`) |
+| WT12 | `recover_anchors.py:155,185` — stale `verified` kept in the written record; `revisions` overwritten instead of appended | **next** (round 4a, `claude/audit-round4a`) |
+| WT13 | `recover_anchors.py:133,100,234` — "already resolves" gate, absolute refs, and `build_plans` selecting `verified == "true"` all green; `build_plans` untested | **next** (round 4a, `claude/audit-round4a`) |
+| WT14 | `sync_memory_edit.py:128` — dropping the `with conn` transaction stays green: the UPDATE is discarded on close while "PostgreSQL reconciled" prints | **next** (round 4a, `claude/audit-round4a`) |
+| WT15 | `monthly-archive.py:112,491-494,484-485` — the sanity cap is asserted as `CAP + 1` (never pinned), the post-apply re-check is deletable, the partition HALT can become `return 0` | **next** (round 4a, `claude/audit-round4a`) |
+
+Lows recorded: W14 parent directories not fsynced; W15 `tag-gardening`
+rewrites without flush or fsync and builds the corpus in memory; W16 merge
+log stamped naive local time; W17 `sync_memory_edit` skips
+`assert_schema_version`; W18 `apply-decay` has no `PERMANENT_OVERRIDES` net
+and the schema seed cannot repair a legacy 180-day row; W19 partition month
+is UTC (10-11 h out of step with the local month — decision D7); W20
+`recover_anchors` commits after releasing the lock (the S15 window); W21
+`archive-memories` and `recover_anchors` pin the corpus to `Path.home()`, so
+an `--apply` from a copy targets the live store (deliberate; decision D8);
+WT16-19 case-folding, field precedence, a vacuous `Z` test on Python 3.13,
+fsync and the merge log unobserved. Cross-file: `_timestamps.py` is imported
+by no writer; serialisation differs between the hook and two writers (W1);
+Postgres change detection is line position only, so every in-place edit needs
+its own surgical UPDATE (`tag-gardening` has none); adjacent,
+`hooks/extraction-hook.py:1375` ignores the return value of `os.write`.
+Verified correct: decay boundaries and edge cases, CRLF round-trip,
+blank-line preservation in three writers, partition append fsynced before the
+corpus rename, idempotent retry, locks held across read-modify-rename (except
+W3), temp files beside their targets, no injection, no import-time writes,
+UK spelling.
+
+## Tranche 3c — retrieval and serving (both lenses, 2026-09-08 evening)
+
+Scope: `fetch-memories.py`, `memory_mcp.py`, `search-sessions.py`,
+`surfacing_stats.py`, `log-recall.py`, `log-confab-flag.py`,
+`digest-preview.py`, `project_id.py`, `resolve_session_id.py`, their tests,
+and the `/recall` and `/forget` command documents. Lens A: 4 critical,
+5 medium, 10 low. Lens B: 18 mutations, 18 survived; 8 critical, 8 medium.
+Fix round 4b on `claude/audit-round4b`.
+
+### Critical (retrieval)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| R1 | `scripts/fetch-memories.py:513-525,552-555,608-611` — the JSONL fallback sorts naive and aware datetimes together (date-only legacy records are still on disk), so `/recall`'s depth fetch dies with a `TypeError` exactly when Postgres is down; the retrieval hook fixed the same defect at `session-start-retrieval.py:452` and this script did not | CONFIRMED by repro | **next** (round 4b, `claude/audit-round4b`) |
+| R2 | `scripts/fetch-memories.py:462-510` (`matches_filters`) and `scripts/memory_mcp.py:250-271,433-445` never check `is_active`, so every non-Postgres path returns forgotten memories, ranked first, unmarked; `commands/forget.md:62-65` promises the opposite | CONFIRMED by repro | **next** (round 4b, `claude/audit-round4b`) |
+| R3 | `commands/recall.md:57-70,234` — the `/recall` procedure itself filters on content, category, and tag only and states that all memories are searched; it is the path `/forget` names as its id source | CONFIRMED by reading | **next** (round 4b, `claude/audit-round4b`) |
+| R4 | `scripts/project_id.py:56` does not encode `.` the way Claude Code does (live: `-home-shawn-personal-assistant--claude-worktrees-…`, double dash); any cwd with a dot component sees zero same-project memories, which is the drift the module docstring exists to prevent; `resolve()` breaks a symlinked cwd the same way | CONFIRMED by repro and directory evidence | **next** (round 4b, `claude/audit-round4b`) |
+| RT1 | `scripts/fetch-memories.py:241-301` — the whole Postgres query body is unreachable by the suite (a hard-coded result after connect passes 130 of 130); reading `memories` instead of `active_memories` (:248, and `memory_mcp.py:491`), `AND` to `OR` (:281-283), `DESC` to `ASC`, and `LIMIT` ignored all stay green | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
+| RT2 | `scripts/fetch-memories.py:710-803` — `main()` has no test: deleting the JSONL fallback and the `--limit` validation pass; `parse_args`, `_staleness_warning`, and `_log_invocation` are unreferenced by any test | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
+| RT3 | `scripts/memory_mcp.py:390-392,251-271` — `search_sessions` returning a hard-coded list is green; the JSONL fallback test stubs `matches_filters` to `True`, so dropping the project filter, reversing the sort, and dropping the limit pass together | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
+| RT4 | `scripts/search-sessions.py` has zero coverage in the full suite (LIKE escaping, the role filter, and the rank order all mutable); `scripts/fetch-memories.py:318-430` `try_semantic` is never called (worst matches first stays green) | CONFIRMED (mutation, full suite) | **next** (round 4b, `claude/audit-round4b`) |
+
+### Medium (retrieval)
+
+| # | Finding | Disposition |
+|---|---|---|
+| R5 | `scripts/memory_mcp.py` — six tools serve memories and none logs to `surfaced.log`; `tier-2-retrieval.md:82-92` names three paths, MCP is an undeclared fourth, so earned-utility counts are biased | **next** (round 4b, `claude/audit-round4b`) |
+| R6 | `scripts/fetch-memories.py:732-757` — `--semantic` silently discards `--query` and `--id`, and an empty semantic result never falls back to FTS despite the stderr text (SUSPECTED) | **next** (round 4b, `claude/audit-round4b`) |
+| R7 | `scripts/fetch-memories.py:389-390` — rows without an embedding are dropped, not ranked last: a memory written since the last backfill is invisible to `--semantic` and MCP `semantic_search`, undocumented | **next** (round 4b, `claude/audit-round4b`) (document and count) |
+| R8 | `commands/recall.md:174-187` — the session-search snippet interpolates user text into `plainto_tsquery(...)` inside a `psql -c` shell string | **next** (round 4b, `claude/audit-round4b`) (use `search-sessions.py`) |
+| R9 | `scripts/search-sessions.py:70-86` — a `--substring` pattern under three characters cannot use the trigram index and no statement or connect timeout exists anywhere in `scripts/`; the MCP tool exposes it (SUSPECTED) | **next** (round 4b, `claude/audit-round4b`) |
+| RT5 | `scripts/fetch-memories.py:496` — multi-tag OR to AND survives (every tag test passes one tag) | **next** (round 4b, `claude/audit-round4b`) |
+| RT6 | `scripts/surfacing_stats.py:42` — the reader's default path is never compared with the writer's; `_render_human` and `main()` untested | **next** (round 4b, `claude/audit-round4b`) |
+| RT7 | `scripts/log-recall.py:106-141` — `main()` untested; writing `source=fetch` for a recall passes | **next** (round 4b, `claude/audit-round4b`) |
+| RT8 | `scripts/memory_mcp.py:437` — `get_memory` prefix match survives | **next** (round 4b, `claude/audit-round4b`) |
+| RT9 | The `SchemaVersionError` guard is unpinned at every read call site (`fetch-memories.py:237,377`, `memory_mcp.py:111`) | **next** (round 4b, `claude/audit-round4b`) |
+| RT10 | `scripts/project_id.py:59-81,119-208` — `decode_project_id`, `repo_set`, `repo_set_for` untested (every id decoding to `/` passes) | **next** (round 4b, `claude/audit-round4b`) |
+| RT11 | `scripts/resolve_session_id.py` — zero coverage, nothing imports it; the planned `tests/test_resolve_session_id.py` does not exist | **next** (round 4b, `claude/audit-round4b`) |
+| RT12 | Write side: `log-recall.py:87` and `log-confab-flag.py:169` bind a `__file__`-derived default log path at import with no pytest guard, and `fetch-memories.py:813` has no injection point — a throwaway test created `logs/fetch-memories.log` and `logs/confab-flags.log` in the checkout and the suite stayed green (S22's fix reached one of four writers) | **next** (round 4b, `claude/audit-round4b`) |
+
+Lows recorded: R10 `log-recall --limit` not sanitised (forged columns);
+R11 FTS order has no final tiebreak; R12 `show_turns` multiplies rows with
+sub-agent chunks; R13 catalogue `rel` unvalidated (escapes the root); R14
+`resolve_session_id` tracebacks on a stale mount instead of exit 2; R15
+`/recall` output never shows the id that `/forget` needs; R16
+`matches_filters(tags=[])` excludes everything; R17 `fetch-memories.py:813`
+and `digest-preview.py:39` write into the private submodule by default
+(digest-preview lines carry no preview marker); R18 psycopg2 error text
+crosses the MCP boundary; R19 "5 read-only MCP tools" is six; RT13
+`digest-preview` zero coverage; RT14 `list_recent` omits `verified`.
+Cross-file: the flag-OFF legacy path in `hooks/session-start-retrieval.py:1381-1400`
+applies no `is_active` filter and logs nothing surfaced; two archive roots
+(Postgres built from `~/cc-archives` versus the rpi share) not
+cross-referenced; the JSONL-fallback ranking differs between CLI and MCP.
+Verified correct: parameterisation of every Python query; LIKE escaping;
+`is_active` on all four Postgres paths via `active_memories`; connections
+closed on every path; limit bounds; exact-match ids; empty and
+punctuation-only queries; no embedding call without an explicit flag
+(Ollama on localhost only, no cloud path); UK spelling.
 
 ## Decisions for Shawn
 
@@ -333,6 +461,20 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    `wiki/`, or the data submodule (added to the shared brief). Whatever is
    decided, PR #115 should be squash-merged so the six commits carrying
    the rows never enter `main`'s history.
+
+7. **W19 — the archive partition month is UTC.** `archive-memories.py:328`
+   names the partition from `datetime.now(timezone.utc)`, so a run in the
+   first 10-11 hours of a local (AEST/AEDT) month files into the previous
+   month. Deterministic and idempotent, so nothing is lost; the question is
+   which calendar the partitions should follow. Recommendation: leave UTC
+   and say so in the partition README, because every other stamp in the
+   system is UTC.
+8. **W21 — two writers pin the corpus to the home directory.**
+   `archive-memories.CORPUS` and `recover_anchors.CORPUS` are
+   `Path.home()`-derived, so an `--apply` from a copy or worktree still
+   targets the live store. Deliberate (a worktree must not archive its own
+   stub), but it means cwd never sandboxes them. Recommendation: keep, and
+   require `--corpus` to be explicit when `PA_DIR` is not the home checkout.
 
 ## Fix rounds
 
@@ -779,6 +921,38 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   nothing; the owed count is capped at two, under-skipping by design).
   **Merged as 190bc7c**; main suite 1,587. H27's fixture on `main` is done
   (8e2425f). S23 and S26 sit with PR #116; P17 with PR #117;
-  `surfacing_log.py` (S22's third member) is round 3b.
+  Round 3c (S23, S27, S28) is PR #119 (suite 2,393 merged with main;
+  re-audit found C1 and M1–M5, fix round running).
+- Round 3b (`surfacing_log.py`, S22's third member, plus the eleventh
+  re-audit's follow-ups L1 and L6 from PR #117) is **PR #120, merged
+  69a7590**; main suite 2,372. Four fixes (bab4990 lazy log path, 01efef0
+  named message constants, 5a59bf6 `utf-8-sig`, 99586fe future gate stamp).
+  Its re-audit: no critical; one merge-blocking flake (the future-stamp
+  test asserted `120m` where a fractional fixture mtime truncates to 119
+  about once in a hundred runs) and two follow-ups fixed before merge
+  (18489e5: the clamp after the future-stamp report changes no outcome,
+  so the comment and docstring now call it belt-and-braces; the
+  live-resource guard's `pytest.mark` clause gained the case that kills
+  deleting it). Verified live: the suite run from the worktree with the
+  real `HOME` left `data/logs/surfaced.log` unchanged (md5 before and
+  after), so S22 is closed on all three members. **Carried as
+  follow-ups (round 4 material):** (i) the `__file__`-derived log-default
+  shape survives in over a dozen scripts, mitigated only by per-test
+  monkeypatching (13 by `grep -l __file__ scripts/*.py hooks/*.py` filtered
+  to a `logs/` path; the 3b agent's wider sweep counted about seventeen);
+  the suite triggers none of them (whole-tree snapshot before and after a
+  full run); (ii) the two readers, `scripts/surfacing_stats.py:42` and
+  `scripts/memory-health-report.py:71-73`, derive the path from `PA_DIR`
+  and ignore `PA_SURFACED_LOG`, so an overridden writer and the readers
+  disagree; (iii) `utf-8-sig` strips only a stream-leading byte-order
+  mark — a mark mid-file (only a non-Python tool writes one) still hides
+  the record after it and defeats the dedup, re-appending it; (iv) the
+  shell's own `REFUSED` wording in `scripts/daily-sync.sh` is not tied to
+  `_sync_gate.QUARANTINE_REFUSED_WORD`; (v) a gate stamped persistently
+  in the future (clock stepped back and never corrected) keeps the
+  staleness rule off — the banner says so and the next cron write heals
+  it, but it is disclosed rather than caught; (vi) dormancy under pytest
+  is silent: a production process that happens to import `pytest` would
+  lose the surfacing log without a diagnostic.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
