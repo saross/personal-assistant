@@ -471,17 +471,24 @@ def cursor_file_lock() -> Iterator[None]:
 class ParsedWindow(NamedTuple):
     """What one pass over a transcript window yielded.
 
-    ``skip_pending`` is the load-bearing third field (audit round two M1):
-    it is True when the window ended with a slash-command exchange whose
-    response has NOT yet been seen, so the skip flag would have to survive
-    into the next window to do its job. The cursor must not move past that
-    point, or the response is extracted next firing — duplicating what the
-    command itself already wrote.
+    ``skip_pending`` is True when the window ended with a slash-command
+    exchange whose response has NOT yet been seen (audit round two M1), so
+    the skip flag would have to survive into the next window to do its job.
+
+    ``safe_uuid`` is where the cursor may stop when that happens (audit
+    round three C1): the uuid of the last entry after which NO skip was
+    pending — i.e. the entry just before the command that set the flag.
+    Advancing there instead of to ``last_uuid`` keeps both invariants at
+    once: the command and its response are seen together next firing, so
+    the response is still dropped, and the real messages before the command
+    are never re-read. A plain "hold the cursor" guard satisfies only the
+    first and re-extracts the second.
     """
 
     messages: list[dict]
     last_uuid: str | None
     skip_pending: bool
+    safe_uuid: str | None
 
 
 def parse_transcript(
@@ -491,9 +498,10 @@ def parse_transcript(
     """
     Parse a Claude Code transcript JSONL file.
 
-    Returns new messages since last_uuid, the UUID of the last entry seen
-    (for cursor advancement), and whether a slash-command skip is still
-    pending at the end of the window.
+    Returns new messages since last_uuid, the UUID of the last entry seen,
+    whether a slash-command skip is still pending at the end of the window,
+    and the last UUID at which no skip was pending (where the cursor may
+    stop when one is).
 
     If last_uuid is set but not found in the transcript (stale cursor
     from a rotated/truncated file), falls back to processing the entire
@@ -501,6 +509,10 @@ def parse_transcript(
     """
     messages = []
     last_seen_uuid = None
+    # The last position after which no command skip was pending. It trails
+    # ``last_seen_uuid`` by one entry and freezes the moment a command sets
+    # the flag, so it names the entry BEFORE the command (audit C1).
+    safe_uuid = None
     found_cursor = last_uuid is None  # If no cursor, start from beginning
     skip_next_assistant = False  # Flag to skip assistant response to a command
 
@@ -518,6 +530,14 @@ def parse_transcript(
                 if entry_uuid == last_uuid:
                     found_cursor = True
                 continue
+
+            # Settle the PREVIOUS entry before touching this one: if no
+            # skip was pending after it, the cursor may stop there. Doing
+            # this at the top of the next iteration (rather than at the end
+            # of each one) keeps it correct through every ``continue``
+            # below, of which there are many.
+            if not skip_next_assistant:
+                safe_uuid = last_seen_uuid
 
             if entry_uuid:
                 last_seen_uuid = entry_uuid
@@ -573,24 +593,18 @@ def parse_transcript(
                 continue
 
             # Harness-injected and subagent turns are not conversation
-            # (audit H22, 2026-09-08). ``isMeta`` marks an entry the harness
-            # itself wrote into the transcript — system-reminder injections,
-            # slash-command expansions — and records it with
-            # ``"role": "user"``; ``isSidechain`` marks a subagent's turns,
-            # which belong to that agent's own transcript. Neither is
-            # something Shawn or this session's assistant said, so feeding
-            # either to the extractor invents memories out of the harness's
-            # own prose.
+            # (audit H22, 2026-09-08). ``isMeta`` marks text the harness
+            # wrote into the transcript and records it with
+            # ``"role": "user"``; ``isSidechain`` marks a subagent's turns.
             #
-            # The check sits AFTER the slash-command branch above, and that
+            # The check sits AFTER the slash-command branch, and that
             # ordering is load-bearing: slash commands ARE delivered as
             # ``isMeta`` user entries (measured 2026-09-08 across
             # ~/.claude/projects/-home-shawn-personal-assistant: all 364
             # marker-bearing user entries were isMeta, and no non-meta user
-            # entry carried a marker). Dropping meta entries any earlier
-            # would stop the command markers ever setting
-            # ``skip_next_assistant``, letting every /remember, /forget, and
-            # /update response back into extraction.
+            # entry carried a marker). Dropping them any earlier would stop
+            # the markers ever setting ``skip_next_assistant``, letting every
+            # /remember, /forget, and /update response back into extraction.
             #
             # ``last_seen_uuid`` is assigned above this point, so a skipped
             # entry still yields a cursor position. ``main()`` is what
@@ -619,12 +633,20 @@ def parse_transcript(
         )
         return parse_transcript(transcript_path, None)
 
+    # Settle the final entry the same way the loop settles each previous
+    # one: with no skip pending at end of window, the last entry is itself
+    # a safe stopping place.
+    if not skip_next_assistant:
+        safe_uuid = last_seen_uuid
+
     # ``skip_next_assistant`` still set at end of window means the command's
     # response has not arrived yet (PreCompact fires before the model call,
     # and an interrupt mid-tool-use leaves [command, tool-use-only
-    # assistant]). The caller must hold the cursor so the flag is rebuilt
-    # from the same starting point next firing.
-    return ParsedWindow(messages, last_seen_uuid, skip_next_assistant)
+    # assistant]). The caller advances to ``safe_uuid`` instead, so the
+    # command is re-read next firing and its response is still skipped.
+    return ParsedWindow(
+        messages, last_seen_uuid, skip_next_assistant, safe_uuid
+    )
 
 
 # ============================================================================
@@ -1178,8 +1200,18 @@ def main() -> None:
         last_uuid = cursor.get(session_id)
 
         # Parse new content from transcript
-        messages, new_last_uuid, skip_pending = parse_transcript(
-            transcript_path, last_uuid
+        window = parse_transcript(transcript_path, last_uuid)
+        messages, new_last_uuid = window.messages, window.last_uuid
+
+        # Where the cursor may move to. When the window ends mid-command the
+        # answer is NOT the last uuid: stopping at ``safe_uuid`` — the entry
+        # just before the command — puts the command and its response in the
+        # SAME next window, where the existing skip logic drops the
+        # response, while leaving the real messages before the command
+        # behind the cursor so they are never extracted twice (audit round
+        # three C1). Every cursor write below uses this, not new_last_uuid.
+        advance_uuid = (
+            window.safe_uuid if window.skip_pending else new_last_uuid
         )
 
         if not messages:
@@ -1208,14 +1240,14 @@ def main() -> None:
             # The split is reachable because PreCompact fires before the
             # model call, and an interrupt mid-tool-use leaves
             # [command, tool-use-only assistant].
-            if new_last_uuid and new_last_uuid != last_uuid and not skip_pending:
-                cursor[session_id] = new_last_uuid
+            if advance_uuid and advance_uuid != last_uuid:
+                cursor[session_id] = advance_uuid
                 save_cursor(cursor)
                 logger.debug(
                     "No extractable messages in session %s; cursor advanced "
                     "to %s past dropped entries",
                     session_id,
-                    new_last_uuid,
+                    advance_uuid,
                 )
             else:
                 logger.debug("No new entries at all in session %s", session_id)
@@ -1291,8 +1323,8 @@ def main() -> None:
                     update_vocabulary(new_tags)
 
                 # Only advance cursor AFTER successful append
-                if new_last_uuid:
-                    cursor[session_id] = new_last_uuid
+                if advance_uuid:
+                    cursor[session_id] = advance_uuid
                     save_cursor(cursor)
 
                 logger.info(
@@ -1310,8 +1342,8 @@ def main() -> None:
         else:
             # No memories extracted, but still advance cursor so we don't
             # reprocess the same content
-            if new_last_uuid:
-                cursor[session_id] = new_last_uuid
+            if advance_uuid:
+                cursor[session_id] = advance_uuid
                 save_cursor(cursor)
             logger.info(
                 "No memories extracted from %d messages (session %s)",
