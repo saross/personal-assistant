@@ -128,6 +128,27 @@ class TestAddSyncGateDetail:
         assert result.stdout.strip() == "2", result.stdout
 
 
+class TestTemporaryFileGuard:
+    """`mktemp` failing must be a `fail` (exit 2), not a bare abort with
+    status 1 — which daily-sync-trigger.sh reports as benign lock
+    contention (audit low, eighth re-audit)."""
+
+    def test_the_scanner_guards_its_mktemp(self) -> None:
+        """Source-level, with its limits stated: the failure needs a
+        TMPDIR that cannot be written, which pytest cannot arrange for a
+        subprocess without also breaking git. What is checkable is that
+        the call is guarded at all — an unguarded `errors="$(mktemp)"`
+        aborts under `set -e` with status 1."""
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        line = next(
+            ln for ln in source.splitlines() if 'errors="$(mktemp' in ln
+        )
+        assert "|| fail" in line, (
+            "the mktemp for the corpus check is unguarded, so a failure "
+            "exits 1 and is read as lock contention: " + line
+        )
+
+
 class TestPushStash:
     """``push_stash`` must return the SHA of an entry it actually created."""
 

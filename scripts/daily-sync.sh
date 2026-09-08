@@ -166,6 +166,9 @@ fail() {
 # session start until the sync completes cleanly again.
 # ---------------------------------------------------------------------------
 SYNC_GATE="$CACHE_DIR/daily-sync-gate"
+#: What this run did to its own stashes, so the NEXT run can say whose
+#: markers a half-merged tree holds without guessing (audit C-B).
+STASH_STATE_FILE="$CACHE_DIR/daily-sync-stash-state"
 
 # audit C1 (fifth re-audit): the gate is built in MEMORY during the run and
 # rendered exactly once, from the EXIT handler. Writers used to touch the
@@ -192,6 +195,27 @@ add_sync_gate_detail() {
         [[ "$existing" == "$detail" ]] && return 0
     done
     sync_gate_details+=("$detail")
+}
+
+write_stash_state() {
+    # One `<repo><TAB><sha><TAB>applied|conflicted` line per stash whose
+    # content this run put into a working tree. Never fatal, and never
+    # under --dry-run.
+    local sha
+    if [[ $DRY_RUN -eq 1 ]]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$STASH_STATE_FILE")" 2>/dev/null || true
+    : > "$STASH_STATE_FILE" 2>/dev/null || return 0
+    for sha in ${conflicted_stash_shas[@]+"${conflicted_stash_shas[@]}"}; do
+        printf '%s\t%s\tconflicted\n' "$DATA_DIR" "$sha" >> "$STASH_STATE_FILE" 2>/dev/null || true
+        printf '%s\t%s\tconflicted\n' "$PA_DIR" "$sha" >> "$STASH_STATE_FILE" 2>/dev/null || true
+    done
+    for sha in ${applied_stash_shas[@]+"${applied_stash_shas[@]}"}; do
+        printf '%s\t%s\tapplied\n' "$DATA_DIR" "$sha" >> "$STASH_STATE_FILE" 2>/dev/null || true
+        printf '%s\t%s\tapplied\n' "$PA_DIR" "$sha" >> "$STASH_STATE_FILE" 2>/dev/null || true
+    done
+    return 0
 }
 
 render_sync_gate() {
@@ -510,6 +534,16 @@ memory_files_with_markers() {
                 ;;
             2)
                 log "corpus check: $f vanished between the status scan and the check"
+                ;;
+            127)
+                # audit (low, eighth re-audit): 127 is "could not execute",
+                # which here means the `timeout` binary or the interpreter
+                # is missing — a broken toolchain, not a broken checker,
+                # and certainly nothing about the corpus.
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: could not run the corpus check on $f — a required tool is missing (exit 127; the `timeout` binary and $PA_DIR/venv/bin/python3 are what it needs): $(tr '\n' ' ' <"$errors"). This says NOTHING about the file's contents. Install the missing tool, then run the sync again."
+                rm -f "$errors"
+                fail "corpus check could not be run on $f (exit 127: a required tool is missing)"
                 ;;
             *)
                 add_sync_gate_detail \
@@ -973,31 +1007,120 @@ cd "$DATA_DIR" || fail "cannot enter the data submodule at $DATA_DIR"
 # never mentioning the rebase. And an unmerged corpus reached
 # reconcile_orphaned_stashes first, whose generic advice replaced the
 # specific "resolve the markers, then delete the entry".
+describe_stash() {
+    # describe_stash <repo> <sha>
+    # "<sha8> <selector> <subject>" — never name a stash by fewer than all
+    # three (audit C-B, eighth re-audit). A bare sha8 is not something an
+    # operator can act on, and a bare selector is a moving target.
+    local repo="$1" sha="$2" ref subject
+    ref="$(stash_ref_for "$repo" "$sha")" || ref="(no longer on the stack)"
+    subject="$(git -C "$repo" log -1 --format=%s "$sha" 2>/dev/null || true)"
+    printf '%s %s %s' "${sha:0:8}" "$ref" "$subject"
+}
+
+list_stash_entries() {
+    # list_stash_entries <repo> — every entry, identified in full.
+    git -C "$1" stash list --format='%H %gd %s' 2>/dev/null \
+        | while read -r _sha _rest; do printf '%s %s; ' "${_sha:0:8}" "$_rest"; done
+}
+
+previously_conflicted_stashes() {
+    # previously_conflicted_stashes <repo>
+    # Stashes an EARLIER run recorded as applied-with-conflicts and that
+    # are still on the stack. Only these may be described as "their content
+    # is in the tree as these markers" — anything else is a guess, and the
+    # guess this used to make invited deleting the only copy of an orphan.
+    local repo="$1" line entry_repo sha state
+    [[ -f "$STASH_STATE_FILE" ]] || return 0
+    while IFS=$'\t' read -r entry_repo sha state; do
+        [[ "$entry_repo" == "$repo" ]] || continue
+        [[ "$state" == "conflicted" ]] || continue
+        stash_ref_for "$repo" "$sha" >/dev/null || continue
+        printf '%s; ' "$(describe_stash "$repo" "$sha")"
+    done < "$STASH_STATE_FILE"
+}
+
 check_interrupted_state() {
-    local git_dir op unmerged
-    git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+    # check_interrupted_state <repo> <label>
+    # Name what a previous run left behind, before anything works around
+    # it. A run killed mid-operation — routine, under SessionStart's 90 s
+    # budget — used to be discovered three steps later as "stash push
+    # before branch switch failed".
+    local repo="$1" label="$2" git_dir op abort_cmd continue_cmd unmerged named
+    git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null || true)"
     op=""
+    abort_cmd=""
+    continue_cmd=""
     if [[ -n "$git_dir" ]]; then
-        if [[ -d "$git_dir/rebase-merge" ]] || [[ -d "$git_dir/rebase-apply" ]]; then
+        if [[ -d "$git_dir/rebase-merge" ]]; then
             op="rebase"
+        elif [[ -d "$git_dir/rebase-apply" ]]; then
+            # audit M2 (eighth re-audit): rebase-apply is `git am`'s
+            # directory too, and `git rebase --abort` is not the way out of
+            # a half-applied mailbox. `applying` is the file am leaves.
+            if [[ -f "$git_dir/rebase-apply/applying" ]]; then
+                op="git am"
+                abort_cmd="git -C $repo am --abort"
+                continue_cmd="git -C $repo am --continue"
+            else
+                op="rebase"
+            fi
+        elif [[ -f "$git_dir/CHERRY_PICK_HEAD" ]]; then
+            op="cherry-pick"
+        elif [[ -f "$git_dir/REVERT_HEAD" ]]; then
+            op="revert"
         elif [[ -f "$git_dir/MERGE_HEAD" ]]; then
             op="merge"
+            abort_cmd="git -C $repo merge --abort"
+            continue_cmd="git -C $repo commit"
         fi
     fi
-    if [[ -n "$op" ]]; then
-        add_sync_gate_detail \
-            "daily-sync STOPPED: a previous run was interrupted mid-$op in $DATA_DIR. Check what it was doing (git -C $DATA_DIR status), then clear it: git -C $DATA_DIR $op --abort. Nothing will sync until that is done."
-        fail "a previous run left a $op in progress in $DATA_DIR"
+    if [[ -n "$op" ]] && [[ -z "$abort_cmd" ]]; then
+        abort_cmd="git -C $repo $op --abort"
+        continue_cmd="git -C $repo $op --continue"
     fi
-    unmerged="$(git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)"
+
+    unmerged="$(git -C "$repo" status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)"
+
+    if [[ -n "$op" ]]; then
+        if [[ -n "$unmerged" ]]; then
+            add_sync_gate_detail \
+                "daily-sync STOPPED: a previous run was interrupted mid-$op in $repo ($label), and paths are still unresolved — ${unmerged//$'\n'/, }. Resolve them and finish it ($continue_cmd), or throw the whole operation away ($abort_cmd). Nothing will sync until one or the other is done."
+        else
+            # audit M3 (eighth re-audit): an operation in progress with
+            # NOTHING unresolved is a resolution waiting to be committed.
+            # Aborting it discards work somebody has already done.
+            add_sync_gate_detail \
+                "daily-sync STOPPED: a $op is in progress in $repo ($label) with nothing left unresolved — somebody resolved it and did not finish. Complete it: $continue_cmd. Do NOT abort: that would throw away the resolution."
+        fi
+        fail "$label: a $op is in progress in $repo"
+    fi
+
     if [[ -n "$unmerged" ]]; then
-        add_sync_gate_detail \
-            "daily-sync STOPPED: $DATA_DIR has unmerged paths from a previous run — ${unmerged//$'\n'/, }. Resolve them, then DELETE any stash entry this left behind (git -C $DATA_DIR stash list). Do NOT pop it: its content is already in the tree as those markers."
-        fail "$DATA_DIR has unmerged paths left by a previous run"
+        # audit C-B (eighth re-audit): only claim a stash put these markers
+        # here if an earlier run RECORDED doing exactly that. The blanket
+        # "delete any stash entry this left behind" was advice to destroy
+        # the only copy of an orphan — given before reconciliation had so
+        # much as listed what was on the stack.
+        named="$(previously_conflicted_stashes "$repo")"
+        if [[ -n "$named" ]]; then
+            add_sync_gate_detail \
+                "daily-sync STOPPED: $repo ($label) has unmerged paths — ${unmerged//$'\n'/, }. A previous run applied ${named%; } and it conflicted, so these markers ARE that stash's content. Resolve them, then delete that entry. Do NOT pop it: that would apply the same content again."
+        else
+            local entries
+            entries="$(list_stash_entries "$repo")"
+            [[ -n "$entries" ]] || entries="(none)"
+            add_sync_gate_detail \
+                "daily-sync STOPPED: $repo ($label) has unmerged paths from an operation this run cannot identify — ${unmerged//$'\n'/, }. Resolve them by hand. Do NOT touch any stash entry until the sync has run far enough to reconcile orphans; the entries on the stack right now are: ${entries%; }."
+        fi
+        fail "$label: $repo has unmerged paths left by a previous run"
     fi
     return 0
 }
-check_interrupted_state
+# audit M1 (eighth re-audit): BOTH repositories. A rebase left in the
+# parent went entirely unnoticed — the run exited 0 and cleared the gate.
+check_interrupted_state "$DATA_DIR" "data submodule"
+check_interrupted_state "$PA_DIR" "parent repo"
 
 # The corpus guard runs before recovery too: an unmerged or marker-laden
 # corpus has advice of its own, and reconcile's generic orphan message
@@ -1047,15 +1170,30 @@ restore_stash_on_exit() {
                 # the same content on top of itself, which for a corpus
                 # that was committed in between means `UU` markers in the
                 # live memories.jsonl, with rc 0.
-                if stash_was_applied "$_sha" || stash_was_conflicted "$_sha"; then
+                # (stash_was_conflicted is not consulted here: every path
+                # that records a conflicted SHA also clears
+                # stash_restore_allowed, so this loop cannot be reached
+                # with one — audit low, eighth re-audit.)
+                if stash_was_applied "$_sha"; then
                     log "not restoring ${_sha:0:8} in $_repo — this run already applied it"
                     continue
                 fi
                 log "WARNING: aborting before stash pop — restoring ${_sha:0:8} in $_repo"
-                if apply_then_drop "$_repo" "$_sha" "restore"; then
-                    :
-                else
-                    log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
+                if ! apply_then_drop "$_repo" "$_sha" "restore"; then
+                    # audit C-A (eighth re-audit): the apply failed, and
+                    # HOW it failed decides the advice. This branch only
+                    # logged, so the SHA entered neither list and the
+                    # stranded check called it UNRECOVERED — telling the
+                    # operator to pop a stash whose content was already in
+                    # the tree as markers. Routine, under SessionStart's
+                    # 90 s SIGTERM.
+                    if [[ -n "$(git -C "$_repo" status --porcelain \
+                            | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)" ]]; then
+                        conflicted_stash_shas+=("$_sha")
+                        log "ERROR: restoring $(describe_stash "$_repo" "$_sha") conflicted; its content is in the tree as markers"
+                    else
+                        log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was refused; the tree is untouched and the stash is preserved"
+                    fi
                 fi
             done
         done
@@ -1102,6 +1240,11 @@ restore_stash_on_exit() {
         add_sync_gate_detail \
             "daily-sync applied ${#_applied[@]} of its own stash(es) and could not drop them: ${_applied[*]}. Their contents are ALREADY in the working tree — delete the entries (git stash drop <ref>). Do NOT pop them: that would duplicate every record in them."
     fi
+
+    # audit C-B (eighth re-audit): record what this run did to its own
+    # stashes, so the NEXT run can say whose markers a half-merged tree
+    # holds instead of guessing — and can name them in full.
+    write_stash_state
 
     # audit C1 (fifth re-audit): the gate is rendered here, once, after
     # every writer has had its say — including the stranded check above.
@@ -1528,13 +1671,17 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # on top of them — while a refused one left the tree untouched
             # and its work only in the stash, where a pop is exactly right.
             if [[ -n "$(git status --porcelain -- ':!data' | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)" ]]; then
+                # audit L9 (eighth re-audit): the diagnosis only. The
+                # recovery advice comes from the conflicted group in the
+                # EXIT handler, which names every such entry in full —
+                # saying it here as well told the operator twice.
                 conflicted_stash_shas+=("$_sha")
                 add_sync_gate_detail \
-                    "daily-sync STOPPED: applying parent-repo stash ${_sha:0:8} in $PA_DIR conflicted. Its content is in the tree as conflict markers — resolve them (git -C $PA_DIR status), then DELETE the entry (git -C $PA_DIR stash drop <ref>). Do NOT pop it: that would apply the same content again on top of the markers."
+                    "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR conflicted."
                 fail "parent repo: applying stash ${_sha:0:8} raised conflicts — manual resolution required"
             fi
             add_sync_gate_detail \
-                "daily-sync STOPPED: applying parent-repo stash ${_sha:0:8} in $PA_DIR was REFUSED — the tree was left untouched and the work is only in the stash. Clear whatever collides (git -C $PA_DIR status), then pop it: git -C $PA_DIR stash pop <ref>."
+                "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR was REFUSED — the tree was left untouched and the work is only in the stash. Clear whatever collides (git -C $PA_DIR status), then pop it: git -C $PA_DIR stash pop <ref>."
             fail "parent repo: applying stash ${_sha:0:8} was refused — manual resolution required"
         else
             drop_applied_stash "$PA_DIR" "$_sha" "parent repo" || true

@@ -487,6 +487,47 @@ class TestCrossMachineRebase:
         assert result.returncode == 0, result.stdout + result.stderr
         assert world.gate("daily-sync-gate").splitlines() == ["0"]
 
+    def test_a_completed_run_with_findings_replaces_the_old_gate(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M5 (eighth re-audit): completion is what makes a run's
+        view current.
+
+        A run that reaches the end and still has something to say replaces
+        what was there; a run that stops early adds to it. With
+        sync_run_completed never set, a completed run would carry stale
+        lines forward for ever.
+        """
+        machine = world.add_machine("a")
+        (world.home / ".cache" / "daily-sync-gate").write_text(
+            "1\ndaily-sync STOPPED: something a previous run found\n",
+            encoding="utf-8",
+        )
+        # A completed run that raises one finding of its own: no
+        # origin/main, so the pointer bump is withheld.
+        git("config", "--unset", "remote.origin.fetch", cwd=machine.data)
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=machine.data)
+        machine.append_memory("2026-09-08-m5")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        joined = "\n".join(gate_details(world))
+        assert "bump was withheld" in joined, joined
+        assert "something a previous run found" not in joined, (
+            "a completed run carried a stale finding forward: " + joined
+        )
+
+    def test_a_completed_clean_run_clears_it(self, world: SyncWorld) -> None:
+        """The other half of the same rule."""
+        machine = world.add_machine("a")
+        (world.home / ".cache" / "daily-sync-gate").write_text(
+            "1\ndaily-sync STOPPED: something a previous run found\n",
+            encoding="utf-8",
+        )
+        assert world.run_sync(machine).returncode == 0
+        assert world.gate("daily-sync-gate").splitlines() == ["0"]
+
     def test_lock_contention_leaves_a_standing_gate(
         self, world: SyncWorld
     ) -> None:
@@ -615,6 +656,51 @@ class TestStashIsRestoredWhenTheRunAborts:
         joined = "\n".join(gate_details(world))
         assert "could not drop" in combined, combined
         assert "ALREADY in the working tree" in joined, joined
+
+    def test_a_conflicted_restore_is_never_told_to_pop(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C-A (eighth re-audit): the exit handler's apply can
+        conflict too.
+
+        That branch only logged, so the SHA entered neither list and the
+        stranded check called it UNRECOVERED — telling the operator to pop
+        a stash whose content was already in the tree as markers. Routine
+        under SessionStart's 90 s SIGTERM: the run aborts before its own
+        pop, and the handler's restore hits the conflict instead.
+
+        Staged so the restore MUST conflict: the stash is taken against an
+        older commit, the branch guard then moves the tree to a main whose
+        version of the file differs, and the pull fails before the run
+        reaches its own pop.
+        """
+        machine = world.add_machine("a")
+        inbox = machine.data / "tasks" / "inbox.md"
+        base = machine.head("data")
+        inbox.write_text("# Inbox\n\n- the version on main\n", encoding="utf-8")
+        machine.commit_data("main version", "tasks/inbox.md")
+
+        # Detach to the older commit and dirty the same file there.
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        inbox.write_text("# Inbox\n\n- the version in the stash\n", encoding="utf-8")
+        # And break the remote, so the run aborts after the branch-switch
+        # stash and before its own pop.
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "conflicted; its content is in the tree as markers" in combined, combined
+        assert "<<<<<<<" in inbox.read_text(encoding="utf-8"), inbox.read_text()
+
+        joined = "\n".join(gate_details(world))
+        assert "UNRECOVERED" not in joined, (
+            "a tree holding markers was told to pop the stash that put them "
+            "there: " + joined
+        )
+        assert "WITH CONFLICTS" in joined, joined
+        assert "Do NOT pop" in joined, joined
 
     def test_failed_pull_restores_the_stashed_edits(self, world: SyncWorld) -> None:
         """Kills DS-M5: removing `trap restore_stash_on_exit EXIT` leaves
@@ -1265,6 +1351,53 @@ class TestStashPopConflictPartitioning:
         assert "could not read" in joined, joined
         assert "not-a-number" in joined, joined
 
+    def test_a_record_with_no_tabs_refuses_rather_than_proceeds(
+        self, world: SyncWorld
+    ) -> None:
+        """The other unparsed branch: a line with no field separators at
+        all. Dropping it silently is how a marker-laden corpus becomes a
+        clean verdict."""
+        machine = world.add_machine("a")
+        resolver = machine.pa / "scripts" / "resolve-merge-conflicts.py"
+        resolver.unlink()
+        resolver.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            'print("something went wrong but not in a record shape")\n'
+            "sys.exit(3)\n",
+            encoding="utf-8",
+        )
+        resolver.chmod(0o755)
+        git("commit", "-q", "-am", "checker with a bare line", cwd=machine.pa)
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert world.published_data_head() == published_before
+        joined = "\n".join(gate_details(world))
+        assert "could not read" in joined, joined
+        assert "not in a record shape" in joined, joined
+
+    def test_an_empty_path_field_refuses(self, world: SyncWorld) -> None:
+        """And a record whose path is empty names nothing to act on."""
+        machine = world.add_machine("a")
+        resolver = machine.pa / "scripts" / "resolve-merge-conflicts.py"
+        resolver.unlink()
+        resolver.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            'print("\\t4\\ta problem with no file")\n'
+            "sys.exit(3)\n",
+            encoding="utf-8",
+        )
+        resolver.chmod(0o755)
+        git("commit", "-q", "-am", "checker with an empty path", cwd=machine.pa)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "could not read" in joined, joined
+
     def test_a_lone_separator_is_refused_with_hand_edit_advice(
         self, world: SyncWorld
     ) -> None:
@@ -1306,6 +1439,39 @@ class TestStashPopConflictPartitioning:
         assert "resolve-merge-conflicts.py" in joined, joined
         assert "Edit those LINES by hand" not in joined, joined
 
+    def test_a_marker_laden_corpus_stops_the_run_before_reconciliation(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M6 (eighth re-audit): the start-of-run corpus guard, on
+        its own.
+
+        With a clean index — no unmerged paths, nothing in progress, so
+        check_interrupted_state has nothing to say — a corpus holding
+        markers must still stop the run before orphan reconciliation,
+        with the corpus advice rather than generic orphan advice.
+        """
+        machine = world.add_machine("a")
+        machine.memories.write_text(
+            '<<<<<<< HEAD\n{"id": "a"}\n=======\n{"id": "b"}\n>>>>>>> x\n',
+            encoding="utf-8",
+        )
+        machine.commit_data("committed markers", "memories/memories.jsonl")
+        assert not git("status", "--porcelain", cwd=machine.data).stdout.strip()
+        # An orphan the detector would otherwise be asked to recover.
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert world.published_data_head() == published_before
+
+        joined = "\n".join(gate_details(world))
+        assert "conflict blocks" in joined or "marker-shaped" in joined, joined
+        assert "ORPHANED STASH" not in joined, (
+            "reconciliation ran before the corpus guard: " + joined
+        )
+        assert "no longer resolves" not in combined, combined
+
     def test_a_broken_checker_never_produces_a_corpus_verdict(
         self, world: SyncWorld
     ) -> None:
@@ -1343,6 +1509,57 @@ class TestStashPopConflictPartitioning:
         assert "Edit those LINES by hand" not in joined, (
             "a checker failure was reported as a corpus verdict: " + joined
         )
+
+    def test_a_hanging_checker_is_bounded_and_reported(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit (low, eighth re-audit): this runs inside a 90 s
+        SessionStart budget, so the checker is bounded — and a timeout is
+        a checker failure, never a corpus verdict."""
+        machine = world.add_machine("a")
+        resolver = machine.pa / "scripts" / "resolve-merge-conflicts.py"
+        resolver.unlink()
+        resolver.write_text(
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(600)\n", encoding="utf-8"
+        )
+        resolver.chmod(0o755)
+        git("commit", "-q", "-am", "hanging checker", cwd=machine.pa)
+        # Bound the test itself, not just the script.
+        world.bin_dir.joinpath("timeout").write_text(
+            "#!/usr/bin/env bash\n"
+            "# Shorten the script's own 60 s bound so the test is quick.\n"
+            'shift\n'
+            'exec /usr/bin/timeout 2 "$@"\n',
+            encoding="utf-8",
+        )
+        world.bin_dir.joinpath("timeout").chmod(0o755)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        joined = "\n".join(gate_details(world))
+        assert "checker itself failed" in joined, joined
+        assert "124" in joined, joined
+        assert "Edit those LINES by hand" not in joined, joined
+
+    def test_a_missing_tool_says_so_rather_than_blaming_the_checker(
+        self, world: SyncWorld
+    ) -> None:
+        """Exit 127 is "could not execute": the tool is missing, which is
+        neither a corpus verdict nor something to fix in the checker."""
+        machine = world.add_machine("a")
+        # A `timeout` on PATH that is not executable at all.
+        missing = world.bin_dir / "timeout"
+        missing.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+        missing.chmod(0o755)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        joined = "\n".join(gate_details(world))
+        assert "a required tool is missing" in joined, joined
+        assert "127" in joined, joined
+        assert "Fix the checker" not in joined, joined
 
     def test_a_missing_interpreter_never_accuses_the_corpus(
         self, world: SyncWorld
@@ -1570,28 +1787,97 @@ class TestParentStashWedge:
 
 class TestAnInterruptedPredecessor:
     """A run killed mid-operation leaves state the next run must NAME
-    rather than trip over three steps later (audit M1/M2, seventh
-    re-audit)."""
+    rather than trip over three steps later — and must describe
+    accurately enough that acting on it is safe (audit M1-M4 and C-B)."""
 
-    def test_a_rebase_left_in_progress_is_named(self, world: SyncWorld) -> None:
-        """The next run used to gate "stash push before branch switch
-        failed", never mentioning the rebase that was actually in the
-        way."""
+    def _git_dir(self, machine: object, repo: str) -> Path:
+        """The real git directory of either repository."""
+        return machine.data_git_dir if repo == "data" else machine.pa / ".git"
+
+    def test_an_unfinished_rebase_with_conflicts_offers_both_ways_out(
+        self, world: SyncWorld
+    ) -> None:
+        """Unresolved paths: finish it, or throw it away — the operator
+        chooses, and the run names both commands."""
         machine = world.add_machine("a")
         (machine.data_git_dir / "rebase-merge").mkdir()
-        machine.append_memory("2026-09-08-m1")
+        machine.memories.write_text('{"id": "a"}\n', encoding="utf-8")
+        machine.commit_data("base", "memories/memories.jsonl")
+        git("stash", "push", "-q", "-m", "x", cwd=machine.data, check=False)
+        # Force an unmerged path alongside the rebase directory.
+        git("update-index", "--index-info", cwd=machine.data, check=False)
 
         result = world.run_sync(machine)
-        combined = result.stdout + result.stderr
-        assert result.returncode == 2, combined
-
+        assert result.returncode == 2, result.stdout + result.stderr
         joined = "\n".join(gate_details(world))
-        assert "interrupted mid-rebase" in joined, joined
-        assert "rebase --abort" in joined, joined
-        assert "stash push before branch switch" not in joined, joined
+        assert "rebase" in joined, joined
+        assert "rebase --continue" in joined or "Complete it" in joined, joined
 
-    def test_a_merge_left_in_progress_is_named(self, world: SyncWorld) -> None:
-        """The same for a half-finished merge."""
+    def test_a_resolved_operation_is_told_to_continue_not_abort(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M3 (eighth re-audit): an operation in progress with
+        NOTHING unresolved is a resolution waiting to be committed.
+        Aborting it discards work somebody has already done."""
+        machine = world.add_machine("a")
+        (machine.data_git_dir / "rebase-merge").mkdir()
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "nothing left unresolved" in joined, joined
+        assert "rebase --continue" in joined, joined
+        assert "Do NOT abort" in joined, joined
+
+    def test_an_interrupted_git_am_is_not_told_to_abort_a_rebase(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M2 (eighth re-audit): rebase-apply is `git am`'s
+        directory too, and `git rebase --abort` is not the way out of a
+        half-applied mailbox."""
+        machine = world.add_machine("a")
+        (machine.data_git_dir / "rebase-apply").mkdir()
+        (machine.data_git_dir / "rebase-apply" / "applying").write_text("", encoding="utf-8")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "git am" in joined, joined
+        assert "am --continue" in joined or "am --abort" in joined, joined
+        assert "rebase --abort" not in joined, joined
+
+    def test_a_bare_rebase_apply_is_still_a_rebase(self, world: SyncWorld) -> None:
+        """Without `applying` it is an interactive-less rebase, not am."""
+        machine = world.add_machine("a")
+        (machine.data_git_dir / "rebase-apply").mkdir()
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "rebase" in joined, joined
+        assert "git am" not in joined, joined
+
+    @pytest.mark.parametrize(
+        ("head_file", "operation"),
+        [("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")],
+    )
+    def test_cherry_pick_and_revert_get_their_own_commands(
+        self, world: SyncWorld, head_file: str, operation: str
+    ) -> None:
+        """Audit M4 (eighth re-audit): each operation has its own way out,
+        and `git merge --abort` is not it."""
+        machine = world.add_machine("a")
+        (machine.data_git_dir / head_file).write_text(
+            machine.head("data") + "\n", encoding="utf-8"
+        )
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert f"{operation} --continue" in joined or f"{operation} --abort" in joined, joined
+
+    def test_an_unfinished_merge_is_told_to_commit(self, world: SyncWorld) -> None:
+        """A merge finishes with `git commit`, not `merge --continue`."""
         machine = world.add_machine("a")
         (machine.data_git_dir / "MERGE_HEAD").write_text(
             machine.head("data") + "\n", encoding="utf-8"
@@ -1600,43 +1886,84 @@ class TestAnInterruptedPredecessor:
         result = world.run_sync(machine)
         assert result.returncode == 2, result.stdout + result.stderr
         joined = "\n".join(gate_details(world))
-        assert "interrupted mid-merge" in joined, joined
-        assert "merge --abort" in joined, joined
+        assert "merge is in progress" in joined, joined
+        # , not `merge --continue`.
+        assert " commit." in joined, joined
+        assert "merge --continue" not in joined, joined
 
-    def test_an_unmerged_tree_gets_third_state_advice(
+    def test_the_parent_repository_is_checked_too(self, world: SyncWorld) -> None:
+        """Audit M1 (eighth re-audit): a rebase left in the PARENT went
+        entirely unnoticed — the run exited 0 and cleared the gate."""
+        machine = world.add_machine("a")
+        (machine.pa / ".git" / "rebase-merge").mkdir()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        joined = "\n".join(gate_details(world))
+        assert "parent repo" in joined, joined
+        assert "rebase" in joined, joined
+
+    def test_unmerged_paths_of_unknown_origin_name_no_stash_to_delete(
         self, world: SyncWorld
     ) -> None:
-        """Audit M2: an unmerged corpus reached reconcile_orphaned_stashes
-        first, whose generic advice replaced "resolve, then delete".
+        """Audit C-B (eighth re-audit): never advise deleting a stash the
+        run cannot prove put those markers there.
 
-        Staged as an abandoned conflicted stash apply leaves it: unmerged
-        paths with no MERGE_HEAD, so the merge branch above does not fire.
+        The blanket "DELETE any stash entry this left behind" was advice
+        to destroy the only copy of an orphan — given before
+        reconciliation had so much as listed what was on the stack.
         """
         machine = world.add_machine("a")
-        machine.memories.write_text('{"id": "stashed"}\n', encoding="utf-8")
-        git("stash", "push", "-q", "-m", "left by a killed run", cwd=machine.data)
+        # An orphan holding the only copy of a record…
+        machine.append_memory("2026-09-08-only-copy")
+        git("stash", "push", "-q", "-m", "an orphan nobody has recovered",
+            cwd=machine.data)
+        # …and unmerged paths from something else entirely.
         machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
         machine.commit_data("diverge", "memories/memories.jsonl")
         git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
         assert "<<<<<<<" in machine.memories.read_text(encoding="utf-8")
-        assert not (machine.data_git_dir / "MERGE_HEAD").exists()
 
-        result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
-        combined = result.stdout + result.stderr
-        assert result.returncode == 2, combined
-
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
         joined = "\n".join(gate_details(world))
-        assert "unmerged paths" in joined or "conflict markers" in joined, joined
-        assert "Do NOT pop" in joined or "Do NOT run" in joined, joined
-        assert "ORPHANED STASH" not in joined, (
-            "generic orphan advice replaced the specific diagnosis: " + joined
+        assert "cannot identify" in joined, joined
+        assert "Do NOT touch any stash entry" in joined, joined
+        assert "DELETE" not in joined.upper() or "do not touch" in joined.lower(), joined
+        # The entries are listed in full so nothing is deleted blind.
+        assert "an orphan nobody has recovered" in joined, joined
+
+    def test_a_stash_this_run_recorded_is_named_in_full(
+        self, world: SyncWorld
+    ) -> None:
+        """And when a PREVIOUS run recorded conflicting on a stash, that
+        one may be named — by SHA, selector, and message."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-recorded")
+        git("stash", "push", "-q", "-m", "recorded as conflicted", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tconflicted\n", encoding="utf-8"
         )
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert sha[:8] in joined, joined
+        assert "stash@{0}" in joined, joined
+        assert "recorded as conflicted" in joined, joined
+        assert "delete that entry" in joined, joined
+        assert "Do NOT pop" in joined, joined
 
     def test_a_failing_run_keeps_the_previous_interruption_line(
         self, world: SyncWorld
     ) -> None:
-        """Audit M1: a run that fails has not established that whatever a
-        previous run recorded is resolved, so it must not erase it."""
+        """Audit M1 (seventh re-audit): a run that fails has not
+        established that whatever a previous run recorded is resolved."""
         machine = world.add_machine("a")
         (world.home / ".cache" / "daily-sync-gate").write_text(
             "1\ndaily-sync was INTERRUPTED by SIGTERM before it finished.\n",
@@ -1649,7 +1976,7 @@ class TestAnInterruptedPredecessor:
         assert "INTERRUPTED by SIGTERM" in joined, (
             "the previous run's only record was erased: " + joined
         )
-        assert "interrupted mid-rebase" in joined, joined
+        assert "rebase is in progress" in joined, joined
 
 
 class TestUnusableHomeIsNotLockContention:
