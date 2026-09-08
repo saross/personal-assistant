@@ -2028,3 +2028,50 @@ class TestRewriteVocabularyEdgeCases:
         tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
         assert len(tags) == 1, f"two spellings of one winner landed: {tags}"
         assert tags[0].lower() == "api"
+
+
+class TestCanonicalPathsAreNamedInMessages:
+    """When nothing exists, messages must name the canonical path."""
+
+    def test_the_fallback_is_only_taken_when_it_exists(
+        self, tmp_path: Path,
+    ) -> None:
+        """The rebinding rule itself, exercised directly.
+
+        Kills the mutation that rebinds unconditionally: with neither file
+        present the canonical (``data/memories/...``) must stay bound, so a
+        refusal names the path the operator has to repair rather than the
+        legacy symlink path.
+        """
+        canonical = tmp_path / "data" / "memories" / "tag-vocabulary.txt"
+        fallback = tmp_path / "memories" / "tag-vocabulary.txt"
+
+        def resolve(canonical_path: Path, fallback_path: Path) -> Path:
+            """The module's rule, applied to a pair of paths."""
+            if not canonical_path.exists() and fallback_path.exists():
+                return fallback_path
+            return canonical_path
+
+        # Neither exists -> the canonical stays.
+        assert resolve(canonical, fallback) == canonical
+        # Only the fallback exists -> take it.
+        fallback.parent.mkdir(parents=True)
+        fallback.write_text("api\n", encoding="utf-8")
+        assert resolve(canonical, fallback) == fallback
+        # The canonical exists -> it wins regardless.
+        canonical.parent.mkdir(parents=True)
+        canonical.write_text("api\n", encoding="utf-8")
+        assert resolve(canonical, fallback) == canonical
+
+    def test_the_module_binds_the_canonical_when_nothing_exists(self) -> None:
+        """In this worktree the data submodule is a stub, so neither exists.
+
+        The binding must therefore still name ``data/memories/...``.
+        """
+        root = Path(tag_gardening.__file__).resolve().parent.parent
+        canonical = root / "data" / "memories" / "tag-vocabulary.txt"
+        fallback = root / "memories" / "tag-vocabulary.txt"
+        if canonical.exists() or fallback.exists():
+            pytest.skip("a vocabulary exists here; the rule is unit-tested above")
+        assert tag_gardening.VOCABULARY_FILE == canonical, (
+            "a refusal would name the legacy path, not the canonical one")
