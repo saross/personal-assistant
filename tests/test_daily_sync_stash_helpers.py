@@ -2545,29 +2545,45 @@ class TestMergeWithNoCorpusInAnyParent:
 
 class TestGuardsDoNotPipeIntoGrepQ:
     """`grep -q` exits on its first match; the upstream then dies of
-    SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. In a
-    guard that decides whether data is published, that turns a match into
-    its opposite -- a real trailer into "no trailer", a binary path into
-    "no binary paths" -- on a race decided by how much the upstream had
-    written."""
+    SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. Any
+    match on the far side of a pipe can therefore read as its opposite --
+    a real trailer as "no trailer", a binary path as "no binary paths" --
+    on a race decided by how much the upstream had written."""
 
-    def test_the_publishing_guards_read_rather_than_pipe(self) -> None:
-        """Kills: rewriting either guard as `<producer> | grep -q ...`.
+    def test_no_grep_q_sits_on_the_far_side_of_a_pipe(self) -> None:
+        """Kills DS-L1: the previous form of this test read the bodies of
+        two FUNCTIONS while the defect lived in their CALLERS, so putting
+        the old pipe shape back at either call site passed everything.
 
-        Scoped to the two functions whose answer gates a push. Elsewhere
-        in the script the same shape is bounded and its worst outcome is
-        a skipped optional pass, so it is left alone rather than churned.
+        The whole file is held to the rule now. There is no allow-list:
+        every `grep -q` here takes a here-string or a `$( )`, and the
+        four bounded survivors -- the gate-supersession key match, the
+        two sidecar path matches, and the cc-archives mount probes --
+        were converted rather than excused, because "bounded today" is
+        not a property anyone re-checks.
         """
-        for name in ("stash_tracked_half_is_binary", "has_bulk_rewrite_trailer"):
-            body = _extract_function(name)
-            assert "| grep -q" not in body.replace("\n", " "), (
-                f"{name} pipes into `grep -q`, whose match reads as a failure "
-                "under `set -o pipefail`: " + body
-            )
-            assert "grep" in body, (
-                f"{name} no longer greps at all; this test is checking the "
-                "wrong thing"
-            )
+        offenders = []
+        for number, line in enumerate(
+            DAILY_SYNC.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue          # prose about the rule is not the rule
+            if "grep -q" in stripped and "|" in stripped.split("grep -q")[0]:
+                offenders.append(f"{number}: {stripped}")
+        assert not offenders, (
+            "these pipe into `grep -q`, whose match reads as a failure "
+            "under `set -o pipefail`:\n" + "\n".join(offenders)
+        )
+
+    def test_the_rule_is_being_checked_against_real_greps(self) -> None:
+        """The scan above passes trivially if the greps ever go away, so
+        say out loud that they are still there and still matter."""
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        assert source.count("grep -q") >= 4, (
+            "the guards this rule protects no longer grep; the scan above "
+            "is now checking nothing"
+        )
 
 
 class TestSweepCollectsItsOwnMarker:

@@ -473,9 +473,13 @@ render_sync_gate() {
         while IFS= read -r _previous; do
             [[ -n "$_previous" ]] || continue
             _keys="$(gate_subject_keys "$_previous")"
+            # Fed by here-string, not by pipe: `grep -q` exits on its
+            # first match and the upstream then dies of SIGPIPE, which
+            # `set -o pipefail` reports as a FAILED pipeline — a match
+            # read as its opposite (audit L1, fifth re-audit).
             if [[ -n "$_keys" ]] && [[ -n "$_our_keys" ]] \
-                    && printf '%s\n' "$_keys" \
-                        | grep -qxF -f <(printf '%s' "$_our_keys"); then
+                    && grep -qxF -f <(printf '%s' "$_our_keys") \
+                        <<<"$_keys"; then
                 continue
             fi
             add_sync_gate_detail "$_previous"
@@ -1891,8 +1895,13 @@ stash_tracked_half_is_binary() {
     # Read into a variable rather than piping into `grep -q`: `grep -q`
     # exits the moment it matches, the upstream `git` then dies of
     # SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED —
-    # so the match would read as "no binary paths". Every `grep -q` on
-    # the far side of a pipe in this script has that hazard.
+    # so the match would read as "no binary paths".
+    #
+    # audit L1 (fifth re-audit): that hazard is not local to this
+    # function, and the first fix pinned only this function while the
+    # defect lived in the CALLERS. No `grep -q` in this script now sits
+    # on the far side of a pipe — here-strings and `$( )` throughout —
+    # and TestGuardsDoNotPipeIntoGrepQ holds the whole file to it.
     local repo="$1" sha="$2" numstat
     numstat="$(git -C "$repo" diff --numstat --no-renames "${sha}^1" "$sha" \
         2>/dev/null || true)"
@@ -2033,7 +2042,7 @@ previously_recorded_stashes() {
         # is any row whose path field is empty.
         [[ -n "$path" ]] || continue
         stash_ref_for "$repo" "$sha" >/dev/null || continue
-        printf '%s\n' "$current" | grep -qxF -- "$path" || continue
+        grep -qxF -- "$path" <<<"$current" || continue
         for known in ${matched[@]+"${matched[@]}"}; do
             [[ "$known" == "$sha" ]] && continue 2
         done
@@ -2045,7 +2054,7 @@ previously_recorded_stashes() {
             [[ "$sha" == "$candidate" ]] || continue
             [[ "$state" == "$want_state" ]] || continue
             [[ -n "$path" ]] || continue
-            printf '%s\n' "$current" | grep -qxF -- "$path" || continue
+            grep -qxF -- "$path" <<<"$current" || continue
             shared+="$path "
         done < "$STASH_STATE_FILE"
         printf '%s (its markers are in %s); ' \
@@ -3293,13 +3302,14 @@ if [[ $DRY_RUN -eq 0 ]]; then
     # same sshfs invocation as the `mount-rpi-shares` alias (reconnect
     # keeps it healthy across suspends; leave it mounted afterwards).
     if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]] \
-            || ! df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+            || [[ "$(df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1)" \
+                != *rpi-server* ]]; then
         if command -v sshfs >/dev/null 2>&1 \
                 && ssh -o BatchMode=yes -o ConnectTimeout=5 rpi-server true >/dev/null 2>&1; then
             log "cc-archives sync: rpi-shares not mounted — attempting self-mount"
             # A dead FUSE endpoint (laptop suspended past the reconnect
             # window) blocks a fresh mount — lazily unmount it first.
-            if mount | grep -q "$HOME/mnt/rpi-shares"; then
+            if [[ "$(mount)" == *"$HOME/mnt/rpi-shares"* ]]; then
                 fusermount -uz "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1 || true
             fi
             mkdir -p "$HOME/mnt/rpi-shares"
@@ -3329,7 +3339,8 @@ if [[ $DRY_RUN -eq 0 ]]; then
 
     if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]]; then
         log "cc-archives sync: mount point missing ($CC_ARCHIVES_CANONICAL) — skipped"
-    elif ! df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+    elif [[ "$(df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1)" \
+            != *rpi-server* ]]; then
         log "cc-archives sync: rpi-shares not mounted (silent-empty-dir state) — skipped"
     elif [[ ! -d "$CC_ARCHIVES_LOCAL" ]]; then
         log "cc-archives sync: $CC_ARCHIVES_LOCAL missing — nothing to push"
