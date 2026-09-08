@@ -202,9 +202,46 @@ def add_revision(record: dict, *, when: str, ref_rewrites, stripped) -> None:
 # ============================================================================
 
 
-def build_plans(corpus: Path, repos):
+def project_repos_for(project: str | None, repos) -> list[Path] | None:
+    """Which of *repos* the memory's ``project`` was written in, or ``None``.
+
+    ``project`` is an encoded cwd (``-home-shawn-Code-map-reader-llm``), so a
+    repository matches when its own encoding is the whole string or a prefix
+    of it at a segment boundary — the latter covering a memory written in a
+    subdirectory of the repository. Where two repositories both match (one
+    nested inside the other) the LONGEST encoding wins, which is the inner
+    repository the memory was actually written in.
+
+    ``None`` means "we cannot attribute this memory to a repository": no
+    project recorded, or a project outside every discovered repository. The
+    caller then searches the union and labels the result ``cross-repo``.
+    """
+    if not project:
+        return None
+    best: list[Path] = []
+    best_len = -1
+    for repo in repos:
+        encoded = project_id.encode_project_id(str(repo))
+        if not encoded:
+            continue
+        if project == encoded or project.startswith(encoded + "-"):
+            if len(encoded) > best_len:
+                best, best_len = [repo], len(encoded)
+            elif len(encoded) == best_len:
+                best.append(repo)
+    return best or None
+
+
+def build_plans(corpus: Path, repos, *, allow_cross_repo: bool = False):
     """Return a list of per-record plans for every verified=false anchored
-    record that has a recoverable ref and/or a strippable junk anchor."""
+    record that has a recoverable ref and/or a strippable junk anchor.
+
+    Recovery is scoped to the memory's own project (finding AN2). A ref whose
+    only unique match lives in some other repository is a ``cross-repo``
+    candidate and is NOT rewritten unless *allow_cross_repo* is set: a memory
+    about project A must not be re-anchored onto a same-named file in project
+    B, which would then verify ``true`` and read as evidence.
+    """
     bn_index = build_basename_index(repos)
 
     resolve_memo: dict[tuple, str] = {}
@@ -222,12 +259,33 @@ def build_plans(corpus: Path, repos):
         resolve_memo[key] = res
         return res
 
-    recover_memo: dict[str, str | None] = {}
+    # Keyed on (project scope, ref): the same ref recovers differently for two
+    # memories written in different projects, so the ref alone is not a key.
+    recover_memo: dict[tuple[str | None, str], str | None] = {}
 
-    def recover(ref):
-        if ref not in recover_memo:
-            recover_memo[ref] = av.unique_suffix_match(ref, _flat(bn_index, ref))
-        return recover_memo[ref]
+    def recover_for(record):
+        """Build the project-scoped ``recover(ref)`` callable for one record."""
+        project = record.get("project")
+        scope_repos = project_repos_for(project, repos)
+        scope_key = project if scope_repos else None
+
+        def recover(ref):
+            key = (scope_key, ref)
+            if key not in recover_memo:
+                match = av.unique_suffix_match(
+                    ref, _flat(bn_index, ref), project_repos=scope_repos,
+                )
+                if match is None:
+                    recover_memo[key] = None
+                elif match.scope == "cross-repo" and not allow_cross_repo:
+                    # A unique hit in someone else's repository. Reported by
+                    # triage_anchors; never written without --allow-cross-repo.
+                    recover_memo[key] = None
+                else:
+                    recover_memo[key] = match.path
+            return recover_memo[key]
+
+        return recover
 
     def reverify(rec):
         return av.verify_memory(rec, repos)
@@ -246,7 +304,7 @@ def build_plans(corpus: Path, repos):
                 continue
             if not (str(r.get("verified")).lower() == "false" and r.get("anchors")):
                 continue
-            plan = plan_record(r, resolve, recover, reverify)
+            plan = plan_record(r, resolve, recover_for(r), reverify)
             if plan is not None:
                 plans.append(plan)
     return plans
@@ -488,11 +546,16 @@ def main(argv=None) -> int:
                     help="With --apply, skip the postgres column update.")
     ap.add_argument("--report", type=Path, default=None,
                     help="Write the dry-run proposal to this path as well.")
+    ap.add_argument("--allow-cross-repo", action="store_true",
+                    help=("Also rewrite refs whose only unique match lives in "
+                          "a repository other than the memory's own project. "
+                          "Off by default: a cross-repo match binds the memory "
+                          "to a same-named file it was never about."))
     args = ap.parse_args(argv)
 
     repos = project_id.repo_set()
     print(f"repo set: {len(repos)} repos; corpus: {CORPUS}", file=sys.stderr)
-    plans = build_plans(CORPUS, repos)
+    plans = build_plans(CORPUS, repos, allow_cross_repo=args.allow_cross_repo)
     report = render_report(plans)
     print(report)
     if args.report:

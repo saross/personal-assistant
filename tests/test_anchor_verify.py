@@ -501,8 +501,10 @@ class TestUniqueSuffixMatch:
     ]
 
     def test_unique_basename_recovers(self):
-        assert av.unique_suffix_match("continuity.md", self.TRACKED) == \
-            "wiki/continuity.md"
+        match = av.unique_suffix_match("continuity.md", self.TRACKED)
+        assert match.path == "wiki/continuity.md"
+        # Unattributed candidates can never be proved same-project.
+        assert match.scope == "cross-repo"
 
     def test_ambiguous_basename_returns_none(self):
         # Two tracked extraction.py → can't safely pick one.
@@ -512,14 +514,15 @@ class TestUniqueSuffixMatch:
         # The directory context narrows the ambiguous basename to one file.
         assert av.unique_suffix_match(
             "cc_session_toolkit/extraction.py", self.TRACKED
-        ) == "src/cc_session_toolkit/extraction.py"
+        ).path == "src/cc_session_toolkit/extraction.py"
 
     def test_absent_basename_returns_none(self):
         assert av.unique_suffix_match("ghost.md", self.TRACKED) is None
 
     def test_exact_path_matches(self):
-        assert av.unique_suffix_match("scripts/anchor_verify.py", self.TRACKED) == \
-            "scripts/anchor_verify.py"
+        assert av.unique_suffix_match(
+            "scripts/anchor_verify.py", self.TRACKED
+        ).path == "scripts/anchor_verify.py"
 
     def test_partial_name_does_not_match_across_boundary(self):
         # "tion.py" must NOT match "extraction.py" — only whole path segments.

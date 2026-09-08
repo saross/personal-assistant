@@ -9,6 +9,9 @@ postgres update) are not exercised here — they reuse already-tested modules.
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -465,7 +468,7 @@ class TestApplyGate:
         monkeypatch.setattr(ra, "CORPUS", corpus)
         monkeypatch.setattr(ra.project_id, "repo_set", lambda: [])
         monkeypatch.setattr(ra, "build_plans",
-                            lambda corpus_path, repos: [_plan_for(rec)])
+                            lambda corpus_path, repos, **kw: [_plan_for(rec)])
         monkeypatch.setattr(ra, "apply_plans",
                             lambda *a, **k: called.append("apply"))
 
@@ -497,8 +500,11 @@ class TestBuildPlans:
         ])
         monkeypatch.setattr(ra.av, "verify_file", lambda ref, repos: "false")
         monkeypatch.setattr(ra.av, "verify_commit", lambda ref, repos: "false")
-        monkeypatch.setattr(ra.av, "unique_suffix_match",
-                            lambda ref, cands: "wiki/notes.md")
+        monkeypatch.setattr(
+            ra.av, "unique_suffix_match",
+            lambda ref, cands, **kw: ra.av.SuffixMatch(
+                "wiki/notes.md", "same-project"),
+        )
         monkeypatch.setattr(ra.av, "verify_memory", lambda rec, repos: "true")
         monkeypatch.setattr(ra, "build_basename_index", lambda repos: {})
 
@@ -533,3 +539,135 @@ def test_a_ref_that_already_resolves_is_left_alone() -> None:
         rec, _const("true"), lambda ref: "somewhere/else.md", _const("true"),
     )
     assert plan is None
+
+
+# ============================================================================
+# Recovery stays inside the memory's own project (finding AN2)
+# ============================================================================
+
+
+def _seed_project_repo(root: Path, name: str, relpath: str) -> Path:
+    """Create a throwaway git repository *name* tracking one file *relpath*."""
+    repo = root / name
+    target = repo / relpath
+    target.parent.mkdir(parents=True)
+    target.write_text("# seeded\n", encoding="utf-8")
+    env = {
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "PATH": os.environ.get("PATH", ""), "HOME": str(root),
+    }
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "seed"], check=True, env=env,
+    )
+    return repo
+
+
+def _false_record(project: str, ref: str) -> dict:
+    """A verified=false anchored record attributed to *project*."""
+    return {
+        "id": "2031-07-04-aaaabbbbcccc",
+        "category": "progress",
+        "project": project,
+        "verified": "false",
+        "confidence": "low",
+        "anchors": [{"type": "file", "ref": ref}],
+    }
+
+
+class TestRecoveryIsScopedToTheMemorysProject:
+    """A dead ref must not recover onto a same-named file elsewhere.
+
+    Two throwaway repositories, each tracking a file whose path ends
+    ``util.py``. A memory written in project A carries the dead ref
+    ``util.py``. Before the fix, the basename index pooled both repositories
+    into one namespace and the match in B was "unique", so the memory was
+    re-anchored onto a file it was never about — and then verified true.
+
+    The mutation these kill: dropping ``project_repos=`` from the
+    ``unique_suffix_match`` call in ``build_plans`` (the union match in B is
+    then written), and returning the cross-repo match without the
+    ``allow_cross_repo`` gate.
+    """
+
+    def _corpus(self, tmp_path: Path, record: dict) -> Path:
+        corpus = tmp_path / "memories.jsonl"
+        corpus.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        return corpus
+
+    def test_a_match_in_another_project_is_not_recovered(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        repo_a = _seed_project_repo(tmp_path, "project-a", "src/other.py")
+        repo_b = _seed_project_repo(tmp_path, "project-b", "pkg/src/util.py")
+        monkeypatch.setattr(ra.av, "verify_file", lambda ref, repos: "false")
+        monkeypatch.setattr(ra.av, "verify_memory", lambda rec, repos: "false")
+        record = _false_record(
+            ra.project_id.encode_project_id(str(repo_a)), "src/util.py",
+        )
+        plans = ra.build_plans(
+            self._corpus(tmp_path, record), [repo_a, repo_b],
+        )
+        assert plans == [], "a same-named file in project B is not a recovery"
+
+    def test_a_match_inside_the_memorys_own_project_is_recovered(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """The control: the same shape, with the file in the right project."""
+        repo_a = _seed_project_repo(tmp_path, "project-a", "wiki/util.py")
+        _seed_project_repo(tmp_path, "project-b", "pkg/other.py")
+        repos = [repo_a, tmp_path / "project-b"]
+        monkeypatch.setattr(ra.av, "verify_file", lambda ref, repos_: "false")
+        monkeypatch.setattr(ra.av, "verify_memory", lambda rec, repos_: "true")
+        record = _false_record(
+            ra.project_id.encode_project_id(str(repo_a)), "util.py",
+        )
+        plans = ra.build_plans(self._corpus(tmp_path, record), repos)
+        assert [p["ref_rewrites"] for p in plans] == [
+            [("util.py", "wiki/util.py")]
+        ]
+
+    def test_the_cross_repo_flag_opens_the_union_back_up(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """An unattributed memory recovers only under --allow-cross-repo."""
+        _seed_project_repo(tmp_path, "project-a", "src/other.py")
+        _seed_project_repo(tmp_path, "project-b", "pkg/src/util.py")
+        repos = [tmp_path / "project-a", tmp_path / "project-b"]
+        monkeypatch.setattr(ra.av, "verify_file", lambda ref, repos_: "false")
+        monkeypatch.setattr(ra.av, "verify_memory", lambda rec, repos_: "true")
+        record = _false_record("", "src/util.py")
+        corpus = self._corpus(tmp_path, record)
+        assert ra.build_plans(corpus, repos) == []
+        opened = ra.build_plans(corpus, repos, allow_cross_repo=True)
+        assert [p["ref_rewrites"] for p in opened] == [
+            [("src/util.py", "pkg/src/util.py")]
+        ]
+
+
+class TestProjectReposFor:
+    """Mapping an encoded project id back onto discovered repositories."""
+
+    def test_exact_and_subdirectory_projects_match(self, tmp_path) -> None:
+        repo = tmp_path / "Code" / "widget"
+        repo.mkdir(parents=True)
+        encoded = ra.project_id.encode_project_id(str(repo))
+        assert ra.project_repos_for(encoded, [repo]) == [repo]
+        assert ra.project_repos_for(encoded + "-src", [repo]) == [repo]
+
+    def test_the_innermost_repository_wins(self, tmp_path) -> None:
+        """A nested checkout must not be attributed to its parent."""
+        outer = tmp_path / "Code" / "widget"
+        inner = outer / "vendor" / "thing"
+        inner.mkdir(parents=True)
+        encoded = ra.project_id.encode_project_id(str(inner))
+        assert ra.project_repos_for(encoded, [outer, inner]) == [inner]
+
+    def test_an_unknown_project_is_unattributed(self, tmp_path) -> None:
+        repo = tmp_path / "Code" / "widget"
+        repo.mkdir(parents=True)
+        assert ra.project_repos_for("-home-someone-else", [repo]) is None
+        assert ra.project_repos_for(None, [repo]) is None

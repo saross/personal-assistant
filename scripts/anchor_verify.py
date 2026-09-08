@@ -49,7 +49,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 
 # Subprocess timeout in seconds. Tuned for warm git repos on local
@@ -295,7 +295,55 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
     return "false" if checked_any and not pending_seen else "pending"
 
 
-def unique_suffix_match(ref: str, tracked_paths: Iterable[str]) -> str | None:
+class TrackedPath(NamedTuple):
+    """One tracked file, and the repository it belongs to.
+
+    ``repo`` is the repository root as a string (empty when the caller has no
+    attribution to offer). Recovery needs it because a bare basename recurs
+    across repositories: pooling ~36 checkouts into one namespace let project
+    A's dead ``src/util.py`` "recover" to project B's ``pkg/src/util.py``
+    (audit 2026-09-08, finding AN2).
+    """
+
+    repo: str
+    path: str
+
+
+class SuffixMatch(NamedTuple):
+    """A recovered path plus where it came from.
+
+    ``scope`` is ``"same-project"`` when the match lies inside the memory's
+    own project, and ``"cross-repo"`` when it was found only by searching the
+    union of every repository. A caller that WRITES a recovered ref must
+    refuse ``"cross-repo"`` unless the operator has asked for it: binding a
+    memory to a same-named file in an unrelated repository is worse than
+    leaving the anchor unresolved.
+    """
+
+    path: str
+    scope: str
+
+
+def _as_tracked(candidate: object) -> TrackedPath:
+    """Normalise a candidate into a :class:`TrackedPath`.
+
+    Accepts a :class:`TrackedPath`, a ``(repo, path)`` pair, or a bare
+    repo-relative string (no attribution — such a candidate can never satisfy
+    a project-scoped search).
+    """
+    if isinstance(candidate, TrackedPath):
+        return candidate
+    if isinstance(candidate, (tuple, list)) and len(candidate) == 2:
+        return TrackedPath(str(candidate[0]), str(candidate[1]))
+    return TrackedPath("", str(candidate))
+
+
+def unique_suffix_match(
+    ref: str,
+    tracked_paths: Iterable[object],
+    *,
+    project_repos: Iterable[Path] | None = None,
+) -> SuffixMatch | None:
     """Collision-guarded prefix recovery (item 21b core) — I/O-free.
 
     Item-20 triage found ~53 % of the still-false relative `file` anchors are
@@ -312,17 +360,42 @@ def unique_suffix_match(ref: str, tracked_paths: Iterable[str]) -> str | None:
     ``src/cc_session_toolkit/extraction.py`` without colliding with an
     unrelated ``hooks/extraction.py``.
 
-    *tracked_paths* are repo-relative POSIX paths (e.g. from ``git ls-files``).
-    This is a measurement/recovery helper, deliberately **not** wired into
-    :func:`verify_file`: loosening the live resolver to fuzzy matches would
-    erode the very ``verified`` signal we are trying to make trustworthy.
+    *tracked_paths* are repo-relative POSIX paths (e.g. from ``git ls-files``),
+    each optionally carrying the repository it came from (see
+    :class:`TrackedPath`). This is a measurement/recovery helper, deliberately
+    **not** wired into :func:`verify_file`: loosening the live resolver to
+    fuzzy matches would erode the very ``verified`` signal we are trying to
+    make trustworthy.
+
+    *project_repos* scopes the search (finding AN2). When it is given, ONLY
+    candidates inside those repositories are considered, and a unique hit is
+    returned as ``"same-project"``; a memory that names a project must not
+    recover onto a same-named file in someone else's repository, so no union
+    fallback happens. When it is ``None`` — the memory records no project, or
+    none of the discovered repositories matches it — the union is searched and
+    a unique hit is labelled ``"cross-repo"`` for the caller to accept or
+    refuse.
     """
     ref_norm = ref.rstrip("/")
     if not ref_norm:
         return None
     suffix = "/" + ref_norm
-    matches = [p for p in tracked_paths if p == ref_norm or p.endswith(suffix)]
-    return matches[0] if len(matches) == 1 else None
+    candidates = [_as_tracked(p) for p in tracked_paths]
+
+    def _hits(pool: list[TrackedPath]) -> list[TrackedPath]:
+        return [c for c in pool
+                if c.path == ref_norm or c.path.endswith(suffix)]
+
+    if project_repos is not None:
+        wanted = {os.path.normpath(str(r)) for r in project_repos}
+        scoped = _hits([c for c in candidates
+                        if c.repo and os.path.normpath(c.repo) in wanted])
+        if len(scoped) == 1:
+            return SuffixMatch(scoped[0].path, "same-project")
+        return None
+
+    matches = _hits(candidates)
+    return SuffixMatch(matches[0].path, "cross-repo") if len(matches) == 1 else None
 
 
 # ============================================================================

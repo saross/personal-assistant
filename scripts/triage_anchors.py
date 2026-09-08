@@ -47,30 +47,53 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anchor_verify as av  # noqa: E402
 
 
-def build_basename_index(repos: list[Path]) -> dict[str, list[str]]:
-    """``basename`` → sorted unique repo-relative paths, across all *repos*.
+def build_basename_index(
+    repos: list[Path],
+) -> dict[str, list[av.TrackedPath]]:
+    """``basename`` → sorted unique tracked files, across all *repos*.
+
+    Each entry is an :class:`anchor_verify.TrackedPath` carrying the
+    repository it came from. The attribution is what lets recovery stay inside
+    the memory's own project: without it, ~36 checkouts share one namespace
+    and a dead ``src/util.py`` in project A recovers onto project B's
+    ``pkg/src/util.py`` (audit 2026-09-08, finding AN2).
 
     Sourced from ``git ls-files`` (tracked files only). Feeds the item-21b
-    prefix-recovery diagnostic. A repo whose ``git ls-files`` errors is skipped.
+    prefix-recovery diagnostic. A repository whose ``git ls-files`` fails is
+    skipped and logged — a silent skip is indistinguishable from a repository
+    with no tracked files, and it narrows the recovery namespace invisibly
+    (finding ANT-Md).
     """
-    index: dict[str, set[str]] = {}
+    index: dict[str, set[av.TrackedPath]] = {}
     for repo in repos:
         try:
-            out = subprocess.run(
+            result = subprocess.run(
                 ["git", "-C", str(repo), "ls-files"],
                 capture_output=True, text=True, timeout=20,
-            ).stdout
-        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            print(f"[triage] WARN: cannot list {repo}: {exc}", file=sys.stderr)
             continue
-        for f in out.splitlines():
+        if result.returncode != 0:
+            print(f"[triage] WARN: git ls-files failed in {repo} "
+                  f"(exit {result.returncode})", file=sys.stderr)
+            continue
+        for f in result.stdout.splitlines():
             f = f.strip()
             if f:
-                index.setdefault(os.path.basename(f), set()).add(f)
+                index.setdefault(os.path.basename(f), set()).add(
+                    av.TrackedPath(str(repo), f)
+                )
     return {k: sorted(v) for k, v in index.items()}
 
 
 def recovery_status(ref: str, basename_index: dict[str, list[str]]) -> tuple[str, str | None]:
     """Three-way prefix-recovery classification for one *ref* (item 21b).
+
+    Union-scoped and REPORTING ONLY: unlike
+    :func:`anchor_verify.unique_suffix_match`, which the write path calls with
+    the memory's own project, this counts what could in principle be recovered
+    anywhere. The two numbers differ, and the report says so.
 
     Returns ``("recoverable", path)`` when exactly one tracked file suffix-
     matches (safe to recover — mirrors :func:`anchor_verify.unique_suffix_match`),
@@ -80,9 +103,11 @@ def recovery_status(ref: str, basename_index: dict[str, list[str]]) -> tuple[str
     ref_norm = ref.rstrip("/")
     if not ref_norm:
         return "absent", None
-    candidates = basename_index.get(os.path.basename(ref_norm), [])
+    candidates = [av._as_tracked(c)
+                  for c in basename_index.get(os.path.basename(ref_norm), [])]
     suffix = "/" + ref_norm
-    matches = [p for p in candidates if p == ref_norm or p.endswith(suffix)]
+    matches = [c.path for c in candidates
+               if c.path == ref_norm or c.path.endswith(suffix)]
     if len(matches) == 1:
         return "recoverable", matches[0]
     return ("ambiguous", None) if matches else ("absent", None)
