@@ -94,7 +94,14 @@ ensure_symlink() {
         local current
         current="$(readlink "$target")"
         if [ "$current" != "$src" ]; then
-            ln -sf "$src" "$target"
+            # Audit 2026-09-08 S11: -n (--no-dereference) is mandatory here.
+            # When $target is a symlink to a DIRECTORY (every skill link —
+            # step 4), plain `ln -sf` follows the link and creates the new
+            # symlink INSIDE the old target directory instead of retargeting
+            # the link. The retarget then silently fails, the script logs
+            # "updated symlink" on every run, and a stray symlink is
+            # deposited into the old source directory.
+            ln -sfn "$src" "$target"
             say "  $label — updated symlink"
         elif [ ! -e "$target" ]; then
             # Audit 2026-05-02 E-Medium: target string matches but the

@@ -12,8 +12,9 @@ Routing (proposal v3, 2026-09-08). Several Claude/Codex partnerships run in
 different repositories, so a message carries optional headers:
 
 - ``Project:`` the git repository name it concerns, or ``any``. A session
-  lists messages whose project matches its own (the basename of the cwd's
-  git root) or is absent/``any``; messages for other projects are summarised
+  lists messages whose project matches its own (its repository's name: from
+  the origin remote, else the primary checkout's directory, else the git
+  root, else the cwd) or is absent/``any``; messages for other projects are summarised
   as one count line, never listed, so the wrong desk cannot act on them.
 - ``Lane:`` a model lane (``fable``, ``opus``, ``sonnet``, a GPT model, or
   ``any``). The hook cannot learn the session's model, so it prints the

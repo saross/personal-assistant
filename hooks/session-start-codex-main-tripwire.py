@@ -130,25 +130,49 @@ def flagged_commits(
         if by_identity or names_codex(trailers):
             flagged.append({
                 "sha": sha, "date": date, "subject": printable(subject),
-                "author": printable(author),
+                "author": author_name(author),
             })
     return flagged[:MAX_COMMITS]
 
 
-def printable(text: str, limit: int = 120) -> str:
-    """Strip control characters and every bracket-like character.
+def _bracket_like(ch: str) -> bool:
+    """True for anything that could read as a square bracket.
 
-    A subject cannot forge extra output lines, and an author name cannot
-    close the ``[author]`` group early to plant text inside the block that
-    is relayed to Shawn. Unicode open and close punctuation (categories Ps
-    and Pe: fullwidth brackets, ornate parentheses, and the like) goes too;
-    deleting the two ASCII brackets alone left lookalikes working
-    (re-audit, 2026-09-08).
+    The two ASCII brackets; every Unicode open/close punctuation character
+    except the ASCII parentheses (which conventional-commit subjects need:
+    ``fix(scope): …`` is 89% of this repository's history); and every
+    character whose name says BRACKET, which catches the ``Sm``-category
+    bracket pieces (U+23A1 ⎡, U+23A4 ⎤, …) that the category test misses.
+    Text is NFKC-normalised first so fullwidth and small-form brackets fold
+    to ASCII before the test (re-audits, 2026-09-08).
     """
-    return "".join(
-        ch for ch in text
-        if ch.isprintable() and unicodedata.category(ch) not in ("Ps", "Pe")
-    )[:limit]
+    if ch in "[]":
+        return True
+    if ch in "()":
+        return False
+    return (unicodedata.category(ch) in ("Ps", "Pe")
+            or "BRACKET" in unicodedata.name(ch, ""))
+
+
+def printable(text: str, limit: int = 120) -> str:
+    """A subject fit to relay: printable, no bracket-like characters.
+
+    A subject cannot forge extra output lines or close the ``[author]``
+    group that follows it; parentheses survive so the subject stays the
+    subject.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if ch.isprintable() and not _bracket_like(ch))[:limit]
+
+
+def author_name(text: str, limit: int = 60) -> str:
+    """An author fit to sit inside ``[…]``: an allowlist, not a denylist.
+
+    Names are letters, digits, spaces, and ``.-'_@()``; nothing else can
+    appear inside the group, so nothing can close it early.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if ch.isalnum() or ch in " .-'_@()")[:limit].strip()
 
 
 def read_acks(path: Path = ACK_FILE) -> frozenset[str]:

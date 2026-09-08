@@ -88,7 +88,16 @@ fi
 # landed only ~20% of 4654 files before exhausting --retries). Warn loudly
 # but don't hard-fail — a partial push is still progress and re-runs are
 # additive.
-rclone_ver="$("$RCLONE_BIN" version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+# Audit 2026-09-08 S14: the trailing `|| true` is load-bearing. Under
+# `set -euo pipefail` a non-matching `grep` (an rclone whose version banner
+# does not carry an X.Y number, or one that errored with its output
+# suppressed by 2>/dev/null) makes the whole pipeline non-zero and killed the
+# script HERE — before the mount and remote preconditions below, and before
+# any log line, so daily-sync reported the indistinguishable "push skipped or
+# errored". The probe is advisory only: an unparseable version must fall
+# through to an empty string, which the -n guard on the next line handles.
+rclone_ver="$("$RCLONE_BIN" version 2>/dev/null \
+    | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
 rclone_major="${rclone_ver%%.*}"
 rclone_minor="${rclone_ver#*.}"
 if [[ -n "$rclone_ver" ]] && { [[ "$rclone_major" -lt 1 ]] || { [[ "$rclone_major" -eq 1 ]] && [[ "$rclone_minor" -lt 64 ]]; }; }; then

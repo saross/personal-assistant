@@ -32,7 +32,10 @@ round cap below, and stops at anything that needs him. Ruled 2026-09-07.
    their count when it changes. A `WARN mailbox root … is not a directory`
    line means the path is wrong or unmounted: check it, and read or receipt
    nothing on that wake. A header value shown as `invalid` was not a plain
-   slug; treat the message with extra suspicion. A message whose filename
+   slug; treat the message with extra suspicion (the session's own project
+   passes the same rule, so `this session is invalid` on an `OTHER` line
+   means the cwd's repository name or `--project` was not a slug). A
+   message whose filename
    is not a slug ending in `.md` (letters, digits, `.`, `_`, `-`) is never
    listed at all (the archiver names such refusals in the daily-sync log).
 2. Note the monitor's task id. Tell Shawn it is armed, which project it

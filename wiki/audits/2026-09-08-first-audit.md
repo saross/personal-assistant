@@ -52,7 +52,7 @@ one on the 2026-09-07/08 code"), suite 1,250:
 | Verifier: case asymmetry, zero-width characters, `%2F` in remote, trimmed field list crashes | fixed |
 | Hook: linked worktree's git root is the worktree, not the repository (Astra, #113) | fixed (remote repository name, common-dir fallback) |
 | Tests: no entry-point coverage; commit pathspec untested on commit; 5 verifier fixtures testing the wrong rule; `attempt()` untested; watcher loop untested | fixed (67 tests in the five files, from 38) |
-| `check-credentials.py` has no tests | **round 2** (branch `claude/audit-hook-tests`; Lens B supplied the case list) |
+| `check-credentials.py` has no tests | fixed in PR #115 (b0f3269): the case list, the wiring, and the bash divergences, each verified by probe |
 | Tripwire never examines local `main` when `origin/main` resolves | deferred (the token pushes to origin; a local-only Codex commit is not the threat) |
 | Archiver sort key mixes `Date:` and `sent` formats | deferred (deterministic; all live headers are ISO) |
 
@@ -69,8 +69,8 @@ critical and every medium in Claude-owned code are fixed in 06225a0 and
 | 2, 3 | Hook and watcher print the unsanitised `Project:` header on the "Other projects" line (CONFIRMED: raw ANSI reached hook stdout) | fixed in 5798dc9: `route()` keys the counts by `safe_value` |
 | 4, 5 | `safe_value` stripped brackets only; `Lane: fable; project: x` forged a second field, and the test pinned the forged output as correct | fixed in 5798dc9: a value is a slug (`[A-Za-z0-9._-]`, ≤60) or `invalid`; test rewritten |
 | 6 | A printable filename with brackets forged a bracket group on the listing line | fixed in 5798dc9: names must match `[A-Za-z0-9._-]+\.md` (all 97 live names conform) |
-| 7 | Checker misses `NAME= value` (bash runs the secret as a command with NAME empty) | **round 2** (branch `claude/audit-hook-tests`, with the checker's first tests) |
-| 8 | Checker's `quoted` guard turned `TOKEN='abc' # comment` from a true positive into a silent false negative | **round 2** (same branch) |
+| 7 | Checker misses `NAME= value` (bash runs the secret as a command with NAME empty) | fixed in PR #115 (b0f3269) |
+| 8 | Checker's `quoted` guard turned `TOKEN='abc' # comment` from a true positive into a silent false negative | fixed in PR #115 (b0f3269) |
 | 9 | Verifier coverage-guard test's `else: pass` — the guard was deletable with the test green (CONFIRMED by mutation) | fixed in 5798dc9: removes every case for one rule and requires the refusal |
 | 10 | Tripwire `SINCE` had no zone; a UTC or US host narrowed the window by up to 17 h | fixed in 5798dc9: `+10:00` pinned; boundary test across three zones |
 | 11 | A trailing `%2F` in an admitted remote defeated the segment count | fixed in 5798dc9: slash counts compared |
@@ -127,6 +127,25 @@ where noted:
 | L | The Codex-side hook applies no v3 routing and no name rule, so the two agents can disagree on what is mail | with Astra (message of 2026-09-08T02:19Z) |
 | L | Every non-slug project collapses into one `invalid` bucket | accepted |
 
+### Round 1e — re-audit of round 1d (fresh agent, 2026-09-08)
+
+No critical; 3 medium, 5 low. Fixed in 940fb2d:
+
+| # | Finding | Disposition |
+|---|---|---|
+| M1 | Round 1d's bracket stripping removed parentheses from 89% of relayed subjects (`fix(scope):` became `fixscope:`), and a test pinned the damage (CONFIRMED) | fixed: NFKC then only bracket-like characters go; ASCII parentheses stay |
+| M2 | `Sm`-category bracket pieces (U+23A1, U+23A4) still forged the author group (CONFIRMED) | fixed: the author passes an allowlist; the subject drops anything named BRACKET |
+| M3 | A source that vanished between listing and read aborted the whole archive run before the index and the refusal report (CONFIRMED) | fixed: skipped, seen next run |
+| L1 | Hook and watcher docstrings still said "basename of the git root" | fixed |
+| L2 | The archiver's copy of the slug rule could drift from the hook's | fixed: a test pins the two |
+| L3 | `this session is invalid` undocumented | fixed: runbook |
+| L4 | Index `Date` kept free text after control stripping | fixed: ISO stamp or `invalid` |
+| L5 | The archive-side comparison read was unbounded | fixed |
+
+The re-audit also confirmed no real repository under the home directory
+(45 checked) resolves to `invalid` or `any`, and the archiver reproduces
+the live mailbox exactly (98 files, 50 messages, 48 receipts, 0 refused).
+
 ## Tranche 1 — session hooks
 
 Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
@@ -139,9 +158,9 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H2 | `hooks/session-start-code-state.py:128-136` — `commit_at_start` overwritten on resume/compact (same session id); 37 of 42 multi-write sessions recorded a changed commit. | CONFIRMED from the sidecar log | fixed in 300ee10 (first write wins) |
 | H3 | `hooks/session-start-retrieval.py:644-667,821-862` — the legacy four-bucket path surfaces `verified: "false"` memories as fact; 738 such records, 401 in permanent categories; the digest path filters, the legacy path does not. | CONFIRMED (grep: `verified` read nowhere in retrieval) | fixed in 300ee10 (apply the stated anti-confabulation rule on the legacy path) |
 | H4 | `scripts/_command_markers.py:61-62` — `/forget` and `/update` markers no longer match their command headers, so those exchanges (which contain the deleted/superseded memory text) are re-extracted. | CONFIRMED against `commands/*.md` | fixed in 300ee10 (fix markers; derive the test fixture from `commands/*.md`) |
-| H5 (B) | `extraction-hook.py:1021,1145` — the persistence path is untested: truncating the store on every session close, or never writing, passes 1,208 tests; `tests/test_jsonl_flock.py` re-implements the append instead of importing it. | CONFIRMED (mutations survived) | **round 2** (branch `claude/audit-hook-tests`) (test `append_memories` and a successful `main()` end to end, asserting bytes appended) |
-| H6 (B) | `session-start-accountability.py:265` — `build_banner()` can return a constant; the counts can be swapped; slot delimiters can vanish; all green. | CONFIRMED | **round 2** (branch `claude/audit-hook-tests`) (banner tests) |
-| H7 (B) | `session-start-retrieval.py:1262` — on this machine the digest path is live and the tests assert only scaffolding; the digest can surface zero memories with tests green. The autouse fixture forces all machine flags off, so the suite tests the path this machine no longer takes. | CONFIRMED | **round 2** (branch `claude/audit-hook-tests`) |
+| H5 (B) | `extraction-hook.py:1021,1145` — the persistence path is untested: truncating the store on every session close, or never writing, passes 1,208 tests; `tests/test_jsonl_flock.py` re-implements the append instead of importing it. | CONFIRMED (mutations survived) | fixed in PR #115 (squash-merged b0f3269) (test `append_memories` and a successful `main()` end to end, asserting bytes appended) |
+| H6 (B) | `session-start-accountability.py:265` — `build_banner()` can return a constant; the counts can be swapped; slot delimiters can vanish; all green. | CONFIRMED | fixed in PR #115 (squash-merged b0f3269) (banner tests) |
+| H7 (B) | `session-start-retrieval.py:1262` — on this machine the digest path is live and the tests assert only scaffolding; the digest can surface zero memories with tests green. The autouse fixture forces all machine flags off, so the suite tests the path this machine no longer takes. | CONFIRMED | fixed in PR #115 (squash-merged b0f3269) |
 
 ### Medium (hooks)
 
@@ -159,13 +178,17 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H17 | Locale-dependent `read_text()` in five places; no top-level guard in retrieval `main()` | fixed in 300ee10 |
 | H18 | Vocabulary updated inside `format_memories`, before the append that may fail | fixed in 300ee10 (move after append) |
 | H19 | Anchor verification can spawn up to 72 git subprocesses per unresolved anchor inside a 30 s hook | deferred (measure first) |
-| H20 (B) | No output bound pinned in the retrieval suite; the one cap test uses exactly the cap | **round 2** (branch `claude/audit-hook-tests`) |
-| H21 (B) | Flock guards in extraction removable with tests green; no double-firing test | **round 2** (branch `claude/audit-hook-tests`) (test `main()` twice) |
-| H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | **round 2** (branch `claude/audit-hook-tests`) (filter; fixture from a real transcript shape) |
+| H20 (B) | No output bound pinned in the retrieval suite; the one cap test uses exactly the cap | fixed in PR #115 (squash-merged b0f3269) |
+| H21 (B) | Flock guards in extraction removable with tests green; no double-firing test | fixed in PR #115 (squash-merged b0f3269) (test `main()` twice) |
+| H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | fixed in PR #115 (squash-merged b0f3269) (filter; fixture from a real transcript shape) |
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
-| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
-| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
+| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | fixed in PR #118 (merged 190bc7c) |
+| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | fixed in PR #118 (merged 190bc7c) |
+| H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
+| H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | fixed on PR #115 (fifth round, 943da8d) after two attempts that encoded the pending skip in the cursor POSITION and each broke an invariant: the cursor record is now `{uuid, skip_pending}` per session, so position and pending state are separate facts; ten tests through `main()` assert the cursor file after each firing |
+| H29 | `hooks/extraction-hook.py` marker branch — a non-meta user entry whose text merely contains a slash-command header (a tool result echoing `commands/*.md` or `scripts/_command_markers.py`) sets the skip flag and drops the next genuine assistant turn (SUSPECTED by the round-four re-audit; one such entry exists, created by this audit session) | fixed in PR #118 (merged 190bc7c) |
+| H30 | `hooks/extraction-hook.py` — the command skip is a boolean, not a counter: `[cmd, cmd]` then `[resp, resp]` sends the second response to the model (CONFIRMED by the fifth re-audit; pre-existing) | fixed in PR #118 (merged 190bc7c) |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -190,7 +213,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S5 | `daily-sync.sh:358,405-423` run before the detached-HEAD guard at 438-445; on a detached HEAD the memory commit and the archive commit are orphaned and the working tree reverted. Likely trigger: `sync-symlinks.sh:126 git submodule update` detaching HEAD. | CONFIRMED by ordering; trigger SUSPECTED | **round 2** (branch `claude/audit-sync-writers`) (move the guard above every commit site) |
 | S6 (B) | `scripts/resolve-merge-conflicts.py` has zero tests; keeping only "ours" passes the whole suite. | CONFIRMED | **round 2** (branch `claude/audit-sync-writers`) (tests with real conflict markers) |
 | S7 (B) | `scripts/daily-sync-trigger.sh` has zero tests; "never runs again" and "breaks the hook chain" both pass. | CONFIRMED | **round 2** (branch `claude/audit-sync-writers`) |
-| S8 (B) | `archive-memories.py::apply_archive` untested: evicting without archiving, or archiving without evicting, passes. `monthly-archive.py::_apply` halts removable with tests green. | CONFIRMED | **round 2** (branch `claude/audit-sync-helpers`) |
+| S8 (B) | `archive-memories.py::apply_archive` untested: evicting without archiving, or archiving without evicting, passes. `monthly-archive.py::_apply` halts removable with tests green. | CONFIRMED | fixed in PR #114 (merged 8c61bb8) |
 
 ### Medium (sync)
 
@@ -198,18 +221,18 @@ dies at line 618 before the sync body and the test passes anyway).
 |---|---|---|
 | S9 | Archiver call lacks a `DRY_RUN` guard; `--dry-run` commits | **round 2** (branch `claude/audit-sync-writers`) |
 | S10 | Two Syncthing gate-file layouts; the trigger reads one; the early-exit path renders a headerless problem | **round 2** (branch `claude/audit-sync-writers`) |
-| S11 | `sync-symlinks.sh:97` `ln -sf` on a symlink-to-directory writes inside it; needs `-sfn` | **round 2** (branch `claude/audit-sync-helpers`) |
+| S11 | `sync-symlinks.sh:97` `ln -sf` on a symlink-to-directory writes inside it; needs `-sfn` | fixed in PR #114 (merged 8c61bb8) |
 | S12 | Resolver: a valid-JSON non-object line raises `AttributeError`, aborting the sync with a conflicted tree | **round 2** (branch `claude/audit-sync-writers`) |
-| S13 | `compose-global-claude-md.sh:102` truncates `~/.claude/CLAUDE.md` before writing | **round 2** (branch `claude/audit-sync-helpers`) (temp + `mv`) |
-| S14 | `push-archives-to-r2.sh:91` version probe kills the script under `pipefail` | **round 2** (branch `claude/audit-sync-helpers`) |
-| S15 | `archive-memories.py:369-373` releases the flock before its commit | **round 2** (branch `claude/audit-sync-helpers`) |
-| S16 | `archive-memories.py:413`, `commit-data.sh:49,58` commit without a pathspec | **round 2** (branch `claude/audit-sync-helpers`) |
+| S13 | `compose-global-claude-md.sh:102` truncates `~/.claude/CLAUDE.md` before writing | fixed in PR #114 (merged 8c61bb8) (temp + `mv`) |
+| S14 | `push-archives-to-r2.sh:91` version probe kills the script under `pipefail` | fixed in PR #114 (merged 8c61bb8) |
+| S15 | `archive-memories.py:369-373` releases the flock before its commit | fixed in PR #114 (merged 8c61bb8) |
+| S16 | `archive-memories.py:413`, `commit-data.sh:49,58` commit without a pathspec | fixed in PR #114 (merged 8c61bb8) |
 | S17 | A conflicted orphan-stash pop wedges every later session with no gate line | **round 2** (branch `claude/audit-sync-writers`) (gate line) |
 | S18 | Syncthing SSH probe runs inside the 90 s SessionStart budget | deferred |
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
-| S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
+| S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (CONFIRMED by two round-two agents; `rebuild.log` grew during today's runs) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -253,6 +276,7 @@ callers.
 | P14 | Poison lines re-quarantined every 5 minutes while the cursor is halted | **round 2** (branch `claude/audit-postgres`) (dedup before append) |
 | P15 | Drift recovery pulls the whole table to filter in Python | deferred |
 | P16 | Three processes read-modify-write `sync-cursors.json` without lock or atomic rename | **round 2** (branch `claude/audit-postgres`) (atomic write; the memories sync already has the flock pattern) |
+| P17 | `scripts/sync-to-zotero.py:129` is the third writer of `sync-cursors.json` and still writes unlocked and non-atomically; P16 protects the other two (CONFIRMED, round-two agent) | **next** (external-services tranche, or round 3) |
 
 Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs
@@ -292,22 +316,398 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    (recommended, since the hub rule is push-after-commit anyway), or push
    when ahead and accept that the sync publishes every local commit.
 
+6. **D6 — purge private names from public git history (H27).** The
+   branch tip no longer carries them, but six commits on
+   `claude/audit-hook-tests` do, and `main` has carried one third-party name
+   in a test fixture since 2026-05-02 (82f5035). Options: (a) rewrite the
+   branch (filter-branch or a fresh branch from `main` with the same
+   changes) and force-push, then ask GitHub support to drop the orphaned
+   commits from their cache — needed for the branch, cheap; (b) also rewrite
+   `main` back to May, which invalidates every clone and worktree on both
+   machines and needs GitHub support for cached views; or (c) leave `main`'s
+   history and replace the fixture in a normal commit (queued in round 3
+   either way). Recommendation: (a) now, (c) for `main`, and a standing
+   rule for fix agents: fixtures are synthetic, never read from `tasks/`,
+   `wiki/`, or the data submodule (added to the shared brief). Whatever is
+   decided, PR #115 should be squash-merged so the six commits carrying
+   the rows never enter `main`'s history.
+
 ## Fix rounds
 
-- Round 1 (done, 0577648): tranche 0. Re-audited three times: rounds 1b
-  (06225a0, 5798dc9), 1c (0f94722), and 1d (122c9e3).
+- Round 1 (done, 0577648): tranche 0. Re-audited four times: rounds 1b
+  (06225a0, 5798dc9), 1c (0f94722), 1d (122c9e3), and 1e (940fb2d).
 - Round 2, hooks (done, 300ee10): H2–H4, H8–H13, H15–H18. Re-audit pending.
 - Round 2, remainder (four branches, each in its own worktree, reviewed and
   merged by PR after a fresh-agent re-audit): hook tests H5–H7, H20–H22 and
   the checker's tests and two fixes (PR #115, `claude/audit-hook-tests`);
   sync helpers S8, S11, S13–S16, S20 (PR #114, `claude/audit-sync-helpers`);
   sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (PR #116,
-  `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16
-  (`claude/audit-postgres`, in progress). PR #114's re-audit found a
-  critical in the new `commit-data.sh` staging logic (latches into a silent
-  no-op after a failed run) and glob pathspecs; being fixed on the branch
-  before merge.
-- Round 3 (queued, on main after the branches merge): H25, H26, S22, S23,
-  S26.
+  `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16 and the
+  `rebuild.log` half of S22 (PR #117, `claude/audit-postgres`).
+- Branch re-audits (each a fresh agent; fixes land on the branch before
+  merge). Every branch's first pass found at least one critical in the fix
+  code itself, which is the protocol's point:
+  - PR #114, first pass: the new `commit-data.sh` staging logic latched into
+    a silent no-op after a failed run, and glob pathspecs swept lookalike
+    files. Fixed (ae35435–689c949). Second pass: the in-progress guard
+    missed unmerged index entries with no marker file (a conflicted stash
+    pop pushed conflict markers with exit 0); the exit-3 remedy advised the
+    very sweep the fix prevents; a stale parent pointer was never bumped.
+    Fixed (2e3d616). Third pass: the new pointer bump rolled the pointer
+    BACKWARDS when the parent was ahead of the checkout (a pull without a
+    submodule update), with exit 0 — a regression in the fix; `data` tracked
+    as plain files would have had its contents committed into the public
+    parent; the staleness probe was silenced by submodule ignore settings.
+    Fixed (0a0a147: forward-only, gitlink-only, SHAs read directly). Fourth
+    pass: merge, with the guard moved before the data push and four
+    untested guards pinned (d68af93). **Merged as 8c61bb8**; main suite
+    1,333.
+  - PR #115, first pass: **private content in a public branch** (H27, D6);
+    a false comment about cursor advance on harness-only windows; unpinned
+    digest constants; loose banner assertions; three checker divergences
+    from bash (`$VAR`, trailing backslash, CRLF); deletable checker passes;
+    an untested cursor prune; two old tests reading the real scratchpads.
+    Tip purged (41ae79b); the rest fixed in ten commits (2d36e39–5c1e7a1;
+    the agent also desensitised three older fixtures with collaborator
+    names). Second pass: no critical; the new cursor advance could drop a
+    pending slash-command skip and re-extract a `/remember` response
+    (being fixed); two archiver commit tests depended on the operator's
+    `~/.gitconfig` (fixed on main, b25fe3e); CR-only `.env` files now
+    parse wrongly and backtick/`&` values go unflagged (being fixed); the
+    desensitised fixture still reads as this week's house move. Third
+    round (48736e9–1b96351): all fixed; the agent's sweep also found six
+    more fixtures in the same file carrying the real focus slot verbatim
+    (project, slug, rotation date, the prose deadline and its client),
+    several from its own earlier work — all replaced by an invented 2024
+    equipment log. `tests/test_digest.py` and `tests/test_retrieval_hook.py`
+    carry project slugs the repository names openly (left);
+    `tests/test_zotero.py` carries published author surnames from a
+    bibliographic fixture (Shawn's call). Third pass: **do not merge as
+    is** — the pending-skip guard covered only the empty-window advance; the
+    two non-empty advances still step past a trailing command (H28, now
+    being fixed with the safe-advance design); a subagent assistant entry
+    consumes the skip flag; the substitution guard checks the opening
+    quote, so `A='abc'$(id)` (which bash executes) is unreported; no test
+    covers a file without a trailing newline (dropping `|$` from the line
+    splitter silences the whole parse); `tests/conftest.py` still carries
+    the real focus slots and an institution. Fourth round done
+    (c6087ff–fc03226): the safe-advance position on all three cursor
+    writes (six tests including a two-firing run); subagent entries dropped
+    before the command branch; the checker guards on the closing quote,
+    adds `<`/`>`, scopes the operator scan to the value before a comment,
+    and decodes a BOM; `conftest.py` fixtures retired. Fourth pass:
+    **hold** — the safe-advance position regresses on `[real, /cmd,
+    real-user]`: the later message is extracted but the cursor stays
+    behind it, so it is re-extracted every firing (a live shape). Fifth
+    round running: the cursor record persists the pending-skip state
+    per session, so the cursor always advances to the last processed
+    entry and the skip carries over; a legacy cursor sitting on a command
+    entry sets the flag; tab-delimited comments; two untested lines
+    pinned. Fifth round done (943da8d–453625c). Fifth pass: **no
+    critical; merge after one fix** — the comment-start regex used `\s`,
+    wider than bash's blanks, so a vertical tab before `#` muted the
+    operator scan; plus four surviving mutations, a non-dict cursor file
+    crashing the hook, and eight older tests reading the operator's real
+    memory store into a prompt. Sixth round done (33d9102–8efa1e6; suite
+    1,487 measured three times). Final narrow pass: no critical, nothing
+    touches the live store; two mediums of the branch's own classes
+    remain — the `^#` comment alternative is wrong (bash starts a comment
+    only at a word start, so `A=#c>z` lost its redirect finding) and a
+    malformed content BLOCK still crashes the hook — plus backslash parity
+    in the lookbehind and the sibling blank-class assumption in the
+    whitespace check. Closing round done (ef3fa0d, 6e86f91; the
+    coordinator reviewed the diff). **Squash-merged as b0f3269**; main
+    suite 1,555; no private row on `main`. The branch on GitHub still
+    carries the six commits (D6). Design note worth keeping: the first two cursor fixes each
+    satisfied one invariant by breaking another because they stored two
+    facts (position, pending skip) in one pointer; only separating them
+    satisfies all four. Merge strategy: squash, so the six commits
+    carrying private rows never enter `main`'s history; the branch itself
+    is D6.
+  - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
+    guard pushes a second stash and only one is popped, so a run that
+    reports success leaves the day's appends in a stash (the very loss
+    class the branch closes); and the append-only block stages an unmerged
+    `memories.jsonl`, so conflict markers left by the S3 abort are committed
+    by the next run and published by the S1 push. Plus: the S1 bump goes
+    ahead when `origin/main` is absent; a parent stash-pop conflict has no
+    gate; one commit body over-claims its mutation kills. Fixed
+    (221acd4–ca10efa): every stash is tracked by SHA and popped
+    oldest-first (the boolean flags are gone); an unmerged memory file is
+    refused with a gate; the bump is withheld when `origin/main` is absent;
+    the trigger survives an unset `HOME`. Second pass: **two more
+    criticals in the round-two fixes** — a stash pop that is refused (two
+    stashes touching one file) rather than conflicted orphans the remainder
+    with no gate and the next run exits 0; the marker check reads the index,
+    so a marker-laden memory file that has been `git add`ed (which the gate
+    text itself advises) is committed and published. Plus: `push_stash` can
+    return a foreign stash's SHA; `daily-sync.sh` itself still dies on an
+    unset `HOME`; seven mutations of the round's own stash logic survive
+    the suite (the SHA resolution is untested). Third round done
+    (409e848–fd02e2f), briefed as invariants: a run never exits with its
+    own stash unrecovered without naming it in the gate; no memory file
+    whose content holds a marker line is staged at any of the five sites;
+    only a run's own stashes are popped or dropped; an unusable `HOME`
+    fails at the start; orphans recovered by SHA; all seven surviving
+    mutations killed. Third pass: merge after fixing two — diff3/zdiff3
+    `|||||||` markers pass the content check and the resolver keeps them
+    (a corpus with one reached origin, exit 0, clean gate; no such config
+    is set on either machine today); a resolved data conflict latches off
+    the parent-half stash restore. Also: five new mutations survive (the
+    marker regex, the file loop, two of the five refusal sites, orphan pop
+    by selector); every `fail` on the rebase and push paths wedges the
+    sync with no gate line; the marker re-scan runs after `rebase
+    --abort`. Fourth round done (bb029fd–9ebbbd7): diff3/zdiff3 markers
+    recognised and the base section dropped whole (stripping only the
+    marker line resurrected records both machines had deleted); the latch
+    reset; `fail` itself gates every non-zero exit; the marker list
+    captured before the abort; orphans applied by commit; a non-existent
+    `HOME` refused; the five surviving mutations killed. Suite 1,398.
+    Fourth pass: **do not merge** — two more criticals in the round-four
+    fixes: the resolver's new base-section handling truncates a file to
+    the end on a stray `|||||||` line outside any conflict block (and the
+    gate text tells the operator to run that resolver); the post-resolver
+    stash drop uses a selector resolved before the pop, and a concurrent
+    drop in that window destroyed another session's stash with exit 0.
+    Also: `fail` skips its gate line after a non-fatal gate; the trigger's
+    `mkdir -p` creates a phantom `HOME` before the sync's guard can refuse
+    it; the orphan apply-by-commit fix has no discriminating test;
+    `--dry-run` now writes a gate. Thirty-six real merge conflicts across
+    three conflict styles resolved correctly otherwise. Fifth round done
+    (cef4743–daf5d7d; suite 1,414): the resolver is positional and leaves
+    a file with only stray marker-shaped lines byte-identical; `git stash
+    pop` is gone from the script — every restore applies by commit and
+    re-resolves the selector at the drop; every failure reason appends to
+    the gate; the trigger checks `HOME` first and prints the diagnosis on
+    stdout; a dry run never gates. Fifth pass: **do not merge** — three
+    criticals in the round-five fixes: the gate now duplicates its
+    paragraph on every failing run (nothing resets it); the guard and the
+    resolver still disagree on "has markers", so a corpus with a lone
+    `=======` wedges behind advice to run a resolver that then skips it;
+    a nested conflict is rewritten with live markers left in and reported
+    as resolved. Plus: the diff3 base section is dropped only to its first
+    `=======`; a failed drop after a successful apply is gated as
+    "unrecovered" work (popping it again would duplicate records); eight
+    call sites still truncate the gate. Sixth round running: the gate is
+    rendered once at exit from an in-run list; guard and resolver share
+    one marker predicate; an unbalanced block structure is refused.
+    Sixth round done (3530620–a2c84f5, merged with main as 4b451a2; suite
+    1,704): the gate is built in memory and rendered once from the EXIT
+    handler; the guard calls the resolver's new `--check` mode; unbalanced
+    structures exit 3 untouched; the separator is the last `=======`
+    before the closer; applied work is never called unrecovered; one relay
+    header; an unwritable lock surfaced. Sixth pass: **do not merge** —
+    three new criticals in the round-six wiring: the exit-time render
+    writes `0` over a live gate on lock contention, SIGTERM, or SIGINT
+    (and a test pinned that design); a resolver crash exits 1, which the
+    guard reads as "resolvable" and gates the traceback as marker lines;
+    a missing venv interpreter accuses a clean corpus. Plus: a conflicted
+    apply is still told to pop; the `applied` classification is untested;
+    a THEIRS line that is literally `=======` is deleted under the
+    last-separator rule; a vanished file reads as "manual". Seventh
+    round running: the gate is cleared only where the run completed;
+    `--check` has its own failure code and the guard maps only 0/1/3 to
+    corpus verdicts; the interpreter is verified first. Seventh round
+    done (9a58f13–17f5aeb; suite 1,718): all three fixed as briefed;
+    signals exit 130/143 and append an interruption line; a
+    conflicted-then-abandoned apply is a third state; a block with more
+    than one separator is refused; and the agent found the corpus guard
+    was being called inside `$(...)`, so its gate details were discarded
+    and its `fail` exited only the subshell — now an array in the main
+    shell. Seventh pass: **merge after fixing two** — the third state was
+    added on the data half only (a conflicted parent apply is still told
+    to pop, and a test pinned that advice); the exit handler re-applies a
+    stash the run already applied when its drop failed, leaving markers
+    in the live corpus with exit 0. Plus: a run killed mid-rebase is
+    misdiagnosed by every later run; the third-state advice survives one
+    run; every marker fixture puts its problem on a single-digit line, so
+    narrowing the line-number regex publishes markers with the suite
+    green; the checker's broad exception handler is untested. Eighth
+    round done (1fa64df, 99b7672; suite 1,727): the parent half has the
+    third state and distinguishes a refused from a conflicted apply; the
+    exit handler never re-applies what the run applied; an in-progress
+    rebase, merge, or unmerged tree is named at the start; a failing run
+    keeps the previous interruption line; the guard and the interrupted
+    check run before orphan reconciliation; the marker parser fails
+    closed (tested at line 13); the resolver runs under `timeout 60`.
+    Eighth pass: **do not merge** — the exit handler can itself create a
+    conflicted apply without classifying it (so the gate says pop for a
+    tree holding markers); the new interrupted-state advice orders the
+    deletion of an unnamed stash before orphan reconciliation has run;
+    the parent repository is never checked for in-progress state; `git
+    am`, a resolved-but-uncommitted merge, cherry-pick, and revert get the
+    wrong command; the completion flag and the start-of-run guard are
+    untested. Ninth round running: classify a conflicted restore; name
+    every stash by SHA and only claim "in the tree" for a proven applied
+    one; check both repositories; per-operation commands. Both machines
+    at 16:15: corpora pass `--check`, no stash, no in-progress rebase or
+    merge, no unmerged path, no `merge.conflictStyle` set.
+  - PR #117, first pass: **a regression class** — `ProgrammingError` and
+    `InternalError` (revoked privilege, missing table, aborted transaction)
+    were routed to "row refused", so an environment fault would quarantine
+    every pending row and advance the cursor with exit 0 where the old code
+    held it; the per-row replay lacks a defensive rollback; two of four
+    cursor writers still unlocked; the rebuild truncates before resetting
+    the cursor with no lock against the cron; `index-session-content.py`
+    still lacks NUL sanitising and refused-row handling. Fixed
+    (fbddbcc–dafcb20): three-way classification with `ProgrammingError`
+    split by SQLSTATE, an all-alike rule, a 200-row quarantine cap, exit 4
+    with the cursor held; all four cursor writers locked and atomic; the
+    rebuild holds the cursor lock and a sync whose key vanished exits 6;
+    the indexer sanitises and skips. Second pass: **do not merge as is** —
+    the all-alike rule (prescribed by the coordinator) re-creates P1 on
+    correlated poison (two NUL sessions in one batch hold the cursor forever
+    with exit 4), and exit 4 reaches nobody (cron discards status; the
+    settings hook chain `sessions-sync && indexer` now silently stops the
+    indexer); the sessions sync's compare-and-set is untested; a refused
+    file is retried and unreported every run; `DiskFull`/`QueryCanceled`
+    are `OperationalError` and were routed to "outage, exit 0". Third
+    round: classify by SQLSTATE class (22/23 row; 42/53/54/55/57/58/25/0A
+    environment; connection-level outage), tunable cap, a
+    `postgres-sync-gate` relayed at session start, indexer refusals
+    remembered and reported. Done (4183962–dc7f782; the agent also caught
+    two of its own tests writing fabricated gate and refusal files under
+    the real `~/.cache` and fixed them). Third pass: **block** — one gate
+    file, two writers, unconditional clear (either sync's clean, contended,
+    or outage run erased the other's alarm within a tick); the indexer's
+    remembered refusal made every later run exit 5 forever and `--force`
+    never cleared it; a whole batch refused under a data-class SQLSTATE
+    (a migration adding a NOT NULL column) still quarantined up to 200 rows
+    per tick and advanced with exit 0 and no gate; the new hook chain
+    swallowed an archive failure; a cap overflow read as an environment
+    fault; five mutations survived (the trigger's gate threshold, the
+    archive `&&`, the locked read in both syncs, the cap clamp). Fourth
+    round running, briefed as invariants: a gate is cleared only by a full
+    successful cycle of the script that raised it; exit 5 only for a
+    refusal this run; any quarantine raises a warning gate; five or more
+    rows refused alike with no success hold and gate, with a named escape
+    hatch. Fourth round done (f276454–fbe17f4): one gate per script,
+    cleared only by a completed cycle; exit 5 only for a refusal this
+    run, `--force` clears, vanished archives pruned; correlated hold at
+    five or more with `--quarantine-anyway`; the hook chain fails on an
+    archive failure again; exit 7 for a cap overflow; malformed SQLSTATE
+    → environment; transient remedy for classes 40 and 57; a structural
+    test pins every gate write to an injectable path after the suite
+    wrote a fabricated gate under the real `~/.cache` a third time. Suite
+    1,540, measured. Fourth pass: **block** — three criticals of one
+    shape: a run that did no work (nothing new to sync; an unmounted
+    archive root; a `--project`-scoped indexer run; an empty root that
+    made the prune loop wipe the refusal memory) is labelled a completed
+    cycle and lowers a gate it learnt nothing about, so the quarantine
+    warning self-erases within one tick. Also: the indexer gates nothing
+    on exit 3/4; the syncs gate nothing on exit 1/2 (a schema mismatch
+    stalls invisibly); a degraded run's quarantines are discarded; a
+    persistent outage has no signal at all; the sessions gate policy and
+    the memories correlated hold are untested; the structural gate test
+    is substring-based. Fifth round running, briefed as one invariant: a
+    gate is lowered only by evidence that the fault is gone; absence of
+    work is not evidence (an idle outcome that never touches the gate;
+    the indexer gate reflects the whole refusal memory; an outage counter
+    that gates after three consecutive runs). Fifth round done (suite
+    1,573 measured): the rule lives once in `_sync_gate.py`; idle never
+    touches a gate; completed needs a processed row; absent or empty
+    root is degraded; the indexer gate reflects the whole memory and an
+    empty root is refused; exits 1/2 gate; a degraded run's quarantines
+    gate; outage streak of three gates; AST structural test; a test-count
+    tripwire after a scripted edit silently truncated fourteen tests (the
+    agent also reported destroying its own uncommitted work with a
+    `git checkout --` and redoing it). Fifth pass running. After merge
+    the PreCompact and SessionEnd hook commands in `~/.claude/settings.json`
+    on both machines must follow the new template, and `~/cc-archives`
+    must be mounted when the sessions sync runs.
+    Fifth pass: **do not merge** — four criticals in the gate semantics
+    again: a quarantine gate lowered by the next run that processes any
+    unrelated row; an outage overwriting the standing reason and any later
+    connected run (even contended) clearing both; every degraded outcome
+    silent, including a cursor-held stall; an indexer refusal stranded
+    forever by a `.gz` swap. Sixth round running, briefed as a state
+    machine: per script, independent problems (fault, correlated,
+    quarantine, degraded, outage streak, refusals), each with its own
+    raise and lower evidence, a rendered gate derived from them, and a
+    transition-matrix test.
+    Sixth round done (8b1abf7, 4026d9e; suite 1,618): the machine lives
+    once in `_sync_gate.py`; a quarantine carries a running count and
+    stands until `--ack-quarantine`; an outage lowers only itself; every
+    degraded return carries its reason; indexing either transcript form
+    forgets a refusal; thirty matrix rows are executable; the AST test
+    covers every reader and writer of a gate or its sidecar. Sixth pass:
+    **block** — the core transitions hold; three edge defects: the
+    acknowledgement ran a full sync and was silently dropped under lock
+    contention while logging success; the sidecar is an unlocked,
+    non-atomic read-modify-write (a cron tick can resurrect an acked
+    quarantine); the indexer gates nothing on a schema mismatch, an import
+    failure, or an absent root. Plus: fault coupled to quarantine; indexer
+    outages raise a fault an idle run cannot lower; idle runs never report
+    connected; the quarantine count tallies attempts, not rows written;
+    the matrix-coverage test cannot fail; the AST test is name-based.
+    Seventh round done (b4e87fe; suite 1,642): the ack is state-only
+    (no sync, no lock, exit 9 if unwritable); every sidecar read-modify-
+    write runs under a per-gate flock with atomic writes; a contended run
+    touches no state; the indexer gates a schema mismatch and a missing
+    driver as faults and an absent root as degraded; a completed run
+    lowers a fault regardless of quarantines; indexer outages use the
+    streak; the count is rows written; the AST test rejects direct writes;
+    the refusal memory is read-only against a foreign root. Seventh pass:
+    **do not merge** — the ack reports success and exits 0 when the state
+    write fails (its exit-9 test monkeypatched the transition to a no-op);
+    the quarantine count still counts duplicates, so a held cursor inflates
+    it by the batch every tick; a gate-lock failure changes the script's
+    exit code; an outage during the advisory-lock query is an unexpected
+    fault, not an outage; degraded returns drop proven connectivity; the
+    ack lowers a degraded problem; the AST test is defeated by a one-line
+    alias; the trigger cannot see a dead pipeline. Eighth round done
+    (aeab185; suite 1,656): the verdict is keyed to what is on disk after
+    a re-read inside the lock; only newly written rows reach the count; a
+    gate or lock failure never changes an exit code; outages during the
+    schema check or lock query feed the streak; the acknowledgement is
+    its own event; the AST check resolves aliases; an autouse session
+    fixture asserts the suite left nothing under the real `~/.cache`; the
+    trigger reports a never-written or stale gate; the flock is bounded.
+    Eighth pass: **do not merge** — a mixed slice with one bad line never
+    reports its quarantine (the parse-layer count reaches the result only
+    on the empty-slice return); the new staleness check fires three false
+    alarms after any sleep longer than six hours; two more degraded returns
+    still drop connectivity; the indexer takes the gate lock unguarded
+    outside the machine; the ack reports success over a half-written gate;
+    rows re-refused after an ack and a rebuild count as duplicates and say
+    nothing; a lock timeout loses that tick's count; the staleness hours
+    variable is an arithmetic-injection sink. Ninth round running: the
+    quarantine problem is re-derived from the append-only quarantine file
+    against an acked position stored in the sidecar (reset on a cursor
+    reset), so no tick can be lost and no delta can be wrong; the
+    staleness check is guarded by uptime and boot time. Ninth round done
+    (4a1eedf–fe10832; suite 1,704): the quarantine problem is derived from
+    the file against an acked position (reset on a cursor reset); staleness
+    is asserted only once uptime exceeds the window (a suspend longer than
+    the window still reports, since Linux counts suspended time —
+    documented); connectivity on every return, enforced by an AST test; the
+    indexer's direct lock read is guarded; the ack names which half of a
+    partial write failed; the stale-hours override is validated; the
+    hermeticity guard covers all eight gate globs and deletions; nine
+    mutations killed. Ninth pass: **block** — the acked position is
+    computed but never persisted (one line undoes the round's fix); an
+    ordinary rebuild without a sync in flight never resets it; a missing
+    quarantine file counts as zero and lowers the alarm; the ack on a
+    healthy pipeline exits 9 calling an empty sidecar corrupt; the uptime
+    amnesty runs before the boot-epoch check; the hermeticity guard blames
+    the suite for other processes' writes and would fail at random after
+    merge. Tenth round running: persist the acked block; detect a cursor
+    reset from the stored last position; per-gate-kind staleness (cron
+    gate by age since boot, hook gates by a newer session archive); the
+    whole suite runs under a tmp `HOME`. First session after merge will
+    report all three gates as never written until each script has run
+    once.
+- Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
+  on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
+  mergeable after two wording fixes in the digest (the new "nothing verified
+  is available" heading was false when the fallback fires on thin coverage;
+  "never checked" was false for pending records) and two counter edges (a
+  uuid-less trailing command double-counts; the count never decays). Closing
+  round done (5ddfb6c–43a4eba: the heading says why the fallback fired;
+  pending records are "unchecked or inconclusive"; a uuid-less command arms
+  nothing; the owed count is capped at two, under-skipping by design).
+  **Merged as 190bc7c**; main suite 1,587. H27's fixture on `main` is done
+  (8e2425f). S23 and S26 sit with PR #116; P17 with PR #117;
+  `surfacing_log.py` (S22's third member) is round 3b.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.

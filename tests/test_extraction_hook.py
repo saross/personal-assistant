@@ -9,6 +9,9 @@ respectively (2026-05-19).
 """
 
 import json
+import subprocess
+import sys
+import textwrap
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -29,6 +32,34 @@ eh = importlib.import_module("extraction-hook")
 # ============================================================================
 # Tag Normalisation
 # ============================================================================
+
+
+def _entry_text_result(entry: dict) -> str:
+    """Call the hook's content flattener (hyphenated module, private name)."""
+    return eh._entry_text(entry)
+
+
+def _cursor_state(cursor_file: Path, session_id: str) -> tuple[str | None, int]:
+    """Read ``(uuid, skip_pending)`` from a cursor FILE, as main() wrote it.
+
+    Cursor records are ``{"uuid": …, "skip_pending": …}`` since audit round
+    four, where ``skip_pending`` counts the command responses still owed a
+    skip (audit H30); going through ``cursor_entry`` keeps the shape stated
+    in one place and reads legacy plain-string and boolean rows too.
+    """
+    if not cursor_file.exists():
+        return None, 0
+    uuid, owed = eh.cursor_entry(json.loads(cursor_file.read_text()), session_id)
+    # Strictly an int (re-audit L5). ``0 == False`` and ``1 == True`` in
+    # Python, so a tuple comparison at a call site cannot tell the count
+    # apart from the boolean flag it replaced — the helper would hide the
+    # very regression the call sites use it to detect. Check the type once,
+    # here, rather than at every assertion.
+    assert not isinstance(owed, bool), f"cursor_entry returned a bool: {owed!r}"
+    assert isinstance(owed, int), (
+        f"cursor_entry returned {type(owed).__name__}, not an int"
+    )
+    return uuid, owed
 
 
 class TestNormaliseTag:
@@ -95,14 +126,28 @@ class TestNormaliseTags:
 
 
 def make_transcript_entry(
-    role: str, content: str, uuid: str, entry_type: str | None = None
+    role: str,
+    content: str,
+    uuid: str,
+    entry_type: str | None = None,
+    *,
+    is_meta: bool = False,
 ) -> dict:
-    """Helper to create a transcript JSONL entry."""
-    return {
+    """Helper to create a transcript JSONL entry.
+
+    ``is_meta`` is emitted only when true, so entries built without it keep
+    the three-key shape these older tests were written against. A slash
+    command reaches the transcript as an isMeta USER entry (audit H29), so
+    any fixture standing in for one has to say so.
+    """
+    entry = {
         "type": entry_type or role,
         "uuid": uuid,
         "message": {"content": content},
     }
+    if is_meta:
+        entry["isMeta"] = True
+    return entry
 
 
 class TestParseTranscript:
@@ -119,7 +164,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 3
         assert last_uuid == "uuid-3"
 
@@ -134,7 +179,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), "uuid-2")
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), "uuid-2")
         assert len(messages) == 1
         assert messages[0]["content"] == "New message"
         assert last_uuid == "uuid-3"
@@ -150,7 +195,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(
+        messages, last_uuid, _ = eh.parse_transcript(
             str(transcript), "nonexistent-uuid"
         )
         assert len(messages) == 2
@@ -166,7 +211,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
@@ -181,6 +226,7 @@ class TestParseTranscript:
                 "user",
                 "# /remember \u2014 Manual Memory Capture\n\nSome content",
                 "uuid-3",
+                is_meta=True,
             ),
             make_transcript_entry(
                 "assistant", "Captured to memory: ...", "uuid-4"
@@ -191,7 +237,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 3  # uuid-1, uuid-2, uuid-5
         contents = [m["content"] for m in messages]
         assert "Normal question" in contents
@@ -205,7 +251,7 @@ class TestParseTranscript:
         entries = []
         for i, marker in enumerate(eh.COMMAND_MARKERS):
             entries.append(
-                make_transcript_entry("user", marker, f"cmd-{i}")
+                make_transcript_entry("user", marker, f"cmd-{i}", is_meta=True)
             )
             entries.append(
                 make_transcript_entry("assistant", f"Response {i}", f"resp-{i}")
@@ -217,7 +263,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["content"] == "Normal"
 
@@ -246,7 +292,7 @@ class TestParseTranscript:
         with open(transcript, "w") as f:
             f.write(json.dumps(entry) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert "[THINKING]:" in messages[0]["content"]
         assert "Here is my answer." in messages[0]["content"]
@@ -255,7 +301,7 @@ class TestParseTranscript:
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text("")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert messages == []
         assert last_uuid is None
 
@@ -266,7 +312,7 @@ class TestParseTranscript:
         with open(transcript, "w") as f:
             f.write(json.dumps(entry) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages[0]["content"]) == eh.MAX_MESSAGE_CHARS
 
     def test_command_skip_flag_persists_across_user_entries(
@@ -297,6 +343,7 @@ class TestParseTranscript:
                 "user",
                 "# /remember — Manual Memory Capture\n\nSave this",
                 "uuid-3",
+                is_meta=True,
             ),
             # MCP-style intervening user entry. Pre-fix this cleared the
             # flag; post-fix it must not.
@@ -316,7 +363,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         contents = [m["content"] for m in messages]
         # The /remember response must not appear.
         assert not any(
@@ -817,6 +864,27 @@ class TestExtractMemoriesTransientErrors:
     (API succeeded or input was hopeless).
     """
 
+    @pytest.fixture(autouse=True)
+    def _isolate_seed_tag_sources(self, tmp_path, monkeypatch):
+        """Keep ``recent_seed_tags`` away from the operator's real store.
+
+        ``extract_memories`` seeds its prompt from the newest records in
+        ``MEMORIES_FILE``, falling back to ``VOCABULARY_FILE``. Neither was
+        redirected in this class (audit round five L-5), so every test here
+        read the tail of the live corpus into the prompt it built — real
+        memory content in a test process, and a suite whose prompts differed
+        by machine. These fixtures are deliberately tiny and fixed.
+        """
+        store = tmp_path / "seed-memories.jsonl"
+        store.write_text(
+            json.dumps({"id": "seed-1", "research_tags": ["fixture-tag"]}) + "\n",
+            encoding="utf-8",
+        )
+        vocab = tmp_path / "seed-vocabulary.txt"
+        vocab.write_text("fixture-tag\n", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+
     def test_internal_server_error_returns_none(self):
         """A 5xx (overload, 529) is transient — return None."""
         with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
@@ -966,7 +1034,7 @@ class TestExtractMemoriesTransientErrors:
         # Empty list → cursor advances to the last seen UUID.
         assert cursor_file.exists()
         saved = json.loads(cursor_file.read_text())
-        assert saved.get("sess-Y") == "uuid-A"
+        assert eh.cursor_entry(saved, "sess-Y") == ("uuid-A", 0)
 
 
 # ============================================================================
@@ -1086,6 +1154,27 @@ class TestSalvageTruncatedArray:
 class TestTruncationRouting:
     """A max_tokens stop_reason routes to salvage instead of dropping the window."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_seed_tag_sources(self, tmp_path, monkeypatch):
+        """Keep ``recent_seed_tags`` away from the operator's real store.
+
+        ``extract_memories`` seeds its prompt from the newest records in
+        ``MEMORIES_FILE``, falling back to ``VOCABULARY_FILE``. Neither was
+        redirected in this class (audit round five L-5), so every test here
+        read the tail of the live corpus into the prompt it built — real
+        memory content in a test process, and a suite whose prompts differed
+        by machine. These fixtures are deliberately tiny and fixed.
+        """
+        store = tmp_path / "seed-memories.jsonl"
+        store.write_text(
+            json.dumps({"id": "seed-1", "research_tags": ["fixture-tag"]}) + "\n",
+            encoding="utf-8",
+        )
+        vocab = tmp_path / "seed-vocabulary.txt"
+        vocab.write_text("fixture-tag\n", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+
     @staticmethod
     def _mock_response(text: str, stop_reason: str):
         block = MagicMock()
@@ -1134,7 +1223,7 @@ class TestAuditRoundTwo:
         marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
         transcript = tmp_path / "t.jsonl"
         entries = [
-            make_transcript_entry("user", marker + "\nrun it", "u1"),
+            make_transcript_entry("user", marker + "\nrun it", "u1", is_meta=True),
             {"type": "assistant", "uuid": "a-tool",
              "message": {"content": [{"type": "tool_use", "name": "x", "input": {}}]}},
             make_transcript_entry("assistant", "Here is the command response text", "a-text"),
@@ -1142,7 +1231,7 @@ class TestAuditRoundTwo:
             make_transcript_entry("assistant", "an ordinary answer that must survive", "a2"),
         ]
         transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "Here is the command response text" not in texts
         assert "an ordinary answer that must survive" in texts
@@ -1172,12 +1261,2026 @@ class TestAuditRoundTwo:
         monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
         assert eh.recent_seed_tags(5) == ["aaa", "bbb"]          # fallback
 
-    def test_vocabulary_is_not_written_by_format_memories(self, tmp_path, monkeypatch):
-        """H18: the vocabulary update moved to after the append in main()."""
-        vocab = tmp_path / "vocab.txt"
-        vocab.write_text("existing\n")
+    def test_vocabulary_is_untouched_when_the_append_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """H18, behaviourally: the vocabulary is written only after the append.
+
+        Kills moving ``update_vocabulary(new_tags)`` above
+        ``append_memories(memories)`` in main(), and kills reinstating the
+        ``update_vocabulary`` call inside ``format_memories`` — either puts
+        the window's tags in the shared vocabulary for memories that were
+        never persisted, so the vocabulary claims tags no record carries.
+
+        Replaces an ``inspect.getsource`` string assertion (audit round two
+        M6), which passed for any rename or reordering that kept the literal
+        text.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text("existing-tag\n", encoding="utf-8")
         monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
-        import inspect
-        source = inspect.getsource(eh.format_memories)
-        assert "update_vocabulary(" not in source
-        assert "update_vocabulary(new_tags)" in inspect.getsource(eh.main)
+        # A regular file where the store's parent directory must be, so the
+        # append raises before any vocabulary work could legitimately run.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", blocker / "sub" / "memories.jsonl")
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-V"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            with pytest.raises(SystemExit):
+                eh.main()
+
+        assert vocab.read_text(encoding="utf-8") == "existing-tag\n", (
+            "the vocabulary gained tags from memories that were never written"
+        )
+
+    def test_vocabulary_records_the_tags_of_a_successful_append(
+        self, tmp_path, monkeypatch
+    ):
+        """The other half: after a good append the tags DO land.
+
+        Kills ``update_vocabulary(new_tags)`` -> ``pass``, which the
+        ordering test above cannot see on its own.
+        """
+        transcript, _, _ = _stage_main_paths(tmp_path, monkeypatch)
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text("existing-tag\n", encoding="utf-8")
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-W"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        text = vocab.read_text(encoding="utf-8")
+        assert "existing-tag" in text
+        assert "audit-round-two" in text
+
+
+class TestCursorPruning:
+    """Audit round two M6: ``save_cursor``'s prune had no coverage."""
+
+    def test_an_overflowing_cursor_is_pruned_to_the_cap(self, tmp_path, monkeypatch):
+        """Kills ``for key in keys[:len(keys) - MAX_CURSOR_ENTRIES]`` -> ``keys``.
+
+        The mutation deletes EVERY entry, so every live session reparses its
+        whole transcript on the next firing. Nothing asserted the size, so it
+        survived.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        overflow = 20
+        cursor = {
+            f"sess-{i:04d}": f"uuid-{i:04d}"
+            for i in range(eh.MAX_CURSOR_ENTRIES + overflow)
+        }
+        eh.save_cursor(cursor)
+
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        assert len(saved) == eh.MAX_CURSOR_ENTRIES
+        # The prune keeps the tail of insertion order — the newest sessions.
+        assert "sess-0000" not in saved
+        assert f"sess-{overflow:04d}" in saved
+        last = eh.MAX_CURSOR_ENTRIES + overflow - 1
+        assert saved[f"sess-{last:04d}"] == f"uuid-{last:04d}"
+
+    def test_a_cursor_exactly_at_the_cap_is_not_pruned(self, tmp_path, monkeypatch):
+        """Kills a prune that drops a session while still at the cap.
+
+        Specifically ``keys[:len(keys) - MAX_CURSOR_ENTRIES + 1]``: the
+        dropped session reprocesses its entire transcript on the next
+        firing.
+
+        Note the honest limit: ``>`` -> ``>=`` on the guard above is an
+        EQUIVALENT mutant, not a surviving one. At exactly the cap the
+        slice is empty either way, so no test can distinguish them.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        cursor = {
+            f"sess-{i:04d}": f"uuid-{i:04d}"
+            for i in range(eh.MAX_CURSOR_ENTRIES)
+        }
+        eh.save_cursor(cursor)
+
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        assert len(saved) == eh.MAX_CURSOR_ENTRIES
+        assert saved["sess-0000"] == "uuid-0000"
+
+    def test_the_cursor_is_written_atomically(self, tmp_path, monkeypatch):
+        """Kills ``tmp.rename(CURSOR_FILE)`` -> ``CURSOR_FILE.write_text(...)``.
+
+        A crash mid-write would otherwise leave a truncated cursor, which
+        ``load_cursor`` reads as empty — every session reparsed from the top.
+        The temp file must not survive the write either.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        renames: list[tuple[str, str]] = []
+        real_rename = type(target).rename
+
+        def _tracking_rename(self, dest):
+            renames.append((str(self), str(dest)))
+            return real_rename(self, dest)
+
+        monkeypatch.setattr(type(target), "rename", _tracking_rename)
+        eh.save_cursor({"sess-A": "uuid-A"})
+
+        assert renames == [(str(target.with_suffix(".tmp")), str(target))]
+        assert json.loads(target.read_text(encoding="utf-8")) == {"sess-A": "uuid-A"}
+        assert not target.with_suffix(".tmp").exists()
+
+
+# ============================================================================
+# Audit round two, Lens B (2026-09-08): H5 (persistence path), H21 (flock
+# wiring in main), H22 (transcript-shape fidelity)
+# ============================================================================
+
+
+def make_live_shape_entry(
+    role: str,
+    content: str | list,
+    uuid: str,
+    *,
+    is_meta: bool = False,
+    is_sidechain: bool = False,
+) -> dict:
+    """Build a transcript entry carrying the keys a live transcript carries.
+
+    ``make_transcript_entry`` above emits the three keys the parser reads
+    (``type``, ``uuid``, ``message``), which is why the ``isMeta`` /
+    ``isSidechain`` blindness of audit H22 was invisible to the suite. The
+    key set here was measured (2026-09-08) from the entries under
+    ``~/.claude/projects/-home-shawn-personal-assistant``: every ``user``
+    and ``assistant`` entry carries ``cwd``, ``entrypoint``, ``gitBranch``,
+    ``isSidechain``, ``message``, ``parentUuid``, ``sessionId``,
+    ``timestamp``, ``type``, ``userType``, ``uuid``, and ``version``, and a
+    harness-injected entry adds ``isMeta``. Only the SHAPE is reproduced —
+    every value below is synthetic.
+    """
+    return {
+        "type": role,
+        "uuid": uuid,
+        "parentUuid": None,
+        "sessionId": "00000000-0000-0000-0000-000000000000",
+        "timestamp": "2026-09-08T00:00:00.000Z",
+        "cwd": "/home/shawn/personal-assistant",
+        "gitBranch": "main",
+        "entrypoint": "cli",
+        "userType": "external",
+        "version": "0.0.0",
+        "isMeta": is_meta,
+        "isSidechain": is_sidechain,
+        "message": {"role": role, "content": content},
+    }
+
+
+def _write_transcript(path: Path, entries: list[dict]) -> None:
+    """Write JSONL entries to *path*, one compact object per line."""
+    path.write_text(
+        "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8"
+    )
+
+
+def _mock_extraction_response(payload: str):
+    """Build a mock Anthropic response carrying *payload* as its only text."""
+    block = MagicMock()
+    block.text = payload
+    resp = MagicMock()
+    resp.content = [block]
+    resp.stop_reason = "end_turn"
+    return resp
+
+
+# One extracted memory, in the shape ``format_memories`` expects. Anchor-less
+# on purpose: ``anchor_verify.verify_memory`` short-circuits to None without
+# anchors, so no git subprocess is spawned by these tests.
+_ONE_MEMORY_JSON = json.dumps(
+    [
+        {
+            "category": "decision",
+            "content": "Pinned the persistence path with an end-to-end test.",
+            "summary": "Persistence path pinned.",
+            "confidence": "high",
+            "research_tags": ["audit-round-two"],
+        }
+    ]
+)
+
+
+def _stage_main_paths(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
+    """Redirect every file ``main()`` writes into *tmp_path*.
+
+    Returns ``(transcript, cursor_file, memories_file)``. The transcript
+    holds one user turn long enough to clear ``MIN_CONTENT_LENGTH``.
+    ``repo_set_for`` is stubbed to an empty repo set so anchor verification
+    does no filesystem discovery outside the temporary directory.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(
+        transcript,
+        [make_live_shape_entry("user", "decide: " + "x" * 800, "uuid-A")],
+    )
+    cursor_file = tmp_path / "cursor.json"
+    memories_file = tmp_path / "memories.jsonl"
+    monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+    monkeypatch.setattr(eh, "MEMORIES_FILE", memories_file)
+    monkeypatch.setattr(eh, "VOCABULARY_FILE", tmp_path / "tags.txt")
+    monkeypatch.setattr(eh, "load_env", lambda: None)
+    monkeypatch.setattr(eh, "repo_set_for", lambda project: [])
+    return transcript, cursor_file, memories_file
+
+
+class TestAppendMemories:
+    """H5: the append path itself — no test called it before 2026-09-08."""
+
+    def test_append_preserves_the_existing_store(self, tmp_path, monkeypatch):
+        """Kills ``with open(MEMORIES_FILE, "wb") as fh`` in append_memories.
+
+        The mutation truncates the ~42k-record canonical store on every
+        session close. Seeding a prior record and asserting it survives —
+        and that the file grew by exactly the encoded payload — is what
+        makes truncation visible.
+        """
+        store = tmp_path / "memories.jsonl"
+        seed = json.dumps({"id": "seed-1", "content": "already here"}) + "\n"
+        store.write_text(seed, encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+
+        new = [{"id": "new-1", "content": "appended"}]
+        eh.append_memories(new)
+
+        text = store.read_text(encoding="utf-8")
+        assert text.startswith(seed), "the pre-existing store was truncated"
+        expected = json.dumps(new[0]) + "\n"
+        assert text == seed + expected
+        assert store.stat().st_size == len((seed + expected).encode("utf-8"))
+
+    def test_append_is_a_no_op_for_an_empty_list(self, tmp_path, monkeypatch):
+        """Kills ``if not memories: return`` → falling through to os.write.
+
+        An empty append must not even create the file — the hook fires on
+        every session close, most of which extract nothing.
+        """
+        store = tmp_path / "memories.jsonl"
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        eh.append_memories([])
+        assert not store.exists()
+
+    def test_append_creates_the_store_and_its_parent(self, tmp_path, monkeypatch):
+        """Kills ``target_path.parent.mkdir(parents=True, exist_ok=True)``.
+
+        First run on a fresh clone has no ``memories/`` directory; without
+        the mkdir the very first extraction raises and is lost.
+        """
+        store = tmp_path / "memories" / "memories.jsonl"
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        eh.append_memories([{"id": "first", "content": "x"}])
+        assert json.loads(store.read_text(encoding="utf-8"))["id"] == "first"
+
+
+class TestMainPersistsAndAdvances:
+    """H5: a *successful* main() — bytes appended, cursor advanced."""
+
+    def test_main_appends_the_extracted_memories(self, tmp_path, monkeypatch):
+        """Kills ``append_memories(memories)`` → ``pass`` in main().
+
+        Also kills the truncating-append mutation: the seeded record must
+        still be in the store afterwards. Nothing in the suite asserted a
+        byte reached ``memories.jsonl`` before this test.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        seed = json.dumps({"id": "seed-1", "content": "already here"}) + "\n"
+        store.write_text(seed, encoding="utf-8")
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-P"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        lines = store.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == seed.rstrip("\n"), "the store was rewritten, not appended"
+        assert len(lines) == 2, f"expected one appended record, got {lines[1:]}"
+        record = json.loads(lines[1])
+        assert record["content"] == (
+            "Pinned the persistence path with an end-to-end test."
+        )
+        assert record["session_id"] == "sess-P"
+        # Cursor advanced only because the append succeeded.
+        assert _cursor_state(cursor_file, "sess-P") == ("uuid-A", 0)
+
+    def test_main_holds_the_cursor_when_the_append_fails(self, tmp_path, monkeypatch):
+        """Kills moving the cursor advance ABOVE ``append_memories(memories)``.
+
+        With the advance moved up, a failed append loses the window's
+        memories forever: the bytes never land and the cursor has already
+        stepped past them.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        # A regular file standing where the store's parent directory must be,
+        # so ``parent.mkdir`` raises and the append cannot happen.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", blocker / "sub" / "memories.jsonl")
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-F"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            with pytest.raises(SystemExit) as exc:
+                eh.main()
+
+        assert exc.value.code == 1, "a failed save must exit non-zero"
+        saved = json.loads(cursor_file.read_text()) if cursor_file.exists() else {}
+        assert "sess-F" not in saved, (
+            "cursor advanced past a window whose memories were never written; "
+            f"cursor is {saved!r}"
+        )
+
+
+class TestConcurrentMainInvocations:
+    """H21: the flock wiring inside main(), not just the context manager.
+
+    Stop / PreCompact / SessionEnd fire seconds apart at session close, so
+    two main() runs genuinely race over one transcript.
+    """
+
+    def test_two_racing_main_runs_persist_the_window_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``with cursor_file_lock():`` → ``if True:`` in main().
+
+        Without the lock both runs read the same starting cursor, both
+        extract the same window, and both append — the window's memories
+        land twice with a fresh id each, so dedup-by-id never catches them.
+        ``TestCursorFileLock`` exercises the context manager directly and
+        would stay green through that mutation.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-R"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        # Both runs meet inside the mocked API call. With the lock the second
+        # run never gets there (it blocks on flock), so the barrier times out
+        # and breaks — which is exactly the signal that serialisation held.
+        barrier = threading.Barrier(2)
+        response = _mock_extraction_response(_ONE_MEMORY_JSON)
+
+        def _create(**_kwargs):
+            try:
+                barrier.wait(timeout=1.0)
+            except threading.BrokenBarrierError:
+                pass
+            return response
+
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                eh.main()
+            except SystemExit:
+                pass  # "no new messages" exits 0 — the expected second run
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.side_effect = _create
+            mock_cls.return_value = mock_client
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+        assert not errors, f"worker errors: {errors!r}"
+        assert not any(t.is_alive() for t in threads), "a run never finished"
+
+        lines = [
+            ln for ln in store.read_text(encoding="utf-8").splitlines() if ln.strip()
+        ]
+        # No corruption: every line is a whole JSON object.
+        records = [json.loads(ln) for ln in lines]
+        assert len(records) == 1, (
+            f"the window was persisted {len(records)} times — the second run "
+            "was not serialised behind the first"
+        )
+        assert _cursor_state(cursor_file, "sess-R") == ("uuid-A", 0)
+
+
+class TestTranscriptShapeFidelity:
+    """H22: harness-injected and subagent turns must not reach the model."""
+
+    def test_meta_entries_are_not_sent_as_user_turns(self, tmp_path):
+        """Kills dropping the ``entry.get("isMeta")`` guard in parse_transcript.
+
+        A system-reminder injection is recorded with ``"role": "user"``; fed
+        to the extractor it becomes a "memory" of the harness's own prose.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", "harness injection, not something Shawn said",
+                    "u-meta", is_meta=True,
+                ),
+                make_live_shape_entry("user", "a real question from Shawn", "u-real"),
+                make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
+            ],
+        )
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in messages]
+        assert "harness injection, not something Shawn said" not in texts
+        assert texts == ["a real question from Shawn", "an ordinary answer"]
+        # The skipped entry still advances the cursor.
+        assert last_uuid == "a-real"
+
+    def test_sidechain_entries_are_not_sent_as_conversation(self, tmp_path):
+        """Kills dropping the ``entry.get("isSidechain")`` guard.
+
+        A subagent's turns belong to that agent's own transcript; extracting
+        them here attributes the subagent's words to this session.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", "subagent task brief text here", "u-side",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "subagent reply text here", "a-side",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry("user", "the real turn", "u-real"),
+            ],
+        )
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in messages] == ["the real turn"]
+        assert last_uuid == "u-real"
+
+    def test_a_meta_slash_command_still_suppresses_its_response(self, tmp_path):
+        """Kills moving the isMeta guard ABOVE the command-marker branch.
+
+        Slash commands arrive as ``isMeta`` user entries (364 of the 365
+        marker-bearing user entries measured under
+        ~/.claude/projects/-home-shawn-personal-assistant on 2026-09-08; the
+        one exception is a tool result quoting a header). Skipping meta
+        entries before the marker test would leave ``responses_owed`` at
+        zero and let every /remember, /forget, and /update response back
+        into extraction — the duplication the marker filter exists to stop.
+        """
+        marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", marker + "\nrun it", "u-cmd", is_meta=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "the slash-command response", "a-cmd",
+                ),
+                make_live_shape_entry("user", "an unrelated real question", "u-real"),
+                make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
+            ],
+        )
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in messages]
+        assert "the slash-command response" not in texts
+        assert texts == ["an unrelated real question", "an ordinary answer"]
+
+    def test_a_meta_only_window_still_reports_a_cursor_position(self, tmp_path):
+        """Kills placing the isMeta guard ABOVE the ``last_seen_uuid`` assignment.
+
+        A window of nothing but harness injections yields no messages, but it
+        must still report where the transcript was read to, or ``main()`` has
+        nothing to save.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "injection one", "u1", is_meta=True),
+                make_live_shape_entry("user", "injection two", "u2", is_meta=True),
+            ],
+        )
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
+        assert messages == []
+        assert last_uuid == "u2"
+
+    def test_main_advances_the_cursor_past_a_meta_only_window(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``if not messages: sys.exit(0)`` without the cursor advance.
+
+        Audit round two M1: ``parse_transcript`` reported the position but
+        ``main()`` exited before ``save_cursor`` ever ran, so a window whose
+        entries were all dropped by design was re-parsed on every firing
+        forever. The entries are dropped either way, so nothing is lost by
+        stepping past them.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", "harness injection " + "x" * 800, "uuid-M1",
+                    is_meta=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "subagent reply " + "y" * 800, "uuid-M2",
+                    is_sidechain=True,
+                ),
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-M"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            with pytest.raises(SystemExit) as exc:
+                eh.main()
+            # No window means no model call at all.
+            mock_cls.assert_not_called()
+
+        assert exc.value.code == 0
+        assert cursor_file.exists(), "the cursor file was never written"
+        assert _cursor_state(cursor_file, "sess-M") == ("uuid-M2", 0)
+        # Nothing was persisted — the entries really were dropped.
+        assert not store.exists()
+
+    def test_main_does_not_write_a_cursor_when_nothing_is_new(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills making the cursor write unconditional (``if True:``).
+
+        A firing with nothing after the cursor must not rewrite the cursor
+        file at all; the hook fires three times at every session close, and
+        an unconditional write stores a null uuid for the session.
+
+        Note the honest limit (audit round two L3): dropping the
+        ``new_last_uuid != last_uuid`` conjunct is a NEAR-EQUIVALENT
+        mutant, not a surviving one. ``parse_transcript`` skips past the
+        cursor entry with ``continue`` before ``last_seen_uuid`` is
+        assigned, so the returned uuid can never equal the one we started
+        from — the conjunct is unreachable, and no test can distinguish
+        its presence. It is kept as a statement of intent.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        cursor_file.write_text(json.dumps({"sess-N": "uuid-A"}), encoding="utf-8")
+        before = cursor_file.stat().st_mtime_ns
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-N"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic"):
+            with pytest.raises(SystemExit):
+                eh.main()
+
+        assert cursor_file.stat().st_mtime_ns == before
+        assert json.loads(cursor_file.read_text()) == {"sess-N": "uuid-A"}
+        assert _cursor_state(cursor_file, "sess-N") == ("uuid-A", 0)
+
+
+class TestImportSideEffects:
+    """Audit round two M7: importing the hook must not touch the live log."""
+
+    def test_import_under_pytest_does_not_open_the_live_log(self, tmp_path):
+        """Kills hoisting ``logging.basicConfig(filename=LOG_FILE)`` out of the
+        ``"pytest" not in sys.modules`` guard.
+
+        The guard used to cover only ``LOG_DIR.mkdir``, so a test import
+        still handed ``basicConfig`` the operator's real
+        ``data/logs/extraction.log``. It was inert only because pytest's
+        logging plugin had already installed a root handler, which makes
+        ``basicConfig`` a no-op — an accident, not a guarantee.
+
+        Run in a subprocess with ``HOME`` pinned to a tmp directory and a
+        stand-in ``pytest`` module in ``sys.modules``, and with the log
+        directory pre-created so nothing else can stop the file being
+        opened. If the file exists afterwards, the guard has gone.
+        """
+        fake_home = tmp_path / "home"
+        log_dir = fake_home / "personal-assistant" / "logs"
+        log_dir.mkdir(parents=True)
+
+        program = textwrap.dedent(
+            """
+            import json, logging, sys, types
+            # Stand in for pytest so the hook takes its under-test branch.
+            sys.modules.setdefault("pytest", types.ModuleType("pytest"))
+            sys.path.insert(0, sys.argv[1])
+            import importlib
+            hook = importlib.import_module("extraction-hook")
+            handlers = [
+                getattr(h, "baseFilename", None)
+                for h in logging.getLogger().handlers
+            ]
+            print(json.dumps({
+                "log_file": str(hook.LOG_FILE),
+                "file_handlers": [h for h in handlers if h],
+            }))
+            """
+        )
+        env = dict(os.environ, HOME=str(fake_home))
+        env.pop("ANTHROPIC_API_KEY", None)
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(Path(eh.__file__).parent)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+
+        assert report["log_file"] == str(log_dir / "extraction.log")
+        assert not (log_dir / "extraction.log").exists(), (
+            "importing the hook under pytest opened the live extraction log"
+        )
+        assert report["file_handlers"] == [], (
+            f"a file handler was installed at import: {report['file_handlers']}"
+        )
+
+
+class TestSidechainAndTheSkipFlag:
+    """Audit round three M4: subagent turns must not touch the skip flag."""
+
+    @staticmethod
+    def _command_marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_sidechain_assistant_does_not_consume_the_flag(self, tmp_path):
+        """Kills consuming the flag before the isSidechain drop.
+
+        A subagent's reply can land between a command and its response. It
+        is not the command's response, so it must not spend the flag —
+        otherwise the real response is extracted, which is the duplication
+        the marker filter exists to prevent.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._command_marker() + "\nx", "u1", is_meta=True
+                ),
+                make_live_shape_entry(
+                    "assistant", "a subagent reply with text", "u2",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "THE REAL COMMAND RESPONSE", "u3"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in window.messages]
+        assert "THE REAL COMMAND RESPONSE" not in texts
+        assert texts == []
+        assert window.skip_pending == 0  # the real response spent it
+
+    def test_a_sidechain_user_entry_does_not_set_the_flag(self, tmp_path):
+        """Kills setting the flag before the isSidechain drop.
+
+        A subagent quoting a command header is not the operator invoking
+        it. If it set the flag, the next real assistant turn would be
+        dropped and a genuine exchange lost for good.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._command_marker() + "\nquoted by a subagent",
+                    "u1", is_meta=True, is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in window.messages]
+        assert "AN ORDINARY ANSWER THAT MUST SURVIVE" in texts
+        assert window.skip_pending == 0
+
+
+class TestPersistedSkipState:
+    """Audit round four C1: the cursor carries position AND pending skip.
+
+    Four invariants, all asserted through ``main()`` with the API mocked:
+
+    1. a slash-command response is never sent to the model;
+    2. no real message is read twice;
+    3. the cursor never moves backwards;
+    4. a session that ends on a command pins nothing.
+
+    Two earlier attempts made one pointer carry both facts. Holding the
+    cursor broke (2) — the real messages before the command were re-read
+    every firing. Stopping at a "safe" position broke (2) differently: on
+    ``[real, /cmd, real]`` the cursor stalled behind the trailing message,
+    which was then extracted on every firing (three firings at session
+    close, three duplicate records).
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _fire(monkeypatch, transcript, session_id, *, expect_call):
+        """Run main() once; return the prompt sent, or None if none was."""
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": session_id}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            try:
+                eh.main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main exited {exc.code}"
+            if not expect_call:
+                mock_cls.assert_not_called()
+                return None
+            assert mock_client.messages.create.call_count == 1
+            return mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+    def test_a_follow_up_typed_before_the_response(self, tmp_path, monkeypatch):
+        """The regression that killed the safe-advance position.
+
+        ``[real, /cmd, real-user]``: the trailing message is extracted once
+        and the cursor moves PAST it, so the next firing does not see it
+        again. Kills any scheme that parks the cursor behind messages[-1].
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker, follow_up = self._marker(), "a follow-up typed straight away"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "first question " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("user", follow_up + " " + "f" * 800, "u3"),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-A", expect_call=True)
+        assert "first question" in sent and follow_up in sent
+        assert _cursor_state(cursor_file, "sess-A") == ("u3", 1)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+        # Second firing: the response lands. It must not be sent, the
+        # follow-up must not be re-read, and the cursor must move on.
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "first question " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("user", follow_up + " " + "f" * 800, "u3"),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4"),
+            ],
+        )
+        assert self._fire(monkeypatch, transcript, "sess-A", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-A") == ("u4", 0)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_a_command_at_the_end_of_a_window(self, tmp_path, monkeypatch):
+        """``[real, real, /cmd]`` then ``[response]``.
+
+        The window ends on the command, so the cursor stores the pending
+        skip; the response arrives in the next window and is dropped.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", "question " + "q" * 800, "u1"),
+            make_live_shape_entry("assistant", "answer " + "a" * 800, "u2"),
+            make_live_shape_entry("user", marker + "\nsave", "u3", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        sent = self._fire(monkeypatch, transcript, "sess-B", expect_call=True)
+        assert "question" in sent
+        assert _cursor_state(cursor_file, "sess-B") == ("u3", 1)
+
+        entries.append(
+            make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-B", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-B") == ("u4", 0)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_a_command_alone_then_an_idle_firing_then_the_response(
+        self, tmp_path, monkeypatch
+    ):
+        """``[/cmd]``, nothing, ``[response]`` — invariant 4.
+
+        A session that ends on a command must not pin the cursor: it
+        advances past the command carrying the flag, an idle firing in
+        between changes nothing, and the flag survives to drop the
+        response whenever it turns up.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True)
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-C") == ("u1", 1)
+
+        # An idle firing: nothing new, nothing changes.
+        assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-C") == ("u1", 1)
+
+        entries.append(
+            make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-C") == ("u2", 0)
+        assert not store.exists()
+
+    def test_a_complete_command_exchange_inside_one_window(
+        self, tmp_path, monkeypatch
+    ):
+        """``[real, /cmd, response, real]`` in a single window.
+
+        The response is dropped, both real messages are extracted, and the
+        window closes with no skip owed.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "question " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u3"),
+                make_live_shape_entry("user", "later question " + "l" * 800, "u4"),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-D", expect_call=True)
+        assert "THE COMMAND RESPONSE" not in sent
+        assert "question" in sent and "later question" in sent
+        assert _cursor_state(cursor_file, "sess-D") == ("u4", 0)
+
+    def test_a_second_command_after_a_spent_one(self, tmp_path, monkeypatch):
+        """``[/cmd, response, /cmd]`` then ``[response]``.
+
+        The first command's response spends the flag; the second re-arms it,
+        and that state has to persist too.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nfirst", "u1", is_meta=True),
+            make_live_shape_entry("assistant", "FIRST RESPONSE", "u2"),
+            make_live_shape_entry("user", marker + "\nsecond", "u3", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-E", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-E") == ("u3", 1)
+
+        entries.append(
+            make_live_shape_entry("assistant", "SECOND RESPONSE", "u4")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-E", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-E") == ("u4", 0)
+        assert not store.exists()
+
+    def test_a_legacy_plain_uuid_cursor_row_still_works(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills dropping the ``isinstance(record, str)`` branch.
+
+        Every cursor row on disk today is a bare uuid string. Reading one
+        as "no skip pending" is the safe default; failing to read it at all
+        would reprocess every live session's whole transcript.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "old turn", "u1"),
+                make_live_shape_entry("user", "new question " + "q" * 800, "u2"),
+            ],
+        )
+        cursor_file.write_text(json.dumps({"sess-F": "u1"}), encoding="utf-8")
+        sent = self._fire(monkeypatch, transcript, "sess-F", expect_call=True)
+        assert "new question" in sent
+        assert "old turn" not in sent, "a legacy row must still position the cursor"
+        assert _cursor_state(cursor_file, "sess-F") == ("u2", 0)
+
+    def test_a_cursor_sitting_on_a_command_entry(self, tmp_path, monkeypatch):
+        """Audit round four L-2: the cursor entry itself carries a marker.
+
+        Code before this round could write exactly that row. The entry is
+        consumed by the found_cursor skip BEFORE the marker test, so
+        without the check in that branch the response leaks into the next
+        window and is extracted.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+                make_live_shape_entry("user", "later " + "l" * 800, "u3"),
+            ],
+        )
+        # A legacy-shaped row parked on the command itself.
+        cursor_file.write_text(json.dumps({"sess-G": "u1"}), encoding="utf-8")
+        sent = self._fire(monkeypatch, transcript, "sess-G", expect_call=True)
+        assert "THE COMMAND RESPONSE" not in sent, (
+            "the response leaked because the cursor sat on the command entry"
+        )
+        assert "later" in sent
+        assert _cursor_state(cursor_file, "sess-G") == ("u3", 0)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_the_cursor_never_moves_backwards(self, tmp_path, monkeypatch):
+        """Invariant 3, stated directly: position is monotonic per firing.
+
+        Kills any scheme that rewinds to an earlier entry to preserve skip
+        state — the cursor must never fall behind the last message it just
+        handed to the model.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        order = ["u1", "u2", "u3", "u4"]
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "one " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("user", "two " + "w" * 800, "u3"),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4"),
+            ],
+        )
+        seen = []
+        for firing in range(3):
+            # Only the first firing has anything extractable in it; the
+            # later two must find nothing and still not rewind.
+            self._fire(
+                monkeypatch, transcript, "sess-H", expect_call=(firing == 0)
+            )
+            uuid, _skip = _cursor_state(cursor_file, "sess-H")
+            seen.append(uuid)
+        positions = [order.index(u) for u in seen]
+        assert positions == sorted(positions), f"cursor went backwards: {seen}"
+        assert seen[-1] == "u4"
+
+    def test_the_stored_flag_seeds_the_next_parse(self, tmp_path):
+        """Kills ``responses_owed = pending_count(skip_pending)`` -> ``= 0``.
+
+        The unit-level statement of the whole mechanism: without the seed
+        the response in the next window is an ordinary assistant turn.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u1")],
+        )
+        seeded = eh.parse_transcript(str(transcript), None, 1)
+        assert seeded.messages == []
+        assert seeded.skip_pending == 0
+
+        unseeded = eh.parse_transcript(str(transcript), None, 0)
+        assert [m["content"] for m in unseeded.messages] == [
+            "THE COMMAND RESPONSE"
+        ]
+
+    def test_the_cursor_record_round_trips(self, tmp_path, monkeypatch):
+        """Kills writing the position without its flag.
+
+        ``set_cursor_entry`` and ``cursor_entry`` are the only two places
+        that know the record shape; a bare uuid written by either loses the
+        pending skip, which is the bug this round fixed.
+        """
+        monkeypatch.setattr(eh, "CURSOR_FILE", tmp_path / "cursor.json")
+        cursor = {}
+        eh.set_cursor_entry(cursor, "s1", "u9", 2)
+        eh.save_cursor(cursor)
+        reloaded = eh.load_cursor()
+        assert reloaded["s1"] == {"uuid": "u9", "skip_pending": 2}
+        assert eh.cursor_entry(reloaded, "s1") == ("u9", 2)
+        assert eh.cursor_entry(reloaded, "absent") == (None, 0)
+        assert eh.cursor_entry({"s2": "legacy-uuid"}, "s2") == ("legacy-uuid", 0)
+
+
+class TestMetaAssistantAndTheSkipFlag:
+    """Audit round four: the isMeta-non-user drop was unpinned."""
+
+    def test_a_meta_assistant_does_not_consume_the_skip_flag(self, tmp_path):
+        """Kills deleting ``if entry.get("isMeta") and type != "user"``.
+
+        A harness-written assistant entry can land between a command and
+        its real response. It is not the response, so it must not spend the
+        flag — otherwise the genuine response is extracted, duplicating
+        what the command wrote.
+        """
+        marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True),
+                make_live_shape_entry(
+                    "assistant", "a harness-written assistant note", "u2",
+                    is_meta=True,
+                ),
+                make_live_shape_entry("assistant", "THE REAL RESPONSE", "u3"),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == []
+        assert window.skip_pending == 0
+
+
+class TestCursorFileShapes:
+    """Audit round five L-3: a cursor file that is valid JSON but not an object."""
+
+    @pytest.mark.parametrize(
+        "payload", ["[]", "null", "3", '"s"', '["a", "b"]', "3.5"]
+    )
+    def test_a_non_object_cursor_starts_fresh(
+        self, tmp_path, monkeypatch, payload, caplog
+    ):
+        """Kills ``if not isinstance(data, dict): return {}``.
+
+        Only malformed JSON was caught before, so these parsed cleanly and
+        then raised ``AttributeError`` on the first ``.get`` — inside a
+        Stop / PreCompact / SessionEnd hook, where the traceback surfaces
+        as a broken session close and not as anything an operator would
+        connect to the cursor file.
+        """
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(payload, encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        assert eh.load_cursor() == {}
+
+    def test_a_non_object_cursor_does_not_break_main(self, tmp_path, monkeypatch):
+        """The consequence, not just the return value.
+
+        Kills the same guard at the level that matters: the hook has to
+        survive the file, not merely read it.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        cursor_file.write_text("[]", encoding="utf-8")
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-L3"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+        assert _cursor_state(cursor_file, "sess-L3") == ("uuid-A", 0)
+
+    def test_a_valid_object_is_still_read(self, tmp_path, monkeypatch):
+        """Kills ``return {}`` unconditionally in place of the type check."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(json.dumps({"s1": "u1"}), encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        assert eh.load_cursor() == {"s1": "u1"}
+
+
+class TestRoundFiveSurvivors:
+    """Audit round five: four mutations the suite did not catch."""
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_sidechain_entry_at_the_cursor_does_not_arm_the_skip(
+        self, tmp_path
+    ):
+        """Kills dropping ``not entry.get("isSidechain")`` from the cursor check.
+
+        The cursor-on-command check reads the entry the cursor points at.
+        If a subagent's turn quoting a command header could arm the flag
+        there, the next genuine assistant answer would be dropped — the
+        same failure the sidechain guard prevents further down, reached by
+        a different route.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._marker() + "\nquoted by a subagent", "u1",
+                    is_meta=True, is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), "u1")
+        assert [m["content"] for m in window.messages] == [
+            "AN ORDINARY ANSWER THAT MUST SURVIVE"
+        ]
+        assert window.skip_pending == 0
+
+    def test_a_sterile_window_still_stores_the_pending_skip(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``set_cursor_entry(..., window.skip_pending)`` -> ``False``
+        in the "no memories extracted" branch.
+
+        The model can return an empty list while a command response is
+        still owed. That branch advances the cursor like any other, so it
+        has to carry the flag too — otherwise the response is extracted on
+        the next firing, and only for windows Haiku happened to find
+        nothing in.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "chatter " + "c" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-R5"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            # The API succeeded and found nothing worth keeping.
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                "[]"
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        assert not store.exists(), "nothing should have been persisted"
+        assert _cursor_state(cursor_file, "sess-R5") == ("u2", 1), (
+            "a sterile window dropped the pending skip"
+        )
+
+    @pytest.mark.parametrize(
+        "content", [{"unexpected": "dict"}, 42, None, {"type": "text"}]
+    )
+    def test_entry_text_survives_a_non_string_non_list_content(self, content):
+        """Kills ``_entry_text`` returning ``content`` unchanged.
+
+        ``message.content`` is a string or a list of blocks in every shape
+        measured, but the parser must not hand a dict or an int onward: the
+        marker test does ``marker in content`` and the append does
+        ``content[:MAX_MESSAGE_CHARS]``, both of which raise on a dict.
+        A hook may not die on an entry shape it has not seen.
+        """
+        entry = {"type": "user", "uuid": "u1", "message": {"content": content}}
+        assert _entry_text_result(entry) == ""
+
+    def test_a_malformed_entry_does_not_break_the_parse(self, tmp_path):
+        """The same, end to end: the window still parses around it."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "message": {"content": {"unexpected": "dict"}},
+                },
+                make_live_shape_entry("user", "a real question", "u2"),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == ["a real question"]
+        assert window.last_uuid == "u2"
+
+    def test_a_stale_cursor_reparse_still_skips_the_response(self, tmp_path):
+        """Pins why the stale-cursor fallback does NOT seed the stored flag.
+
+        A full reparse starts before the command, so the command re-arms
+        the flag on the way through and the response is still dropped.
+        Seeding it as well would suppress the first assistant turn in the
+        file, which belongs to no command at all — so this test would fail
+        in the other direction if someone "fixed" the fallback by passing
+        the flag down.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("assistant", "AN EARLIER ANSWER", "u1"),
+                make_live_shape_entry(
+                    "user", self._marker() + "\nsave", "u2", is_meta=True
+                ),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u3"),
+            ],
+        )
+        # A cursor pointing at an entry that is no longer in the file, with a
+        # skip still owed — the rotated-transcript case.
+        window = eh.parse_transcript(str(transcript), "gone-uuid", True)
+        texts = [m["content"] for m in window.messages]
+        assert "THE COMMAND RESPONSE" not in texts
+        assert "AN EARLIER ANSWER" in texts, (
+            "the stored flag was seeded into the reparse and swallowed an "
+            "assistant turn that belongs to no command"
+        )
+        assert window.last_uuid == "u3"
+
+
+class TestRoundSixEntryShapes:
+    """Audit round six M-C1 and L-2: block payloads and unreadable content."""
+
+    def test_a_non_string_text_payload_does_not_raise(self):
+        """Kills appending ``block.get("text")`` without a type check.
+
+        ``{"type": "text", "text": 99}`` raised TypeError in the join —
+        out of a Stop / PreCompact / SessionEnd hook, so the session close
+        died on an entry shape nobody had seen.
+        """
+        entry = {
+            "type": "user",
+            "uuid": "u1",
+            "message": {"content": [{"type": "text", "text": 99}]},
+        }
+        assert _entry_text_result(entry) == ""
+
+    def test_a_non_string_thinking_payload_does_not_raise(self):
+        """Kills slicing ``block.get("thinking")`` without a type check.
+
+        Same failure one branch over: ``99[:MAX_THINKING_CHARS]`` raises.
+        """
+        entry = {
+            "type": "assistant",
+            "uuid": "u1",
+            "message": {"content": [{"type": "thinking", "thinking": 99}]},
+        }
+        assert _entry_text_result(entry) == ""
+
+    def test_a_text_block_with_no_text_key_does_not_raise(self):
+        """Kills ``block.get("text", "")`` -> ``block["text"]``.
+
+        A text block missing its payload is not a reason to abort the
+        session close; it is a reason to have nothing to say about it.
+        """
+        entry = {
+            "type": "user",
+            "uuid": "u1",
+            "message": {"content": [{"type": "text"}, {"type": "text", "text": "kept"}]},
+        }
+        assert _entry_text_result(entry) == " kept"
+
+    def test_a_thinking_block_with_no_payload_does_not_raise(self):
+        """Kills ``block.get("thinking", "")`` -> ``block["thinking"]``."""
+        entry = {
+            "type": "assistant",
+            "uuid": "u1",
+            "message": {"content": [{"type": "thinking"}]},
+        }
+        assert _entry_text_result(entry) == "[THINKING]: "
+
+    def test_good_blocks_around_a_bad_one_still_parse(self, tmp_path):
+        """The consequence: one malformed block must not lose the window."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": 99},
+                            {"type": "text", "text": "REAL PROSE"},
+                        ]
+                    },
+                },
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == ["REAL PROSE"]
+
+    def test_unreadable_content_is_named_in_a_warning(self, tmp_path, caplog):
+        """Kills returning "" silently for truthy-but-unreadable content.
+
+        An unwrapped block — ``{"content": {"type": "text", "text": "…"}}``
+        — yields no text, and the cursor then advances past real prose. The
+        uuid is the only handle an operator has for finding that entry in
+        the transcript, so it goes in the warning (audit round six L-2).
+        """
+        entry = {
+            "type": "user",
+            "uuid": "uuid-unwrapped",
+            "message": {"content": {"type": "text", "text": "REAL PROSE"}},
+        }
+        with caplog.at_level("WARNING"):
+            assert _entry_text_result(entry) == ""
+        assert "uuid-unwrapped" in caplog.text
+        assert "not text" in caplog.text
+
+    def test_absent_content_does_not_warn(self, tmp_path, caplog):
+        """Kills warning on every entry regardless.
+
+        An empty or missing content field is ordinary — tool-use-only
+        assistant entries have one on every turn — and warning about those
+        would bury the case that matters.
+        """
+        entry = {"type": "user", "uuid": "u1", "message": {"content": ""}}
+        with caplog.at_level("WARNING"):
+            assert _entry_text_result(entry) == ""
+        assert caplog.text == ""
+
+
+class TestRoundSixCursorPins:
+    """Audit round six L-3 and the four unasserted mutations."""
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_row_without_a_string_uuid_carries_no_flag(self):
+        """Kills returning the flag from a row with no position (L-3).
+
+        ``{"uuid": null, "skip_pending": true}`` seeded a skip with nowhere
+        to resume from, so the parse started at the top of the transcript
+        with a skip owed and swallowed the first assistant turn — which
+        belongs to no command at all.
+        """
+        assert eh.cursor_entry({"s": {"uuid": None, "skip_pending": True}}, "s") == (
+            None,
+            0,
+        )
+        assert eh.cursor_entry({"s": {"skip_pending": True}}, "s") == (None, 0)
+        assert eh.cursor_entry({"s": {"uuid": 7, "skip_pending": True}}, "s") == (
+            None,
+            0,
+        )
+
+    def test_a_row_with_a_string_uuid_still_carries_its_flag(self):
+        """Kills discarding the flag from every row."""
+        assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": True}}, "s") == (
+            "u1",
+            1,
+        )
+
+    def test_a_null_uuid_row_does_not_swallow_the_first_answer(self, tmp_path):
+        """The consequence of L-3, through the parse."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [make_live_shape_entry("assistant", "THE FIRST ANSWER", "u1")],
+        )
+        uuid, skip = eh.cursor_entry({"s": {"uuid": None, "skip_pending": True}}, "s")
+        window = eh.parse_transcript(str(transcript), uuid, skip)
+        assert [m["content"] for m in window.messages] == ["THE FIRST ANSWER"]
+
+    def test_the_load_cursor_warning_is_emitted(self, tmp_path, monkeypatch, caplog):
+        """Kills deleting the WARNING from the non-object branch (M7).
+
+        The branch was pinned by its return value only, so the operator's
+        one signal that a cursor file was discarded could vanish silently.
+        """
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text("[]", encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        with caplog.at_level("WARNING"):
+            assert eh.load_cursor() == {}
+        assert "not an object" in caplog.text
+        assert "list" in caplog.text
+
+    def test_the_corrupt_cursor_warning_is_emitted(self, tmp_path, monkeypatch, caplog):
+        """Kills deleting the WARNING from the JSONDecodeError branch."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        with caplog.at_level("WARNING"):
+            assert eh.load_cursor() == {}
+        assert "Corrupt cursor file" in caplog.text
+
+    def test_the_cursor_on_command_check_fires_positively(self, tmp_path):
+        """Kills ``if any(...)`` -> ``if False and any(...)`` (M10).
+
+        The negative case (a non-command entry at the cursor) passes either
+        way; only asserting that a command entry DOES arm the flag pins the
+        condition itself.
+        """
+        marker = self._marker()
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+            ],
+        )
+        armed = eh.parse_transcript(str(transcript), "u1")
+        assert armed.messages == [], "the response was not skipped"
+
+        # And the negative, so the check is not simply always-on.
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "an ordinary question", "u1"),
+                make_live_shape_entry("assistant", "AN ORDINARY ANSWER", "u2"),
+            ],
+        )
+        idle = eh.parse_transcript(str(transcript), "u1")
+        assert [m["content"] for m in idle.messages] == ["AN ORDINARY ANSWER"]
+
+
+class TestQuotedCommandHeaders:
+    """H29: only a HARNESS-written user entry can be a command invocation.
+
+    The marker test is a substring match, so before this round any user
+    entry whose text merely quoted a command header — a tool result echoing
+    ``commands/*.md`` or ``scripts/_command_markers.py`` — armed the skip
+    and swallowed the next genuine assistant turn. That turn is gone for
+    good: the cursor moves past it and nothing re-reads it. Live data says
+    the narrowing is safe (measured 2026-09-08: of 365 marker-bearing user
+    entries under the personal-assistant project, 364 were isMeta and
+    exactly one was not — the tool result whose false positive this class
+    pins).
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _fire(monkeypatch, transcript, session_id, *, expect_call):
+        """Run main() once; return the prompt sent, or None if none was."""
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": session_id}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            try:
+                eh.main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main exited {exc.code}"
+            if not expect_call:
+                mock_cls.assert_not_called()
+                return None
+            assert mock_client.messages.create.call_count == 1
+            return mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+    def test_a_quoted_header_in_ordinary_prose_arms_nothing(self, tmp_path):
+        """Kills dropping ``entry.get("isMeta") and`` from the marker branch.
+
+        The quoting entry is a tool result read back into the conversation,
+        not an invocation. With the mutation it arms the skip, the real
+        answer that follows is dropped, and the window ends owing a response
+        that no command ever asked for.
+        """
+        transcript = tmp_path / "t.jsonl"
+        quoting = (
+            "here is what the file says, verbatim:\n"
+            + self._marker()
+            + "\nand that is the whole header"
+        )
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", quoting, "u1"),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in window.messages]
+        assert "AN ORDINARY ANSWER THAT MUST SURVIVE" in texts, (
+            "a genuine assistant turn was dropped by a quoted header"
+        )
+        assert quoting in texts, "the quoting turn is prose and must be kept"
+        assert not window.skip_pending
+
+    def test_the_harness_written_shape_still_arms_the_skip(self, tmp_path):
+        """The control, so the narrowing cannot be satisfied by never arming.
+
+        Same text, same position, ``isMeta`` set: this IS the invocation and
+        its response must not reach the model.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._marker() + "\nsave this", "u1", is_meta=True
+                ),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == []
+        assert not window.skip_pending
+
+    def test_a_quoted_header_at_the_cursor_position_arms_nothing(self, tmp_path):
+        """Kills dropping ``entry.get("isMeta") and`` from the cursor branch.
+
+        The same substring match runs a second time on the entry sitting AT
+        the cursor, and the same quoting entry reaches it by that route.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", self._marker() + " quoted", "u1"),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), "u1")
+        assert [m["content"] for m in window.messages] == [
+            "AN ORDINARY ANSWER THAT MUST SURVIVE"
+        ]
+
+    def test_the_answer_after_a_quoted_header_reaches_the_model(
+        self, tmp_path, monkeypatch
+    ):
+        """The consequence, end to end through main() with the API mocked.
+
+        Kills the same mutation at the level that matters: the assistant
+        turn has to be IN the prompt sent for extraction, not merely present
+        in a returned list.
+        """
+        transcript, cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        quoting = (
+            "quoting the command file back at you: "
+            + self._marker()
+            + " " + "q" * 800
+        )
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", quoting, "u1"),
+                make_live_shape_entry(
+                    "assistant", "THE ANSWER THAT MUST BE EXTRACTED " + "a" * 800,
+                    "u2",
+                ),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-Q", expect_call=True)
+        assert "THE ANSWER THAT MUST BE EXTRACTED" in sent
+        # Nothing is owed, so the next window starts clean.
+        assert _cursor_state(cursor_file, "sess-Q") == ("u2", 0)
+
+
+class TestOwedResponsesAreCounted:
+    """H30: the command skip was a boolean, so two commands owed one skip.
+
+    ``[/cmd, /cmd]`` in one window then ``[resp, resp]`` in the next: the
+    first response spent the flag and the second was sent to Haiku and
+    re-extracted into the store the command had already written itself.
+    Consecutive commands are ordinary (two ``/remember`` calls in a row, or
+    ``/recall`` then ``/remember``), and the window split is reachable
+    because PreCompact fires before the model call.
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _fire(monkeypatch, transcript, session_id, *, expect_call):
+        """Run main() once; return the prompt sent, or None if none was."""
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": session_id}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            try:
+                eh.main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main exited {exc.code}"
+            if not expect_call:
+                mock_cls.assert_not_called()
+                return None
+            assert mock_client.messages.create.call_count == 1
+            return mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+    def test_pending_count_reads_every_stored_shape(self):
+        """Kills ``pending_count`` -> ``bool(raw)`` (or ``int(bool(raw))``).
+
+        ``bool`` has to be tested before ``int`` because ``True`` IS an int
+        in Python; a row holding ``2`` must not collapse to one.
+        """
+        assert eh.pending_count(True) == 1
+        assert eh.pending_count(False) == 0
+        assert eh.pending_count(0) == 0
+        assert eh.pending_count(1) == 1
+        assert eh.pending_count(2) == 2
+        assert eh.pending_count(3) == eh.MAX_RESPONSES_OWED  # clamped down
+        assert eh.pending_count(-2) == 0  # clamped, never a negative debt
+        assert eh.pending_count(None) == 0
+        assert eh.pending_count("2") == 0  # unrecognised reads as none owed
+        # And a real int, not a bool that merely compares equal to one:
+        # dropping the ``isinstance(raw, bool)`` branch returns ``True`` here
+        # and writes ``true`` back into the cursor file, re-creating the very
+        # shape this change exists to retire.
+        assert not isinstance(eh.pending_count(True), bool)
+        assert isinstance(eh.pending_count(True), int)
+
+    def test_a_legacy_boolean_row_owes_exactly_one_response(self, tmp_path):
+        """Kills reading a legacy ``true`` as anything but one owed skip.
+
+        Rows written before this change stored a bool. Reading ``true`` as
+        zero lets the response through; reading it as more than one eats the
+        genuine turn behind it. Asserted through the parse, not just the
+        accessor, so the seeding path is covered.
+        """
+        assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": True}}, "s") == (
+            "u1",
+            1,
+        )
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u1"),
+                make_live_shape_entry("assistant", "AN ORDINARY ANSWER", "u2"),
+            ],
+        )
+        _uuid, owed = eh.cursor_entry({"s": {"uuid": "x", "skip_pending": True}}, "s")
+        window = eh.parse_transcript(str(transcript), None, owed)
+        assert [m["content"] for m in window.messages] == ["AN ORDINARY ANSWER"]
+        assert window.skip_pending == 0
+
+    def test_two_commands_then_two_responses_send_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``responses_owed += 1`` -> ``= 1`` (the boolean behaviour).
+
+        The second response reached the model with the mutation in place,
+        duplicating into ``memories.jsonl`` what the command had already
+        written there.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave one", "u1", is_meta=True),
+            make_live_shape_entry("user", marker + "\nsave two", "u2", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-2C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-2C") == ("u2", 2)
+
+        entries += [
+            make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "u3"),
+            make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "u4"),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-2C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-2C") == ("u4", 0)
+        assert not store.exists(), "a command response was extracted"
+
+    def test_a_command_response_and_another_command_still_owe_one(
+        self, tmp_path, monkeypatch
+    ):
+        """``[/cmd, resp, /cmd]`` then ``[resp]`` — the count goes up AND down.
+
+        Kills ``responses_owed -= 1`` -> ``pass`` as well: with the decrement
+        gone the first window would end owing two, and a later genuine
+        assistant turn would be swallowed.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave one", "u1", is_meta=True),
+            make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "u2"),
+            make_live_shape_entry("user", marker + "\nsave two", "u3", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-3C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-3C") == ("u3", 1)
+
+        entries.append(
+            make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "u4")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-3C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-3C") == ("u4", 0)
+        assert not store.exists(), "a command response was extracted"
+
+    def test_a_genuine_turn_after_the_owed_skips_is_still_extracted(
+        self, tmp_path, monkeypatch
+    ):
+        """The negative control: the counter must actually reach zero.
+
+        Kills ``responses_owed -= 1`` -> ``pass`` and any scheme that never
+        spends the owed skips — both would silently drop real conversation
+        for the rest of the session.
+        """
+        transcript, _cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave one", "u1", is_meta=True),
+                make_live_shape_entry("user", marker + "\nsave two", "u2", is_meta=True),
+                make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "u3"),
+                make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "u4"),
+                make_live_shape_entry(
+                    "user", "an ordinary question " + "q" * 800, "u5"
+                ),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER " + "a" * 800, "u6"
+                ),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-4C", expect_call=True)
+        assert "AN ORDINARY ANSWER" in sent
+        assert "COMMAND RESPONSE" not in sent
+
+    def test_the_cursor_on_a_command_does_not_owe_the_skip_twice(self, tmp_path):
+        """Kills ``responses_owed = max(responses_owed, 1)`` -> ``+= 1``.
+
+        The entry at the cursor position was already counted by the window
+        that read it, so re-arming there must not add a second owed skip:
+        with the mutation the genuine turn after the command response is
+        swallowed and never comes back.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._marker() + "\nsave", "u1", is_meta=True
+                ),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+                make_live_shape_entry("assistant", "AN ORDINARY ANSWER", "u3"),
+            ],
+        )
+        # Resuming exactly as main() would: cursor on the command, one owed.
+        window = eh.parse_transcript(str(transcript), "u1", 1)
+        assert [m["content"] for m in window.messages] == ["AN ORDINARY ANSWER"]
+        assert window.skip_pending == 0
+
+
+class TestUnpositionableCommandEntries:
+    """M3: a command entry with no uuid was counted once per firing.
+
+    ``last_seen_uuid`` is only ever assigned from a uuid, so an entry
+    without one can never become a cursor position: every later window
+    re-reads it. Arming there made the owed count climb without limit until
+    it began swallowing genuine assistant turns, which are irrecoverable —
+    the cursor has moved past them and nothing re-reads them.
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _uuidless(marker: str) -> dict:
+        """A live-shape meta command entry with its ``uuid`` key removed."""
+        entry = make_live_shape_entry("user", marker + "\nsave", "dropped", is_meta=True)
+        del entry["uuid"]
+        return entry
+
+    # The same one-firing harness the owed-count tests use; there is one
+    # correct way to drive main() with the API mocked and it lives there.
+    _fire = staticmethod(TestOwedResponsesAreCounted._fire)
+
+    def test_the_uuidless_command_is_counted_zero_times_not_once_per_firing(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills dropping the ``if entry_uuid:`` guard (re-audit M3).
+
+        The exact two-window scenario from the re-audit. Without the guard
+        W1 ends owing 2 at position ``c1``; W2 seeds 2, re-arms at the
+        cursor, re-reads the uuid-less entry to owe 3, spends two on the
+        command responses and the third on the genuine turn — which is then
+        gone for good.
+        """
+        transcript, cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave one", "c1", is_meta=True),
+            self._uuidless(marker),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-M3", expect_call=False) is None
+        # One command was positionable, so exactly one response is owed and
+        # the cursor sits on that command.
+        assert _cursor_state(cursor_file, "sess-M3") == ("c1", 1)
+
+        entries += [
+            make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "r1"),
+            make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "r2"),
+            make_live_shape_entry(
+                "assistant", "THE GENUINE TURN THAT MUST SURVIVE " + "g" * 800, "g1"
+            ),
+        ]
+        _write_transcript(transcript, entries)
+        sent = self._fire(monkeypatch, transcript, "sess-M3", expect_call=True)
+        assert "THE GENUINE TURN THAT MUST SURVIVE" in sent, (
+            "the uuid-less command was counted again and ate a real turn"
+        )
+        assert "FIRST COMMAND RESPONSE" not in sent
+        assert _cursor_state(cursor_file, "sess-M3") == ("g1", 0)
+
+    def test_the_count_does_not_climb_across_repeated_firings(self, tmp_path):
+        """Kills the same guard at the parse level, over three windows.
+
+        Re-parsing an unchanged transcript must be idempotent: the owed
+        count is a property of the transcript, not of how often the hook
+        fired.
+        """
+        transcript = tmp_path / "t.jsonl"
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "c1", is_meta=True),
+                self._uuidless(marker),
+            ],
+        )
+        first = eh.parse_transcript(str(transcript), None)
+        assert (first.last_uuid, first.skip_pending) == ("c1", 1)
+        second = eh.parse_transcript(str(transcript), first.last_uuid, first.skip_pending)
+        assert (second.last_uuid, second.skip_pending) == (None, 1)
+        third = eh.parse_transcript(str(transcript), "c1", second.skip_pending)
+        assert third.skip_pending == 1, "the owed count climbed on a re-read"
+
+    def test_the_unpositionable_command_is_reported(self, tmp_path, caplog):
+        """Kills deleting the WARNING.
+
+        Its response WILL reach extraction once, as an ordinary turn. That
+        is the deliberate trade (a duplicate is dedupable, a lost turn is
+        not), but the operator's only signal that it happened is this line.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [self._uuidless(self._marker())])
+        with caplog.at_level("WARNING"):
+            window = eh.parse_transcript(str(transcript), None)
+        assert window.skip_pending == 0
+        assert "no uuid" in caplog.text
+        assert str(transcript) in caplog.text
+
+
+class TestOwedResponsesAreCapped:
+    """M4: the owed count was unbounded and never decayed.
+
+    Three commands whose responses never arrive — an interrupt, a crash, a
+    PreCompact landing between them — left three owed for the rest of the
+    session, and the next three genuine assistant turns paid the debt.
+    Those turns are irrecoverable; a leaked command response is a duplicate
+    record that dedup collapses. The cap makes the counter wrong in the
+    recoverable direction.
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    _fire = staticmethod(TestOwedResponsesAreCounted._fire)
+
+    def test_the_cap_is_two_and_is_stated_once(self):
+        """Kills a cap invented at a call site instead of the constant."""
+        assert eh.MAX_RESPONSES_OWED == 2
+
+    def test_three_commands_owe_at_most_the_cap(self, tmp_path):
+        """Kills ``min(responses_owed + 1, MAX_RESPONSES_OWED)`` -> ``+= 1``.
+
+        Three back-to-back commands with no responses in the window: the
+        third increment is refused.
+        """
+        transcript = tmp_path / "t.jsonl"
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", marker + f"\nsave {i}", f"c{i}", is_meta=True
+                )
+                for i in range(3)
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert window.messages == []
+        assert window.skip_pending == 2
+
+    def test_a_stored_row_cannot_carry_a_larger_debt_back_in(self, tmp_path):
+        """Kills capping only at the increment and not in ``pending_count``.
+
+        A cursor row written before the cap — or hand-edited — must not
+        reintroduce the unbounded debt on the next firing.
+        """
+        assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": 9}}, "s") == (
+            "u1",
+            2,
+        )
+        cursor = {}
+        eh.set_cursor_entry(cursor, "s1", "u9", 9)
+        assert cursor["s1"]["skip_pending"] == 2
+
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("assistant", f"ANSWER {i}", f"a{i}")
+                for i in range(4)
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None, 9)
+        assert [m["content"] for m in window.messages] == ["ANSWER 2", "ANSWER 3"]
+
+    def test_four_genuine_turns_after_three_commands_lose_at_most_two(
+        self, tmp_path, monkeypatch
+    ):
+        """The consequence, through main() with the API mocked.
+
+        Uncapped, three of the four assistant turns are swallowed. Capped,
+        exactly two are — and the operator gets the rest of the session
+        back.
+        """
+        transcript, cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry(
+                "user", marker + f"\nsave {i}", f"c{i}", is_meta=True
+            )
+            for i in range(3)
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-M4", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-M4") == ("c2", 2)
+
+        entries += [
+            make_live_shape_entry(
+                "assistant", f"TURN {i} " + "t" * 400, f"a{i}"
+            )
+            for i in range(4)
+        ]
+        _write_transcript(transcript, entries)
+        sent = self._fire(monkeypatch, transcript, "sess-M4", expect_call=True)
+        consumed = [i for i in range(4) if f"TURN {i} " not in sent]
+        assert consumed == [0, 1], (
+            f"expected the cap to consume exactly two turns, lost {consumed}"
+        )
+        assert _cursor_state(cursor_file, "sess-M4") == ("a3", 0)

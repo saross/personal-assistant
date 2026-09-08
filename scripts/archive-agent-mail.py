@@ -92,6 +92,10 @@ def read_bounded(path: Path, max_bytes: int = MAX_MESSAGE_BYTES) -> bytes | None
     return None if len(data) > max_bytes else data
 
 
+MAX_HEADER_VALUE = 60     # the hook's MAX_HEADER_VALUE; a test pins the two rules together
+ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?")
+
+
 def slug_or_invalid(value: str) -> str:
     """The reading hook's rule for a routing value: a slug, or ``invalid``.
 
@@ -101,9 +105,17 @@ def slug_or_invalid(value: str) -> str:
     value = value.strip()
     if not value:
         return ""
-    if len(value) > 60 or not SAFE_NAME.fullmatch(value):
+    if len(value) > MAX_HEADER_VALUE or not SAFE_NAME.fullmatch(value):
         return "invalid"
     return value
+
+
+def iso_or_invalid(value: str) -> str:
+    """A ``Date:`` header as an ISO-8601 stamp, empty, or ``invalid``."""
+    value = value.strip()
+    if not value:
+        return ""
+    return value if ISO_DATE.fullmatch(value) else "invalid"
 
 
 def read_headers(path: Path) -> dict[str, str]:
@@ -185,13 +197,20 @@ def copy_new(root: Path, archive: Path, refused: list[Path] | None = None) -> tu
     for source in mail_files(root, refused=refused):
         relative = source.relative_to(root)
         target = archive / relative
-        data = read_bounded(source)
+        try:
+            data = read_bounded(source)
+        except OSError:
+            continue                        # vanished since the listing; next run sees it
         if data is None:                    # grew past the cap since stat: refuse
             if refused is not None:
                 refused.append(source)
             continue
         if target.exists():
-            if target.read_bytes() == data:
+            try:
+                existing = read_bounded(target)   # bounded on the archive side too
+            except OSError:
+                existing = None
+            if existing == data:
                 continue
             changed += 1
         else:
@@ -267,7 +286,7 @@ def build_index(archive: Path) -> list[dict]:
             "project": (slug_or_invalid(headers.get("Project", "")) or "any").casefold(),
             "lane": (slug_or_invalid(headers.get("Lane", "")) or "any").casefold(),
             "workstream": slug_or_invalid(headers.get("Workstream", "")),
-            "date": "".join(ch for ch in headers.get("Date", "") if ch.isprintable())[:40],
+            "date": iso_or_invalid(headers.get("Date", "")),
             "subject": "".join(ch for ch in headers.get("Re", "") if ch.isprintable())[:200],
             "bytes": message.stat().st_size,
             "sha256": sha256(message),
@@ -292,14 +311,15 @@ def commit(archive: Path, summary: str) -> bool:
     """Commit the archive directory in its repository with an explicit pathspec."""
     repo = archive.parent
     relative = archive.relative_to(repo).as_posix()
-    subprocess.run(["git", "-C", str(repo), "add", "--", relative], check=True)
-    staged = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--cached", "--quiet", "--", relative])
+    # --literal-pathspecs: a pathspec is a glob by default, and the archive
+    # directory name comes from the --archive option (re-audit, 2026-09-08).
+    git = ["git", "--literal-pathspecs", "-C", str(repo)]
+    subprocess.run([*git, "add", "--", relative], check=True)
+    staged = subprocess.run([*git, "diff", "--cached", "--quiet", "--", relative])
     if staged.returncode == 0:
         return False
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", f"chore(agent-mail): {summary}",
-         "--", relative], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", f"chore(agent-mail): {summary}", "--", relative],
+                   check=True)
     return True
 
 

@@ -88,7 +88,7 @@ def sample_memories():
             "category": "commitment",
             "content": "Finish results section by Friday.",
             "confidence": "high",
-            "research_tags": ["llm-history-paper", "deadline"],
+            "research_tags": ["mirror-recoating", "deadline"],
             "source_context": "Manual capture via /remember",
             "created_at": "2026-02-07T12:00:00+00:00",
             "deadline_at": "2026-02-13T15:00:00+11:00",
@@ -112,41 +112,41 @@ def sample_focus_md():
     """Sample FOCUS.md content with 3 slots."""
     return """# Current Focus
 
-**Last updated:** 2026-02-08 (standup)
+**Last updated:** 2024-02-08 (standup)
 **Focus check:** 3 of 3 slots filled
 
 ---
 
-## Slot 1: LLM-History-Paper
+## Slot 1: Mirror recoating
 
-- **Project:** research/llm-history-paper
-- **Started:** 2026-02-06
-- **Deadline:** 2026-02-28
+- **Project:** observatory/optics
+- **Started:** 2024-02-06
+- **Deadline:** 2024-02-28
 - **Why this matters:** End-of-February deadline.
-- **Next action:** Write results section.
+- **Next action:** Book the coating chamber.
 - **Blocked by:** Nothing
 
 ---
 
-## Slot 2: fieldmark-docs-staging
+## Slot 2: Dome automation
 
-- **Project:** business/fieldmark-docs-staging
-- **Started:** 2026-02-08
+- **Project:** observatory/dome
+- **Started:** 2024-02-08
 - **Deadline:** None
-- **Why this matters:** EFN startup documentation.
-- **Next action:** Review pipeline output.
+- **Why this matters:** Shutter controller documentation.
+- **Next action:** Review the driver output.
 - **Blocked by:** Nothing
 
 ---
 
-## Slot 3: ANU Teaching Prep
+## Slot 3: Observing run prep
 
-- **Project:** teaching/anu-digital-humanities
-- **Started:** 2026-02-08
-- **Deadline:** 2026-02-25
-- **Why this matters:** First class 25 Feb.
-- **Next action:** Check Canvas access.
-- **Blocked by:** Possibly Canvas access
+- **Project:** observatory/scheduling
+- **Started:** 2024-02-08
+- **Deadline:** 2024-02-25
+- **Why this matters:** First run 25 Feb.
+- **Next action:** Check roster access.
+- **Blocked by:** Possibly roster access
 
 ---
 
@@ -159,7 +159,7 @@ def sample_focus_md():
 
 ## Rules
 
-1. **Max 3 focus items.** (Raised from 2 on 2026-02-08.)
+1. **Max 3 focus items.** (Raised from 2 on 2024-02-08.)
 2. **Finish or explicitly abandon** before starting something new.
 3. **If stuck for 3+ days**, something is wrong. Surface it.
 4. **Paused items are paused**, not "also working on." Don't touch them.
@@ -171,7 +171,7 @@ def sample_system_md():
     """Sample SYSTEM.md content."""
     return """# System Configuration
 
-Last updated: 2026-02-08
+Last updated: 2024-02-08
 
 ## Parameters
 

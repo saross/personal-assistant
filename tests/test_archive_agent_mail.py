@@ -91,11 +91,19 @@ def test_index_is_regenerated_and_stable(tmp_path):
     assert json.loads(first.splitlines()[0])["path"] == "codex/outbox/claude/m1.md"
 
 
-def test_commit_uses_an_explicit_pathspec(tmp_path):
+GIT_IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
+                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+
+
+def test_commit_uses_an_explicit_pathspec(tmp_path, monkeypatch):
+    # archive.commit() shells out with the inherited environment, so the
+    # identity must be in os.environ, not only in this test's env dict —
+    # or the test silently depends on the operator's ~/.gitconfig.
+    for key, value in GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+    env = {**os.environ}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
     (repo / "unrelated.txt").write_text("pending edit, must not be swept\n")
     store = repo / "agent-mail"
@@ -126,12 +134,13 @@ def test_cli_reports_summary_without_bodies(tmp_path):
 
 # ---- added after the 2026-09-08 audit (Lens B findings C3, M1, M2 and lows) ----
 
-def test_commit_pathspec_leaves_another_sessions_staged_file_alone(tmp_path):
+def test_commit_pathspec_leaves_another_sessions_staged_file_alone(tmp_path, monkeypatch):
     """A file another session has already STAGED must not be swept into the commit."""
+    for key, value in GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+    env = {**os.environ}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
     (repo / "other-session.txt").write_text("staged by someone else\n")
     subprocess.run(["git", "-C", str(repo), "add", "other-session.txt"], check=True, env=env)
@@ -346,6 +355,37 @@ def test_index_header_values_pass_the_same_rule_as_the_hook(tmp_path):
     by_path = {r["path"].rsplit("/", 1)[1]: r for r in archive.build_index(store)}
     bad, good = by_path["m1.md"], by_path["m2.md"]
     assert (bad["project"], bad["lane"], bad["workstream"], bad["date"]) == (
-        "invalid", "invalid", "invalid", "2026-09-08[31m")
+        "invalid", "invalid", "invalid", "invalid")
+    assert good["date"] == "2026-09-08T00:00:00Z"
     assert (good["project"], good["lane"], good["workstream"]) == ("map-reader-llm", "fable", "")
     assert "\x1b" not in json.dumps(archive.build_index(store))
+
+
+# ---- added after the 2026-09-08 re-audit of round 1d (M3, L2) ----
+
+def test_a_source_that_vanishes_mid_run_does_not_abort_the_archive(tmp_path, monkeypatch):
+    """Kills: an uncaught OSError in copy_new (one vanished file aborted the run before the
+    index was rebuilt and the refusal report printed)."""
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, _ = mailbox(root)
+    gone, kept = outbox / "gone.md", outbox / "kept.md"
+    gone.write_text(MESSAGE)
+    kept.write_text(MESSAGE)
+    monkeypatch.setattr(archive, "mail_files", lambda r, **kw: [gone, kept])
+    gone.unlink()
+    assert archive.copy_new(root, store) == (1, 0)
+    assert (store / "codex/outbox/claude/kept.md").exists()
+
+
+def test_archiver_routing_rule_matches_the_hook():
+    """Kills: the archiver's copy of the slug rule drifting from the hook's safe_value."""
+    import importlib
+    import sys
+    hooks_dir = str(ROOT / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+    hook = importlib.import_module("session-start-agent-mail")
+    assert archive.MAX_HEADER_VALUE == hook.MAX_HEADER_VALUE
+    for value in ("", "  ", "map-reader-llm", "Personal-Assistant", "a.b_c-d", "x" * 60,
+                  "x" * 61, "a b", "a;b", "a[b", "fable; project: x", "w\x1b[31m", "gpt-5 high"):
+        assert archive.slug_or_invalid(value) == hook.safe_value(value), repr(value)
