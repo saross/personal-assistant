@@ -1180,10 +1180,16 @@ class TestR2PushSafety:
         ), "the value was not passed through literally"
 
     def test_only_the_two_r2_variables_are_exported(self, sandbox) -> None:
-        """Every other secret in .env used to reach every child process."""
+        """Every other secret in .env used to reach every child process.
+
+        The assertions are on the .env FILE's values, not on variable names:
+        a name like ANTHROPIC_API_KEY may legitimately already be in the
+        ambient environment, and this fix is about what sourcing the file
+        added on top of it.
+        """
         (sandbox.pa_dir / ".env").write_text(
-            "OPENAI_API_KEY=sk-invented-not-a-real-key\n"
-            "ANTHROPIC_API_KEY=ant-invented-not-a-real-key\n"
+            "OPENAI_API_KEY=sk-invented-value-from-dot-env\n"
+            "ANTHROPIC_API_KEY=ant-invented-value-from-dot-env\n"
             'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="r2-id-invented"\n'
             "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY='r2-secret-invented'\n",
             encoding="utf-8",
@@ -1192,8 +1198,10 @@ class TestR2PushSafety:
         assert self._run(sandbox).returncode == 0
 
         env_text = sandbox.env_log.read_text(encoding="utf-8")
-        assert "OPENAI_API_KEY" not in env_text
-        assert "ANTHROPIC_API_KEY" not in env_text
+        assert "sk-invented-value-from-dot-env" not in env_text, (
+            "a non-R2 secret from .env reached the transfer's environment"
+        )
+        assert "ant-invented-value-from-dot-env" not in env_text
         # The two that are needed arrive, with their quotes stripped.
         assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented" in env_text
         assert (
