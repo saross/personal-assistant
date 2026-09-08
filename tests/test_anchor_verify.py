@@ -68,14 +68,14 @@ class TestWellformedAnchor:
     """Pure, I/O-free shape gate applied before persisting anchors."""
 
     def test_valid_commit_hash_ok(self):
-        ok, reason = av.wellformed_anchor({"type": "commit", "ref": "7078d39"})
+        ok, reason = av.wellformed_anchor({"type": "commit", "ref": "abc1234"})
         assert ok is True and reason == "ok"
 
     @pytest.mark.parametrize("ref", [
-        "rome-verification-script",            # descriptive slug
-        "audit-corrections-applied",           # descriptive slug
+        "example-verification-script",         # descriptive slug
+        "corrections-applied-note",            # descriptive slug
         "bb5r1pr54",                           # non-hex chars
-        "feat(hooks): SessionStart sidecar",   # a commit *message*, not a ref
+        "feat(scope): a subject line",         # a commit *message*, not a ref
     ])
     def test_malformed_commit_refs_rejected(self, ref):
         ok, reason = av.wellformed_anchor({"type": "commit", "ref": ref})
@@ -116,7 +116,7 @@ class TestWellformedAnchor:
     def test_tightened_file_gate_rejects_prose(self):
         # item 21a: prose mis-typed as a file anchor now fails the gate.
         ok, reason = av.wellformed_anchor(
-            {"type": "file", "ref": "scoring table (7 sessions, 42 cells)"})
+            {"type": "file", "ref": "results table (3 rounds, 12 cells)"})
         assert ok is False and reason == "malformed-file-ref"
 
     def test_tightened_file_gate_passes_real_path(self):
@@ -146,8 +146,8 @@ class TestLooksLikeFileRef:
         "decision-log.md",
         "session.meta.json",
         "~/.bash_aliases",
-        "~/Zotero/storage/FGM4PVSX/Hanson - 2016 - urban geography.pdf",  # space+sep
-        "/home/shawn/personal-assistant/scripts/x.py",  # multi-segment absolute
+        "~/Zotero/storage/AAAA1111/Author - 1999 - a paper title.pdf",  # space+sep
+        "/home/someone/a-project/scripts/x.py",  # multi-segment absolute
         "responses-round-1/",                  # directory ref
         "LICENSE",                             # extensionless real file
         "Makefile",
@@ -157,19 +157,19 @@ class TestLooksLikeFileRef:
 
     @pytest.mark.parametrize("ref", [
         # prose
-        "scoring table (7 sessions, 42 cells)",
-        "preregistration draft",
-        "Round 4 tally table: H=7 (17%), G=17 (40%), T=18 (43%)",
-        "Run-sheet Block B2",
+        "results table (3 rounds, 12 cells)",
+        "draft outline",
+        "Round 1 tally table: A=2 (20%), B=3 (30%), C=5 (50%)",
+        "Work sheet Block Z9",
         # slash-command names (single-segment absolute, prose tolerated)
         "/weekly-review",
         "/reflect",
-        "/lit-scout-iterate — Iteration policy (settled 2026-05-22)",
+        "/example-command — a policy note (settled 2031-01-02)",
         # bare object ids mis-typed as files
-        "3825319a",
-        "932f8ad0",
-        "a6ba54fa",
-        "msgbatch_016RZjdHMfWAtKcW2uBxkbgJ",
+        "1a2b3c4d",
+        "5e6f7a8b",
+        "9c0d1e2f",
+        "msgbatch_00AAAAAAAAAAAAAAAAAAAAAA",
         # control chars / over-length
         "a\nb",
         "a\tb",
