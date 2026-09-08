@@ -1072,6 +1072,56 @@ class TestBatchSubmitIsNotRepeatable:
         assert f"--out-dir {out_dir}" in message
         assert "the SAME manifest" in message
 
+    @staticmethod
+    def _expected_retrieve_command(batch_id: str, root_out_dir: Path) -> str:
+        """The recovery line, spelled out rather than pattern-matched.
+
+        Substring assertions let both halves of this command rot: naming
+        the provider subdirectory instead of its parent, or the wrong
+        --provider, still "contains" the fragments a loose test checks.
+        The operator copy-pastes this line, so it is pinned exactly.
+        """
+        return (
+            "venv/bin/python3 scripts/bake-off-metadata.py "
+            f"--provider haiku --haiku-apply {batch_id} "
+            f"--out-dir {root_out_dir}"
+        )
+
+    def test_retrieve_command_is_exact(self, tmp_path):
+        provider_dir = tmp_path / "out" / "haiku"
+        assert bom.haiku_retrieve_command("batch_007", provider_dir) == (
+            self._expected_retrieve_command("batch_007", tmp_path / "out")
+        )
+
+    def test_the_printed_recovery_line_is_exact(
+        self, tmp_path, capsys, submit_stub
+    ):
+        manifest = _one_session_manifest(tmp_path, "recovery-aaaa-1111")
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, _prompt_file(tmp_path), out_dir)) == 0
+        printed = capsys.readouterr().out
+        line = next(
+            line for line in printed.splitlines()
+            if line.startswith("[haiku] retrieve with: ")
+        )
+        assert line == "[haiku] retrieve with: " + self._expected_retrieve_command(
+            "batch_001", out_dir
+        )
+
+    def test_the_refusal_repeats_that_exact_line(
+        self, tmp_path, capsys, submit_stub
+    ):
+        manifest = _one_session_manifest(tmp_path, "recovery-bbbb-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        capsys.readouterr()
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
+        message = capsys.readouterr().err
+        assert self._expected_retrieve_command("batch_001", out_dir) in [
+            line.strip() for line in message.splitlines()
+        ]
+
     def test_a_different_manifest_is_still_refused_but_says_so(
         self, tmp_path, capsys, submit_stub
     ):
