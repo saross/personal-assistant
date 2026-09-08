@@ -41,6 +41,7 @@ from _sync_cursor import (  # noqa: E402
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+from _soft_delete import normalise_flag  # noqa: E402  (audit M-1)
 # Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
 from _sync_gate import (  # noqa: E402
     CYCLE_COMPLETED,
@@ -468,7 +469,10 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("extractor_model_id"),
         # Soft-delete flag (P8 fix, 2026-06-06) — defaults TRUE when absent,
         # mirroring the column default; a /forget'd record carries False.
-        record.get("is_active", True),
+        # Normalised to a real bool (audit M-1): the column is BOOLEAN, and
+        # an int from a hand-edited record has no implicit cast to it, so
+        # the whole batch INSERT failed rather than the memory retiring.
+        normalise_flag(record.get("is_active"), default=True),
     )
 
 

@@ -56,17 +56,41 @@ def resolve_via_catalogue(
     """Fast path: look up session_id in <root>/CATALOG.json.
 
     Returns the archive directory, or ``None`` when the catalogue is
-    absent, unparseable, or simply does not list this session — all normal,
-    and the caller falls back to the filesystem walk. Raises
-    :class:`CatalogueError` when the file is present and valid JSON but the
-    wrong shape, which is a broken catalogue rather than a miss.
+    absent, unparseable, or simply does not list this session — all
+    recoverable, and the caller falls back to the filesystem walk. The
+    first two report themselves on stderr (audit L-5): the walk is
+    exhaustive enough to hide a missing or truncated catalogue
+    indefinitely, so without a line here a corrupt file on the rpi share
+    surfaces only as unexplained slowness. A plain miss stays silent —
+    the catalogue only indexes top-level sessions, so misses are routine.
+
+    Raises :class:`CatalogueError` when the file is present and valid JSON
+    but the wrong shape, which is a broken catalogue rather than a miss.
     """
     catalogue = root / "CATALOG.json"
     if not catalogue.is_file():
+        # Not an error — ``_legacy`` trees and freshly-made archive roots
+        # have no catalogue — but say so (audit L-5). The filesystem walk
+        # that follows is exhaustive and will usually succeed, so a
+        # catalogue that has gone missing from the rpi share otherwise
+        # shows up only as "this got slow", months later.
+        print(
+            f"resolve-session-id: no catalogue at {catalogue}; "
+            "falling back to a full filesystem walk",
+            file=sys.stderr,
+        )
         return None
     try:
         data = json.loads(catalogue.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        # Same reasoning, more urgently: a truncated or half-written
+        # CATALOG.json on a network share is a real defect that the walk
+        # would otherwise paper over completely.
+        print(
+            f"resolve-session-id: cannot read {catalogue} ({exc}); "
+            "falling back to a full filesystem walk",
+            file=sys.stderr,
+        )
         return None
 
     if not isinstance(data, dict):

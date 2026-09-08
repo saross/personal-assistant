@@ -3675,3 +3675,58 @@ class TestCursorMatchesTheBacklogGate:
         assert saved["postgres_sync_line"] == 2, (
             "the cursor counted the carriage return as a line break")
         assert _sync_cursor.unsynced_line_backlog(memories, cursor_file) == 0
+
+
+
+# ============================================================================
+# Audit M-1 — is_active reaches the BOOLEAN column as a real bool
+# ============================================================================
+
+
+class TestIsActiveNormalisedForInsert:
+    """``record_to_tuple`` feeds a BOOLEAN column, so it must send a bool."""
+
+    @staticmethod
+    def _flag(record_extra: dict) -> object:
+        """The is_active element of the INSERT tuple (JSONL_FIELDS' last)."""
+        record = {
+            "id": "2026-06-05-abc",
+            "category": "decision",
+            "content": "Something happened.",
+            "created_at": "2026-06-05T00:00:00+00:00",
+            **record_extra,
+        }
+        return sync_mod.record_to_tuple(record)[-1]
+
+    @pytest.mark.parametrize("stored,expected", [
+        (False, False), ("false", False), ("f", False), ("no", False),
+        ("n", False), ("off", False), ("0", False), (0, False), (0.0, False),
+        (True, True), ("true", True), ("yes", True), (1, True),
+        ("unrecognised", True),
+    ])
+    def test_every_stored_shape_becomes_a_bool(
+        self, stored: object, expected: bool,
+    ) -> None:
+        """Kills: ``record.get("is_active", True)`` passing the raw value on.
+
+        psycopg2 renders an int as an SQL integer literal, and PostgreSQL
+        has no implicit int4 -> bool cast, so a hand-edited 0 raised
+        "column is of type boolean but expression is of type integer" and
+        failed the whole batch. A string like "no" adapted fine but
+        disagreed with every JSONL reader.
+        """
+        assert self._flag({"is_active": stored}) is expected
+
+    def test_absent_defaults_to_true(self) -> None:
+        """Mirrors the column default for the pre-/forget corpus."""
+        assert self._flag({}) is True
+
+    def test_agrees_with_the_jsonl_readers(self) -> None:
+        """One record, one answer, whichever side asks (audit M-1)."""
+        from _soft_delete import is_active
+
+        for stored in (False, "false", "f", "no", "n", "off", "0", 0,
+                       True, "true", "yes", 1, "unrecognised"):
+            assert self._flag({"is_active": stored}) is is_active(
+                {"is_active": stored}
+            ), stored

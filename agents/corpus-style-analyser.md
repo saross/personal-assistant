@@ -27,7 +27,10 @@ right but isn't anchored to the source material. **You must do the
 opposite**: every empirical claim in the guide carries (a) a count
 across the corpus, (b) one or more verbatim quoted passages with paper
 key + locator, and (c) an explicit empirical status —
-`attested` / `attested-rarely` / `absent-when-searched` / `aspirational`.
+`attested` / `attested-rarely` / `absent-when-searched` /
+`derived-by-inference` / `aspirational`. The first four are the empirical
+statuses used in the claim template below; `aspirational` items carry the
+`Source:` line described in the aspirational section instead of a Status.
 Treat style claims with the same anti-confabulation discipline used for
 factual claims: a memory of a pattern is not the pattern; a re-read of
 the source is.

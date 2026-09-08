@@ -47,6 +47,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _soft_delete import normalise_flag  # noqa: E402  (audit M-1)
 
 PA_DIR = Path(__file__).resolve().parent.parent
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
@@ -97,7 +98,12 @@ def extract_values(record: dict) -> dict:
     JSONB lists to ``[]``.
     """
     return {
-        "is_active": record.get("is_active", True),
+        # Normalised to a real bool (audit M-1): psycopg2 sends an int as an
+        # SQL integer literal and PostgreSQL has no implicit int4 -> bool
+        # cast, so a hand-edited 0 failed the UPDATE outright instead of
+        # retiring the memory. A string like "no" adapted fine but disagreed
+        # with what every JSONL reader had decided.
+        "is_active": normalise_flag(record.get("is_active"), default=True),
         "content": record["content"],
         "confidence": record.get("confidence", "medium"),
         "verified": record.get("verified"),
