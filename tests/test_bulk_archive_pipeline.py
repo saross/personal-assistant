@@ -76,6 +76,7 @@ class Pipeline:
             min_turns=0,
             min_content_tokens=0,
             min_content_chars=bulk_archive.MIN_CONTENT_CHARS,
+            layout="auto",
             **overrides,
         )
         bulk_archive.cmd_discover(args, LOGGER)
@@ -91,6 +92,7 @@ class Pipeline:
             min_turns=0,
             min_content_tokens=0,
             min_content_chars=bulk_archive.MIN_CONTENT_CHARS,
+            layout="auto",
         )
         bulk_archive.cmd_archive(args, LOGGER)
 
@@ -325,3 +327,63 @@ class TestDiscoverSelection:
         age_file(path, hours=96)
 
         assert pipeline.discover() == []
+
+
+# ---------------------------------------------------------------------------
+# AR10 — the layout probe must not guess
+# ---------------------------------------------------------------------------
+
+
+class TestLayoutProbe:
+    """A store read under the wrong layout is read wrongly and silently."""
+
+    def test_a_live_store_is_recognised(self, pipeline: Pipeline) -> None:
+        pipeline.add_session(SID_A)
+        assert bulk_archive.detect_source_layout(
+            pipeline.raw_root, LOGGER
+        ) == "live"
+
+    def test_a_merged_snapshot_is_recognised(self, tmp_path: Path) -> None:
+        """Machine directories holding project keys is positive evidence."""
+        root = tmp_path / "snapshot"
+        for machine in ("amd-tower", "zbook"):
+            project = root / machine / "-home-tester-Workshop"
+            project.mkdir(parents=True)
+            write_transcript(
+                project / f"{SID_A}.jsonl", substantive_records(SID_A)
+            )
+        assert bulk_archive.detect_source_layout(root, LOGGER) == "snapshot"
+
+    def test_session_uuid_directories_are_refused_not_read_as_projects(
+        self, tmp_path: Path
+    ) -> None:
+        """The live store whose top-level transcripts have been archived away.
+
+        Under the old single-negation probe this tree was read as a merged
+        snapshot, and each session-UUID directory became a *project key*.
+        """
+        root = tmp_path / "ambiguous"
+        (root / SID_A / "subagents").mkdir(parents=True)
+        write_transcript(
+            root / SID_A / "subagents" / "agent-1.jsonl",
+            substantive_records("agent-1"),
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            bulk_archive.detect_source_layout(root, LOGGER)
+
+        assert exit_info.value.code != 0
+
+    def test_an_explicit_layout_overrides_the_probe(
+        self, tmp_path: Path
+    ) -> None:
+        """The operator who knows better is not blocked by the refusal."""
+        root = tmp_path / "ambiguous"
+        (root / SID_A).mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(
+            root, LOGGER, "snapshot"
+        ) == "snapshot"
+        assert bulk_archive.detect_source_layout(
+            root, LOGGER, "live"
+        ) == "live"

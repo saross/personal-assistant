@@ -274,9 +274,74 @@ def _source_machine_of(jsonl_file: Path) -> str:
     return "local"
 
 
+#: A directory named like a session UUID is a session's own subdirectory
+#: (holding ``subagents/``), never a project key or a machine name.
+_UUID_DIR_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def detect_source_layout(
+    source_root: Path,
+    logger: logging.Logger,
+    layout: str = "auto",
+) -> str:
+    """Return ``"live"`` or ``"snapshot"`` for *source_root*, or exit.
+
+    The old probe was a single negation: "no child holds ``*.jsonl`` at scan
+    time, therefore this is a merged snapshot". That is false in the one case
+    it matters — a live store whose sessions happen to sit in per-session
+    subdirectories, or a store scanned at a moment when no project directory
+    holds a top-level transcript. Every session-UUID directory was then read
+    as a *project key*, and the run proceeded silently under a completely
+    wrong idea of the tree (audit 2026-09-08, finding AR10).
+
+    So the probe now has to see positive evidence for whichever layout it
+    reports, and says which:
+
+    * **live** — some child directory holds ``*.jsonl`` directly.
+    * **snapshot** — no child does, and every non-empty child holds
+      project-key directories (the leading-dash encoding).
+
+    Anything else is ambiguous, and an ambiguous store is a refusal with the
+    remedy named, not a guess. ``--layout live|snapshot`` overrides the probe
+    outright for the case the operator knows better.
+    """
+    if layout in ("live", "snapshot"):
+        logger.info("Source %s: layout forced to %s", source_root, layout)
+        return layout
+
+    children = [child for child in sorted(source_root.iterdir())
+                if child.is_dir()]
+    if any(any(child.glob("*.jsonl")) for child in children):
+        return "live"
+
+    uuid_named = [child.name for child in children if _UUID_DIR_RE.match(child.name)]
+    project_keyed = [
+        child for child in children
+        if any(g.is_dir() and g.name.startswith("-") for g in child.iterdir())
+    ]
+    if uuid_named or (children and not project_keyed):
+        logger.error(
+            "Cannot tell what %s is: no project directory holds a "
+            "transcript, and its children do not look like machine "
+            "directories%s. Refusing to guess — pass --layout live or "
+            "--layout snapshot.",
+            source_root,
+            (
+                f" ({len(uuid_named)} are session-UUID directories, which are "
+                "never projects)" if uuid_named else ""
+            ),
+        )
+        sys.exit(2)
+    return "snapshot"
+
+
 def iter_source_project_dirs(
     source_root: Path,
     logger: logging.Logger,
+    layout: str = "auto",
 ) -> list[tuple[str, Path]]:
     """Yield ``(encoded_cwd_key, project_dir)`` pairs from a transcript store.
 
@@ -301,11 +366,9 @@ def iter_source_project_dirs(
         return []
 
     # A live store's children hold *.jsonl directly; a snapshot's children are
-    # machine directories whose grandchildren do. Probe rather than assume.
-    is_snapshot = not any(
-        child.is_dir() and any(child.glob("*.jsonl"))
-        for child in source_root.iterdir()
-    )
+    # machine directories whose grandchildren do. The probe demands positive
+    # evidence either way and refuses when it has none (AR10).
+    is_snapshot = detect_source_layout(source_root, logger, layout) == "snapshot"
 
     if not is_snapshot:
         pairs = [
@@ -668,7 +731,9 @@ def discover_sessions(
 def cmd_discover(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the discover mode: scan, filter, report, save manifest."""
     source_root = getattr(args, "source_root", CLAUDE_PROJECTS_DIR)
-    source_pairs = iter_source_project_dirs(source_root, logger)
+    source_pairs = iter_source_project_dirs(
+        source_root, logger, getattr(args, "layout", "auto")
+    )
     project_mapping = resolve_project_mapping(logger, source_pairs)
     manifest = discover_sessions(
         project_mapping, args.min_turns, logger, source_pairs,
@@ -1146,7 +1211,9 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     if not MANIFEST_FILE.exists():
         logger.info("No manifest found — running discovery first...")
         source_root = getattr(args, "source_root", CLAUDE_PROJECTS_DIR)
-        source_pairs = iter_source_project_dirs(source_root, logger)
+        source_pairs = iter_source_project_dirs(
+            source_root, logger, getattr(args, "layout", "auto")
+        )
         project_mapping = resolve_project_mapping(logger, source_pairs)
         manifest = discover_sessions(
             project_mapping, args.min_turns, logger, source_pairs,
@@ -2546,6 +2613,16 @@ def main() -> None:
         ),
     )
 
+    p_discover.add_argument(
+        "--layout", choices=("auto", "live", "snapshot"), default="auto",
+        help=(
+            "Force the source store's layout instead of probing for it. "
+            "'live' is <root>/<cwd-key>/*.jsonl; 'snapshot' is "
+            "<root>/<machine>/<cwd-key>/*.jsonl. The probe refuses rather "
+            "than guesses when the tree matches neither."
+        ),
+    )
+
     # archive
     p_archive = subparsers.add_parser(
         "archive", help="Compress and archive sessions"
@@ -2570,6 +2647,16 @@ def main() -> None:
     p_archive.add_argument(
         "--min-content-tokens", type=int, default=0,
         help="As for `discover` (used only by the discovery fallback).",
+    )
+
+    p_archive.add_argument(
+        "--layout", choices=("auto", "live", "snapshot"), default="auto",
+        help=(
+            "Force the source store's layout instead of probing for it. "
+            "'live' is <root>/<cwd-key>/*.jsonl; 'snapshot' is "
+            "<root>/<machine>/<cwd-key>/*.jsonl. The probe refuses rather "
+            "than guesses when the tree matches neither."
+        ),
     )
 
     # enrich
