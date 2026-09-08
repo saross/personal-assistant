@@ -390,3 +390,109 @@ def test_a_key_left_in_the_judge_directory_is_read_but_flagged(tmp_path, capsys)
 
     assert _run(judge_dir, key_dir, out_dir) == 0
     assert "inside the directory the judge reads" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Re-audit item 2 — a key that cannot identify its pairs is not scoreable
+# ---------------------------------------------------------------------------
+
+def _anonymous_pair(pair_id: str, guide_side: str = "A") -> dict:
+    """A legacy-shaped key entry with no identity fields at all."""
+    return {"pair_id": pair_id, "guide_side": guide_side}
+
+
+def test_a_key_without_pair_identities_is_refused(tmp_path, capsys):
+    """Every entry collapsing to "?|?|?" reported p = 1.0 and exited 0.
+
+    Eight judgements became "1 unordered pair", the tallies came out "0/0
+    decided", and the run passed. The mutation this kills: restoring the
+    ``str(entry.get(field, "?"))`` fallback in ``unordered_pair_key``.
+    """
+    pairs = [_anonymous_pair(f"pair{i:02d}") for i in range(8)]
+    judge_dir, key_dir, out_dir = _write_case(tmp_path, pairs, [
+        json.dumps({"pair_id": f"pair{i:02d}", "choice": "A"})
+        for i in range(8)
+    ])
+
+    assert _run(judge_dir, key_dir, out_dir) == 1
+    assert not (out_dir / "judge-analysis.json").exists()
+    assert "do not say which unordered pair" in capsys.readouterr().err
+
+
+def test_a_key_entry_missing_one_identity_field_is_refused(tmp_path):
+    """Two of the three fallback fields is not an identity either."""
+    entry = _pair("pair00", "Z1", 0)
+    del entry["unordered_pair_id"]
+    del entry["guide_condition"]
+    judge_dir, key_dir, out_dir = _write_case(tmp_path, [entry], [
+        json.dumps({"pair_id": "pair00", "choice": "A"}),
+    ])
+
+    assert _run(judge_dir, key_dir, out_dir) == 1
+
+
+def test_a_legacy_key_with_all_three_fields_still_scores(tmp_path):
+    """The fallback must keep working where it can actually identify a pair."""
+    entry = _pair("pair00", "Z1", 0)
+    del entry["unordered_pair_id"]
+    judge_dir, key_dir, out_dir = _write_case(tmp_path, [entry], [
+        json.dumps({"pair_id": "pair00", "choice": "A"}),
+    ])
+
+    assert _run(judge_dir, key_dir, out_dir) == 0
+    assert _summary(out_dir)["n_pairs_judged"] == 1
+
+
+def test_more_than_two_orders_per_pair_is_fatal(tmp_path, capsys):
+    """A pair has two orders; a higher ratio means shared identities.
+
+    The mutation this kills: dropping the MAX_ORDERS_PER_PAIR check, which
+    lets a key whose entries share one identity report tallies computed over
+    the wrong groups.
+    """
+    pairs = [_pair(f"pair{i:02d}", "Z1", i % 2) for i in range(6)]
+    judge_dir, key_dir, out_dir = _write_case(tmp_path, pairs, [
+        json.dumps({"pair_id": "pair00", "choice": "A"}),
+    ])
+
+    assert _run(judge_dir, key_dir, out_dir) == 1
+    assert "orders per pair" in capsys.readouterr().err
+
+
+def test_a_bare_code_fence_is_not_counted_as_a_judgement(tmp_path):
+    """A judge's formatting must not inflate the unusable count.
+
+    The mutation this kills: dropping the fence filter, which counts ``` as an
+    unusable judgement and reports two answers where one was given.
+    """
+    pairs = [_pair("pair00", "Z1", 0)]
+    judge_dir, key_dir, out_dir = _write_case(tmp_path, pairs, [
+        "```json",
+        json.dumps({"pair_id": "pair00", "choice": "A"}),
+        "```",
+    ])
+
+    assert _run(judge_dir, key_dir, out_dir) == 0
+
+    summary = _summary(out_dir)
+    assert summary["n_judgements"] == 1
+    assert summary["n_unusable"] == 0
+
+
+def test_a_lower_case_choice_still_counts(tmp_path):
+    """Judges answer "a" as often as "A"; the normalisation must survive.
+
+    The mutation this kills: dropping ``.upper()`` from the choice
+    normalisation, which turns every lower-case answer into an unusable
+    record and silently halves the evidence.
+    """
+    pairs = [_pair("pair00", "Z1", 0)]
+    judge_dir, key_dir, out_dir = _write_case(tmp_path, pairs, [
+        json.dumps({"pair_id": "pair00", "choice": " a "}),
+    ])
+
+    assert _run(judge_dir, key_dir, out_dir) == 0
+
+    summary = _summary(out_dir)
+    assert summary["n_usable"] == 1
+    assert summary["pairs"] == {"guide": 1, "plain": 0, "tie": 0}

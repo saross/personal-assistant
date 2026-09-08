@@ -69,11 +69,18 @@ STRATUM_BY_PREFIX = {"A": "on-domain", "B": "off-domain"}
 #: an empty string, "either" — is unusable, never a win for either side.
 VALID_CHOICES = ("A", "B")
 
+#: An unordered pair is judged in at most two orders (guide as A, guide as B).
+#: A key implying more than that has entries sharing one identity.
+MAX_ORDERS_PER_PAIR = 2
+
 #: A fenced code block, so a judge that wrapped its JSON in ```json ... ```
 #: is read rather than crashing the run.
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 #: Last resort: the first {...} span in a line of prose.
 _BRACES_RE = re.compile(r"\{.*\}", re.S)
+#: A line that is only a code fence is layout, not an answer: counting it as
+#: an unusable judgement inflates the denominator with the judge's formatting.
+_FENCE_ONLY_RE = re.compile(r"```(?:json)?")
 
 
 @dataclass(frozen=True)
@@ -145,18 +152,32 @@ def parse_judgement(line: str, line_no: int) -> Judgement:
     return Judgement(line_no, pair_id, normalised, confidence, True)
 
 
-def unordered_pair_key(entry: dict) -> str:
+#: The fields the fallback identity is reconstructed from. All three must be
+#: present, or the entry has no identity at all.
+_FALLBACK_IDENTITY_FIELDS = ("contrast", "topic_id", "guide_condition")
+
+
+def unordered_pair_key(entry: dict) -> str | None:
     """Identify the unordered pair an ordered mapping entry belongs to.
 
     The build script records this explicitly; the fallback keeps an older key
     file scoreable by reconstructing the identity from the fields that define
     the content of a pair (its contrast, topic, and guide condition).
+
+    Returns ``None`` when neither is available. The fallback used to fill each
+    missing field with ``"?"``, which gave EVERY entry the same identity
+    ``"?|?|?"`` — eight judgements collapsed into "1 unordered pair", the
+    tallies came out "0/0 decided" with p = 1.0, and the run exited 0. A key
+    that cannot say which pair an entry belongs to cannot be scored at all,
+    and the caller refuses rather than reporting that arithmetic.
     """
     explicit = entry.get("unordered_pair_id")
     if isinstance(explicit, str) and explicit:
         return explicit
-    return "|".join(str(entry.get(field, "?")) for field in
-                    ("contrast", "topic_id", "guide_condition"))
+    values = [entry.get(field) for field in _FALLBACK_IDENTITY_FIELDS]
+    if any(value in (None, "") for value in values):
+        return None
+    return "|".join(str(value) for value in values)
 
 
 def sign_test(n_guide: int, n_plain: int) -> tuple[float, float]:
@@ -406,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
 
     lines = judgments_path.read_text(encoding="utf-8").splitlines()
     judgements = [parse_judgement(line, i)
-                  for i, line in enumerate(lines, 1) if line.strip()]
+                  for i, line in enumerate(lines, 1)
+                  if line.strip() and not _FENCE_ONLY_RE.fullmatch(line.strip())]
     if not judgements:
         print(f"ERROR: {judgments_path} contains no judgements. Nothing was "
               "scored; this is a diagnostic, not a result.", file=sys.stderr)
@@ -416,6 +438,21 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    # A key entry with neither an explicit unordered_pair_id nor all three
+    # fallback fields has no identity. The fallback used to substitute "?" for
+    # each missing field, so every entry collapsed into one group and the run
+    # reported "1 unordered pair", "0/0 decided", p = 1.0 and exit 0.
+    anonymous = [entry.get("pair_id", "<no pair_id>") for entry in pairs
+                 if unordered_pair_key(entry) is None]
+    if anonymous:
+        print(f"ERROR: {len(anonymous)} key entr(y/ies) do not say which "
+              f"unordered pair they belong to: {sorted(anonymous)[:8]}. "
+              "Each needs an `unordered_pair_id`, or all of "
+              f"{list(_FALLBACK_IDENTITY_FIELDS)}. Re-run "
+              "efficacy_build_judge_tasks.py to regenerate the key.",
+              file=sys.stderr)
         return 1
 
     usable = [j for j in judgements if j.usable]
@@ -431,6 +468,16 @@ def main(argv: list[str] | None = None) -> int:
     topics = sorted({str(entry.get("topic_id", "?")) for entry in pairs})
     contrasts = sorted({str(entry.get("contrast", "?")) for entry in pairs})
     orders_per_pair = round(len(pairs) / max(len(all_keys), 1), 2)
+    if orders_per_pair > MAX_ORDERS_PER_PAIR:
+        # An unordered pair has at most two orders (guide as A, guide as B).
+        # A higher ratio means several distinct pairs share one identity, so
+        # every tally below would be over the wrong groups.
+        print(f"ERROR: the key has {len(pairs)} entries for "
+              f"{len(all_keys)} unordered pair(s) — {orders_per_pair} orders "
+              f"per pair, and a pair has at most {MAX_ORDERS_PER_PAIR}. The "
+              "identities in this key do not distinguish its pairs.",
+              file=sys.stderr)
+        return 1
 
     guide_conf = Counter(j.confidence for j in usable
                          if j.choice == mapping[j.pair_id].get("guide_side"))
