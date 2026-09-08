@@ -52,7 +52,7 @@ one on the 2026-09-07/08 code"), suite 1,250:
 | Verifier: case asymmetry, zero-width characters, `%2F` in remote, trimmed field list crashes | fixed |
 | Hook: linked worktree's git root is the worktree, not the repository (Astra, #113) | fixed (remote repository name, common-dir fallback) |
 | Tests: no entry-point coverage; commit pathspec untested on commit; 5 verifier fixtures testing the wrong rule; `attempt()` untested; watcher loop untested | fixed (67 tests in the five files, from 38) |
-| `check-credentials.py` has no tests | **round 2** (branch `claude/audit-hook-tests`; Lens B supplied the case list) |
+| `check-credentials.py` has no tests | fixed in PR #115 (b0f3269): the case list, the wiring, and the bash divergences, each verified by probe |
 | Tripwire never examines local `main` when `origin/main` resolves | deferred (the token pushes to origin; a local-only Codex commit is not the threat) |
 | Archiver sort key mixes `Date:` and `sent` formats | deferred (deterministic; all live headers are ISO) |
 
@@ -69,8 +69,8 @@ critical and every medium in Claude-owned code are fixed in 06225a0 and
 | 2, 3 | Hook and watcher print the unsanitised `Project:` header on the "Other projects" line (CONFIRMED: raw ANSI reached hook stdout) | fixed in 5798dc9: `route()` keys the counts by `safe_value` |
 | 4, 5 | `safe_value` stripped brackets only; `Lane: fable; project: x` forged a second field, and the test pinned the forged output as correct | fixed in 5798dc9: a value is a slug (`[A-Za-z0-9._-]`, ≤60) or `invalid`; test rewritten |
 | 6 | A printable filename with brackets forged a bracket group on the listing line | fixed in 5798dc9: names must match `[A-Za-z0-9._-]+\.md` (all 97 live names conform) |
-| 7 | Checker misses `NAME= value` (bash runs the secret as a command with NAME empty) | **round 2** (branch `claude/audit-hook-tests`, with the checker's first tests) |
-| 8 | Checker's `quoted` guard turned `TOKEN='abc' # comment` from a true positive into a silent false negative | **round 2** (same branch) |
+| 7 | Checker misses `NAME= value` (bash runs the secret as a command with NAME empty) | fixed in PR #115 (b0f3269) |
+| 8 | Checker's `quoted` guard turned `TOKEN='abc' # comment` from a true positive into a silent false negative | fixed in PR #115 (b0f3269) |
 | 9 | Verifier coverage-guard test's `else: pass` — the guard was deletable with the test green (CONFIRMED by mutation) | fixed in 5798dc9: removes every case for one rule and requires the refusal |
 | 10 | Tripwire `SINCE` had no zone; a UTC or US host narrowed the window by up to 17 h | fixed in 5798dc9: `+10:00` pinned; boundary test across three zones |
 | 11 | A trailing `%2F` in an admitted remote defeated the segment count | fixed in 5798dc9: slash counts compared |
@@ -158,9 +158,9 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H2 | `hooks/session-start-code-state.py:128-136` — `commit_at_start` overwritten on resume/compact (same session id); 37 of 42 multi-write sessions recorded a changed commit. | CONFIRMED from the sidecar log | fixed in 300ee10 (first write wins) |
 | H3 | `hooks/session-start-retrieval.py:644-667,821-862` — the legacy four-bucket path surfaces `verified: "false"` memories as fact; 738 such records, 401 in permanent categories; the digest path filters, the legacy path does not. | CONFIRMED (grep: `verified` read nowhere in retrieval) | fixed in 300ee10 (apply the stated anti-confabulation rule on the legacy path) |
 | H4 | `scripts/_command_markers.py:61-62` — `/forget` and `/update` markers no longer match their command headers, so those exchanges (which contain the deleted/superseded memory text) are re-extracted. | CONFIRMED against `commands/*.md` | fixed in 300ee10 (fix markers; derive the test fixture from `commands/*.md`) |
-| H5 (B) | `extraction-hook.py:1021,1145` — the persistence path is untested: truncating the store on every session close, or never writing, passes 1,208 tests; `tests/test_jsonl_flock.py` re-implements the append instead of importing it. | CONFIRMED (mutations survived) | **round 2** (branch `claude/audit-hook-tests`) (test `append_memories` and a successful `main()` end to end, asserting bytes appended) |
-| H6 (B) | `session-start-accountability.py:265` — `build_banner()` can return a constant; the counts can be swapped; slot delimiters can vanish; all green. | CONFIRMED | **round 2** (branch `claude/audit-hook-tests`) (banner tests) |
-| H7 (B) | `session-start-retrieval.py:1262` — on this machine the digest path is live and the tests assert only scaffolding; the digest can surface zero memories with tests green. The autouse fixture forces all machine flags off, so the suite tests the path this machine no longer takes. | CONFIRMED | **round 2** (branch `claude/audit-hook-tests`) |
+| H5 (B) | `extraction-hook.py:1021,1145` — the persistence path is untested: truncating the store on every session close, or never writing, passes 1,208 tests; `tests/test_jsonl_flock.py` re-implements the append instead of importing it. | CONFIRMED (mutations survived) | fixed in PR #115 (squash-merged b0f3269) (test `append_memories` and a successful `main()` end to end, asserting bytes appended) |
+| H6 (B) | `session-start-accountability.py:265` — `build_banner()` can return a constant; the counts can be swapped; slot delimiters can vanish; all green. | CONFIRMED | fixed in PR #115 (squash-merged b0f3269) (banner tests) |
+| H7 (B) | `session-start-retrieval.py:1262` — on this machine the digest path is live and the tests assert only scaffolding; the digest can surface zero memories with tests green. The autouse fixture forces all machine flags off, so the suite tests the path this machine no longer takes. | CONFIRMED | fixed in PR #115 (squash-merged b0f3269) |
 
 ### Medium (hooks)
 
@@ -178,9 +178,9 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H17 | Locale-dependent `read_text()` in five places; no top-level guard in retrieval `main()` | fixed in 300ee10 |
 | H18 | Vocabulary updated inside `format_memories`, before the append that may fail | fixed in 300ee10 (move after append) |
 | H19 | Anchor verification can spawn up to 72 git subprocesses per unresolved anchor inside a 30 s hook | deferred (measure first) |
-| H20 (B) | No output bound pinned in the retrieval suite; the one cap test uses exactly the cap | **round 2** (branch `claude/audit-hook-tests`) |
-| H21 (B) | Flock guards in extraction removable with tests green; no double-firing test | **round 2** (branch `claude/audit-hook-tests`) (test `main()` twice) |
-| H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | **round 2** (branch `claude/audit-hook-tests`) (filter; fixture from a real transcript shape) |
+| H20 (B) | No output bound pinned in the retrieval suite; the one cap test uses exactly the cap | fixed in PR #115 (squash-merged b0f3269) |
+| H21 (B) | Flock guards in extraction removable with tests green; no double-firing test | fixed in PR #115 (squash-merged b0f3269) (test `main()` twice) |
+| H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | fixed in PR #115 (squash-merged b0f3269) (filter; fixture from a real transcript shape) |
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
 | H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
@@ -415,8 +415,10 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     only at a word start, so `A=#c>z` lost its redirect finding) and a
     malformed content BLOCK still crashes the hook — plus backslash parity
     in the lookbehind and the sibling blank-class assumption in the
-    whitespace check. Closing round running; the coordinator reviews that
-    diff before the squash merge. Design note worth keeping: the first two cursor fixes each
+    whitespace check. Closing round done (ef3fa0d, 6e86f91; the
+    coordinator reviewed the diff). **Squash-merged as b0f3269**; main
+    suite 1,555; no private row on `main`. The branch on GitHub still
+    carries the six commits (D6). Design note worth keeping: the first two cursor fixes each
     satisfied one invariant by breaking another because they stored two
     facts (position, pending skip) in one pointer; only separating them
     satisfies all four. Merge strategy: squash, so the six commits
@@ -547,6 +549,16 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     the PreCompact and SessionEnd hook commands in `~/.claude/settings.json`
     on both machines must follow the new template, and `~/cc-archives`
     must be mounted when the sessions sync runs.
+    Fifth pass: **do not merge** — four criticals in the gate semantics
+    again: a quarantine gate lowered by the next run that processes any
+    unrelated row; an outage overwriting the standing reason and any later
+    connected run (even contended) clearing both; every degraded outcome
+    silent, including a cursor-held stall; an indexer refusal stranded
+    forever by a `.gz` swap. Sixth round running, briefed as a state
+    machine: per script, independent problems (fault, correlated,
+    quarantine, degraded, outage streak, refusals), each with its own
+    raise and lower evidence, a rendered gate derived from them, and a
+    transition-matrix test.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
