@@ -1066,3 +1066,45 @@ class TestSurfacingInstrumentation:
         ):
             _run(memory_mcp.semantic_search(query="x"))
         mock_log.assert_not_called()
+
+
+# -------------------------------------------------------------------------
+# Audit R7 (2026-09-08): semantic search declares what it cannot see
+# -------------------------------------------------------------------------
+
+class TestSemanticCoverageNote:
+    """Un-embedded memories are excluded outright, so say so."""
+
+    @staticmethod
+    def _semantic_with_coverage(missing: int, total: int):
+        """A try_semantic stand-in that fills the coverage dict it is given."""
+
+        def _fake(**kwargs):
+            kwargs["stats"]["unembedded_active"] = missing
+            kwargs["stats"]["total_active"] = total
+            return [SAMPLE_RESULTS[0]]
+
+        return _fake
+
+    def test_note_reports_the_uncovered_count(self) -> None:
+        """Kills: dropping the note (a caller cannot tell empty from unindexed)."""
+        with patch.object(
+            memory_mcp.fetch_memories, "try_semantic",
+            self._semantic_with_coverage(4, 10),
+        ):
+            data = json.loads(_run(memory_mcp.semantic_search(query="canopy")))
+        assert "4 of 10 active memories have no embedding" in data["note"]
+
+    def test_full_coverage_adds_no_note(self) -> None:
+        """No gap, no noise."""
+        with patch.object(
+            memory_mcp.fetch_memories, "try_semantic",
+            self._semantic_with_coverage(0, 10),
+        ):
+            data = json.loads(_run(memory_mcp.semantic_search(query="canopy")))
+        assert "note" not in data
+
+    def test_tool_description_states_the_limitation(self) -> None:
+        """The contract is in the tool description, not only the envelope."""
+        tools = {t.name: t for t in _run(memory_mcp.mcp.list_tools())}
+        assert "embedding" in tools["semantic_search"].description

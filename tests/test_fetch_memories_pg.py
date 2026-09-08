@@ -283,6 +283,45 @@ class TestTrySemantic:
         )
         assert [r["id"] for r in results] == ["wanted"]
 
+    def test_reports_how_many_active_rows_lack_an_embedding(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Audit R7: the caller must be able to say what was not searched.
+
+        Kills: deleting the coverage COUNT, or counting over the base table.
+        """
+        rows = self._embedded_corpus() + [
+            _row("forgotten-unembedded", embedding=None, is_active=False),
+        ]
+        _install(monkeypatch, rows)
+        coverage: dict[str, Any] = {}
+        fetch_memories.try_semantic("canopy", stats=coverage)
+        # The forgotten row is outside active_memories, so it is not counted.
+        assert coverage == {"unembedded_active": 1, "total_active": 3}
+
+    def test_coverage_is_optional(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Callers that do not ask for coverage still get their results."""
+        _install(monkeypatch, self._embedded_corpus())
+        assert fetch_memories.try_semantic("canopy") is not None
+
+    def test_main_reports_the_coverage_gap_on_stderr(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The CLI states the gap rather than implying full coverage."""
+        _install(monkeypatch, self._embedded_corpus())
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy"],
+        )
+        monkeypatch.setattr(
+            fetch_memories, "_log_invocation", lambda args, results: None,
+        )
+        fetch_memories.main()
+        err = capsys.readouterr().err
+        assert "1 of 3 active memories have no embedding" in err
+
 
 # ---------------------------------------------------------------------------
 # Schema-version guard at both call sites (lens B, RT14)

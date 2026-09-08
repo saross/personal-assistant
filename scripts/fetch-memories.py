@@ -339,6 +339,7 @@ def try_semantic(
     category: str | None = None,
     tags: list[str] | None = None,
     limit: int = MAX_RESULTS,
+    stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """
     Semantic similarity search via pgvector cosine distance.
@@ -347,11 +348,21 @@ def try_semantic(
     the closest memories by cosine similarity. Returns None if pgvector,
     Ollama, or PostgreSQL is unavailable (caller falls back to FTS).
 
+    **Coverage caveat (audit R7).** The query filters on
+    ``embedding IS NOT NULL``, so a memory written since the last
+    ``backfill-embeddings.py`` run is not ranked last — it is not searched
+    at all, and nothing in the result said so. The number of active rows
+    in that state is now counted on the same connection and reported back
+    through *stats*, so every caller can tell the user what was skipped.
+
     Args:
         query: Free-text search query.
         category: Optional category filter (exact match).
         tags: Optional tag filter (array overlap).
         limit: Maximum results.
+        stats: Optional dict the function fills in with coverage numbers:
+            ``unembedded_active`` (rows excluded for want of an embedding)
+            and ``total_active``. Left untouched when the query fails.
 
     Returns:
         List of memory dicts with an added ``similarity`` field,
@@ -425,6 +436,18 @@ def try_semantic(
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+
+            # Coverage count on the SAME connection (audit R7), so the
+            # figure describes the corpus the search just ran against
+            # rather than a separately-timed snapshot.
+            if stats is not None:
+                cur.execute(
+                    "SELECT COUNT(*) FILTER (WHERE embedding IS NULL), "
+                    "COUNT(*) FROM active_memories"
+                )
+                counted = cur.fetchone()
+                stats["unembedded_active"] = int(counted[0])
+                stats["total_active"] = int(counted[1])
 
         results: list[dict[str, Any]] = []
         for row in rows:
@@ -795,12 +818,26 @@ def main() -> None:
 
     # Semantic search path (pgvector cosine similarity)
     if args.semantic:
+        coverage: dict[str, Any] = {}
         results = try_semantic(
             query=args.semantic,
             category=args.category,
             tags=args.tags,
             limit=args.limit,
+            stats=coverage,
         )
+        # Say what the search could not see (audit R7). Un-embedded rows
+        # are excluded outright, not ranked last, so a silent count of
+        # zero results can mean "nothing matched" or "nothing indexed".
+        skipped = coverage.get("unembedded_active")
+        if skipped:
+            print(
+                f"[fetch-memories] NOTE: {skipped} of "
+                f"{coverage.get('total_active', '?')} active memories have "
+                "no embedding and were NOT searched. Run "
+                "scripts/backfill-embeddings.py to close the gap.",
+                file=sys.stderr,
+            )
         if results is None:
             # Semantic unavailable — fall through to FTS
             print(

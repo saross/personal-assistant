@@ -199,6 +199,25 @@ def _envelope(
     )
 
 
+def _coverage_note(coverage: dict[str, Any]) -> str | None:
+    """Describe what a semantic search could not see, or ``None`` if it saw all.
+
+    Semantic search filters on ``embedding IS NOT NULL``, so un-embedded
+    memories are excluded outright rather than ranked last (audit R7). A
+    caller that is not told this cannot distinguish "nothing matched" from
+    "nothing indexed yet".
+    """
+    skipped = coverage.get("unembedded_active")
+    if not skipped:
+        return None
+    total = coverage.get("total_active", "?")
+    return (
+        f"Semantic search covers embedded memories only: {skipped} of "
+        f"{total} active memories have no embedding and were NOT searched. "
+        "Try search_memories (full-text) as well."
+    )
+
+
 def _error_envelope(message: str) -> str:
     """Build a standardised error response."""
     return json.dumps(
@@ -343,6 +362,12 @@ async def semantic_search(
     Generates an embedding for the query via Ollama, then finds the
     closest memories by cosine similarity. Requires Ollama and pgvector
     to be available; returns an error otherwise (FTS tools still work).
+
+    COVERAGE: only memories that already carry an embedding are searched.
+    A memory written since the last embedding backfill is not ranked last
+    — it is invisible to this tool. The envelope's `note` reports how many
+    active memories were skipped for that reason; when it is non-zero, use
+    search_memories (full-text) as well before concluding nothing matched.
     """
     tag_list = tags if tags else None
 
@@ -353,11 +378,15 @@ async def semantic_search(
     # truncate to the requested limit.
     fetch_limit = 50 if min_similarity > 0 else limit
 
+    # ``coverage`` is filled in by try_semantic on the same connection the
+    # search used, so the note below describes the corpus actually searched.
+    coverage: dict[str, Any] = {}
     results = fetch_memories.try_semantic(
         query=query,
         category=category,
         tags=tag_list,
         limit=fetch_limit,
+        stats=coverage,
     )
 
     if results is None:
@@ -375,7 +404,7 @@ async def semantic_search(
     results = results[:limit]
 
     _log_surfaced(results)
-    return _envelope(results, source="postgres")
+    return _envelope(results, source="postgres", note=_coverage_note(coverage))
 
 
 # -------------------------------------------------------------------------
