@@ -1657,3 +1657,89 @@ class TestParseEnvCommentBoundary:
         assert not any("byte-order mark" in f for f in cc.findings), cc.findings
         # The stray character still surfaces, as a malformed name on line 2.
         assert any(f.startswith("line 2:") for f in cc.findings)
+
+
+class TestParseEnvBlankClasses:
+    """Audit round five M-1 and L-4: what bash counts as a word blank.
+
+    Python's ``\\s`` is wider than bash's notion of a blank. Using it to find
+    where a comment starts cut the value short at characters bash keeps
+    inside the word, hiding the operator that was still going to run.
+    """
+
+    @pytest.mark.parametrize(
+        "blank,name",
+        [("\v", "vertical tab"), ("\f", "form feed"), (" ", "NBSP")],
+    )
+    def test_a_non_blank_before_a_hash_does_not_start_a_comment(
+        self, tmp_path, blank, name
+    ):
+        """Kills ``_COMMENT_START`` -> ``r"(?:^|\\s)#"``.
+
+        Verified against bash 5.2.37 for all three: ``A=abc<X># > z`` keeps
+        the '#' inside the word — the value becomes ``abc<X>#`` — and the
+        ``> z`` STILL redirects, creating the file. Treating <X> as a blank
+        cut the scan at the '#' and lost the '>' finding, which is the one
+        that destroys something.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake{blank}# > target\n"))
+        assert any(
+            "contains > and is not quoted" in f for f in cc.findings
+        ), f"{name} was treated as a word blank: {cc.findings}"
+
+    @pytest.mark.parametrize("blank", [" ", "\t"])
+    def test_a_real_blank_before_a_hash_still_starts_a_comment(
+        self, tmp_path, blank
+    ):
+        """Kills narrowing the class past what bash actually treats as blank.
+
+        Space and tab are the two, and both must still be recognised or the
+        trailing-comment finding stops firing on the common shape.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake{blank}# x & y\n"))
+        assert len(cc.findings) == 1
+        assert "has a '#' in its value" in cc.findings[0]
+
+    def test_an_escaped_space_is_not_a_comment(self, tmp_path):
+        """Kills dropping the ``(?<!\\\\)`` lookbehind (audit round five L-4).
+
+        Verified against bash 5.2.37: ``A=a\\ #b`` assigns ``a #b`` — the
+        escaped space keeps the '#' inside the word and no comment starts.
+        Reporting "a trailing comment is dropped by shell sourcing" was a
+        false statement about what bash does with that line.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=a\\ #b\n"))
+        assert not any("'#' in its value" in f for f in cc.findings), cc.findings
+
+    def test_an_escaped_space_is_reported_for_the_backslash(self, tmp_path):
+        """Kills dropping the unquoted-backslash finding.
+
+        The line IS still a divergence, just not the one that used to be
+        reported: bash removes the backslash and assigns ``a #b``, while
+        this parser and the Codex launcher keep it. Silence here would
+        trade a wrong finding for no finding.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN=a\\ #b\n"))
+        assert len(cc.findings) == 1
+        assert "contains a backslash and is not quoted" in cc.findings[0]
+        assert env["TOKEN"] == "a\\ #b"  # what bash would NOT assign
+
+    def test_a_trailing_backslash_keeps_its_own_finding(self, tmp_path):
+        """Kills widening the new check to swallow the line-continuation case.
+
+        A trailing backslash is a different failure — it eats the NEXT line
+        — and has its own message; reporting both would bury it.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=abcfake\\\nNEXT_VAR=other\n"))
+        assert len(cc.findings) == 1
+        assert "ends with a backslash" in cc.findings[0]
+
+    def test_a_quoted_backslash_is_not_flagged(self, tmp_path):
+        """Kills applying the backslash check to quoted values.
+
+        Inside single quotes the backslash is literal on both sides, which
+        is exactly what the finding's advice tells the operator to do.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN='a\\ #b'\n"))
+        assert cc.findings == []
+        assert env["TOKEN"] == "a\\ #b"

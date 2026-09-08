@@ -35,7 +35,11 @@ Three passes, cheapest first:
    unset.
 
    Pass 1 finally reports the shell metacharacters, because a credential
-   file is sourced by every session hook: an unquoted ``&``, ``;``, ``|``,
+   file is sourced by every session hook. What counts as "unquoted" is
+   judged the way bash judges it — a comment starts at a ``#`` following an
+   unescaped SPACE OR TAB, not at any character Python calls whitespace —
+   so a value is never cut short at a ``#`` bash keeps inside the word. An
+   unquoted ``&``, ``;``, ``|``,
    ``<`` or ``>`` ends the assignment and runs or redirects the rest
    (``A=https://x?a=1&b=2`` leaves A UNSET; ``A=a>b`` truncates a file named
    ``b``), and a backtick or ``$(`` anywhere outside a fully single-quoted
@@ -92,10 +96,15 @@ VALID_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _LINE_SPLIT = re.compile(r"([^\r\n]*)(\r\n|\r|\n|$)")
 # A leading UTF-8 byte-order mark. bash keeps it; ``utf-8-sig`` drops it.
 _UTF8_BOM = b"\xef\xbb\xbf"
-# Where an unquoted trailing comment begins: a '#' at the start of the value
-# or after whitespace of any kind. bash treats '#' as ordinary text mid-word,
-# so ``A=x#y`` assigns ``x#y`` and is not a comment at all.
-_COMMENT_START = re.compile(r"(?:^|\s)#")
+# Where an unquoted trailing comment begins: a '#' at the start of the value,
+# or after an UNESCAPED space or tab. Deliberately NOT ``\s`` (audit round
+# five M-1): Python's ``\s`` also matches \v, \f and NBSP, which bash does not
+# treat as word blanks — ``A=abc\v# > z`` keeps the '#' inside the word and
+# STILL redirects, so cutting the scan there hid the '>'. The negative
+# lookbehind covers the other half (L-4): in ``A=a\ #b`` the space is escaped,
+# so bash assigns ``a #b`` and there is no comment. bash also treats '#' as
+# ordinary text mid-word, so ``A=x#y`` assigns ``x#y``.
+_COMMENT_START = re.compile(r"(?:^|(?<!\\)[ \t])#")
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
 GITHUB_API = "https://api.github.com"
@@ -247,11 +256,11 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             # Scan the value with any trailing comment removed: bash stops
             # reading at a '#' that starts a word, so an '&' after that cannot
             # run and reporting it was a false positive (audit round three
-            # L1). ``_COMMENT_START`` matches the '#' only when it begins a
-            # word — ANY whitespace before it, not just a space (audit round
-            # four L-1: a tab was a false positive with the wrong message) —
-            # so ``A=x#y>z``, where bash assigns ``x#y`` and still redirects,
-            # keeps its '>' finding. The comment itself is reported below.
+            # L1). ``_COMMENT_START`` matches the '#' only where bash would —
+            # after an unescaped space or tab, or at the start of the value —
+            # so ``A=x#y>z`` and ``A=abc\v#>z`` both keep their '>' finding,
+            # bash having assigned ``x#y`` / ``abc\v#`` and redirected anyway.
+            # The comment itself is reported below.
             comment = _COMMENT_START.search(raw_value)
             code = raw_value if comment is None else raw_value[: comment.start()]
             operators = sorted({char for char in "&;|<>" if char in code})
@@ -274,6 +283,21 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 f"line {lineno}: {name}'s value contains '$' outside single quotes "
                 "— bash expands it (to nothing, for an unset name) while the Codex "
                 "launcher keeps it literally. Single-quote the value."
+            )
+        if not quoted and "\\" in raw_value[:-1]:
+            # An escape, not a comment: verified against bash 5.2.37,
+            # ``A=a\ #b`` assigns ``a #b`` — the backslash is consumed and the
+            # escaped space keeps the '#' inside the word. This parser and the
+            # Codex launcher both KEEP the backslash, so the two hand a process
+            # different secrets. Reported for the retained backslash rather
+            # than as a dropped comment, which is what it used to say and was
+            # false (audit round five L-4). A TRAILING backslash is a line
+            # continuation and has its own finding below.
+            note(
+                f"line {lineno}: {name}'s value contains a backslash and is not "
+                "quoted — bash removes it and keeps the next character literally, "
+                "while the Codex launcher keeps the backslash itself. Single-quote "
+                "the value."
             )
         if raw_value.endswith("\\"):
             # Verified against bash 5.2: ``A=x\`` followed by ``NEXT=y`` assigns
