@@ -9,6 +9,9 @@ respectively (2026-05-19).
 """
 
 import json
+import subprocess
+import sys
+import textwrap
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1780,3 +1783,64 @@ class TestTranscriptShapeFidelity:
 
         assert cursor_file.stat().st_mtime_ns == before
         assert json.loads(cursor_file.read_text()) == {"sess-N": "uuid-A"}
+
+
+class TestImportSideEffects:
+    """Audit round two M7: importing the hook must not touch the live log."""
+
+    def test_import_under_pytest_does_not_open_the_live_log(self, tmp_path):
+        """Kills hoisting ``logging.basicConfig(filename=LOG_FILE)`` out of the
+        ``"pytest" not in sys.modules`` guard.
+
+        The guard used to cover only ``LOG_DIR.mkdir``, so a test import
+        still handed ``basicConfig`` the operator's real
+        ``data/logs/extraction.log``. It was inert only because pytest's
+        logging plugin had already installed a root handler, which makes
+        ``basicConfig`` a no-op — an accident, not a guarantee.
+
+        Run in a subprocess with ``HOME`` pinned to a tmp directory and a
+        stand-in ``pytest`` module in ``sys.modules``, and with the log
+        directory pre-created so nothing else can stop the file being
+        opened. If the file exists afterwards, the guard has gone.
+        """
+        fake_home = tmp_path / "home"
+        log_dir = fake_home / "personal-assistant" / "logs"
+        log_dir.mkdir(parents=True)
+
+        program = textwrap.dedent(
+            """
+            import json, logging, sys, types
+            # Stand in for pytest so the hook takes its under-test branch.
+            sys.modules.setdefault("pytest", types.ModuleType("pytest"))
+            sys.path.insert(0, sys.argv[1])
+            import importlib
+            hook = importlib.import_module("extraction-hook")
+            handlers = [
+                getattr(h, "baseFilename", None)
+                for h in logging.getLogger().handlers
+            ]
+            print(json.dumps({
+                "log_file": str(hook.LOG_FILE),
+                "file_handlers": [h for h in handlers if h],
+            }))
+            """
+        )
+        env = dict(os.environ, HOME=str(fake_home))
+        env.pop("ANTHROPIC_API_KEY", None)
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(Path(eh.__file__).parent)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+
+        assert report["log_file"] == str(log_dir / "extraction.log")
+        assert not (log_dir / "extraction.log").exists(), (
+            "importing the hook under pytest opened the live extraction log"
+        )
+        assert report["file_handlers"] == [], (
+            f"a file handler was installed at import: {report['file_handlers']}"
+        )

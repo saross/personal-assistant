@@ -99,11 +99,21 @@ def load_env() -> None:
 try:
     if __name__ == "__main__" or "pytest" not in sys.modules:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(LOG_FILE),
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+        logging.basicConfig(
+            filename=str(LOG_FILE),
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+        )
+    else:
+        # Under pytest the file handler is deliberately NOT opened (audit
+        # round two M7). The guard above covered only the mkdir, so importing
+        # this module from a test still handed ``basicConfig`` the live
+        # ``data/logs/extraction.log`` path. That was inert only by accident:
+        # pytest's logging plugin has already put a handler on the root
+        # logger, which makes ``basicConfig`` a no-op. Run the suite with
+        # ``-p no:logging`` and the test process would open — and append to —
+        # the operator's real extraction log.
+        logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 except OSError:
     # ``logs`` is a symlink into the data submodule; on a fresh clone it
     # dangles and mkdir raises FileExistsError. A hook must not die at

@@ -1706,7 +1706,25 @@ class TestDigestModeFlag:
 
 
 class TestDigestModeOutput:
-    """End-to-end main() behaviour when the digest flag is ON."""
+    """End-to-end main() behaviour when the digest flag is ON.
+
+    Every test here drives ``main()``, so it must neutralise EVERY path the
+    hook reads or writes. Audit round two M7: these three patched
+    ``SCRATCHPAD_FILE`` but not ``SCRATCHPADS_DIR``, ``FOCUS_FILE``, or
+    ``surfacing_log.DEFAULT_LOG_PATH``, so a run read the operator's real
+    ``data/scratchpads/<cwd-name>.md`` and could append to the repository's
+    real ``data/logs/surfaced.log``. It passed only because no scratchpad
+    happened to be named after the fixture's cwd.
+    """
+
+    @staticmethod
+    def _isolate(tmp_path, monkeypatch) -> None:
+        """Point every remaining live path at *tmp_path*."""
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", tmp_path / "no-scratchpads")
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", tmp_path / "no-FOCUS.md")
+        monkeypatch.setattr(
+            retrieval.surfacing_log, "DEFAULT_LOG_PATH", tmp_path / "surfaced.log"
+        )
 
     def test_emits_digest_not_buckets(self, tmp_path, monkeypatch, capsys):
         memories_file = tmp_path / "memories.jsonl"
@@ -1717,6 +1735,7 @@ class TestDigestModeOutput:
         )
         monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(retrieval, "DIGEST_LOG", tmp_path / "digest.log")
         monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 
@@ -1746,6 +1765,7 @@ class TestDigestModeOutput:
         log_path = tmp_path / "logs" / "digest.log"
         monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(retrieval, "DIGEST_LOG", log_path)
         monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 
@@ -1778,6 +1798,7 @@ class TestDigestModeOutput:
         blocker.write_text("not a dir")
         monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(retrieval, "DIGEST_LOG", blocker / "sub" / "digest.log")
         monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 
@@ -2335,3 +2356,47 @@ class TestRetrievalOutputBounds:
             f"{len(result)} returned from {len(memories)} candidates against a "
             f"{retrieval.MAX_CONSTRAINTS} cap"
         )
+
+
+class TestDigestModeReadsTheScratchpadPaths:
+    """Audit round two M7: prove the paths a main() test must neutralise.
+
+    ``TestDigestModeOutput`` patched ``SCRATCHPAD_FILE`` alone, which left
+    ``SCRATCHPADS_DIR`` pointed at the operator's real
+    ``data/scratchpads/``. These tests show both paths are genuinely read in
+    digest mode, so leaving either unpatched reads a live file.
+    """
+
+    def test_the_project_scratchpad_for_the_cwd_is_injected(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills dropping the project-scratchpad section from digest mode.
+
+        It also demonstrates the M7 hazard: the file is keyed on the
+        basename of the session's cwd, so an unpatched ``SCRATCHPADS_DIR``
+        reads whatever the operator happens to have under that name.
+        """
+        records = [_digest_record("v1", "A verified entry for the digest.")]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        (scratchpads / "inscriptions.md").write_text(
+            "PROJECT SCRATCHPAD MARKER\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+
+        out = _run_main_capture(monkeypatch, capsys)
+        assert "PROJECT SCRATCHPAD MARKER" in out
+        assert "# Project Scratchpad (inscriptions)" in out
+
+    def test_the_global_scratchpad_is_injected(self, tmp_path, monkeypatch, capsys):
+        """Kills dropping the global scratchpad section from digest mode."""
+        records = [_digest_record("v1", "A verified entry for the digest.")]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        scratchpad = tmp_path / "scratchpad.md"
+        scratchpad.write_text("GLOBAL SCRATCHPAD MARKER\n", encoding="utf-8")
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", scratchpad)
+
+        out = _run_main_capture(monkeypatch, capsys)
+        assert "GLOBAL SCRATCHPAD MARKER" in out
+        assert "# Scratchpad" in out
