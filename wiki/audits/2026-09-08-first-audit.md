@@ -728,9 +728,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     detection; the post-boot grace is documented but inert; a symlinked
     or absent archive root silently switches off the hook-gate liveness
     check; one pre-existing unmarked test connects to the live database
-    on a plain run. Eleventh round running. First session after merge
-    will report all three gates as never written until each script has
-    run once.
+    on a plain run. Eleventh round done (d068593–4d56a52; suite 2,121 on
+    the merged branch): one parser for the quarantine file shared by the
+    gate, the writer, and the health report; cursor types normalised at
+    read; the post-boot grace made real; symlinked and absent roots
+    handled; the live-database test marked integration with a structural
+    guard; five more mutations killed. Eleventh pass running, asked to
+    weigh what remains as merge-blocking versus follow-up. First session
+    after merge will report all three gates as never written until each
+    script has run once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
