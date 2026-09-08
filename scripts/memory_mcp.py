@@ -9,6 +9,12 @@ fetch-memories query engine and makes it available to any Claude instance
 Read-only. All tools go through the ``active_memories`` PostgreSQL view
 (decay rules applied) with JSONL fallback for offline scenarios.
 
+Every tool that returns memory content logs the ids it served to
+``data/logs/surfaced.log`` under ``path=mcp`` (audit R5, 2026-09-08), so
+MCP retrieval counts towards the earned-utility signal alongside the
+digest, the CLI depth-fetch, and ``/recall``. Logging is best-effort and
+never alters what a tool returns.
+
 Transport: stdio (default). Run directly:
 
     venv/bin/python3 scripts/memory_mcp.py
@@ -72,23 +78,62 @@ _ss_spec.loader.exec_module(search_sessions_mod)
 DB_NAME = "claude_memories"
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
+#: Connection bounds (audit R9). An MCP server has no operator watching it:
+#: an unbounded connect or a runaway query would leave the client waiting
+#: forever with no way to interrupt. Mirrors search-sessions.py.
+CONNECT_TIMEOUT_SECONDS = 5
+STATEMENT_TIMEOUT_MS = 30_000
+
 # Schema-version guard (audit IC5 / B-X1). Imported here so MCP tools
 # can call ``assert_schema_version`` on every connection they open.
 sys.path.insert(0, str(SCRIPT_DIR))
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+import surfacing_log  # noqa: E402  (item 16 earned-utility instrumentation)
+
+#: The ``path=`` label every MCP tool logs under. Distinct from ``fetch``
+#: (the local CLI depth-fetch) so the aggregator can tell a memory served to
+#: another Claude instance from one served here; both count as *active*
+#: retrieval in ``surfacing_stats.ACTIVE_PATHS`` (audit R5, 2026-09-08).
+SURFACING_PATH = "mcp"
+
+
+def _log_surfaced(results: list[dict[str, Any]] | None) -> None:
+    """Record which memory ids this call served (best-effort; never raises).
+
+    Until audit R5 the six MCP tools were the one retrieval surface writing
+    nothing to ``surfaced.log``, so every memory served to Claude Desktop or
+    claude.ai was invisible to the earned-utility signal that a future
+    archival decision rests on. The destination resolves inside
+    ``surfacing_log.log_surfaced`` (dormant under pytest, audit S22), so
+    there is nothing to inject here.
+    """
+    surfacing_log.log_surfaced(results, SURFACING_PATH)
 
 
 # -------------------------------------------------------------------------
 # PostgreSQL helpers (only needed for tools not covered by fetch-memories)
 # -------------------------------------------------------------------------
 
+#: What a client is told when the database is unreachable. The driver's own
+#: message names the socket path, the host, and the database (audit R18):
+#: detail an MCP client -- which may be another machine's Claude -- has no
+#: use for and no business seeing. The full text goes to the server log on
+#: stderr, where the operator reads it.
+GENERIC_DB_ERROR = "PostgreSQL unavailable (see the MCP server log for detail)"
+
+#: The same posture for a query that fails once connected.
+GENERIC_QUERY_ERROR = "Query failed (see the MCP server log for detail)"
+
+
 def _pg_connect() -> tuple[Any | None, str | None]:
     """
     Open a fresh PostgreSQL connection.
 
-    Returns (connection, None) on success, (None, error_message) on
-    failure. The error message is propagated to the MCP client so the
-    caller can see *why* the connection failed (not just that it did).
+    Returns (connection, None) on success, (None, message) on failure. The
+    message is deliberately generic: the driver's text crosses a process
+    boundary to an arbitrary client, so it is logged here and summarised
+    there. A schema-version mismatch is the exception -- that message is
+    ours, carries no host detail, and tells the operator what to run.
     """
     try:
         import psycopg2
@@ -97,11 +142,14 @@ def _pg_connect() -> tuple[Any | None, str | None]:
         logger.warning(msg)
         return None, msg
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+        )
     except Exception as exc:  # noqa: BLE001 — graceful degradation
-        msg = f"PostgreSQL unavailable: {exc}"
-        logger.warning(msg)
-        return None, msg
+        logger.warning("PostgreSQL connection failed: %s", exc)
+        return None, GENERIC_DB_ERROR
 
     # Schema-version guard (audit IC5). Surface the mismatch through
     # the same (None, error) channel the connection failure path uses
@@ -170,6 +218,25 @@ def _envelope(
         payload["note"] = note
     return json.dumps(
         payload, ensure_ascii=False, indent=2, default=str,
+    )
+
+
+def _coverage_note(coverage: dict[str, Any]) -> str | None:
+    """Describe what a semantic search could not see, or ``None`` if it saw all.
+
+    Semantic search filters on ``embedding IS NOT NULL``, so un-embedded
+    memories are excluded outright rather than ranked last (audit R7). A
+    caller that is not told this cannot distinguish "nothing matched" from
+    "nothing indexed yet".
+    """
+    skipped = coverage.get("unembedded_active")
+    if not skipped:
+        return None
+    total = coverage.get("total_active", "?")
+    return (
+        f"Semantic search covers embedded memories only: {skipped} of "
+        f"{total} active memories have no embedding and were NOT searched. "
+        "Try search_memories (full-text) as well."
     )
 
 
@@ -245,9 +312,10 @@ async def search_memories(
     )
 
     if results is not None:
+        _log_surfaced(results)
         return _envelope(results, source="postgres")
 
-    # Fall back to JSONL (no decay rules applied)
+    # Fall back to JSONL (soft deletes honoured, decay not applied)
     try:
         all_memories = fetch_memories.load_jsonl_memories()
         filtered = [
@@ -261,17 +329,32 @@ async def search_memories(
             )
             and (not project or m.get("project") == project)
         ]
+        # Rank exactly as fetch-memories.fallback_jsonl does. This sorted
+        # raw strings, which ranks "2026-03-15T09:00:00" above
+        # "2026-03-15T10:00:00+10:00" (an earlier instant) and puts legacy
+        # date-only records last whatever their date, so the CLI and the
+        # MCP server disagreed about the same corpus. The shared helper
+        # normalises every stamp to an aware datetime (audit R1).
         filtered.sort(
-            key=lambda m: m.get("created_at", ""), reverse=True,
+            key=lambda m: fetch_memories._parse_datetime(
+                m.get("created_at", "")
+            ),
+            reverse=True,
         )
+        served = filtered[:limit]
+        _log_surfaced(served)
         return _envelope(
-            filtered[:limit],
+            served,
             source="jsonl",
-            note="PostgreSQL unavailable; using JSONL fallback (decay rules NOT applied)",
+            note=(
+                "PostgreSQL unavailable; using JSONL fallback. Forgotten "
+                "memories (is_active: false) ARE excluded; category decay "
+                "is NOT applied, so a decayed record may appear."
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"JSONL fallback failed: {exc}")
-        return _error_envelope(f"Memory lookup failed: {exc}")
+        return _error_envelope("Memory lookup failed (see the MCP server log)")
 
 
 # -------------------------------------------------------------------------
@@ -310,6 +393,12 @@ async def semantic_search(
     Generates an embedding for the query via Ollama, then finds the
     closest memories by cosine similarity. Requires Ollama and pgvector
     to be available; returns an error otherwise (FTS tools still work).
+
+    COVERAGE: only memories that already carry an embedding are searched.
+    A memory written since the last embedding backfill is not ranked last
+    — it is invisible to this tool. The envelope's `note` reports how many
+    active memories were skipped for that reason; when it is non-zero, use
+    search_memories (full-text) as well before concluding nothing matched.
     """
     tag_list = tags if tags else None
 
@@ -320,11 +409,15 @@ async def semantic_search(
     # truncate to the requested limit.
     fetch_limit = 50 if min_similarity > 0 else limit
 
+    # ``coverage`` is filled in by try_semantic on the same connection the
+    # search used, so the note below describes the corpus actually searched.
+    coverage: dict[str, Any] = {}
     results = fetch_memories.try_semantic(
         query=query,
         category=category,
         tags=tag_list,
         limit=fetch_limit,
+        stats=coverage,
     )
 
     if results is None:
@@ -341,7 +434,8 @@ async def semantic_search(
         ]
     results = results[:limit]
 
-    return _envelope(results, source="postgres")
+    _log_surfaced(results)
+    return _envelope(results, source="postgres", note=_coverage_note(coverage))
 
 
 # -------------------------------------------------------------------------
@@ -366,7 +460,9 @@ async def search_sessions(
     substring: Annotated[
         bool,
         Field(description="Exact/identifier match (trigram ILIKE) instead of "
-              "stemmed full-text — use for code tokens like 'build_model_f1'"),
+              "stemmed full-text — use for code tokens like 'build_model_f1'. "
+              "Needs a query of at least 3 characters (pg_trgm indexes "
+              "trigrams); shorter patterns are refused."),
     ] = False,
     limit: Annotated[
         int,
@@ -392,8 +488,14 @@ async def search_sessions(
         )
     except ImportError:
         return _error_envelope("psycopg2 not installed; session search unavailable.")
+    except ValueError as exc:
+        # A usage error raised by search() itself (currently the trigram
+        # floor on substring patterns). Its text is ours, written for the
+        # caller, so it passes through verbatim.
+        return _error_envelope(str(exc))
     except Exception as exc:  # noqa: BLE001 — graceful degradation to the client
-        return _error_envelope(f"Session search failed: {exc}")
+        logger.error(f"Session search failed: {exc}")
+        return _error_envelope("Session search failed (see the MCP server log)")
 
     if not results:
         return _envelope([], source="none",
@@ -428,24 +530,32 @@ async def get_memory(
             return _error_envelope(
                 f"Memory {memory_id} not found (may be decayed or never existed)"
             )
+        _log_surfaced(results)
         return _envelope(results, source="postgres")
 
-    # JSONL fallback — scan for matching ID
+    # JSONL fallback — scan for matching ID. A forgotten record
+    # (``is_active: false``) is skipped here exactly as the
+    # ``active_memories`` view would skip it (audit R2): "not found" is
+    # the honest answer for a memory the operator retired.
     try:
         all_memories = fetch_memories.load_jsonl_memories()
         for mem in all_memories:
-            if mem.get("id") == memory_id:
+            if mem.get("id") == memory_id and fetch_memories.is_active(mem):
+                _log_surfaced([mem])
                 return _envelope(
                     [mem],
                     source="jsonl",
                     note=(
-                        "PostgreSQL unavailable; using JSONL fallback "
-                        "(decay rules NOT applied — memory may be stale)"
+                        "PostgreSQL unavailable; using JSONL fallback. "
+                        "Forgotten memories (is_active: false) ARE "
+                        "excluded; category decay is NOT applied, so this "
+                        "record may be stale."
                     ),
                 )
         return _error_envelope(f"Memory {memory_id} not found")
     except Exception as exc:  # noqa: BLE001
-        return _error_envelope(f"Memory lookup failed: {exc}")
+        logger.error(f"get_memory JSONL fallback failed: {exc}")
+        return _error_envelope("Memory lookup failed (see the MCP server log)")
 
 
 # -------------------------------------------------------------------------
@@ -480,8 +590,13 @@ async def list_recent(
         )
 
     try:
+        # Must stay identical to fetch-memories.try_postgres's column list:
+        # a client that fetches a memory through search_memories and then
+        # through this tool should not find a field has vanished.
+        # ``verified`` was missing here (lens B, RT18) -- the one field the
+        # display layer turns into a verification label.
         columns = [
-            "id", "category", "content", "summary", "confidence",
+            "id", "category", "content", "summary", "confidence", "verified",
             "research_tags", "source_context", "created_at", "project",
         ]
         # Use make_interval to avoid quoting a %s inside a string literal;
@@ -505,10 +620,11 @@ async def list_recent(
             rows = cur.fetchall()
 
         results = [_row_to_memory(row, columns) for row in rows]
+        _log_surfaced(results)
         return _envelope(results, source="postgres")
     except Exception as exc:  # noqa: BLE001
         logger.error(f"list_recent query failed: {exc}")
-        return _error_envelope(f"Query failed: {exc}")
+        return _error_envelope(GENERIC_QUERY_ERROR)
     finally:
         conn.close()
 
@@ -589,7 +705,7 @@ async def memory_statistics() -> str:
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"Statistics query failed: {exc}")
-        return _error_envelope(f"Query failed: {exc}")
+        return _error_envelope(GENERIC_QUERY_ERROR)
     finally:
         conn.close()
 

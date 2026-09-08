@@ -50,8 +50,18 @@ Marker semantics (verified empirically against the live corpus
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
+
+# The soft-delete predicate is shared with fetch-memories.py so the two can
+# never disagree about what "forgotten" means (audit M1). Importing by name
+# needs this directory on sys.path: digest.py is loaded from several places
+# (the hook, the preview harness, the tests), not all of which arrange that
+# themselves. Same pattern as fetch-memories.py and memory_mcp.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _soft_delete import is_active  # noqa: E402,F401  (re-exported below)
 
 # ============================================================================
 # Configuration (design §5a, §7b)
@@ -250,13 +260,11 @@ def is_disproved(mem: dict) -> bool:
     return str(v).strip().lower() == "false"
 
 
-def is_active(mem: dict) -> bool:
-    """False only when explicitly forgotten (``is_active: false``).
-
-    A memory with no ``is_active`` field is active (legacy default).
-    Forgotten memories must never be surfaced eagerly.
-    """
-    return mem.get("is_active", True) is not False
+# ``is_active`` is imported from ``_soft_delete`` above and re-exported here:
+# ``digest.is_active`` remains the name the hook and the tests use, but the
+# implementation is the shared one. It normalises rather than comparing
+# identities, so a hand-edited ``"false"`` string retires the record on the
+# JSONL paths exactly as it already did in PostgreSQL (audit M1).
 
 
 def has_anchors(mem: dict) -> bool:

@@ -1046,3 +1046,23 @@ class TestHeadingsMatchTheirEntries:
         assert len(_section(thin.text, _VERIFIED_HEADING)) == 2
         assert _COVERAGE_THIN in thin.text
         assert _NOTHING_VERIFIED not in thin.text
+
+
+# ============================================================================
+# Audit M1 — the digest side of the shared soft-delete predicate
+# ============================================================================
+
+
+def test_digest_is_active_normalises_hand_edited_values() -> None:
+    """Kills: reverting digest.is_active to an identity comparison.
+
+    ``/forget`` is carried out by an LLM editing JSONL, so ``"false"`` is a
+    plausible slip. PostgreSQL casts it and hides the row; before audit M1
+    the digest did not, so the memory vanished on the machine with a
+    database and kept appearing in every session start without one.
+    """
+    for value in (False, "false", "FALSE", " false ", 0, "0"):
+        assert not digest.is_active({"is_active": value}), value
+    for value in (True, "true", None, 1):
+        assert digest.is_active({"is_active": value}), value
+    assert digest.is_active({})

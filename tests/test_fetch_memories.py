@@ -210,6 +210,128 @@ class TestMatchesFilters:
 
 
 # ============================================================================
+# TestSoftDeleteFilter — audit R2 (forgotten memories must not surface)
+# ============================================================================
+
+
+class TestSoftDeleteFilter:
+    """``is_active: false`` excludes a record from every JSONL path."""
+
+    def test_forgotten_record_never_matches(self) -> None:
+        """Kills: deleting the ``if not is_active(mem): return False`` guard."""
+        mem = _make_memory(mem_id="retired")
+        mem["is_active"] = False
+        assert not fetch_memories.matches_filters(mem, category="decision")
+        assert not fetch_memories.matches_filters(mem, memory_id="retired")
+
+    @pytest.mark.parametrize("record_extra", [{}, {"is_active": True}])
+    def test_absent_key_and_true_still_match(
+        self, record_extra: dict[str, Any],
+    ) -> None:
+        """Absent ``is_active`` is the legacy default: active."""
+        mem = {**_make_memory(), **record_extra}
+        assert fetch_memories.matches_filters(mem, category="decision")
+
+    def test_fallback_excludes_forgotten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The JSONL fallback drops a forgotten record and keeps the rest."""
+        live = _make_memory(mem_id="live", category="progress")
+        retired = _make_memory(mem_id="retired", category="progress")
+        retired["is_active"] = False
+        _write_jsonl(tmp_path / "memories.jsonl", [retired, live])
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress")
+        assert [m["id"] for m in results] == ["live"]
+
+    def test_search_archive_excludes_forgotten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cold archive shares the filter (same ``matches_filters``)."""
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        live = _make_memory(mem_id="live", category="progress")
+        retired = _make_memory(mem_id="retired", category="progress")
+        retired["is_active"] = False
+        (archive / "memories-archive-2026-03.jsonl").write_text(
+            "".join(json.dumps(m) + "\n" for m in (retired, live)),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        results = fetch_memories.search_archive(category="progress")
+        assert [m["id"] for m in results] == ["live"]
+
+
+# ============================================================================
+# TestParseDatetime — audit R1 (mixed naive/aware stamps must not crash)
+# ============================================================================
+
+
+class TestParseDatetime:
+    """``_parse_datetime`` must return an AWARE datetime for every input."""
+
+    @pytest.mark.parametrize("stamp", [
+        "2026-03-15",                        # legacy date-only record
+        "2026-03-15T10:00:00",               # naive ISO, no offset
+        "2026-03-15T10:00:00+10:00",         # non-UTC offset
+        "2026-03-15T10:00:00Z",              # Z suffix
+        "not a timestamp",                   # unparseable -> epoch sentinel
+        "",                                  # absent created_at
+    ])
+    def test_every_input_yields_an_aware_datetime(self, stamp: str) -> None:
+        """No parse path may return a naive datetime."""
+        assert fetch_memories._parse_datetime(stamp).tzinfo is not None
+
+    def test_unparseable_sorts_to_the_end(self) -> None:
+        """The sentinel stays the epoch, not ``now`` — junk sorts last."""
+        assert fetch_memories._parse_datetime("junk").year == 1970
+
+    def _mixed_corpus(self) -> list[dict[str, Any]]:
+        """Three records whose stamps mix date-only, naive, and +10:00."""
+        return [
+            _make_memory(mem_id="date-only", category="progress",
+                         created_at="2026-03-14"),
+            _make_memory(mem_id="naive", category="progress",
+                         created_at="2026-03-15T09:00:00"),
+            # 2026-03-16T08:00+10:00 == 2026-03-15T22:00Z, the newest.
+            _make_memory(mem_id="offset", category="progress",
+                         created_at="2026-03-16T08:00:00+10:00"),
+        ]
+
+    def test_fallback_sorts_mixed_stamps_newest_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The JSONL fallback ranks a mixed-stamp corpus without raising.
+
+        Kills: dropping the ``parsed.replace(tzinfo=timezone.utc)``
+        normalisation in ``_parse_datetime`` (TypeError comparing
+        offset-naive and offset-aware datetimes).
+        """
+        _write_jsonl(tmp_path / "memories.jsonl", self._mixed_corpus())
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress")
+        assert [m["id"] for m in results] == ["offset", "naive", "date-only"]
+
+    def test_search_archive_sorts_mixed_stamps_newest_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cold-archive search shares the fix (same sort key)."""
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "memories-archive-2026-03.jsonl").write_text(
+            "".join(json.dumps(m) + "\n" for m in self._mixed_corpus()),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        results = fetch_memories.search_archive(category="progress")
+        assert [m["id"] for m in results] == ["offset", "naive", "date-only"]
+
+
+# ============================================================================
 # TestFallbackJsonl
 # ============================================================================
 
@@ -546,3 +668,232 @@ class TestMergeArchive:
     def test_empty_archive_returns_empty(self):
         primary = [_make_memory(mem_id="a")]
         assert fetch_memories._merge_archive(primary, []) == []
+
+
+# ============================================================================
+# Audit R6 — --semantic must not silently discard --query / --id, and an
+# empty semantic result must honour the FTS-fallback promise
+# ============================================================================
+
+
+@pytest.fixture()
+def _quiet_invocation_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise ``_log_invocation`` for main()-driving tests in this block.
+
+    These tests are about which search path runs, not about instrumentation;
+    the logger's own destination resolution is pinned separately.
+    """
+    monkeypatch.setattr(
+        fetch_memories, "_log_invocation", lambda args, results: None,
+    )
+
+
+class TestSemanticFlagCombinations:
+    """``--semantic`` is refused alongside selectors it cannot honour."""
+
+    @pytest.mark.parametrize("extra", [
+        ["--query", "gps"],
+        ["--id", "2026-03-15-abc123"],
+    ])
+    def test_semantic_with_query_or_id_is_a_usage_error(
+        self, monkeypatch: pytest.MonkeyPatch, extra: list[str],
+    ) -> None:
+        """Kills: dropping the parse_args guard (the selector was discarded).
+
+        argparse exits 2 for a usage error.
+        """
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy", *extra],
+        )
+        with pytest.raises(SystemExit) as exc:
+            fetch_memories.parse_args()
+        assert exc.value.code == 2
+
+    def test_semantic_with_tag_and_category_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """try_semantic honours these two, so they must stay legal."""
+        monkeypatch.setattr(sys, "argv", [
+            "fetch-memories.py", "--semantic", "canopy",
+            "--tag", "gps", "--category", "decision",
+        ])
+        args = fetch_memories.parse_args()
+        assert args.semantic == "canopy"
+        assert args.tags == ["gps"]
+
+
+class TestEmptySemanticFallsBackToFts:
+    """An empty semantic result must fall through to full-text search."""
+
+    def test_empty_semantic_result_triggers_fts(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        _quiet_invocation_log: None,
+    ) -> None:
+        """Kills: leaving ``results = []`` in place (FTS never ran).
+
+        The stderr contract promises FTS as the backstop; before the fix an
+        empty list satisfied ``results is not None`` and short-circuited it.
+        """
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy"],
+        )
+        monkeypatch.setattr(fetch_memories, "try_semantic", lambda **kw: [])
+        seen: dict[str, Any] = {}
+
+        def fake_postgres(**kwargs: Any) -> list[dict[str, Any]]:
+            seen.update(kwargs)
+            return [_make_memory(mem_id="from-fts")]
+
+        monkeypatch.setattr(fetch_memories, "try_postgres", fake_postgres)
+        fetch_memories.main()
+
+        captured = capsys.readouterr()
+        assert seen["query"] == "canopy"  # the semantic text drove the FTS
+        assert "Semantic search returned no matches" in captured.err
+        assert "Memory Details (1 result)" in captured.out
+
+    def test_non_empty_semantic_result_skips_fts(
+        self, monkeypatch: pytest.MonkeyPatch, _quiet_invocation_log: None,
+    ) -> None:
+        """A successful semantic search must NOT also run FTS."""
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy"],
+        )
+        monkeypatch.setattr(
+            fetch_memories, "try_semantic",
+            lambda **kw: [_make_memory(mem_id="from-semantic")],
+        )
+
+        def fail(**kwargs: Any) -> None:
+            raise AssertionError("FTS must not run after a semantic hit")
+
+        monkeypatch.setattr(fetch_memories, "try_postgres", fail)
+        fetch_memories.main()
+
+
+# ============================================================================
+# Audit R15 — the id is the /forget handle, so retrieval must print it
+# ============================================================================
+
+
+class TestFormatOutputShowsTheId:
+    """``/forget`` takes an id and names recall as where to get one."""
+
+    def test_id_appears_for_every_result(self) -> None:
+        """Kills: dropping the ``ID:`` line from format_output."""
+        memories = [
+            _make_memory(mem_id="2026-03-15-abc123"),
+            _make_memory(mem_id="2026-03-14-def456"),
+        ]
+        output = fetch_memories.format_output(memories)
+        assert "ID: 2026-03-15-abc123" in output
+        assert "ID: 2026-03-14-def456" in output
+
+    def test_missing_id_is_labelled_not_blank(self) -> None:
+        """An id-less record must not render an empty handle."""
+        mem = _make_memory()
+        del mem["id"]
+        assert "ID: (no id)" in fetch_memories.format_output([mem])
+
+
+# ============================================================================
+# Audit R16 / lens B RT9 — tag-filter semantics
+# ============================================================================
+
+
+class TestTagFilterSemantics:
+    """An empty list means "no filter"; several tags mean OR."""
+
+    def test_empty_tag_list_is_no_filter(self) -> None:
+        """Kills: ``if tags is not None`` (any() over an empty list is False).
+
+        Passing ``[]`` used to reject every record, so a caller that did
+        not normalise an empty list to None got silence, not everything.
+        """
+        assert fetch_memories.matches_filters(_make_memory(), tags=[])
+
+    def test_multiple_tags_are_an_or_not_an_and(self) -> None:
+        """Kills: ``any(...)`` -> ``all(...)`` in the tag test.
+
+        The docstring documents OR, and every previous tag test passed
+        exactly one tag, so the distinction was unobservable.
+        """
+        mem = _make_memory(tags=["database"])
+        assert fetch_memories.matches_filters(
+            mem, tags=["database", "ethics"],
+        )
+
+    def test_a_record_with_none_of_the_tags_is_still_rejected(self) -> None:
+        """OR must not degrade into "no filter at all"."""
+        mem = _make_memory(tags=["database"])
+        assert not fetch_memories.matches_filters(
+            mem, tags=["ethics", "permits"],
+        )
+
+    def test_empty_tag_list_reaches_fallback_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The consequence at the call site, not just the predicate."""
+        _write_jsonl(tmp_path / "memories.jsonl", [
+            _make_memory(mem_id="a", category="progress"),
+            _make_memory(mem_id="b", category="progress"),
+        ])
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress", tags=[])
+        assert len(results) == 2
+
+
+# ============================================================================
+# Audit M1 — one soft-delete predicate, tolerant of hand-edited shapes
+# ============================================================================
+
+
+class TestSoftDeletePredicateIsShared:
+    """``/forget`` is executed by an LLM editing JSONL, so the value varies."""
+
+    def test_both_readers_use_the_same_function(self) -> None:
+        """Kills: either module growing its own copy again.
+
+        Two independent ``is not False`` copies were what let a
+        hand-written ``"false"`` hide a memory in PostgreSQL (which casts
+        it) while every JSONL reader kept serving it.
+        """
+        import digest
+
+        assert fetch_memories.is_active is digest.is_active
+
+    @pytest.mark.parametrize("value", [
+        False, "false", "False", " FALSE ", 0, "0",
+    ])
+    def test_forgotten_shapes_all_retire_the_record(self, value: Any) -> None:
+        """Kills: reverting to ``mem.get("is_active", True) is not False``."""
+        mem = _make_memory(mem_id="retired")
+        mem["is_active"] = value
+        assert not fetch_memories.is_active(mem)
+        assert not fetch_memories.matches_filters(mem, category="decision")
+
+    @pytest.mark.parametrize("record_extra", [
+        {}, {"is_active": True}, {"is_active": "true"}, {"is_active": None},
+        {"is_active": 1},
+    ])
+    def test_active_shapes_all_pass(self, record_extra: dict[str, Any]) -> None:
+        """The whole legacy corpus predates the field: absence means active."""
+        mem = {**_make_memory(), **record_extra}
+        assert fetch_memories.is_active(mem)
+
+    def test_string_false_is_excluded_from_the_jsonl_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The consequence on the offline path, not just the predicate."""
+        live = _make_memory(mem_id="live", category="progress")
+        retired = _make_memory(mem_id="retired", category="progress")
+        retired["is_active"] = "false"
+        _write_jsonl(tmp_path / "memories.jsonl", [retired, live])
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress")
+        assert [m["id"] for m in results] == ["live"]
