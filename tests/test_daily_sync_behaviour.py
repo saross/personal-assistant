@@ -427,6 +427,72 @@ class TestDetachedHeadGuard:
         assert "daily-sync on" in leftovers[0]
         assert "branch-switch" not in leftovers[0]
 
+    def test_a_conflicted_pop_drops_only_the_entry_it_popped(
+        self, world: SyncWorld
+    ) -> None:
+        """After resolving a conflicted pop, the entry that was popped is
+        the one to drop — not whatever is on top.
+
+        The conflicted entry is the OLDER of this run's two stashes, so a
+        bare `git stash drop` takes the newer one instead: that work is
+        discarded unapplied, and the conflicted entry stays on the stack.
+        """
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-ours")          # -> stash A
+        world.publish_memory_append("2026-09-08-theirs")  # conflicts with A
+
+        result = world.run_sync(
+            machine,
+            PA_TEST_ARCHIVER_DIRTIES="# Inbox\n\n- written mid-run\n",  # -> stash B
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert not git("stash", "list", cwd=machine.data).stdout.strip(), (
+            "an entry was left behind, so the wrong one was dropped"
+        )
+        assert "written mid-run" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8"), "the newer stash was dropped unapplied"
+        published = world.published_data_file("memories/memories.jsonl")
+        assert "2026-09-08-ours" in published
+        assert "2026-09-08-theirs" in published
+
+    def test_a_concurrent_sessions_stash_is_never_touched(
+        self, world: SyncWorld
+    ) -> None:
+        """Only stashes this run created may be popped.
+
+        A concurrent session pushes its own stash between our
+        branch-switch stash and our pre-pull stash, so ours are no longer
+        the top of the stack. Matching by SHA is what keeps their work
+        out of our tree; matching by position would pop it and drop it.
+        """
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-mine")
+
+        result = world.run_sync(
+            machine,
+            PA_TEST_ARCHIVER_STASHES="their unfinished note\n",
+            PA_TEST_ARCHIVER_DIRTIES="# Inbox\n\n- ours, mid-run\n",
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        # Theirs is still on the stack, untouched and unapplied.
+        leftovers = git("stash", "list", cwd=machine.data).stdout.strip().splitlines()
+        assert len(leftovers) == 1, leftovers
+        assert "a concurrent session" in leftovers[0]
+        assert not (machine.data / "tasks" / "foreign-session.md").exists(), (
+            "a concurrent session's stash was applied into our tree"
+        )
+        # Ours both came back and were published.
+        assert "2026-09-08-mine" in world.published_data_file("memories/memories.jsonl")
+        assert "ours, mid-run" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8")
+
     def test_detached_head_with_prose_edits_keeps_them(
         self, world: SyncWorld
     ) -> None:
@@ -483,6 +549,9 @@ class TestStashPopConflictPartitioning:
         assert "half-written local thought" in inbox
         # The stash git preserved on a conflicted pop is still there.
         assert git("stash", "list", cwd=machine.data).stdout.strip()
+        # And the EXIT handler did not try to re-pop into the half-merged
+        # tree on the way out (second re-audit M5).
+        assert "— restoring" not in combined, combined
         # Nothing was published.
         assert world.published_data_head() == published_before
 

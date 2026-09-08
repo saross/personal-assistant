@@ -107,6 +107,18 @@ _ARCHIVER_STUB_BODY = '''
         data = Path(__file__).resolve().parent.parent / "data"
         (data / "tasks" / "inbox.md").write_text(dirties, encoding="utf-8")
 
+    # A concurrent session pushing its OWN stash between the run's push
+    # and its pop — the race the SHA bookkeeping exists for.
+    foreign = os.environ.get("PA_TEST_ARCHIVER_STASHES")
+    if foreign:
+        data = Path(__file__).resolve().parent.parent / "data"
+        (data / "tasks" / "foreign-session.md").write_text(foreign, encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(data), "stash", "push", "-u", "-q",
+             "-m", "a concurrent session", "--", "tasks/foreign-session.md"],
+            check=True,
+        )
+
     marker = os.environ.get("PA_TEST_ARCHIVER_COMMIT")
     if marker:
         data = Path(__file__).resolve().parent.parent / "data"
