@@ -539,7 +539,7 @@ _WAITING_LIVE = """# Waiting For
 | **Consent-orders filing date** (`personal`/move) | Sarah | 2026-09-08 | — | Call Wed. |
 | **Container quote** (`personal`/move) | Red Truck | 2026-08-27 | 2026-08-28 | Call Monday. |
 | **Logo artwork** (`efn`) | Jody | 2026-09-04 | 2026-09-04 | Chase Mon 8 Sept. |
-| ~~Car service — slot requested via web form~~ (`personal`) | ~~Skoda~~ | 2026-08-18 | — | Resolved same day. |
+| ~~Car service — slot requested~~ (`personal`) | ~~Skoda~~ | 2026-08-18 | — | Resolved. |
 | ~~Flinders trainee profile info~~ | ~~Talia Barnes~~ | ~~2026-03-17~~ | — | Received. |
 """
 
