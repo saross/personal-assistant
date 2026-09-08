@@ -126,10 +126,16 @@ def decode_project_id(project_id: str) -> Path | None:
 
     Examples
     --------
-    >>> decode_project_id("-home-shawn-personal-assistant")
-    PosixPath('/home/shawn/personal-assistant')
+    >>> decode_project_id("-tmp-foo-bar")
+    PosixPath('/tmp/foo/bar')
+    >>> decode_project_id("-home-shawn-personal-assistant")  # ambiguous
+    PosixPath('/home/shawn/personal/assistant')
     >>> decode_project_id("-home-shawn-Code-cc-session-toolkit")  # ambiguous
     PosixPath('/home/shawn/Code/cc/session/toolkit')
+
+    The middle example is the one to remember: the hub's own project id does
+    NOT decode back to the hub, because "personal-assistant" contains a
+    hyphen. The previous version of this docstring claimed it did.
     """
     if not project_id or not project_id.strip():
         return None
