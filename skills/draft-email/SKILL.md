@@ -50,9 +50,10 @@ including for a two-line reply late in a long session.
   answer-confirm-stop.
 - **Call to action near the end** (Rule 9) whenever something is
   needed: what, from whom, by when.
-- **Warmth Claude under-uses** (Rule 10): thanks where due, a single
-  exclamation mark on genuine good news, people credited by name,
-  concrete forward commitments.
+- **Warmth goes light** (Rule 10): warm greeting and close, people
+  credited by name. No exclamation marks, no repeated thanks — Shawn
+  adds those in ten seconds, modulated to the recipient; cutting costs
+  him minutes.
 - **Mechanics:** contractions, `--` not `—`, asks as questions, reasons
   inside clauses, bullets for multiple items, closes that hand over
   control, `Cheers, Shawn` by default.
@@ -88,6 +89,6 @@ version. Calibration reruns when five or more new pairs exist.
 - "I'll add why this matters." → The recipient can infer it. Cut.
 - "Remind them they agreed." → They know. Cut.
 - "Ask which option they prefer." → If Shawn can decide, decide.
-- "Keep it professional, no exclamation marks." → That is Claude's
-  register, not Shawn's.
+- "Warm it up to soften the cuts." → No. Cut the justification, keep
+  the edges, leave warmth to Shawn.
 - "It's urgent, I'll send it." → Never. Draft, hand over, stop.
