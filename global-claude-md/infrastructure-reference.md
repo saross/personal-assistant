@@ -108,7 +108,7 @@ Located in `scripts/`.
 | `sync-to-postgres.py` | JSONL → PostgreSQL sync + auto-embed (5-min cron). P8 (2026-06-06): now syncs `is_active` in its INSERT so a row forgotten before its first sync lands inactive rather than being resurrected. |
 | `sync_memory_edit.py` | Surgical PG `UPDATE` for `/forget` and `/update` (P8, 2026-06-06). Reads the already-edited JSONL record and mirrors the six mutable columns (`is_active`, `content`, `confidence`, `verified`, `anchors`, `revisions`) into PostgreSQL. Idempotent. Called as a mandatory step by both commands. PG-only: runs on amd-tower; no-op notice on other machines. |
 | `apply-decay.py` | Mark expired memories inactive (weekly cron, Sun 3am) |
-| `fetch-memories.py` | CLI retrieval: `--query` (FTS), `--semantic` (pgvector), `--tag`, `--category`, `--id`. Logs surfaced memory IDs via `surfacing_log` (item 16, 2026-06-06). |
+| `fetch-memories.py` | CLI retrieval: `--query` (FTS), `--semantic` (pgvector), `--tag`, `--category`, `--id`. `--semantic` carries its own query text and cannot filter by id, so it is **mutually exclusive** with `--query` and `--id` (a usage error since 2026-09-08; it used to discard them silently) — `--tag` and `--category` still apply. It searches embedded rows only and reports how many active rows lack an embedding. Logs surfaced memory IDs via `surfacing_log` (item 16, 2026-06-06). |
 | `embed.py` | Shared Ollama embedding client (nomic-embed-text, 768d) |
 | `backfill-summaries.py` | Bulk summary generation via Haiku Batch API |
 | `backfill-embeddings.py` | Bulk embedding via Ollama |
