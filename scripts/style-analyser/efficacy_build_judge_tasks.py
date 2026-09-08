@@ -64,8 +64,26 @@ EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
 EXTRACTED = REPO_ROOT / "data/style-corpus/extracted"
 PASSAGES = EXP / "passages"
 JUDGE_DIR = EXP / "judge-tasks"
-#: The unblinding key lives OUTSIDE the directory handed to the judge.
-KEY_DIR = EXP / "judge-key"
+#: The unblinding key lives under a directory nobody hands to a judge. A
+#: sibling of judge-tasks/ was still one `ls ..` from the blind material and
+#: sat beside the analysis outputs an operator opens routinely; `private/`
+#: says what it is, and README_DO_NOT_SHARE.md says it again inside.
+PRIVATE_DIR = EXP / "private"
+KEY_DIR = PRIVATE_DIR / "judge-key"
+
+#: Dropped into the private directory so the reason survives the person who
+#: knows it.
+PRIVATE_README = """# Private — never give this directory to a judge
+
+This directory holds the unblinding key for the pairwise judge test: which
+side of each pair was written under the style guide, and which source file
+each blinded task came from.
+
+A judge who sees any of it is no longer blind, and the run is void. Point
+judges at the judge-tasks/ directory ONLY. `efficacy_build_judge_tasks.py`
+refuses to write a key inside the judge's directory, or a judge directory
+inside this one, but it cannot stop a person copying a path.
+"""
 
 # Two reference papers chosen for voice variety + recency: a first-author 2022
 # methods/argument paper and a last-author 2024 paper. Real author text.
@@ -140,6 +158,51 @@ def plan_pairs(seed: int, contrasts: list[tuple[str, str]] | None = None,
     return plan
 
 
+def key_is_private(judge_dir: Path, key_dir: Path) -> bool:
+    """True when neither directory contains the other.
+
+    Checked in BOTH directions: a key inside the judge's root is the original
+    leak, and a judge root inside the key directory is the same leak wearing a
+    different hat, since anyone given the parent can read the key.
+    """
+    judge = judge_dir.resolve()
+    key = key_dir.resolve()
+    if judge == key:
+        return False
+    return judge not in key.parents and key not in judge.parents
+
+
+def migrate_key(judge_dir: Path, key_dir: Path, *, dry_run: bool = False) -> int:
+    """Move a legacy `judge-mapping.json` out of the judge's own directory.
+
+    The first runs of this experiment wrote the key beside the tasks, so a
+    live judge-tasks/ still holds it next to judgments.jsonl. This moves that
+    file — and only that file — into the key directory, leaving the collected
+    judgements untouched. Returns a process exit status.
+    """
+    legacy = judge_dir / "judge-mapping.json"
+    if not legacy.exists():
+        print(f"Nothing to migrate: no {legacy}")
+        return 0
+    destination = key_dir / "judge-mapping.json"
+    if destination.exists():
+        print(f"REFUSING: {destination} already exists; move or remove it "
+              "first so no key is silently overwritten.", file=sys.stderr)
+        return 1
+    if dry_run:
+        print(f"--dry-run: would move {legacy} -> {destination}")
+        return 0
+    style_support.atomic_write_text(
+        destination, legacy.read_text(encoding="utf-8"))
+    style_support.atomic_write_text(key_dir.parent / "README_DO_NOT_SHARE.md",
+                                    PRIVATE_README)
+    legacy.unlink()
+    print(f"Moved {legacy} -> {destination}")
+    print("The judge directory no longer holds the answer key; its "
+          "judgments.jsonl is untouched.")
+    return 0
+
+
 def prepare_judge_dir(judge_dir: Path, *, force: bool,
                       dry_run: bool) -> bool:
     """Clear the judge directory, refusing to destroy collected judgements.
@@ -201,7 +264,13 @@ def emit_tasks(plan: list[dict], passages_dir: Path, judge_dir: Path,
             sources.append(source)
             if dry_run:
                 continue
-            shutil.copyfile(source, judge_dir / f"{entry['pair_id']}_{side}.md")
+            # Not shutil.copyfile: an interrupted copy leaves a truncated
+            # task file, and a judge reading half a passage produces a
+            # judgement nobody can tell apart from a real one.
+            style_support.atomic_write_text(
+                judge_dir / f"{entry['pair_id']}_{side}.md",
+                source.read_text(encoding="utf-8"),
+            )
     style_support.atomic_write_text(judge_dir / "reference.md",
                                     reference_text, dry_run=dry_run)
     key = {
@@ -220,6 +289,9 @@ def emit_tasks(plan: list[dict], passages_dir: Path, judge_dir: Path,
     }
     style_support.atomic_write_json(key_dir / "judge-mapping.json", key,
                                     dry_run=dry_run)
+    # The warning travels with the directory, not with whoever set it up.
+    style_support.atomic_write_text(key_dir.parent / "README_DO_NOT_SHARE.md",
+                                    PRIVATE_README, dry_run=dry_run)
     return key
 
 
@@ -237,15 +309,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--spacy-model", default="en_core_web_sm")
     ap.add_argument("--force", action="store_true",
                     help="rebuild even if the judge directory holds answers")
+    ap.add_argument("--migrate-key", action="store_true",
+                    help="move an existing judge-mapping.json out of the "
+                         "judge directory into the key directory, and do "
+                         "nothing else")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would be built; write nothing")
     args = ap.parse_args(argv)
 
-    if args.key_dir.resolve() == args.judge_dir.resolve() or \
-            args.judge_dir.resolve() in args.key_dir.resolve().parents:
-        print("REFUSING: the key directory must not sit inside the directory "
-              "the judges read.", file=sys.stderr)
+    if not key_is_private(args.judge_dir, args.key_dir):
+        print("REFUSING: the key directory and the judge directory must not "
+              f"contain one another ({args.key_dir} vs {args.judge_dir}). A "
+              "judge given either root could reach the answers.",
+              file=sys.stderr)
         return 2
+
+    if args.migrate_key:
+        return migrate_key(args.judge_dir, args.key_dir, dry_run=args.dry_run)
 
     # Everything that can fail is done BEFORE the judge directory is cleared:
     # planning, the passage-file check, and the spaCy-dependent reference

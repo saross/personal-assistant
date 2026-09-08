@@ -272,3 +272,128 @@ def test_mid_window_returns_the_requested_whole_sentence_window():
     assert builder.mid_window("ignored", nlp, 1, 4).startswith("beta")
     # An index past the end clamps to the last window rather than raising.
     assert builder.mid_window("ignored", nlp, 9, 4).startswith("gamma")
+
+
+# ---------------------------------------------------------------------------
+# Re-audit items 6 and 10 — atomic task files, and a key nobody stumbles into
+# ---------------------------------------------------------------------------
+
+def test_the_key_directory_is_not_a_sibling_of_the_judge_directory():
+    """A sibling was still one `ls ..` from the blind material.
+
+    The mutation this kills: restoring ``KEY_DIR = EXP / "judge-key"``, which
+    puts the answers beside judge-tasks/ and beside the analysis outputs an
+    operator opens routinely.
+    """
+    assert builder.KEY_DIR.parent == builder.PRIVATE_DIR
+    assert builder.PRIVATE_DIR.name == "private"
+    assert builder.KEY_DIR.parent != builder.JUDGE_DIR.parent
+
+
+def test_a_judge_root_containing_the_key_is_refused(tmp_path):
+    """The original leak: the key under the directory the judge is given."""
+    judge = tmp_path / "judge-tasks"
+
+    assert builder.key_is_private(judge, judge / "key") is False
+    assert builder.key_is_private(judge, judge) is False
+
+
+def test_a_key_root_containing_the_judge_directory_is_refused(tmp_path):
+    """The same leak the other way up: anyone given the parent reads the key.
+
+    The mutation this kills: checking containment in one direction only.
+    """
+    private = tmp_path / "private"
+
+    assert builder.key_is_private(private / "judge-tasks", private) is False
+
+
+def test_separate_trees_are_accepted(tmp_path):
+    """The guard must not refuse the layout the script itself produces."""
+    assert builder.key_is_private(tmp_path / "judge-tasks",
+                                  tmp_path / "private" / "judge-key") is True
+
+
+def test_the_private_directory_carries_its_own_warning(tmp_path):
+    """The reason must outlive whoever set the experiment up."""
+    built = _emit(tmp_path)
+    readme = built["key_dir"].parent / "README_DO_NOT_SHARE.md"
+
+    assert readme.exists()
+    assert "never give this directory to a judge" in readme.read_text(
+        encoding="utf-8").lower()
+
+
+def test_a_task_file_is_written_atomically(tmp_path, monkeypatch):
+    """An interrupted copy would leave a judge reading half a passage.
+
+    ``os.replace`` is made to fail part-way, standing in for a crash. The
+    mutation this kills: restoring ``shutil.copyfile``, under which the
+    truncated destination survives.
+    """
+    import style_support
+
+    judge_dir = tmp_path / "judge-tasks"
+    key_dir = tmp_path / "private" / "judge-key"
+    judge_dir.mkdir()
+    key_dir.mkdir(parents=True)
+    plan = builder.plan_pairs(5, contrasts=CONTRASTS, topics=TOPICS)
+
+    def boom(*args, **kwargs):
+        raise OSError("simulated crash mid-copy")
+
+    monkeypatch.setattr(style_support.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        builder.emit_tasks(plan, _passages(tmp_path), judge_dir, key_dir,
+                           "# Reference\n", seed=5)
+
+    # Nothing half-written, and no temporary debris for the judge to find.
+    assert list(judge_dir.iterdir()) == []
+
+
+def test_migrate_key_moves_a_legacy_key_and_leaves_the_answers(tmp_path):
+    """The live judge-tasks/ still holds the key beside judgments.jsonl.
+
+    The mutation this kills: moving (or deleting) judgments.jsonl along with
+    the key, which would destroy the only irreplaceable file in the tree.
+    """
+    judge_dir = tmp_path / "judge-tasks"
+    key_dir = tmp_path / "private" / "judge-key"
+    judge_dir.mkdir()
+    (judge_dir / "judge-mapping.json").write_text('{"pairs": []}',
+                                                  encoding="utf-8")
+    (judge_dir / "judgments.jsonl").write_text('{"pair_id": "pair00"}\n',
+                                               encoding="utf-8")
+
+    assert builder.migrate_key(judge_dir, key_dir) == 0
+
+    assert not (judge_dir / "judge-mapping.json").exists()
+    assert (key_dir / "judge-mapping.json").exists()
+    assert (judge_dir / "judgments.jsonl").exists()
+    assert (key_dir.parent / "README_DO_NOT_SHARE.md").exists()
+
+
+def test_migrate_key_refuses_to_overwrite_an_existing_key(tmp_path):
+    """Two keys for one experiment is a question, not something to resolve."""
+    judge_dir = tmp_path / "judge-tasks"
+    key_dir = tmp_path / "private" / "judge-key"
+    judge_dir.mkdir()
+    key_dir.mkdir(parents=True)
+    (judge_dir / "judge-mapping.json").write_text("{}", encoding="utf-8")
+    (key_dir / "judge-mapping.json").write_text("{}", encoding="utf-8")
+
+    assert builder.migrate_key(judge_dir, key_dir) == 1
+    assert (judge_dir / "judge-mapping.json").exists()
+
+
+def test_migrate_key_dry_run_moves_nothing(tmp_path):
+    """The migration is reported before it is run against live data."""
+    judge_dir = tmp_path / "judge-tasks"
+    key_dir = tmp_path / "private" / "judge-key"
+    judge_dir.mkdir()
+    (judge_dir / "judge-mapping.json").write_text("{}", encoding="utf-8")
+
+    assert builder.migrate_key(judge_dir, key_dir, dry_run=True) == 0
+    assert (judge_dir / "judge-mapping.json").exists()
+    assert not key_dir.exists()
