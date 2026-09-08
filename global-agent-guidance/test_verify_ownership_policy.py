@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 
 
@@ -202,17 +203,30 @@ admitted_by = "shawn"
             candidate.write_text(text.replace("schema_version = 2", "schema_version = 3", 1))
             with self.assertRaisesRegex(ValueError, "schema"):
                 verifier.load_policy(candidate)
-            # Remove one verification case: its rule is then untested and must fail.
-            case_start = text.index('[[verification_cases]]\nid = "codex-pa-scripts"')
-            case_end = text.index("[[verification_cases]]", case_start + 10)
-            candidate.write_text(text[:case_start] + text[case_end:])
-            try:
+            # Remove every case for one rule: that rule is then untested and the
+            # loader must refuse. (The earlier version tolerated no error, so the
+            # guard could be deleted with the test green — re-audit finding 9.)
+            rule_id = tomllib.loads(text)["verification_cases"][0]["rule_id"]
+            blocks = text.split("[[verification_cases]]")
+            kept = [blocks[0]] + [b for b in blocks[1:] if f'rule_id = "{rule_id}"' not in b]
+            self.assertLess(len(kept), len(blocks))
+            candidate.write_text("[[verification_cases]]".join(kept))
+            with self.assertRaisesRegex(ValueError, "verification"):
                 verifier.load_policy(candidate)
-            except ValueError as error:
-                self.assertIn("verification", str(error))
-            else:
-                # Only fails if that rule had a second case; then nothing to assert.
-                pass
+
+    def test_a_trailing_encoded_separator_in_a_remote_is_rejected(self) -> None:
+        """A trailing %2F survived the segment-count comparison (re-audit finding 11)."""
+        verifier.validate_clone_remote("https://github.com/saross/personal-assistant.git")
+        verifier.validate_clone_remote("https://github.com/saross/personal-assistant/")
+        for remote in (
+            "https://github.com/saross/personal-assistant%2F",
+            "https://github.com/saross/personal-assistant%2F%2F",
+            "https://github.com/%2Fsaross/personal-assistant",
+            "https://github.com/saross%2Fevil/personal-assistant",
+            "https://github.com/saross/%2E%2E/personal-assistant",
+        ):
+            with self.assertRaises(ValueError, msg=remote):
+                verifier.validate_clone_remote(remote)
 
     def test_glob_case_resolves_an_existing_backup_without_reading_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

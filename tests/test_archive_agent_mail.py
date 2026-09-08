@@ -156,7 +156,13 @@ def test_when_from_note_accepts_both_agents_receipt_conventions():
             == "2026-09-08T00:05Z")
     assert archive.when_from_note("Read: 2026-08-25T09:43:01Z") == "2026-08-25T09:43:01Z"
     assert archive.when_from_note("Read: 2026-09-08 Australia/Sydney") == "2026-09-08"
-    assert archive.when_from_note("seen 2026-09-08T00:05Z") == ""
+    # Live shapes the first version silently lost (re-audit finding 15):
+    assert archive.when_from_note("Read: 2026-09-07 07:42:54 UTC") == "2026-09-07T07:42:54Z"
+    assert archive.when_from_note("Read and assessed by codex on 2026-09-08.") == "2026-09-08"
+    assert archive.when_from_note("read 2026-09-08 10:05+10:00 by claude") == (
+        "2026-09-08T10:05+10:00")
+    assert archive.when_from_note("seen 2026-09-08T00:05Z") == "2026-09-08T00:05Z"
+    assert archive.when_from_note("read by claude, no time") == ""
     assert archive.when_from_note("read") == ""
     assert archive.when_from_note("") == ""
 
@@ -220,3 +226,50 @@ def test_unwritable_archive_reports_failure(tmp_path):
         [sys.executable, str(SCRIPT), "--root", str(root), "--archive", str(blocker)],
         capture_output=True, text=True)
     assert result.returncode == 1 and "failed" in result.stderr
+
+
+# ---- added after the 2026-09-08 re-audit of round one (findings 14, 17) ----
+
+def test_refused_files_are_counted_and_named(tmp_path):
+    """Kills: dropping a refused file silently (the summary claimed 0 added, 0 changed)."""
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    big = outbox / "big.md"
+    big.write_text(MESSAGE + "x" * archive.MAX_MESSAGE_BYTES)
+    refused: list = []
+    assert archive.copy_new(root, store, refused) == (1, 0)
+    assert refused == [big]
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(root), "--archive", str(store)],
+        capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == (
+        "agent-mail archive: 0 added, 0 changed; 1 messages, 0 receipted; "
+        "1 refused (not mail by the protocol)")
+    assert "refused: " in result.stderr and "big.md" in result.stderr
+
+
+def test_archive_scan_keeps_a_file_the_live_cap_would_now_refuse(tmp_path):
+    """Kills: applying the size cap to the archive scan (an old message left the index)."""
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    archive.copy_new(root, store)
+    archived = store / "codex/outbox/claude/m1.md"
+    archived.write_text(MESSAGE + "y" * archive.MAX_MESSAGE_BYTES)   # accepted under an older rule
+    assert [r["path"] for r in archive.build_index(store)] == ["codex/outbox/claude/m1.md"]
+
+
+def test_cli_commit_failure_exits_nonzero(tmp_path):
+    """Kills: returning 0 after a failed commit (daily-sync.sh never saw the failure)."""
+    root = tmp_path / "mail"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    store = tmp_path / "not-a-repo" / "agent-mail"       # no .git anywhere above it
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(root), "--archive", str(store), "--commit"],
+        capture_output=True, text=True, env=env)
+    assert result.returncode == 1
+    assert "commit failed" in result.stderr
+    assert (store / "index.jsonl").exists()               # the copy and index still happened

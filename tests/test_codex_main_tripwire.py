@@ -155,14 +155,27 @@ def test_codex_author_email_is_flagged(repo):
     assert flagged(repo) == [sha]
 
 
-def test_since_is_the_ruling_date():
-    """Pin the activation date: moving it forward would silently disable the hook."""
+@pytest.mark.parametrize("zone", ["UTC", "America/Los_Angeles", "Australia/Sydney"])
+def test_window_boundary_is_the_ruling_midnight_on_every_host(repo, monkeypatch, zone):
+    """SINCE is local midnight on the ruling day with the zone pinned, so a host in
+    another zone sees the same window. Kills: a bare date (git fills in the current
+    time of day) and a zone-less datetime (narrowed by up to 17 hours on a UTC or
+    US host). The activation date itself is pinned: moving it forward would
+    silently disable the hook."""
     assert tripwire.SINCE.startswith("2026-09-07")
+    before = commit(repo, "a", "feat: before" + CODEX_TRAILER, env={
+        "GIT_AUTHOR_DATE": "2026-09-06T23:30:00+10:00",
+        "GIT_COMMITTER_DATE": "2026-09-06T23:30:00+10:00"})
+    after = commit(repo, "b", "feat: after" + CODEX_TRAILER, env={
+        "GIT_AUTHOR_DATE": "2026-09-07T00:30:00+10:00",
+        "GIT_COMMITTER_DATE": "2026-09-07T00:30:00+10:00"})
+    monkeypatch.setenv("TZ", zone)
+    hits = [h["sha"] for h in tripwire.flagged_commits(repo, "main")]
+    assert hits == [after] and before not in hits
 
 
-def test_window_starts_at_midnight_and_cap_keeps_the_oldest(repo):
-    """SINCE must be a datetime (a bare date means 'now'); the cap must not drop old commits."""
-    assert tripwire.SINCE.endswith("T00:00:00")
+def test_cap_keeps_the_oldest(repo):
+    """The cap must not drop old commits (--max-count before --reverse did)."""
     first = commit(repo, "a", "feat: first" + CODEX_TRAILER)
     for i in range(3):
         commit(repo, f"b{i}", f"feat: later {i}" + CODEX_TRAILER)
@@ -178,6 +191,15 @@ def test_control_characters_in_a_subject_do_not_split_or_forge_records(repo):
     assert hits == [sha]
     record = tripwire.flagged_commits(repo, "main", "2000-01-01")[0]
     assert "\x01" not in record["subject"] and "\x1b" not in record["subject"]
+
+
+def test_control_characters_in_an_author_name_are_stripped(repo):
+    """Kills: printable() applied to the subject only (the author is printed too)."""
+    commit(repo, "a", "feat: odd author" + CODEX_TRAILER,
+           env={"GIT_AUTHOR_NAME": "Sol \x1b[31mfake\x01"})
+    record = tripwire.flagged_commits(repo, "main", "2000-01-01")[0]
+    assert "\x1b" not in record["author"] and "\x01" not in record["author"]
+    assert "Sol" in record["author"]
 
 
 def test_ack_without_an_argument_is_a_usage_error(monkeypatch, capsys):

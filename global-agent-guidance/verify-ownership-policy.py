@@ -139,8 +139,8 @@ def validate_clone_remote(value: str) -> None:
     try:
         remote = urlsplit(value)
         port = remote.port
-        raw_segments = [part for part in remote.path.split("/") if part]
-        decoded_segments = [part for part in unquote(remote.path).split("/") if part]
+        decoded_path = unquote(remote.path)
+        decoded_segments = [part for part in decoded_path.split("/") if part]
         valid = (
             remote.scheme == "https" and bool(remote.hostname)
             and bool(remote.path.strip("/"))
@@ -149,8 +149,10 @@ def validate_clone_remote(value: str) -> None:
             and (port is None or port > 0)
             and value.isascii() and value.isprintable() and " " not in value
             # Percent-encoding may not add path separators or traversal:
-            # %2F would name a different repository once decoded.
-            and len(decoded_segments) == len(raw_segments)
+            # %2F would name a different repository once decoded. Compared
+            # as a slash count, not a segment count: a trailing %2F added a
+            # separator the segment count could not see (re-audit).
+            and decoded_path.count("/") == remote.path.count("/")
             and ".." not in decoded_segments
         )
     except ValueError:
