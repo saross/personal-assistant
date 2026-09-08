@@ -233,12 +233,12 @@ dies at line 618 before the sync body and the test passes anyway).
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | fixed in PR #116 (merged 0d1d391) (before any fixture repair) |
 | S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — fixed in **PR #120** (round 3b, merged 69a7590: the path resolves at call time, nothing opens at import, the production path is tested in a child process) |
-| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; the second re-audit found a regression in that fix (`applied` drops a stash whose tracked half never landed) and an ancestor clobber, fixed in 5b4985c-3b328a5; the third re-audit found the evidence test still foolable by a concurrent write; fourth round running) |
+| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; the second re-audit found a regression in that fix (`applied` drops a stash whose tracked half never landed) and an ancestor clobber, fixed in 5b4985c-3b328a5; the third re-audit found the evidence test still foolable by a concurrent write, fixed in 947ac45-bb96d27 (reverse-apply evidence); fourth re-audit running) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
 | S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | fixed in PR #116: every non-zero exit writes a gate line |
-| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; the second re-audit found a regression in that fix (`applied` drops a stash whose tracked half never landed) and an ancestor clobber, fixed in 5b4985c-3b328a5; the third re-audit found the evidence test still foolable by a concurrent write; fourth round running) |
-| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; the second re-audit found a regression in that fix (`applied` drops a stash whose tracked half never landed) and an ancestor clobber, fixed in 5b4985c-3b328a5; the third re-audit found the evidence test still foolable by a concurrent write; fourth round running) |
+| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; the second re-audit found a regression in that fix (`applied` drops a stash whose tracked half never landed) and an ancestor clobber, fixed in 5b4985c-3b328a5; the third re-audit found the evidence test still foolable by a concurrent write, fixed in 947ac45-bb96d27 (reverse-apply evidence); fourth re-audit running) |
+| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; the second re-audit found a regression in that fix (`applied` drops a stash whose tracked half never landed) and an ancestor clobber, fixed in 5b4985c-3b328a5; the third re-audit found the evidence test still foolable by a concurrent write, fixed in 947ac45-bb96d27 (reverse-apply evidence); fourth re-audit running) |
 | S4 note | Measured on the branch: neither `--ours` nor `--theirs` changes a conflicted gitlink's index entry; the following `git add` records the checked-out HEAD, which is why the live sync resolved these correctly despite the inverted flag. The fix is legibility, not data loss. | recorded |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
@@ -351,7 +351,16 @@ Verified correct: decay boundaries and edge cases, CRLF round-trip,
 blank-line preservation in three writers, partition append fsynced before the
 corpus rename, idempotent retry, locks held across read-modify-rename (except
 W3), temp files beside their targets, no injection, no import-time writes,
-UK spelling.
+UK spelling. Round 4a-2 (the PR #121 re-audit's follow-ups M1-M8 plus
+the network guard and the widened store guard) is **PR #123**
+(`claude/audit-round4a-2`; re-audit verdict merge after one shadowed test name was
+un-shadowed; **merged bb616b7**). Its re-audit's follow-ups (a lone CR still
+splits the cursor and gate definitions; the network guard's comment overstates
+its scope — UDP, child processes, and C-level connectors are covered only by
+the PGHOST environment; a fixture that repoints PGHOST plus an import-bound
+connector reaches the live database; PGSERVICE pops untested; four surviving
+mutations; the midnight flake in `test_daily_sync_trigger.py`, a module-level
+`date.today()`) are round 4a-3 (`claude/audit-round4a-3`, running).
 
 ## Tranche 3c — retrieval and serving (both lenses, 2026-09-08 evening)
 
@@ -366,32 +375,32 @@ Fix round 4b on `claude/audit-round4b`.
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| R1 | `scripts/fetch-memories.py:513-525,552-555,608-611` — the JSONL fallback sorts naive and aware datetimes together (date-only legacy records are still on disk), so `/recall`'s depth fetch dies with a `TypeError` exactly when Postgres is down; the retrieval hook fixed the same defect at `session-start-retrieval.py:452` and this script did not | CONFIRMED by repro | **next** (round 4b, `claude/audit-round4b`) |
-| R2 | `scripts/fetch-memories.py:462-510` (`matches_filters`) and `scripts/memory_mcp.py:250-271,433-445` never check `is_active`, so every non-Postgres path returns forgotten memories, ranked first, unmarked; `commands/forget.md:62-65` promises the opposite | CONFIRMED by repro | **next** (round 4b, `claude/audit-round4b`) |
-| R3 | `commands/recall.md:57-70,234` — the `/recall` procedure itself filters on content, category, and tag only and states that all memories are searched; it is the path `/forget` names as its id source | CONFIRMED by reading | **next** (round 4b, `claude/audit-round4b`) |
-| R4 | `scripts/project_id.py:56` does not encode `.` the way Claude Code does (live: `-home-shawn-personal-assistant--claude-worktrees-…`, double dash); any cwd with a dot component sees zero same-project memories, which is the drift the module docstring exists to prevent; `resolve()` breaks a symlinked cwd the same way | CONFIRMED by repro and directory evidence | **next** (round 4b, `claude/audit-round4b`) |
-| RT1 | `scripts/fetch-memories.py:241-301` — the whole Postgres query body is unreachable by the suite (a hard-coded result after connect passes 130 of 130); reading `memories` instead of `active_memories` (:248, and `memory_mcp.py:491`), `AND` to `OR` (:281-283), `DESC` to `ASC`, and `LIMIT` ignored all stay green | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
-| RT2 | `scripts/fetch-memories.py:710-803` — `main()` has no test: deleting the JSONL fallback and the `--limit` validation pass; `parse_args`, `_staleness_warning`, and `_log_invocation` are unreferenced by any test | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
-| RT3 | `scripts/memory_mcp.py:390-392,251-271` — `search_sessions` returning a hard-coded list is green; the JSONL fallback test stubs `matches_filters` to `True`, so dropping the project filter, reversing the sort, and dropping the limit pass together | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
-| RT4 | `scripts/search-sessions.py` has zero coverage in the full suite (LIKE escaping, the role filter, and the rank order all mutable); `scripts/fetch-memories.py:318-430` `try_semantic` is never called (worst matches first stays green) | CONFIRMED (mutation, full suite) | **next** (round 4b, `claude/audit-round4b`) |
+| R1 | `scripts/fetch-memories.py:513-525,552-555,608-611` — the JSONL fallback sorts naive and aware datetimes together (date-only legacy records are still on disk), so `/recall`'s depth fetch dies with a `TypeError` exactly when Postgres is down; the retrieval hook fixed the same defect at `session-start-retrieval.py:452` and this script did not | CONFIRMED by repro | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| R2 | `scripts/fetch-memories.py:462-510` (`matches_filters`) and `scripts/memory_mcp.py:250-271,433-445` never check `is_active`, so every non-Postgres path returns forgotten memories, ranked first, unmarked; `commands/forget.md:62-65` promises the opposite | CONFIRMED by repro | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| R3 | `commands/recall.md:57-70,234` — the `/recall` procedure itself filters on content, category, and tag only and states that all memories are searched; it is the path `/forget` names as its id source | CONFIRMED by reading | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| R4 | `scripts/project_id.py:56` does not encode `.` the way Claude Code does (live: `-home-shawn-personal-assistant--claude-worktrees-…`, double dash); any cwd with a dot component sees zero same-project memories, which is the drift the module docstring exists to prevent; `resolve()` breaks a symlinked cwd the same way | CONFIRMED by repro and directory evidence | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT1 | `scripts/fetch-memories.py:241-301` — the whole Postgres query body is unreachable by the suite (a hard-coded result after connect passes 130 of 130); reading `memories` instead of `active_memories` (:248, and `memory_mcp.py:491`), `AND` to `OR` (:281-283), `DESC` to `ASC`, and `LIMIT` ignored all stay green | CONFIRMED (mutation) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT2 | `scripts/fetch-memories.py:710-803` — `main()` has no test: deleting the JSONL fallback and the `--limit` validation pass; `parse_args`, `_staleness_warning`, and `_log_invocation` are unreferenced by any test | CONFIRMED (mutation) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT3 | `scripts/memory_mcp.py:390-392,251-271` — `search_sessions` returning a hard-coded list is green; the JSONL fallback test stubs `matches_filters` to `True`, so dropping the project filter, reversing the sort, and dropping the limit pass together | CONFIRMED (mutation) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT4 | `scripts/search-sessions.py` has zero coverage in the full suite (LIKE escaping, the role filter, and the rank order all mutable); `scripts/fetch-memories.py:318-430` `try_semantic` is never called (worst matches first stays green) | CONFIRMED (mutation, full suite) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
 
 ### Medium (retrieval)
 
 | # | Finding | Disposition |
 |---|---|---|
-| R5 | `scripts/memory_mcp.py` — six tools serve memories and none logs to `surfaced.log`; `tier-2-retrieval.md:82-92` names three paths, MCP is an undeclared fourth, so earned-utility counts are biased | **next** (round 4b, `claude/audit-round4b`) |
-| R6 | `scripts/fetch-memories.py:732-757` — `--semantic` silently discards `--query` and `--id`, and an empty semantic result never falls back to FTS despite the stderr text (SUSPECTED) | **next** (round 4b, `claude/audit-round4b`) |
-| R7 | `scripts/fetch-memories.py:389-390` — rows without an embedding are dropped, not ranked last: a memory written since the last backfill is invisible to `--semantic` and MCP `semantic_search`, undocumented | **next** (round 4b, `claude/audit-round4b`) (document and count) |
-| R8 | `commands/recall.md:174-187` — the session-search snippet interpolates user text into `plainto_tsquery(...)` inside a `psql -c` shell string | **next** (round 4b, `claude/audit-round4b`) (use `search-sessions.py`) |
-| R9 | `scripts/search-sessions.py:70-86` — a `--substring` pattern under three characters cannot use the trigram index and no statement or connect timeout exists anywhere in `scripts/`; the MCP tool exposes it (SUSPECTED) | **next** (round 4b, `claude/audit-round4b`) |
-| RT5 | `scripts/fetch-memories.py:496` — multi-tag OR to AND survives (every tag test passes one tag) | **next** (round 4b, `claude/audit-round4b`) |
-| RT6 | `scripts/surfacing_stats.py:42` — the reader's default path is never compared with the writer's; `_render_human` and `main()` untested | **next** (round 4b, `claude/audit-round4b`) |
-| RT7 | `scripts/log-recall.py:106-141` — `main()` untested; writing `source=fetch` for a recall passes | **next** (round 4b, `claude/audit-round4b`) |
-| RT8 | `scripts/memory_mcp.py:437` — `get_memory` prefix match survives | **next** (round 4b, `claude/audit-round4b`) |
-| RT9 | The `SchemaVersionError` guard is unpinned at every read call site (`fetch-memories.py:237,377`, `memory_mcp.py:111`) | **next** (round 4b, `claude/audit-round4b`) |
-| RT10 | `scripts/project_id.py:59-81,119-208` — `decode_project_id`, `repo_set`, `repo_set_for` untested (every id decoding to `/` passes) | **next** (round 4b, `claude/audit-round4b`) |
-| RT11 | `scripts/resolve_session_id.py` — zero coverage, nothing imports it; the planned `tests/test_resolve_session_id.py` does not exist | **next** (round 4b, `claude/audit-round4b`) |
-| RT12 | Write side: `log-recall.py:87` and `log-confab-flag.py:169` bind a `__file__`-derived default log path at import with no pytest guard, and `fetch-memories.py:813` has no injection point — a throwaway test created `logs/fetch-memories.log` and `logs/confab-flags.log` in the checkout and the suite stayed green (S22's fix reached one of four writers) | **next** (round 4b, `claude/audit-round4b`) |
+| R5 | `scripts/memory_mcp.py` — six tools serve memories and none logs to `surfaced.log`; `tier-2-retrieval.md:82-92` names three paths, MCP is an undeclared fourth, so earned-utility counts are biased | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| R6 | `scripts/fetch-memories.py:732-757` — `--semantic` silently discards `--query` and `--id`, and an empty semantic result never falls back to FTS despite the stderr text (SUSPECTED) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| R7 | `scripts/fetch-memories.py:389-390` — rows without an embedding are dropped, not ranked last: a memory written since the last backfill is invisible to `--semantic` and MCP `semantic_search`, undocumented | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) (document and count) |
+| R8 | `commands/recall.md:174-187` — the session-search snippet interpolates user text into `plainto_tsquery(...)` inside a `psql -c` shell string | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) (use `search-sessions.py`) |
+| R9 | `scripts/search-sessions.py:70-86` — a `--substring` pattern under three characters cannot use the trigram index and no statement or connect timeout exists anywhere in `scripts/`; the MCP tool exposes it (SUSPECTED) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT5 | `scripts/fetch-memories.py:496` — multi-tag OR to AND survives (every tag test passes one tag) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT6 | `scripts/surfacing_stats.py:42` — the reader's default path is never compared with the writer's; `_render_human` and `main()` untested | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT7 | `scripts/log-recall.py:106-141` — `main()` untested; writing `source=fetch` for a recall passes | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT8 | `scripts/memory_mcp.py:437` — `get_memory` prefix match survives | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT9 | The `SchemaVersionError` guard is unpinned at every read call site (`fetch-memories.py:237,377`, `memory_mcp.py:111`) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT10 | `scripts/project_id.py:59-81,119-208` — `decode_project_id`, `repo_set`, `repo_set_for` untested (every id decoding to `/` passes) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT11 | `scripts/resolve_session_id.py` — zero coverage, nothing imports it; the planned `tests/test_resolve_session_id.py` does not exist | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
+| RT12 | Write side: `log-recall.py:87` and `log-confab-flag.py:169` bind a `__file__`-derived default log path at import with no pytest guard, and `fetch-memories.py:813` has no injection point — a throwaway test created `logs/fetch-memories.log` and `logs/confab-flags.log` in the checkout and the suite stayed green (S22's fix reached one of four writers) | **PR #122** (`claude/audit-round4b`; first re-audit: merge after the bare `/recall` branch gains the `is_active` step — done in round 4b-2 with a shared soft-delete predicate, `list_recent` through the fake database, and the test-hardening follow-ups; second re-audit running) |
 
 Lows recorded: R10 `log-recall --limit` not sanitised (forged columns);
 R11 FTS order has no final tiebreak; R12 `show_turns` multiplies rows with
@@ -429,39 +438,39 @@ separate checkout) and is not pinned by this repository. Fix round 4c on
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| AR1 | `check-archive-drift.py:66` (4,000 prose chars) and `bulk-archive.py:2286-2298` (five turns by default) disagree on "substantive", so a session the gate reports is refused by the archiver at the flags the gate's own remediation line names: a permanent session-start gate | CONFIRMED by repro | **next** (round 4c, `claude/audit-round4c`) |
-| AR2 | `bulk-archive.py:479` treats a catalogue id as archived, three lines after logging that it has no metadata on disk, against the docstring and `infrastructure-reference.md:191`; a ghost entry suppresses archiving while the drift check keeps flagging it | CONFIRMED by repro | **next** (round 4c, `claude/audit-round4c`) |
-| AR3 | `bulk-archive.py` has no completeness guard (no grace, no size re-check at archive time; `verify` checks existence only; validation never opens a transcript): a transcript copied mid-session is frozen as canonical and every check reports clean | CONFIRMED (absence) | **next** (round 4c, `claude/audit-round4c`) |
-| AR4 | `backfill-summaries.py:312,466` reach the Anthropic API on the default path with no estimate and no confirmation, against the API review gate every sibling honours | CONFIRMED by reading | **next** (round 4c, `claude/audit-round4c`) |
-| AR5 | `backfill-summaries.py:275-285` writes a summary for any id in the model's reply found in the canonical; a hallucinated id overwrites an unrelated memory's summary | CONFIRMED by repro | **next** (round 4c, `claude/audit-round4c`) |
-| ART1 | `check-archive-drift.py` has zero tests: reporting zero drift always, or treating every session as trivial, leaves the full suite green; it is the sole tripwire for the failure class of the 77-session gap of 2026-07-28 | CONFIRMED (mutation, full suite) | **next** (round 4c, `claude/audit-round4c`) |
-| ART2 | `bulk-archive.py:516,535,334` — the incremental skip, the triviality predicate, and the on-disk id set are all unpinned (re-archive everything, or archive nothing, stays green); no test calls `discover_sessions` or any `cmd_*` entry point (ART3: swallowed failures, a blinded `verify`, a truncated catalogue all green) | CONFIRMED (mutation) | **next** (round 4c, `claude/audit-round4c`) |
-| ART4 | `normalise-archive-storage.py` has zero tests and deletes transcripts: removing the sha256 round-trip verify, or unlinking in the DIVERGENT branch, stays green | CONFIRMED (mutation, full suite) | **next** (round 4c, `claude/audit-round4c`) |
+| AR1 | `check-archive-drift.py:66` (4,000 prose chars) and `bulk-archive.py:2286-2298` (five turns by default) disagree on "substantive", so a session the gate reports is refused by the archiver at the flags the gate's own remediation line names: a permanent session-start gate | CONFIRMED by repro | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR2 | `bulk-archive.py:479` treats a catalogue id as archived, three lines after logging that it has no metadata on disk, against the docstring and `infrastructure-reference.md:191`; a ghost entry suppresses archiving while the drift check keeps flagging it | CONFIRMED by repro | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR3 | `bulk-archive.py` has no completeness guard (no grace, no size re-check at archive time; `verify` checks existence only; validation never opens a transcript): a transcript copied mid-session is frozen as canonical and every check reports clean | CONFIRMED (absence) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR4 | `backfill-summaries.py:312,466` reach the Anthropic API on the default path with no estimate and no confirmation, against the API review gate every sibling honours | CONFIRMED by reading | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR5 | `backfill-summaries.py:275-285` writes a summary for any id in the model's reply found in the canonical; a hallucinated id overwrites an unrelated memory's summary | CONFIRMED by repro | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART1 | `check-archive-drift.py` has zero tests: reporting zero drift always, or treating every session as trivial, leaves the full suite green; it is the sole tripwire for the failure class of the 77-session gap of 2026-07-28 | CONFIRMED (mutation, full suite) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART2 | `bulk-archive.py:516,535,334` — the incremental skip, the triviality predicate, and the on-disk id set are all unpinned (re-archive everything, or archive nothing, stays green); no test calls `discover_sessions` or any `cmd_*` entry point (ART3: swallowed failures, a blinded `verify`, a truncated catalogue all green) | CONFIRMED (mutation) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART4 | `normalise-archive-storage.py` has zero tests and deletes transcripts: removing the sha256 round-trip verify, or unlinking in the DIVERGENT branch, stays green | CONFIRMED (mutation, full suite) | **PR #124** (`claude/audit-round4c`; re-audit running) |
 
 ### Medium (archive)
 
 | # | Finding | Disposition |
 |---|---|---|
-| AR6 | `reprocess-sessions.py:211,520` — selection counts `source == "extraction"` but the writer stamps `"reprocessing"`: not idempotent, re-spends every run, appends byte-identical duplicate ids | **next** (round 4c, `claude/audit-round4c`) |
-| AR7 | `reprocess-sessions.py:640` — `custom_id` uses eight hex characters of the session id; a prefix collision mis-attributes or rejects the batch | **next** (round 4c, `claude/audit-round4c`) |
-| AR8 | `reprocess-sessions.py:769-773` — `apply BATCH_ID` never checks the state's batch id (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
-| AR9 | `normalise-archive-storage.py:166-167,185` — the raw file is unlinked before the meta is repointed, the repoint is a bare write, and a failed run never self-heals | **next** (round 4c, `claude/audit-round4c`) |
-| AR10 | `bulk-archive.py:288-291` — a live store with no top-level transcript at scan time is read as a merged snapshot and session directories become projects, silently | **next** (round 4c, `claude/audit-round4c`) |
-| AR11 | `reprocess-sessions.py:261-336` — no `isMeta`/`isSidechain` filter although the docstring claims parity with the hook; harness text can become memories | **next** (round 4c, `claude/audit-round4c`) |
-| AR12 | `data/logs/bulk-archive-progress.json` is git-tracked and honoured unconditionally, so a checkpoint synced from the other machine skips sessions this machine never archived | **next** (round 4c, `claude/audit-round4c`) (re-verify on disk) |
-| AR13 | `bulk-archive.py:2152-2159` — `_enrich_apply` replaces `auto_generated` wholesale (drops `three_ps`) and writes non-atomically (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
-| AR14 | `bulk-archive.py:737-748` — `archive_subagents` overwrites an existing archive with no temp file (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
-| AR15 | `bulk-archive.py:452` — the token counter is built before the toolkit is on `sys.path`, so the preferred `--min-content-tokens` floor is the one that fails to import | **next** (round 4c, `claude/audit-round4c`) |
-| AR16 | `bulk-archive.py:2254` — `CATALOG.json` written unlocked and non-atomically; a truncated file crashes the next `discover` at `:472` (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
-| AR17 | `push-archives-to-r2.sh:67-70` sources `.env` (shell-executes it, exports every secret to child processes); `rclone copy --s3-disable-checksum` lets a truncated canonical with a newer mtime overwrite the last offsite copy (SUSPECTED, never executed) | **next** (round 4c, `claude/audit-round4c`) |
-| AR18 | One batch-state slot per script (`bulk-archive.py:54`, `reprocess-sessions.py:55`): a second submit before apply destroys the first's map (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
-| ART5 | `search-archives-safe.sh:177,132` — the single-run `flock` and the nice/ionice/timeout prefix (the 2026-06-21 hard-lock fix) are untested | **next** (round 4c, `claude/audit-round4c`) |
-| ART6 | `push-archives-to-r2.sh:141,116` — dropping `--dry-run` or the mount guard survives; the one test stops at the version probe | **next** (round 4c, `claude/audit-round4c`) |
-| ART7 | `_scan_archives.py:91,118` — the per-line truncation (the OOM guard) and the exception tuple are untested | **next** (round 4c, `claude/audit-round4c`) |
-| ART8 | `reprocess-sessions.py:235,238,758,285` — the already-extracted skip, the session directory, the rewrite guard, and the partial-last-line handling are all mutable | **next** (round 4c, `claude/audit-round4c`) |
-| ART9 | `validate-session-metadata.py` (537 lines) has zero tests; disabling `check_schema` stays green | **next** (round 4c, `claude/audit-round4c`) |
-| ART10 | `backfill-summaries.py:241,228` — the line-count invariant and the temp-and-rename are removable; `:234` also writes `ensure_ascii=False` (the round-4a re-audit's M1) | **next** (round 4c, `claude/audit-round4c`) |
-| ART11 | `extract-transcript-text.py` and `extraction-prompt-spotcheck.py` have zero tests (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+| AR6 | `reprocess-sessions.py:211,520` — selection counts `source == "extraction"` but the writer stamps `"reprocessing"`: not idempotent, re-spends every run, appends byte-identical duplicate ids | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR7 | `reprocess-sessions.py:640` — `custom_id` uses eight hex characters of the session id; a prefix collision mis-attributes or rejects the batch | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR8 | `reprocess-sessions.py:769-773` — `apply BATCH_ID` never checks the state's batch id (SUSPECTED) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR9 | `normalise-archive-storage.py:166-167,185` — the raw file is unlinked before the meta is repointed, the repoint is a bare write, and a failed run never self-heals | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR10 | `bulk-archive.py:288-291` — a live store with no top-level transcript at scan time is read as a merged snapshot and session directories become projects, silently | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR11 | `reprocess-sessions.py:261-336` — no `isMeta`/`isSidechain` filter although the docstring claims parity with the hook; harness text can become memories | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR12 | `data/logs/bulk-archive-progress.json` is git-tracked and honoured unconditionally, so a checkpoint synced from the other machine skips sessions this machine never archived | **PR #124** (`claude/audit-round4c`; re-audit running) (re-verify on disk) |
+| AR13 | `bulk-archive.py:2152-2159` — `_enrich_apply` replaces `auto_generated` wholesale (drops `three_ps`) and writes non-atomically (SUSPECTED) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR14 | `bulk-archive.py:737-748` — `archive_subagents` overwrites an existing archive with no temp file (SUSPECTED) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR15 | `bulk-archive.py:452` — the token counter is built before the toolkit is on `sys.path`, so the preferred `--min-content-tokens` floor is the one that fails to import | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR16 | `bulk-archive.py:2254` — `CATALOG.json` written unlocked and non-atomically; a truncated file crashes the next `discover` at `:472` (SUSPECTED) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR17 | `push-archives-to-r2.sh:67-70` sources `.env` (shell-executes it, exports every secret to child processes); `rclone copy --s3-disable-checksum` lets a truncated canonical with a newer mtime overwrite the last offsite copy (SUSPECTED, never executed) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| AR18 | One batch-state slot per script (`bulk-archive.py:54`, `reprocess-sessions.py:55`): a second submit before apply destroys the first's map (SUSPECTED) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART5 | `search-archives-safe.sh:177,132` — the single-run `flock` and the nice/ionice/timeout prefix (the 2026-06-21 hard-lock fix) are untested | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART6 | `push-archives-to-r2.sh:141,116` — dropping `--dry-run` or the mount guard survives; the one test stops at the version probe | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART7 | `_scan_archives.py:91,118` — the per-line truncation (the OOM guard) and the exception tuple are untested | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART8 | `reprocess-sessions.py:235,238,758,285` — the already-extracted skip, the session directory, the rewrite guard, and the partial-last-line handling are all mutable | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART9 | `validate-session-metadata.py` (537 lines) has zero tests; disabling `check_schema` stays green | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART10 | `backfill-summaries.py:241,228` — the line-count invariant and the temp-and-rename are removable; `:234` also writes `ensure_ascii=False` (the round-4a re-audit's M1) | **PR #124** (`claude/audit-round4c`; re-audit running) |
+| ART11 | `extract-transcript-text.py` and `extraction-prompt-spotcheck.py` have zero tests (SUSPECTED) | **PR #124** (`claude/audit-round4c`; re-audit running) |
 
 Lows recorded: AR19 documented `--resume` flag absent; AR20 `setup_logging`
 tracebacks on a dangling `logs` symlink; AR21 `_scan_archives` and `verify`
@@ -498,34 +507,34 @@ survived (eleven applied at once still pass the full suite); 5 critical,
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| E1 | `lit-scout-zotero-import.py:894` — the only duplicate guard on both Zotero write paths is an exact DOI match with no URL or scheme normalisation, while `zotero.py:328-372` normalises; an item stored as `https://doi.org/…` (the connector's form) is invisible, so `--live` imports and `add-doi-to-zotero.py` create duplicates and the latter's safety claim is false | CONFIRMED by repro | **next** (round 4d, `claude/audit-round4d`) |
-| ET1 | `lit-scout-zotero-import.py:1341-1560` — the whole write path is untested: always-create, publish-on-dry-run, wrong collection, no credential check, read-write SQLite, and no manifest idempotency each stay green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET2 | `publish-dashboard.py:540` — `main()` is never invoked: publish without `--publish`, without a token or canvas id, a failed Slack call reporting success, an empty dashboard published, and a repointed API host all stay green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET3 | `zotero.py:70` — the read-only (`immutable=1`) promise is untested because every test replaces `_connect`; a read-write open of the live Zotero database stays green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET4 | `lit-search.py:262,395` — per-host pacing and `Retry-After` handling are deletable (the suite pays the pacing cost without asserting it) | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET5 | `sync-symlinks.sh:61-75` — `prune_stale_symlinks`, the only `rm` in the tranche, has zero coverage: `-L` to `-e` and `rm` to `rm -rf` stay green and would together delete real directories under `~/.claude` | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+| E1 | `lit-scout-zotero-import.py:894` — the only duplicate guard on both Zotero write paths is an exact DOI match with no URL or scheme normalisation, while `zotero.py:328-372` normalises; an item stored as `https://doi.org/…` (the connector's form) is invisible, so `--live` imports and `add-doi-to-zotero.py` create duplicates and the latter's safety claim is false | CONFIRMED by repro | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET1 | `lit-scout-zotero-import.py:1341-1560` — the whole write path is untested: always-create, publish-on-dry-run, wrong collection, no credential check, read-write SQLite, and no manifest idempotency each stay green | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET2 | `publish-dashboard.py:540` — `main()` is never invoked: publish without `--publish`, without a token or canvas id, a failed Slack call reporting success, an empty dashboard published, and a repointed API host all stay green | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET3 | `zotero.py:70` — the read-only (`immutable=1`) promise is untested because every test replaces `_connect`; a read-write open of the live Zotero database stays green | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET4 | `lit-search.py:262,395` — per-host pacing and `Retry-After` handling are deletable (the suite pays the pacing cost without asserting it) | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET5 | `sync-symlinks.sh:61-75` — `prune_stale_symlinks`, the only `rm` in the tranche, has zero coverage: `-L` to `-e` and `rm` to `rm -rf` stay green and would together delete real directories under `~/.claude` | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
 
 ### Medium (external)
 
 | # | Finding | Disposition |
 |---|---|---|
-| E2 | `lit-scout-zotero-import.py:463-477` — `.env` loader keeps surrounding quotes and mis-parses `export` lines; `env-fingerprint.sh` reports the same file healthy | **next** (round 4d, `claude/audit-round4d`) |
-| E3 | `lit-search.py:203` — the Semantic Scholar key is set client-wide and sent to CrossRef, OpenAlex, and DataCite, against the rule the docstring above it states | **next** (round 4d, `claude/audit-round4d`) |
-| E4 | `lit-scout-zotero-import.py:1117` — CrossRef `date-parts: [[null]]` writes the literal string "None" as the Zotero date | **next** (round 4d, `claude/audit-round4d`) |
-| E5 | `lit-scout-zotero-import.py:1099` — the title is written with HTML intact while the abstract is stripped | **next** (round 4d, `claude/audit-round4d`) |
-| E6 | `add-doi-to-zotero.py:139` — reads only the retirement-candidate key; breaks when it is revoked (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E7 | `publish-dashboard.py:479` — the bearer token follows redirects to any host (stdlib redirect handler) | **next** (round 4d, `claude/audit-round4d`) |
-| E8 | `lit-scout-zotero-import.py:1277` — `ensure_subcollection` reads one unpaginated page, so a same-named twin is created once the staging collection grows (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E9 | `sync-symlinks.sh:243` — `pip install --upgrade -r requirements.txt` runs unattended at session start whenever one probe import is missing (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E10 | `sync-symlinks.sh:133` — `git submodule update --init --recursive` at every session start detaches an initialised `data/` and can orphan a concurrent session's commits (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E11 | `compose-global-claude-md.sh:25-30` — sources from the script's tree, target from `$HOME`: run from a worktree it overwrites the live global instructions with the branch's content | CONFIRMED in sandbox; **next** (round 4d, `claude/audit-round4d`) |
-| ET6-7 | `_http_retry.py:249,265` — the timeout kwarg and the exception tuple are mutable unnoticed | **next** (round 4d, `claude/audit-round4d`) |
-| ET8-10 | `compose-global-claude-md.sh:85,78,117` — `--dry-run` writing, layer order, and a write to a Sol-owned surface all stay green | **next** (round 4d, `claude/audit-round4d`) |
-| ET11 | `sync-symlinks.sh:120` — the "real file, leave it" branch untested | **next** (round 4d, `claude/audit-round4d`) |
-| ET12 | `zotero.py:397,406` — `_normalise_doi` and `find_by_doi` have no test anywhere (a prior silent-failure defect is recorded in `wiki/working-notes.md:577`) | **next** (round 4d, `claude/audit-round4d`) |
-| ET13 | `lit-scout-zotero-import.py:1271` — subcollection idempotency untested | **next** (round 4d, `claude/audit-round4d`) |
-| ET14 | `env-fingerprint.sh` — zero tests for the one script whose purpose is handling secrets safely | **next** (round 4d, `claude/audit-round4d`) |
-| ET15 | `syncthing-bind-heal.sh:43-46` — the precondition before `docker compose up --force-recreate` is untested | **next** (round 4d, `claude/audit-round4d`) |
+| E2 | `lit-scout-zotero-import.py:463-477` — `.env` loader keeps surrounding quotes and mis-parses `export` lines; `env-fingerprint.sh` reports the same file healthy | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E3 | `lit-search.py:203` — the Semantic Scholar key is set client-wide and sent to CrossRef, OpenAlex, and DataCite, against the rule the docstring above it states | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E4 | `lit-scout-zotero-import.py:1117` — CrossRef `date-parts: [[null]]` writes the literal string "None" as the Zotero date | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E5 | `lit-scout-zotero-import.py:1099` — the title is written with HTML intact while the abstract is stripped | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E6 | `add-doi-to-zotero.py:139` — reads only the retirement-candidate key; breaks when it is revoked (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E7 | `publish-dashboard.py:479` — the bearer token follows redirects to any host (stdlib redirect handler) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E8 | `lit-scout-zotero-import.py:1277` — `ensure_subcollection` reads one unpaginated page, so a same-named twin is created once the staging collection grows (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E9 | `sync-symlinks.sh:243` — `pip install --upgrade -r requirements.txt` runs unattended at session start whenever one probe import is missing (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E10 | `sync-symlinks.sh:133` — `git submodule update --init --recursive` at every session start detaches an initialised `data/` and can orphan a concurrent session's commits (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E11 | `compose-global-claude-md.sh:25-30` — sources from the script's tree, target from `$HOME`: run from a worktree it overwrites the live global instructions with the branch's content | CONFIRMED in sandbox; **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET6-7 | `_http_retry.py:249,265` — the timeout kwarg and the exception tuple are mutable unnoticed | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET8-10 | `compose-global-claude-md.sh:85,78,117` — `--dry-run` writing, layer order, and a write to a Sol-owned surface all stay green | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET11 | `sync-symlinks.sh:120` — the "real file, leave it" branch untested | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET12 | `zotero.py:397,406` — `_normalise_doi` and `find_by_doi` have no test anywhere (a prior silent-failure defect is recorded in `wiki/working-notes.md:577`) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET13 | `lit-scout-zotero-import.py:1271` — subcollection idempotency untested | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET14 | `env-fingerprint.sh` — zero tests for the one script whose purpose is handling secrets safely | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET15 | `syncthing-bind-heal.sh:43-46` — the precondition before `docker compose up --force-recreate` is untested | **PR #125** (`claude/audit-round4d`; re-audit running) |
 
 Lows recorded: E12 dead "n.d." default; E13 only the exact `--dry-run`
 spelling is safe; E14 POST retried without an idempotency rule; E15
@@ -547,6 +556,149 @@ the retry helper; the symlink pruner cannot follow a link into `data/`;
 the composer is atomic and never touches a Sol-owned surface; no host is
 rebooted, restarted, or unmounted except a local docker recreate behind
 three preconditions.
+
+## Tranche 6 — bake-off and style tooling (both lenses, 2026-09-09 early)
+
+Scope: `bake-off-metadata.py`, `resample-bake-off-manifest.py`,
+`analyse-wiki-vocabulary.py`, the two `corpus-style-analyser` agent
+definitions, and the path defaults of four `scripts/style-analyser/`
+scripts. No tests exist for any of the three scripts. Lens A: 1 critical,
+14 medium, 10 low. Lens B: 3 damaging mutations, all green; 4 critical,
+5 medium, plus a minimum-suite specification. Fix round 4e on
+`claude/audit-round4e`. The remaining fourteen files under
+`scripts/style-analyser/` are a later tranche.
+
+### Critical (bake-off)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| AS1 | `bake-off-metadata.py:1126` — `--build-rubric` replaces a literal marker pair, so on an already-populated rubric (or any separation between the markers) the body is left as it was while the blind key is regenerated from the current arms; every blinded score then decodes to the wrong model, and "Wrote populated rubric" prints either way | CONFIRMED by repro | **next** (round 4e, `claude/audit-round4e`) |
+| AST1 | Same site from the test side: a template with one blank line between the markers produced a five-line empty rubric, exit 0, with a fully populated key beside it | CONFIRMED by repro | **next** (round 4e, `claude/audit-round4e`) |
+| AST2 | `resample-bake-off-manifest.py:550-564` — dedup keeps the LIVE copy (the sort key puts `~/.claude/…` before `~/cc-archives/…`), inverting the comment's stated preference; every dual-resident session loses its meta and drops out of both tiers | CONFIRMED | **next** (round 4e, `claude/audit-round4e`) |
+| AST3 | `resample-bake-off-manifest.py:52-57,518` — hard-coded absolute path to the live manifest, no arguments, no dry run, unconditional non-atomic overwrite: any invocation, from any copy, destroys the manifest the committed responses were generated against (Lens A AS4) | CONFIRMED | **next** (round 4e, `claude/audit-round4e`) |
+| AST4 | The hermeticity guard does not watch `reports/` or `wiki/`: an analyser that writes into the public tree stays green | CONFIRMED (mutation) | round 4a-2 (guard widening) |
+
+### Medium (bake-off)
+
+| # | Finding | Disposition |
+|---|---|---|
+| AS2 | `bake-off-metadata.py:1054` — a fifth arm is silently dropped from rubric and key; the blinding is reverse-only (two permutations, not twenty-four) | **next** (round 4e, `claude/audit-round4e`) |
+| AS3 | `bake-off-metadata.py:112-113` — Sonnet prices the comment says went stale on 1 Sep 2026; estimates under-count by a third | **next** (round 4e, `claude/audit-round4e`) |
+| AS5 | `resample-bake-off-manifest.py:470,487` — `generated_at` from the clock, so the same seed is not byte-reproducible | **next** (round 4e, `claude/audit-round4e`) |
+| AS6 | `bake-off-metadata.py:293,472` — `custom_id` uses eight characters of the session id and the map collapses duplicates (sub-agent ids share long prefixes): one session's output written under another's id | **next** (round 4e, `claude/audit-round4e`) |
+| AS7 | `bake-off-metadata.py:1263-1278` — the live prompt names no model, count, mode, or cost, and `--yes` skips it; the API review gate is not presented | **next** (round 4e, `claude/audit-round4e`) |
+| AS8 | `bake-off-metadata.py:1251` — `--haiku-apply` reaches the API before the confirmation block (free retrieval; the launch plan claims otherwise) | **next** (round 4e, `claude/audit-round4e`) (document) |
+| AS9 | `bake-off-metadata.py:668,826,922` — bare response writes; a re-run overwrites a complete response with an error object; usage replaced wholesale | **next** (round 4e, `claude/audit-round4e`) |
+| AS10 | `analyse-wiki-vocabulary.py:191,196,149` — empty or undated corpus and non-string tags crash `/weekly-review` step 5b | **next** (round 4e, `claude/audit-round4e`) |
+| AS11-13 | `agents/corpus-style-analyser-v2.md:657,765-767,574` — Safeguard 5 names the wrong section (§9 for §11); the "correct" mean sentence length contradicts the file's own appendix and the results JSON (21.45); Steps 1-2 require a tmpfs manifest with no regeneration path while a durable one exists | **next** (round 4e, `claude/audit-round4e`) |
+| AS14 | `scripts/style-analyser/phase3_promotion.py:38-39` and three siblings — relative output paths with no override, so the documented invocations write into the wrong tree from any other cwd | **next** (round 4e, `claude/audit-round4e`) |
+| AS15 | `bake-off-metadata.py:1,482` — the shebang and the printed recovery command use the system interpreter, which lacks the toolkit and the clients | **next** (round 4e, `claude/audit-round4e`) |
+| AST5-9 | Fifth-arm truncation, empty-manifest crash after the cost file is written, silent under-filled strata, two-permutation blinding, `.env` hydrated before the dry-run branch | **next** (round 4e, `claude/audit-round4e`) |
+
+Lows recorded: AS16 chars-over-four token heuristic (recorded as
+authoritative); AS17-19 docstrings out of date (two arms, thinking budget,
+100-token floor); AS20 under-filled stratum silent; AS21-22 status
+vocabulary and counts in the agent definitions ("fifth status" of six,
+"five scripts" of fourteen, "§§1-8" after the relayout); AS23 no NFC
+normalisation; AS24 empty manifest; AS25 the committed manifest predates
+the committed writer (bare-date `generated_at`); AST10-14 crashes,
+strip/lower asymmetry, `EOFError` on closed stdin, two clock reads, the
+out-of-repo extractor unpinned. Cross-file: v1 and v2 definitions disagree
+on section count, status vocabulary, and pipeline; v2 contradicts itself on
+reconciliation; response-to-manifest provenance is one-directional (no
+model id, prompt hash, or manifest hash beside the responses). Verified
+correct: no output lands in the public tree; nothing here writes the
+memory store; no network call outside `bake-off-metadata.py`; no session
+sampled twice; no US spellings.
+
+## Tranche 7 — memory readers, reports, and anchors (Lens A, 2026-09-09; Lens B running)
+
+Scope: `memory-health-report.py`, `drift-sweep.py`, `anchor_verify.py`,
+`triage_anchors.py`, `audit-postgres-sync.py`, and the commands that invoke
+them. Lens A: 3 critical, 7 medium, 8 low. Fix round 4f on
+`claude/audit-round4f` once Lens B reports.
+
+### Critical (anchors)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| AN1 | `anchor_verify.py:98-106` — `git log --all -- <ref>` runs without `--literal-pathspecs`, so a file reference with glob characters is matched as a pattern and a junk anchor verifies true (then `confidence: high`); fifteen live records carry such a reference | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+| AN2 | `anchor_verify.py:195-222` with `triage_anchors.py:50-88` — the recovery index pools every repository's file list into one namespace, so a dead path in project A "recovers" to a same-suffix file in project B, verifies true, and `recover_anchors.py:131-155` writes the foreign reference into the corpus | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+| AN3 | `anchor_verify.py:93-95,109-110,258-259` — a missing `git`, an unreadable repository, or an unmounted mount returns "false", never "pending", against the module contract at `:32-35`; the drift sweep then logs a permanent bogus failure spike and `recover_anchors` rewrites `verified` and `confidence` from it | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+
+### Medium (readers)
+
+| # | Finding | Disposition |
+|---|---|---|
+| AN4 | `memory-health-report.py:721` reaches `audit-postgres-sync.py:246-250`, which `sys.exit(2)`s on a schema mismatch inside a library function, so a schema bump kills `/memory-health` with no report although most sections need no Postgres | **next** (round 4f, `claude/audit-round4f`) |
+| AN5 | `memory-health-report.py:197-224` — "anchored" counts records whose anchors are all of unknown type (103 live), overstating verifiable coverage; a string-valued `anchors` iterates per character | **next** (round 4f, `claude/audit-round4f`) |
+| AN6 | `drift-sweep.py:69-86` — a record with a missing or unparseable `created_at` is silently excluded from the "never ages out" back-set | **next** (round 4f, `claude/audit-round4f`) |
+| AN7 | `drift-sweep.py:79-86` — no floor on the repository set: a degraded set (other machine, unmounted repo) makes every anchor false and appends the fabricated spike to the append-only trend log | **next** (round 4f, `claude/audit-round4f`) |
+| AN8 | `memory-health-report.py:63,490-503` — an unreadable quarantine file becomes a count of zero and an overall PASS; the quarantine path is the one constant without the symlink fallback | **next** (round 4f, `claude/audit-round4f`) |
+| AN9 | `audit-postgres-sync.py:139-168,282-291` — the audit compares id sets only, so divergent content, duplicate lines collapsed to one id, and Postgres-only orphans all read "clean" although content divergence is the sync's expected failure mode | **next** (round 4f, `claude/audit-round4f`) |
+| AN10 | `drift-sweep.py:83-85`, `memory-health-report.py:771-773` — unmemoised resolvers: one unresolvable reference costs up to 72 git spawns, repeated per duplicate across 5,537 anchored records (SUSPECTED) | **next** (round 4f, `claude/audit-round4f`) |
+
+Lows recorded: AN11 `..` escapes the repository in the existence check; AN12
+four-character hex accepted as a commit reference across 36 repositories;
+AN13 the two surfaced-log readers still ignore `PA_SURFACED_LOG`; AN14 four
+schema-dependent queries before any schema check, no statement timeout; AN15
+659 absolute or tilde-rooted anchors have no recovery path; AN16 no
+`is_active` filter in any report section; AN17 top-five surfaced ids without
+a corpus membership check; AN18 the trend appender swallows every exception.
+Cross-file: three definitions of a line (the sync's is being unified on PR
+#123); `--literal-pathspecs` passed to `git add` and `git commit` in
+`recover_anchors` but not to the verifier's `git log`; two independently
+maintained repository sets that are identical today. Verified correct: no
+shell, every git call an argv list; empty-corpus arithmetic guarded; exactly
+one write site (the trend log); reports emit ids and counts only; UK
+spelling.
+
+## Tranche 8 — style-analyser scripts (Lens A, 2026-09-09; Lens B running)
+
+Scope: the fourteen scripts under `scripts/style-analyser/`. Lens A:
+5 critical, 10 medium, 18 low. No external call exists in any of them. Fix
+round 4g on `claude/audit-round4g` once Lens B reports.
+
+### Critical (style analyser)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| ST1 | `efficacy_score_judges.py:54` — any judge choice that is not the guide's side (a tie, a refusal, an empty string) is scored as a baseline win, biasing the headline result by the number of unusable judgements | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST2 | `efficacy_score_judges.py:47` — judgements parsed with a bare `json.loads`: a fenced or prose reply aborts, an empty file divides by zero, a duplicated pair id counts twice, a missing pair is silently dropped | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST3 | `efficacy_build_judge_tasks.py:129` — the unblinding key is written into the directory handed to the judge; pair ids also encode the key deterministically and each pair is emitted twice as identical files | CONFIRMED | **next** (round 4g, `claude/audit-round4g`) |
+| ST4 | `phase3_guide_verifier.py:394-403` — the count-over-words confabulation check matches the claimed number against any integer in the aggregate, so a figure attached to the wrong feature passes | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST5 | `phase1_pipeline.py:303-308` — hapax ratio divides by tokens while its docstring and the efficacy reference define it over types; the published figure is a different measure with a larger length artefact | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+
+### Medium (style analyser)
+
+| # | Finding | Disposition |
+|---|---|---|
+| ST6 | `phase3_guide_verifier.py:294-337` — an incidental word ("lower", "range") in the snippet downgrades a numeric FAIL to WARN | **next** (round 4g, `claude/audit-round4g`) |
+| ST7 | `phase3_guide_verifier.py:196,417-426` — any eight-character upper-case token is treated as a Zotero key, producing spurious FAILs | **next** (round 4g, `claude/audit-round4g`) |
+| ST8 | `phase1_pipeline.py:383-396` — passive counted per verb (ratio above one possible) where the definition says presence per sentence | **next** (round 4g, `claude/audit-round4g`) |
+| ST9 | `phase1_pipeline.py:397` — nominalisation per 1k words uses a punctuation-inclusive denominator unlike every other per-1k rate | **next** (round 4g, `claude/audit-round4g`) |
+| ST10 | `efficacy_build_reference.py:137,146` — windows measured before citation stripping land about a seventh short of the length they are matched to | **next** (round 4g, `claude/audit-round4g`) |
+| ST11 | `phase5_evaluator.py:948,1002-1012` — the "held-out real" sanity fixture is scored against a fit that includes itself (SUSPECTED) | **next** (round 4g, `claude/audit-round4g`) |
+| ST12 | `phase5_evaluator.py:1019-1021` — the sanity footer can say PASS over a table showing a fixture that is not farther | **next** (round 4g, `claude/audit-round4g`) |
+| ST13 | `efficacy_score_judges.py:36-39,83-89` — counterbalanced orders counted as independent trials, no test or interval, and the provenance line hard-coded | **next** (round 4g, `claude/audit-round4g`) |
+| ST14 | Both validators read a stale `/tmp` corpus layout: one crashes, the other silently reports zero examples, so neither precision estimate can be re-derived | **next** (round 4g, `claude/audit-round4g`) |
+| ST15 | `phase1_pipeline.py:106-148` — a body line beginning "References" in the last third truncates the document, including already-clean text | **next** (round 4g, `claude/audit-round4g`) |
+
+Lows recorded: ST16-ST33 (indentation collapsed in the injected guide;
+citation stripping mismatches its docstring; curly quotes and a numeric
+colon case; no NFC normalisation; MATTR silently becomes TTR under 100
+words; "exclude" matches "not excluded"; cross-paragraph exemplar splicing;
+documented counts wrong; suffix scan false positives; a length mismatch
+disarms the promotion guard; always-positive metrics auto-promote; excluded
+topics enter the feature profile; dead code and an unreachable allow-list;
+absolute thresholds on short passages; a re-run deletes collected
+judgements; the manifest written a level up; sentence filters that exclude
+words from one denominator but not another). Cross-file: three definitions
+of "passive" and two of "announcement colon"; no atomic write in twenty-odd
+output paths; no provenance (no hash, commit, model version, judge model,
+or prompt hash) in any output. Verified correct: MATTR windows; genuine
+leave-one-out; zero-variance guard; the exact sign-flip test; pairing by
+topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## Decisions for Shawn
 
@@ -1085,8 +1237,15 @@ three preconditions.
   second tracked path during a refused merge still reads as applied and
   drops the only copy; a legitimate bulk rewrite arriving via a merge
   commit is now a false stop; `grep -c ''` counts NUL bytes as lines.
-  Fourth round running: `applied` requires the stash's own hunks to
-  reverse-apply cleanly to the tree.
+  Fourth round done (947ac45-bb96d27): `applied` requires the entry's own
+  tracked diff to reverse-apply cleanly to the files on disk AND every
+  tracked path's status to have moved (binary paths never count as landed);
+  a merge is measured against the smallest of its parents; `grep -ac ''`;
+  a blob that cannot be counted is exit 4, not zero; the shrink guard
+  re-runs between the retry rebase and the retry push; orphaned sidecar
+  temps swept under the flock; the real write-failure path tested. 13 of
+  13 mutations killed; suite 2,549 with main merged (eca875e). Fourth
+  narrow re-audit running.
 - Round 3b (`surfacing_log.py`, S22's third member, plus the eleventh
   re-audit's follow-ups L1 and L6 from PR #117) is **PR #120, merged
   69a7590**; main suite 2,372. Four fixes (bab4990 lazy log path, 01efef0
@@ -1118,5 +1277,7 @@ three preconditions.
   it, but it is disclosed rather than caught; (vi) dormancy under pytest
   is silent: a production process that happens to import `pytest` would
   lose the surfacing log without a diagnostic.
-- Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
-  their findings arrive against corrected code.
+- Tranches 3b, 3c, 4, 5, and 6 ran on 2026-09-08/09 against corrected code
+  (sections above); tranches 7 and 8 (the memory readers and the
+  style-analyser scripts) have their Lens A sections above and Lens B running.
+  Every script under `scripts/` and `hooks/` is now covered by a tranche.

@@ -35,6 +35,7 @@ from _sync_cursor import (  # noqa: E402
     quarantine_record,
     read_cursor_file,
     read_cursor_file_locked,
+    split_jsonl_lines,
     update_cursor_file,
 )
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
@@ -1350,8 +1351,11 @@ def _sync_locked_body(
         cursor_line = 0
     cursor_key_was_present = "postgres_sync_line" in cursor_snapshot
 
-    # Read all lines and process from cursor position
-    lines = MEMORIES_FILE.read_text(encoding="utf-8").splitlines()
+    # Read all lines and process from cursor position. ``split_jsonl_lines``
+    # breaks on "\n" alone — the one definition of "a line" this system
+    # shares with _sync_cursor.count_jsonl_lines, which the bulk rewriters'
+    # backlog gate compares this cursor against (audit round 4a-2, M2).
+    lines = split_jsonl_lines(MEMORIES_FILE.read_text(encoding="utf-8"))
     total_lines = len(lines)
 
     # Shrink guard (item 22): if the canonical shrank below the saved cursor
@@ -1365,13 +1369,15 @@ def _sync_locked_body(
     # NOTHING, so re-scanning already-synced rows is cheap and idempotent.
     #
     # Computed inline against ``total_lines`` (not via detect_jsonl_shrink) on
-    # purpose: the cursor is SAVED as the ``splitlines()`` count below
+    # purpose: the cursor is SAVED as this count below
     # (``save_cursor(total_lines)``) and the slice ``lines[cursor_line:]`` uses
-    # the same list, so the shrink test must use that same count. The helper
-    # counts lines by file-handle iteration, which diverges from ``splitlines()``
-    # on embedded Unicode line separators (U+2028/U+2029/U+0085/…) and would
-    # fire a spurious shrink every cycle once such a char survives an
-    # ``ensure_ascii=False`` rewrite.
+    # the same list, so the shrink test must use that same count. Since audit
+    # round 4a-2 (M2) that count comes from ``split_jsonl_lines``, which breaks
+    # on "\n" alone — the same definition ``_sync_cursor.count_jsonl_lines``
+    # uses — so the cursor this cycle saves and the backlog gate the bulk
+    # rewriters run against it can no longer disagree. (They did while this
+    # used ``splitlines()``: a raw U+2028 below the cursor made the gate read
+    # "caught up" with records still unsynced beneath it.)
     if cursor_line > total_lines:
         logger.warning(
             "Canonical JSONL shrank below the sync cursor (cursor=%d, "

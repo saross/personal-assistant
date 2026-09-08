@@ -849,12 +849,32 @@ def detect_jsonl_shrink(
 MEMORIES_CURSOR_KEY = "postgres_sync_line"
 
 
+def split_jsonl_lines(text: str) -> list[str]:
+    """Split JSONL text into lines on ``"\n"`` alone (no trailing empty).
+
+    The one definition of "a line" that every reader and every cursor in
+    this system shares. Deliberately NOT ``str.splitlines()``: that also
+    breaks on U+2028, U+2029 and U+0085, which are legal inside a JSON
+    string, so the two disagree the moment such a character reaches disk
+    unescaped — and a cursor saved by one and compared by the other reads
+    as "caught up" while records sit unsynced beneath it (audit round
+    4a-2, finding M2).
+
+    ``len(split_jsonl_lines(path.read_text()))`` always equals
+    ``count_jsonl_lines(path)``; ``test_sync_cursor.py`` pins that.
+    """
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # a trailing newline terminates the last line
+    return lines
+
+
 def count_jsonl_lines(jsonl_path: Path) -> int:
     """Count the lines in ``jsonl_path``, splitting on ``"\n"`` alone.
 
-    Deliberately NOT ``str.splitlines()``: that also breaks on U+2028,
-    U+2029 and U+0085, which are legal inside a JSON string, so the two
-    disagree the moment such a character reaches disk unescaped.
+    The counting half of :func:`split_jsonl_lines`; see there for why
+    ``str.splitlines()`` is not used. Reads bytes, so it need not decode a
+    45 MB corpus just to count it.
     """
     if not jsonl_path.exists():
         return 0
@@ -865,6 +885,16 @@ def count_jsonl_lines(jsonl_path: Path) -> int:
     if not data.endswith(b"\n"):
         count += 1  # a final line with no terminator is still a line
     return count
+
+
+class UnusableCursor(RuntimeError):
+    """A sync cursor is present on disk and cannot be read as a position.
+
+    Raised by :func:`unsynced_line_backlog` so a line-deleting rewrite fails
+    CLOSED. Treating it as "no backlog" was the wrong default: a cursor
+    nobody can read is exactly the state in which the rewrite's effect on
+    the mirror cannot be reasoned about (audit round 4a-2, finding M2).
+    """
 
 
 def unsynced_line_backlog(
@@ -886,15 +916,56 @@ def unsynced_line_backlog(
     Returns ``0`` when the cursor key is ABSENT: a machine with no PostgreSQL
     never writes one, and refusing there would break archival on every
     non-amd-tower host. Only a cursor that is present and behind is a backlog.
+
+    Raises
+    ------
+    UnusableCursor
+        When the key IS present but is not a line number — a negative
+        integer, a non-digit string, a bool, ``null``, or a malformed cursor
+        file. Failing closed is the point: the caller is about to delete
+        lines, and an unreadable cursor means nobody can say which records
+        would end up beneath it.
     """
+    data = read_cursor_file(cursor_path)
+    if cursor_key not in data:
+        # ``read_cursor_file`` flattens "absent", "unparseable", and "an
+        # empty object" to the same ``{}``. Only the middle one is a refusal,
+        # so tell them apart here rather than failing open on all three.
+        if cursor_path.exists() and not data:
+            try:
+                parsed = json.loads(cursor_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise UnusableCursor(
+                    f"{cursor_path} could not be read as JSON ({exc}), so "
+                    f"{cursor_key} cannot be checked"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise UnusableCursor(
+                    f"{cursor_path} holds {type(parsed).__name__}, not a JSON "
+                    f"object, so {cursor_key} cannot be checked"
+                )
+        # Either no PostgreSQL on this machine, or a first-ever run.
+        return 0
     cursor = normalise_line_cursor(
-        read_cursor_file(cursor_path).get(cursor_key),
-        key=cursor_key,
-        logger=logger,
+        data.get(cursor_key), key=cursor_key, logger=logger,
     )
     if cursor is None:
-        return 0
+        raise UnusableCursor(
+            f"{cursor_key} in {cursor_path} is {data.get(cursor_key)!r}, "
+            f"which is not a line number"
+        )
     return max(0, count_jsonl_lines(jsonl_path) - cursor)
+
+
+def unusable_cursor_refusal(script: str, detail: str) -> str:
+    """The refusal text for a rewrite blocked by an unreadable cursor."""
+    return (
+        f"[{script}] the PostgreSQL sync cursor cannot be read: {detail}. "
+        f"This rewrite deletes lines and the cursor is a line position, so "
+        f"without it there is no way to tell which records would be stranded "
+        f"below it. Repair the cursor file (or run sync-to-postgres.py, which "
+        f"resets it), then re-run this script. Nothing was written."
+    )
 
 
 def postgres_backlog_refusal(script: str, backlog: int, cursor_path: Path) -> str:
