@@ -241,16 +241,37 @@ _lock_fd: int | None = None
 
 
 def _acquire_lock() -> bool:
-    """Acquire the shared daily-sync flock (non-blocking)."""
+    """Acquire the shared daily-sync flock (non-blocking).
+
+    Returns False if the lock cannot be taken for ANY reason — contention,
+    or the lock file being unopenable. Both mean the same thing to the
+    caller: this process does not hold the lock, so it must not proceed
+    under enforcement. Fail closed.
+    """
     global _lock_fd
-    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # O_CLOEXEC so the fd doesn't leak into child processes if the
-    # guard's caller spawns subprocesses before release_lock() runs.
-    _lock_fd = os.open(
-        str(LOCK_FILE),
-        os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC,
-        0o644,
-    )
+    try:
+        LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # O_CLOEXEC so the fd doesn't leak into child processes if the
+        # guard's caller spawns subprocesses before release_lock() runs.
+        _lock_fd = os.open(
+            str(LOCK_FILE),
+            os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC,
+            0o644,
+        )
+    except OSError as exc:
+        # ``logs`` is a symlink into the data submodule; on a fresh clone it
+        # dangles and ``mkdir`` raises FileExistsError (the entry exists, but
+        # ``is_dir()`` is false, so ``exist_ok`` does not absorb it). That
+        # escaped uncaught and killed every bulk-rewrite script with a
+        # traceback from inside the guard, in place of the guard's own
+        # "aborting" message — the operator sees a crash where the design
+        # says they should see a refusal (re-audit, 2026-09-08).
+        logger.error(
+            "Could not open the sync lock %s (%s). Refusing to proceed; "
+            "check that the data submodule is initialised.", LOCK_FILE, exc,
+        )
+        _lock_fd = None
+        return False
     try:
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
