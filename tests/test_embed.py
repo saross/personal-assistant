@@ -288,3 +288,71 @@ class TestEmbedSingle:
             result = embed.embed_single("test text")
 
         assert result is None
+
+
+# ============================================================================
+# Audit round two, finding P3 (lens A-C3) — the documented Ollama-outage
+# fallback must actually exist
+# ============================================================================
+
+
+class TestOllamaBaseUrlFallback:
+    """``OLLAMA_BASE_URL=""`` must fall back, not build a relative URL."""
+
+    def _reload_with_env(self, monkeypatch, value):
+        """Re-import embed with OLLAMA_BASE_URL set to ``value``."""
+        import importlib
+        if value is None:
+            monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        else:
+            monkeypatch.setenv("OLLAMA_BASE_URL", value)
+        return importlib.reload(embed)
+
+    def test_empty_env_var_falls_back_to_localhost(self, monkeypatch) -> None:
+        """
+        ``ollama-endpoint.sh`` prints an empty string and exits 1 when no
+        candidate answers, and the documented cron wrapper exports that
+        value. ``os.environ.get(name, default)`` returns "" — the key
+        exists — so the URL became the relative "/api/tags" and
+        ``urllib.request.Request`` raised ``ValueError: unknown url
+        type``, outside embed.py's degradation ladder. The mutation this
+        kills: restoring ``os.environ.get("OLLAMA_BASE_URL", default)``.
+        """
+        reloaded = self._reload_with_env(monkeypatch, "")
+        try:
+            assert reloaded.OLLAMA_BASE_URL == "http://localhost:11434"
+        finally:
+            self._reload_with_env(monkeypatch, None)
+
+    def test_whitespace_env_var_falls_back(self, monkeypatch) -> None:
+        """A stray newline from command substitution is not an endpoint."""
+        reloaded = self._reload_with_env(monkeypatch, "  \n ")
+        try:
+            assert reloaded.OLLAMA_BASE_URL == "http://localhost:11434"
+        finally:
+            self._reload_with_env(monkeypatch, None)
+
+    def test_real_endpoint_is_respected(self, monkeypatch) -> None:
+        """A genuine value still wins — the fallback is only for empties."""
+        reloaded = self._reload_with_env(
+            monkeypatch, "http://192.168.1.150:11434",
+        )
+        try:
+            assert reloaded.OLLAMA_BASE_URL == "http://192.168.1.150:11434"
+        finally:
+            self._reload_with_env(monkeypatch, None)
+
+    def test_availability_check_degrades_on_a_malformed_url(
+        self, monkeypatch,
+    ) -> None:
+        """
+        A malformed (not merely empty) endpoint must degrade to False
+        rather than traceback: ``is_ollama_available`` is called outside
+        any try block in both ``sync-to-postgres.py`` and
+        ``backfill-embeddings.py``.
+        """
+        reloaded = self._reload_with_env(monkeypatch, "sapphire:11434")
+        try:
+            assert reloaded.is_ollama_available() is False
+        finally:
+            self._reload_with_env(monkeypatch, None)

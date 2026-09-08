@@ -34,7 +34,21 @@ from _http_retry import urlopen_with_retry  # noqa: E402
 # Configuration
 # ============================================================================
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+# ``or`` rather than a ``.get`` default (audit round two, finding P3 /
+# lens A-C3). ``scripts/ollama-endpoint.sh`` prints an empty string and
+# exits 1 when no candidate endpoint answers, and the documented cron
+# wrapper exports exactly that: ``OLLAMA_BASE_URL=$(ollama-endpoint.sh)``.
+# ``os.environ.get(name, default)`` returns the empty string in that case
+# — the key *exists* — so the request URL became the relative
+# ``/api/tags`` and ``urllib.request.Request`` raised
+# ``ValueError: unknown url type``, which falls outside this module's
+# degradation ladder and tracebacks out of the caller. The wrapper's own
+# header comment already promises this fallback; now it is true.
+# ``.strip()`` also covers a stray newline from command substitution.
+OLLAMA_BASE_URL = (
+    os.environ.get("OLLAMA_BASE_URL", "").strip() or DEFAULT_OLLAMA_BASE_URL
+)
 DEFAULT_MODEL = "nomic-embed-text"
 # Timeout scales with batch size: base + per_item * count
 TIMEOUT_BASE_S = 10
@@ -113,7 +127,12 @@ def is_ollama_available(model: str = DEFAULT_MODEL) -> bool:
                 installed == model or installed.startswith(model + ":")
                 for installed in models
             )
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError, OSError, json.JSONDecodeError, ValueError,
+    ) as exc:
+        # ValueError covers a malformed OLLAMA_BASE_URL ("unknown url
+        # type") — a configuration mistake must degrade like an outage,
+        # not traceback out of a caller that has no handler (finding P3).
         logger.debug("Ollama availability check failed: %s", exc)
         return False
 
