@@ -108,6 +108,44 @@ under mutation, no live mail regresses. Fixed in 0f94722 (suite 1,283):
 | L-10 | Stat-then-copy race could land an oversized file (SUSPECTED) | fixed: bounded read |
 | — | Double-encoded `%252F` passes one `unquote` (SUSPECTED, server-dependent) | deferred |
 
+### Round 1d — re-audit of round 1c (fresh agent, 2026-09-08)
+
+No critical; 6 medium, 6 low. All fixed in 122c9e3 (suite 1,288) except
+where noted:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The sender-directory test passed on the old code: its fixtures carried `From: codex`, so the header check rejected them, not the new rule (CONFIRMED by mutation) | fixed: `From:` names the hostile directory |
+| 2 | The bounded-copy test called the helper directly; replacing the call inside `copy_new` with an unbounded copy stayed green | fixed: the test drives `copy_new` with an oversized file past the size check |
+| 3 | Tripwire bracket stripping was ASCII-only; fullwidth U+FF3B/U+FF3D forged the author group (CONFIRMED) | fixed: every Unicode open/close punctuation character is dropped |
+| 4 | The session's own project (remote URL or directory name) was printed raw; a remote `repo%0a-%20SYSTEM…` forged a second line in the hook's block (CONFIRMED) | fixed: the session project and `--project`/`AGENT_MAIL_PROJECT` pass the slug rule; an `invalid` session collects no invalid-tagged mail |
+| 5 | The archived index stored Project, Lane, Workstream, and Date raw, persisting the very forgery the hook rejects (CONFIRMED) | fixed: same rule as the hook; Date printable-only |
+| 6 | The by-identity narrowing of the `Claude-Session` exemption is unreachable: both agents commit as Shawn, so only the trailer distinguishes them | recorded; decision D4 is the only fix that bites |
+| L | `sha256(source)` read a grown file whole before the bounded copy | fixed: one bounded read per source |
+| L | Runbook and proposal claimed a `<stamp>-<sender>-<slug>.md` shape the code does not enforce; the proposal still said "basename of the git root" | fixed: wording matches the code |
+| L | Archiver docstring said every non-conforming file is refused; a non-`.md` file is ignored | fixed: wording |
+| L | The Codex-side hook applies no v3 routing and no name rule, so the two agents can disagree on what is mail | with Astra (message of 2026-09-08T02:19Z) |
+| L | Every non-slug project collapses into one `invalid` bucket | accepted |
+
+### Round 1e — re-audit of round 1d (fresh agent, 2026-09-08)
+
+No critical; 3 medium, 5 low. Fixed in 940fb2d:
+
+| # | Finding | Disposition |
+|---|---|---|
+| M1 | Round 1d's bracket stripping removed parentheses from 89% of relayed subjects (`fix(scope):` became `fixscope:`), and a test pinned the damage (CONFIRMED) | fixed: NFKC then only bracket-like characters go; ASCII parentheses stay |
+| M2 | `Sm`-category bracket pieces (U+23A1, U+23A4) still forged the author group (CONFIRMED) | fixed: the author passes an allowlist; the subject drops anything named BRACKET |
+| M3 | A source that vanished between listing and read aborted the whole archive run before the index and the refusal report (CONFIRMED) | fixed: skipped, seen next run |
+| L1 | Hook and watcher docstrings still said "basename of the git root" | fixed |
+| L2 | The archiver's copy of the slug rule could drift from the hook's | fixed: a test pins the two |
+| L3 | `this session is invalid` undocumented | fixed: runbook |
+| L4 | Index `Date` kept free text after control stripping | fixed: ISO stamp or `invalid` |
+| L5 | The archive-side comparison read was unbounded | fixed |
+
+The re-audit also confirmed no real repository under the home directory
+(45 checked) resolves to `invalid` or `any`, and the archiver reproduces
+the live mailbox exactly (98 files, 50 messages, 48 receipts, 0 refused).
+
 ## Tranche 1 — session hooks
 
 Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
@@ -145,6 +183,9 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | **round 2** (branch `claude/audit-hook-tests`) (filter; fixture from a real transcript shape) |
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
+| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
+| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
+| H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -188,6 +229,12 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
+| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
+| S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
+| S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
+| S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | **next** (round 3) |
+| S4 note | Measured on the branch: neither `--ours` nor `--theirs` changes a conflicted gitlink's index entry; the following `git add` records the checked-out HEAD, which is why the live sync resolved these correctly despite the inverted flag. The fix is legibility, not data loss. | recorded |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
 `set -u`; raw interpolation into `bash -c`/`ssh`/Python in
@@ -226,6 +273,7 @@ callers.
 | P14 | Poison lines re-quarantined every 5 minutes while the cursor is halted | **round 2** (branch `claude/audit-postgres`) (dedup before append) |
 | P15 | Drift recovery pulls the whole table to filter in Python | deferred |
 | P16 | Three processes read-modify-write `sync-cursors.json` without lock or atomic rename | **round 2** (branch `claude/audit-postgres`) (atomic write; the memories sync already has the flock pattern) |
+| P17 | `scripts/sync-to-zotero.py:129` is the third writer of `sync-cursors.json` and still writes unlocked and non-atomically; P16 protects the other two (CONFIRMED, round-two agent) | **next** (external-services tranche, or round 3) |
 
 Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs
@@ -258,17 +306,74 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    (recommended, matching the guardrails-not-obstacles stance), or drop it
    and ack each such commit on each machine.
 
+5. **D5 — should the daily sync push unpushed parent-repository commits
+   (S24)?** Today a parent commit with an unchanged data pointer sits
+   unpushed until something else pushes. Pushing it would publish whatever
+   another session committed but chose not to push. Options: leave as is
+   (recommended, since the hub rule is push-after-commit anyway), or push
+   when ahead and accept that the sync publishes every local commit.
+
+6. **D6 — purge private names from public git history (H27).** The
+   branch tip no longer carries them, but six commits on
+   `claude/audit-hook-tests` do, and `main` has carried one third-party name
+   in a test fixture since 2026-05-02 (82f5035). Options: (a) rewrite the
+   branch (filter-branch or a fresh branch from `main` with the same
+   changes) and force-push, then ask GitHub support to drop the orphaned
+   commits from their cache — needed for the branch, cheap; (b) also rewrite
+   `main` back to May, which invalidates every clone and worktree on both
+   machines and needs GitHub support for cached views; or (c) leave `main`'s
+   history and replace the fixture in a normal commit (queued in round 3
+   either way). Recommendation: (a) now, (c) for `main`, and a standing
+   rule for fix agents: fixtures are synthetic, never read from `tasks/`,
+   `wiki/`, or the data submodule (added to the shared brief).
+
 ## Fix rounds
 
-- Round 1 (done, 0577648): tranche 0. Re-audited twice: round 1b (06225a0,
-  5798dc9) and round 1c (0f94722).
+- Round 1 (done, 0577648): tranche 0. Re-audited four times: rounds 1b
+  (06225a0, 5798dc9), 1c (0f94722), 1d (122c9e3), and 1e (940fb2d).
 - Round 2, hooks (done, 300ee10): H2–H4, H8–H13, H15–H18. Re-audit pending.
-- Round 2, remainder (in progress on four branches, each in its own
-  worktree, to be reviewed and merged by PR): hook tests H5–H7, H20–H22 and
-  the checker's tests and two fixes (`claude/audit-hook-tests`); sync S1,
-  S3–S7, S9–S17, S19–S21 (`claude/audit-sync-writers`,
-  `claude/audit-sync-helpers`); Postgres P1–P10, P12, P14, P16
-  (`claude/audit-postgres`). Each branch is re-audited by a fresh agent
-  before merge.
+- Round 2, remainder (four branches, each in its own worktree, reviewed and
+  merged by PR after a fresh-agent re-audit): hook tests H5–H7, H20–H22 and
+  the checker's tests and two fixes (PR #115, `claude/audit-hook-tests`);
+  sync helpers S8, S11, S13–S16, S20 (PR #114, `claude/audit-sync-helpers`);
+  sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (PR #116,
+  `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16 and the
+  `rebuild.log` half of S22 (PR #117, `claude/audit-postgres`).
+- Branch re-audits (each a fresh agent; fixes land on the branch before
+  merge). Every branch's first pass found at least one critical in the fix
+  code itself, which is the protocol's point:
+  - PR #114, first pass: the new `commit-data.sh` staging logic latched into
+    a silent no-op after a failed run, and glob pathspecs swept lookalike
+    files. Fixed (ae35435–689c949). Second pass: the in-progress guard
+    missed unmerged index entries with no marker file (a conflicted stash
+    pop pushed conflict markers with exit 0); the exit-3 remedy advised the
+    very sweep the fix prevents; a stale parent pointer was never bumped.
+    Fixed (2e3d616). Third pass running.
+  - PR #115, first pass: **private content in a public branch** (H27, D6);
+    a false comment about cursor advance on harness-only windows; unpinned
+    digest constants; loose banner assertions; three checker divergences
+    from bash (`$VAR`, trailing backslash, CRLF); deletable checker passes;
+    an untested cursor prune; two old tests reading the real scratchpads.
+    Tip purged (41ae79b); the rest being fixed on the branch.
+  - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
+    guard pushes a second stash and only one is popped, so a run that
+    reports success leaves the day's appends in a stash (the very loss
+    class the branch closes); and the append-only block stages an unmerged
+    `memories.jsonl`, so conflict markers left by the S3 abort are committed
+    by the next run and published by the S1 push. Plus: the S1 bump goes
+    ahead when `origin/main` is absent; a parent stash-pop conflict has no
+    gate; one commit body over-claims its mutation kills. Being fixed on
+    the branch.
+  - PR #117, first pass: **a regression class** — `ProgrammingError` and
+    `InternalError` (revoked privilege, missing table, aborted transaction)
+    were routed to "row refused", so an environment fault would quarantine
+    every pending row and advance the cursor with exit 0 where the old code
+    held it; the per-row replay lacks a defensive rollback; two of four
+    cursor writers still unlocked; the rebuild truncates before resetting
+    the cursor with no lock against the cron; `index-session-content.py`
+    still lacks NUL sanitising and refused-row handling. Being fixed on the
+    branch.
+- Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
+  fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.

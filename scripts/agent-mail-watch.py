@@ -102,14 +102,17 @@ def main() -> int:
     parser.add_argument(
         "--root", type=lambda value: Path(value).expanduser(),
         default=Path(os.environ.get("AGENT_MAIL_ROOT", "~/agent-mail")).expanduser())
-    parser.add_argument("--project", help="this session's project (default: cwd git root name)")
+    parser.add_argument("--project", help="this session's project (default: the repository "
+                        "name from the origin remote, else the git root)")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--once", action="store_true", help="scan once and exit")
     args = parser.parse_args()
 
     hook = load_hook()
-    project = (args.project or os.environ.get("AGENT_MAIL_PROJECT")
-               or hook.session_project(Path.cwd()))
+    # The same slug rule as every printed value: --project is operator input,
+    # and the OTHER line prints it.
+    project = (hook.safe_value(args.project or os.environ.get("AGENT_MAIL_PROJECT", ""))
+               .casefold() or hook.session_project(Path.cwd()))
     seen: set[Path] = set()
     last_elsewhere: dict[str, int] | None = None
     if not args.root.is_dir():
