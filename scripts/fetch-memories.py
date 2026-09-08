@@ -971,6 +971,19 @@ def main() -> None:
     _log_invocation(args, results)
 
 
+def _clean(value: object) -> str:
+    """Collapse all whitespace in a log field so it cannot forge a column.
+
+    ``--tag`` and ``--category`` are free-form CLI values written straight
+    into a tab-separated record that ``log-recall.py`` also appends to and
+    the 2026-06-13 review parser reads. A tab in a category name split the
+    line into extra columns that the parser then read as real fields
+    (audit L2). ``log-recall.py:format_line`` has collapsed its fields
+    since audit R10; this is the same treatment for the sibling writer.
+    """
+    return " ".join(str(value).split())
+
+
 def _log_invocation(
     args: argparse.Namespace,
     results: Any,
@@ -979,7 +992,8 @@ def _log_invocation(
     """Append a one-line tier-2 retrieval record to fetch-memories.log.
 
     Tab-separated: timestamp, the selectors used, limit, and result
-    count. Best-effort — any failure is swallowed so instrumentation can
+    count. Every free-form field is whitespace-collapsed so none can forge
+    a column. Best-effort — any failure is swallowed so instrumentation can
     never degrade the retrieval path itself.
     """
     target = log_path if log_path is not None else default_log_path()
@@ -990,20 +1004,20 @@ def _log_invocation(
         # log only the selector name — never the search text (privacy).
         selectors = []
         if getattr(args, "tags", None):
-            selectors.append(f"tag:{','.join(args.tags)}")
+            selectors.append(f"tag:{','.join(_clean(t) for t in args.tags)}")
         if getattr(args, "query", None):
             selectors.append("query")
         if getattr(args, "semantic", None):
             selectors.append("semantic")
         if getattr(args, "category", None):
-            selectors.append(f"category:{args.category}")
+            selectors.append(f"category:{_clean(args.category)}")
         if getattr(args, "memory_id", None):
             selectors.append("id")
         n = len(results) if isinstance(results, list) else 0
         line = (
             f"{datetime.now(timezone.utc).isoformat()}\t"
-            f"selectors={';'.join(selectors) or 'none'}\t"
-            f"limit={getattr(args, 'limit', '?')}\t"
+            f"selectors={_clean(';'.join(selectors)) or 'none'}\t"
+            f"limit={_clean(getattr(args, 'limit', '?')) or '-'}\t"
             f"results={n}\n"
         )
         # The mkdir sits inside the "we have a destination" branch: an

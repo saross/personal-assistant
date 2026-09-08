@@ -199,3 +199,62 @@ class TestDigestPreviewLog:
             result, now=datetime(2026, 6, 2, tzinfo=timezone.utc),
         )
         assert line.endswith("\tpreview=true")
+
+
+class TestInvocationLogFieldsCannotForgeColumns:
+    """Audit L2 — --tag and --category are free-form CLI values."""
+
+    def test_tab_bearing_category_is_collapsed(self, tmp_path: Path) -> None:
+        """Kills: interpolating args.category raw into the record.
+
+        The forged text lands inside the selectors field instead of
+        creating columns the review parser would read as real fields.
+        """
+        target = tmp_path / "fetch-memories.log"
+        args = Namespace(
+            tags=None, query=None, semantic=None,
+            category="decision\tsource=fetch\tresults=999",
+            memory_id=None, limit=10,
+        )
+        fetch_memories._log_invocation(args, [], log_path=target)
+        line = target.read_text(encoding="utf-8").rstrip("\n")
+        assert len(line.split("\t")) == 4
+        assert "selectors=category:decision source=fetch results=999" in line
+
+    def test_tab_bearing_tag_is_collapsed(self, tmp_path: Path) -> None:
+        """--tag is repeatable, so each value is cleaned individually."""
+        target = tmp_path / "fetch-memories.log"
+        args = Namespace(
+            tags=["survey", "grid\tspacing"], query=None, semantic=None,
+            category=None, memory_id=None, limit=10,
+        )
+        fetch_memories._log_invocation(args, [], log_path=target)
+        line = target.read_text(encoding="utf-8").rstrip("\n")
+        assert len(line.split("\t")) == 4
+        assert "selectors=tag:survey,grid spacing" in line
+
+    def test_newline_in_a_selector_cannot_inject_a_record(
+        self, tmp_path: Path,
+    ) -> None:
+        """A second line would be a wholly fabricated retrieval event."""
+        target = tmp_path / "fetch-memories.log"
+        args = Namespace(
+            tags=None, query=None, semantic=None,
+            category="decision\n2026-01-01T00:00:00+00:00\tselectors=none",
+            memory_id=None, limit=10,
+        )
+        fetch_memories._log_invocation(args, [], log_path=target)
+        assert target.read_text(encoding="utf-8").count("\n") == 1
+
+    def test_ordinary_values_are_unchanged(self, tmp_path: Path) -> None:
+        """The cleaning must not mangle the normal case."""
+        target = tmp_path / "fetch-memories.log"
+        args = Namespace(
+            tags=["survey"], query=None, semantic=None, category="decision",
+            memory_id=None, limit=10,
+        )
+        fetch_memories._log_invocation(args, [{"id": "a"}], log_path=target)
+        line = target.read_text(encoding="utf-8").rstrip("\n")
+        assert "selectors=tag:survey;category:decision" in line
+        assert "limit=10" in line
+        assert "results=1" in line
