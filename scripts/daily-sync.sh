@@ -2653,7 +2653,7 @@ abort_on_published_shrink() {
     # push.
     local context="$1" lines_before lines_after shrink_report
     local commit parent before after offender="" offender_reason=""
-    local parents parents_with_corpus shortening=0
+    local parents parents_with_corpus shortening=0 unjudgeable_merge=""
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
@@ -2715,9 +2715,15 @@ abort_on_published_shrink() {
             fi
         done < <(git rev-parse "${commit}^@" 2>/dev/null || true)
         if [[ $parents -gt 1 ]] && [[ $parents_with_corpus -eq 0 ]]; then
-            offender="$commit"
-            offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
-            break
+            # audit L4 (fifth re-audit): REMEMBER it and keep scanning.
+            # Breaking here refused a range whose shrink a LATER commit
+            # owned outright — two parentless commits, a merge that
+            # restores the corpus, then a trailered archive commit —
+            # because the merge was met first and nothing after it was
+            # ever looked at. An unjudgeable merge only decides the
+            # verdict when nothing else can.
+            [[ -n "$unjudgeable_merge" ]] || unjudgeable_merge="$commit"
+            continue
         fi
         # One parent and no corpus in it is the commit that added the
         # file: nothing existed to shorten.
@@ -2737,6 +2743,12 @@ abort_on_published_shrink() {
     if [[ -z "$offender" ]] && [[ $shortening -gt 0 ]]; then
         log "corpus is shorter than origin/main, but every commit that shortened it carries a Rewrite-Class: bulk trailer — allowed"
         return 0
+    fi
+    if [[ -z "$offender" ]] && [[ -n "$unjudgeable_merge" ]]; then
+        # Nothing else in the range accounts for the shrink, and this one
+        # commit cannot be measured against anything.
+        offender="$unjudgeable_merge"
+        offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
     fi
     if [[ -z "$offender" ]]; then
         # audit M1 (fourth re-audit): FAIL CLOSED. The outer comparison

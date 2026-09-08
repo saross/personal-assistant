@@ -2611,3 +2611,106 @@ class TestSweepCollectsItsOwnMarker:
             "the marker a killed sweep left behind is unreachable by any "
             "later sweep: " + str(list(cache.iterdir()))
         )
+
+
+class TestUnjudgeableMergeDoesNotStopTheScan:
+    """A merge this guard cannot measure decides the verdict only when
+    nothing else in the range can."""
+
+    def _repo(self, tmp_path: Path, name: str, records: int) -> tuple[Path, str]:
+        """A repo whose published corpus holds ``records`` lines."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        origin = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/main", origin, cwd=repo)
+        return repo, origin
+
+    def _guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+
+    def test_a_later_trailered_commit_still_owns_the_shrink(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L4: breaking at the first corpus-less merge.
+
+        Two parentless commits holding nothing, a merge that RESTORES the
+        corpus in full, and then an archive commit that shortens it and
+        says so. The merge is unmeasurable but it took nothing away, and
+        the commit that did is blameless -- so this publishes.
+        """
+        repo, _ = self._repo(tmp_path, "later-owner", 5)
+        logs = tmp_path / "logs-later"
+        logs.mkdir()
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        one = _git("commit-tree", empty, "-m", "side one", cwd=repo).stdout.strip()
+        two = _git("commit-tree", empty, "-m", "side two", cwd=repo).stdout.strip()
+        # The merge restores the corpus exactly as origin has it.
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git("commit-tree", tree, "-p", one, "-p", two, "-m",
+                     "Merge two strangers", cwd=repo).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        # …and a deliberate archive run shortens it afterwards.
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "kept"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+    def test_an_unjudgeable_merge_still_decides_when_nothing_else_can(
+        self, tmp_path: Path
+    ) -> None:
+        """The other side: with no commit to account for the shrink, the
+        merge is the answer -- and is named as one, not reported as an
+        unattributable mystery."""
+        repo, _ = self._repo(tmp_path, "sole-cause", 5)
+        logs = tmp_path / "logs-sole"
+        logs.mkdir()
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        one = _git("commit-tree", empty, "-m", "side one", cwd=repo).stdout.strip()
+        two = _git("commit-tree", empty, "-m", "side two", cwd=repo).stdout.strip()
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "one record"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git("commit-tree", tree, "-p", one, "-p", two, "-m",
+                     "Merge two strangers", cwd=repo).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+        assert merge in written, written
