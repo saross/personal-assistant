@@ -944,6 +944,34 @@ class TestATimestampCursorMustBeATimestamp:
         assert "sessions_sync_archived_at" in caplog.text
 
 
+class TestANegativeLineCursorIsReported:
+    """
+    Eleventh re-audit, M3 — a negative line cursor returned None from
+    the first branch, before the warning, so it silently reset the
+    acknowledged quarantine position and re-raised rows a human had
+    dismissed. The docstring had always promised a warning.
+    """
+
+    def test_it_is_warned_about(self, caplog):
+        """The mutation this kills: returning None before the warning."""
+        logger = logging.getLogger("test-neg-cursor")
+        with caplog.at_level(logging.WARNING):
+            assert _sync_cursor.normalise_line_cursor(
+                -17, key="postgres_sync_line", logger=logger,
+            ) is None
+        assert "not a line number" in caplog.text
+        assert "postgres_sync_line" in caplog.text
+
+    def test_zero_is_still_a_position(self, caplog):
+        """Nothing synced yet is an ordinary state, not a fault."""
+        logger = logging.getLogger("test-zero-cursor")
+        with caplog.at_level(logging.WARNING):
+            assert _sync_cursor.normalise_line_cursor(
+                0, key="postgres_sync_line", logger=logger,
+            ) == 0
+        assert caplog.text == ""
+
+
 class TestTheGateTextForABadCursor:
     """
     The warning goes to a log nobody reads; the gate is the surface that

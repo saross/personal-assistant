@@ -3438,3 +3438,91 @@ class TestAnUnreadableQuarantineDoesNotStopTheWrites:
 
         assert "without deduplicating" not in caplog.text
         assert _sync_cursor.count_quarantine_entries(quarantine) == 1
+
+
+class TestAnUnusableLineCursorReachesTheGate:
+    """
+    Eleventh re-audit, M3 — a negative line cursor was treated as absent
+    without a word, so the sync resynced from the beginning and the
+    acknowledged quarantine position was reset with it: rows a human had
+    dismissed came back, and nothing said why.
+    """
+
+    def _canonical(self, path: Path) -> None:
+        """One valid record."""
+        path.write_text(
+            json.dumps({
+                "id": "m1", "category": "progress", "content": "c",
+                "created_at": "2026-09-01T00:00:00+00:00",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    @pytest.mark.parametrize("bad", [-5, "not a line", {"line": 2}, 4.5])
+    def test_the_gate_names_the_value(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file, bad,
+    ):
+        """
+        The mutation this kills: dropping the degraded detail from the
+        memories sync's cursor check.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories)
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": bad}), encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m1"],
+        )
+
+        cycle = sync_mod.sync(test_logger)
+
+        assert cycle.degraded_detail is not None
+        assert repr(bad) in cycle.degraded_detail
+        assert "postgres_sync_line" in cycle.degraded_detail
+
+        sync_mod.apply_gate(
+            sync_mod.GateEvent(
+                outcome=cycle.outcome,
+                connected=cycle.connected,
+                processed=cycle.processed,
+                degraded_detail=cycle.degraded_detail,
+                script=sync_mod.SCRIPT_NAME,
+            ),
+            gate_path=pinned_gate_file, logger=test_logger,
+        )
+        assert "Repair the cursor file" in pinned_gate_file.read_text(
+            encoding="utf-8",
+        )
+
+    def test_an_ordinary_cursor_raises_nothing(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """The guard must not fire on every run that has a cursor."""
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories)
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 0}), encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m1"],
+        )
+
+        cycle = sync_mod.sync(test_logger)
+
+        assert cycle.degraded_detail is None
+        assert cycle.processed == 1
