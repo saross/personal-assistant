@@ -31,7 +31,7 @@ worst moment and the weaker claim it implies is forgotten first.
   audit's fix rounds), **decision** (needs Shawn), **deferred** (recorded,
   not planned), **rejected** (false positive after verification).
 
-## Tranche 0 — code written 7–8 Sep (agent mail, tripwire, archiver, credential checker, admission verifier)
+## Tranche 0 — code written 7–8 Sep (mail, tripwire, archiver, checker, verifier)
 
 Lens A: 3 critical, 11 medium, 11 low. Lens B: 113 mutations, 59 survived
 (48% killed); 6 critical, 9 medium. Plus the Codex-side review of PR #113.
@@ -125,11 +125,17 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
 
-Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9 duplicates exist), dict-equality collapse in `other_take`, `focus_limit` regex takes the first match anywhere, non-dict stdin payloads, unstripped anchor refs, an unreachable branch, a few boundary flips uncaught. Recorded; not planned.
+Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
+columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
+duplicates exist), dict-equality collapse in `other_take`, `focus_limit` regex
+takes the first match anywhere, non-dict stdin payloads, unstripped anchor refs,
+an unreachable branch, a few boundary flips uncaught. Recorded; not planned.
 
 ## Tranche 2 — git and sync writers
 
-Lens A: 5 critical, 11 medium, 14 low. Lens B: 20 mutations survived of ~28; `daily-sync.sh` effectively has no behavioural test (its one end-to-end fixture dies at line 618 before the sync body and the test passes anyway).
+Lens A: 5 critical, 11 medium, 14 low. Lens B: 20 mutations survived of ~28;
+`daily-sync.sh` effectively has no behavioural test (its one end-to-end fixture
+dies at line 618 before the sync body and the test passes anyway).
 
 ### Critical
 
@@ -162,7 +168,15 @@ Lens A: 5 critical, 11 medium, 14 low. Lens B: 20 mutations survived of ~28; `da
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
 
-Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under `set -u`; raw interpolation into `bash -c`/`ssh`/Python in `syncthing-health.sh`; diff3 markers unsupported (latent); stale co-author in `commit-data.sh`; two drifting rebase resolvers; `--porcelain` without `-z`; psql `IN (...)` from 10,000 ids; cc-archives gate not rewritten when the mount is absent; EXIT trap pops the top stash; `/tmp` lock ownership; only `$1` inspected for `--dry-run`; two shrink detectors disagree by one line; `sync_memory_edit.py` reads via the root symlink; `advance_or_quarantine` has no callers.
+Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
+`set -u`; raw interpolation into `bash -c`/`ssh`/Python in
+`syncthing-health.sh`; diff3 markers unsupported (latent); stale co-author in
+`commit-data.sh`; two drifting rebase resolvers; `--porcelain` without `-z`;
+psql `IN (...)` from 10,000 ids; cc-archives gate not rewritten when the mount
+is absent; EXIT trap pops the top stash; `/tmp` lock ownership; only `$1`
+inspected for `--dry-run`; two shrink detectors disagree by one line;
+`sync_memory_edit.py` reads via the root symlink; `advance_or_quarantine` has no
+callers.
 
 ## Tranche 3a — memory-to-Postgres pipeline (Lens A; Lens B not yet run)
 
@@ -192,13 +206,27 @@ Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under `se
 | P15 | Drift recovery pulls the whole table to filter in Python | deferred |
 | P16 | Three processes read-modify-write `sync-cursors.json` without lock or atomic rename | **round 2** (branch `claude/audit-postgres`) (atomic write; the memories sync already has the flock pattern) |
 
-Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls: 0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs `splitlines()`; id-less stash lines; U+2028 latent; stale comments; docstring "bounded memory" claim.
+Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
+0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs
+`splitlines()`; id-less stash lines; U+2028 latent; stale comments; docstring
+"bounded memory" claim.
 
 ## Decisions for Shawn
 
-1. **H1 — extraction drops everything before the last 30 messages.** Fix is to process the window in chunks of 30, which multiplies Haiku calls on the 5% of firings that need it (never more than ten calls for the largest window seen). Approve the spend, or choose a larger single window.
-2. **S2 — what the daily sync may auto-commit.** Today it commits everything dirty in the data submodule after the stash pop, prose included. The hub's own comments say prose must never be swept, but scratchpad and notes appends are left for it deliberately. Options: (a) an explicit allow-list of append-only paths (memories, scratchpads, notes inbox); (b) keep sweeping everything; (c) sweep but never push a commit that touched `tasks/` or `wiki/`. Recommendation: (a).
-3. **Sessions table stale since 17 August (P1).** Fixing the error split and sanitising NUL will let 48+ sessions sync on the next run. No decision needed unless you want to inspect the two affected archive files first.
+1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
+   process the window in chunks of 30, which multiplies Haiku calls on the 5% of
+   firings that need it (never more than ten calls for the largest window seen).
+   Approve the spend, or choose a larger single window.
+2. **S2 — what the daily sync may auto-commit.** Today it commits everything
+   dirty in the data submodule after the stash pop, prose included. The hub's
+   own comments say prose must never be swept, but scratchpad and notes appends
+   are left for it deliberately. Options: (a) an explicit allow-list of
+   append-only paths (memories, scratchpads, notes inbox); (b) keep sweeping
+   everything; (c) sweep but never push a commit that touched `tasks/` or
+   `wiki/`. Recommendation: (a).
+3. **Sessions table stale since 17 August (P1).** Fixing the error split and
+   sanitising NUL will let 48+ sessions sync on the next run. No decision needed
+   unless you want to inspect the two affected archive files first.
 
 ## Fix rounds
 
@@ -211,4 +239,5 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   `claude/audit-sync-helpers`); Postgres P1–P10, P12, P14, P16
   (`claude/audit-postgres`). Each branch is re-audited by a fresh agent
   before merge.
-- Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so their findings arrive against corrected code.
+- Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
+  their findings arrive against corrected code.
