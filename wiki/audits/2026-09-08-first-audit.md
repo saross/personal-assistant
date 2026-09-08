@@ -183,12 +183,12 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | fixed in PR #115 (squash-merged b0f3269) (filter; fixture from a real transcript shape) |
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
-| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
-| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
+| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | fixed in PR #118 (merged 190bc7c) |
+| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | fixed in PR #118 (merged 190bc7c) |
 | H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
 | H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | fixed on PR #115 (fifth round, 943da8d) after two attempts that encoded the pending skip in the cursor POSITION and each broke an invariant: the cursor record is now `{uuid, skip_pending}` per session, so position and pending state are separate facts; ten tests through `main()` assert the cursor file after each firing |
-| H29 | `hooks/extraction-hook.py` marker branch — a non-meta user entry whose text merely contains a slash-command header (a tool result echoing `commands/*.md` or `scripts/_command_markers.py`) sets the skip flag and drops the next genuine assistant turn (SUSPECTED by the round-four re-audit; one such entry exists, created by this audit session) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
-| H30 | `hooks/extraction-hook.py` — the command skip is a boolean, not a counter: `[cmd, cmd]` then `[resp, resp]` sends the second response to the model (CONFIRMED by the fifth re-audit; pre-existing) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
+| H29 | `hooks/extraction-hook.py` marker branch — a non-meta user entry whose text merely contains a slash-command header (a tool result echoing `commands/*.md` or `scripts/_command_markers.py`) sets the skip flag and drops the next genuine assistant turn (SUSPECTED by the round-four re-audit; one such entry exists, created by this audit session) | fixed in PR #118 (merged 190bc7c) |
+| H30 | `hooks/extraction-hook.py` — the command skip is a boolean, not a counter: `[cmd, cmd]` then `[resp, resp]` sends the second response to the model (CONFIRMED by the fifth re-audit; pre-existing) | fixed in PR #118 (merged 190bc7c) |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -232,7 +232,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed on PR #118 (lazy handler); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -612,8 +612,11 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   is available" heading was false when the fallback fires on thin coverage;
   "never checked" was false for pending records) and two counter edges (a
   uuid-less trailing command double-counts; the count never decays). Closing
-  round running. H27's fixture on `main` is done (8e2425f). S23 and S26 sit
-  with PR #116; P17 with PR #117; `surfacing_log.py` (S22's third member)
-  is round 3b.
+  round done (5ddfb6c–43a4eba: the heading says why the fallback fired;
+  pending records are "unchecked or inconclusive"; a uuid-less command arms
+  nothing; the owed count is capped at two, under-skipping by design).
+  **Merged as 190bc7c**; main suite 1,587. H27's fixture on `main` is done
+  (8e2425f). S23 and S26 sit with PR #116; P17 with PR #117;
+  `surfacing_log.py` (S22's third member) is round 3b.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
