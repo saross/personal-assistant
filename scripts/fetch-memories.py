@@ -603,8 +603,13 @@ def matches_filters(
         if mem.get("category") != category:
             return False
 
-    # Tag filter (any tag overlaps, case-insensitive)
-    if tags is not None:
+    # Tag filter (any tag overlaps, case-insensitive). An EMPTY list is
+    # "no filter", matching how the callers normalise it and how
+    # ``research_tags && '{}'`` behaves in PostgreSQL. Testing
+    # ``is not None`` made ``tags=[]`` reject every record, because
+    # ``any()`` over an empty sequence is False (audit R16) -- unreachable
+    # from today's two callers, and a trap for the third.
+    if tags:
         mem_tags = mem.get("research_tags") or []
         if isinstance(mem_tags, str):
             mem_tags = [mem_tags]

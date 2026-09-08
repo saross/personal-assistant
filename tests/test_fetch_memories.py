@@ -795,3 +795,52 @@ class TestFormatOutputShowsTheId:
         mem = _make_memory()
         del mem["id"]
         assert "ID: (no id)" in fetch_memories.format_output([mem])
+
+
+# ============================================================================
+# Audit R16 / lens B RT9 — tag-filter semantics
+# ============================================================================
+
+
+class TestTagFilterSemantics:
+    """An empty list means "no filter"; several tags mean OR."""
+
+    def test_empty_tag_list_is_no_filter(self) -> None:
+        """Kills: ``if tags is not None`` (any() over an empty list is False).
+
+        Passing ``[]`` used to reject every record, so a caller that did
+        not normalise an empty list to None got silence, not everything.
+        """
+        assert fetch_memories.matches_filters(_make_memory(), tags=[])
+
+    def test_multiple_tags_are_an_or_not_an_and(self) -> None:
+        """Kills: ``any(...)`` -> ``all(...)`` in the tag test.
+
+        The docstring documents OR, and every previous tag test passed
+        exactly one tag, so the distinction was unobservable.
+        """
+        mem = _make_memory(tags=["database"])
+        assert fetch_memories.matches_filters(
+            mem, tags=["database", "ethics"],
+        )
+
+    def test_a_record_with_none_of_the_tags_is_still_rejected(self) -> None:
+        """OR must not degrade into "no filter at all"."""
+        mem = _make_memory(tags=["database"])
+        assert not fetch_memories.matches_filters(
+            mem, tags=["ethics", "permits"],
+        )
+
+    def test_empty_tag_list_reaches_fallback_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The consequence at the call site, not just the predicate."""
+        _write_jsonl(tmp_path / "memories.jsonl", [
+            _make_memory(mem_id="a", category="progress"),
+            _make_memory(mem_id="b", category="progress"),
+        ])
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress", tags=[])
+        assert len(results) == 2
