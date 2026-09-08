@@ -1877,3 +1877,96 @@ def _load_drift_check():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-3 finding M-2 — the two directions of a size difference differ
+# ---------------------------------------------------------------------------
+
+
+class TestShrinkIsNotStaleness:
+    """A source that lost bytes was truncated; a source that gained them grew.
+
+    Round 4c-2 made both directions a warning. Archiving a truncated source
+    writes the short version and nothing downstream can tell: the toolkit
+    records the length it actually compressed, so verify's size check
+    compares the truncation against itself and reports clean.
+    """
+
+    def test_a_shrunken_source_is_refused(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = pipeline.add_session(
+            SID_A, records=substantive_records(SID_A, turns=3)
+        )
+        pipeline.discover()
+
+        # An interrupted store sync leaves a whole-line prefix behind: still
+        # comfortably substantive, just missing the end of the session.
+        lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+        source.write_text("".join(lines[:2]), encoding="utf-8")
+        age_file(source, hours=96)
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert pipeline.entries() == [], (
+            "a truncated transcript was archived; the short version is now "
+            "canonical and verify will call it clean"
+        )
+        assert any(
+            "SHRUNK" in record.getMessage() for record in caplog.records
+        )
+
+    def test_a_grown_source_is_still_archived(
+        self, pipeline: Pipeline
+    ) -> None:
+        """The positive control: growth stays a warning, not a refusal."""
+        source = pipeline.add_session(SID_A)
+        pipeline.discover()
+        with source.open("a", encoding="utf-8") as handle:
+            for record in substantive_records(SID_A, turns=1):
+                handle.write(json.dumps(record) + "\n")
+        age_file(source, hours=96)
+
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+
+    def test_verify_cannot_catch_the_truncation_afterwards(
+        self, pipeline: Pipeline, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Why the refusal has to happen at archive time.
+
+        The toolkit records the size it actually compressed, so once a short
+        source is archived the metadata agrees with the transcript and every
+        later check reports clean. There is no second chance.
+        """
+        source = pipeline.add_session(
+            SID_A, records=substantive_records(SID_A, turns=3)
+        )
+        lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+        source.write_text("".join(lines[:2]), encoding="utf-8")
+        age_file(source, hours=96)
+        pipeline.discover()          # discovery records the SHORT length
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+        capsys.readouterr()
+        assert pipeline.verify() == 0
+        assert "Size mismatch" not in capsys.readouterr().out
+
+    def test_an_unchanged_source_is_archived_without_a_warning(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+        assert not any(
+            "SHRUNK" in record.getMessage() or "manifest records" in
+            record.getMessage() for record in caplog.records
+        )

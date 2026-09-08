@@ -1437,22 +1437,37 @@ def refuse_incomplete_source(
     archive it IS the session, with every integrity check reporting clean,
     because until now every check compared the archive against itself.
 
-    Two refusals:
+    Three refusals:
 
     * the transcript has gone (moved, or the machine's store was cleaned);
     * it was last written inside the grace window, so a live session or an
-      in-flight compaction may still be appending.
+      in-flight compaction may still be appending;
+    * it is SHORTER than discovery recorded.
 
-    A size that differs from the one discovery recorded is deliberately NOT a
-    refusal. Discovery already skipped anything inside the grace window, so a
-    manifested session was quiescent when it was listed; if it is quiescent
-    again now, the difference says the manifest is stale, not that the file
-    is moving. Refusing on it made the mismatch permanent — the manifest kept
-    the old size, so every later run refused for the same reason and the
-    session could never be archived without re-running discover (audit round
-    4c-2, finding 1). The caller refreshes the recorded size and says so.
-    What still protects the copy is the pair of checks about NOW: the grace
-    window above, and the before/after comparison around the copy itself.
+    The two directions of a size difference are not the same event, and
+    round 4c-2 wrongly treated them alike (audit round 4c-3, finding M-2).
+
+    **Larger** is a stale manifest. Discovery already skipped anything inside
+    the grace window, so a manifested session was quiescent when it was
+    listed; if it is quiescent again now and has grown, the session simply
+    resumed and finished between the two commands. Refusing on that made the
+    mismatch permanent, because the manifest kept the old size and every
+    later run refused for the same reason. So growth is a warning and the
+    current content is archived.
+
+    **Smaller** is never a stale manifest. Transcripts are append-only: a
+    source that has lost bytes was truncated by something — an interrupted
+    store sync, a partial rsync, a manual edit, a failing disk. Archiving it
+    writes the short version, and nothing downstream can tell: the toolkit
+    records the length it actually compressed, so ``verify``'s size check
+    compares the truncation against itself and reports clean. A shrink is
+    the one case where the manifest is better evidence than the file, so it
+    is refused and named, and the drift gate keeps reporting the session
+    until a human looks.
+
+    What still protects the copy in the growth case is the pair of checks
+    about NOW: the grace window above, and the before/after comparison
+    around the copy itself.
     """
     try:
         stat = session_path.stat()
@@ -1462,6 +1477,13 @@ def refuse_incomplete_source(
         return (
             f"written within the {GRACE_HOURS}h grace window "
             "(may still be growing)"
+        )
+    if expected_size is not None and stat.st_size < expected_size:
+        return (
+            f"source has SHRUNK since discovery ({expected_size} -> "
+            f"{stat.st_size} bytes). Transcripts are append-only, so this "
+            "is truncation, not staleness — archiving it would make the "
+            "short version canonical and every check would call it clean"
         )
     if expected_size is not None and stat.st_size != expected_size:
         logger.warning(
