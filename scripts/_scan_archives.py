@@ -50,6 +50,15 @@ def iter_transcripts(root: Path):
 
     Accepts either a single ``.gz`` file or a directory tree. Matches the
     archive layout: ``*/session.jsonl.gz`` plus ``*/subagents/*.jsonl.gz``.
+
+    Only the gzipped form is scanned, because ``session.jsonl.gz`` is the
+    declared canonical storage form (decided 2026-08-22). An entry still
+    holding a raw ``session.jsonl`` is therefore invisible here — which is
+    why ``bulk-archive.py verify`` reports raw-only entries as a defect
+    rather than accepting them silently, and why
+    ``normalise-archive-storage.py`` exists to convert them (audit
+    2026-09-08, finding AR21). The two commands agree on what an archived
+    transcript is; before that fix they did not.
     """
     if root.is_file():
         yield root

@@ -15,11 +15,13 @@ Nothing here touches the operator's real ``~/.cache``: the child run's
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -631,6 +633,20 @@ def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
 # ===========================================================================
 
 
+
+@pytest.fixture
+def strict_hermeticity(monkeypatch):
+    """Run the source-tree half of the guard in fail-fast mode.
+
+    Round 4a-3 addendum: a change under wiki/, scripts/, and friends is
+    ADVISORY in a shared checkout, because several sessions work this
+    repository at once and a two-minute run routinely straddles someone
+    else's edit. Failing on it blames the suite for another session's work.
+    A clean copy sets PA_HERMETICITY_STRICT=1, and so do these tests, which
+    is where a test that really did write to the checkout is caught.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+
 def _throwaway_store(tmp_path, monkeypatch):
     """A tree shaped like the repo: data/memories + logs, reached by symlink."""
     real_dir = tmp_path / "data" / "memories"
@@ -649,6 +665,7 @@ def _throwaway_store(tmp_path, monkeypatch):
         tmp_path / "memories" / "tag-vocabulary.txt",
     ))
     monkeypatch.setattr(conftest, "_CANONICAL_DIRS", (tmp_path / "logs",))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", (tmp_path / "logs",))
     return corpus, vocabulary, logs_dir
 
 
@@ -671,8 +688,10 @@ def test_the_guard_raises_on_a_rewritten_canonical(tmp_path, monkeypatch):
 
     with pytest.raises(AssertionError, match="canonical memory store"):
         conftest.assert_canonical_store_untouched(before, after)
-    assert str(corpus.resolve()) in conftest.canonical_store_changes(
+    violations, appends, _tolerated = conftest.classify_store_changes(
         before, after)
+    assert str(corpus.resolve()) in violations
+    assert appends == [], "a rewrite is not an append"
 
 
 def test_the_guard_raises_on_a_created_or_deleted_canonical(tmp_path,
@@ -733,7 +752,7 @@ def test_the_watched_paths_name_the_canonical_files(tmp_path, monkeypatch):
     # and executable code are all clobberable and were all unwatched.
     assert {path.name for path in conftest._CANONICAL_DIRS} == {
         "logs", "tasks", "global-claude-md", "global-agent-guidance",
-        "wiki", "commands", "hooks", "scripts",
+        "wiki", "commands", "hooks", "scripts", "tests",
     }
 
     # And the snapshot really visits each of them.
@@ -816,6 +835,13 @@ def test_the_pg_environment_points_nowhere():
     assert "PGHOSTADDR" not in os.environ, (
         "PGHOSTADDR would take precedence over PGHOST")
     assert os.environ["PGPORT"] == "1"
+    # A service file names a host, port, and database of its own, so an
+    # inherited PGSERVICE would route straight past the dead end above
+    # (round 4a-3, finding M6: deleting either pop stayed green).
+    assert "PGSERVICE" not in os.environ, (
+        "an inherited PGSERVICE would name a real host")
+    assert "PGSERVICEFILE" not in os.environ, (
+        "an inherited PGSERVICEFILE would name a real host")
     assert str(conftest._SUITE_HOME.name) in os.environ["PGHOST"], (
         "the dead end must live inside the suite's own home")
 
@@ -989,6 +1015,7 @@ def _throwaway_checkout(tmp_path, monkeypatch):
         tmp_path / name for name in (
             "tasks", "global-claude-md", "wiki", "commands", "hooks", "scripts")
     ))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", ())
     return tmp_path
 
 
@@ -999,7 +1026,8 @@ def _throwaway_checkout(tmp_path, monkeypatch):
     "scripts/example.py",
 ])
 def test_the_guard_catches_a_clobbered_checkout_file(tmp_path, monkeypatch,
-                                                     relative):
+                                                     relative,
+                                                     strict_hermeticity):
     """Each of the probe's targets must now be caught.
 
     The mutation this kills: narrowing ``_CANONICAL_DIRS`` back to ``logs``
@@ -1012,13 +1040,13 @@ def test_the_guard_catches_a_clobbered_checkout_file(tmp_path, monkeypatch,
     before = conftest._canonical_store_snapshot()
     target.write_text("clobbered by a careless test\n", encoding="utf-8")
 
-    with pytest.raises(AssertionError, match="REAL checkout"):
-        conftest.assert_canonical_store_untouched(
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
-def test_the_guard_catches_a_file_created_in_a_watched_tree(tmp_path,
-                                                            monkeypatch):
+def test_the_guard_catches_a_file_created_in_a_watched_tree(
+        tmp_path, monkeypatch, strict_hermeticity):
     """A NEW file in a watched directory is a change too."""
     root = _throwaway_checkout(tmp_path, monkeypatch)
 
@@ -1027,7 +1055,7 @@ def test_the_guard_catches_a_file_created_in_a_watched_tree(tmp_path,
                                                    encoding="utf-8")
 
     with pytest.raises(AssertionError):
-        conftest.assert_canonical_store_untouched(
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
@@ -1046,3 +1074,1008 @@ def test_generated_bytecode_is_not_mistaken_for_a_leak(tmp_path, monkeypatch):
 
     conftest.assert_canonical_store_untouched(
         before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# The network guard's real perimeter (audit round 4a-3, finding M4)
+# ===========================================================================
+
+
+def test_a_udp_datagram_is_refused():
+    """UDP needs no connect, so sendto had to be guarded separately.
+
+    Measured from inside a run before this: sendto to 8.8.8.8:53 succeeded
+    while the guard was armed. Kills the mutation that drops the ``sendto``
+    wrapper.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(AssertionError, match="send a datagram to"):
+            sock.sendto(b"probe", ("8.8.8.8", 53))
+    finally:
+        sock.close()
+
+
+def test_a_udp_sendmsg_with_a_destination_is_refused():
+    """``sendmsg`` takes its destination as a fourth argument.
+
+    Kills the mutation that drops the ``sendmsg`` wrapper.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(AssertionError, match="no network"):
+            sock.sendmsg([b"probe"], [], 0, ("8.8.8.8", 53))
+    finally:
+        sock.close()
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_may_send_a_datagram_to_its_own_server():
+    """The opt-in covers UDP too, and still only for loopback."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        client.sendto(b"hello", ("127.0.0.1", port))
+        assert server.recv(16) == b"hello"
+        with pytest.raises(AssertionError, match="no network"):
+            client.sendto(b"probe", ("8.8.8.8", 53))
+    finally:
+        client.close()
+        server.close()
+
+
+def test_only_the_two_loopback_addresses_are_allowed():
+    """127.0.0.0/8 as a whole is NOT loopback for this guard.
+
+    Kills the mutation ``host in _LOOPBACK_HOSTS`` -> ``... or
+    host.startswith("127.")``: the comment promised 127.0.0.1 and the code
+    allowed the whole /8, and a test that owns a server binds 127.0.0.1, so
+    the wider range bought nothing.
+    """
+    assert conftest._is_loopback(("127.0.0.1", 80))
+    assert conftest._is_loopback(("::1", 80))
+    assert conftest._is_loopback(("localhost", 80))
+    assert not conftest._is_loopback(("127.0.0.2", 80))
+    assert not conftest._is_loopback(("127.53.0.1", 80))
+    assert not conftest._is_loopback(("10.0.0.1", 80))
+    assert not conftest._is_loopback("/var/run/postgresql/.s.PGSQL.5432")
+    assert not conftest._is_loopback(None)
+
+
+def test_the_opt_in_does_not_outlive_the_test():
+    """``local_socket`` is off unless the running test asked for it.
+
+    Kills the mutation that drops ``pytest_runtest_teardown``: the last
+    marked test's permission would otherwise stay in force for fixture
+    finalisers, session teardown, and the next collection. This test is
+    unmarked and runs after marked ones in the same file.
+    """
+    assert conftest._ACTIVE_TEST["local_socket"] is False
+
+
+def test_the_guard_documents_what_it_cannot_reach():
+    """The comment must name the three gaps, not claim blanket denial.
+
+    A guard whose docs overstate its scope is worse than a narrower one
+    honestly described: the next author trusts it for a case it never
+    covered. Kills a revert of the comment to the old unqualified
+    "DEFAULT DENY".
+    """
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    section = source[source.index("must not open a network connection"):
+                     source.index("must not write ~/.cache")]
+    assert "_socket.socket()" in section, "the C accelerator gap"
+    assert "Child processes" in section, "the subprocess gap"
+    assert "psycopg2" in section, "the C-level driver gap"
+    assert "PGHOST" in section, "what actually covers children"
+
+
+#: Filled by ``record_opt_in_at_teardown`` so a later test can read what the
+#: flag looked like once the marked test's body was over.
+_OPT_IN_AT_TEARDOWN: list = []
+
+
+@pytest.fixture
+def record_opt_in_at_teardown():
+    """Record ``_ACTIVE_TEST["local_socket"]`` from a fixture finaliser."""
+    yield
+    _OPT_IN_AT_TEARDOWN.append(conftest._ACTIVE_TEST["local_socket"])
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_runs_with_the_opt_in(record_opt_in_at_teardown):
+    """Precondition: the flag really is on inside a marked test's body."""
+    assert conftest._ACTIVE_TEST["local_socket"] is True
+
+
+def test_the_opt_in_is_dropped_before_finalisers_run():
+    """The marked test above must not leave its permission behind.
+
+    Kills the mutation that empties ``pytest_runtest_teardown``: without it
+    the flag is still True while the previous test's fixture finalisers run,
+    and stays True through session teardown. Fail closed: a finaliser only
+    ever closes a socket, which needs no permission.
+    """
+    assert _OPT_IN_AT_TEARDOWN, (
+        "test_a_marked_test_runs_with_the_opt_in must run first")
+    assert _OPT_IN_AT_TEARDOWN[-1] is False, (
+        "the opt-in was still in force during the marked test's teardown")
+
+
+# ===========================================================================
+# The PG* environment survives every test (audit round 4a-3, findings M5, M6)
+#
+# psycopg2 opens its socket in C, below the network guard, so the PGHOST
+# repoint is the only thing keeping an import-bound `from psycopg2 import
+# connect` away from the operator's database. A fixture that repointed
+# PGHOST and forgot to restore it re-opened that door for every following
+# test -- reproduced in a copy, with server_version coming back.
+# ===========================================================================
+
+
+@pytest.mark.pg_env
+def test_the_pg_snapshot_covers_the_whole_prefix(monkeypatch):
+    """Every PG* variable is watched, not a hand-listed few.
+
+    Marked ``pg_env`` even though ``monkeypatch`` restores the variable:
+    pytest is free to tear the two fixtures down in either order, and when
+    the guard runs first it sees the mutation. The marker is the sanctioned
+    way to say "this test varies PG* on purpose"; the restore happens either
+    way.
+    """
+    monkeypatch.setenv("PGPASSFILE", "/tmp/nowhere")
+    snapshot = conftest.pg_env_snapshot()
+    assert snapshot["PGPASSFILE"] == "/tmp/nowhere"
+    assert snapshot["PGHOST"] == os.environ["PGHOST"]
+    assert all(key.startswith("PG") for key in snapshot)
+
+
+def test_the_assertion_flags_a_changed_variable():
+    """Set, changed, and removed are all flagged.
+
+    Kills the mutation that neuters ``assert not changed``.
+    """
+    base = {"PGHOST": "/dead/end", "PGPORT": "1"}
+    for after in (
+        {"PGHOST": "/var/run/postgresql", "PGPORT": "1"},   # repointed
+        {"PGPORT": "1"},                                    # removed
+        {"PGHOST": "/dead/end", "PGPORT": "1", "PGUSER": "x"},  # added
+    ):
+        with pytest.raises(AssertionError, match="PG\\* environment"):
+            conftest.assert_pg_env_unchanged(base, after, "some::test")
+
+    conftest.assert_pg_env_unchanged(base, dict(base), "some::test")
+
+
+@pytest.mark.pg_env
+def test_a_marked_test_may_vary_the_pg_environment():
+    """The exemption exists for tests that must vary these deliberately."""
+    os.environ["PGHOST"] = "/tmp/somewhere-else"
+    os.environ["PGSERVICE"] = "invented"
+    assert os.environ["PGHOST"] == "/tmp/somewhere-else"
+
+
+def test_the_environment_is_restored_after_a_marked_test():
+    """The restore is unconditional, so one test cannot poison the rest.
+
+    Kills the mutation that drops the restore loop from ``pg_env_unchanged``:
+    the marked test above leaves PGHOST pointing elsewhere and PGSERVICE set,
+    and every test after it would inherit both.
+    """
+    assert os.environ["PGHOST"] == str(conftest._NO_PG_SOCKET_DIR)
+    assert "PGSERVICE" not in os.environ
+
+
+def test_the_autouse_fixture_uses_the_assertion():
+    """Structural: the fixture must still CALL the guard it defines.
+
+    Kills the mutation that leaves the function in place but stops calling
+    it from ``pg_env_unchanged``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fixture = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "pg_env_unchanged"
+    )
+    called = {
+        ast.unparse(node.func) for node in ast.walk(fixture)
+        if isinstance(node, ast.Call)
+    }
+    assert "assert_pg_env_unchanged" in called
+    assert "pg_env_snapshot" in called
+
+
+def test_a_new_empty_directory_is_caught(tmp_path, monkeypatch,
+                                         strict_hermeticity):
+    """Creating an empty directory in a watched tree is a change.
+
+    Kills the mutation that records files only: a test could leave a new
+    empty directory anywhere in the checkout and the guard saw nothing.
+    Audit round 4a-3, low finding — decided in favour of catching it,
+    since a directory costs one dict entry and no stat.
+    """
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "invented-section").mkdir()
+
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_removed_directory_is_caught(tmp_path, monkeypatch,
+                                       strict_hermeticity):
+    """And so is deleting one."""
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    (root / "wiki" / "section").mkdir()
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "section").rmdir()
+
+    with pytest.raises(AssertionError):
+        conftest.report_source_tree_changes(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_generated_cache_directory_is_still_ignored(tmp_path, monkeypatch):
+    """Recording directories must not resurrect the __pycache__ false alarm."""
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "scripts" / "__pycache__").mkdir()
+    (root / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+
+    conftest.report_source_tree_changes(
+        before, conftest._canonical_store_snapshot())
+
+
+@pytest.mark.parametrize("watched", [
+    "logs", "tasks", "global-claude-md", "global-agent-guidance",
+    "wiki", "commands", "hooks", "scripts", "tests",
+])
+def test_each_watched_directory_is_really_watched(tmp_path, monkeypatch,
+                                                  watched,
+                                                  strict_hermeticity):
+    """One behavioural check per watched tree, not just a name list.
+
+    ``test_the_watched_paths_name_the_canonical_files`` compares
+    ``_CANONICAL_DIRS`` against a hard-coded list, which proves the names
+    match a list and nothing more. This creates a file in each directory of
+    a throwaway tree and requires the guard to notice — so dropping any one
+    entry from ``_CANONICAL_DIRS`` fails here (round 4a-3, low finding).
+    """
+    # Build the tree from _CANONICAL_DIRS' own basenames, so a directory
+    # added to the guard later is exercised the moment it is listed here.
+    root = tmp_path / "checkout"
+    (root / "data").mkdir(parents=True)
+    watched_dirs = []
+    for name in [path.name for path in conftest._CANONICAL_DIRS]:
+        if name in ("logs", "tasks"):
+            real = root / "data" / name
+            real.mkdir(parents=True)
+            (root / name).symlink_to(real)
+        else:
+            (root / name).mkdir()
+        watched_dirs.append(root / name)
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", tuple(watched_dirs))
+
+    before = conftest._canonical_store_snapshot()
+    (root / watched / "stray.md").write_text("left behind\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
+            before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# The suite's temporary home does not accumulate (round 4a-3, low finding)
+# ===========================================================================
+
+
+def test_a_stale_suite_home_is_swept(tmp_path):
+    """An abandoned home older than the window is removed.
+
+    TemporaryDirectory's finaliser does not run when the process is killed
+    outright, so a suite that dies that way leaves its whole home behind --
+    stub psql and all. Seven were sitting in /tmp when this was written.
+    """
+    stale = tmp_path / f"{conftest.SUITE_HOME_PREFIX}old"
+    stale.mkdir()
+    (stale / "bin").mkdir()
+    (stale / "bin" / "psql").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    old_time = time.time() - 48 * 3600
+    os.utime(stale, (old_time, old_time))
+
+    removed = conftest.sweep_stale_suite_homes(tmp_path)
+
+    assert removed == [stale.name]
+    assert not stale.exists()
+
+
+def test_a_fresh_or_current_suite_home_is_left_alone(tmp_path):
+    """A concurrent sibling run must not have its home pulled out.
+
+    Kills a mutation that drops the age check or the ``keep`` check: another
+    agent's worktree runs this same suite, and its home is minutes old.
+    """
+    fresh = tmp_path / f"{conftest.SUITE_HOME_PREFIX}fresh"
+    fresh.mkdir()
+    current = tmp_path / f"{conftest.SUITE_HOME_PREFIX}current"
+    current.mkdir()
+    old_time = time.time() - 48 * 3600
+    os.utime(current, (old_time, old_time))
+
+    removed = conftest.sweep_stale_suite_homes(tmp_path, current)
+
+    assert removed == []
+    assert fresh.exists(), "a fresh home belongs to a live run"
+    assert current.exists(), "the running suite's own home must survive"
+
+
+def test_the_sweep_touches_nothing_else(tmp_path):
+    """Only direct children matching the prefix are ever removed.
+
+    Kills a mutation that widens the name test: /tmp holds other agents'
+    scratch directories, and this runs unattended on every collection.
+    """
+    old_time = time.time() - 48 * 3600
+    bystanders = []
+    for name in ("pytest-of-shawn", "mut-ABCDEF", "pa-round4a2-XXXX",
+                 "not-pa-test-home-x"):
+        path = tmp_path / name
+        path.mkdir()
+        os.utime(path, (old_time, old_time))
+        bystanders.append(path)
+    # A matching name that is a FILE, and one that is a symlink to a real
+    # directory: neither is a suite home.
+    plain = tmp_path / f"{conftest.SUITE_HOME_PREFIX}file"
+    plain.write_text("", encoding="utf-8")
+    os.utime(plain, (old_time, old_time))
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / f"{conftest.SUITE_HOME_PREFIX}link"
+    link.symlink_to(target)
+
+    assert conftest.sweep_stale_suite_homes(tmp_path) == []
+    assert all(path.exists() for path in bystanders)
+    assert plain.exists()
+    assert target.exists()
+
+
+def test_the_current_home_is_registered_for_cleanup_at_exit():
+    """atexit is the deterministic half of the cleanup.
+
+    Structural: the weakref finaliser is not guaranteed to run at
+    interpreter shutdown, so the hook must be registered. Kills the mutation
+    that drops ``atexit.register(_SUITE_HOME.cleanup)``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    registered = [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "atexit.register"
+    ]
+    assert any("_SUITE_HOME.cleanup" in call for call in registered), (
+        f"the suite home is not registered for cleanup: {registered}")
+    # And the sweep runs at import, not merely exists.
+    called = {
+        ast.unparse(node.func) for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "sweep_stale_suite_homes" in called
+
+
+# ===========================================================================
+# Concurrency: strict in a clean copy, advisory in a shared checkout
+#
+# Audit round 4a-3 addendum, CONFIRMED by reproduction. The widened guard
+# snapshots the REAL checkout, and this repository is worked by several
+# concurrent sessions BY DESIGN (CLAUDE.md). A two-minute run therefore
+# straddles other people's edits routinely -- and data/logs/extraction.log
+# was rewritten by a session hook mid-run during the investigation. Failing
+# for that blames the suite for work the suite did not do, which is the
+# fastest way to get a guard switched off.
+# ===========================================================================
+
+
+def test_an_append_to_a_watched_log_is_tolerated(tmp_path, monkeypatch):
+    """The extraction hook adding a line must not fail the run.
+
+    Kills the mutation that treats any size change as a violation: the live
+    system appends to memories.jsonl and data/logs/* continuously, and the
+    suite has no business reporting that.
+    """
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("first line\n", encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("a line the hook appended mid-run\n")
+
+    appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+
+    assert appended == [str(log.resolve())]
+    assert tolerated == []
+
+
+def test_an_append_to_the_corpus_is_tolerated(tmp_path, monkeypatch):
+    """The same for memories.jsonl itself."""
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "id": "2031-01-02-ddddeeeeffff",
+            "content": "A memory the hook appended mid-run.",
+            "created_at": "2031-01-02T09:00:00+00:00",
+        }) + "\n")
+
+    appended, _tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert appended == [str(corpus.resolve())]
+
+
+def test_a_rewritten_prefix_is_not_an_append(tmp_path, monkeypatch):
+    """A file that GREW but whose earlier bytes changed is still a rewrite.
+
+    Kills the mutation that accepts any size increase without checking the
+    prefix: a dedup pass that rewrote the store and happened to end up
+    larger would sail through.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    corpus.write_text(
+        '{"id": "rewritten-by-a-careless-test"}\n'
+        '{"id": "2031-01-02-ddddeeeeffff"}\n',
+        encoding="utf-8",
+    )
+    assert corpus.stat().st_size > 0
+
+    with pytest.raises(AssertionError, match="APPEND"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_truncated_log_is_still_a_violation(tmp_path, monkeypatch):
+    """A shrink is never an append."""
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    log.write_text("one\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_source_edit_is_queued_for_the_terminal_summary(tmp_path,
+                                                          monkeypatch):
+    """A concurrent session's edit is reported, not fatal.
+
+    Asserts the QUEUE, not a captured print: the operator-visible half is
+    covered end to end by
+    test_the_advisory_reaches_the_operator_under_default_capture, which runs
+    a nested pytest under default capture and greps its output. Reading
+    capsys here was exactly the mistake -- the old warning was swallowed and
+    its test stayed green (round 4a-4, finding M1).
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    monkeypatch.setitem(conftest._DEFERRED_REPORT, "source_changes", [])
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "someone-elses-note.md").write_text(
+        "another session's work\n", encoding="utf-8")
+
+    changed = conftest.report_source_tree_changes(
+        before, conftest._canonical_store_snapshot())
+
+    expected = str((root / "wiki" / "someone-elses-note.md").resolve())
+    assert changed == [expected]
+    assert conftest._DEFERRED_REPORT["source_changes"] == [expected], (
+        "the advisory was not queued for the terminal summary")
+
+
+def test_the_same_source_edit_fails_under_strict(tmp_path, monkeypatch):
+    """A clean copy has nothing else writing, so the finding is fatal there.
+
+    Kills the mutation that warns unconditionally: the guard would then
+    never catch a test that really did write to the checkout.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "written-by-a-test.md").write_text("oops\n",
+                                                        encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_strict_is_off_unless_the_variable_is_exactly_one(monkeypatch):
+    """Only ``1`` turns it on; a stray truthy string does not."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    assert conftest.hermeticity_is_strict() is False
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "0")
+    assert conftest.hermeticity_is_strict() is False
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "true")
+    assert conftest.hermeticity_is_strict() is False
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    assert conftest.hermeticity_is_strict() is True
+
+
+def test_the_store_half_is_strict_in_both_modes(tmp_path, monkeypatch):
+    """Advisory mode applies to the SOURCE trees only.
+
+    A test that rewrites memories.jsonl fails whether or not STRICT is set:
+    that is the guard's original purpose and nothing about concurrency
+    excuses it.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    corpus.write_text('{"id": "clobbered"}\n', encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# The advisories must survive pytest's output capture (round 4a-4, M1)
+#
+# The warning was printed from a session-scoped fixture teardown, which
+# pytest captures and discards on a green run: measured at zero occurrences
+# at -q and at default verbosity, visible only under -s. Its own test read
+# capsys, so it stayed green while the operator saw nothing.
+# ===========================================================================
+
+#: Appended to a COPY of the real conftest, so the nested run gets the real
+#: guards, hooks and fixtures verbatim and only the watched paths move. A
+#: module-level reassignment rather than a hook: it runs at import, long
+#: before any snapshot, and cannot be shadowed by a second hook definition.
+_NESTED_OVERRIDE = "\n".join([
+    "",
+    "_CANONICAL_FILES = ()",
+    "_APPEND_TOLERANT_DIRS = ()",
+    '_CANONICAL_DIRS = (Path(__file__).resolve().parent / "watched",)',
+    "",
+])
+
+_NESTED_TEST = "\n".join([
+    "from pathlib import Path",
+    "",
+    "_ROOT = Path(__file__).resolve().parent",
+    "",
+    "",
+    "def test_that_writes_into_the_watched_tree():",
+    '    (_ROOT / "watched" / "left-behind.md").write_text(',
+    '        "x\\n", encoding="utf-8")',
+    "    assert True",
+    "",
+])
+
+
+def _run_nested_pytest(tmp_path, extra_env=None):
+    """Run a nested pytest with DEFAULT capture and return its result.
+
+    The nested tree carries a copy of the real conftest with only the
+    watched paths repointed, so what is measured is the real guard's real
+    output channel under the real capture settings.
+    """
+    work = tmp_path / "nested"
+    (work / "watched").mkdir(parents=True)
+    real_conftest = Path(conftest.__file__).resolve()
+    (work / "conftest.py").write_text(
+        real_conftest.read_text(encoding="utf-8") + _NESTED_OVERRIDE,
+        encoding="utf-8",
+    )
+    (work / "test_writer.py").write_text(_NESTED_TEST, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.update(extra_env or {})
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--no-header",
+         "-p", "no:cacheprovider", "--basetemp", str(tmp_path / "bt"),
+         str(work)],
+        capture_output=True, text=True, cwd=str(work), env=env,
+    )
+
+
+def test_the_advisory_reaches_the_operator_under_default_capture(tmp_path):
+    """The warning must appear in a plain ``-q`` run's own output.
+
+    This is the finding itself: the old ``print`` from a session-fixture
+    teardown was swallowed, and the test that "covered" it read capsys, so
+    both were green and the operator was told nothing. Kills a revert of the
+    ``pytest_terminal_summary`` channel back to ``print``.
+    """
+    result = _run_nested_pytest(tmp_path)
+
+    combined = result.stdout + result.stderr
+    assert "hermeticity" in combined, combined[-3000:]
+    assert "WARNING" in combined
+    assert "left-behind.md" in combined, "the warning must name the path"
+    assert "CONCURRENT SESSION" in combined
+    assert conftest.STRICT_ENV_VAR in combined
+    assert result.returncode == 0, "advisory mode must not fail the run"
+
+
+def test_the_same_change_fails_the_nested_run_under_strict(tmp_path):
+    """And with STRICT set it is fatal, not merely louder."""
+    result = _run_nested_pytest(
+        tmp_path, {conftest.STRICT_ENV_VAR: "1"})
+
+    assert result.returncode != 0, result.stdout[-2000:]
+    assert "source trees" in result.stdout + result.stderr
+
+
+# ===========================================================================
+# The session path's own pairing (round 4a-4, finding M3)
+# ===========================================================================
+
+
+def test_the_session_pair_leaves_source_changes_to_the_advisory_half(
+    tmp_path, monkeypatch,
+):
+    """A source-tree edit must not make the STORE assertion raise.
+
+    ``assert_canonical_store_untouched`` filters ``violations`` down to the
+    append-tolerant paths precisely so a concurrent session's wiki edit goes
+    to the advisory half instead of failing the run. Dropping that filter
+    (``list(violations)``) survived 395 tests, because every existing test
+    drove one half or the other and never the pair the session fixture
+    actually uses.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    monkeypatch.setitem(conftest._DEFERRED_REPORT, "source_changes", [])
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "concurrent-edit.md").write_text("theirs\n",
+                                                      encoding="utf-8")
+    after = conftest._canonical_store_snapshot()
+
+    # The pair, in the order the session fixture calls them.
+    changed = conftest.report_source_tree_changes(before, after)
+    appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, after)
+
+    assert changed == [str((root / "wiki" / "concurrent-edit.md").resolve())]
+    assert appended == [] and tolerated == []
+
+
+# ===========================================================================
+# An append is only benign if it is the shape the writer produces (M4)
+# ===========================================================================
+
+
+def test_a_garbage_append_to_the_corpus_is_a_violation(tmp_path, monkeypatch):
+    """Growth alone is not enough to call an append the live system's work.
+
+    Kills the mutation that drops ``_appended_content_problem``: a test that
+    forgot to patch its path and appended a line of its own to the real
+    memories.jsonl was classified benign purely because the file grew.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write("not json at all\n")
+
+    with pytest.raises(AssertionError, match="not JSON"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_an_appended_record_missing_required_keys_is_a_violation(
+    tmp_path, monkeypatch,
+):
+    """Valid JSON is not enough either; it must look like a memory."""
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"id": "2031-01-02-ddddeeeeffff"}) + "\n")
+
+    with pytest.raises(AssertionError, match="lacks"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_prose_append_to_the_vocabulary_is_a_violation(tmp_path,
+                                                         monkeypatch):
+    """The vocabulary holds one bare tag per line."""
+    _corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with vocabulary.open("a", encoding="utf-8") as handle:
+        handle.write("this is a sentence, not a tag\n")
+
+    with pytest.raises(AssertionError, match="not a bare tag"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_real_tag_append_is_still_benign(tmp_path, monkeypatch):
+    """The hook adding a tag must not be reported as a violation."""
+    _corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with vocabulary.open("a", encoding="utf-8") as handle:
+        handle.write("kiln-firing-log\n")
+
+    appended, _tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert appended == [str(vocabulary.resolve())]
+
+
+def test_tolerated_appends_are_described_with_byte_counts(tmp_path,
+                                                          monkeypatch):
+    """The operator is told what grew and by how much.
+
+    Without this line a test that appended to the real store is invisible,
+    since the append itself is classified benign.
+    """
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("first\n", encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("0123456789\n")
+    after = conftest._canonical_store_snapshot()
+
+    described = conftest.describe_tolerated_appends(
+        before, [str(log.resolve())], after)
+    assert described == [f"{log.resolve()} (+11 bytes)"]
+
+
+# ===========================================================================
+# Shared-checkout noise: lock files and rotations (round 4a-4, finding L3)
+# ===========================================================================
+
+
+def test_a_lock_file_appearing_is_tolerated_in_advisory_mode(tmp_path,
+                                                             monkeypatch):
+    """_bulk_rewrite_guard creates logs/daily-sync.lock in the watched tree.
+
+    Kills the mutation that drops the ``*.lock`` allowance: any bulk rewrite
+    running anywhere on the machine during the suite would fail the run.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "daily-sync.lock").write_text("", encoding="utf-8")
+
+    appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert appended == []
+    assert tolerated == [str((logs / "daily-sync.lock").resolve())]
+
+
+def test_a_log_rotation_is_tolerated_in_advisory_mode(tmp_path, monkeypatch):
+    """`mv X X.1` plus a fresh X is a rotation, not the suite writing.
+
+    The fresh X reads as a shrink, which is otherwise a violation. Kills the
+    mutation that drops the rotation allowance.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("a long-standing log with plenty of content\n",
+                   encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    log.rename(logs / "extraction.log.1")
+    log.write_text("fresh\n", encoding="utf-8")
+
+    appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert appended == []
+    assert set(tolerated) == {
+        str((logs / "extraction.log.1").resolve()),
+        str(log.resolve()),
+    }
+
+
+def test_lock_files_and_rotations_are_violations_under_strict(tmp_path,
+                                                              monkeypatch):
+    """In a clean copy nothing else is running, so this IS the suite.
+
+    Kills the mutation that tolerates the noise unconditionally.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "daily-sync.lock").write_text("", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_an_ordinary_new_log_file_is_still_a_violation(tmp_path, monkeypatch):
+    """The allowance is narrow: only *.lock and a rotation of a known base."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "written-by-a-test.log").write_text("oops\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# Strict mode says so when the store half is watching nothing (M2)
+# ===========================================================================
+
+
+def test_strict_reports_an_inert_store_half(tmp_path, monkeypatch):
+    """An archive export has no data/, so the store paths dangle.
+
+    That was the one invocation with STRICT set — and the half it made
+    strict was watching nothing. Kills the mutation that drops the
+    self-check.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (tmp_path / "memories" / "memories.jsonl",))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS",
+                        (tmp_path / "logs",))
+
+    message = conftest.strict_store_coverage_warning()
+
+    assert message is not None
+    assert "INERT" in message
+    assert "memories.jsonl" in message
+    assert "data/ submodule" in message
+
+
+def test_no_inert_warning_when_the_store_is_present(tmp_path, monkeypatch):
+    """A populated checkout under STRICT says nothing."""
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    _corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+    assert conftest.strict_store_coverage_warning() is None
+
+
+def test_no_inert_warning_without_strict(tmp_path, monkeypatch):
+    """Advisory mode never mentions it: the store half is not strict there."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (tmp_path / "absent.jsonl",))
+    assert conftest.strict_store_coverage_warning() is None
+
+
+# ===========================================================================
+# Round 4a-4, L5 — four mutations the re-audit found surviving in conftest
+# ===========================================================================
+
+
+def test_growth_without_a_start_digest_is_a_violation(tmp_path, monkeypatch):
+    """An unreadable file at session start cannot be shown to have grown.
+
+    Kills the mutation that drops ``or old_digest is None``. The hole it
+    closes is narrow but real: when the file cannot be hashed at EITHER end
+    the comparison becomes ``None != None``, which is false, and the growth
+    would be waved through as an append with nothing checked. Fail closed.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+    key = str(corpus.resolve())
+
+    before = conftest._canonical_store_snapshot()
+    mtime, size, _digest = before[key]
+    before[key] = (mtime, size, None)      # unreadable at session start
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "id": "2031-01-02-ddddeeeeffff",
+            "content": "A perfectly ordinary appended memory.",
+            "created_at": "2031-01-02T09:00:00+00:00",
+        }) + "\n")
+    after = conftest._canonical_store_snapshot(with_digests=False)
+    # ...and unreadable at teardown too, so the digests compare equal.
+    monkeypatch.setattr(conftest, "_digest_prefix",
+                        lambda path, length: None)
+
+    violations, appends, _tolerated = conftest.classify_store_changes(
+        before, after)
+    assert appends == []
+    assert violations == [key]
+
+
+def test_the_sweep_never_follows_a_symlinked_directory(tmp_path,
+                                                       monkeypatch):
+    """A symlink named like a suite home is never handed to rmtree.
+
+    Kills the mutation that drops ``entry.is_symlink() or`` from the type
+    test: ``is_dir()`` FOLLOWS symlinks, so a stale symlink pointing at (say)
+    a real project directory would be passed to ``shutil.rmtree``. Today
+    rmtree refuses a symlink and ``ignore_errors`` swallows it, so the
+    target survives by rmtree's grace rather than by this guard — which is
+    exactly why the call itself has to be observed.
+    """
+    target = tmp_path / "precious"
+    target.mkdir()
+    (target / "keep.txt").write_text("do not delete\n", encoding="utf-8")
+    link = tmp_path / f"{conftest.SUITE_HOME_PREFIX}link"
+    link.symlink_to(target)
+    old_time = time.time() - 48 * 3600
+    os.utime(link, (old_time, old_time), follow_symlinks=False)
+    os.utime(target, (old_time, old_time))
+
+    attempted = []
+    real_rmtree = shutil.rmtree
+    monkeypatch.setattr(
+        shutil, "rmtree",
+        lambda path, **kwargs: (attempted.append(str(path)),
+                                real_rmtree(path, **kwargs))[1],
+    )
+
+    removed = conftest.sweep_stale_suite_homes(tmp_path)
+
+    assert attempted == [], f"rmtree was called on a symlink: {attempted}"
+    assert removed == []
+    assert link.is_symlink(), "the symlink itself must be left alone"
+    assert (target / "keep.txt").exists(), "the target must not be deleted"
+
+
+def test_sendto_reads_the_destination_from_the_last_argument():
+    """``sendto(data, flags, address)`` puts the destination last.
+
+    Kills the mutation ``args[-1]`` -> ``args[0]``: with a flags argument
+    present, ``args[0]`` is the integer 0, which is not loopback, so the
+    three-argument form would be refused for the wrong reason -- and, worse,
+    a marked test's legitimate loopback send would be refused while the
+    address was never examined at all.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(AssertionError) as excinfo:
+            sock.sendto(b"probe", 0, ("8.8.8.8", 53))
+        assert "('8.8.8.8', 53)" in str(excinfo.value), (
+            "the refusal named the flags argument, not the destination")
+    finally:
+        sock.close()
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_may_use_the_three_argument_sendto():
+    """And the same form works for a loopback server the test owns."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        client.sendto(b"hello", 0, ("127.0.0.1", port))
+        assert server.recv(16) == b"hello"
+    finally:
+        client.close()
+        server.close()
