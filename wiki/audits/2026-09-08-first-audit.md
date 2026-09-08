@@ -348,13 +348,22 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     missed unmerged index entries with no marker file (a conflicted stash
     pop pushed conflict markers with exit 0); the exit-3 remedy advised the
     very sweep the fix prevents; a stale parent pointer was never bumped.
-    Fixed (2e3d616). Third pass running.
+    Fixed (2e3d616). Third pass: the new pointer bump rolled the pointer
+    BACKWARDS when the parent was ahead of the checkout (a pull without a
+    submodule update), with exit 0 — a regression in the fix; `data` tracked
+    as plain files would have had its contents committed into the public
+    parent; the staleness probe was silenced by submodule ignore settings.
+    Fixed (0a0a147: forward-only, gitlink-only, SHAs read directly). Fourth,
+    narrow pass running.
   - PR #115, first pass: **private content in a public branch** (H27, D6);
     a false comment about cursor advance on harness-only windows; unpinned
     digest constants; loose banner assertions; three checker divergences
     from bash (`$VAR`, trailing backslash, CRLF); deletable checker passes;
     an untested cursor prune; two old tests reading the real scratchpads.
-    Tip purged (41ae79b); the rest being fixed on the branch.
+    Tip purged (41ae79b); the rest fixed in ten commits (2d36e39–5c1e7a1;
+    the agent also desensitised three older fixtures with collaborator
+    names). Second pass running. `tests/test_zotero.py` carries published
+    author surnames from a bibliographic fixture; Shawn's call.
   - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
     guard pushes a second stash and only one is popped, so a run that
     reports success leaves the day's appends in a stash (the very loss
