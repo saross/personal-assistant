@@ -298,39 +298,39 @@ Lens B: 63 mutations over 170 tests; 4 critical, 11 medium. Fix round 4a on
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| W1 | `scripts/dedup-memories.py:293` writes `ensure_ascii=False` and `:98` reads with `splitlines()`: a record holding U+2028/U+2029/U+0085 (escaped by the hook's `json.dumps`) is split into two malformed lines on the second run; same write at `tag-gardening.py:591,647`; the Postgres cursor is a `splitlines()` count, so it drifts from every file-iteration reader | CONFIRMED by repro | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W2 | `scripts/tag-gardening.py:744` — `orphans --action clean` rewrites the protected `tag-vocabulary.txt` with a bare `write_text`: no guard, no lock, no temp-and-rename; the hook appends under a shared lock, `/tags` step 7 runs it routinely | CONFIRMED by repro | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W3 | `scripts/recover_anchors.py:434,302-352` — the plan is built outside the rewrite lock and whole stale records are written back, reverting a `/forget` or `/update` that landed in between (the docstring claims parity with `archive-memories`, which re-reads inside the lock) | CONFIRMED by repro | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT1 | `scripts/sync_memory_edit.py:107-110` — the UPDATE's WHERE clause is untested (`id != %s` stays green; the test compares the constant with itself); a `/forget` would blank every other Postgres row | CONFIRMED (mutation) | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT2 | `scripts/recover_anchors.py:333` — the write path is untested: deleting the verbatim `else: out.write(line)` (corpus reduced to the modified records), the guard (:317), the lock (:319), the atomic rename (:320), and the `--apply` gate (:441) all stay green | CONFIRMED (mutation) | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT3 | `scripts/dedup-memories.py` has no test file; its module constants resolve to the real store from `__file__` | CONFIRMED | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT4 | A test in `tests/test_tag_gardening.py` that forgets to patch the store path rewrites the REAL canonical store and the suite stays green: the autouse `_bypass_rewrite_guard` (:31-56) noops the one refusing check and the conftest hermeticity guard (`tests/conftest.py:220-260`) watches only `~/.cache` | CONFIRMED by repro in a copy | **PR #121** (`claude/audit-round4a`; re-audit running) |
+| W1 | `scripts/dedup-memories.py:293` writes `ensure_ascii=False` and `:98` reads with `splitlines()`: a record holding U+2028/U+2029/U+0085 (escaped by the hook's `json.dumps`) is split into two malformed lines on the second run; same write at `tag-gardening.py:591,647`; the Postgres cursor is a `splitlines()` count, so it drifts from every file-iteration reader | CONFIRMED by repro | fixed in **PR #121** (merged d1c3773) |
+| W2 | `scripts/tag-gardening.py:744` — `orphans --action clean` rewrites the protected `tag-vocabulary.txt` with a bare `write_text`: no guard, no lock, no temp-and-rename; the hook appends under a shared lock, `/tags` step 7 runs it routinely | CONFIRMED by repro | fixed in **PR #121** (merged d1c3773) |
+| W3 | `scripts/recover_anchors.py:434,302-352` — the plan is built outside the rewrite lock and whole stale records are written back, reverting a `/forget` or `/update` that landed in between (the docstring claims parity with `archive-memories`, which re-reads inside the lock) | CONFIRMED by repro | fixed in **PR #121** (merged d1c3773) |
+| WT1 | `scripts/sync_memory_edit.py:107-110` — the UPDATE's WHERE clause is untested (`id != %s` stays green; the test compares the constant with itself); a `/forget` would blank every other Postgres row | CONFIRMED (mutation) | fixed in **PR #121** (merged d1c3773) |
+| WT2 | `scripts/recover_anchors.py:333` — the write path is untested: deleting the verbatim `else: out.write(line)` (corpus reduced to the modified records), the guard (:317), the lock (:319), the atomic rename (:320), and the `--apply` gate (:441) all stay green | CONFIRMED (mutation) | fixed in **PR #121** (merged d1c3773) |
+| WT3 | `scripts/dedup-memories.py` has no test file; its module constants resolve to the real store from `__file__` | CONFIRMED | fixed in **PR #121** (merged d1c3773) |
+| WT4 | A test in `tests/test_tag_gardening.py` that forgets to patch the store path rewrites the REAL canonical store and the suite stays green: the autouse `_bypass_rewrite_guard` (:31-56) noops the one refusing check and the conftest hermeticity guard (`tests/conftest.py:220-260`) watches only `~/.cache` | CONFIRMED by repro in a copy | fixed in **PR #121** (merged d1c3773) |
 
 ### Medium (writers)
 
 | # | Finding | Disposition |
 |---|---|---|
-| W4 | `tag-gardening.py:676-687,744` — both vocabulary rewrites drop every `#` comment line (eight section headers live) | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W5 | `tag-gardening.py:501` — the bulk guard runs before the `--dry-run` branch: a dry run takes the exclusive daily-sync lock and exits 2 on a dirty tree | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W6 | `dedup-memories.py:383` logs a backup file that nothing creates; the script's only deletion-safety claim is false | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W7 | `recover_anchors.py:233,328` — `json.loads` with no `try`: one malformed line aborts both modes with a traceback and orphans `memories.jsonl.tmp` | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W8 | `tag-gardening.py:692` — a tag merge never reaches Postgres and the printed remedy (`sync-to-postgres.py`, which is insert-only past the cursor) is wrong; `commands/tags.md:167` says a full rebuild | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W9 | Line-position cursor plus mid-file deletion: `archive-memories --apply` or `dedup-memories` run with an unsynced backlog leaves the deleted count of never-synced records below the cursor forever (`sync-to-postgres.py:1354-1382` resets only when the cursor passes the end); `monthly-archive` syncs first (SUSPECTED, no Postgres) | **PR #121** (`claude/audit-round4a`; re-audit running) (refuse while a backlog exists) |
-| W10 | `dedup-memories.py:160,292` — the re-id path records no old-to-new mapping; `surfaced.log`, `superseded_by`, and the Postgres row and embedding under the old id are orphaned | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W11 | `sync_memory_edit.py:55,107` — `/update` replaces content but keeps the embedding; refill is `WHERE embedding IS NULL`, so semantic recall matches the old text (SUSPECTED) | **PR #121** (`claude/audit-round4a`; re-audit running) (`embedding = NULL` on content change) |
-| W12 | `tag-gardening.py:541,581,634` — plan keys stored raw, matched lower-cased: a loser with any uppercase replaces nothing while reporting "Tags retired: 1" | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| W13 | `dedup-memories.py:244,402` — one unclassified group aborts the whole run (invariant exit) though the comment says such groups are kept verbatim | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT5 | `tag-gardening.py:613` — a malformed line is dropped on decode error and no test notices (`archive-memories` has the equivalent test) | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT6 | `tag-gardening.py:501-505,603,673,662-664` — guard, both flocks, and the atomic rename unpinned | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT7 | `apply-decay.py:107,111-112,102` — the decay predicate is asserted by substring: `NOW() + interval`, `<` to `>`, `AND` to `OR` all green | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT8 | `apply-decay.py:88-93` — the schema-version call is deletable | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT9 | `archive-memories.py:337,372,534` — JSONL flock, atomic rename, and `--apply` gate unpinned (a dry run that archives, rewrites, and commits stays green) | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT10 | `archive-memories.py:427-430` — the `Rewrite-Class: bulk` trailer (what stops the daily sync's shrink detector resetting the commit) is droppable | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT11 | `archive-memories.py:441-442` — `git add --literal-pathspecs -- <paths>` to `add -A` stays green (sweeps unstaged work) | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT12 | `recover_anchors.py:155,185` — stale `verified` kept in the written record; `revisions` overwritten instead of appended | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT13 | `recover_anchors.py:133,100,234` — "already resolves" gate, absolute refs, and `build_plans` selecting `verified == "true"` all green; `build_plans` untested | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT14 | `sync_memory_edit.py:128` — dropping the `with conn` transaction stays green: the UPDATE is discarded on close while "PostgreSQL reconciled" prints | **PR #121** (`claude/audit-round4a`; re-audit running) |
-| WT15 | `monthly-archive.py:112,491-494,484-485` — the sanity cap is asserted as `CAP + 1` (never pinned), the post-apply re-check is deletable, the partition HALT can become `return 0` | **PR #121** (`claude/audit-round4a`; re-audit running) |
+| W4 | `tag-gardening.py:676-687,744` — both vocabulary rewrites drop every `#` comment line (eight section headers live) | fixed in **PR #121** (merged d1c3773) |
+| W5 | `tag-gardening.py:501` — the bulk guard runs before the `--dry-run` branch: a dry run takes the exclusive daily-sync lock and exits 2 on a dirty tree | fixed in **PR #121** (merged d1c3773) |
+| W6 | `dedup-memories.py:383` logs a backup file that nothing creates; the script's only deletion-safety claim is false | fixed in **PR #121** (merged d1c3773) |
+| W7 | `recover_anchors.py:233,328` — `json.loads` with no `try`: one malformed line aborts both modes with a traceback and orphans `memories.jsonl.tmp` | fixed in **PR #121** (merged d1c3773) |
+| W8 | `tag-gardening.py:692` — a tag merge never reaches Postgres and the printed remedy (`sync-to-postgres.py`, which is insert-only past the cursor) is wrong; `commands/tags.md:167` says a full rebuild | fixed in **PR #121** (merged d1c3773) |
+| W9 | Line-position cursor plus mid-file deletion: `archive-memories --apply` or `dedup-memories` run with an unsynced backlog leaves the deleted count of never-synced records below the cursor forever (`sync-to-postgres.py:1354-1382` resets only when the cursor passes the end); `monthly-archive` syncs first (SUSPECTED, no Postgres) | fixed in **PR #121** (merged d1c3773) (refuse while a backlog exists) |
+| W10 | `dedup-memories.py:160,292` — the re-id path records no old-to-new mapping; `surfaced.log`, `superseded_by`, and the Postgres row and embedding under the old id are orphaned | fixed in **PR #121** (merged d1c3773) |
+| W11 | `sync_memory_edit.py:55,107` — `/update` replaces content but keeps the embedding; refill is `WHERE embedding IS NULL`, so semantic recall matches the old text (SUSPECTED) | fixed in **PR #121** (merged d1c3773) (`embedding = NULL` on content change) |
+| W12 | `tag-gardening.py:541,581,634` — plan keys stored raw, matched lower-cased: a loser with any uppercase replaces nothing while reporting "Tags retired: 1" | fixed in **PR #121** (merged d1c3773) |
+| W13 | `dedup-memories.py:244,402` — one unclassified group aborts the whole run (invariant exit) though the comment says such groups are kept verbatim | fixed in **PR #121** (merged d1c3773) |
+| WT5 | `tag-gardening.py:613` — a malformed line is dropped on decode error and no test notices (`archive-memories` has the equivalent test) | fixed in **PR #121** (merged d1c3773) |
+| WT6 | `tag-gardening.py:501-505,603,673,662-664` — guard, both flocks, and the atomic rename unpinned | fixed in **PR #121** (merged d1c3773) |
+| WT7 | `apply-decay.py:107,111-112,102` — the decay predicate is asserted by substring: `NOW() + interval`, `<` to `>`, `AND` to `OR` all green | fixed in **PR #121** (merged d1c3773) |
+| WT8 | `apply-decay.py:88-93` — the schema-version call is deletable | fixed in **PR #121** (merged d1c3773) |
+| WT9 | `archive-memories.py:337,372,534` — JSONL flock, atomic rename, and `--apply` gate unpinned (a dry run that archives, rewrites, and commits stays green) | fixed in **PR #121** (merged d1c3773) |
+| WT10 | `archive-memories.py:427-430` — the `Rewrite-Class: bulk` trailer (what stops the daily sync's shrink detector resetting the commit) is droppable | fixed in **PR #121** (merged d1c3773) |
+| WT11 | `archive-memories.py:441-442` — `git add --literal-pathspecs -- <paths>` to `add -A` stays green (sweeps unstaged work) | fixed in **PR #121** (merged d1c3773) |
+| WT12 | `recover_anchors.py:155,185` — stale `verified` kept in the written record; `revisions` overwritten instead of appended | fixed in **PR #121** (merged d1c3773) |
+| WT13 | `recover_anchors.py:133,100,234` — "already resolves" gate, absolute refs, and `build_plans` selecting `verified == "true"` all green; `build_plans` untested | fixed in **PR #121** (merged d1c3773) |
+| WT14 | `sync_memory_edit.py:128` — dropping the `with conn` transaction stays green: the UPDATE is discarded on close while "PostgreSQL reconciled" prints | fixed in **PR #121** (merged d1c3773) |
+| WT15 | `monthly-archive.py:112,491-494,484-485` — the sanity cap is asserted as `CAP + 1` (never pinned), the post-apply re-check is deletable, the partition HALT can become `return 0` | fixed in **PR #121** (merged d1c3773) |
 
 Lows recorded: W14 parent directories not fsynced; W15 `tag-gardening`
 rewrites without flush or fsync and builds the corpus in memory; W16 merge
@@ -412,6 +412,76 @@ Verified correct: parameterisation of every Python query; LIKE escaping;
 closed on every path; limit bounds; exact-match ids; empty and
 punctuation-only queries; no embedding call without an explicit flag
 (Ollama on localhost only, no cloud path); UK spelling.
+
+## Tranche 4 — session archive pipeline (both lenses, 2026-09-08 night)
+
+Scope: `bulk-archive.py`, `check-archive-drift.py`, `reprocess-sessions.py`,
+`backfill-summaries.py`, `validate-session-metadata.py`,
+`normalise-archive-storage.py`, `extract-transcript-text.py`,
+`_scan_archives.py`, `extraction-prompt-spotcheck.py`,
+`search-archives-safe.sh`, `push-archives-to-r2.sh`, and their tests. Lens A:
+5 critical, 13 medium, 9 low. Lens B: 31 mutations, 31 survived; 4 critical,
+7 medium. The archive write path itself lives in `cc_session_toolkit` (a
+separate checkout) and is not pinned by this repository. Fix round 4c on
+`claude/audit-round4c`.
+
+### Critical (archive)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| AR1 | `check-archive-drift.py:66` (4,000 prose chars) and `bulk-archive.py:2286-2298` (five turns by default) disagree on "substantive", so a session the gate reports is refused by the archiver at the flags the gate's own remediation line names: a permanent session-start gate | CONFIRMED by repro | **next** (round 4c, `claude/audit-round4c`) |
+| AR2 | `bulk-archive.py:479` treats a catalogue id as archived, three lines after logging that it has no metadata on disk, against the docstring and `infrastructure-reference.md:191`; a ghost entry suppresses archiving while the drift check keeps flagging it | CONFIRMED by repro | **next** (round 4c, `claude/audit-round4c`) |
+| AR3 | `bulk-archive.py` has no completeness guard (no grace, no size re-check at archive time; `verify` checks existence only; validation never opens a transcript): a transcript copied mid-session is frozen as canonical and every check reports clean | CONFIRMED (absence) | **next** (round 4c, `claude/audit-round4c`) |
+| AR4 | `backfill-summaries.py:312,466` reach the Anthropic API on the default path with no estimate and no confirmation, against the API review gate every sibling honours | CONFIRMED by reading | **next** (round 4c, `claude/audit-round4c`) |
+| AR5 | `backfill-summaries.py:275-285` writes a summary for any id in the model's reply found in the canonical; a hallucinated id overwrites an unrelated memory's summary | CONFIRMED by repro | **next** (round 4c, `claude/audit-round4c`) |
+| ART1 | `check-archive-drift.py` has zero tests: reporting zero drift always, or treating every session as trivial, leaves the full suite green; it is the sole tripwire for the failure class of the 77-session gap of 2026-07-28 | CONFIRMED (mutation, full suite) | **next** (round 4c, `claude/audit-round4c`) |
+| ART2 | `bulk-archive.py:516,535,334` — the incremental skip, the triviality predicate, and the on-disk id set are all unpinned (re-archive everything, or archive nothing, stays green); no test calls `discover_sessions` or any `cmd_*` entry point (ART3: swallowed failures, a blinded `verify`, a truncated catalogue all green) | CONFIRMED (mutation) | **next** (round 4c, `claude/audit-round4c`) |
+| ART4 | `normalise-archive-storage.py` has zero tests and deletes transcripts: removing the sha256 round-trip verify, or unlinking in the DIVERGENT branch, stays green | CONFIRMED (mutation, full suite) | **next** (round 4c, `claude/audit-round4c`) |
+
+### Medium (archive)
+
+| # | Finding | Disposition |
+|---|---|---|
+| AR6 | `reprocess-sessions.py:211,520` — selection counts `source == "extraction"` but the writer stamps `"reprocessing"`: not idempotent, re-spends every run, appends byte-identical duplicate ids | **next** (round 4c, `claude/audit-round4c`) |
+| AR7 | `reprocess-sessions.py:640` — `custom_id` uses eight hex characters of the session id; a prefix collision mis-attributes or rejects the batch | **next** (round 4c, `claude/audit-round4c`) |
+| AR8 | `reprocess-sessions.py:769-773` — `apply BATCH_ID` never checks the state's batch id (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+| AR9 | `normalise-archive-storage.py:166-167,185` — the raw file is unlinked before the meta is repointed, the repoint is a bare write, and a failed run never self-heals | **next** (round 4c, `claude/audit-round4c`) |
+| AR10 | `bulk-archive.py:288-291` — a live store with no top-level transcript at scan time is read as a merged snapshot and session directories become projects, silently | **next** (round 4c, `claude/audit-round4c`) |
+| AR11 | `reprocess-sessions.py:261-336` — no `isMeta`/`isSidechain` filter although the docstring claims parity with the hook; harness text can become memories | **next** (round 4c, `claude/audit-round4c`) |
+| AR12 | `data/logs/bulk-archive-progress.json` is git-tracked and honoured unconditionally, so a checkpoint synced from the other machine skips sessions this machine never archived | **next** (round 4c, `claude/audit-round4c`) (re-verify on disk) |
+| AR13 | `bulk-archive.py:2152-2159` — `_enrich_apply` replaces `auto_generated` wholesale (drops `three_ps`) and writes non-atomically (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+| AR14 | `bulk-archive.py:737-748` — `archive_subagents` overwrites an existing archive with no temp file (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+| AR15 | `bulk-archive.py:452` — the token counter is built before the toolkit is on `sys.path`, so the preferred `--min-content-tokens` floor is the one that fails to import | **next** (round 4c, `claude/audit-round4c`) |
+| AR16 | `bulk-archive.py:2254` — `CATALOG.json` written unlocked and non-atomically; a truncated file crashes the next `discover` at `:472` (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+| AR17 | `push-archives-to-r2.sh:67-70` sources `.env` (shell-executes it, exports every secret to child processes); `rclone copy --s3-disable-checksum` lets a truncated canonical with a newer mtime overwrite the last offsite copy (SUSPECTED, never executed) | **next** (round 4c, `claude/audit-round4c`) |
+| AR18 | One batch-state slot per script (`bulk-archive.py:54`, `reprocess-sessions.py:55`): a second submit before apply destroys the first's map (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+| ART5 | `search-archives-safe.sh:177,132` — the single-run `flock` and the nice/ionice/timeout prefix (the 2026-06-21 hard-lock fix) are untested | **next** (round 4c, `claude/audit-round4c`) |
+| ART6 | `push-archives-to-r2.sh:141,116` — dropping `--dry-run` or the mount guard survives; the one test stops at the version probe | **next** (round 4c, `claude/audit-round4c`) |
+| ART7 | `_scan_archives.py:91,118` — the per-line truncation (the OOM guard) and the exception tuple are untested | **next** (round 4c, `claude/audit-round4c`) |
+| ART8 | `reprocess-sessions.py:235,238,758,285` — the already-extracted skip, the session directory, the rewrite guard, and the partial-last-line handling are all mutable | **next** (round 4c, `claude/audit-round4c`) |
+| ART9 | `validate-session-metadata.py` (537 lines) has zero tests; disabling `check_schema` stays green | **next** (round 4c, `claude/audit-round4c`) |
+| ART10 | `backfill-summaries.py:241,228` — the line-count invariant and the temp-and-rename are removable; `:234` also writes `ensure_ascii=False` (the round-4a re-audit's M1) | **next** (round 4c, `claude/audit-round4c`) |
+| ART11 | `extract-transcript-text.py` and `extraction-prompt-spotcheck.py` have zero tests (SUSPECTED) | **next** (round 4c, `claude/audit-round4c`) |
+
+Lows recorded: AR19 documented `--resume` flag absent; AR20 `setup_logging`
+tracebacks on a dangling `logs` symlink; AR21 `_scan_archives` and `verify`
+accept different transcript names; AR22 unvalidated path joins from manifest
+and catalogue data; AR23 non-atomic gate write and a BOM dropping the first
+record; AR24 spot-check glob includes flat agent files; AR25 style; AR26
+`data/.gitignore` does not ignore `logs/*.json`, so 95 files including LLM
+summaries of private transcripts are tracked in the private submodule
+(Shawn's call); AR27 a worktree run takes a different daily-sync lock, so the
+guard does not serialise against the live hook; ART12-13 two tautological
+tests that cannot fail, one probing the operator's real filesystem; ART14
+the cross-machine "largest wins" tie-break unpinned. Cross-file: three
+substantive rules; atomicity per author; every script defaults to
+`~/cc-archives` except `resolve_session_id` (the rpi share); no fixture
+carries the entry shapes production writes (`type`, `isMeta`, `isSidechain`,
+`uuid`, tool and thinking blocks). Verified correct: no shell interpolation
+of filenames; `search-archives-safe.sh` honours the 2026-06-21 lesson;
+`_scan_archives` bounded; the spot-check is dry by default; BOM, CRLF, and
+partial lines tolerated by every parser; normalisation verifies a round-trip
+before unlinking; the R2 push never deletes.
 
 ## Decisions for Shawn
 

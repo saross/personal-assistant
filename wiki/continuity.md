@@ -2394,8 +2394,12 @@ every round with its re-audit outcome, six decisions for Shawn).
   shrink detector's coverage (S23); its re-audit found C1 and M1–M5, fix
   round running. Round 3b (`surfacing_log.py`, S22's third member; L1 and
   L6 of PR #117's eleventh re-audit) merged as PR #120 (69a7590); six
-  follow-ups recorded in the audit report. Tranches 3b–6 of the original
-  plan not yet run. Astra owes
+  follow-ups recorded in the audit report. Tranche 3b (memory-store
+  writers) audited and fixed: PR #121 merged d1c3773, follow-up round 4a-2
+  running. Tranche 3c (retrieval) audited, fixes on PR #122 (re-audit
+  running). Tranche 4 (session archive) audited, fix round 4c running.
+  Tranches 5a/5b (external services) and 6 (style analyser) not yet run.
+  Astra owes
   a re-review of PR #113 and a mirror of the slug rule (message of
   02:19Z); gpt-hub PR #3 unreviewed by me.
 
