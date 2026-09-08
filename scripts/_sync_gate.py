@@ -211,6 +211,16 @@ class GateState:
     #: Pruning against a *different* root would forget every entry
     #: because none of its directories exist there (sixth re-audit).
     archive_root: str | None = None
+    #: Where the last run that looked LEFT the sync cursor. The next
+    #: run's STARTING position is measured against it, so the comparison
+    #: spans the gap between runs — which is when a rebuild happens. A
+    #: rebuild that removes the key, or rewinds it, is how
+    #: previously acknowledged rows come to be re-offered — and an
+    #: ordinary rebuild raises no exit 6 for anyone to notice, so the
+    #: gate detects it by comparing this with the next run's observation
+    #: (ninth re-audit, finding C2). ``int`` for the memories sync (a
+    #: line number), ``str`` for the sessions sync (an ISO timestamp).
+    cursor_position: int | str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,8 +247,22 @@ class GateEvent:
     quarantine_file: Path | None = None
     #: A rebuild cleared the cursor, so the rows will be re-offered and
     #: re-refused: forget the acknowledged position, or the second
-    #: refusal of the same rows would be silently below it.
+    #: refusal of the same rows would be silently below it. Set
+    #: explicitly on the exit-6 path; ordinary rebuilds are detected from
+    #: ``cursor_position`` instead, because they raise nothing.
     reset_quarantine_ack: bool = False
+    #: Where the sync cursor stood when this run STARTED, compared with
+    #: where the last run LEFT it. ``None`` with ``cursor_seen`` true
+    #: means the key is not in the cursor file at all — a rebuild removed
+    #: it. The comparison has to span the gap BETWEEN runs, which is when
+    #: a rebuild happens; comparing a run with itself would see nothing.
+    cursor_position: int | str | None = None
+    #: Where this run left the cursor, which is what the next run's
+    #: starting position is measured against.
+    cursor_position_after: int | str | None = None
+    #: Did this run look at the cursor? The indexer has none, and an
+    #: event that never looked must not erase the recorded position.
+    cursor_seen: bool = False
     #: Set to raise the ``fault`` problem with this text.
     fault_detail: str | None = None
     #: Set to raise the ``correlated`` problem with this text.
@@ -254,16 +278,56 @@ class GateEvent:
     script: str = ""
 
 
-def quarantine_detail(script: str, count: int, path: Path | None) -> str:
+def quarantine_detail(
+    script: str,
+    count: int,
+    path: Path | None,
+    *,
+    after_reset: bool = False,
+) -> str:
     """Compose the quarantine problem's text, naming the acknowledgement."""
     where = path if path is not None else "the quarantine file"
+    reset_note = (
+        " The sync cursor was reset since these were acknowledged, so rows "
+        "you had already dismissed are being offered again and are counted "
+        "here."
+        if after_reset else ""
+    )
     return (
         f"[{script}] {count} row(s) have been REFUSED by PostgreSQL and "
         f"quarantined to {where}. They are NOT in the database and the "
-        f"cursor has moved past them. Repair and replay them, then clear "
-        f"this with: ~/personal-assistant/venv/bin/python3 "
+        f"cursor has moved past them.{reset_note} Repair and replay them, "
+        f"then clear this with: ~/personal-assistant/venv/bin/python3 "
         f"~/personal-assistant/scripts/{script} --ack-quarantine"
     )
+
+
+def cursor_went_backwards(
+    recorded: int | str | None,
+    current: int | str | None,
+) -> bool:
+    """
+    Did the sync cursor move backwards since the last run that looked?
+
+    A rebuild removes the cursor key or rewinds it, and the rows the
+    operator had already acknowledged are then re-offered and refused
+    again. Only the rebuild-during-a-sync case raises exit 6; an ordinary
+    rebuild raises nothing at all, so the gate has to see the movement
+    for itself (ninth re-audit, finding C2).
+
+    ``recorded is None`` means there is nothing to compare against — a
+    first run, or one after the state was cleared — which is not evidence
+    of anything. A ``current`` of ``None`` means the key has gone.
+    """
+    if recorded is None:
+        return False
+    if current is None:
+        return True
+    try:
+        return current < recorded
+    except TypeError:
+        # Two different shapes of cursor: a version change, not a rewind.
+        return False
 
 
 def outage_detail(script: str, streak: int) -> str:
@@ -313,7 +377,10 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
     # not even the streak. Callers skip apply_gate entirely for this case;
     # the guard is here so the rule holds wherever it is called from.
     if event.outcome == CYCLE_CONTENDED:
-        return GateState(problems, streak, state.acked, state.archive_root)
+        return GateState(
+            problems, streak, state.acked, state.archive_root,
+            state.cursor_position,
+        )
 
     if event.outcome == CYCLE_ACK:
         # Touches the quarantine problem and nothing else: not the
@@ -336,7 +403,10 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
                 else acked.get("acked_position", 0)
             ),
         })
-        return GateState(problems, streak, acked, state.archive_root)
+        return GateState(
+            problems, streak, acked, state.archive_root,
+            state.cursor_position,
+        )
 
     # -- outage: connectivity is its own evidence, and touches nothing else
     if event.connected is True:
@@ -360,7 +430,17 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
     acked_position = state.acked.get("acked_position", 0)
     if not isinstance(acked_position, int) or acked_position < 0:
         acked_position = 0
-    if event.reset_quarantine_ack:
+    # A rebuild is detected two ways: the exit-6 path says so outright,
+    # and an ordinary rebuild — which raises nothing for anyone to notice
+    # — is caught by the cursor having moved backwards since the last run
+    # that looked (ninth re-audit, finding C2).
+    cursor_position = state.cursor_position
+    was_reset = event.reset_quarantine_ack
+    if event.cursor_seen:
+        if cursor_went_backwards(state.cursor_position, event.cursor_position):
+            was_reset = True
+        cursor_position = event.cursor_position_after
+    if was_reset:
         acked_position = 0
     if event.quarantine_entries is not None:
         entries = max(0, event.quarantine_entries)
@@ -370,6 +450,7 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
             problems[PROBLEM_QUARANTINE] = Problem(
                 quarantine_detail(
                     event.script, outstanding, event.quarantine_file,
+                    after_reset=was_reset,
                 ),
                 outstanding,
             )
@@ -431,7 +512,7 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
     # claim a memory built elsewhere, or the next prune would forget it
     # all (seventh re-audit, low).
     root = state.archive_root or event.archive_root
-    return GateState(problems, streak, acked, root)
+    return GateState(problems, streak, acked, root, cursor_position)
 
 
 # ============================================================================
@@ -593,11 +674,13 @@ def read_state_with_status(
     streak = raw.get("outage_streak", 0)
     acked = raw.get("acked")
     root = raw.get("archive_root")
+    cursor = raw.get("cursor_position")
     return GateState(
         problems=problems,
         outage_streak=streak if isinstance(streak, int) and streak >= 0 else 0,
         acked=acked if isinstance(acked, dict) else {},
         archive_root=root if isinstance(root, str) else None,
+        cursor_position=cursor if isinstance(cursor, (int, str)) else None,
     ), STATE_OK
 
 
@@ -623,6 +706,7 @@ def write_state(
             "outage_streak": state.outage_streak,
             "acked": state.acked,
             "archive_root": state.archive_root,
+            "cursor_position": state.cursor_position,
         }, indent=2) + "\n")
     except OSError as exc:
         if logger is not None:
@@ -726,7 +810,18 @@ def apply_gate(
     """
     try:
         with gate_lock(gate_path):
-            state = next_state(read_state(gate_path, logger), event)
+            previous = read_state(gate_path, logger)
+            if event.cursor_seen and cursor_went_backwards(
+                previous.cursor_position, event.cursor_position,
+            ):
+                logger.warning(
+                    "The sync cursor has moved backwards (%r -> %r) — a "
+                    "rebuild has re-offered rows that were already "
+                    "acknowledged. The quarantine count starts again from "
+                    "the whole file.",
+                    previous.cursor_position, event.cursor_position,
+                )
+            state = next_state(previous, event)
             persisted = write_state(gate_path, state, logger)
             rendered = render_gate(gate_path, state, logger)
             # Re-read inside the lock: what the next run will see.

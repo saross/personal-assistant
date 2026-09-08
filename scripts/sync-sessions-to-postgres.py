@@ -31,7 +31,7 @@ Exit codes:
 import argparse
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -162,6 +162,16 @@ class CycleResult:
     connected: bool | None = None
     #: Why this cycle is degraded, if it is — the text the gate shows.
     degraded_detail: str | None = None
+    #: Where the cursor stood when this cycle STARTED, so the gate can
+    #: see a rebuild that rewound or removed it between runs. ``None``
+    #: alongside ``cursor_seen`` means the key was absent (ninth
+    #: re-audit, C2).
+    cursor_position: int | str | None = None
+    #: Where this cycle left it, which is what the NEXT run's starting
+    #: position is compared against.
+    cursor_position_after: int | str | None = None
+    #: Did this cycle get far enough to read the cursor at all?
+    cursor_seen: bool = False
 
 
 # ============================================================================
@@ -942,13 +952,52 @@ def _sync_locked(
 ) -> CycleResult:
     """Core sync cycle, executed under the advisory lock.
 
+    Reports where the cursor stood when the cycle STARTED, whatever the
+    cycle then did. The gate compares that with the position the last run
+    recorded: an ordinary rebuild — one with no sync in flight — raises
+    no exit 6 for anyone to notice, and the cursor going backwards is the
+    only evidence that acknowledged rows are being re-offered (ninth
+    re-audit, finding C2). Reporting the position at the END would say
+    nothing, because a re-sync puts it back where it was.
+
+    Returns a :class:`CycleResult` — see :func:`sync`.
+    """
+    snapshot = read_cursor_file_locked(CURSOR_FILE)
+    started_at = snapshot.get(CURSOR_KEY)
+    result = _sync_locked_body(
+        archive_root, full_resync, logger, quarantine_cap,
+        quarantine_anyway, lock_connected, snapshot,
+    )
+    ended_at = read_cursor_file_locked(CURSOR_FILE).get(CURSOR_KEY)
+    return replace(
+        result,
+        cursor_position=started_at if isinstance(started_at, str) else None,
+        cursor_position_after=(
+            ended_at if isinstance(ended_at, str) else None
+        ),
+        cursor_seen=True,
+    )
+
+
+def _sync_locked_body(
+    archive_root: Path,
+    full_resync: bool,
+    logger: logging.Logger,
+    quarantine_cap: int | None,
+    quarantine_anyway: bool,
+    lock_connected: bool | None,
+    cursor_snapshot: dict,
+) -> CycleResult:
+    """The cycle itself, given the one locked cursor read above.
+
     Returns a :class:`CycleResult` — see :func:`sync`.
     """
     # One locked read for both facts — the timestamp and whether the key
     # was there at all (low finding L1). Two unlocked reads leave a window
     # in which a rebuild lands between them, defeating the compare-and-set
-    # at save time (finding M3).
-    cursor_snapshot = read_cursor_file_locked(CURSOR_FILE)
+    # at save time (finding M3). The read itself now happens in
+    # :func:`_sync_locked`, which passes the snapshot in so the cursor's
+    # starting position can be reported to the gate.
     since = None if full_resync else str(
         cursor_snapshot.get(CURSOR_KEY, "2000-01-01T00:00:00Z")
     )
@@ -1421,6 +1470,12 @@ def main() -> None:
             quarantine_entries=count_quarantine_entries(QUARANTINE_FILE),
             quarantine_file=QUARANTINE_FILE,
             degraded_detail=cycle.degraded_detail,
+            # Where the cursor stood when the cycle started, so the gate
+            # can see a rebuild that rewound or removed it — which is the
+            # only trace an ordinary rebuild leaves (ninth re-audit, C2).
+            cursor_position=cycle.cursor_position,
+            cursor_position_after=cycle.cursor_position_after,
+            cursor_seen=cycle.cursor_seen,
             script=SCRIPT_NAME,
         ),
         gate_path=GATE_FILE,

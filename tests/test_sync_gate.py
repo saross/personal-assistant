@@ -1933,3 +1933,103 @@ class TestARenderFailureLeavesTheStateIntact:
             gate, _sync_gate.read_state(gate, logger), logger,
         )
         assert "the schema is wrong" in gate.read_text(encoding="utf-8")
+
+
+class TestTheCursorGoingBackwardsIsARebuild:
+    """
+    Ninth re-audit, C2 — exit 6 is raised only when a rebuild lands while
+    a sync is in flight. Run the rebuild on a quiet machine and nothing
+    is raised at all, so the gate detects it by watching the cursor
+    across the gap BETWEEN runs.
+    """
+
+    @pytest.mark.parametrize("recorded,current,expected", [
+        (None, None, False),      # nothing recorded yet
+        (None, 5, False),         # first run to report
+        (5, 5, False),            # standing still
+        (5, 9, False),            # ordinary progress
+        (5, None, True),          # the key was removed
+        (9, 3, True),             # rewound
+        ("2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z", False),
+        ("2026-09-02T00:00:00Z", "2026-09-01T00:00:00Z", True),
+        ("2026-09-02T00:00:00Z", None, True),
+        (5, "2026-09-01T00:00:00Z", False),   # a shape change, not a rewind
+    ])
+    def test_the_predicate(self, recorded, current, expected):
+        """The mutation this kills: any arm of the comparison."""
+        assert _sync_gate.cursor_went_backwards(recorded, current) is expected
+
+    def _state_file(self, gate: Path) -> dict:
+        import json
+
+        path = gate.with_name(gate.name + ".state.json")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _apply(self, gate: Path, **kwargs):
+        return _sync_gate.apply_gate(
+            _sync_gate.GateEvent(script="test", **kwargs),
+            gate_path=gate, logger=logging.getLogger("test-cursor"),
+        )
+
+    def test_the_recorded_position_is_where_the_run_left_it(self, tmp_path):
+        """
+        The state stores the END position, because the next run's START
+        is what it must be compared with. The mutation this kills:
+        recording the starting position, which compares a run with itself
+        and never sees the gap a rebuild happens in.
+        """
+        gate = tmp_path / "g"
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=2, cursor_seen=True,
+            cursor_position=0, cursor_position_after=7,
+        )
+        assert self._state_file(gate)["cursor_position"] == 7
+
+    def test_a_vanished_key_resets_the_acknowledged_position(self, tmp_path):
+        """
+        The end-to-end case in one transition: two rows acknowledged, the
+        cursor key removed, the same two rows re-offered. The mutation
+        this kills: relying on ``reset_quarantine_ack`` alone.
+        """
+        gate = tmp_path / "g"
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=2, cursor_seen=True,
+            cursor_position=None, cursor_position_after=2,
+        )
+        self._apply(gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=2)
+        assert self._state_file(gate)["acked"]["acked_position"] == 2
+
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=2, cursor_seen=True,
+            cursor_position=None, cursor_position_after=2,
+        )
+
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+        assert "cursor was reset" in state.problems[
+            _sync_gate.PROBLEM_QUARANTINE
+        ].detail
+        assert self._state_file(gate)["acked"]["acked_position"] == 0
+
+    def test_an_event_that_never_looked_keeps_the_recorded_position(
+        self, tmp_path,
+    ):
+        """
+        The indexer shares this state machine and has no cursor at all.
+        The mutation this kills: recording the event's position
+        unconditionally, which lets a cursorless run erase what the sync
+        recorded and blind the next comparison.
+        """
+        gate = tmp_path / "g"
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=2, cursor_seen=True,
+            cursor_position=0, cursor_position_after=7,
+        )
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, refusals=0,
+        )
+        assert self._state_file(gate)["cursor_position"] == 7

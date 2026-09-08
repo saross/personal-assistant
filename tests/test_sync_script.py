@@ -2841,3 +2841,189 @@ class TestAMixedSliceReportsOnlyWhatWasRefused:
             f"holds {len(entries)}"
         )
         assert "1" in pinned_gate_file.read_text(encoding="utf-8")
+
+
+# ============================================================================
+# Ninth re-audit, finding C2 — an ordinary rebuild raises nothing, so the
+# gate has to see the cursor move backwards for itself
+# ============================================================================
+
+
+class TestARebuildWithNoSyncRunningIsStillDetected:
+    """
+    Exit 6 is raised only when a rebuild lands WHILE a sync is in flight.
+    Run the rebuild on a quiet machine — the normal way — and nothing is
+    raised at all: the acknowledged position stands, the same rows are
+    re-offered and refused, the quarantine file deduplicates them, and
+    the gate reports nothing. The rows are out of the database and
+    nobody is told.
+    """
+
+    def _record(self, mid: str) -> dict:
+        """A minimal valid canonical record."""
+        return {
+            "id": mid,
+            "category": "progress",
+            "content": f"content for {mid}",
+            "created_at": "2026-09-01T00:00:00+00:00",
+        }
+
+    def _pin(self, monkeypatch, tmp_path, memories, cursor_file, quarantine):
+        """Point the module at a tmp tree."""
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+
+    def test_the_acknowledged_rows_are_counted_again(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Quarantine two, acknowledge them, rebuild the database with no
+        sync running, then let the next tick re-refuse the same two. The
+        gate must say 2 again.
+
+        The mutation this kills: relying on the exit-6 reset alone —
+        nothing raises it here, so the acknowledged position survives the
+        rebuild and the re-offered rows are silently below it.
+        """
+        import _sync_gate
+
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            "".join(
+                json.dumps(self._record(mid)) + "\n"
+                for mid in ("m-bad-1", "m-bad-2")
+            ),
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._pin(monkeypatch, tmp_path, memories, cursor_file, quarantine)
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values(
+                {"m-bad-1", "m-bad-2"},
+            ),
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        # 1. Both rows are refused and quarantined.
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 2
+
+        # 2. The operator acknowledges them.
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+        assert excinfo.value.code == 0
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
+
+        # 3. A rebuild removes the cursor key. No sync is running, so
+        #    nothing raises exit 6 and nothing else notices.
+        cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
+        del cursors["postgres_sync_line"]
+        cursor_file.write_text(json.dumps(cursors), encoding="utf-8")
+
+        # 4. The next tick re-offers both rows; the quarantine file
+        #    deduplicates them, so its length is unchanged at 2.
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+        with caplog.at_level(logging.WARNING):
+            try:
+                sync_mod.main()
+            finally:
+                logging.getLogger("sync-to-postgres").handlers.clear()
+
+        entries = [
+            line for line in
+            quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 2, "the file should still hold the same two"
+        state = _sync_gate.read_state(pinned_gate_file)
+        problem = state.problems.get(_sync_gate.PROBLEM_QUARANTINE)
+        assert problem is not None, (
+            "a rebuild put two rows back outside the database and the gate "
+            "said nothing"
+        )
+        assert problem.count == 2
+        assert "moved backwards" in caplog.text
+        assert "cursor was reset" in pinned_gate_file.read_text(
+            encoding="utf-8",
+        )
+
+    def test_ordinary_progress_is_not_mistaken_for_a_rebuild(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The guard must not fire on a cursor that simply moved forward, or
+        every acknowledgement would be undone on the next tick.
+        """
+        import _sync_gate
+
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            json.dumps(self._record("m-bad-1")) + "\n", encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._pin(monkeypatch, tmp_path, memories, cursor_file, quarantine)
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values({"m-bad-1"}),
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+        try:
+            with pytest.raises(SystemExit):
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        # A second, healthy record arrives and syncs cleanly.
+        memories.write_text(
+            json.dumps(self._record("m-bad-1")) + "\n"
+            + json.dumps(self._record("m-good")) + "\n",
+            encoding="utf-8",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m-good"],
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems, (
+            "a cursor that moved forward was read as a rebuild"
+        )
