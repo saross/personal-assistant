@@ -545,6 +545,41 @@ class TestCountingQuarantineEntries:
         )
         assert _sync_cursor.count_quarantine_entries(path) == 3
 
+    def test_a_leading_byte_order_mark_hides_no_row(self, tmp_path):
+        """
+        A file saved as UTF-8-with-BOM must not lose its first record.
+
+        The mark glued itself to the opening brace, ``json.loads``
+        rejected ``\ufeff{...}``, and the FIRST quarantined row then
+        vanished from every reader at once: uncounted by the gate,
+        unmatched by the duplicate check — so a re-offered row appended a
+        second copy on every tick — and absent from ``/memory-health``.
+        Consistency between the readers was never the issue; they agreed,
+        and all three were wrong (eleventh re-audit follow-up L6).
+
+        The mutation this kills: decoding as ``utf-8`` in
+        ``read_quarantine_entries``.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_bytes(
+            "\ufeff".encode("utf-8")
+            + b'{"reason": "adaptation", "record": {"id": "m1"}}\n'
+            + b'{"reason": "adaptation", "record": {"id": "m2"}}\n'
+        )
+
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+        entries = _sync_cursor.read_quarantine_entries(path)
+        assert [entry["record"]["id"] for entry in entries] == ["m1", "m2"]
+
+        # The consequence that costs an operator: the hidden row was
+        # re-quarantined on every cron tick, because the duplicate check
+        # could not see it either.
+        status = _sync_cursor.quarantine_record(
+            path, {"id": "m1"}, "adaptation",
+        )
+        assert status == _sync_cursor.QUARANTINE_DUPLICATE
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+
     def test_a_truly_partial_last_line_is_not_counted(self, tmp_path):
         """
         A write cut off mid-record is not a record. The mutation this
