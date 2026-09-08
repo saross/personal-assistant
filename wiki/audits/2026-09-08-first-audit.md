@@ -548,6 +548,60 @@ the composer is atomic and never touches a Sol-owned surface; no host is
 rebooted, restarted, or unmounted except a local docker recreate behind
 three preconditions.
 
+## Tranche 6 — bake-off and style tooling (both lenses, 2026-09-09 early)
+
+Scope: `bake-off-metadata.py`, `resample-bake-off-manifest.py`,
+`analyse-wiki-vocabulary.py`, the two `corpus-style-analyser` agent
+definitions, and the path defaults of four `scripts/style-analyser/`
+scripts. No tests exist for any of the three scripts. Lens A: 1 critical,
+14 medium, 10 low. Lens B: 3 damaging mutations, all green; 4 critical,
+5 medium, plus a minimum-suite specification. Fix round 4e on
+`claude/audit-round4e`. The remaining fourteen files under
+`scripts/style-analyser/` are a later tranche.
+
+### Critical (bake-off)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| AS1 | `bake-off-metadata.py:1126` — `--build-rubric` replaces a literal marker pair, so on an already-populated rubric (or any separation between the markers) the body is left as it was while the blind key is regenerated from the current arms; every blinded score then decodes to the wrong model, and "Wrote populated rubric" prints either way | CONFIRMED by repro | **next** (round 4e, `claude/audit-round4e`) |
+| AST1 | Same site from the test side: a template with one blank line between the markers produced a five-line empty rubric, exit 0, with a fully populated key beside it | CONFIRMED by repro | **next** (round 4e, `claude/audit-round4e`) |
+| AST2 | `resample-bake-off-manifest.py:550-564` — dedup keeps the LIVE copy (the sort key puts `~/.claude/…` before `~/cc-archives/…`), inverting the comment's stated preference; every dual-resident session loses its meta and drops out of both tiers | CONFIRMED | **next** (round 4e, `claude/audit-round4e`) |
+| AST3 | `resample-bake-off-manifest.py:52-57,518` — hard-coded absolute path to the live manifest, no arguments, no dry run, unconditional non-atomic overwrite: any invocation, from any copy, destroys the manifest the committed responses were generated against (Lens A AS4) | CONFIRMED | **next** (round 4e, `claude/audit-round4e`) |
+| AST4 | The hermeticity guard does not watch `reports/` or `wiki/`: an analyser that writes into the public tree stays green | CONFIRMED (mutation) | round 4a-2 (guard widening) |
+
+### Medium (bake-off)
+
+| # | Finding | Disposition |
+|---|---|---|
+| AS2 | `bake-off-metadata.py:1054` — a fifth arm is silently dropped from rubric and key; the blinding is reverse-only (two permutations, not twenty-four) | **next** (round 4e, `claude/audit-round4e`) |
+| AS3 | `bake-off-metadata.py:112-113` — Sonnet prices the comment says went stale on 1 Sep 2026; estimates under-count by a third | **next** (round 4e, `claude/audit-round4e`) |
+| AS5 | `resample-bake-off-manifest.py:470,487` — `generated_at` from the clock, so the same seed is not byte-reproducible | **next** (round 4e, `claude/audit-round4e`) |
+| AS6 | `bake-off-metadata.py:293,472` — `custom_id` uses eight characters of the session id and the map collapses duplicates (sub-agent ids share long prefixes): one session's output written under another's id | **next** (round 4e, `claude/audit-round4e`) |
+| AS7 | `bake-off-metadata.py:1263-1278` — the live prompt names no model, count, mode, or cost, and `--yes` skips it; the API review gate is not presented | **next** (round 4e, `claude/audit-round4e`) |
+| AS8 | `bake-off-metadata.py:1251` — `--haiku-apply` reaches the API before the confirmation block (free retrieval; the launch plan claims otherwise) | **next** (round 4e, `claude/audit-round4e`) (document) |
+| AS9 | `bake-off-metadata.py:668,826,922` — bare response writes; a re-run overwrites a complete response with an error object; usage replaced wholesale | **next** (round 4e, `claude/audit-round4e`) |
+| AS10 | `analyse-wiki-vocabulary.py:191,196,149` — empty or undated corpus and non-string tags crash `/weekly-review` step 5b | **next** (round 4e, `claude/audit-round4e`) |
+| AS11-13 | `agents/corpus-style-analyser-v2.md:657,765-767,574` — Safeguard 5 names the wrong section (§9 for §11); the "correct" mean sentence length contradicts the file's own appendix and the results JSON (21.45); Steps 1-2 require a tmpfs manifest with no regeneration path while a durable one exists | **next** (round 4e, `claude/audit-round4e`) |
+| AS14 | `scripts/style-analyser/phase3_promotion.py:38-39` and three siblings — relative output paths with no override, so the documented invocations write into the wrong tree from any other cwd | **next** (round 4e, `claude/audit-round4e`) |
+| AS15 | `bake-off-metadata.py:1,482` — the shebang and the printed recovery command use the system interpreter, which lacks the toolkit and the clients | **next** (round 4e, `claude/audit-round4e`) |
+| AST5-9 | Fifth-arm truncation, empty-manifest crash after the cost file is written, silent under-filled strata, two-permutation blinding, `.env` hydrated before the dry-run branch | **next** (round 4e, `claude/audit-round4e`) |
+
+Lows recorded: AS16 chars-over-four token heuristic (recorded as
+authoritative); AS17-19 docstrings out of date (two arms, thinking budget,
+100-token floor); AS20 under-filled stratum silent; AS21-22 status
+vocabulary and counts in the agent definitions ("fifth status" of six,
+"five scripts" of fourteen, "§§1-8" after the relayout); AS23 no NFC
+normalisation; AS24 empty manifest; AS25 the committed manifest predates
+the committed writer (bare-date `generated_at`); AST10-14 crashes,
+strip/lower asymmetry, `EOFError` on closed stdin, two clock reads, the
+out-of-repo extractor unpinned. Cross-file: v1 and v2 definitions disagree
+on section count, status vocabulary, and pipeline; v2 contradicts itself on
+reconciliation; response-to-manifest provenance is one-directional (no
+model id, prompt hash, or manifest hash beside the responses). Verified
+correct: no output lands in the public tree; nothing here writes the
+memory store; no network call outside `bake-off-metadata.py`; no session
+sampled twice; no US spellings.
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
@@ -1118,5 +1172,8 @@ three preconditions.
   it, but it is disclosed rather than caught; (vi) dormancy under pytest
   is silent: a production process that happens to import `pytest` would
   lose the surfacing log without a diagnostic.
-- Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
-  their findings arrive against corrected code.
+- Tranches 3b, 3c, 4, 5, and 6 ran on 2026-09-08/09 against corrected code
+  (sections above). Still unaudited: the memory readers and reports
+  (`memory-health-report.py`, `drift-sweep.py`, `anchor_verify.py`,
+  `triage_anchors.py`, `audit-postgres-sync.py`) and the fourteen scripts
+  under `scripts/style-analyser/`.
