@@ -193,3 +193,106 @@ class TestMain:
         err = capsys.readouterr().err
         assert err.count("\n") == 1
         assert "Stale file handle" in err
+
+
+# ---------------------------------------------------------------------------
+# Audit L5 — a wrong-shaped catalogue is an error, not a traceback
+# ---------------------------------------------------------------------------
+
+
+class TestMalformedCatalogueShapes:
+    """Valid JSON, wrong structure. Each used to escape as a traceback."""
+
+    @pytest.mark.parametrize("payload,fragment", [
+        # Top-level list: data.get(...) raised AttributeError.
+        ([{"id": SESSION_ID, "path": "session"}], "expected a JSON object"),
+        # sessions is not a list: iteration raised or silently misbehaved.
+        ({"sessions": {"id": SESSION_ID}}, "must be a list"),
+        # An entry that is not an object: entry.get raised AttributeError.
+        ({"sessions": ["just a string"]}, "entries must be objects"),
+    ])
+    def test_shape_errors_raise_catalogue_error(
+        self, tmp_path: Path, payload: Any, fragment: str,
+    ) -> None:
+        """Kills: dropping any of the isinstance guards."""
+        (tmp_path / "CATALOG.json").write_text(
+            json.dumps(payload), encoding="utf-8",
+        )
+        with pytest.raises(resolver.CatalogueError) as exc:
+            resolver.resolve_via_catalogue(SESSION_ID, tmp_path)
+        assert fragment in str(exc.value)
+
+    def test_non_string_path_raises_catalogue_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """``root / {"a": 1}`` raised TypeError before audit L5."""
+        _catalogue(tmp_path, [{"id": SESSION_ID, "path": {"nested": "object"}}])
+        with pytest.raises(resolver.CatalogueError) as exc:
+            resolver.resolve_via_catalogue(SESSION_ID, tmp_path)
+        assert "must be a string" in str(exc.value)
+
+    @pytest.mark.parametrize("payload", [
+        [{"id": SESSION_ID, "path": "session"}],
+        {"sessions": {"id": SESSION_ID}},
+    ])
+    def test_main_exits_two_with_one_line(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str], payload: Any,
+    ) -> None:
+        """Kills: removing the CatalogueError handler from main().
+
+        Exit 1 with a traceback is indistinguishable to a caller from
+        "no such session"; exit 2 is what the docstring promises.
+        """
+        (tmp_path / "CATALOG.json").write_text(
+            json.dumps(payload), encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["resolve_session_id.py", SESSION_ID, str(tmp_path)],
+        )
+        assert resolver.main() == 2
+        err = capsys.readouterr().err
+        assert err.count("\n") == 1
+        assert "resolve-session-id:" in err
+
+    def test_a_well_formed_catalogue_still_works(self, tmp_path: Path) -> None:
+        """The guards must not reject the ordinary case."""
+        target = _archive(tmp_path, "fieldwork/session", SESSION_ID)
+        _catalogue(tmp_path, [{"id": SESSION_ID, "path": "fieldwork/session"}])
+        assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) == target
+
+    def test_an_entry_without_a_path_field_is_skipped_not_rejected(
+        self, tmp_path: Path,
+    ) -> None:
+        """A missing path is a miss; only a wrong-typed one is an error."""
+        _catalogue(tmp_path, [{"id": SESSION_ID}])
+        assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) is None
+
+
+class TestContainmentRejectionIsVisible:
+    """A catalogue pointing outside its archive is a defect to report."""
+
+    def test_escape_is_reported_on_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Kills: rejecting silently.
+
+        The filesystem walk that follows would otherwise make a broken
+        catalogue entry look like an ordinary catalogue miss.
+        """
+        root = tmp_path / "archive"
+        root.mkdir()
+        _archive(tmp_path, "elsewhere", SESSION_ID)
+        _catalogue(root, [{"id": SESSION_ID, "path": "../elsewhere"}])
+        assert resolver.resolve_via_catalogue(SESSION_ID, root) is None
+        err = capsys.readouterr().err
+        assert "escapes the archive root" in err
+        assert "../elsewhere" in err
+
+    def test_an_ordinary_miss_is_silent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Only escapes are reported; a normal miss says nothing."""
+        _catalogue(tmp_path, [{"id": OTHER_ID, "path": "other"}])
+        assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) is None
+        assert capsys.readouterr().err == ""
