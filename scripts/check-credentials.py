@@ -15,6 +15,13 @@ Three passes, cheapest first:
    ``^[A-Za-z_0-9]+=`` silently skips the malformed lines you are looking
    for. Anchor on the ``=`` instead — ``^[^=]+=`` — as this script does.
 
+   Whitespace is checked on **both** sides of the ``=``, because the two
+   sides fail differently. ``NAME =value`` makes bash echo the variable
+   *name*; ``NAME= value`` makes bash assign ``NAME`` the empty string for
+   one command and then run the *value* as that command, so the secret
+   itself reaches stderr. The second form is the worse leak, and it was
+   invisible to this script until 2026-09-08.
+
 2. **Shell-source test.** Sources the file in a subshell; any output at all
    is a finding.
 
@@ -88,10 +95,24 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
         m = re.match(r"^([^=]+)=(.*)$", line)
         if not m:
             continue
-        raw_name, raw_value = m.group(1), m.group(2).strip()
+        raw_name, raw_value_field = m.group(1), m.group(2)
+        raw_value = raw_value_field.strip()
         name = raw_name.strip()
-        quoted = raw_value[:1] in ('"', "'")
-        value = raw_value.strip('"').strip("'")
+        # "Quoted" must mean the quote CLOSES the value, not merely that the
+        # value opens with one (audit round two, 2026-09-08). For
+        # ``TOKEN='abc' # trailing comment`` bash assigns ``abc`` while this
+        # parser keeps ``abc' # trailing comment`` — a genuine divergence, and
+        # the old ``raw_value[:1] in ('"', "'")`` test suppressed the very
+        # finding that would have surfaced it. A quote that does close the
+        # value (``TOKEN="abc # inside"``) still exempts the '#' test, because
+        # there both sides agree on ``abc # inside``. Verified against bash 5.
+        quote_char = raw_value[:1] if raw_value[:1] in ('"', "'") else ""
+        quoted = (
+            bool(quote_char)
+            and len(raw_value) >= 2
+            and raw_value.endswith(quote_char)
+        )
+        value = raw_value[1:-1] if quoted else raw_value.strip('"').strip("'")
         out[name] = value
         if raw_name != name:
             # bash treats "NAME =value" as a command named NAME — the leak class
@@ -99,6 +120,20 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             note(
                 f"line {lineno}: whitespace around the name {name!r} — bash would run "
                 "it as a command and echo the rest. Remove the spaces."
+            )
+        if value and raw_value_field[:1].isspace():
+            # The worse half of the same defect, and invisible until
+            # 2026-09-08 because the value was stripped before any test ran.
+            # "NAME =value" makes bash echo the variable NAME; "NAME= value"
+            # makes bash assign NAME the empty string for one command and then
+            # RUN THE VALUE as that command, so the secret itself lands in
+            # stderr ("<secret>: command not found"). Verified against bash 5.
+            # A value that is only whitespace is not a leak, hence the
+            # ``value and`` guard.
+            note(
+                f"line {lineno}: whitespace after the '=' on {name!r} — bash sets "
+                f"{name} empty and runs the value as a command, echoing the secret "
+                "itself to stderr. Remove the space."
             )
         if not quoted and (" #" in value or value.startswith("#")):
             # bash sourcing drops an unquoted trailing comment; the Codex launcher
