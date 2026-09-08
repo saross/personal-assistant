@@ -175,7 +175,60 @@ class TestApplyOrdering:
 
 
 class TestDivergentIsUntouched:
-    """Two different transcripts under one entry is a human's problem."""
+    """Two different transcripts under one entry is a human's problem.
+
+    Both prefix branches are guarded by an ``is_prefix`` call as well as a
+    length comparison, and the two guards do different work. Until round
+    4c-2 only the gz-longer case had a fixture, so dropping the raw-longer
+    branch's ``is_prefix(...)`` left the suite green — and unguarded, a
+    DIVERGENT pair whose raw half is merely LONGER is recompressed over the
+    gz and the raw then unlinked. That is permanent loss of the gz content,
+    in the one branch of this script that both writes and deletes.
+    """
+
+    def test_a_longer_but_divergent_raw_is_not_recompressed_over_the_gz(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """raw is longer than gz, and is NOT a superset of it."""
+        divergent_raw = (
+            '{"type": "user", "message": {"role": "user", '
+            '"content": "A wholly different first turn."}}\n'
+        ) * 4
+        entry = _entry(tmp_path, raw=divergent_raw, gz=RAW_BODY)
+        assert len(divergent_raw) > len(RAW_BODY), (
+            "the fixture must exercise the raw-longer half"
+        )
+        raw_before = (entry / "session.jsonl").read_bytes()
+        gz_before = (entry / "session.jsonl.gz").read_bytes()
+        meta_before = (entry / "session.meta.json").read_text(encoding="utf-8")
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 1
+
+        assert (entry / "session.jsonl").read_bytes() == raw_before, (
+            "a divergent raw transcript was deleted"
+        )
+        assert (entry / "session.jsonl.gz").read_bytes() == gz_before, (
+            "a divergent raw transcript was recompressed over the gz; the "
+            "gz content is gone and unrecoverable"
+        )
+        assert (entry / "session.meta.json").read_text(
+            encoding="utf-8"
+        ) == meta_before
+        assert "DIVERGENT" in capsys.readouterr().out
+
+    def test_a_genuine_raw_longer_prefix_is_still_converged(
+        self, tmp_path: Path
+    ) -> None:
+        """The positive control for the branch the guard protects."""
+        longer_raw = RAW_BODY + EXTRA_BODY
+        entry = _entry(tmp_path, raw=longer_raw, gz=RAW_BODY)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert not (entry / "session.jsonl").exists()
+        with gzip.open(entry / "session.jsonl.gz", "rt") as handle:
+            assert handle.read() == longer_raw
+        assert _meta(entry)["archive"]["jsonl_path"] == "session.jsonl.gz"
 
     def test_nothing_is_deleted_or_rewritten(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
