@@ -261,20 +261,83 @@ class TestRepoSet:
         assert project_id_module.repo_set() == [second]
 
 
+@pytest.fixture()
+def roundtrip_home(project_id_module):
+    """A temporary HOME whose absolute path survives encode -> decode.
+
+    ``tmp_path`` cannot be used for the prioritisation test: pytest's
+    directory names contain hyphens, the encoder maps every non-alphanumeric
+    character to ``-``, and ``decode_project_id`` cannot tell those apart. So
+    the decoded candidate never matched a discovered repo, ``primary`` was
+    always empty, and the test passed under ``return primary or rest`` just
+    as it did under ``primary + rest`` -- it was asserting nothing (audit
+    M4). This root is named from a uuid hex, which is alphanumeric by
+    construction, so the round trip is exact and prioritisation is reachable.
+    """
+    import shutil
+    import tempfile
+    import uuid
+
+    root = Path(tempfile.gettempdir()) / f"pa{uuid.uuid4().hex}"
+    root.mkdir()
+    try:
+        # If TMPDIR itself carries a hyphen or underscore the premise fails;
+        # say so rather than passing vacuously all over again.
+        encoded = project_id_module.encode_project_id(str(root))
+        if project_id_module.decode_project_id(encoded) != root:
+            pytest.skip(f"temp root {root} does not round-trip through the encoder")
+        yield root
+    finally:
+        # Created by this fixture, inside the system temp directory, and
+        # never anything the operator owns.
+        shutil.rmtree(root, ignore_errors=True)
+
+
 class TestRepoSetFor:
     """The memory's own project is checked first, when it can be identified."""
 
     def test_decoded_project_is_ordered_first(
-        self, project_id_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self, project_id_module, roundtrip_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Kills: dropping the prioritisation (anchor_verify loses its fast path)."""
-        TestRepoSet._make_repo(tmp_path / "Code" / "alpha")
-        target = TestRepoSet._make_repo(tmp_path / "Code" / "zulu")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        """Kills: ``return primary + rest`` -> ``primary or rest``, and any
+        other way of dropping the prioritisation (anchor_verify's fast path).
+
+        Two repos are discovered and the decoded one must come first, so the
+        assertion fails both if prioritisation is skipped and if the other
+        repo is dropped from the result.
+        """
+        other = TestRepoSet._make_repo(roundtrip_home / "Code" / "alpha")
+        target = TestRepoSet._make_repo(roundtrip_home / "Code" / "zulu")
+        monkeypatch.setattr(
+            Path, "home", classmethod(lambda cls: roundtrip_home),
+        )
         encoded = project_id_module.encode_project_id(str(target))
+        # The premise: the id really does decode back to the repo.
+        assert project_id_module.decode_project_id(encoded) == target
         ordered = project_id_module.repo_set_for(encoded)
         assert ordered[0] == target
-        assert len(ordered) == 2
+        assert set(ordered) == {target, other}
+
+    def test_discovery_order_alone_would_not_pass(
+        self, project_id_module, roundtrip_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Prioritisation must reorder, not merely agree with the walk.
+
+        Checks the unprioritised order for both repos and then asserts the
+        prioritised call puts the decoded one first regardless.
+        """
+        TestRepoSet._make_repo(roundtrip_home / "Code" / "alpha")
+        TestRepoSet._make_repo(roundtrip_home / "Code" / "zulu")
+        monkeypatch.setattr(
+            Path, "home", classmethod(lambda cls: roundtrip_home),
+        )
+        discovered = project_id_module.repo_set()
+        assert len(discovered) == 2
+        for repo in discovered:
+            encoded = project_id_module.encode_project_id(str(repo))
+            assert project_id_module.repo_set_for(encoded)[0] == repo
 
     def test_none_project_returns_discovery_order(
         self, project_id_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
