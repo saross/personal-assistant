@@ -127,6 +127,98 @@ class TestTranscriptFiltering:
             "A genuine answer.",
         ]
 
+    def test_a_quoted_command_header_does_not_drop_a_real_turn(
+        self, tmp_path: Path
+    ) -> None:
+        """isMeta AND the marker, not the marker alone (finding 7).
+
+        The marker test is a substring match, so on its own it fires on any
+        user entry that merely QUOTES a command header — a tool result
+        echoing commands/*.md. Measured on the live store: of 365
+        marker-bearing user entries, 364 were isMeta and the one that was
+        not was exactly such a quotation. Arming the skip on it dropped the
+        next genuine assistant turn for good.
+        """
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        path = _write_gz(tmp_path / "session.jsonl.gz", [
+            # A non-meta user entry quoting a header: ordinary prose.
+            prose_record(
+                "user", f"The file says {marker} near the top — is that right?",
+                index=1,
+            ),
+            prose_record("assistant", "Yes, that is the header.", index=2),
+        ])
+
+        messages = reprocess.parse_archived_transcript(path)
+
+        assert [message["content"] for message in messages] == [
+            f"The file says {marker} near the top — is that right?",
+            "Yes, that is the header.",
+        ], "a quoted command header dropped a genuine assistant turn"
+
+    def test_two_commands_in_a_row_owe_two_responses(
+        self, tmp_path: Path
+    ) -> None:
+        """A counter, not a boolean (finding 8).
+
+        A boolean is cleared by the next user entry, so the second command's
+        response leaks back into extraction.
+        """
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        path = _write_gz(tmp_path / "session.jsonl.gz", [
+            prose_record("user", f"{marker} one", index=1, is_meta=True),
+            prose_record("user", f"{marker} two", index=2, is_meta=True),
+            prose_record("assistant", "Output of the first command.", index=3),
+            prose_record("assistant", "Output of the second command.", index=4),
+            prose_record("user", "A genuine question.", index=5),
+            prose_record("assistant", "A genuine answer.", index=6),
+        ])
+
+        messages = reprocess.parse_archived_transcript(path)
+
+        assert [message["content"] for message in messages] == [
+            "A genuine question.", "A genuine answer.",
+        ], "a command's output was extracted as conversation"
+
+    def test_an_empty_assistant_entry_does_not_spend_the_skip(
+        self, tmp_path: Path
+    ) -> None:
+        """Assistant turns are split; only the text-bearing one is the reply."""
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        path = _write_gz(tmp_path / "session.jsonl.gz", [
+            prose_record("user", f"{marker} go", index=1, is_meta=True),
+            # A tool-use-only assistant entry: no text at all.
+            prose_record("assistant", "   ", index=2),
+            prose_record("assistant", "The command's real output.", index=3),
+            prose_record("user", "A genuine question.", index=4),
+            prose_record("assistant", "A genuine answer.", index=5),
+        ])
+
+        messages = reprocess.parse_archived_transcript(path)
+
+        assert [message["content"] for message in messages] == [
+            "A genuine question.", "A genuine answer.",
+        ]
+
+    def test_an_interleaved_tool_result_does_not_clear_the_skip(
+        self, tmp_path: Path
+    ) -> None:
+        """MCP servers inject tool_result-as-user entries mid-exchange."""
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        path = _write_gz(tmp_path / "session.jsonl.gz", [
+            prose_record("user", f"{marker} go", index=1, is_meta=True),
+            prose_record("user", "tool result text", index=2, is_meta=True),
+            prose_record("assistant", "The command's real output.", index=3),
+            prose_record("user", "A genuine question.", index=4),
+            prose_record("assistant", "A genuine answer.", index=5),
+        ])
+
+        messages = reprocess.parse_archived_transcript(path)
+
+        assert [message["content"] for message in messages] == [
+            "A genuine question.", "A genuine answer.",
+        ]
+
     def test_a_partial_last_line_is_skipped_not_emptied(
         self, tmp_path: Path
     ) -> None:

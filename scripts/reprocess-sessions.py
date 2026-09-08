@@ -284,7 +284,10 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
     Decompress and parse an archived session transcript.
 
     Returns list of {role, content} dicts, with slash commands filtered
-    and messages truncated (mirrors extraction-hook.py logic).
+    and messages truncated. The filtering mirrors hooks/extraction-hook.py
+    exactly — the same isMeta-plus-marker test and the same owed-response
+    counter — because a divergence here sends different text to the same
+    model and calls the result the same kind of memory.
 
     **Machine-injected records are dropped exactly as the hook drops them**
     (audit 2026-09-08, finding AR11). ``isSidechain`` entries are a subagent's
@@ -298,7 +301,10 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
     user entries), and are dropped immediately after it.
     """
     messages: list[dict[str, str]] = []
-    skip_next_assistant = False
+    # Slash-command responses still owed a skip. A count, not a flag: see the
+    # note at the marker branch below, and hooks/extraction-hook.py, which
+    # this mirrors.
+    responses_owed = 0
 
     with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -350,10 +356,32 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                 if not content or not content.strip():
                     continue
 
-                # Skip slash command exchanges
+                # Skip slash-command exchanges, exactly as the hook does.
+                #
+                # Two differences from the naive version used to matter
+                # (audit round 4c-2, findings 7 and 8):
+                #
+                # ``isMeta`` AND the marker, not the marker alone. The marker
+                # test is a substring match, so on its own it fires on any
+                # user entry that merely QUOTES a command header — a tool
+                # result echoing ``commands/*.md``, say. Measured on the live
+                # store 2026-09-08: of 365 marker-bearing user entries, 364
+                # were isMeta and the one that was not was exactly such a
+                # quotation. Arming the skip on it dropped the next genuine
+                # assistant turn and lost a real exchange for good.
+                #
+                # A COUNTER, not a boolean, and one spent only by a
+                # text-bearing assistant turn. Assistant turns are often
+                # split — a tool-use-only entry with no text precedes the
+                # real reply — and a boolean cleared by the next user entry
+                # loses the skip entirely when two commands are issued in a
+                # row, or when an MCP server injects a tool_result-as-user
+                # entry between the command and its answer.
                 if role in ("user", "human"):
-                    if any(marker in content for marker in COMMAND_MARKERS):
-                        skip_next_assistant = True
+                    if entry.get("isMeta") and any(
+                        marker in content for marker in COMMAND_MARKERS
+                    ):
+                        responses_owed += 1
                         continue
                     # Harness-injected user prose that was not a command:
                     # dropped here, AFTER the marker branch, because slash
@@ -361,9 +389,11 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                     # that branch to arm the skip.
                     if entry.get("isMeta"):
                         continue
-                    skip_next_assistant = False
-                elif role == "assistant" and skip_next_assistant:
-                    skip_next_assistant = False
+                elif role == "assistant" and responses_owed:
+                    # Only a text-bearing assistant entry is the command's
+                    # response, so only it spends an owed skip.
+                    if content and content.strip():
+                        responses_owed -= 1
                     continue
 
                 if role in ("user", "human"):
