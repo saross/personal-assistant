@@ -56,6 +56,19 @@ class TestHelpers:
             assert not digest.is_verified_true({"verified": v})
         assert not digest.is_verified_true({})  # field absent
 
+    def test_is_disproved_only_when_verification_returned_false(self):
+        """Audit H25: "checked and found wrong" is its own state.
+
+        ``pending``/absent must NOT read as disproved — that would empty the
+        promoted-recent fallback pool of the records it exists to carry.
+        """
+        assert digest.is_disproved({"verified": "false"})
+        assert digest.is_disproved({"verified": "FALSE"})
+        assert digest.is_disproved({"verified": False})
+        for v in ("true", True, "pending", None, ""):
+            assert not digest.is_disproved({"verified": v})
+        assert not digest.is_disproved({})  # field absent
+
     def test_is_active_only_false_when_explicit(self):
         assert digest.is_active({})  # legacy default
         assert digest.is_active({"is_active": True})
@@ -209,19 +222,50 @@ class TestRankVerified:
 
 
 class TestRankFallback:
-    def test_only_anchored_unverified_active_in_window(self):
+    def test_only_anchored_pending_active_in_window(self):
+        """The pool is anchored records still AWAITING verification.
+
+        Rewritten for audit H25 (2026-09-08): the fixtures used to be
+        ``verified="false"`` records, which pinned the disproved-records-are-
+        eligible behaviour as deliberate. A record whose anchors were checked
+        and did not hold is a known-wrong pointer and is now excluded; the
+        pool is the anchored-but-pending records it was always described as.
+        """
         mems = [
-            _mem(id="anchored", verified="false", anchors=["x.py:1"], created_at=_iso(1)),
-            _mem(id="no-anchors", verified="false", anchors=[], created_at=_iso(1)),
+            _mem(id="anchored", verified="pending", anchors=["x.py:1"],
+                 created_at=_iso(1)),
+            _mem(id="no-anchors", verified="pending", anchors=[], created_at=_iso(1)),
             _mem(id="verified", verified="true", anchors=["x.py:1"], created_at=_iso(1)),
-            _mem(id="forgotten", verified="false", anchors=["x.py:1"],
+            _mem(id="disproved", verified="false", anchors=["x.py:1"],
+                 created_at=_iso(1)),
+            _mem(id="forgotten", verified="pending", anchors=["x.py:1"],
                  is_active=False, created_at=_iso(1)),
         ]
         out = digest.rank_fallback(mems, now=NOW, exclude_ids=set(), window_days=7)
         assert [m["id"] for m in out] == ["anchored"]
 
+    def test_a_disproved_record_is_never_in_the_pool(self):
+        """Kills dropping ``and not is_disproved(m)`` from ``rank_fallback``.
+
+        Both spellings the corpus uses — the string ``"false"`` and a real
+        ``False`` — must be excluded, and a record that has simply never been
+        checked must still get in, so the mutation cannot be satisfied by
+        excluding everything.
+        """
+        as_string = _mem(id="s", verified="false", anchors=["x.py:1"],
+                         created_at=_iso(1))
+        as_bool = _mem(id="b", verified=False, anchors=["x.py:1"], created_at=_iso(1))
+        never_checked = _mem(id="n", anchors=["x.py:1"], created_at=_iso(1))
+        del never_checked["verified"]
+        out = digest.rank_fallback(
+            [as_string, as_bool, never_checked],
+            now=NOW, exclude_ids=set(), window_days=7,
+        )
+        assert [m["id"] for m in out] == ["n"]
+
     def test_respects_exclude_ids(self):
-        m = _mem(id="anchored", verified="false", anchors=["x.py:1"], created_at=_iso(1))
+        m = _mem(id="anchored", verified="pending", anchors=["x.py:1"],
+                 created_at=_iso(1))
         out = digest.rank_fallback(
             [m], now=NOW, exclude_ids={id(m)}, window_days=7
         )
@@ -321,9 +365,11 @@ class TestBuildDigest:
         assert len(chosen_ids) < 21  # some low-rank entries were excluded
 
     def test_fallback_fires_when_verified_sparse(self):
-        # No verified-true, but anchored recent memories exist.
+        # No verified-true, but anchored recent memories awaiting a check
+        # exist. ``verified="pending"`` since audit H25 — a disproved record
+        # is no longer eligible for the fallback at all.
         mems = [
-            _mem(id=f"f{i}", verified="false", anchors=["x.py:1"],
+            _mem(id=f"f{i}", verified="pending", anchors=["x.py:1"],
                  summary="anchored recent", created_at=_iso(i % 5))
             for i in range(5)
         ]
@@ -521,10 +567,13 @@ class TestRankVerifiedScopeAndFocus:
 
 class TestRankFallbackScope:
     def test_fallback_respects_project_scope(self):
-        # Anchored, not-verified-true → fallback pool; off-project excluded.
-        ins = _mem(id="i", verified="false", anchors=[{"type": "commit", "ref": "x"}],
+        # Anchored, awaiting verification → fallback pool; off-project
+        # excluded. ``pending`` rather than ``false`` since audit H25.
+        ins = _mem(id="i", verified="pending",
+                   anchors=[{"type": "commit", "ref": "x"}],
                    project="-home-shawn-Code-inscriptions")
-        mr = _mem(id="m", verified="false", anchors=[{"type": "commit", "ref": "y"}],
+        mr = _mem(id="m", verified="pending",
+                  anchors=[{"type": "commit", "ref": "y"}],
                   project="-home-shawn-Code-map-reader-llm")
         pool = digest.rank_fallback(
             [ins, mr], now=NOW, exclude_ids=set(),
@@ -796,3 +845,204 @@ class TestModuleDefaults:
         assert res.window_days == 7
         assert "in the last 7 days" in res.text
         assert "Verified-true entries from the last 7 days" in res.text
+
+
+# ---------------------------------------------------------------------------
+# Headings — what the digest CLAIMS about the entries under them (audit H25)
+# ---------------------------------------------------------------------------
+
+
+_VERIFIED_HEADING = "**Verified-true entries from the last"
+# The common prefix of both fallback headings; the clause after it names why
+# the fallback fired and is asserted on explicitly where it matters.
+_UNVERIFIED_HEADING = "**Unverified, shown because"
+_NOTHING_VERIFIED = "**Unverified, shown because nothing verified is available"
+_COVERAGE_THIN = "**Unverified, shown because verified coverage is thin"
+
+
+def _section(text: str, heading_prefix: str) -> list[str]:
+    """Return the bullet lines that follow *heading_prefix* in *text*.
+
+    A section runs from its heading to the next blank line, which is how
+    :func:`digest._assemble` separates the blocks. Returns ``[]`` when the
+    heading is absent, so an assertion on a missing section reads as an
+    empty section rather than raising.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(heading_prefix):
+            body = []
+            for candidate in lines[i + 1:]:
+                if not candidate.strip():
+                    break
+                body.append(candidate)
+            return body
+    return []
+
+
+class TestHeadingsMatchTheirEntries:
+    """H25: the fallback rendered under a "Verified-true entries" heading.
+
+    ``rank_fallback`` admitted anchored ``verified: "false"`` records and
+    ``_assemble`` printed every chosen entry under one heading claiming
+    verification, directly above the anti-confabulation line promising that
+    unverified content is not surfaced. Two independent guarantees now stop
+    that: disproved records are out of the pool, and anything that is not
+    verified-true renders under its own honest heading.
+    """
+
+    def test_a_disproved_record_never_renders_under_the_verified_heading(self):
+        """Kills both halves of the H25 fix at once.
+
+        Restoring ``rank_fallback``'s old predicate puts the disproved record
+        in the digest; collapsing ``_assemble`` back to a single heading puts
+        it under the verified-true one. The assertions below fail on either.
+        """
+        disproved = _mem(
+            id="d", verified="false", anchors=["x.py:1"],
+            summary="THE REFUTED CLAIM", created_at=_iso(1),
+        )
+        pending = _mem(
+            id="p", verified="pending", anchors=["x.py:1"],
+            summary="THE UNCHECKED CLAIM", created_at=_iso(1),
+        )
+        res = digest.build_digest(
+            [disproved, pending], now=NOW, project_tags=set(), byte_budget=1500
+        )
+
+        assert "THE REFUTED CLAIM" not in res.text, (
+            "a record whose anchors were disproved reached the session"
+        )
+        verified_block = "\n".join(_section(res.text, _VERIFIED_HEADING))
+        assert "THE UNCHECKED CLAIM" not in verified_block, (
+            "an unverified entry was rendered under the verified-true heading"
+        )
+        unverified_block = "\n".join(_section(res.text, _UNVERIFIED_HEADING))
+        assert "THE UNCHECKED CLAIM" in unverified_block
+        assert res.used_fallback is True
+
+    def test_assemble_splits_by_verification_not_by_call_site(self):
+        """Kills ``lines += [render_entry(m) for m in entries]`` under one
+        heading, without relying on ``rank_fallback`` to have filtered first.
+
+        ``_assemble`` is handed the mixed list directly, so the split has to
+        be derived from the records. The verified-true count in the heading
+        must count only verified-true entries as well — "5 shown of 0
+        available" was the old shape whenever the fallback fired.
+        """
+        good = _mem(id="g", summary="A CHECKED FACT", created_at=_iso(1))
+        pending = _mem(
+            id="p", verified="pending", anchors=["x.py:1"],
+            summary="AN UNCHECKED NOTE", created_at=_iso(1),
+        )
+        text = digest._assemble(
+            {"new": 2, "updated": 0, "forgotten": 0, "categories": {}},
+            [good, pending],
+            window_days=7,
+            verified_available=1,
+            since_label=None,
+        )
+        assert "1 shown of 1 available" in text
+        verified_block = "\n".join(_section(text, _VERIFIED_HEADING))
+        assert "A CHECKED FACT" in verified_block
+        assert "AN UNCHECKED NOTE" not in verified_block
+        assert "AN UNCHECKED NOTE" in "\n".join(
+            _section(text, _UNVERIFIED_HEADING)
+        )
+
+    def test_the_anti_confabulation_line_describes_this_digest(self):
+        """Kills leaving the no-fallback wording in place when unverified
+        entries are shown.
+
+        "unverified content from prior sessions is not surfaced here" is a
+        false claim on a digest that surfaces exactly that, and it is the
+        sentence a reader would trust when deciding whether to re-check an
+        entry.
+        """
+        pending = _mem(
+            id="p", verified="pending", anchors=["x.py:1"],
+            summary="an unchecked note", created_at=_iso(1),
+        )
+        with_fallback = digest.build_digest(
+            [pending], now=NOW, project_tags=set(), byte_budget=1500
+        ).text
+        assert "is not surfaced here" not in with_fallback
+        assert "not verified true — unchecked or inconclusive" in (
+            with_fallback.replace("\n", " ")
+        )
+
+        # And the untouched wording on a digest that really does hold only
+        # verified entries — the pre-H25 output, byte for byte.
+        verified_only = digest.build_digest(
+            [_mem(id="v", summary="a checked fact", created_at=_iso(1))],
+            now=NOW, project_tags=set(), byte_budget=1500,
+        ).text
+        assert "unverified content from prior sessions is not surfaced" in (
+            verified_only.replace("\n", " ")
+        )
+        assert _UNVERIFIED_HEADING not in verified_only
+
+    def test_a_pending_record_is_not_called_unchecked(self):
+        """Kills "never checked against a source" (re-audit M2, 2026-09-08).
+
+        ``verified: "pending"`` means anchor verification RAN and could not
+        settle the record — 53 such records were live at the re-audit. Both
+        states the fallback admits are in this fixture, and the sentence has
+        to be true of both, so it can only claim the negative they share.
+        """
+        pending = _mem(
+            id="p", verified="pending", anchors=["x.py:1"],
+            summary="an inconclusive note", created_at=_iso(1),
+        )
+        never_run = _mem(id="n", anchors=["x.py:1"],
+                         summary="an unchecked note", created_at=_iso(1))
+        del never_run["verified"]
+        text = digest.build_digest(
+            [pending, never_run], now=NOW, project_tags=set(), byte_budget=1500
+        ).text
+        assert {"an inconclusive note", "an unchecked note"} <= set(
+            line.split("] ", 1)[-1].split(" | ")[0]
+            for line in _section(text, _UNVERIFIED_HEADING)
+        )
+        flat = text.replace("\n", " ")
+        assert "not verified true — unchecked or inconclusive" in flat
+        assert "never checked" not in flat, (
+            "a record that was checked and came back inconclusive was "
+            "described as never checked"
+        )
+
+    def test_the_fallback_heading_names_why_the_fallback_fired(self):
+        """Kills hard-coding either clause (re-audit M1, 2026-09-08).
+
+        The fallback fires whenever verified content under-fills
+        ``fallback_min_fill`` of the budget, not only when there is none, so
+        a fixed "nothing verified is available" is false the moment one
+        verified entry is present. Both branches are asserted, so neither
+        clause can be hard-coded.
+        """
+        pending = [
+            _mem(id=f"p{i}", verified="pending", anchors=["x.py:1"],
+                 summary=f"an unchecked note {i}", created_at=_iso(1))
+            for i in range(3)
+        ]
+
+        # Nothing verified at all.
+        none_verified = digest.build_digest(
+            pending, now=NOW, project_tags=set(), byte_budget=1500
+        ).text
+        assert _NOTHING_VERIFIED in none_verified
+        assert _COVERAGE_THIN not in none_verified
+
+        # Two short verified entries — present, but nowhere near filling the
+        # budget, so the fallback still fires.
+        verified = [
+            _mem(id="v1", summary="a checked fact", created_at=_iso(1)),
+            _mem(id="v2", summary="another checked fact", created_at=_iso(2)),
+        ]
+        thin = digest.build_digest(
+            verified + pending, now=NOW, project_tags=set(), byte_budget=1500
+        )
+        assert thin.used_fallback is True, "the fixture did not exercise the top-up"
+        assert len(_section(thin.text, _VERIFIED_HEADING)) == 2
+        assert _COVERAGE_THIN in thin.text
+        assert _NOTHING_VERIFIED not in thin.text

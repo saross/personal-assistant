@@ -2234,9 +2234,10 @@ class TestDigestActuallySurfacesMemories:
         lived only in the pure selector's unit tests.
 
         Scope note: the disproved record here carries no ``anchors``, so it
-        is out of the promoted-recent fallback pool as well. An anchored
-        ``verified: "false"`` record IS admitted by ``rank_fallback`` by
-        design — see the NEW finding raised with this audit round.
+        is out of the promoted-recent fallback pool as well. Since audit H25
+        (2026-09-08) an ANCHORED ``verified: "false"`` record is out of that
+        pool too — ``rank_fallback`` used to admit one and render it under
+        the "Verified-true entries" heading.
         """
         records = [
             _digest_record("good", "This one was verified against the repository."),
