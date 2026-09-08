@@ -221,6 +221,10 @@ _pa_gate_minutes() {
 PG_CRON_STALE_MINUTES="$(_pa_gate_minutes "${PA_GATE_STALE_MINUTES:-}" 30)"
 PG_BOOT_GRACE_MINUTES="$(_pa_gate_minutes "${PA_GATE_BOOT_GRACE_MINUTES:-}" 10)"
 PG_HOOK_LAG_MINUTES="$(_pa_gate_minutes "${PA_HOOK_GATE_LAG_MINUTES:-}" 15)"
+# How far ahead of now a gate's timestamp may sit before it is called
+# impossible rather than rounding. Not an override: a second of skew is
+# filesystem noise, a minute of it is a clock that moved.
+PG_FUTURE_TOLERANCE_SECONDS=60
 
 # Where session archives land. A session.meta.json newer than a
 # hook-written gate is the evidence that the hook did not run.
@@ -276,6 +280,28 @@ for _pg_gate_name in postgres-sync-memories-gate \
     fi
 
     if [[ "$_pg_gate_name" == "postgres-sync-memories-gate" ]]; then
+        # A file cannot have been written in the future. A clock stepped
+        # backwards (an NTP correction, a VM restored from a snapshot, a
+        # copy that kept its old stamp) leaves one dated ahead of PG_NOW,
+        # and the subtraction below then yields a NEGATIVE age, which can
+        # never exceed the window: the staleness rule falls silent for
+        # exactly as long as the skew lasts — precisely the window in
+        # which a dead cron would otherwise be caught. So the stamp counts
+        # as "now" for the age, and the anomaly is reported, because a
+        # check that cannot run is not a clean bill of health (the
+        # archive-root rule above, applied here; eleventh re-audit
+        # follow-up L6).
+        #
+        # Only this branch clamps. The hook gates below compare two files
+        # to each other, which a skewed clock shifts equally, so the raw
+        # stamp is the right one there.
+        _pg_written="$_pg_newest"
+        if (( _pg_written > PG_NOW )); then
+            if (( _pg_written - PG_NOW > PG_FUTURE_TOLERANCE_SECONDS )); then
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] its timestamp is $(( (_pg_written - PG_NOW) / 60 ))m in the FUTURE — this machine's clock has moved backwards since it was written, so the gate's age says nothing and the staleness check for it is OFF until a run rewrites it. A sync that had stopped would not be reported. Check the clock (timedatectl).")
+            fi
+            _pg_written="$PG_NOW"
+        fi
         # Cron-written: silence itself is the signal, and the question is
         # only which silence we are measuring.
         #
@@ -286,13 +312,13 @@ for _pg_gate_name in postgres-sync-memories-gate \
         #       few minutes that is the whole story; waiting out the full
         #       stale window here only delays the news (tenth re-audit,
         #       finding M2, which is why the grace was inert before).
-        if [[ -n "$PG_BOOT_EPOCH" ]] && (( PG_BOOT_EPOCH > _pg_newest )); then
+        if [[ -n "$PG_BOOT_EPOCH" ]] && (( PG_BOOT_EPOCH > _pg_written )); then
             _pg_age_minutes=$(( PG_UPTIME_SECONDS / 60 ))
             if (( _pg_age_minutes > PG_BOOT_GRACE_MINUTES )); then
                 GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written in the ${_pg_age_minutes}m since this machine booted — the sync runs every five minutes, so it is not running. Check the cron entry.")
             fi
         else
-            _pg_age_minutes=$(( (PG_NOW - _pg_newest) / 60 ))
+            _pg_age_minutes=$(( (PG_NOW - _pg_written) / 60 ))
             if (( _pg_age_minutes > PG_CRON_STALE_MINUTES )); then
                 GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written for ${_pg_age_minutes}m — the sync runs every five minutes, so it is not running. Check the cron entry.")
             fi
@@ -334,7 +360,8 @@ for _pg_gate_name in postgres-sync-memories-gate \
     fi
 done
 unset _pg_gate_name _pg_gate_file _pg_state_file _pg_count _pg_line
-unset _pg_witness _pg_mtime _pg_newest _pg_uptime_raw _pg_uptime_rest
+unset _pg_witness _pg_mtime _pg_newest _pg_written
+unset _pg_uptime_raw _pg_uptime_rest
 unset _pg_age_minutes _pg_late _pg_archive_reported
 
 # ---------------------------------------------------------------------------
