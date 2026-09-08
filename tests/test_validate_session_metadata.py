@@ -83,7 +83,19 @@ def _manifest(tmp_path: Path, project: str = "lantern-survey") -> Path:
 
 
 class TestDefectClasses:
-    """One record per class of defect this script exists to catch."""
+    """One record per class of defect this script exists to catch.
+
+    Every case here goes through ``validate_record``, the function the
+    command actually calls, rather than through the individual check. Calling
+    the checks directly left the orchestration untested: deleting
+    ``findings += check_field_swap(...)`` — or check_commits, or check_paths
+    — from validate_record left all 25 tests green while the corresponding
+    defect stopped being reported at all (round 4c-2, finding 20).
+    """
+
+    def _checks(self, findings) -> set[str]:
+        """The check names that fired, as reported by validate_record."""
+        return {finding.check for finding in findings}
 
     def test_a_clean_record_produces_no_errors(self) -> None:
         """The positive control: the checks must not fire on good metadata."""
@@ -95,19 +107,22 @@ class TestDefectClasses:
         record = _record()
         del record["tags"]
 
-        findings = validator.check_schema("luna", SID, record)
+        findings = validator.validate_record("luna", SID, record, None)
 
-        assert [f.severity for f in findings] == ["error"]
-        assert "tags" in findings[0].message
+        errors = [f for f in findings if f.severity == "error"]
+        assert "schema" in self._checks(errors)
+        assert any("tags" in f.message for f in errors)
 
     def test_an_empty_provenance_summary_is_an_error(self) -> None:
         """The observed field-swap defect, caught from the emptiness side."""
         record = _record()
         record["three_ps"]["provenance_summary"] = "   "
 
-        findings = validator.check_schema("luna", SID, record)
+        findings = validator.validate_record("luna", SID, record, None)
 
-        assert any("three_ps.provenance_summary" in f.message for f in findings)
+        assert any(
+            "three_ps.provenance_summary" in f.message for f in findings
+        )
 
     def test_provenance_prose_misfiled_into_process_is_an_error(self) -> None:
         record = _record()
@@ -116,10 +131,14 @@ class TestDefectClasses:
             "Continues the 2026-02 reconnaissance work on the lower terrace."
         )
 
-        findings = validator.check_field_swap("luna", SID, record)
+        findings = validator.validate_record("luna", SID, record, None)
 
-        assert [f.check for f in findings] == ["field-swap"]
-        assert findings[0].severity == "error"
+        swaps = [f for f in findings if f.check == "field-swap"]
+        assert swaps, (
+            "check_field_swap is not reached from validate_record; the "
+            "field-swap defect class is not reported at all"
+        )
+        assert swaps[0].severity == "error"
 
     def test_a_field_swap_is_not_reported_when_provenance_is_populated(
         self
@@ -130,12 +149,75 @@ class TestDefectClasses:
             "Continues the comparison started earlier in the session."
         )
 
-        assert validator.check_field_swap("luna", SID, record) == []
+        findings = validator.validate_record("luna", SID, record, None)
+
+        assert "field-swap" not in self._checks(findings)
 
     def test_tags_must_be_a_list(self) -> None:
-        findings = validator.check_schema("luna", SID, _record(tags="survey"))
+        findings = validator.validate_record(
+            "luna", SID, _record(tags="survey"), None
+        )
 
         assert any("tags must be a list" in f.message for f in findings)
+
+    def test_a_cited_commit_hash_is_reached_from_validate_record(self) -> None:
+        """check_commits must be wired in, not merely importable."""
+        record = _record()
+        record["three_ps"]["process_summary"] = (
+            "Committed the grid change as 4f2a9c1e8b3d5a7f6c0e2d4b8a1f3c5e7d9b0a2c."
+        )
+
+        findings = validator.validate_record("luna", SID, record, None)
+
+        commits = [f for f in findings if f.check == "commit"]
+        assert commits, (
+            "check_commits is not reached from validate_record; a cited "
+            "commit hash is never verified"
+        )
+        # No manifest, so no repo: unverifiable, reported as a warning.
+        assert commits[0].severity == "warning"
+
+    def test_a_cited_path_is_reached_from_validate_record(self) -> None:
+        """check_paths must be wired in too."""
+        record = _record()
+        record["three_ps"]["process_summary"] = (
+            "Wrote /home/tester/Workshop/no-such-file-anywhere-xyz.md."
+        )
+
+        findings = validator.validate_record("luna", SID, record, None)
+
+        paths = [f for f in findings if f.check == "path"]
+        assert paths, (
+            "check_paths is not reached from validate_record; a confabulated "
+            "file path is never reported"
+        )
+        assert paths[0].severity == "warning"
+
+    def test_every_check_is_reachable_from_the_orchestrator(self) -> None:
+        """One record carrying every defect class at once.
+
+        Deleting any single `findings += ...` line from validate_record must
+        break this, whichever line it is.
+        """
+        record = _record()
+        del record["title"]
+        record["three_ps"]["provenance_summary"] = ""
+        record["three_ps"]["process_summary"] = (
+            "Continues the earlier survey; commit "
+            "4f2a9c1e8b3d5a7f6c0e2d4b8a1f3c5e7d9b0a2c wrote "
+            "/home/tester/Workshop/no-such-file-anywhere-xyz.md."
+        )
+        record["tags"] = ["markdown", "git", "python"]
+
+        findings = validator.validate_record("luna", SID, record, None)
+
+        fired = self._checks(findings)
+        assert fired >= {"schema", "field-swap", "commit", "path"}, (
+            f"checks that fired: {fired}"
+        )
+        assert any(check.startswith("tag-") for check in fired), (
+            f"check_tags is not reached from validate_record: {fired}"
+        )
 
 
 class TestExitSemantics:
