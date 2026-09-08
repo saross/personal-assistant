@@ -16,7 +16,15 @@ Rules:
 - **Append-only.** Nothing is ever removed from the archive. A source file
   that goes missing stays archived; a source file whose bytes change (they
   should not — messages and receipts are write-once) is re-copied and the
-  index records the new hash.
+  index records the new hash, unless it has grown past the size cap, in
+  which case it is refused and the earlier copy is kept.
+- **Only protocol names enter the repository.** Agent and peer directory
+  names and message names must be slugs (``[A-Za-z0-9._-]``, messages
+  ending in ``.md``), the same rule the reading hook applies. A directory
+  or ``.md`` file outside the rule is refused and named on stderr, never
+  copied; other files are not mail and are ignored. Header values in the
+  index pass the same rule (``invalid`` otherwise), so the committed index
+  cannot carry what the hook refuses to print.
 - **Copy, never move.** The live mailbox is untouched; both agents' subtrees
   are read only.
 - **Both agents' mail is archived**, under the same relative layout as the
@@ -31,8 +39,9 @@ Usage:
 
 ``--commit`` stages and commits ``agent-mail/`` in the data submodule (an
 explicit pathspec, so other pending data changes are left alone); the daily
-sync pushes and bumps the parent pointer. Exit 0 always unless the archive
-directory cannot be written.
+sync pushes and bumps the parent pointer. Exit 0 unless the archive
+directory cannot be written or a requested commit fails (the daily sync
+warns on a non-zero exit; a silent failure would leave the archive stale).
 """
 from __future__ import annotations
 
@@ -40,7 +49,7 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -51,11 +60,50 @@ DEFAULT_ROOT = Path(os.environ.get("AGENT_MAIL_ROOT", "~/agent-mail")).expanduse
 DEFAULT_ARCHIVE = PA_DIR / "data" / "agent-mail"
 MAX_HEADER_BYTES = 4_096
 MAX_MESSAGE_BYTES = 65_536   # same cap as the hooks; larger files are not mail
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")          # agent and peer directories
+MESSAGE_NAME = re.compile(r"[A-Za-z0-9._-]+\.md")   # same rule as the reading hook
 HEADER_NAMES = ("From", "To", "Project", "Lane", "Workstream", "Date", "Re")
+# The first date-shaped token on a receipt's first line, with an optional
+# time on the same token. Neither agent writes one fixed form.
+RECEIPT_STAMP = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:[T ](?P<time>\d{2}:\d{2}(?::\d{2})?)(?P<zone>Z|[+-]\d{2}:?\d{2}| ?UTC)?)?")
 
 
 def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Hex digest, read in chunks so an unexpectedly large file is not held whole."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(65_536):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_bounded(path: Path, max_bytes: int = MAX_MESSAGE_BYTES) -> bytes | None:
+    """The file's bytes, or ``None`` if it is larger than ``max_bytes``.
+
+    The size was checked by ``stat`` a moment earlier; reading a bounded
+    amount closes the window in which a source could grow between the
+    check and the copy, and the same bytes are compared and written so the
+    source is read exactly once (re-audit, 2026-09-08).
+    """
+    with path.open("rb") as handle:
+        data = handle.read(max_bytes + 1)
+    return None if len(data) > max_bytes else data
+
+
+def slug_or_invalid(value: str) -> str:
+    """The reading hook's rule for a routing value: a slug, or ``invalid``.
+
+    Kept in step with ``safe_value`` in ``hooks/session-start-agent-mail.py``;
+    an empty value stays empty so the caller can apply its default.
+    """
+    value = value.strip()
+    if not value:
+        return ""
+    if len(value) > 60 or not SAFE_NAME.fullmatch(value):
+        return "invalid"
+    return value
 
 
 def read_headers(path: Path) -> dict[str, str]:
@@ -75,13 +123,30 @@ def read_headers(path: Path) -> dict[str, str]:
     return headers
 
 
-def mail_files(root: Path) -> list[Path]:
-    """Every regular ``.md`` under ``<agent>/outbox/*/`` and ``<agent>/seen/*/``."""
+def mail_files(root: Path, *, max_bytes: int | None = MAX_MESSAGE_BYTES,
+               refused: list[Path] | None = None) -> list[Path]:
+    """Every regular ``.md`` under ``<agent>/outbox/*/`` and ``<agent>/seen/*/``.
+
+    A file that is not mail by the protocol (a directory or message name
+    outside the slug rule, or larger than ``max_bytes``) is skipped and,
+    when ``refused`` is given, recorded there so the run can say so — a
+    silent refusal would contradict the archive's claim to be the complete
+    record. The archive itself is scanned with ``max_bytes=None``: what
+    was accepted once stays indexed.
+    """
     found: list[Path] = []
     if not root.is_dir():
         return found
+
+    def refuse(path: Path) -> None:
+        if refused is not None:
+            refused.append(path)
+
     for agent_dir in sorted(root.iterdir()):
         if agent_dir.is_symlink() or not agent_dir.is_dir():
+            continue
+        if not SAFE_NAME.fullmatch(agent_dir.name):
+            refuse(agent_dir)               # its name would be mirrored into the repo
             continue
         for kind in ("outbox", "seen"):
             kind_dir = agent_dir / kind
@@ -90,34 +155,49 @@ def mail_files(root: Path) -> list[Path]:
             for peer_dir in sorted(kind_dir.glob("*")):
                 if peer_dir.is_symlink() or not peer_dir.is_dir():
                     continue
+                if not SAFE_NAME.fullmatch(peer_dir.name):
+                    refuse(peer_dir)
+                    continue
                 for path in sorted(peer_dir.iterdir()):
-                    if path.suffix != ".md" or path.is_symlink() or not path.is_file():
+                    if path.is_symlink() or not path.is_file():
                         continue
-                    if not path.name.isprintable():
+                    if not MESSAGE_NAME.fullmatch(path.name):
+                        if path.suffix == ".md" or not path.name.isprintable():
+                            refuse(path)    # meant as mail, or hostile; either way say so
                         continue
                     try:
-                        if path.stat().st_size > MAX_MESSAGE_BYTES:
-                            continue        # not mail by the protocol; never into the repo
+                        oversized = max_bytes is not None and path.stat().st_size > max_bytes
                     except OSError:
+                        continue
+                    if oversized:
+                        refuse(path)        # not mail by the protocol; never into the repo
                         continue
                     found.append(path)
     return found
 
 
-def copy_new(root: Path, archive: Path) -> tuple[int, int]:
-    """Copy new or changed mail files into the archive. Returns (added, changed)."""
+def copy_new(root: Path, archive: Path, refused: list[Path] | None = None) -> tuple[int, int]:
+    """Copy new or changed mail files into the archive. Returns (added, changed).
+
+    Files the protocol refuses are appended to ``refused`` when given.
+    """
     added = changed = 0
-    for source in mail_files(root):
+    for source in mail_files(root, refused=refused):
         relative = source.relative_to(root)
         target = archive / relative
+        data = read_bounded(source)
+        if data is None:                    # grew past the cap since stat: refuse
+            if refused is not None:
+                refused.append(source)
+            continue
         if target.exists():
-            if sha256(target) == sha256(source):
+            if target.read_bytes() == data:
                 continue
             changed += 1
         else:
             added += 1
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        target.write_bytes(data)
     return added, changed
 
 
@@ -137,24 +217,30 @@ def sent_from_name(name: str) -> str:
 
 
 def when_from_note(note: str) -> str:
-    """The receipt time from its first line, else empty.
+    """The receipt time named on the note's first line, else empty.
 
-    Both agents' conventions are accepted: Claude writes ``read <ISO> by …``,
-    the Codex side writes ``Read: <ISO>`` or ``Read: <date> <zone>``. The
-    time is the first token after the keyword; a bare date is kept as is.
+    Live receipts (2026-09-08) take at least five shapes: ``read <ISO> by …``,
+    ``Read: <ISO>``, ``Read: <date> <time> UTC``, ``Read: <date> <zone>``,
+    and ``Read and assessed by codex on <date>.`` The first date-shaped
+    token is the time. A time on the same token is kept, normalised to
+    ``T`` and to ``Z`` when it is UTC; a bare date stays a bare date. The
+    result is a label, not a sort key — the index sorts on the send time.
     """
-    parts = note.split()
-    if len(parts) >= 2 and parts[0].rstrip(":").casefold() == "read":
-        stamp = parts[1]
-        if stamp[:4].isdigit():             # a date, not "by" in "read by claude …"
-            return stamp
-    return ""
+    match = RECEIPT_STAMP.search(note)
+    if not match:
+        return ""
+    stamp = match.group("date")
+    if match.group("time"):
+        stamp += "T" + match.group("time")
+        zone = (match.group("zone") or "").strip()
+        stamp += "Z" if zone in ("Z", "UTC") else zone
+    return stamp
 
 
 def build_index(archive: Path) -> list[dict]:
     """One record per archived message, joined to its receipt if present."""
     records: list[dict] = []
-    for message in mail_files(archive):
+    for message in mail_files(archive, max_bytes=None):   # accepted once, indexed always
         relative = message.relative_to(archive)
         parts = relative.parts  # <agent>/outbox/<recipient>/<file>
         if len(parts) != 4 or parts[1] != "outbox":
@@ -168,7 +254,7 @@ def build_index(archive: Path) -> list[dict]:
                 note = receipt_path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 note = []
-            first_line = (note[0] if note else "")[:500]
+            first_line = "".join(ch for ch in (note[0] if note else "") if ch.isprintable())[:500]
             receipt = {
                 "path": receipt_path.relative_to(archive).as_posix(),
                 "when": when_from_note(first_line),
@@ -178,10 +264,10 @@ def build_index(archive: Path) -> list[dict]:
             "path": relative.as_posix(),
             "from": sender,
             "to": recipient,
-            "project": (headers.get("Project") or "any").casefold(),
-            "lane": (headers.get("Lane") or "any").casefold(),
-            "workstream": headers.get("Workstream") or "",
-            "date": headers.get("Date") or "",
+            "project": (slug_or_invalid(headers.get("Project", "")) or "any").casefold(),
+            "lane": (slug_or_invalid(headers.get("Lane", "")) or "any").casefold(),
+            "workstream": slug_or_invalid(headers.get("Workstream", "")),
+            "date": "".join(ch for ch in headers.get("Date", "") if ch.isprintable())[:40],
             "subject": "".join(ch for ch in headers.get("Re", "") if ch.isprintable())[:200],
             "bytes": message.stat().st_size,
             "sha256": sha256(message),
@@ -225,27 +311,33 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
+    refused: list[Path] = []
     try:
         args.archive.mkdir(parents=True, exist_ok=True)
-        added, changed = copy_new(args.root, args.archive)
+        added, changed = copy_new(args.root, args.archive, refused)
         records = build_index(args.archive)
-        index_changed = write_index(args.archive, records)
+        write_index(args.archive, records)
     except OSError as error:
         print(f"agent-mail archive failed: {error}", file=sys.stderr)
         return 1
     receipted = sum(1 for r in records if r["receipt"])
     summary = f"{added} added, {changed} changed; {len(records)} messages, {receipted} receipted"
-    committed = False
+    if refused:
+        summary += f"; {len(refused)} refused (not mail by the protocol)"
+        for path in refused:                # repr: the name itself may be unprintable
+            print(f"agent-mail archive refused: {path.parent}/{path.name!r}", file=sys.stderr)
+    committed = failed = False
     # Always try when asked: a commit that failed on an earlier run leaves
     # files staged, and commit() itself is a no-op when nothing is staged.
     if args.commit:
         try:
             committed = commit(args.archive, summary)
-        except subprocess.CalledProcessError as error:
+        except (subprocess.CalledProcessError, OSError) as error:
             print(f"agent-mail archive commit failed: {error}", file=sys.stderr)
+            failed = True                   # non-zero so daily-sync.sh logs its WARNING
     if not args.quiet:
         print(f"agent-mail archive: {summary}" + (" (committed)" if committed else ""))
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

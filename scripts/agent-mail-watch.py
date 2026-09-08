@@ -108,8 +108,10 @@ def main() -> int:
     args = parser.parse_args()
 
     hook = load_hook()
-    project = (args.project or os.environ.get("AGENT_MAIL_PROJECT")
-               or hook.session_project(Path.cwd()))
+    # The same slug rule as every printed value: --project is operator input,
+    # and the OTHER line prints it.
+    project = (hook.safe_value(args.project or os.environ.get("AGENT_MAIL_PROJECT", ""))
+               .casefold() or hook.session_project(Path.cwd()))
     seen: set[Path] = set()
     last_elsewhere: dict[str, int] | None = None
     if not args.root.is_dir():
