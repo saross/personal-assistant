@@ -48,8 +48,18 @@ def _cursor_state(cursor_file: Path, session_id: str) -> tuple[str | None, int]:
     in one place and reads legacy plain-string and boolean rows too.
     """
     if not cursor_file.exists():
-        return None, False
-    return eh.cursor_entry(json.loads(cursor_file.read_text()), session_id)
+        return None, 0
+    uuid, owed = eh.cursor_entry(json.loads(cursor_file.read_text()), session_id)
+    # Strictly an int (re-audit L5). ``0 == False`` and ``1 == True`` in
+    # Python, so a tuple comparison at a call site cannot tell the count
+    # apart from the boolean flag it replaced — the helper would hide the
+    # very regression the call sites use it to detect. Check the type once,
+    # here, rather than at every assertion.
+    assert not isinstance(owed, bool), f"cursor_entry returned a bool: {owed!r}"
+    assert isinstance(owed, int), (
+        f"cursor_entry returned {type(owed).__name__}, not an int"
+    )
+    return uuid, owed
 
 
 class TestNormaliseTag:
@@ -1024,7 +1034,7 @@ class TestExtractMemoriesTransientErrors:
         # Empty list → cursor advances to the last seen UUID.
         assert cursor_file.exists()
         saved = json.loads(cursor_file.read_text())
-        assert eh.cursor_entry(saved, "sess-Y") == ("uuid-A", False)
+        assert eh.cursor_entry(saved, "sess-Y") == ("uuid-A", 0)
 
 
 # ============================================================================
@@ -1581,7 +1591,7 @@ class TestMainPersistsAndAdvances:
         )
         assert record["session_id"] == "sess-P"
         # Cursor advanced only because the append succeeded.
-        assert _cursor_state(cursor_file, "sess-P") == ("uuid-A", False)
+        assert _cursor_state(cursor_file, "sess-P") == ("uuid-A", 0)
 
     def test_main_holds_the_cursor_when_the_append_fails(self, tmp_path, monkeypatch):
         """Kills moving the cursor advance ABOVE ``append_memories(memories)``.
@@ -1688,7 +1698,7 @@ class TestConcurrentMainInvocations:
             f"the window was persisted {len(records)} times — the second run "
             "was not serialised behind the first"
         )
-        assert _cursor_state(cursor_file, "sess-R") == ("uuid-A", False)
+        assert _cursor_state(cursor_file, "sess-R") == ("uuid-A", 0)
 
 
 class TestTranscriptShapeFidelity:
@@ -1832,7 +1842,7 @@ class TestTranscriptShapeFidelity:
 
         assert exc.value.code == 0
         assert cursor_file.exists(), "the cursor file was never written"
-        assert _cursor_state(cursor_file, "sess-M") == ("uuid-M2", False)
+        assert _cursor_state(cursor_file, "sess-M") == ("uuid-M2", 0)
         # Nothing was persisted — the entries really were dropped.
         assert not store.exists()
 
@@ -1867,7 +1877,7 @@ class TestTranscriptShapeFidelity:
 
         assert cursor_file.stat().st_mtime_ns == before
         assert json.loads(cursor_file.read_text()) == {"sess-N": "uuid-A"}
-        assert _cursor_state(cursor_file, "sess-N") == ("uuid-A", False)
+        assert _cursor_state(cursor_file, "sess-N") == ("uuid-A", 0)
 
 
 class TestImportSideEffects:
@@ -2060,7 +2070,7 @@ class TestPersistedSkipState:
         )
         sent = self._fire(monkeypatch, transcript, "sess-A", expect_call=True)
         assert "first question" in sent and follow_up in sent
-        assert _cursor_state(cursor_file, "sess-A") == ("u3", True)
+        assert _cursor_state(cursor_file, "sess-A") == ("u3", 1)
         assert len(store.read_text(encoding="utf-8").splitlines()) == 1
 
         # Second firing: the response lands. It must not be sent, the
@@ -2075,7 +2085,7 @@ class TestPersistedSkipState:
             ],
         )
         assert self._fire(monkeypatch, transcript, "sess-A", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-A") == ("u4", False)
+        assert _cursor_state(cursor_file, "sess-A") == ("u4", 0)
         assert len(store.read_text(encoding="utf-8").splitlines()) == 1
 
     def test_a_command_at_the_end_of_a_window(self, tmp_path, monkeypatch):
@@ -2094,14 +2104,14 @@ class TestPersistedSkipState:
         _write_transcript(transcript, entries)
         sent = self._fire(monkeypatch, transcript, "sess-B", expect_call=True)
         assert "question" in sent
-        assert _cursor_state(cursor_file, "sess-B") == ("u3", True)
+        assert _cursor_state(cursor_file, "sess-B") == ("u3", 1)
 
         entries.append(
             make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4")
         )
         _write_transcript(transcript, entries)
         assert self._fire(monkeypatch, transcript, "sess-B", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-B") == ("u4", False)
+        assert _cursor_state(cursor_file, "sess-B") == ("u4", 0)
         assert len(store.read_text(encoding="utf-8").splitlines()) == 1
 
     def test_a_command_alone_then_an_idle_firing_then_the_response(
@@ -2121,18 +2131,18 @@ class TestPersistedSkipState:
         ]
         _write_transcript(transcript, entries)
         assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-C") == ("u1", True)
+        assert _cursor_state(cursor_file, "sess-C") == ("u1", 1)
 
         # An idle firing: nothing new, nothing changes.
         assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-C") == ("u1", True)
+        assert _cursor_state(cursor_file, "sess-C") == ("u1", 1)
 
         entries.append(
             make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2")
         )
         _write_transcript(transcript, entries)
         assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-C") == ("u2", False)
+        assert _cursor_state(cursor_file, "sess-C") == ("u2", 0)
         assert not store.exists()
 
     def test_a_complete_command_exchange_inside_one_window(
@@ -2157,7 +2167,7 @@ class TestPersistedSkipState:
         sent = self._fire(monkeypatch, transcript, "sess-D", expect_call=True)
         assert "THE COMMAND RESPONSE" not in sent
         assert "question" in sent and "later question" in sent
-        assert _cursor_state(cursor_file, "sess-D") == ("u4", False)
+        assert _cursor_state(cursor_file, "sess-D") == ("u4", 0)
 
     def test_a_second_command_after_a_spent_one(self, tmp_path, monkeypatch):
         """``[/cmd, response, /cmd]`` then ``[response]``.
@@ -2174,14 +2184,14 @@ class TestPersistedSkipState:
         ]
         _write_transcript(transcript, entries)
         assert self._fire(monkeypatch, transcript, "sess-E", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-E") == ("u3", True)
+        assert _cursor_state(cursor_file, "sess-E") == ("u3", 1)
 
         entries.append(
             make_live_shape_entry("assistant", "SECOND RESPONSE", "u4")
         )
         _write_transcript(transcript, entries)
         assert self._fire(monkeypatch, transcript, "sess-E", expect_call=False) is None
-        assert _cursor_state(cursor_file, "sess-E") == ("u4", False)
+        assert _cursor_state(cursor_file, "sess-E") == ("u4", 0)
         assert not store.exists()
 
     def test_a_legacy_plain_uuid_cursor_row_still_works(
@@ -2205,7 +2215,7 @@ class TestPersistedSkipState:
         sent = self._fire(monkeypatch, transcript, "sess-F", expect_call=True)
         assert "new question" in sent
         assert "old turn" not in sent, "a legacy row must still position the cursor"
-        assert _cursor_state(cursor_file, "sess-F") == ("u2", False)
+        assert _cursor_state(cursor_file, "sess-F") == ("u2", 0)
 
     def test_a_cursor_sitting_on_a_command_entry(self, tmp_path, monkeypatch):
         """Audit round four L-2: the cursor entry itself carries a marker.
@@ -2232,7 +2242,7 @@ class TestPersistedSkipState:
             "the response leaked because the cursor sat on the command entry"
         )
         assert "later" in sent
-        assert _cursor_state(cursor_file, "sess-G") == ("u3", False)
+        assert _cursor_state(cursor_file, "sess-G") == ("u3", 0)
         assert len(store.read_text(encoding="utf-8").splitlines()) == 1
 
     def test_the_cursor_never_moves_backwards(self, tmp_path, monkeypatch):
@@ -2375,7 +2385,7 @@ class TestCursorFileShapes:
             )
             mock_cls.return_value = mock_client
             eh.main()
-        assert _cursor_state(cursor_file, "sess-L3") == ("uuid-A", False)
+        assert _cursor_state(cursor_file, "sess-L3") == ("uuid-A", 0)
 
     def test_a_valid_object_is_still_read(self, tmp_path, monkeypatch):
         """Kills ``return {}`` unconditionally in place of the type check."""
@@ -2457,7 +2467,7 @@ class TestRoundFiveSurvivors:
             eh.main()
 
         assert not store.exists(), "nothing should have been persisted"
-        assert _cursor_state(cursor_file, "sess-R5") == ("u2", True), (
+        assert _cursor_state(cursor_file, "sess-R5") == ("u2", 1), (
             "a sterile window dropped the pending skip"
         )
 
@@ -2647,19 +2657,19 @@ class TestRoundSixCursorPins:
         """
         assert eh.cursor_entry({"s": {"uuid": None, "skip_pending": True}}, "s") == (
             None,
-            False,
+            0,
         )
-        assert eh.cursor_entry({"s": {"skip_pending": True}}, "s") == (None, False)
+        assert eh.cursor_entry({"s": {"skip_pending": True}}, "s") == (None, 0)
         assert eh.cursor_entry({"s": {"uuid": 7, "skip_pending": True}}, "s") == (
             None,
-            False,
+            0,
         )
 
     def test_a_row_with_a_string_uuid_still_carries_its_flag(self):
         """Kills discarding the flag from every row."""
         assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": True}}, "s") == (
             "u1",
-            True,
+            1,
         )
 
     def test_a_null_uuid_row_does_not_swallow_the_first_answer(self, tmp_path):
