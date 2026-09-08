@@ -10,15 +10,22 @@ Several session-scoped guards live here. They are described where they are
 defined; the one thing a reader needs up front is the environment switch:
 
 ``PA_HERMETICITY_STRICT=1``
-    Makes a change to the checkout's SOURCE trees (``wiki/``, ``scripts/``,
-    ``hooks/``, ``commands/``, ``global-claude-md/``,
-    ``global-agent-guidance/``, ``tasks/``) fail the run instead of printing
-    a warning. Set it in a clean copy — a ``git archive`` export, a
-    re-audit, CI — where nothing but the suite is writing. Leave it unset in
-    a working checkout: this repository is worked by several concurrent
-    sessions by design (see CLAUDE.md), a run takes about two minutes, and
-    another session editing a wiki page in that window is ordinary work, not
-    a test misbehaving.
+    Makes a change to the checkout's SOURCE trees (``wiki/``,
+    ``scripts/``, ``hooks/``, ``commands/``, ``tests/``,
+    ``global-claude-md/``, ``global-agent-guidance/``, ``tasks/``) fail
+    the run instead of warning, and makes shared-checkout noise in the
+    store (a ``*.lock`` file, a log rotation) fatal too. Set it in a
+    clean copy — a ``git archive`` export, a re-audit, CI — where
+    nothing but the suite is writing. Leave it unset in a working
+    checkout: this repository is worked by several concurrent sessions
+    by design (see CLAUDE.md), a run takes about two minutes, and
+    another session editing a wiki page in that window is ordinary work,
+    not a test misbehaving.
+
+    An archive export has no ``data/`` submodule, so the store paths
+    dangle and the store half is INERT there; the run says so under the
+    ``hermeticity`` banner at the end. ``commands/audit.md`` carries the
+    two invocations that between them cover both halves.
 
     The canonical memory store and ``logs/`` are strict in BOTH modes, with
     one allowance: an APPEND by the live system (the extraction hook adding
@@ -348,6 +355,43 @@ Last updated: 2024-02-08
 
 
 
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Emit the hermeticity advisories where the operator will see them.
+
+    A session-fixture teardown's ``print`` goes through pytest's capture and
+    is discarded on a green run — measured at zero occurrences at ``-q`` and
+    at default verbosity, visible only under ``-s`` (round 4a-4, finding
+    M1). The terminal reporter writes straight to the real terminal, so
+    everything queued in :data:`_DEFERRED_REPORT` lands whatever the capture
+    mode.
+    """
+    coverage = strict_store_coverage_warning()
+    report = dict(_DEFERRED_REPORT)
+    if not report and not coverage:
+        return
+    terminalreporter.write_sep("=", "hermeticity", yellow=True)
+    if coverage:
+        terminalreporter.write_line(coverage, yellow=True)
+    for path in report.get("source_changes", []):
+        terminalreporter.write_line(
+            f"WARNING: the checkout's source trees changed during this run: "
+            f"{path}", yellow=True,
+        )
+    if report.get("source_changes"):
+        terminalreporter.write_line(
+            "  In a shared checkout this is usually a CONCURRENT SESSION, "
+            f"not the suite. Set {STRICT_ENV_VAR}=1 where nothing else is "
+            "writing to make it fatal.", yellow=True,
+        )
+    for line in report.get("appends", []):
+        terminalreporter.write_line(
+            f"note: the live system appended to {line}", yellow=True)
+    for path in report.get("tolerated", []):
+        terminalreporter.write_line(
+            f"note: tolerated shared-checkout noise (a lock file or a "
+            f"rotation): {path}", yellow=True,
+        )
+
 # ---------------------------------------------------------------------------
 # Hermeticity: the PG* environment must survive every test
 #
@@ -403,8 +447,10 @@ def assert_pg_env_unchanged(
         f"{ {key: (before.get(key), after.get(key)) for key in changed} }. "
         f"psycopg2 connects in C, below the network guard, so these "
         f"variables are what keeps an import-bound connector away from the "
-        f"operator's database. Use monkeypatch (which restores), or mark the "
-        f"test @pytest.mark.{PG_ENV_MARKER} if it must vary them."
+        f"operator's database. Mark the test @pytest.mark.{PG_ENV_MARKER}: "
+        f"monkeypatch.setenv alone is NOT enough, because this fixture "
+        f"finalises before monkeypatch's undo runs and still sees the "
+        f"change. The restore happens either way."
     )
 
 
@@ -737,12 +783,23 @@ _CANONICAL_DIRS = _APPEND_TOLERANT_DIRS + (
     PROJECT_ROOT / "commands",
     PROJECT_ROOT / "hooks",
     PROJECT_ROOT / "scripts",
+    PROJECT_ROOT / "tests",              # advisory, like every source tree:
+                                         # concurrent sessions edit tests too
 )
 
 #: Directory names skipped while walking the watched trees. ``__pycache__`` is
 #: written by the interpreter itself the moment a test imports a script, so
 #: watching it would fail every run for a reason that is not a leak.
 _SNAPSHOT_SKIP_DIRS = frozenset({"__pycache__", ".git", ".pytest_cache"})
+
+#: Filled during session teardown and emitted by
+#: ``pytest_terminal_summary``, which writes through the terminal reporter
+#: and is therefore not swallowed by pytest's output capture.
+_DEFERRED_REPORT: dict[str, list[str]] = {}
+
+#: The keys the extraction hook always writes. An appended memories.jsonl
+#: line without them is not something the live system produced.
+_REQUIRED_MEMORY_KEYS = frozenset({"id", "content", "created_at"})
 
 #: Set this to make a change under a SOURCE tree fail the run rather than
 #: warn. See :func:`report_source_tree_changes` for why it is off by default.
@@ -791,15 +848,19 @@ def _digest_prefix(path: Path, length: int) -> str | None:
     return digest.hexdigest()
 
 
-def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
+def _canonical_store_snapshot(
+    *, with_digests: bool = True,
+) -> dict[str, tuple[int, int] | None]:
     """Map every watched canonical path to ``(mtime_ns, size)``, or ``None``.
 
     ``None`` records "absent", so a test that CREATES one of these is caught
     as surely as one that rewrites it. Size as well as mtime: a rewrite
     within one clock tick can leave the mtime alone.
 
-    Cost is one ``stat`` per file and no reads, over roughly 240 files, so a
-    pair of snapshots adds milliseconds to a two-minute run.
+    Cost is one ``stat`` per file over roughly 240 files, plus — on the
+    session-start snapshot only, and only for the append-tolerant paths — a
+    single streamed hash of each. Measured at 0.43 s per run against the
+    live 45 MB corpus; the teardown snapshot does no hashing at all.
     """
     snapshot: dict[str, tuple[int, int] | None] = {}
 
@@ -813,11 +874,13 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
             return
         if _is_append_tolerant(key):
             # Three-tuple: the digest is what lets an APPEND by the live
-            # system be told apart from a rewrite at teardown. Hashed once
-            # here; at teardown only the changed files are re-read.
+            # system be told apart from a rewrite. It is computed ONCE, on
+            # the session-start snapshot; the teardown snapshot passes
+            # ``with_digests=False`` because the comparison re-reads the
+            # changed files from disk anyway.
             snapshot[key] = (
                 stat.st_mtime_ns, stat.st_size,
-                _digest_prefix(resolved, stat.st_size),
+                _digest_prefix(resolved, stat.st_size) if with_digests else None,
             )
         else:
             snapshot[key] = (stat.st_mtime_ns, stat.st_size)
@@ -859,27 +922,51 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
 def classify_store_changes(
     before: dict[str, object],
     after: dict[str, object],
-) -> tuple[list[str], list[str]]:
-    """Split the changed paths into (violations, benign appends).
+) -> tuple[list[str], list[str], list[str]]:
+    """Split the changed paths into (violations, appends, tolerated).
 
-    A path under an append-tolerant root (the two store files and ``logs/``)
-    whose size only GREW, and whose first ``old size`` bytes still hash to
-    what they hashed before, is an append by the live system — the
-    extraction hook adding a memory, a script adding a log line — and not
-    something the suite did. Everything else about those paths (a shrink, a
-    rewritten prefix, a deletion, a NEW file) is a violation, and so is any
-    change at all outside them.
+    ``appends`` are growth by the live system on an append-tolerant path
+    (the two store files and ``logs/``): the size only GREW, the first ``old
+    size`` bytes still hash to what they hashed at session start, and — for
+    ``memories.jsonl`` and the vocabulary — the appended text is the shape
+    that writer produces. Anything else about those paths is a violation.
+
+    ``tolerated`` are the two shapes a shared checkout produces that are not
+    appends and not the suite's doing either: a ``*.lock`` file appearing
+    (``_bulk_rewrite_guard`` creates ``logs/daily-sync.lock``), and a log
+    ROTATION — ``X`` renamed to ``X.1`` and a fresh ``X`` put in its place.
+    They are violations under ``PA_HERMETICITY_STRICT``, where nothing else
+    is running; the caller decides.
+
+    Everything outside the append-tolerant roots is a violation here and is
+    sorted into advisory or fatal by :func:`report_source_tree_changes`.
 
     The prefix is read at teardown, once, and only for files that changed,
-    so the common case where nothing moved costs nothing.
+    so the common case where nothing moved costs no I/O at all.
     """
+    def comparable(entry):
+        """The part of an entry that says whether the file CHANGED.
+
+        The third slot of an append-tolerant entry is the session-start
+        digest, which the teardown snapshot deliberately does not compute
+        (``with_digests=False``). Comparing it would mark every store file
+        as changed on every run.
+        """
+        if isinstance(entry, tuple) and len(entry) == 3:
+            return entry[:2]
+        return entry
+
     violations: list[str] = []
     appends: list[str] = []
-    for path in sorted(set(after) | set(before)):
+    changed = [
+        path for path in sorted(set(after) | set(before))
+        if comparable(before.get(path)) != comparable(after.get(path))
+    ]
+    created = [path for path in changed if before.get(path) is None]
+
+    for path in changed:
         old = before.get(path)
         new = after.get(path)
-        if old == new:
-            continue
         if not _is_append_tolerant(path):
             violations.append(path)
             continue
@@ -889,41 +976,196 @@ def classify_store_changes(
             violations.append(path)
             continue
         _old_mtime, old_size, old_digest = old
-        _new_mtime, new_size, _new_digest = new
+        _new_mtime, new_size, _unused = new
+        # ``old_digest is None`` means the file could not be read at session
+        # start. Without it there is nothing to compare a prefix against, so
+        # growth cannot be shown to be an append: fail closed.
         if new_size < old_size or old_digest is None:
             violations.append(path)
             continue
-        if _digest_prefix(Path(path), old_size) == old_digest:
+        if _digest_prefix(Path(path), old_size) != old_digest:
+            violations.append(path)
+            continue
+        problem = _appended_content_problem(Path(path), old_size)
+        if problem is None:
             appends.append(path)
         else:
-            violations.append(path)
-    return violations, appends
+            violations.append(f"{path} ({problem})")
+
+    tolerated = _shared_checkout_noise(violations, created, before)
+    violations = [path for path in violations if path not in tolerated]
+    return violations, appends, tolerated
+
+
+def _shared_checkout_noise(
+    violations: list[str], created: list[str], before: dict[str, object],
+) -> list[str]:
+    """Violations that a live checkout produces on its own, not the suite.
+
+    Two shapes, both under the append-tolerant roots:
+
+    * a ``*.lock`` file appearing — ``_bulk_rewrite_guard`` creates
+      ``logs/daily-sync.lock`` the moment any bulk rewrite runs;
+    * a rotation — ``X`` renamed to ``X.1`` (or ``.2``, ...) with a fresh
+      ``X`` in its place, which shows up as a new ``X.N`` plus an ``X`` that
+      appears to have shrunk.
+    """
+    noise: set[str] = set()
+    for path in created:
+        if not _is_append_tolerant(path):
+            continue
+        if path.endswith(".lock"):
+            noise.add(path)
+            continue
+        base, _, suffix = path.rpartition(".")
+        if suffix.isdigit() and base in before:
+            # A rotation: the rotated-away copy, and the fresh file that
+            # replaced it (which reads as a shrink or a prefix change).
+            noise.add(path)
+            if base in violations:
+                noise.add(base)
+    return sorted(noise)
+
+
+def _appended_content_problem(path: Path, old_size: int) -> str | None:
+    """Describe why the bytes appended to ``path`` are not what its writer emits.
+
+    Returns ``None`` when the appended text is plausible. Growth alone used
+    to be enough to call an append benign, so a test that appended a garbage
+    line to the real ``memories.jsonl`` was classified as the live system
+    doing its job (audit round 4a-4, finding M4). Only the two structured
+    files are checked; a log line has no shape to check against.
+    """
+    resolved = str(path)
+    canonical = {str(candidate.resolve()): candidate.name
+                 for candidate in _CANONICAL_FILES}
+    kind = canonical.get(resolved)
+    if kind is None:
+        return None  # a log file: nothing to validate
+    try:
+        with path.open("rb") as handle:
+            handle.seek(old_size)
+            tail = handle.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"the appended bytes could not be read as UTF-8: {exc}"
+
+    if kind == "memories.jsonl":
+        for line in tail.split("\n"):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                return "an appended line is not JSON"
+            if not isinstance(record, dict):
+                return "an appended line is not a JSON object"
+            missing = _REQUIRED_MEMORY_KEYS - set(record)
+            if missing:
+                return f"an appended record lacks {sorted(missing)}"
+        return None
+
+    # tag-vocabulary.txt: one tag per line, plus comments and blanks.
+    for line in tail.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped != line.strip() or " " in stripped or "\t" in stripped:
+            return "an appended vocabulary line is not a bare tag"
+    return None
 
 
 def assert_canonical_store_untouched(
     before: dict[str, object],
     after: dict[str, object],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Raise if the suite created, modified, or deleted a canonical file.
 
-    Returns the benign appends it tolerated, so the caller can report them.
+    Returns ``(appends, tolerated)`` — the benign growth and the
+    shared-checkout noise it let through — so the caller can report both.
+
+    Under ``PA_HERMETICITY_STRICT`` the noise is fatal too: in a clean copy
+    nothing else is running, so a lock file or a rotation appearing IS the
+    suite's doing.
 
     A named function rather than an inline assert so its behaviour can be
     exercised in-process by ``test_hermeticity_fixture.py`` — a guard whose
     own failure path is never executed is a guard nobody has checked (audit
     round 4a-2, finding M5).
     """
-    violations, appends = classify_store_changes(before, after)
-    store_violations = [path for path in violations if _is_append_tolerant(path)]
+    violations, appends, tolerated = classify_store_changes(before, after)
+    # ``_is_append_tolerant`` is what splits the store half from the source
+    # half here: a source-tree path in ``violations`` belongs to
+    # report_source_tree_changes, not to this assertion. Dropping the filter
+    # makes this raise on a concurrent session's wiki edit, which is the
+    # false failure the whole advisory split exists to prevent.
+    store_violations = [path for path in violations
+                        if _is_append_tolerant(path.split(" (")[0])]
+    if hermeticity_is_strict():
+        store_violations = store_violations + tolerated
     assert not store_violations, (
         "the test suite wrote to the REAL canonical memory store or its "
         "logs. An APPEND by the live system is tolerated; this was not — a "
-        "shrink, a rewritten prefix, a deletion, or a new file. A test that "
-        "forgot to patch a module's path constant rewrote the operator's "
-        "data.\n"
+        "shrink, a rewritten prefix, a deletion, a new file, or appended "
+        "text the writer would not produce. A test that forgot to patch a "
+        "module's path constant rewrote the operator's data.\n"
         f"  touched: {store_violations}"
     )
-    return appends
+    return appends, tolerated
+
+
+def describe_tolerated_appends(
+    before: dict[str, object], appends: list[str],
+    after: dict[str, object] | None = None,
+) -> list[str]:
+    """One line per tolerated append, naming the path and the bytes added.
+
+    Printed through the terminal reporter so it survives default capture: a
+    test that forgot to patch a path and appended to the real store is
+    otherwise invisible, since the append itself is classified benign
+    (round 4a-4, finding M4).
+    """
+    lines: list[str] = []
+    for path in appends:
+        old = before.get(path)
+        new = (after or {}).get(path)
+        old_size = old[1] if isinstance(old, tuple) and len(old) == 3 else 0
+        if isinstance(new, tuple) and len(new) == 3:
+            new_size = new[1]
+        else:
+            try:
+                new_size = Path(path).stat().st_size
+            except OSError:
+                new_size = old_size
+        lines.append(f"{path} (+{new_size - old_size} bytes)")
+    return lines
+
+
+def strict_store_coverage_warning() -> str | None:
+    """Under STRICT, say so when the store half is watching nothing.
+
+    An archive export has no ``data/`` submodule, so ``memories/`` and
+    ``logs/`` are dangling symlinks and the store half of the guard is
+    INERT there — the one invocation that turns strict mode on was the one
+    where the strictness bought nothing (round 4a-4, finding M2). Strict
+    mode is meaningful in the live checkout, or in a worktree whose
+    submodule is populated, run when no other session is editing.
+    """
+    if not hermeticity_is_strict():
+        return None
+    missing = [str(path) for path in _CANONICAL_FILES
+               if not path.exists()]
+    dirs_missing = [str(path) for path in _APPEND_TOLERANT_DIRS
+                    if not path.is_dir()]
+    if not missing and not dirs_missing:
+        return None
+    return (
+        f"{STRICT_ENV_VAR}=1, but the canonical store is not present here "
+        f"(missing: {missing + dirs_missing}). The store half of the "
+        "hermeticity guard is INERT in this run — an archive export has no "
+        "data/ submodule, so those paths dangle. Only the source-tree half "
+        "is strict. Run in the live checkout, or a worktree with the "
+        "submodule populated, to exercise the store half."
+    )
 
 
 def report_source_tree_changes(
@@ -947,8 +1189,9 @@ def report_source_tree_changes(
 
     Returns the changed paths.
     """
-    violations, _appends = classify_store_changes(before, after)
-    changed = [path for path in violations if not _is_append_tolerant(path)]
+    violations, _appends, _tolerated = classify_store_changes(before, after)
+    changed = [path for path in violations
+               if not _is_append_tolerant(path.split(" (")[0])]
     if not changed:
         return changed
     detail = "\n".join(f"    {path}" for path in changed)
@@ -957,17 +1200,12 @@ def report_source_tree_changes(
             "the test suite changed the REAL checkout's source trees "
             f"({STRICT_ENV_VAR}=1, so this is fatal):\n{detail}"
         )
-    print(
-        "\n"
-        "!! HERMETICITY WARNING: the checkout's source trees changed during "
-        "this run.\n"
-        "!! In a shared checkout this is usually a CONCURRENT SESSION, not "
-        "the suite.\n"
-        f"!! Re-run with {STRICT_ENV_VAR}=1 in a clean copy to make it "
-        "fatal.\n"
-        f"{detail}\n",
-        file=sys.stderr,
-    )
+    # Queued for pytest_terminal_summary rather than printed here. A
+    # session-fixture teardown's stdout and stderr are CAPTURED and thrown
+    # away on a green run, so this warning reached the operator zero times
+    # at default verbosity while its own test read capsys and stayed green
+    # (round 4a-4, finding M1).
+    _DEFERRED_REPORT["source_changes"] = list(changed)
     return changed
 
 
@@ -989,7 +1227,11 @@ def no_real_cache_writes():
     store_before = _canonical_store_snapshot()
     yield
     after = _pipeline_cache_snapshot()
-    store_after = _canonical_store_snapshot()
+    # No digests on the second snapshot: the only prefix that matters is the
+    # one from session start, and the comparison re-reads the changed files
+    # itself. Hashing everything twice and discarding the second set was
+    # pure waste (round 4a-4, finding L2).
+    store_after = _canonical_store_snapshot(with_digests=False)
     home_after = os.environ.get("HOME")
 
     # HOME first: a repointed HOME means the snapshot above was taken of
@@ -1024,10 +1266,10 @@ def no_real_cache_writes():
     # separately, because a concurrent session editing them is ordinary work
     # — see report_source_tree_changes.
     report_source_tree_changes(store_before, store_after)
-    appended = assert_canonical_store_untouched(store_before, store_after)
+    appended, tolerated = assert_canonical_store_untouched(
+        store_before, store_after)
     if appended:
-        print(
-            "note: the live system appended to "
-            f"{len(appended)} watched file(s) during this run: {appended}",
-            file=sys.stderr,
-        )
+        _DEFERRED_REPORT["appends"] = describe_tolerated_appends(
+            store_before, appended, store_after)
+    if tolerated:
+        _DEFERRED_REPORT["tolerated"] = list(tolerated)

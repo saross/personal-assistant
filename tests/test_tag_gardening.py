@@ -2031,47 +2031,106 @@ class TestRewriteVocabularyEdgeCases:
 
 
 class TestCanonicalPathsAreNamedInMessages:
-    """When nothing exists, messages must name the canonical path."""
+    """When nothing exists, messages must name the canonical path.
 
-    def test_the_fallback_is_only_taken_when_it_exists(
+    Round 4a-4, L5: the old pair here was worthless in the live checkout —
+    one test SKIPPED whenever a vocabulary existed (i.e. always, in the main
+    checkout), and its sibling re-implemented the rebinding rule in the test
+    instead of calling the module. This imports the real script into a
+    throwaway tree that has no vocabulary, so the module's own binding is
+    what is measured, in every checkout.
+    """
+
+    @staticmethod
+    def _import_into(root: Path):
+        """Import ``tag-gardening.py`` with ``PA_ROOT`` at ``root``.
+
+        PA_ROOT is derived from ``__file__`` at import, so the script is
+        copied into ``root/scripts/`` and loaded from there under a unique
+        module name.
+        """
+        import importlib.util
+        import uuid
+
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        target = scripts / "tag-gardening.py"
+        target.write_text(
+            Path(tag_gardening.__file__).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        name = f"tag_gardening_probe_{uuid.uuid4().hex}"
+        spec = importlib.util.spec_from_file_location(name, target)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(name, None)
+        return module
+
+    def test_the_canonical_stays_bound_when_neither_path_exists(
         self, tmp_path: Path,
     ) -> None:
-        """The rebinding rule itself, exercised directly.
+        """The module's own binding, in a tree with no vocabulary at all.
 
-        Kills the mutation that rebinds unconditionally: with neither file
-        present the canonical (``data/memories/...``) must stay bound, so a
-        refusal names the path the operator has to repair rather than the
-        legacy symlink path.
+        Kills the mutation that rebinds unconditionally: the refusal would
+        then name ``memories/tag-vocabulary.txt`` (the legacy symlink path)
+        rather than ``data/memories/tag-vocabulary.txt``, sending the
+        operator to the wrong place.
         """
-        canonical = tmp_path / "data" / "memories" / "tag-vocabulary.txt"
-        fallback = tmp_path / "memories" / "tag-vocabulary.txt"
+        module = self._import_into(tmp_path)
 
-        def resolve(canonical_path: Path, fallback_path: Path) -> Path:
-            """The module's rule, applied to a pair of paths."""
-            if not canonical_path.exists() and fallback_path.exists():
-                return fallback_path
-            return canonical_path
+        assert module.VOCABULARY_FILE == (
+            tmp_path / "data" / "memories" / "tag-vocabulary.txt")
+        assert module.MEMORIES_JSONL == (
+            tmp_path / "data" / "memories" / "memories.jsonl")
 
-        # Neither exists -> the canonical stays.
-        assert resolve(canonical, fallback) == canonical
-        # Only the fallback exists -> take it.
-        fallback.parent.mkdir(parents=True)
-        fallback.write_text("api\n", encoding="utf-8")
-        assert resolve(canonical, fallback) == fallback
-        # The canonical exists -> it wins regardless.
-        canonical.parent.mkdir(parents=True)
-        canonical.write_text("api\n", encoding="utf-8")
-        assert resolve(canonical, fallback) == canonical
+    def test_the_fallback_is_taken_when_only_it_exists(
+        self, tmp_path: Path,
+    ) -> None:
+        """A legacy layout still works: the fallback is bound when present."""
+        legacy = tmp_path / "memories"
+        legacy.mkdir(parents=True)
+        (legacy / "tag-vocabulary.txt").write_text("api\n", encoding="utf-8")
+        (legacy / "memories.jsonl").write_text("", encoding="utf-8")
 
-    def test_the_module_binds_the_canonical_when_nothing_exists(self) -> None:
-        """In this worktree the data submodule is a stub, so neither exists.
+        module = self._import_into(tmp_path)
 
-        The binding must therefore still name ``data/memories/...``.
+        assert module.VOCABULARY_FILE == legacy / "tag-vocabulary.txt"
+        assert module.MEMORIES_JSONL == legacy / "memories.jsonl"
+
+    def test_the_canonical_wins_when_both_exist(self, tmp_path: Path) -> None:
+        """With a populated submodule the canonical path is the one bound."""
+        canonical = tmp_path / "data" / "memories"
+        canonical.mkdir(parents=True)
+        (canonical / "tag-vocabulary.txt").write_text("api\n", encoding="utf-8")
+        legacy = tmp_path / "memories"
+        legacy.symlink_to(canonical)
+
+        module = self._import_into(tmp_path)
+
+        assert module.VOCABULARY_FILE == canonical / "tag-vocabulary.txt"
+
+    def test_the_refusal_names_the_bound_path(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """End to end: the M6 refusal quotes the canonical path.
+
+        The consequence the binding exists for, asserted on the message the
+        operator actually reads.
         """
-        root = Path(tag_gardening.__file__).resolve().parent.parent
-        canonical = root / "data" / "memories" / "tag-vocabulary.txt"
-        fallback = root / "memories" / "tag-vocabulary.txt"
-        if canonical.exists() or fallback.exists():
-            pytest.skip("a vocabulary exists here; the rule is unit-tested above")
-        assert tag_gardening.VOCABULARY_FILE == canonical, (
-            "a refusal would name the legacy path, not the canonical one")
+        module = self._import_into(tmp_path)
+        jsonl = tmp_path / "corpus.jsonl"
+        write_sample_jsonl(jsonl)
+
+        with (
+            patch.object(module, "MEMORIES_JSONL", jsonl),
+            patch.object(module, "ensure_safe_to_rewrite",
+                         lambda reason: None),
+            pytest.raises(SystemExit),
+        ):
+            module.cmd_orphans(argparse.Namespace(action="clean"))
+
+        err = capsys.readouterr().err
+        assert str(tmp_path / "data" / "memories" / "tag-vocabulary.txt") in err

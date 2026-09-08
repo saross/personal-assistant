@@ -1308,3 +1308,24 @@ class TestNonObjectCursorFileRefuses:
 
         with pytest.raises(_sync_cursor.UnusableCursor, match="not a JSON"):
             _sync_cursor.unsynced_line_backlog(corpus, cursor)
+
+
+class TestStrictDecoding:
+    """A corpus that is not valid UTF-8 must raise, not be silently mangled.
+
+    Round 4a-4, L5: ``.decode("utf-8")`` -> ``.decode("utf-8", "replace")``
+    survived. Replacement characters would change the byte content of every
+    record on that line and the reader would report success.
+    """
+
+    def test_invalid_utf8_raises_rather_than_being_replaced(self, tmp_path):
+        path = tmp_path / "memories.jsonl"
+        path.write_bytes(b'{"id": "a"}\n\xff\xfe not utf-8\n{"id": "b"}\n')
+
+        with pytest.raises(UnicodeDecodeError):
+            _sync_cursor.read_jsonl_lines(path)
+
+    def test_valid_utf8_still_reads(self, tmp_path):
+        path = tmp_path / "memories.jsonl"
+        path.write_text('{"id": "a", "c": "kiln — firing"}\n', encoding="utf-8")
+        assert len(_sync_cursor.read_jsonl_lines(path)) == 1

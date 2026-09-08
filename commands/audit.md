@@ -137,22 +137,45 @@ For each file, check every line against these categories:
 
 ### 2a-note. Running the suite during an audit
 
-Run the suite from a **clean copy** with the strict hermeticity switch on:
+Two runs, because they cover different halves of the hermeticity guard.
+
+**1. A clean copy — proves the suite does not write to the source trees.**
 
 ```bash
 D=$(mktemp -d) && git archive --format=tar HEAD | tar -x -C "$D"
-cd "$D" && PA_HERMETICITY_STRICT=1 venv/bin/python3 -m pytest -q
+H=$(mktemp -d)
+cd "$D" && env -i PATH=/usr/bin:/bin HOME="$H" LANG=C.UTF-8 \
+  PA_HERMETICITY_STRICT=1 \
+  ~/personal-assistant/venv/bin/python3 -m pytest -q --basetemp="$H/bt"
 ```
 
-`PA_HERMETICITY_STRICT=1` makes a change to the checkout's source trees
-(`wiki/`, `scripts/`, `hooks/`, `commands/`, `global-claude-md/`,
-`global-agent-guidance/`, `tasks/`) fail the run rather than warn. Leave it
-unset in a working checkout: this repository is worked by several concurrent
-sessions by design, a run takes about two minutes, and another session
-editing a wiki page in that window is ordinary work rather than a test
-misbehaving — failing for it blames the suite for something the suite did not
-do. The canonical memory store and `logs/` are strict either way, except that
-an append by the live system is recognised as an append and tolerated.
+The interpreter comes from the **live venv**: `venv/` is gitignored, so an
+archive export has no `venv/bin/python3` in it. Note also that the export has
+no `data/` submodule, so `memories/` and `logs/` are dangling symlinks and the
+**store half of the guard is inert there** — the run says so at the end, under
+a `hermeticity` banner. What this run does prove is the source-tree half:
+nothing the suite does touches `wiki/`, `scripts/`, `commands/`, `hooks/`,
+`tests/`, `global-claude-md/`, `global-agent-guidance/`, or `tasks/`.
+
+`--basetemp` inside the pinned HOME matters when other agents are running
+suites: pytest's `/tmp/pytest-of-<user>` numbered directories are shared, and
+concurrent runs collide there.
+
+**2. The live checkout (or a worktree with the submodule populated) — proves
+the suite does not write to the memory store.**
+
+```bash
+cd ~/personal-assistant && PA_HERMETICITY_STRICT=1 venv/bin/python3 -m pytest -q
+```
+
+Run this only when **no other session is editing the repository**: strict mode
+makes a concurrent session's wiki edit fatal, which is a false failure. Without
+`PA_HERMETICITY_STRICT` the source-tree half is advisory — a warning naming the
+paths, printed through the terminal reporter so it survives output capture —
+while the store half stays strict either way, with one allowance: an append by
+the live system is verified as an append (unchanged prefix, and for
+`memories.jsonl` and the vocabulary a plausible appended line) and tolerated,
+and its byte count is reported.
 
 ### 2b. Lens B — test adequacy
 
