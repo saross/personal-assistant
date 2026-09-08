@@ -604,8 +604,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     driver as faults and an absent root as degraded; a completed run
     lowers a fault regardless of quarantines; indexer outages use the
     streak; the count is rows written; the AST test rejects direct writes;
-    the refusal memory is read-only against a foreign root. Seventh pass
-    running.
+    the refusal memory is read-only against a foreign root. Seventh pass:
+    **do not merge** — the ack reports success and exits 0 when the state
+    write fails (its exit-9 test monkeypatched the transition to a no-op);
+    the quarantine count still counts duplicates, so a held cursor inflates
+    it by the batch every tick; a gate-lock failure changes the script's
+    exit code; an outage during the advisory-lock query is an unexpected
+    fault, not an outage; degraded returns drop proven connectivity; the
+    ack lowers a degraded problem; the AST test is defeated by a one-line
+    alias; the trigger cannot see a dead pipeline. Eighth round running.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
