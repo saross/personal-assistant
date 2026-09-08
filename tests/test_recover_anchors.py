@@ -210,3 +210,326 @@ def test_git_commit_pathspec_is_matched_literally(tmp_path, monkeypatch):
     assert "memories1/memories.jsonl" not in committed, (
         "the glob pathspec swept a lookalike directory")
     assert _staged(data_dir) == ["memories1/memories.jsonl"]
+
+
+# ===========================================================================
+# apply_plans — the write path
+#
+# Added by audit round 4a (2026-09-08), findings A3, A7, A20 and B2. The
+# whole path was previously untested: deleting the verbatim ``out.write``,
+# the guard, the flock, the temp-and-rename, or the ``--apply`` gate all left
+# the suite green.
+# ===========================================================================
+
+import json  # noqa: E402
+import os  # noqa: E402
+import sys  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
+
+import pytest  # noqa: E402
+
+# recover_anchors puts scripts/ on sys.path at import time, and imports the
+# guard lazily inside apply_plans — so the stubs below have to be installed on
+# the guard MODULE, not on a name bound into recover_anchors.
+import importlib  # noqa: E402
+
+_guard = importlib.import_module("_bulk_rewrite_guard")
+
+
+def _record(rid: str, *, ref: str = "notes.md", **extra: object) -> dict:
+    """A synthetic verified=false record with one recoverable file anchor."""
+    rec: dict = {
+        "id": rid,
+        "content": "Survey grid squares are numbered from the south-west.",
+        "category": "methodology",
+        "verified": "false",
+        "confidence": "medium",
+        "anchors": [{"type": "file", "ref": ref}],
+    }
+    rec.update(extra)
+    return rec
+
+
+def _write_corpus(corpus: Path, lines: list[str]) -> None:
+    """Write raw lines (each already newline-free) to the corpus."""
+    corpus.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+
+
+class _Harness:
+    """Stubs the guard, the commit, and PG; records the call order."""
+
+    def __init__(self) -> None:
+        self.order: list[str] = []
+        self.locked: list[Path] = []
+        self.renames: list[tuple[str, str]] = []
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_lock = _guard.lock_jsonl_for_rewrite
+
+        @contextmanager
+        def recording_lock(path):
+            self.locked.append(Path(path))
+            self.order.append("lock")
+            with real_lock(path):
+                yield
+            self.order.append("unlock")
+
+        real_replace = os.replace
+
+        def recording_replace(src, dst, **kwargs):
+            self.renames.append((str(src), str(dst)))
+            return real_replace(src, dst, **kwargs)
+
+        monkeypatch.setattr(
+            _guard, "ensure_safe_to_rewrite",
+            lambda reason: self.order.append("guard"),
+        )
+        monkeypatch.setattr(
+            _guard, "release_lock", lambda: self.order.append("release"),
+        )
+        monkeypatch.setattr(_guard, "lock_jsonl_for_rewrite", recording_lock)
+        monkeypatch.setattr(
+            ra, "_git_commit",
+            lambda *a, **k: self.order.append("commit"),
+        )
+        monkeypatch.setattr(
+            ra, "_update_postgres", lambda plans: self.order.append("pg"),
+        )
+        monkeypatch.setattr(os, "replace", recording_replace)
+
+
+@pytest.fixture
+def harness(monkeypatch: pytest.MonkeyPatch) -> _Harness:
+    """Install the recording stubs for one test."""
+    h = _Harness()
+    h.install(monkeypatch)
+    return h
+
+
+def _plan_for(rec: dict) -> dict:
+    """Build a real plan for ``rec`` via the production planner."""
+    plan = ra.plan_record(
+        rec, _const("false"), lambda ref: "wiki/notes.md", _const("true"),
+    )
+    assert plan is not None
+    return plan
+
+
+class TestApplyPlans:
+    """The corpus rewrite: what is written, and under what protection."""
+
+    def test_unplanned_lines_are_written_verbatim(
+        self, tmp_path: Path, harness: _Harness,
+    ) -> None:
+        """Records with no plan survive byte-identically.
+
+        Kills the B2 mutation that deletes the ``else: out.write(line)``
+        branch, which would keep only the modified records.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        planned = _record("2031-05-01-aaaabbbbcccc")
+        bystander = json.dumps(
+            {"id": "2031-05-02-ddddeeeeffff", "content": "Untouched."}
+        )
+        _write_corpus(corpus, [json.dumps(planned), bystander])
+
+        ra.apply_plans([_plan_for(planned)], corpus, do_postgres=False)
+
+        lines = corpus.read_text(encoding="utf-8").split("\n")[:-1]
+        assert len(lines) == 2
+        assert lines[1] == bystander, "an unplanned line must be verbatim"
+
+    def test_record_edited_since_planning_is_not_reverted(
+        self, tmp_path: Path, harness: _Harness,
+    ) -> None:
+        """A /forget landing between plan and apply survives.
+
+        Kills the A3 mutation that writes ``plan["record"]`` unconditionally:
+        that reverts ``is_active`` and drops the editor's revision entry.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        original = _record("2031-05-01-aaaabbbbcccc")
+        plan = _plan_for(original)
+        # The edit lands after planning, before the lock.
+        edited = dict(original)
+        edited["is_active"] = False
+        edited["revisions"] = [{"revised_at": "2031-05-01T10:00:00+00:00",
+                                "action": "forget", "reason": "superseded"}]
+        _write_corpus(corpus, [json.dumps(edited)])
+
+        ra.apply_plans([plan], corpus, do_postgres=False)
+
+        written = json.loads(corpus.read_text(encoding="utf-8").strip())
+        assert written == edited, "the live edit must win over a stale plan"
+        assert "commit" not in harness.order, "nothing applied, nothing to commit"
+
+    def test_unedited_record_is_corrected_and_stamped(
+        self, tmp_path: Path, harness: _Harness,
+    ) -> None:
+        """An untouched record gets the corrected ref, verified, and revision.
+
+        Kills the B12 mutations: writing the stale ``verified`` field, and
+        overwriting ``revisions`` instead of appending to it.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record(
+            "2031-05-01-aaaabbbbcccc",
+            revisions=[{"revised_at": "2031-04-30T08:00:00+00:00",
+                        "action": "update", "reason": "content corrected"}],
+        )
+        _write_corpus(corpus, [json.dumps(rec)])
+
+        ra.apply_plans([_plan_for(rec)], corpus, do_postgres=False)
+
+        written = json.loads(corpus.read_text(encoding="utf-8").strip())
+        assert written["anchors"][0]["ref"] == "wiki/notes.md"
+        assert written["verified"] == "true"
+        assert len(written["revisions"]) == 2, "the earlier revision must survive"
+        assert written["revisions"][0]["action"] == "update"
+        assert written["revisions"][1]["action"].startswith("anchor-recover")
+
+    def test_malformed_line_is_preserved_not_fatal(
+        self, tmp_path: Path, harness: _Harness,
+    ) -> None:
+        """One bad line neither aborts the run nor orphans the temp file.
+
+        Kills the A7 mutation that drops the ``json.JSONDecodeError`` guard:
+        that raises mid-write, leaving ``memories.jsonl.tmp`` behind.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record("2031-05-01-aaaabbbbcccc")
+        _write_corpus(corpus, ["{not json at all", json.dumps(rec)])
+
+        ra.apply_plans([_plan_for(rec)], corpus, do_postgres=False)
+
+        lines = corpus.read_text(encoding="utf-8").split("\n")[:-1]
+        assert lines[0] == "{not json at all"
+        assert not (tmp_path / "memories.jsonl.tmp").exists()
+
+    def test_guard_lock_and_atomic_rename_are_wired(
+        self, tmp_path: Path, harness: _Harness,
+    ) -> None:
+        """The guard, the flock, and the temp-and-rename all run.
+
+        Kills the B2 mutations that drop ``ensure_safe_to_rewrite``, swap the
+        flock for a nullcontext, or write the corpus directly.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record("2031-05-01-aaaabbbbcccc")
+        _write_corpus(corpus, [json.dumps(rec)])
+
+        ra.apply_plans([_plan_for(rec)], corpus, do_postgres=False)
+
+        assert harness.order[0] == "guard"
+        assert "lock" in harness.order
+        assert harness.locked == [corpus]
+        assert harness.renames == [
+            (str(corpus.with_suffix(".jsonl.tmp")), str(corpus))
+        ]
+
+    def test_commit_happens_inside_the_guard_lock(
+        self, tmp_path: Path, harness: _Harness,
+    ) -> None:
+        """The commit must precede release_lock.
+
+        Kills the A20 mutation that moves ``_git_commit`` below
+        ``release_lock``: a SessionStart daily-sync could then acquire the
+        lock, see the shrunk corpus, and commit it without the
+        ``Rewrite-Class: bulk`` trailer.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record("2031-05-01-aaaabbbbcccc")
+        _write_corpus(corpus, [json.dumps(rec)])
+
+        ra.apply_plans([_plan_for(rec)], corpus, do_postgres=False)
+
+        assert harness.order.index("commit") < harness.order.index("release")
+
+
+class TestApplyGate:
+    """``--apply`` is the only path that may mutate anything."""
+
+    def test_dry_run_writes_nothing_and_does_not_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without --apply, main() reports and returns.
+
+        Kills the B2 mutation that deletes ``if not args.apply: return 0``.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record("2031-05-01-aaaabbbbcccc")
+        _write_corpus(corpus, [json.dumps(rec)])
+        before = corpus.read_bytes()
+        called: list[str] = []
+
+        monkeypatch.setattr(ra, "CORPUS", corpus)
+        monkeypatch.setattr(ra.project_id, "repo_set", lambda: [])
+        monkeypatch.setattr(ra, "build_plans",
+                            lambda corpus_path, repos: [_plan_for(rec)])
+        monkeypatch.setattr(ra, "apply_plans",
+                            lambda *a, **k: called.append("apply"))
+
+        assert ra.main([]) == 0
+        assert corpus.read_bytes() == before
+        assert called == []
+
+        assert ra.main(["--apply"]) == 0
+        assert called == ["apply"]
+
+
+class TestBuildPlans:
+    """Which records the planner selects, and which refs it will rewrite."""
+
+    def test_selects_only_verified_false_anchored_records(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """verified=true and unanchored records are skipped.
+
+        Kills the B13 mutation that drops the ``verified == "false"`` filter.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        _write_corpus(corpus, [
+            json.dumps(_record("2031-05-01-aaaabbbbcccc")),
+            json.dumps(_record("2031-05-02-ddddeeeeffff", verified="true")),
+            json.dumps({"id": "2031-05-03-999988887777",
+                        "verified": "false", "anchors": []}),
+            "{malformed",
+        ])
+        monkeypatch.setattr(ra.av, "verify_file", lambda ref, repos: "false")
+        monkeypatch.setattr(ra.av, "verify_commit", lambda ref, repos: "false")
+        monkeypatch.setattr(ra.av, "unique_suffix_match",
+                            lambda ref, cands: "wiki/notes.md")
+        monkeypatch.setattr(ra.av, "verify_memory", lambda rec, repos: "true")
+        monkeypatch.setattr(ra, "build_basename_index", lambda repos: {})
+
+        plans = ra.build_plans(corpus, [])
+
+        assert [p["id"] for p in plans] == ["2031-05-01-aaaabbbbcccc"]
+
+
+class TestIsRelativeFileRef:
+    """The ref shapes the recovery pass is allowed to touch."""
+
+    def test_absolute_and_home_refs_are_rejected(self) -> None:
+        """Kills the B13 mutation that accepts absolute refs."""
+        assert ra._is_relative_file_ref({"type": "file", "ref": "wiki/a.md"})
+        assert not ra._is_relative_file_ref(
+            {"type": "file", "ref": "/etc/hosts"})
+        assert not ra._is_relative_file_ref(
+            {"type": "file", "ref": "~/notes.md"})
+        assert not ra._is_relative_file_ref({"type": "commit", "ref": "abc123"})
+        assert not ra._is_relative_file_ref({"type": "file", "ref": "  "})
+
+
+def test_a_ref_that_already_resolves_is_left_alone() -> None:
+    """A resolving ref must not be "recovered" onto another file.
+
+    Kills the B13 mutation that removes the ``resolve(...) == "false"`` gate:
+    with a recover stub that always returns a path, every anchor would be
+    rewritten.
+    """
+    rec = _record("2031-05-01-aaaabbbbcccc", ref="wiki/notes.md")
+    plan = ra.plan_record(
+        rec, _const("true"), lambda ref: "somewhere/else.md", _const("true"),
+    )
+    assert plan is None

@@ -169,6 +169,11 @@ def plan_record(record, resolve, recover, reverify):
         "old_confidence": record.get("confidence"),
         "new_confidence": modified["confidence"],
         "record": modified,
+        # The record this plan was computed FROM, deep-copied so a later
+        # mutation cannot make the comparison lie. ``apply_plans`` re-reads
+        # the corpus under the rewrite lock and refuses to write any plan
+        # whose record has changed since (audit 2026-09-08, finding A3).
+        "source": copy.deepcopy(record),
     }
 
 
@@ -230,7 +235,12 @@ def build_plans(corpus: Path, repos):
             line = line.strip()
             if not line:
                 continue
-            r = json.loads(line)
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                # Operational data, not ours to repair: one bad line must not
+                # abort the whole pass with a traceback (finding A7).
+                continue
             if not (str(r.get("verified")).lower() == "false" and r.get("anchors")):
                 continue
             plan = plan_record(r, resolve, recover, reverify)
@@ -300,7 +310,16 @@ def render_report(plans) -> str:
 
 
 def apply_plans(plans, corpus: Path, *, do_postgres: bool) -> None:
-    """Mutate memories.jsonl in place (guarded + locked), commit, update PG."""
+    """Mutate memories.jsonl in place (guarded + locked), commit, update PG.
+
+    The plans were computed from a read taken BEFORE the rewrite lock, so
+    every one of them is re-checked here against the corpus as it stands
+    inside the lock. A record edited in between — a ``/forget`` flipping
+    ``is_active``, an ``/update`` replacing ``content`` — is left exactly as
+    the editor wrote it and its plan is dropped; writing our stale copy back
+    would silently revert that edit (audit 2026-09-08, finding A3, the same
+    hazard archive-memories.py re-reads inside its lock to avoid).
+    """
     from _bulk_rewrite_guard import (
         ensure_safe_to_rewrite,
         lock_jsonl_for_rewrite,
@@ -310,49 +329,88 @@ def apply_plans(plans, corpus: Path, *, do_postgres: bool) -> None:
 
     by_id = {p["id"]: p for p in plans if p["id"] is not None}
     when = datetime.now(timezone.utc).isoformat()
-    for p in plans:
-        add_revision(p["record"], when=when,
-                     ref_rewrites=p["ref_rewrites"], stripped=p["stripped"])
+    applied: list[dict] = []
+    skipped: list[str] = []
 
     ensure_safe_to_rewrite(reason=f"recover_anchors: {len(plans)} records (item 21b)")
     try:
         with lock_jsonl_for_rewrite(corpus):
             tmp = corpus.with_suffix(".jsonl.tmp")
-            n_written = 0
-            with corpus.open(encoding="utf-8") as src, tmp.open("w", encoding="utf-8") as out:
-                for line in src:
-                    stripped_line = line.strip()
-                    if not stripped_line:
-                        out.write(line)
-                        continue
-                    rid = json.loads(stripped_line).get("id")
-                    if rid in by_id:
-                        out.write(json.dumps(by_id[rid]["record"]) + "\n")
-                        n_written += 1
-                    else:
-                        out.write(line)  # verbatim — minimal diff
-                # Flush + fsync the temp file to disk BEFORE the atomic rename,
-                # so a crash/power-loss between the write and the replace cannot
-                # leave a truncated corpus (parity with archive-memories.py).
-                out.flush()
-                os.fsync(out.fileno())
-            tmp.replace(corpus)
-            print(f"rewrote {n_written} records in {corpus}", file=sys.stderr)
+            try:
+                with corpus.open(encoding="utf-8") as src, \
+                        tmp.open("w", encoding="utf-8") as out:
+                    for line in src:
+                        stripped_line = line.strip()
+                        if not stripped_line:
+                            out.write(line)
+                            continue
+                        try:
+                            current = json.loads(stripped_line)
+                        except json.JSONDecodeError:
+                            # Preserve a malformed line verbatim, as every
+                            # sibling rewriter does, rather than aborting
+                            # part-way through the temp file (finding A7).
+                            out.write(line)
+                            continue
+                        rid = current.get("id")
+                        plan = by_id.get(rid) if rid is not None else None
+                        if plan is None:
+                            out.write(line)  # verbatim — minimal diff
+                            continue
+                        if current != plan["source"]:
+                            skipped.append(str(rid))
+                            out.write(line)  # the live edit wins
+                            continue
+                        # Stamp the audit trail only on records we really
+                        # write, so a dropped plan leaves no revision behind.
+                        add_revision(plan["record"], when=when,
+                                     ref_rewrites=plan["ref_rewrites"],
+                                     stripped=plan["stripped"])
+                        out.write(json.dumps(plan["record"]) + "\n")
+                        applied.append(plan)
+                    # Flush + fsync the temp file to disk BEFORE the atomic
+                    # rename, so a crash/power-loss between the write and the
+                    # replace cannot leave a truncated corpus (parity with
+                    # archive-memories.py).
+                    out.flush()
+                    os.fsync(out.fileno())
+                tmp.replace(corpus)
+            except BaseException:
+                # Never leave memories.jsonl.tmp behind on abort: the next run
+                # would inherit a stale half-file next to the canonical.
+                tmp.unlink(missing_ok=True)
+                raise
+            print(f"rewrote {len(applied)} records in {corpus}", file=sys.stderr)
+            if skipped:
+                print(f"skipped {len(skipped)} record(s) edited since planning "
+                      f"(left as written): {', '.join(skipped[:10])}",
+                      file=sys.stderr)
+        # NB: if _git_commit fails (e.g. a pre-commit hook rejects it, or a git
+        # lock is contended), the corpus is rewritten on disk but uncommitted —
+        # a later run will be blocked by ensure_safe_to_rewrite (dirty working
+        # tree). Recover inside the data submodule with either:
+        #   git commit -- memories/memories.jsonl   (keep the applied recovery), or
+        #   git checkout -- memories/memories.jsonl  (discard; the pass is
+        #                                             idempotent and re-runnable)
+        #
+        # Audit 2026-09-08 A20 (same class as archive-memories S15): commit
+        # INSIDE the guard's lock. Releasing the daily-sync flock first left a
+        # window in which a SessionStart daily-sync could acquire it, see the
+        # rewritten memories.jsonl, and commit it WITHOUT the
+        # ``Rewrite-Class: bulk`` trailer — tripping its own shrink detector.
+        if applied:
+            _git_commit(corpus, len(applied), mark_bulk_rewrite_commit_msg)
+        else:
+            print("no plans applied — nothing to commit", file=sys.stderr)
     finally:
         release_lock()
 
-    # NB: if _git_commit fails (e.g. a pre-commit hook rejects it, or a git lock
-    # is contended), the corpus is rewritten on disk but uncommitted — a later
-    # run will be blocked by ensure_safe_to_rewrite (dirty working tree). Recover
-    # inside the data submodule with either:
-    #   git commit -- memories/memories.jsonl   (keep the applied recovery), or
-    #   git checkout -- memories/memories.jsonl  (discard; the pass is idempotent
-    #                                             and can be re-run from clean).
-    _git_commit(corpus, len(plans), mark_bulk_rewrite_commit_msg)
-    if do_postgres:
-        _update_postgres(plans)
-    else:
+    if not do_postgres:
         print("skipped postgres update (--no-postgres)", file=sys.stderr)
+    elif applied:
+        _update_postgres(applied)
+    else:
+        print("no applied records to update in postgres", file=sys.stderr)
 
 
 def _git_commit(corpus, n, mark) -> None:

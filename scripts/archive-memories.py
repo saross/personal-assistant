@@ -87,6 +87,7 @@ from pathlib import Path
 # run from the main tree anyway.
 CORPUS = Path.home() / "personal-assistant" / "data" / "memories" / "memories.jsonl"
 ARCHIVE_DIR = CORPUS.parent / "archive"
+CURSOR_FILE = CORPUS.parent / "sync-cursors.json"
 
 DB_NAME = "claude_memories"
 
@@ -539,6 +540,19 @@ def main(argv=None) -> int:
     if not archived:
         print("nothing to archive.", file=sys.stderr)
         return 0
+
+    # Refuse to evict lines while PostgreSQL is behind. The sync cursor is a
+    # LINE POSITION and only rewinds when it sits beyond EOF, so records still
+    # unsynced below a mid-file deletion would never be inserted (audit
+    # 2026-09-08, finding A9). monthly-archive.py syncs PG before it calls us,
+    # so its gate passes; a standalone --apply is the exposed path.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _sync_cursor import postgres_backlog_refusal, unsynced_line_backlog
+    backlog = unsynced_line_backlog(CORPUS, CURSOR_FILE)
+    if backlog:
+        print(postgres_backlog_refusal("archive-memories", backlog,
+                                       CURSOR_FILE), file=sys.stderr)
+        return 1
 
     scope = ",".join(sorted(only)) if only else "ephemeral"
     apply_archive(CORPUS, windows, now, only,
