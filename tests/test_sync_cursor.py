@@ -1231,3 +1231,80 @@ class TestUnusableCursorFailsClosed:
         assert "cannot be read" in text
         assert "sync-to-postgres.py" in text
         assert "Nothing was written." in text
+
+
+class TestReadJsonlLinesIsNewlineSafe:
+    """Universal-newline translation must not sit between the two halves.
+
+    Audit round 4a-3, finding M2. ``Path.read_text`` rewrites a lone ``\r``
+    (and ``\r\n``) to ``\n`` before any splitting happens, so feeding its
+    output to ``split_jsonl_lines`` counted a record that
+    ``count_jsonl_lines`` did not -- the cursor was then saved one line ahead
+    of the file the backlog gate measures, and the gate read "caught up".
+    """
+
+    LONE_CR = b'{"a":1}\r{"b":2}\n'
+
+    def test_the_lone_carriage_return_shape(self, tmp_path):
+        """The measured case: split=2, count=1 through read_text.
+
+        Kills the mutation ``read_jsonl_lines(path)`` ->
+        ``split_jsonl_lines(path.read_text(encoding="utf-8"))``.
+        """
+        path = tmp_path / "memories.jsonl"
+        path.write_bytes(self.LONE_CR)
+
+        # The defect, demonstrated: read_text turns the \r into a \n.
+        assert len(_sync_cursor.split_jsonl_lines(
+            path.read_text(encoding="utf-8"))) == 2
+        assert _sync_cursor.count_jsonl_lines(path) == 1
+
+        # The fixed reader agrees with the counter.
+        assert len(_sync_cursor.read_jsonl_lines(path)) == 1
+        assert _sync_cursor.read_jsonl_lines(path) == ['{"a":1}\r{"b":2}']
+
+    @pytest.mark.parametrize("raw", [
+        b'{"a":1}\r{"b":2}\n',            # lone CR inside a record
+        b'{"a":1}\r\n{"b":2}\n',          # CRLF terminators
+        b'{"a":1}\r',                     # trailing lone CR, no newline
+        b'{"a":1}\n{"b":2}',              # no trailing newline
+        b'',                              # empty
+        b'{"a":1}\n\n{"b":2}\n',          # blank line
+    ])
+    def test_reader_and_counter_agree_on_every_shape(self, tmp_path, raw):
+        """The invariant the docstring promises, over the awkward inputs."""
+        path = tmp_path / "memories.jsonl"
+        path.write_bytes(raw)
+        assert len(_sync_cursor.read_jsonl_lines(path)) == \
+            _sync_cursor.count_jsonl_lines(path), raw
+
+    def test_a_missing_file_reads_as_no_lines(self, tmp_path):
+        """Absent and empty agree with the counter's zero."""
+        path = tmp_path / "absent.jsonl"
+        assert _sync_cursor.read_jsonl_lines(path) == []
+        assert _sync_cursor.count_jsonl_lines(path) == 0
+
+
+class TestNonObjectCursorFileRefuses:
+    """Valid JSON that is not an object is still an unusable cursor.
+
+    Audit round 4a-3, finding M3: ``if not isinstance(parsed, dict)`` could
+    be turned into ``if False`` and 181 tests stayed green.
+    """
+
+    @pytest.mark.parametrize("body", ["[]", '"3"', "null", "3", "true",
+                                      '[{"postgres_sync_line": 2}]'])
+    def test_a_valid_json_non_object_raises(self, tmp_path, body):
+        """A list, a string, a bare number, or null cannot hold a cursor.
+
+        Kills ``if not isinstance(parsed, dict)`` -> ``if False``: each of
+        these parses cleanly, so the malformed-file branch never fires, and
+        the run proceeds to delete lines as though there were no backlog.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        corpus.write_text('{"id": "a"}\n{"id": "b"}\n', encoding="utf-8")
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(body, encoding="utf-8")
+
+        with pytest.raises(_sync_cursor.UnusableCursor, match="not a JSON"):
+            _sync_cursor.unsynced_line_backlog(corpus, cursor)
