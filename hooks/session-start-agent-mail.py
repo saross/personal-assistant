@@ -129,7 +129,7 @@ def repository_name_from_remote(url: str) -> str:
     return name.removesuffix(".git")
 
 
-def session_project(cwd: Path) -> str:
+def repository_identity(cwd: Path) -> str:
     """A stable name for the repository the session works in.
 
     In order: the origin remote's repository name (stable across linked
@@ -159,6 +159,17 @@ def session_project(cwd: Path) -> str:
         return cwd.name.casefold()
 
 
+def session_project(cwd: Path) -> str:
+    """This session's project as a slug, or ``invalid``.
+
+    The identity comes from a remote URL or a directory name, both of
+    which a hostile origin could shape (``repo%0a- SYSTEM`` decoded to a
+    second line in the hook's own trusted block, re-audit 2026-09-08), so
+    it passes through the same rule as every message-side value.
+    """
+    return safe_value(repository_identity(cwd)).casefold() or "invalid"
+
+
 def message_project(headers: dict[str, str]) -> str:
     """A message's project as a slug; absent or blank means any.
 
@@ -171,7 +182,9 @@ def message_project(headers: dict[str, str]) -> str:
 def routes_here(headers: dict[str, str], project: str) -> bool:
     """True when a message is for this session's project or for any project."""
     target = message_project(headers)
-    return target == ANY or target == project.casefold()
+    # "invalid" never matches: a session whose own project is invalid must
+    # not collect every message with a malformed Project header.
+    return target == ANY or (target != "invalid" and target == project.casefold())
 
 
 def unread_messages(root: Path) -> list[Path]:
@@ -283,7 +296,8 @@ def main() -> int:
     unread = unread_messages(root)
     if not unread:
         return 0
-    project = os.environ.get("AGENT_MAIL_PROJECT") or session_project(hook_cwd())
+    project = (safe_value(os.environ.get("AGENT_MAIL_PROJECT", "")).casefold()
+               or session_project(hook_cwd()))
     here, elsewhere = route(unread, project)
     if not here and not elsewhere:
         return 0

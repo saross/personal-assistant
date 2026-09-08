@@ -46,6 +46,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 REPO = Path.home() / "personal-assistant"
@@ -135,13 +136,19 @@ def flagged_commits(
 
 
 def printable(text: str, limit: int = 120) -> str:
-    """Strip control characters and brackets.
+    """Strip control characters and every bracket-like character.
 
     A subject cannot forge extra output lines, and an author name cannot
     close the ``[author]`` group early to plant text inside the block that
-    is relayed to Shawn (re-audit, 2026-09-08).
+    is relayed to Shawn. Unicode open and close punctuation (categories Ps
+    and Pe: fullwidth brackets, ornate parentheses, and the like) goes too;
+    deleting the two ASCII brackets alone left lookalikes working
+    (re-audit, 2026-09-08).
     """
-    return "".join(ch for ch in text if ch.isprintable() and ch not in "[]")[:limit]
+    return "".join(
+        ch for ch in text
+        if ch.isprintable() and unicodedata.category(ch) not in ("Ps", "Pe")
+    )[:limit]
 
 
 def read_acks(path: Path = ACK_FILE) -> frozenset[str]:

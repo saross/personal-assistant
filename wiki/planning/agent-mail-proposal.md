@@ -114,7 +114,9 @@ Workstream: sol-phase2       # free slug for concurrent sessions in one reposito
 
 Rules:
 
-- **Project.** A session's project is the basename of its cwd's git root
+- **Project.** A session's project is its repository's name: from the
+  `origin` remote, else the primary checkout's directory, else the git
+  root, else the cwd — so a linked worktree and an independent clone agree
   (`personal-assistant` for the hub). The session-start hook and the live
   watch list messages whose `Project` matches or is absent/`any`; messages
   for other projects are summarised as one count line and never listed, so
@@ -127,8 +129,9 @@ Rules:
   read time. This is the RESERVED FOR FABLE beacon made routable.
 - **Values are slugs.** Every routing value is `[A-Za-z0-9._-]`, at most 60
   characters (`gpt-5-high`, not `gpt-5 high`). Anything else is rendered
-  `invalid` by the reading hook and routes nowhere, and a message whose
-  filename is not `<stamp>-<sender>-<slug>.md` is not listed at all. The
+  `invalid` by the reading hook and routes nowhere (the session's own
+  project passes the same rule), and a message whose filename is not a
+  slug ending in `.md` is not listed at all. The
   rule is a rejection, not a filter: filtering left `fable; project: x`
   able to forge a second field in the hook's trusted annotation
   (re-audit, 2026-09-08).
