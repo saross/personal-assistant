@@ -572,28 +572,28 @@ scripts. No tests exist for any of the three scripts. Lens A: 1 critical,
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| AS1 | `bake-off-metadata.py:1126` — `--build-rubric` replaces a literal marker pair, so on an already-populated rubric (or any separation between the markers) the body is left as it was while the blind key is regenerated from the current arms; every blinded score then decodes to the wrong model, and "Wrote populated rubric" prints either way | CONFIRMED by repro | **next** (round 4e, `claude/audit-round4e`) |
-| AST1 | Same site from the test side: a template with one blank line between the markers produced a five-line empty rubric, exit 0, with a fully populated key beside it | CONFIRMED by repro | **next** (round 4e, `claude/audit-round4e`) |
-| AST2 | `resample-bake-off-manifest.py:550-564` — dedup keeps the LIVE copy (the sort key puts `~/.claude/…` before `~/cc-archives/…`), inverting the comment's stated preference; every dual-resident session loses its meta and drops out of both tiers | CONFIRMED | **next** (round 4e, `claude/audit-round4e`) |
-| AST3 | `resample-bake-off-manifest.py:52-57,518` — hard-coded absolute path to the live manifest, no arguments, no dry run, unconditional non-atomic overwrite: any invocation, from any copy, destroys the manifest the committed responses were generated against (Lens A AS4) | CONFIRMED | **next** (round 4e, `claude/audit-round4e`) |
+| AS1 | `bake-off-metadata.py:1126` — `--build-rubric` replaces a literal marker pair, so on an already-populated rubric (or any separation between the markers) the body is left as it was while the blind key is regenerated from the current arms; every blinded score then decodes to the wrong model, and "Wrote populated rubric" prints either way | CONFIRMED by repro | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AST1 | Same site from the test side: a template with one blank line between the markers produced a five-line empty rubric, exit 0, with a fully populated key beside it | CONFIRMED by repro | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AST2 | `resample-bake-off-manifest.py:550-564` — dedup keeps the LIVE copy (the sort key puts `~/.claude/…` before `~/cc-archives/…`), inverting the comment's stated preference; every dual-resident session loses its meta and drops out of both tiers | CONFIRMED | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AST3 | `resample-bake-off-manifest.py:52-57,518` — hard-coded absolute path to the live manifest, no arguments, no dry run, unconditional non-atomic overwrite: any invocation, from any copy, destroys the manifest the committed responses were generated against (Lens A AS4) | CONFIRMED | **PR #126** (`claude/audit-round4e`; re-audit running) |
 | AST4 | The hermeticity guard does not watch `reports/` or `wiki/`: an analyser that writes into the public tree stays green | CONFIRMED (mutation) | round 4a-2 (guard widening) |
 
 ### Medium (bake-off)
 
 | # | Finding | Disposition |
 |---|---|---|
-| AS2 | `bake-off-metadata.py:1054` — a fifth arm is silently dropped from rubric and key; the blinding is reverse-only (two permutations, not twenty-four) | **next** (round 4e, `claude/audit-round4e`) |
-| AS3 | `bake-off-metadata.py:112-113` — Sonnet prices the comment says went stale on 1 Sep 2026; estimates under-count by a third | **next** (round 4e, `claude/audit-round4e`) |
-| AS5 | `resample-bake-off-manifest.py:470,487` — `generated_at` from the clock, so the same seed is not byte-reproducible | **next** (round 4e, `claude/audit-round4e`) |
-| AS6 | `bake-off-metadata.py:293,472` — `custom_id` uses eight characters of the session id and the map collapses duplicates (sub-agent ids share long prefixes): one session's output written under another's id | **next** (round 4e, `claude/audit-round4e`) |
-| AS7 | `bake-off-metadata.py:1263-1278` — the live prompt names no model, count, mode, or cost, and `--yes` skips it; the API review gate is not presented | **next** (round 4e, `claude/audit-round4e`) |
-| AS8 | `bake-off-metadata.py:1251` — `--haiku-apply` reaches the API before the confirmation block (free retrieval; the launch plan claims otherwise) | **next** (round 4e, `claude/audit-round4e`) (document) |
-| AS9 | `bake-off-metadata.py:668,826,922` — bare response writes; a re-run overwrites a complete response with an error object; usage replaced wholesale | **next** (round 4e, `claude/audit-round4e`) |
-| AS10 | `analyse-wiki-vocabulary.py:191,196,149` — empty or undated corpus and non-string tags crash `/weekly-review` step 5b | **next** (round 4e, `claude/audit-round4e`) |
-| AS11-13 | `agents/corpus-style-analyser-v2.md:657,765-767,574` — Safeguard 5 names the wrong section (§9 for §11); the "correct" mean sentence length contradicts the file's own appendix and the results JSON (21.45); Steps 1-2 require a tmpfs manifest with no regeneration path while a durable one exists | **next** (round 4e, `claude/audit-round4e`) |
-| AS14 | `scripts/style-analyser/phase3_promotion.py:38-39` and three siblings — relative output paths with no override, so the documented invocations write into the wrong tree from any other cwd | **next** (round 4e, `claude/audit-round4e`) |
-| AS15 | `bake-off-metadata.py:1,482` — the shebang and the printed recovery command use the system interpreter, which lacks the toolkit and the clients | **next** (round 4e, `claude/audit-round4e`) |
-| AST5-9 | Fifth-arm truncation, empty-manifest crash after the cost file is written, silent under-filled strata, two-permutation blinding, `.env` hydrated before the dry-run branch | **next** (round 4e, `claude/audit-round4e`) |
+| AS2 | `bake-off-metadata.py:1054` — a fifth arm is silently dropped from rubric and key; the blinding is reverse-only (two permutations, not twenty-four) | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS3 | `bake-off-metadata.py:112-113` — Sonnet prices the comment says went stale on 1 Sep 2026; estimates under-count by a third | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS5 | `resample-bake-off-manifest.py:470,487` — `generated_at` from the clock, so the same seed is not byte-reproducible | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS6 | `bake-off-metadata.py:293,472` — `custom_id` uses eight characters of the session id and the map collapses duplicates (sub-agent ids share long prefixes): one session's output written under another's id | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS7 | `bake-off-metadata.py:1263-1278` — the live prompt names no model, count, mode, or cost, and `--yes` skips it; the API review gate is not presented | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS8 | `bake-off-metadata.py:1251` — `--haiku-apply` reaches the API before the confirmation block (free retrieval; the launch plan claims otherwise) | **PR #126** (`claude/audit-round4e`; re-audit running) (document) |
+| AS9 | `bake-off-metadata.py:668,826,922` — bare response writes; a re-run overwrites a complete response with an error object; usage replaced wholesale | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS10 | `analyse-wiki-vocabulary.py:191,196,149` — empty or undated corpus and non-string tags crash `/weekly-review` step 5b | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS11-13 | `agents/corpus-style-analyser-v2.md:657,765-767,574` — Safeguard 5 names the wrong section (§9 for §11); the "correct" mean sentence length contradicts the file's own appendix and the results JSON (21.45 and 1.605 for the colon rate — both re-read from `data/style-corpus/phase1-results-clean.json` by the coordinator on 2026-09-09); Steps 1-2 require a tmpfs manifest with no regeneration path while a durable one exists | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS14 | `scripts/style-analyser/phase3_promotion.py:38-39` and three siblings — relative output paths with no override, so the documented invocations write into the wrong tree from any other cwd | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AS15 | `bake-off-metadata.py:1,482` — the shebang and the printed recovery command use the system interpreter, which lacks the toolkit and the clients | **PR #126** (`claude/audit-round4e`; re-audit running) |
+| AST5-9 | Fifth-arm truncation, empty-manifest crash after the cost file is written, silent under-filled strata, two-permutation blinding, `.env` hydrated before the dry-run branch | **PR #126** (`claude/audit-round4e`; re-audit running) |
 
 Lows recorded: AS16 chars-over-four token heuristic (recorded as
 authoritative); AS17-19 docstrings out of date (two arms, thinking budget,
