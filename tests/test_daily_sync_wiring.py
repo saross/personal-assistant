@@ -29,23 +29,32 @@ TRIGGER = ROOT / "scripts" / "daily-sync-trigger.sh"
 SETTINGS_TEMPLATE = ROOT / "settings-template.json"
 
 
-def test_trigger_surfaces_the_postgres_sync_gate():
+def test_trigger_surfaces_every_postgres_gate():
     """
-    The trigger enumerates gate files explicitly, so a new gate that is
+    The trigger enumerates gate files explicitly, so a gate that is
     written but not listed here is written into silence — the exact
-    failure the script's own header warns about three times.
+    failure the script's own header warns about three times. Since the
+    third re-audit there is one gate per script, and all of them must be
+    relayed (finding C1).
     """
     source = TRIGGER.read_text(encoding="utf-8")
-    assert 'POSTGRES_SYNC_GATE="${HOME}/.cache/postgres-sync-gate"' in source
-    block = source[source.index("POSTGRES_SYNC_GATE="):]
+    for name in (
+        "postgres-sync-memories-gate",
+        "postgres-sync-sessions-gate",
+        "index-session-content-gate",
+    ):
+        assert name in source, f"{name} is never relayed"
+
+    block_start = source.index("for _pg_gate_name in")
+    block = source[block_start:source.index("unset _pg_gate_name", block_start)]
     # Same shape as the other gates: count on line 1, detail after.
-    assert 'head -1 "$POSTGRES_SYNC_GATE"' in block
-    assert 'tail -n +2 "$POSTGRES_SYNC_GATE"' in block
+    assert 'head -1 "$_pg_gate_file"' in block
+    assert 'tail -n +2 "$_pg_gate_file"' in block
     assert "GATE_LINES+=" in block
-    # And it must be added before the block is printed, not after.
-    assert source.index("POSTGRES_SYNC_GATE=") < source.index(
-        "Infra gates — RELAY THESE TO SHAWN"
-    )
+    # A single problem must print: the threshold is -gt 0, not -gt 1.
+    assert '"$_pg_count" -gt 0' in block
+    # And they must be added before the block is printed, not after.
+    assert block_start < source.index("Infra gates — RELAY THESE TO SHAWN")
 
 
 def test_session_hooks_run_the_indexer_even_if_the_sync_fails():

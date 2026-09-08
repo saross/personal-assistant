@@ -39,14 +39,35 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-#: Where the gate lives. ``daily-sync-trigger.sh`` reads this exact path.
-GATE_FILE: Path = Path.home() / ".cache" / "postgres-sync-gate"
+#: What one sync cycle achieved. Only :data:`CYCLE_COMPLETED` licenses a
+#: caller to clear its gate: a run that deferred to another instance, or
+#: that could not reach the database, has learnt nothing about the fault
+#: the gate is reporting (third re-audit, finding C1).
+CYCLE_COMPLETED = "completed"
+#: Another instance held the advisory lock; this run did nothing.
+CYCLE_CONTENDED = "contended"
+#: The run could not do its job — unreachable database, missing canonical,
+#: rows unaccounted for. The cursor did not advance.
+CYCLE_DEGRADED = "degraded"
+
+#: One gate file per script, never a shared one (third re-audit, finding
+#: C1). A single file with two writers and an unconditional clear meant a
+#: clean run of the memories sync erased the sessions sync's alarm within
+#: one cron tick — five minutes of visibility for a fault that needs a
+#: human. ``daily-sync-trigger.sh`` iterates exactly these names.
+MEMORIES_GATE: Path = Path.home() / ".cache" / "postgres-sync-memories-gate"
+SESSIONS_GATE: Path = Path.home() / ".cache" / "postgres-sync-sessions-gate"
+INDEXER_GATE: Path = Path.home() / ".cache" / "index-session-content-gate"
+
+#: Every gate this module owns, in the order the trigger prints them.
+ALL_GATES: tuple[Path, ...] = (MEMORIES_GATE, SESSIONS_GATE, INDEXER_GATE)
 
 
 def write_gate(
     detail: str,
     *,
-    gate_path: Path = GATE_FILE,
+    gate_path: Path,
+    count: int = 1,
     logger: logging.Logger | None = None,
 ) -> bool:
     """
@@ -60,7 +81,12 @@ def write_gate(
         doing, and "sync-to-postgres exited 4" alone does not tell them.
         Newlines are collapsed so the count-then-details format holds.
     gate_path:
-        Overridable for tests; production callers use the default.
+        Which gate to raise. Required — there is no default, because a
+        default is how two scripts came to share one file.
+    count:
+        The problem count on line 1. Any positive value raises the gate;
+        the number is informative (how many rows were quarantined, say),
+        not a severity.
     logger:
         Optional; an I/O failure is logged rather than raised. A gate we
         cannot write must never take down a sync that has otherwise done
@@ -74,7 +100,7 @@ def write_gate(
     line = " ".join(detail.split())
     try:
         gate_path.parent.mkdir(parents=True, exist_ok=True)
-        gate_path.write_text(f"1\n{line}\n", encoding="utf-8")
+        gate_path.write_text(f"{max(1, count)}\n{line}\n", encoding="utf-8")
     except OSError as exc:
         if logger is not None:
             logger.error("Could not write the gate file %s: %s", gate_path, exc)
@@ -84,11 +110,18 @@ def write_gate(
 
 def clear_gate(
     *,
-    gate_path: Path = GATE_FILE,
+    gate_path: Path,
     logger: logging.Logger | None = None,
 ) -> bool:
     """
-    Lower the gate after a clean run.
+    Lower the gate after a full, successful cycle of the owning script.
+
+    The caller must have completed a whole cycle. A run that returned
+    early because another instance held the advisory lock, or because the
+    database was unreachable, has learnt nothing about the fault the gate
+    is reporting and must leave it standing (finding C1). This function
+    cannot check that, so each caller decides — see the sync scripts'
+    cycle-outcome constants.
 
     Writes ``0`` rather than deleting the file: the trigger script reads a
     count, and a missing file and a zero count mean the same thing to it,

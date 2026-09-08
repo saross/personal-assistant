@@ -34,7 +34,10 @@ from _sync_cursor import (  # noqa: E402
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 # Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
 from _sync_gate import (  # noqa: E402
-    GATE_FILE as _DEFAULT_GATE_FILE,
+    CYCLE_COMPLETED,
+    CYCLE_CONTENDED,
+    CYCLE_DEGRADED,
+    MEMORIES_GATE as _DEFAULT_GATE_FILE,
     clear_gate,
     write_gate,
 )
@@ -1079,7 +1082,10 @@ def check_canonical_for_duplicates(logger: logging.Logger) -> None:
         )
 
 
-def sync(logger: logging.Logger, quarantine_cap: int | None = None) -> None:
+def sync(
+    logger: logging.Logger,
+    quarantine_cap: int | None = None,
+) -> tuple[str, int]:
     """
     Run one sync cycle: read new JSONL lines, insert into PostgreSQL,
     update cursor.
@@ -1087,24 +1093,36 @@ def sync(logger: logging.Logger, quarantine_cap: int | None = None) -> None:
     Serialised against concurrent runs via a PG advisory lock; if another
     sync is in progress, this one exits without touching the cursor and
     the next cron tick retries.
+
+    Returns
+    -------
+    tuple[str, int]
+        ``(outcome, quarantined_count)``. The outcome is one of the
+        ``CYCLE_*`` constants and decides whether ``main`` may clear the
+        gate: only a completed cycle has actually learnt that the fault
+        is gone (finding C1). The count drives the quarantine warning
+        gate (finding C3).
     """
     if not MEMORIES_FILE.exists():
         logger.warning("Memories file not found: %s", MEMORIES_FILE)
-        return
+        return CYCLE_DEGRADED, 0
 
     check_canonical_for_duplicates(logger)
 
     with _sync_advisory_lock(logger) as acquired:
         if not acquired:
-            return
-        _sync_locked(logger, quarantine_cap)
+            return CYCLE_CONTENDED, 0
+        return _sync_locked(logger, quarantine_cap)
 
 
 def _sync_locked(
     logger: logging.Logger,
     quarantine_cap: int | None = None,
-) -> None:
-    """Core sync cycle, executed under the advisory lock."""
+) -> tuple[str, int]:
+    """Core sync cycle, executed under the advisory lock.
+
+    Returns ``(outcome, quarantined_count)`` — see :func:`sync`.
+    """
     # One locked read for both facts (low finding L1): the position, and
     # whether the key was there at all. Two unlocked reads leave a window
     # in which a rebuild lands between them, and the compare-and-set at
@@ -1156,7 +1174,7 @@ def _sync_locked(
         # uses this to distinguish "recently confirmed empty" from
         # "haven't checked in N hours".
         save_sync_timestamp()
-        return
+        return CYCLE_COMPLETED, 0
 
     new_lines = lines[cursor_line:]
     logger.info(
@@ -1207,7 +1225,7 @@ def _sync_locked(
         else:
             logger.info("No valid records to insert (slice was blank-only)")
         save_cursor(total_lines, expect_present=cursor_key_was_present)
-        return
+        return CYCLE_COMPLETED, poison_count
 
     # Insert into PostgreSQL (returns InsertResult with full accounting).
     result = insert_memories(records, logger, quarantine_cap)
@@ -1219,11 +1237,14 @@ def _sync_locked(
     #   - no ids fell through pre-flight, RETURNING, *and* quarantine.
     # A record the database explicitly refused is accounted for by its
     # quarantine entry; one that vanished without explanation is not.
+    outcome = CYCLE_COMPLETED
     if not result.db_available:
         logger.warning(
             "Insert could not reach PostgreSQL — cursor NOT advanced. "
             "This is an outage, not a data problem; the next tick retries."
         )
+        # Nothing was learnt about any standing fault, so the gate stays.
+        outcome = CYCLE_DEGRADED
     elif result.unexpected_drops:
         dropped_records = [
             parsed_by_id[mid]
@@ -1237,7 +1258,7 @@ def _sync_locked(
             len(result.unexpected_drops),
             result.unexpected_drops[:10],
         )
-        return
+        return CYCLE_DEGRADED, len(result.quarantined)
     else:
         if result.quarantined:
             logger.error(
@@ -1256,6 +1277,49 @@ def _sync_locked(
     # Processes up to EMBED_BATCH_SIZE per sync cycle (~100ms overhead).
     if HAS_EMBED:
         _update_embeddings(logger)
+
+    return outcome, len(result.quarantined)
+
+
+def _apply_gate_policy(
+    outcome: str,
+    quarantined: int,
+    script: str,
+    quarantine_file: Path,
+    gate_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """
+    Decide what this cycle's outcome means for the session-start gate.
+
+    Three rules, all from the third re-audit:
+
+    * A gate is cleared only by a cycle of *this* script that actually
+      completed (finding C1). A contended or degraded run leaves whatever
+      is standing alone: it deferred to another instance or never reached
+      the database, so it has learnt nothing about the fault.
+    * A completed cycle that quarantined rows raises a warning gate saying
+      how many and where (finding C3). Quarantining is data leaving the
+      pipeline; it happened silently, at exit 0, with no gate at all.
+    * A completed cycle that quarantined nothing clears the gate.
+    """
+    if outcome != CYCLE_COMPLETED:
+        logger.info(
+            "Cycle outcome %r — leaving any standing gate in place.", outcome,
+        )
+        return
+    if quarantined:
+        write_gate(
+            f"[{script}] {quarantined} row(s) were REFUSED by PostgreSQL "
+            f"and quarantined to {quarantine_file}; the cursor advanced "
+            f"past them, so they are NOT in the database. Repair and "
+            f"replay them.",
+            gate_path=gate_path,
+            count=quarantined,
+            logger=logger,
+        )
+        return
+    clear_gate(gate_path=gate_path, logger=logger)
 
 
 def main() -> None:
@@ -1288,7 +1352,7 @@ def main() -> None:
     logger = setup_logging()
     logger.info("Starting sync")
     try:
-        sync(logger, args.quarantine_cap)
+        outcome, quarantined = sync(logger, args.quarantine_cap)
     except EnvironmentFault as exc:
         # Reachable database, wrong state. Retrying cannot help, so exit
         # non-zero rather than reporting success over a database we never
@@ -1330,10 +1394,11 @@ def main() -> None:
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)
-    # Clean run: lower the gate so a fault that has been fixed stops
-    # being reported at every session start.
-    clear_gate(gate_path=GATE_FILE, logger=logger)
-    logger.info("Sync complete")
+    _apply_gate_policy(
+        outcome, quarantined, "sync-to-postgres.py",
+        QUARANTINE_FILE, GATE_FILE, logger,
+    )
+    logger.info("Sync complete (outcome=%s)", outcome)
 
 
 if __name__ == "__main__":

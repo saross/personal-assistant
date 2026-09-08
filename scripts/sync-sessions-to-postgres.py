@@ -48,7 +48,10 @@ from _sync_cursor import (  # noqa: E402
 )
 # Row-level Postgres guards (audit round two, finding P1 / lens A-X1+A-X2).
 from _sync_gate import (  # noqa: E402
-    GATE_FILE as _DEFAULT_GATE_FILE,
+    CYCLE_COMPLETED,
+    CYCLE_CONTENDED,
+    CYCLE_DEGRADED,
+    SESSIONS_GATE as _DEFAULT_GATE_FILE,
     clear_gate,
     write_gate,
 )
@@ -789,7 +792,7 @@ def sync(
     full_resync: bool,
     logger: logging.Logger,
     quarantine_cap: int | None = None,
-) -> None:
+) -> tuple[str, int]:
     """
     Run one sync cycle: find new session.meta.json files, upsert into
     PostgreSQL, update cursor.
@@ -797,11 +800,15 @@ def sync(
     Serialised against concurrent runs via a PG advisory lock; if another
     sessions-sync is in progress, this one exits without touching the
     cursor.
+
+    Returns ``(outcome, quarantined_count)``: only a completed cycle may
+    clear this script's gate (third re-audit, finding C1), and a cycle
+    that quarantined rows raises a warning gate (finding C3).
     """
     with _sync_advisory_lock(logger) as acquired:
         if not acquired:
-            return
-        _sync_locked(archive_root, full_resync, logger, quarantine_cap)
+            return CYCLE_CONTENDED, 0
+        return _sync_locked(archive_root, full_resync, logger, quarantine_cap)
 
 
 def _sync_locked(
@@ -809,8 +816,11 @@ def _sync_locked(
     full_resync: bool,
     logger: logging.Logger,
     quarantine_cap: int | None = None,
-) -> None:
-    """Core sync cycle, executed under the advisory lock."""
+) -> tuple[str, int]:
+    """Core sync cycle, executed under the advisory lock.
+
+    Returns ``(outcome, quarantined_count)`` — see :func:`sync`.
+    """
     # One locked read for both facts — the timestamp and whether the key
     # was there at all (low finding L1). Two unlocked reads leave a window
     # in which a rebuild lands between them, defeating the compare-and-set
@@ -829,7 +839,7 @@ def _sync_locked(
     sessions = find_session_metadata(archive_root, since=since, logger=logger)
     if not sessions:
         logger.info("No new sessions to sync")
-        return
+        return CYCLE_COMPLETED, 0
 
     logger.info("Found %d session(s) to sync", len(sessions))
 
@@ -883,7 +893,7 @@ def _sync_locked(
                 )
         else:
             logger.info("No valid sessions to upsert")
-        return
+        return CYCLE_COMPLETED, skipped_no_id
 
     # Upsert into PostgreSQL (returns InsertResult with full accounting).
     result = upsert_sessions(rows, logger, quarantine_cap)
@@ -893,11 +903,14 @@ def _sync_locked(
     # accounted for — either returned by the upsert or explicitly
     # quarantined. A row the database *refused* is accounted for; a row
     # that vanished without explanation is not.
+    outcome = CYCLE_COMPLETED
     if not result.db_available:
         logger.warning(
             "Upsert could not reach PostgreSQL — cursor NOT advanced. "
             "This is an outage, not a data problem; the next run retries."
         )
+        # Nothing was learnt about any standing fault, so the gate stays.
+        outcome = CYCLE_DEGRADED
     elif result.unexpected_drops:
         rows_by_id = {row["id"]: row for row in rows}
         dropped_rows = [
@@ -912,7 +925,7 @@ def _sync_locked(
             len(result.unexpected_drops),
             result.unexpected_drops[:10],
         )
-        return
+        return CYCLE_DEGRADED, len(result.quarantined)
     else:
         if result.quarantined:
             logger.error(
@@ -925,6 +938,49 @@ def _sync_locked(
             )
         save_cursor(latest_archived_at, expect_present=cursor_key_was_present)
         logger.info("Cursor advanced to %s", latest_archived_at)
+
+    return outcome, len(result.quarantined)
+
+
+def _apply_gate_policy(
+    outcome: str,
+    quarantined: int,
+    script: str,
+    quarantine_file: Path,
+    gate_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """
+    Decide what this cycle's outcome means for the session-start gate.
+
+    Three rules, all from the third re-audit:
+
+    * A gate is cleared only by a cycle of *this* script that actually
+      completed (finding C1). A contended or degraded run leaves whatever
+      is standing alone: it deferred to another instance or never reached
+      the database, so it has learnt nothing about the fault.
+    * A completed cycle that quarantined rows raises a warning gate saying
+      how many and where (finding C3). Quarantining is data leaving the
+      pipeline; it happened silently, at exit 0, with no gate at all.
+    * A completed cycle that quarantined nothing clears the gate.
+    """
+    if outcome != CYCLE_COMPLETED:
+        logger.info(
+            "Cycle outcome %r — leaving any standing gate in place.", outcome,
+        )
+        return
+    if quarantined:
+        write_gate(
+            f"[{script}] {quarantined} row(s) were REFUSED by PostgreSQL "
+            f"and quarantined to {quarantine_file}; the cursor advanced "
+            f"past them, so they are NOT in the database. Repair and "
+            f"replay them.",
+            gate_path=gate_path,
+            count=quarantined,
+            logger=logger,
+        )
+        return
+    clear_gate(gate_path=gate_path, logger=logger)
 
 
 def main() -> None:
@@ -957,7 +1013,7 @@ def main() -> None:
     logger = setup_logging()
     logger.info("Starting session sync (archive_root=%s)", args.archive_root)
     try:
-        sync(
+        outcome, quarantined = sync(
             args.archive_root, args.full_resync, logger, args.quarantine_cap,
         )
     except EnvironmentFault as exc:
@@ -1002,8 +1058,11 @@ def main() -> None:
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)
-    clear_gate(gate_path=GATE_FILE, logger=logger)
-    logger.info("Session sync complete")
+    _apply_gate_policy(
+        outcome, quarantined, "sync-sessions-to-postgres.py",
+        QUARANTINE_FILE, GATE_FILE, logger,
+    )
+    logger.info("Session sync complete (outcome=%s)", outcome)
 
 
 if __name__ == "__main__":

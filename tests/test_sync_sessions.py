@@ -130,7 +130,7 @@ def pinned_gate_file(tmp_path, monkeypatch):
     finding S21, and it happened once while this was being written.
     Autouse so no future test can forget.
     """
-    gate = tmp_path / "gates" / "postgres-sync-gate"
+    gate = tmp_path / "gates" / "this-script-gate"
     monkeypatch.setattr(sync_mod, "GATE_FILE", gate)
     return gate
 

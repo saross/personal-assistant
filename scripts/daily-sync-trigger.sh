@@ -44,12 +44,14 @@ mkdir -p "$(dirname "$LOCK_FILE")"
 # print to STDOUT under an explicit surface-this header, so the assistant
 # sees them in context and relays them to Shawn.
 #
-# Five gates, same format (first line = problem count, rest = detail):
+# Seven gates, same format (first line = problem count, rest = detail):
 #   cc-archives-gate      metas whose transcript is absent locally (E4)
 #   syncthing-gate        mesh health (identity, binds, folder, peers)
 #   memory-drift-gate     memory records surviving in only one store
 #   cc-archive-drift-gate substantive raw sessions never archived
-#   postgres-sync-gate    a sync stopped and needs a human (exit 4 or 6)
+#   postgres-sync-memories-gate   the memory sync stopped, or quarantined
+#   postgres-sync-sessions-gate   the session sync stopped, or quarantined
+#   index-session-content-gate    transcripts left out of the search index
 # ---------------------------------------------------------------------------
 GATE_LINES=()
 
@@ -96,23 +98,33 @@ if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
     fi
 fi
 
-# PostgreSQL sync gate (added 2026-09-08, audit round two finding C2).
-# Written by sync-to-postgres.py / sync-sessions-to-postgres.py when they
-# exit 4 (environment fault: the database is reachable but not in the
-# expected state — permissions, a missing column, a full disk) or 6 (a
-# rebuild cleared the cursor mid-run). Both mean the sync is making no
-# progress and no amount of waiting will change that. Cleared to 0 by the
-# next clean run, so a fixed fault stops reporting itself.
+# PostgreSQL pipeline gates (added 2026-09-08, audit round two finding C2;
+# split per script by the third re-audit, finding C1).
 #
-# This is the gate the September 2026 incident argued for: the sessions
+# ONE FILE PER SCRIPT, deliberately. A single shared file meant a clean
+# run of the memory sync erased the session sync's alarm on the next cron
+# tick — five minutes of visibility for a fault that needs a human. Each
+# script clears only its own gate, and only after a cycle that actually
+# completed.
+#
+# Raised on: exit 4 (environment fault — reachable database, wrong state),
+# exit 6 (a rebuild cleared the cursor mid-run), a cap overflow, a
+# correlated batch refusal, or rows quarantined (data that left the
+# pipeline). Lowered by the next completed cycle with nothing to report.
+#
+# These are the gates the September 2026 incident argued for: the sessions
 # table sat three weeks stale behind an error in a log nobody reads.
-POSTGRES_SYNC_GATE="${HOME}/.cache/postgres-sync-gate"
-if [[ -f "$POSTGRES_SYNC_GATE" ]]; then
-    PG_COUNT="$(head -1 "$POSTGRES_SYNC_GATE" 2>/dev/null)"
-    if [[ "$PG_COUNT" =~ ^[0-9]+$ ]] && [[ "$PG_COUNT" -gt 0 ]]; then
-        GATE_LINES+=("[postgres-sync gate] $(tail -n +2 "$POSTGRES_SYNC_GATE" | head -1)")
+for _pg_gate_name in postgres-sync-memories-gate \
+                     postgres-sync-sessions-gate \
+                     index-session-content-gate; do
+    _pg_gate_file="${HOME}/.cache/${_pg_gate_name}"
+    [[ -f "$_pg_gate_file" ]] || continue
+    _pg_count="$(head -1 "$_pg_gate_file" 2>/dev/null)"
+    if [[ "$_pg_count" =~ ^[0-9]+$ ]] && [[ "$_pg_count" -gt 0 ]]; then
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] $(tail -n +2 "$_pg_gate_file" | head -1)")
     fi
-fi
+done
+unset _pg_gate_name _pg_gate_file _pg_count
 
 # ---------------------------------------------------------------------------
 # Slack dashboard refresh (added 2026-08-22)

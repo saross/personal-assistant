@@ -14,12 +14,16 @@ problem in front of Shawn at his next session start.
 
 from __future__ import annotations
 
+import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+TRIGGER = SCRIPTS_DIR / "daily-sync-trigger.sh"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _sync_gate  # noqa: E402
@@ -80,19 +84,66 @@ class TestGateFormat:
         assert _sync_gate.write_gate("broken", gate_path=gate) is False
         assert _sync_gate.clear_gate(gate_path=gate) is False
 
-    def test_default_path_matches_the_trigger_script(self) -> None:
+    def test_every_gate_is_relayed_by_the_trigger(self) -> None:
         """
-        ``daily-sync-trigger.sh`` reads a hard-coded path. If this constant
-        and that path ever diverge the gate is written into silence — the
-        precise failure C2 is about.
+        The trigger names the gates it prints. A gate written but not
+        named there is written into silence — the precise failure C2 is
+        about, and the reason C1 asks for *every* postgres gate to be
+        relayed. The mutation this kills: adding a gate file without
+        adding it to the trigger's list.
         """
-        trigger = (
-            Path(__file__).resolve().parent.parent
-            / "scripts" / "daily-sync-trigger.sh"
-        ).read_text(encoding="utf-8")
-        assert _sync_gate.GATE_FILE.name in trigger
-        assert '${HOME}/.cache/postgres-sync-gate' in trigger
-        assert _sync_gate.GATE_FILE == Path.home() / ".cache" / "postgres-sync-gate"
+        trigger = TRIGGER.read_text(encoding="utf-8")
+        for gate in _sync_gate.ALL_GATES:
+            assert gate.name in trigger, f"{gate.name} is never relayed"
+            assert gate.parent == Path.home() / ".cache"
+
+    def test_the_gates_are_distinct_files(self) -> None:
+        """
+        One file per script (finding C1). Sharing one meant a clean run of
+        either sync erased the other's alarm within a cron tick.
+        """
+        assert len(set(_sync_gate.ALL_GATES)) == len(_sync_gate.ALL_GATES)
+        assert _sync_gate.MEMORIES_GATE != _sync_gate.SESSIONS_GATE
+
+    def test_the_trigger_prints_a_gate_whose_count_is_one(
+        self, tmp_path: Path,
+    ) -> None:
+        """
+        The threshold is ``-gt 0``, not ``-gt 1``: a single problem is the
+        commonest case and must print. Executed against a copy of the
+        trigger's gate block with HOME pinned to tmp — never the real
+        script, which runs the daily sync.
+        """
+        source = TRIGGER.read_text(encoding="utf-8")
+        start = source.index("for _pg_gate_name in")
+        end = source.index("unset _pg_gate_name", start)
+        block = source[start:end]
+
+        cache = tmp_path / ".cache"
+        cache.mkdir()
+        (cache / "postgres-sync-sessions-gate").write_text(
+            "1\nexactly one problem\n", encoding="utf-8",
+        )
+        (cache / "postgres-sync-memories-gate").write_text(
+            "0\n", encoding="utf-8",
+        )
+
+        script = tmp_path / "gate-block.sh"
+        script.write_text(
+            "GATE_LINES=()\n" + block
+            + '\nprintf "%s\\n" "${GATE_LINES[@]}"\n',
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            ["bash", str(script)],
+            capture_output=True, text=True,
+            env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "exactly one problem" in result.stdout
+        # The count-0 gate must stay silent.
+        assert "postgres-sync-memories" not in result.stdout
 
 
 @pytest.mark.parametrize("script_name", [
@@ -109,9 +160,108 @@ def test_both_syncs_raise_and_clear_the_gate(script_name: str) -> None:
     source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
     assert "write_gate(" in source
     assert "clear_gate(" in source
-    # Both raise sites, and the clear, use the module's pinnable constant.
-    assert source.count("gate_path=GATE_FILE") == 3
+    # Every gate call goes through the module's pinnable constant, so a
+    # test can never write the operator's real gate.
+    assert "gate_path=_DEFAULT_GATE_FILE" not in source
     exit_four = source.index("sys.exit(4)")
     exit_six = source.index("sys.exit(6)")
-    assert "write_gate(" in source[exit_four - 700:exit_four]
-    assert "write_gate(" in source[exit_six - 700:exit_six]
+    assert "write_gate(" in source[exit_four - 900:exit_four]
+    assert "write_gate(" in source[exit_six - 900:exit_six]
+    # And the clear is reached only through the outcome policy, never
+    # unconditionally at the end of main (finding C1).
+    assert source.count("clear_gate(") == 1
+    assert "_apply_gate_policy(" in source
+
+
+class TestOnlyACompletedCycleClears:
+    """
+    Finding C1's invariant, at the level of the policy both syncs share:
+    a gate is cleared only by a cycle of *that* script that completed.
+    """
+
+    def _load_sync(self):
+        """Import the memories sync (its policy is the shared one)."""
+        import importlib.util
+        path = SCRIPTS_DIR / "sync-to-postgres.py"
+        spec = importlib.util.spec_from_file_location("sync_gate_probe", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture
+    def raised(self, tmp_path: Path) -> Path:
+        """A gate already standing, as a previous exit-4 run left it."""
+        gate = tmp_path / "postgres-sync-memories-gate"
+        _sync_gate.write_gate("a previous run exited 4", gate_path=gate)
+        return gate
+
+    def test_a_contended_run_leaves_the_gate(self, raised, tmp_path) -> None:
+        """
+        A run that deferred to another instance learnt nothing about the
+        fault. The mutation this kills: clearing on any outcome.
+        """
+        sync_mod = self._load_sync()
+        sync_mod._apply_gate_policy(
+            _sync_gate.CYCLE_CONTENDED, 0, "sync-to-postgres.py",
+            tmp_path / "quarantine.jsonl", raised,
+            logging.getLogger("test-gate-policy"),
+        )
+        assert raised.read_text(encoding="utf-8").startswith("1")
+
+    def test_an_outage_run_leaves_the_gate(self, raised, tmp_path) -> None:
+        """A run that never reached the database learnt nothing either."""
+        sync_mod = self._load_sync()
+        sync_mod._apply_gate_policy(
+            _sync_gate.CYCLE_DEGRADED, 0, "sync-to-postgres.py",
+            tmp_path / "quarantine.jsonl", raised,
+            logging.getLogger("test-gate-policy"),
+        )
+        assert raised.read_text(encoding="utf-8").startswith("1")
+
+    def test_a_completed_clean_run_clears_the_gate(
+        self, raised, tmp_path,
+    ) -> None:
+        """The one case that may clear it."""
+        sync_mod = self._load_sync()
+        sync_mod._apply_gate_policy(
+            _sync_gate.CYCLE_COMPLETED, 0, "sync-to-postgres.py",
+            tmp_path / "quarantine.jsonl", raised,
+            logging.getLogger("test-gate-policy"),
+        )
+        assert raised.read_text(encoding="utf-8").strip() == "0"
+
+    def test_a_completed_run_that_quarantined_raises_a_warning(
+        self, tmp_path,
+    ) -> None:
+        """
+        Finding C3's first invariant: quarantining is data leaving the
+        pipeline, and it happened silently at exit 0 with no gate at all.
+        """
+        gate = tmp_path / "postgres-sync-memories-gate"
+        sync_mod = self._load_sync()
+        sync_mod._apply_gate_policy(
+            _sync_gate.CYCLE_COMPLETED, 7, "sync-to-postgres.py",
+            tmp_path / "quarantine.jsonl", gate,
+            logging.getLogger("test-gate-policy"),
+        )
+        lines = gate.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "7"
+        assert "REFUSED" in lines[1]
+        assert "quarantine.jsonl" in lines[1]
+
+    def test_neither_sync_can_clear_the_other(self) -> None:
+        """
+        Structural guarantee rather than a race: the two scripts name
+        different constants, so there is no interleaving in which one
+        clears the other's alarm.
+        """
+        memories = self._load_sync()
+        import importlib.util
+        path = SCRIPTS_DIR / "sync-sessions-to-postgres.py"
+        spec = importlib.util.spec_from_file_location("sessions_probe", path)
+        sessions = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sessions)
+
+        assert memories.GATE_FILE == _sync_gate.MEMORIES_GATE
+        assert sessions.GATE_FILE == _sync_gate.SESSIONS_GATE
+        assert memories.GATE_FILE != sessions.GATE_FILE
