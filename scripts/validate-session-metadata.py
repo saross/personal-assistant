@@ -147,6 +147,26 @@ class SessionTruth:
 # ---------------------------------------------------------------------------
 
 
+def _candidate_repos(project: str | None) -> list[Path]:
+    """Return the directories that could be *project*'s repository.
+
+    The project name comes out of a manifest file, and the result is joined
+    onto ``Path.home()`` and then handed to ``git -C`` — so a name like
+    ``../../etc`` or an absolute path would send the join, and the git
+    invocation, somewhere else entirely (audit 2026-09-08, finding AR22).
+    A project name is a single directory component; anything else yields no
+    candidates, which leaves cited hashes reported as unverifiable rather
+    than checked against the wrong repository.
+    """
+    if not project or project in (".", ".."):
+        return []
+    if "/" in project or "\\" in project or project.startswith("."):
+        return []
+    if Path(project).is_absolute() or len(Path(project).parts) != 1:
+        return []
+    return [Path.home() / "Code" / project, Path.home() / project]
+
+
 def load_truth(manifest_path: Path | None) -> dict[str, SessionTruth]:
     """Build per-session ground truth from the bake-off manifest.
 
@@ -163,10 +183,7 @@ def load_truth(manifest_path: Path | None) -> dict[str, SessionTruth]:
         # directory is used; anything else leaves hashes unverifiable rather
         # than falsely failing them.
         repo = None
-        for candidate in (
-            Path.home() / "Code" / (project or ""),
-            Path.home() / (project or ""),
-        ):
+        for candidate in _candidate_repos(project):
             if (candidate / ".git").exists():
                 repo = candidate
                 break
@@ -442,6 +459,11 @@ def validate_record(
 
 
 def main() -> int:
+    """Command-line entry point: validate a directory of generated metadata.
+
+    Returns 1 when findings at or above ``--fail-on`` exist, so the script
+    can gate a pipeline; 0 otherwise.
+    """
     parser = argparse.ArgumentParser(
         description="Deterministic validator for generated session metadata."
     )
