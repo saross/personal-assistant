@@ -37,7 +37,22 @@
 #
 # Exit codes:
 #   0 — a reachable endpoint was printed on stdout
-#   1 — no candidate responded within the timeout (empty stdout)
+#   1 — no candidate responded within the timeout; NOTHING is printed
+#
+# Consuming the failure (audit round 4d, E20)
+# -------------------------------------------
+# The `VAR=$(script) command` form above discards this script's status —
+# the shell reports `command`'s status, not the substitution's — so a total
+# outage used to be indistinguishable from success while setting
+# OLLAMA_BASE_URL to an empty line. The script now prints nothing at all on
+# failure, so that form at least yields an empty variable rather than a
+# blank-line URL. To act on the failure, assign first and test the status:
+#
+#     if url=$(~/personal-assistant/scripts/ollama-endpoint.sh); then
+#         OLLAMA_BASE_URL="$url" venv/bin/python3 scripts/embed.py
+#     else
+#         echo "no Ollama endpoint reachable; skipping embedding" >&2
+#     fi
 
 set -u
 
@@ -53,5 +68,6 @@ for url in "${CANDIDATES[@]}"; do
     fi
 done
 
-echo ""
+# Print NOTHING on failure: an empty line is a value, and a caller that
+# interpolates it gets a blank URL that fails far from here.
 exit 1
