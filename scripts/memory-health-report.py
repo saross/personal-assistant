@@ -88,6 +88,8 @@ DB_NAME = "claude_memories"
 
 #: Per-statement ceiling for the report's own queries. A lock-contended
 #: database must not hang ``/memory-health`` indefinitely (finding AN14).
+#: PostgreSQL reads ``"0"`` as "no limit", so the VALUE is asserted in the
+#: tests, not just the presence of the statement (finding M4).
 PG_STATEMENT_TIMEOUT = "15s"
 
 # anchor_verify / triage_anchors / surfacing_stats are underscore-named — direct
@@ -557,6 +559,16 @@ def pg_snapshot(logger: logging.Logger) -> dict[str, Any] | None:
         conn.set_session(readonly=True)
     except Exception as exc:  # noqa: BLE001 — an old driver, or a fake
         logger.warning("Could not set a read-only session: %s", exc)
+    # The timeout goes on FIRST, before any query at all — including the
+    # schema check, which is itself a SELECT against a table that can be
+    # locked. Setting it after that query left the one statement that runs
+    # on every invocation unprotected (round 4f-3, finding M4). SET LOCAL
+    # opens the transaction and lasts for it; the rollback below ends both.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT}'")
+    except Exception as exc:  # noqa: BLE001 — an old driver, or a fake
+        logger.warning("Could not set a statement timeout: %s", exc)
     # The schema guard runs BEFORE any schema-dependent query, and a mismatch
     # skips the PG sections rather than raising: the report's other eight
     # sections need no database (findings AN4/AN14).
@@ -564,12 +576,11 @@ def pg_snapshot(logger: logging.Logger) -> dict[str, Any] | None:
         assert_schema_version(conn)
     except SchemaVersionError as exc:
         logger.warning("PG sections skipped: schema mismatch (%s)", exc)
+        conn.rollback()
         conn.close()
         return None
     try:
         with conn.cursor() as cur:
-            # A health report must never be the thing that hangs on a lock.
-            cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT}'")
             cur.execute("SELECT COUNT(*) FROM memories")
             total = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM memories WHERE is_active IS TRUE")

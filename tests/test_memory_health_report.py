@@ -630,14 +630,42 @@ class TestPgSnapshotSql:
     def test_the_connection_is_read_only_and_time_limited(
         self, report_paths, fake_pg,
     ) -> None:
-        """AN14: a lock-contended database must not hang /memory-health."""
+        """AN14: a lock-contended database must not hang /memory-health.
+
+        The VALUE is asserted, not the prefix: PostgreSQL reads
+        ``statement_timeout = '0'`` as "no limit", so a mutation to "0"
+        passes a prefix check while removing the protection entirely
+        (finding M4).
+        """
         import logging
         conn = fake_pg(FakeDatabase(memories=[{"id": "a", "is_active": True}]))
         mhr.pg_snapshot(logging.getLogger("test-mhr"))
         assert conn.readonly is True
-        assert any(s.startswith("SET LOCAL statement_timeout")
-                   for s in conn.executed_sql)
+        assert conn.executed_sql[0] == (
+            "SET LOCAL statement_timeout = '15s'"
+        ), "the timeout must be the FIRST statement on the connection"
+        assert mhr.PG_STATEMENT_TIMEOUT not in ("0", 0, "", None)
         assert conn.rollbacks >= 1
+
+    def test_the_timeout_precedes_the_schema_query(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """The schema check is itself a SELECT against a lockable table.
+
+        Kills the mutation moving the SET after assert_schema_version: the
+        one query that runs on every single invocation is then the only
+        unprotected one.
+        """
+        import logging
+        conn = fake_pg(FakeDatabase(memories=[{"id": "a", "is_active": True}]))
+        mhr.pg_snapshot(logging.getLogger("test-mhr"))
+        timeout_at = conn.executed_sql.index(
+            "SET LOCAL statement_timeout = '15s'"
+        )
+        schema_at = next(
+            i for i, sql in enumerate(conn.executed_sql) if "FROM meta" in sql
+        )
+        assert timeout_at < schema_at
 
 
 class TestSectionsFilterInactiveRecords:

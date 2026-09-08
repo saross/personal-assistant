@@ -378,16 +378,34 @@ class TestAuditMemoriesAgainstAFakeConnection:
         """Read-only becomes a property, not a claim (finding ANT2).
 
         The fake raises on any write verb and on commit(); this asserts the
-        weaker, checkable version too — every statement is a SELECT and the
-        transaction ends in a rollback.
+        weaker, checkable version too — every statement is a SELECT or the
+        session's own statement timeout, and the transaction ends in a
+        rollback.
         """
         corpus = _corpus(tmp_path, [_mem("m-1")])
         conn = fake_pg(FakeDatabase(memories=[_mem("m-1")]))
         audit_mod.audit_memories(corpus, logger)
         assert conn.executed_sql, "the audit issued no SQL at all"
-        assert all(s.upper().startswith("SELECT") for s in conn.executed_sql)
+        assert all(
+            s.upper().startswith("SELECT") or s.startswith("SET LOCAL ")
+            for s in conn.executed_sql
+        )
         assert conn.rollbacks >= 1 and conn.closed
         assert conn.readonly is True
+
+    def test_the_audit_is_time_limited_before_its_first_query(
+        self, tmp_path, logger, fake_pg,
+    ) -> None:
+        """A read-only audit has no business waiting behind a lock (M4).
+
+        Kills both the mutation removing the SET and the mutation setting it
+        to "0", which PostgreSQL reads as no limit at all.
+        """
+        corpus = _corpus(tmp_path, [_mem("m-1")])
+        conn = fake_pg(FakeDatabase(memories=[_mem("m-1")]))
+        audit_mod.audit_memories(corpus, logger)
+        assert conn.executed_sql[0] == "SET LOCAL statement_timeout = '15s'"
+        assert audit_mod.PG_STATEMENT_TIMEOUT not in ("0", 0, "", None)
 
     def test_a_write_would_be_caught(self, tmp_path, logger, fake_pg) -> None:
         """The net itself: prove the fake fails a caller that writes."""

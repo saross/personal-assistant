@@ -60,6 +60,10 @@ MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
 DB_NAME = "claude_memories"
 
+#: Per-statement ceiling for this audit's queries. Read-only reconciliation
+#: has no business waiting behind a lock (finding M4).
+PG_STATEMENT_TIMEOUT = "15s"
+
 # Cold-store memory partitions written by scripts/archive-memories.py
 # (one file per month, e.g. memories-archive-2026-06.jsonl). The
 # --archive-parity mode reconciles these archived ids against PostgreSQL.
@@ -223,6 +227,16 @@ def _connect_read_only(logger: logging.Logger):
         conn.set_session(readonly=True)
     except Exception as exc:  # noqa: BLE001 — a fake or an old driver
         logger.warning("Could not set a read-only session: %s", exc)
+
+    # A per-statement ceiling, set before ANY query including the schema
+    # check: an audit that hangs on a lock is worse than one that fails
+    # (round 4f-3, finding M4). ``"0"`` would mean no limit, so the tests
+    # assert the value rather than the presence of the statement.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT}'")
+    except Exception as exc:  # noqa: BLE001 — a fake or an old driver
+        logger.warning("Could not set a statement timeout: %s", exc)
 
     # Schema-version guard (audit IC5), before any schema-dependent query.
     try:
