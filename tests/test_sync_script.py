@@ -1301,3 +1301,64 @@ class TestRefusedRecordsVersusOutages:
                 cursor_file.read_text()
             ).get("postgres_sync_line", 0) == 0
         assert not quarantine.exists()
+
+
+class TestQuarantineDedupAtTheCallSite:
+    """
+    Finding P14 (lens A-M12) at the call site that produced it.
+
+    The poison-quarantine loop runs *before* ``insert_memories``, so while
+    the cursor is halted — a PostgreSQL outage, say — every five-minute
+    tick re-parses the same slice and re-quarantines the same lines: 288
+    duplicate entries per poison line per day, burying the entries that
+    are genuinely distinct.
+    """
+
+    def test_repeated_outage_ticks_quarantine_once(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        Twelve ticks (one hour) against an unreachable database must
+        leave one quarantine entry per poison line, not twelve. The
+        mutation this kills: removing the dedup branch from
+        ``quarantine_record``.
+        """
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            "{not valid json\n"
+            + json.dumps({
+                "id": "m-good", "category": "progress", "content": "c",
+                "created_at": "2026-09-01T00:00:00+00:00",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            raise_on_connect=True,
+        )
+
+        for _ in range(12):
+            sync_mod.sync(test_logger)
+
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1, (
+            f"one poison line quarantined {len(entries)} times across 12 "
+            "ticks"
+        )
+        assert entries[0]["reason"] == "parse_failure"
+        # And the cursor really is still halted, which is what makes the
+        # re-read happen at all.
+        if cursor_file.exists():
+            assert json.loads(
+                cursor_file.read_text()
+            ).get("postgres_sync_line", 0) == 0
