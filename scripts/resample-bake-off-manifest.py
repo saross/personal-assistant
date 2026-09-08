@@ -14,8 +14,10 @@ This script regenerates the manifest:
    - Per-project archives at ``~/Code/*/archive/cc-sessions/*/*/session.jsonl(.gz)``
    - Live transcripts at ``~/.claude/projects/*/<session-id>.jsonl``
    - Live sub-agent transcripts at ``~/.claude/projects/*/subagents/*.jsonl``
-2. Skips git-LFS pointer stubs and transcripts that distil to fewer than 100
-   tokens (matching the original >100-token floor).
+2. Skips git-LFS pointer stubs and transcripts that distil to fewer than
+   ``MIN_TOKENS`` (1,000) tokens. The original floor was >100; it was raised
+   because the live sub-agent pool is dominated by tiny prompts that would
+   otherwise crowd substantive sessions out of the short bin.
 3. Estimates distilled-text token count using the existing extractor
    (``scripts/extract-transcript-text.py``).
 4. Caps inclusion at **190,000 distilled tokens** — 200K Haiku window minus
@@ -487,7 +489,10 @@ def stratified_sample(
     for bin_label, target in TARGET_COUNTS.items():
         pool = by_bin[bin_label]
         if not pool:
-            print(f"  WARNING: bin {bin_label} has 0 candidates")
+            print(
+                f"  SHORTFALL: bin {bin_label} filled 0 of {target} "
+                "(0 candidates in the pool)"
+            )
             continue
 
         # Within a bin, build a per-bin mix that balances:
@@ -532,6 +537,15 @@ def stratified_sample(
         remaining = main_live + empties + populated + subagent
         while len(bin_picks) < target and remaining:
             bin_picks.append(remaining.pop(0))
+
+        # An under-filled stratum used to pass in silence: the counts in the
+        # manifest were honest, but nothing said the design had not been
+        # met, so a bin that came up short looked like a deliberate choice.
+        if len(bin_picks) < target:
+            print(
+                f"  SHORTFALL: bin {bin_label} filled {len(bin_picks)} of "
+                f"{target} ({len(pool)} candidate(s) in the pool)"
+            )
 
         picks.extend(bin_picks)
 

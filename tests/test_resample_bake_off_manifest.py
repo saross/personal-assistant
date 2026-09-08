@@ -366,3 +366,46 @@ class TestReproducibility:
         with pytest.raises(SystemExit) as excinfo:
             run_main(pool, "--out", str(tmp_path / "m.json"), "--as-of", "not-a-date")
         assert excinfo.value.code == 2
+
+
+class TestShortfallReporting:
+    """A bin that cannot be filled must say so."""
+
+    def test_under_filled_bin_names_the_bin_and_the_counts(
+        self, tmp_path, capsys
+    ):
+        """The finding: only a completely empty bin warned."""
+        root = tmp_path / "home"
+        write_archive_session(
+            root, "thornhollow-survey", "2026-01-04T08-00-00",
+            session_id="dddddddd-0000-0000-0000-000000000001",
+        )
+        out = tmp_path / "manifest.json"
+        assert run_main(root, "--out", str(out)) == 0
+        printed = capsys.readouterr().out
+        target = resample.TARGET_COUNTS["short"]
+        assert f"SHORTFALL: bin short filled 1 of {target}" in printed
+        assert "1 candidate(s) in the pool)" in printed
+
+    def test_empty_bin_reports_zero_of_target(self, tmp_path, capsys):
+        root = tmp_path / "home"
+        write_archive_session(
+            root, "thornhollow-survey", "2026-01-04T08-00-00",
+            session_id="dddddddd-0000-0000-0000-000000000002",
+        )
+        assert run_main(root, "--out", str(tmp_path / "manifest.json")) == 0
+        printed = capsys.readouterr().out
+        assert (
+            f"SHORTFALL: bin long filled 0 of {resample.TARGET_COUNTS['long']}"
+            in printed
+        )
+
+    def test_a_filled_bin_reports_no_shortfall(self, tmp_path, capsys):
+        root = tmp_path / "home"
+        for index in range(resample.TARGET_COUNTS["short"]):
+            write_archive_session(
+                root, "thornhollow-survey", f"2026-01-2{index}T08-00-00",
+                session_id=f"eeeeeeee-0000-0000-0000-00000000000{index}",
+            )
+        assert run_main(root, "--out", str(tmp_path / "manifest.json")) == 0
+        assert "SHORTFALL: bin short" not in capsys.readouterr().out
