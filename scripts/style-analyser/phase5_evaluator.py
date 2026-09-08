@@ -1329,6 +1329,13 @@ def main() -> int:
 
     phase1 = load_json(args.phase1)
     phase3 = load_json(args.phase3)
+    # The input below is measured with today's phase 1 code; the corpus it is
+    # scored against must have been measured the same way, or the distance is
+    # between two different measurements (re-audit item 4).
+    stale = style_support.metric_schema_error(phase1, args.phase1)
+    if stale:
+        print(stale, file=sys.stderr)
+        return 2
 
     import spacy
     nlp = spacy.load(args.spacy_model)

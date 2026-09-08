@@ -45,6 +45,7 @@ from style_test_helpers import (  # noqa: E402
 )
 
 verifier = load_style_module("phase3_guide_verifier")
+style_support = load_style_module("style_support")
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +60,9 @@ def _no_network(monkeypatch):
 
 #: Six invented papers. Semicolons in four of them, em-dashes in none.
 PHASE1 = {
+    # Both inputs carry the metric-definition stamp every consumer now
+    # requires; the refusal for an unstamped file is pinned separately below.
+    "metric_schema": style_support.metric_schema_stamp(),
     "per_paper": [
         {"key": "AAAA1111", "regression": {"semicolon_per_1k": 10.0,
                                            "em_dash_per_1k": 0.0}},
@@ -88,6 +92,7 @@ PHASE1 = {
 }
 
 PHASE3 = {
+    "metric_schema": style_support.metric_schema_stamp(),
     "promotions": [
         {"metric": "semicolon_per_1k", "section": "6.2",
          "promotion": "attested", "n_papers_present": 4,
@@ -553,3 +558,47 @@ def test_the_report_records_its_inputs(tmp_path):
     assert "## Provenance" in report
     assert "phase3_guide_verifier.py" in report
     assert report.count("sha256") == 3
+
+
+# ---------------------------------------------------------------------------
+# Re-audit item 4 — a corpus measured with superseded definitions is refused
+# ---------------------------------------------------------------------------
+
+def test_an_unstamped_phase1_file_is_refused(tmp_path, capsys):
+    """The live results file predates the metric fixes and looks identical.
+
+    hapax_ratio moved from tokens to types, passive_ratio from per-verb to
+    presence-per-sentence, and neither change is visible in the file. Checking
+    a guide's claims against numbers measured the old way, with code that
+    computes them the new way, produces a verdict about nothing. The mutation
+    this kills: dropping the metric_schema check from ``main``.
+    """
+    paths = _write_inputs(tmp_path, CLEAN_GUIDE)
+    stale = dict(PHASE1)
+    stale.pop("metric_schema")
+    paths["phase1"].write_text(json.dumps(stale), encoding="utf-8")
+
+    assert _run_main(paths) == 2
+    assert "metric_schema version is absent" in capsys.readouterr().err
+    assert not paths["report"].exists()
+
+
+def test_an_older_stamped_phase1_file_is_refused(tmp_path, capsys):
+    """A stamp from a previous definition set is refused as loudly."""
+    paths = _write_inputs(tmp_path, CLEAN_GUIDE)
+    stale = dict(PHASE1)
+    stale["metric_schema"] = {"version": 1, "definitions": "the old ones"}
+    paths["phase1"].write_text(json.dumps(stale), encoding="utf-8")
+
+    assert _run_main(paths) == 2
+    assert "requires version" in capsys.readouterr().err
+
+
+def test_a_stale_phase3_file_is_refused_too(tmp_path):
+    """The promotion file is derived from phase 1, so it carries the stamp."""
+    paths = _write_inputs(tmp_path, CLEAN_GUIDE)
+    stale = dict(PHASE3)
+    stale.pop("metric_schema")
+    paths["phase3"].write_text(json.dumps(stale), encoding="utf-8")
+
+    assert _run_main(paths) == 2

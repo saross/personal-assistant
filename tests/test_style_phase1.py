@@ -454,3 +454,28 @@ def test_the_published_hapax_key_carries_the_type_based_value():
     # The two measures differ on this fixture, so the assertion above is not
     # satisfied by an accidental equality.
     assert record["hapax_ratio"] != record["hapax_per_token"]
+
+
+def test_the_results_file_stamps_its_metric_definitions(tmp_path, monkeypatch):
+    """Consumers can only refuse a stale corpus if phase 1 stamps a fresh one.
+
+    The mutation this kills: dropping the ``metric_schema`` key from the
+    output, after which every consumer refuses every file — or, if the check
+    were also dropped, silently compares new measurements against old ones.
+    """
+    import style_support
+
+    _install_fake_spacy(monkeypatch)
+    corpus_dir, manifest = _corpus(tmp_path, ["AAAA1111"])
+    out = tmp_path / "out.json"
+
+    p1.main(["--corpus-dir", str(corpus_dir), "--manifest", str(manifest),
+             "--output", str(out), "--clean-corpus"])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["metric_schema"]["version"] == \
+        style_support.METRIC_SCHEMA_VERSION
+    assert "hapax_ratio over word TYPES" in payload["metric_schema"]["definitions"]
+    assert payload["provenance"]["metric_schema_version"] == \
+        style_support.METRIC_SCHEMA_VERSION
+    assert style_support.metric_schema_error(payload, out) is None

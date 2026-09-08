@@ -20,6 +20,7 @@ Every rate and key here is invented.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -29,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from style_test_helpers import load_style_module, refuse_sockets  # noqa: E402
 
 promotion = load_style_module("phase3_promotion")
+style_support = load_style_module("style_support")
+
+#: Every phase 1 fixture carries the metric-definition stamp consumers
+#: require; the refusal for an unstamped file is pinned at the end.
+_STAMP = json.dumps(style_support.metric_schema_stamp())
 
 
 @pytest.fixture(autouse=True)
@@ -183,7 +189,8 @@ def test_a_measured_zero_is_printed_as_zero(tmp_path, monkeypatch, capsys):
     """
     phase1 = tmp_path / "phase1.json"
     phase1.write_text(
-        '{"per_paper": [{"key": "AAAA1111", "regression": '
+        '{"metric_schema": ' + _STAMP + ', '
+        '"per_paper": [{"key": "AAAA1111", "regression": '
         '{"pace_count_case_sensitive": 0}}], '
         '"aggregate": {"regression": {"pace_count_case_sensitive": 0}}}',
         encoding="utf-8")
@@ -203,7 +210,8 @@ def test_dry_run_writes_no_verdict_file(tmp_path, monkeypatch):
     """
     phase1 = tmp_path / "phase1.json"
     phase1.write_text(
-        '{"per_paper": [{"key": "AAAA1111", "mattr_100": 0.7}], '
+        '{"metric_schema": ' + _STAMP + ', '
+        '"per_paper": [{"key": "AAAA1111", "mattr_100": 0.7}], '
         '"aggregate": {"regression": {}}}', encoding="utf-8")
     out_path = tmp_path / "phase3.json"
     monkeypatch.setattr(promotion, "PHASE1", phase1)
@@ -219,7 +227,8 @@ def test_a_written_verdict_file_carries_provenance(tmp_path, monkeypatch):
 
     phase1 = tmp_path / "phase1.json"
     phase1.write_text(
-        '{"per_paper": [{"key": "AAAA1111", "mattr_100": 0.7}], '
+        '{"metric_schema": ' + _STAMP + ', '
+        '"per_paper": [{"key": "AAAA1111", "mattr_100": 0.7}], '
         '"aggregate": {"regression": {}}}', encoding="utf-8")
     out_path = tmp_path / "phase3.json"
     monkeypatch.setattr(promotion, "PHASE1", phase1)
@@ -238,3 +247,41 @@ def test_a_missing_phase1_input_exits_two(tmp_path, monkeypatch, capsys):
 
     assert promotion.main([]) == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_an_unstamped_phase1_file_is_refused(tmp_path, monkeypatch, capsys):
+    """Promotion verdicts inherit whatever definitions phase 1 used.
+
+    The mutation this kills: dropping the metric_schema check, which lets
+    `attested` verdicts be computed from superseded measurements and then
+    quoted in the guide as current evidence.
+    """
+    phase1 = tmp_path / "phase1.json"
+    phase1.write_text(
+        '{"per_paper": [{"key": "AAAA1111", "mattr_100": 0.7}], '
+        '"aggregate": {"regression": {}}}', encoding="utf-8")
+    out_path = tmp_path / "phase3.json"
+    monkeypatch.setattr(promotion, "PHASE1", phase1)
+    monkeypatch.setattr(promotion, "OUT", out_path)
+
+    assert promotion.main([]) == 2
+    assert "metric_schema version is absent" in capsys.readouterr().err
+    assert not out_path.exists()
+
+
+def test_the_verdict_file_carries_the_stamp_forward(tmp_path, monkeypatch):
+    """The verifier checks this file's stamp without re-reading phase 1."""
+    phase1 = tmp_path / "phase1.json"
+    phase1.write_text(
+        '{"metric_schema": ' + _STAMP + ', '
+        '"per_paper": [{"key": "AAAA1111", "mattr_100": 0.7}], '
+        '"aggregate": {"regression": {}}}', encoding="utf-8")
+    out_path = tmp_path / "phase3.json"
+    monkeypatch.setattr(promotion, "PHASE1", phase1)
+    monkeypatch.setattr(promotion, "OUT", out_path)
+
+    assert promotion.main([]) == 0
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["metric_schema"]["version"] == \
+        style_support.METRIC_SCHEMA_VERSION

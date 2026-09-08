@@ -778,6 +778,13 @@ def main(argv: list[str] | None = None) -> int:
     guide = args.guide.read_text(encoding="utf-8")
     phase1 = json.loads(args.phase1.read_text(encoding="utf-8"))
     phase3 = json.loads(args.phase3.read_text(encoding="utf-8"))
+    # Both inputs must have been measured with the definitions this code
+    # checks claims against; otherwise a PASS means nothing.
+    for payload, source in ((phase1, args.phase1), (phase3, args.phase3)):
+        stale = style_support.metric_schema_error(payload, source)
+        if stale:
+            print(stale, file=sys.stderr)
+            return 2
 
     all_results = verify_guide(guide, phase1, phase3)
 

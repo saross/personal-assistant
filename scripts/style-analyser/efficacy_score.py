@@ -106,6 +106,15 @@ def main(argv: list[str] | None = None) -> int:
         for rec in manifest.get("records", []):
             stratum_by_topic[rec["topic_id"]] = rec["stratum"]
 
+    for candidate in (args.phase1, args.reference_phase1):
+        if candidate is None or not candidate.exists():
+            continue
+        stale = style_support.metric_schema_error(
+            json.loads(candidate.read_text(encoding="utf-8")), candidate)
+        if stale:
+            print(stale, file=sys.stderr)
+            return 2
+
     phase1, phase3, fs, X, loo, nlp, matrix_source = load_corpus_space(
         args.phase1, args.phase3, args.spacy_model, args.reference_phase1
     )

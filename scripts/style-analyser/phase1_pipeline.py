@@ -946,6 +946,10 @@ def main(argv: list[str] | None = None) -> int:
         rec.pop("_pos_bigrams_counter", None)
 
     output = {
+        # What the metric NAMES in this file mean. A consumer that measures
+        # its input with different definitions and compares the two gets a
+        # number with no meaning, and nothing downstream can see it happen.
+        "metric_schema": style_support.metric_schema_stamp(),
         "per_paper": per_paper,
         "aggregate": agg,
         "regression_vs_run_1": regression,
@@ -959,7 +963,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(__file__).name, [args.manifest],
             spacy_model=args.spacy_model,
             extra={"spacy_model_version": nlp.meta.get("version"),
-                   "clean_corpus": bool(args.clean_corpus)},
+                   "clean_corpus": bool(args.clean_corpus),
+                   "metric_schema_version": style_support.METRIC_SCHEMA_VERSION},
         ),
     }
 

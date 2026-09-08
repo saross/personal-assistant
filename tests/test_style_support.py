@@ -404,3 +404,32 @@ def test_a_held_out_corpus_paper_is_judged_in_the_other_direction():
     assert style_support.sanity_verdict(3.9, 4.0, 2.0, is_corpus=True) == (
         "within", True)
     assert style_support.sanity_verdict(4.1, 4.0, 2.0, is_corpus=True)[1] is False
+
+
+# ---------------------------------------------------------------------------
+# metric_schema (re-audit item 4)
+# ---------------------------------------------------------------------------
+
+def test_a_stamped_payload_passes_and_an_unstamped_one_does_not(tmp_path):
+    """The whole point: a file measured the old way must be refusable.
+
+    The mutation this kills: returning None unconditionally, which restores
+    exactly the silent mismatch the stamp exists to prevent.
+    """
+    fresh = {"metric_schema": style_support.metric_schema_stamp()}
+    assert style_support.metric_schema_error(fresh, "fresh.json") is None
+
+    message = style_support.metric_schema_error({}, "stale.json")
+    assert message is not None
+    assert "stale.json" in message
+    assert "absent" in message
+    assert "Re-run phase1_pipeline.py" in message
+
+
+def test_an_older_version_is_refused_with_both_numbers():
+    """The operator needs to know what they have and what is required."""
+    message = style_support.metric_schema_error(
+        {"metric_schema": {"version": 1}}, "old.json")
+
+    assert "version is 1" in message
+    assert f"version {style_support.METRIC_SCHEMA_VERSION}" in message

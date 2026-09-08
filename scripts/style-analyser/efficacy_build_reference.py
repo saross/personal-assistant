@@ -131,6 +131,10 @@ def main(argv: list[str] | None = None) -> int:
     semi_incl = semi_free = words_incl = words_free = 0
 
     phase1 = p5.load_json(args.phase1)
+    stale = style_support.metric_schema_error(phase1, args.phase1)
+    if stale:
+        print(stale, file=sys.stderr)
+        return 2
     keys = [p["key"] for p in phase1["per_paper"]]
 
     import spacy
@@ -191,6 +195,10 @@ def main(argv: list[str] | None = None) -> int:
     semi_density_incl = round(1000.0 * semi_incl / max(words_incl, 1), 3)
     semi_density_free = round(1000.0 * semi_free / max(words_free, 1), 3)
     payload = {
+        # This file is phase1-shaped and is consumed as a corpus, so it
+        # carries the same stamp: the excerpts were measured by the phase 1
+        # code path above.
+        "metric_schema": style_support.metric_schema_stamp(),
         "reference_kind": "length-matched corpus excerpts",
         "citations_stripped": not args.keep_citations,
         "target_words": args.target_words,

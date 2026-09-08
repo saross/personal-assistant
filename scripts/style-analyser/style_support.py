@@ -67,6 +67,57 @@ PHASE1_RESULTS_DEFAULT = (
     PA_ROOT / "data" / "style-corpus" / "phase1-results-clean.json"
 )
 
+#: The version of the METRIC DEFINITIONS phase 1 emits. Bumped whenever a
+#: metric changes meaning under a name that stays the same — which is exactly
+#: what happened in the 2026-09 audit: hapax_ratio moved from tokens to types,
+#: passive_ratio from per-verb to presence-per-sentence, the nominalisation
+#: rate onto the alphabetic token count, and mattr_100 to None below its
+#: window. A results file written before that change looks identical to one
+#: written after it, so a consumer measuring an input with the new code and
+#: comparing it against an old corpus file gets numbers that cannot be
+#: compared — silently. Version 1 is anything unstamped.
+METRIC_SCHEMA_VERSION = 2
+
+#: What version 2 means, recorded in the file itself so a reader of an
+#: archived result does not have to find this constant.
+METRIC_SCHEMA_DEFINITIONS = (
+    "hapax_ratio over word TYPES; passive_ratio as the fraction of sentences "
+    "carrying a passive; nominalisation_per_1000w over alphabetic tokens; "
+    "mattr_100 null below its 100-word window; NFC-normalised input"
+)
+
+
+def metric_schema_stamp() -> dict:
+    """Return the stamp phase 1 writes into its results file."""
+    return {
+        "version": METRIC_SCHEMA_VERSION,
+        "definitions": METRIC_SCHEMA_DEFINITIONS,
+    }
+
+
+def metric_schema_error(payload: dict, source: Path | str) -> str | None:
+    """Return a refusal message when ``payload`` predates the current metrics.
+
+    ``None`` means the file is safe to use. Every consumer of a phase 1
+    results file calls this immediately after loading it: comparing an input
+    measured with today's definitions against a corpus measured with
+    yesterday's produces a number with no meaning, and nothing else in the
+    pipeline can detect it.
+    """
+    stamp = payload.get("metric_schema")
+    found = stamp.get("version") if isinstance(stamp, dict) else None
+    if found == METRIC_SCHEMA_VERSION:
+        return None
+    described = "absent" if found is None else repr(found)
+    return (
+        f"{source}: metric_schema version is {described}, but this code "
+        f"requires version {METRIC_SCHEMA_VERSION}. The file was measured "
+        "with superseded metric definitions "
+        f"({METRIC_SCHEMA_DEFINITIONS}), so its numbers are not comparable "
+        "with anything measured now. Re-run phase1_pipeline.py over the "
+        "corpus, then re-run the stages that depend on it."
+    )
+
 
 def atomic_write_text(path: Path | str, text: str, *, dry_run: bool = False,
                       encoding: str = "utf-8") -> bool:

@@ -294,6 +294,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     data = json.loads(phase1_path.read_text(encoding="utf-8"))
+    stale = style_support.metric_schema_error(data, phase1_path)
+    if stale:
+        print(stale, file=sys.stderr)
+        return 2
     per_paper = data["per_paper"]
     agg_reg = data["aggregate"]["regression"]
 
@@ -414,6 +418,9 @@ def main(argv: list[str] | None = None) -> int:
 
     out = {
         "phase1_input": str(phase1_path),
+        # Propagated, so the verifier can check this file's provenance too
+        # without re-reading phase 1.
+        "metric_schema": style_support.metric_schema_stamp(),
         "thresholds": {
             "cv_threshold": CV_THRESHOLD,
             "n_occ_floor": N_OCC_FLOOR,
