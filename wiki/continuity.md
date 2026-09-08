@@ -2544,6 +2544,22 @@ receipts, 1.2 MB, one disk, no git, no backup); recommended an append-only
 copy plus JSONL index into `data/agent-mail/` via the sync hooks, private
 now, curated public export later — awaiting Shawn's word.
 
+**Retry run by Claude on Shawn's instruction — blocked with a precise cause,
+then PASSED in a diagnostic variant.** Unmodified harness: blocked at
+`command/exec`, bwrap "missing path", probe never started, config checks
+true (`/tmp/sol-live-acceptance-host-retry.json`). Variant B (absolute read
+rules on non-existent paths dropped; 44 of them, mostly PA-protected names
+absent from the tiny fixture clone and primary): **every check true in all
+three phases**, 1.14 s (`/tmp/sol-live-acceptance-host-diag2.json`). Cause:
+the renderer emits absolute read rules for protected paths in admitted
+roots whether or not they exist, and bubblewrap cannot bind a missing path;
+Codex creates synthetic targets only for workspace-relative rules. A real PA
+clone would hit it (data-linked paths absent until submodule init). Fix
+recommended to Astra: emit absolute read rules only for existing paths; the
+ownership hook guards not-yet-existing ones. **Archiver shipped** (`b184b4b`):
+`data/agent-mail/` seeded with 46 messages + 45 receipts and `index.jsonl`;
+daily sync runs it. Live-watch round 1 since Shawn's last message.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
