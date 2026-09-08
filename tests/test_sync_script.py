@@ -2312,6 +2312,147 @@ class TestAcknowledgementIsStateOnly:
         state = _sync_gate.read_state(pinned_gate_file)
         assert _sync_gate.PROBLEM_QUARANTINE in state.problems
 
+    def test_a_render_that_failed_is_named_as_the_half_that_failed(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Eighth re-audit, M3 — the sidecar wrote and the render did not.
+        The state is now right and the gate file still shows the problem,
+        which is a real condition with a real remedy, and the operator
+        needs to be told which half failed. The mutation this kills:
+        deriving the verdict from the sidecar alone, which reports
+        success over a session-start banner that still says REFUSED.
+        """
+        import _sync_gate
+
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._standing_quarantine(pinned_gate_file, quarantine)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+
+        real_write = _sync_gate._atomic_write
+
+        def _fail_only_the_render(path, text):
+            if path.name.endswith(".state.json"):
+                return real_write(path, text)
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(_sync_gate, "_atomic_write", _fail_only_the_render)
+
+        try:
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(SystemExit) as excinfo:
+                    sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 9
+        assert "could NOT" in caplog.text
+        assert "re-render" in caplog.text
+        assert "did NOT clear" not in caplog.text, (
+            "the wrong half was blamed"
+        )
+
+        # The state really did land, so the next run repairs the mirror.
+        monkeypatch.setattr(_sync_gate, "_atomic_write", real_write)
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
+        _sync_gate.render_gate(
+            pinned_gate_file, state, logging.getLogger("test-repair"),
+        )
+        assert "REFUSED" not in pinned_gate_file.read_text(encoding="utf-8")
+
+    def test_a_successful_ack_leaves_both_artefacts_agreeing(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The guard must not amount to always failing: when both halves
+        land, the ack exits 0 and neither artefact still carries the
+        problem.
+        """
+        import _sync_gate
+
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._standing_quarantine(pinned_gate_file, quarantine)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 0
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
+        assert "REFUSED" not in pinned_gate_file.read_text(encoding="utf-8")
+
+    def test_an_unreadable_sidecar_is_not_reported_as_nothing_to_do(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Eighth re-audit, low — a corrupt sidecar reads as "no problems",
+        which is indistinguishable from a clean one. Saying "nothing to
+        do" over an unknown state tells the operator the opposite of the
+        truth. The mutation this kills: dropping the exists-but-empty
+        check ahead of the nothing-to-do branch.
+        """
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._standing_quarantine(pinned_gate_file, quarantine)
+        state_file = pinned_gate_file.with_name(
+            pinned_gate_file.name + ".state.json",
+        )
+        state_file.write_text("{ this is not json", encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+
+        try:
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(SystemExit) as excinfo:
+                    sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 9
+        assert "could not be read" in caplog.text
+        assert "Nothing to do" not in caplog.text
+
+    def test_both_syncs_check_both_halves_of_the_write(self):
+        """
+        The two scripts carry the same acknowledgement, and a fix applied
+        to one of them is not a fix. Structural, because the sessions
+        script's ack has no cheap end-to-end harness here.
+        """
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        for name in ("sync-to-postgres.py", "sync-sessions-to-postgres.py"):
+            source = (scripts / name).read_text(encoding="utf-8")
+            start = source.index("def _acknowledge_quarantine(")
+            body = source[start:source.index("\ndef ", start + 10)]
+            assert "sidecar_cleared" in body, f"{name} ignores the sidecar"
+            assert "gate_cleared" in body, f"{name} ignores the rendered gate"
+            assert body.count("return 9") >= 3, (
+                f"{name} does not exit 9 on every way the write can fail"
+            )
+
     def test_an_ack_with_nothing_standing_says_so(
         self, monkeypatch, tmp_path, pinned_gate_file, caplog,
     ):
