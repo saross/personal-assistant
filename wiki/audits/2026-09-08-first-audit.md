@@ -232,7 +232,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | fixed in PR #116 (merged 0d1d391) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | fixed in PR #116 (merged 0d1d391) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **round 3c** (`claude/audit-round3c`) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -257,28 +257,28 @@ callers.
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| P1 | `scripts/sync-sessions-to-postgres.py:543-552,652-658` — every `psycopg2.Error` is reported as "PostgreSQL may be down" and the cursor held. Two archive metadata files carry a NUL in LLM-generated narrative; Postgres rejects ` ` in jsonb; the `sessions` table has been stale since 2026-08-17 with 48 sessions unsynced and the wrong diagnosis in the log. | CONFIRMED live | **round 2** (branch `claude/audit-postgres`) (split outage from data errors; quarantine the row; per-row fallback after a failed batch; sanitise NUL at ingest) |
-| P2 | `scripts/sync-to-postgres.py:656-665,950-954,312` — same conflation in the memories path; `created_at` unguarded (`TIMESTAMPTZ NOT NULL`); a NUL in content raises `ValueError` outside the handler. | CONFIRMED by reading; free-text dates have reached `deadline_at` repeatedly | **round 2** (branch `claude/audit-postgres`) |
-| P3 | `scripts/embed.py:37` — `OLLAMA_BASE_URL=""` from `ollama-endpoint.sh`'s failure path yields `ValueError: unknown url type` outside the degradation ladder; the documented fallback does not exist. | CONFIRMED by repro | **round 2** (branch `claude/audit-postgres`) (`or` default; fix the wrapper's comment) |
+| P1 | `scripts/sync-sessions-to-postgres.py:543-552,652-658` — every `psycopg2.Error` is reported as "PostgreSQL may be down" and the cursor held. Two archive metadata files carry a NUL in LLM-generated narrative; Postgres rejects ` ` in jsonb; the `sessions` table has been stale since 2026-08-17 with 48 sessions unsynced and the wrong diagnosis in the log. | CONFIRMED live | fixed in PR #117 (merged 773a0bd) (split outage from data errors; quarantine the row; per-row fallback after a failed batch; sanitise NUL at ingest) |
+| P2 | `scripts/sync-to-postgres.py:656-665,950-954,312` — same conflation in the memories path; `created_at` unguarded (`TIMESTAMPTZ NOT NULL`); a NUL in content raises `ValueError` outside the handler. | CONFIRMED by reading; free-text dates have reached `deadline_at` repeatedly | fixed in PR #117 (merged 773a0bd) |
+| P3 | `scripts/embed.py:37` — `OLLAMA_BASE_URL=""` from `ollama-endpoint.sh`'s failure path yields `ValueError: unknown url type` outside the degradation ladder; the documented fallback does not exist. | CONFIRMED by repro | fixed in PR #117 (merged 773a0bd) (`or` default; fix the wrapper's comment) |
 
 ### Medium (Postgres)
 
 | # | Finding | Disposition |
 |---|---|---|
-| P4 | `rebuild-postgres.py` never truncates `session_chunks` | **round 2** (branch `claude/audit-postgres`) |
-| P5 | `index-session-content.py` has no schema-version guard and tracebacks on an outage | **round 2** (branch `claude/audit-postgres`) |
-| P6 | `backfill-embeddings.py --limit` not honoured (200 embedded for `--limit 5`) | **round 2** (branch `claude/audit-postgres`) |
-| P7 | `backfill-embeddings.py --catch-up` tracebacks on a DB error mid-batch | **round 2** (branch `claude/audit-postgres`) |
-| P8 | `check-memory-drift.py --recover` resurrects soft-deleted memories (`is_active` and history fields not selected) | **round 2** (branch `claude/audit-postgres`) |
-| P9 | `check-memory-drift.py:298` is the only canonical writer without the flock | **round 2** (branch `claude/audit-postgres`) |
-| P10 | `.get(key, default)` on a NOT NULL column right after the comment warning against it | **round 2** (branch `claude/audit-postgres`) |
+| P4 | `rebuild-postgres.py` never truncates `session_chunks` | fixed in PR #117 (merged 773a0bd) |
+| P5 | `index-session-content.py` has no schema-version guard and tracebacks on an outage | fixed in PR #117 (merged 773a0bd) |
+| P6 | `backfill-embeddings.py --limit` not honoured (200 embedded for `--limit 5`) | fixed in PR #117 (merged 773a0bd) |
+| P7 | `backfill-embeddings.py --catch-up` tracebacks on a DB error mid-batch | fixed in PR #117 (merged 773a0bd) |
+| P8 | `check-memory-drift.py --recover` resurrects soft-deleted memories (`is_active` and history fields not selected) | fixed in PR #117 (merged 773a0bd) |
+| P9 | `check-memory-drift.py:298` is the only canonical writer without the flock | fixed in PR #117 (merged 773a0bd) |
+| P10 | `.get(key, default)` on a NOT NULL column right after the comment warning against it | fixed in PR #117 (merged 773a0bd) |
 | P11 | Sessions cursor is naive local time compared lexicographically; a clock step back skips sessions forever | deferred (document `--full-resync`; fix with UTC when the archive format changes) |
-| P12 | No embedding-dimension validation; a wrong-dimension model re-embeds the same rows forever with a warning | **round 2** (branch `claude/audit-postgres`) (check `len == 768` once) |
+| P12 | No embedding-dimension validation; a wrong-dimension model re-embeds the same rows forever with a warning | fixed in PR #117 (merged 773a0bd) (check `len == 768` once) |
 | P13 | Two quarantine record shapes in one file; dedup sees one | deferred |
-| P14 | Poison lines re-quarantined every 5 minutes while the cursor is halted | **round 2** (branch `claude/audit-postgres`) (dedup before append) |
+| P14 | Poison lines re-quarantined every 5 minutes while the cursor is halted | fixed in PR #117 (merged 773a0bd) (dedup before append) |
 | P15 | Drift recovery pulls the whole table to filter in Python | deferred |
-| P16 | Three processes read-modify-write `sync-cursors.json` without lock or atomic rename | **round 2** (branch `claude/audit-postgres`) (atomic write; the memories sync already has the flock pattern) |
-| P17 | `scripts/sync-to-zotero.py:129` is the third writer of `sync-cursors.json` and still writes unlocked and non-atomically; P16 protects the other two (CONFIRMED, round-two agent) | **next** (external-services tranche, or round 3) |
+| P16 | Three processes read-modify-write `sync-cursors.json` without lock or atomic rename | fixed in PR #117 (merged 773a0bd) (atomic write; the memories sync already has the flock pattern) |
+| P17 | `scripts/sync-to-zotero.py:129` is the third writer of `sync-cursors.json` and still writes unlocked and non-atomically; P16 protects the other two (CONFIRMED, round-two agent) | fixed in PR #117: all four cursor writers take the flock and write atomically |
 
 Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs
@@ -753,9 +753,21 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     counts is destroyed by the next append (one call to fix); follow-ups:
     the timestamp cursor is not validated (a garbage value idles the
     sessions sync for ever), a fourth quarantine reader is unguarded, a
-    negative cursor resets the ack silently. Closing round running.
-    First session after merge will report all three gates as never
-    written until each script has run once.
+    negative cursor resets the ack silently. Closing round done (e78211a–fb4f9da; suite 2,163):
+    one code path appends to a quarantine file and repairs the separator
+    first; the timestamp cursor must parse; the dedup reader is the shared
+    parser; a negative cursor is reported. The coordinator reviewed the
+    closing diff and reconciled the merge with PR #116 (the trigger sandbox
+    now holds a quiet PostgreSQL state). **Merged as 773a0bd**; main suite
+    2,362. Live hook commands on both machines updated to the template
+    (backups beside `settings.json`). First session after merge reports all
+    three gates as never written until each script has run once.
+- Round 2 is complete: all five branches merged (#114 8c61bb8, #115
+  b0f3269 squash, #116 0d1d391, #117 773a0bd, #118 190bc7c); main suite
+  2,362 (from 1,250 at the start). Every branch's first re-audit found at
+  least one critical in the fix code itself; the two long branches took
+  ten and twelve rounds. Two decisions (D4, D6) and the two behavioural
+  decisions (D1, D2) remain Shawn's.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
