@@ -23,6 +23,15 @@ classification code path. The three things it adds over the report's Tier-C
 3. **A threshold exit code** (``--alert-threshold``) — exits 1 when the fail
    rate exceeds the threshold, for cron/hook alerting.
 
+Exit codes:
+  0 — sweep completed, fail rate within the threshold, trend row appended
+  1 — fail rate exceeds ``--alert-threshold``
+  2 — the sweep could not be trusted or could not be recorded: the corpus
+      was unreadable, repository discovery was empty or smaller than the
+      last successful run, more than ``MAX_PENDING_PCT`` of records could
+      not be checked, or the trend row could not be appended. No trend row
+      is written in the unreliable cases.
+
 **Read-only** with respect to the corpus and PostgreSQL: it mutates nothing,
 takes no locks, and only appends to its own trend log. Safe to run during
 concurrent extraction (the memory-health-report posture). No API calls.
@@ -65,25 +74,62 @@ FULL_BACKSET_DAYS = 100_000
 # 2026-06-04 → 2026-06-06); 25 % gives headroom before alerting.
 DEFAULT_ALERT_THRESHOLD = 25.0
 
+# Above this share of ``pending`` verdicts the sweep is not measuring drift, it
+# is measuring its own inability to check: an unmounted mount, a missing git
+# binary, a locked index. Logging a trend row from such a run would put a
+# fabricated spike in an append-only log for ever (audit 2026-09-08, AN3/AN7).
+MAX_PENDING_PCT = 10.0
+
 
 def run_sweep(records: list[dict], *, as_of: datetime,
-              days: int = FULL_BACKSET_DAYS) -> dict:
+              days: int = FULL_BACKSET_DAYS, min_repos: int = 0) -> dict:
     """Re-resolve the anchored records and return the tier_c_audit result.
 
     Wires the same resolution callables the memory-health report uses; the
     only difference is ``days`` defaults to the full back-set. Scans the broad
     repo set once (working tree + git history of every relevant repo).
+
+    *min_repos* is the repository count the last successful sweep recorded.
+    A run that discovers FEWER repositories than that is running on a
+    degraded machine — a different host, an unpopulated ``~/Code``, an
+    unmounted volume — and every anchor in the missing repositories would
+    resolve as absent, so it raises :class:`triage_anchors.RepoSetUnavailable`
+    rather than reporting a drift spike that is really a discovery failure
+    (finding AN7). The returned dict carries ``repo_count`` so the next run
+    can apply the same floor.
     """
-    repos = ta.broad_repo_set()
+    repos = ta.broad_repo_set()   # raises RepoSetUnavailable when empty
+    if len(repos) < min_repos:
+        raise ta.RepoSetUnavailable(
+            f"discovered {len(repos)} repositories, fewer than the "
+            f"{min_repos} the last successful sweep saw"
+        )
     basename_index = ta.build_basename_index(repos)
-    return tier_c_audit(
+    # Memoise both ref-level resolvers: verify_file walks every repository and
+    # spawns up to two git processes per repository, and the same ref recurs
+    # across many records. The key carries the resolver identity, so a file
+    # ref and a commit ref that share text cannot share an answer (AN10).
+    ref_memo: dict[tuple[str, str], object] = {}
+
+    def _memoised(kind: str, fn):
+        def call(ref: str):
+            key = (kind, ref)
+            if key not in ref_memo:
+                ref_memo[key] = fn(ref)
+            return ref_memo[key]
+        return call
+
+    result = tier_c_audit(
         records,
         as_of=as_of,
         days=days,
         verify=lambda rec: av.verify_memory(rec, repos),
-        verify_file_ref=lambda ref: av.verify_file(ref, repos),
-        recover=lambda ref: ta.recovery_status(ref, basename_index),
+        verify_file_ref=_memoised("file", lambda ref: av.verify_file(ref, repos)),
+        recover=_memoised("recover", lambda ref: ta.recovery_status(
+            ref, basename_index)),
     )
+    result["repo_count"] = len(repos)
+    return result
 
 
 def trend_line(result: dict, *, as_of: datetime) -> dict:
@@ -105,7 +151,36 @@ def trend_line(result: dict, *, as_of: datetime) -> dict:
         "absent": recovery.get("absent", 0),
         "recoverable": recovery.get("recoverable", 0),
         "ambiguous": recovery.get("ambiguous", 0),
+        # Recorded so the NEXT sweep can refuse to run against a smaller
+        # repository set than this one saw (finding AN7).
+        "repos": result.get("repo_count", 0),
     }
+
+
+def last_repo_count(log_path: Path) -> int:
+    """The repository count the most recent logged sweep recorded, else 0.
+
+    Reads the append-only trend log backwards for the last line carrying a
+    non-zero ``repos``. A missing, unreadable, or pre-``repos`` log yields 0,
+    which imposes no floor — the guard can only tighten over time, never
+    block a first run.
+    """
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        count = record.get("repos")
+        if isinstance(count, int) and count > 0:
+            return count
+    return 0
 
 
 def append_trend(record: dict, *, log_path: Path = LOG_PATH) -> bool:
@@ -161,21 +236,46 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[drift-sweep] ERROR: cannot read {args.memories}: {exc}",
               file=sys.stderr)
         return 2
-    result = run_sweep(records, as_of=now, days=args.days)
+    try:
+        result = run_sweep(records, as_of=now, days=args.days,
+                           min_repos=last_repo_count(args.log_path))
+    except ta.RepoSetUnavailable as exc:
+        # Not a drift result: a discovery failure wearing one. Log nothing.
+        print(f"[drift-sweep] ERROR: sweep unreliable — {exc}; no trend row "
+              "written", file=sys.stderr)
+        return 2
     record = trend_line(result, as_of=now)
 
+    # A sweep dominated by "pending" verdicts measured our own inability to
+    # check, not the corpus. Say so, and keep it out of the trend log.
+    total = record["total_anchored"]
+    pending_pct = round(100 * record["pending"] / total, 1) if total else 0.0
+    if pending_pct > MAX_PENDING_PCT:
+        print(f"[drift-sweep] ERROR: sweep unreliable — {pending_pct}% of "
+              f"{total} anchored records could not be checked (limit "
+              f"{MAX_PENDING_PCT}%); no trend row written", file=sys.stderr)
+        print(json.dumps(record, indent=2) if args.json else _render(record))
+        return 2
+
+    log_failed = False
     if not args.no_log:
         if not append_trend(record, log_path=args.log_path):
-            print(f"[drift-sweep] WARN: could not append to {args.log_path}",
+            print(f"[drift-sweep] ERROR: could not append to {args.log_path}",
                   file=sys.stderr)
+            log_failed = True
 
     print(json.dumps(record, indent=2) if args.json else _render(record))
 
     if record["fail_pct"] > args.alert_threshold:
         print(f"[drift-sweep] ALERT: fail rate {record['fail_pct']}% exceeds "
               f"threshold {args.alert_threshold}%", file=sys.stderr)
+        if log_failed:
+            return 2
         return 1
-    return 0
+    # A lost trend row is a failed run: the whole point of the sweep is the
+    # week-over-week series, and a silent gap in it is invisible later
+    # (finding AN18).
+    return 2 if log_failed else 0
 
 
 if __name__ == "__main__":

@@ -109,12 +109,33 @@ def dispose(tags: list[str]) -> str:
     return "cross-repo"
 
 
+class RepoSetUnavailable(RuntimeError):
+    """Raised when repository discovery cannot produce a usable repo set.
+
+    Every anchor resolves against this set, so an empty (or degraded) one
+    turns the whole corpus ``verified=false`` — a fabricated drift spike the
+    append-only trend log then keeps for ever (audit 2026-09-08, findings
+    AN7 / ANT5). Callers must fail loudly rather than sweep against nothing.
+    """
+
+
 def broad_repo_set() -> list[Path]:
-    """PA repo + its data submodule + every ``~/Code/*`` git repo."""
+    """PA repo + its data submodule + every ``~/Code/*`` git repo.
+
+    Raises :class:`RepoSetUnavailable` when discovery finds nothing: on a
+    fresh machine, an unmounted home, or a container, ``[]`` would silently
+    condemn every anchored memory instead of reporting that we could not look.
+    """
     home = Path.home()
     repos = [home / "personal-assistant", home / "personal-assistant" / "data"]
     repos += [Path(p).parent for p in glob.glob(str(home / "Code" / "*" / ".git"))]
-    return [r for r in repos if r.exists()]
+    found = [r for r in repos if r.exists()]
+    if not found:
+        raise RepoSetUnavailable(
+            "no git repositories discovered — anchor resolution would report "
+            "every anchor as absent"
+        )
+    return found
 
 
 def _make_resolver(repos: list[Path]):

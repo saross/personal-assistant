@@ -64,6 +64,11 @@ _GIT_TIMEOUT_S = 3
 # such a ref never reaches the resolver in the first place.
 _PATHSPEC_MAGIC = ("*", "?", "[")
 
+# The one git error text that means "checked, and absent" rather than "could
+# not check". Any other non-zero exit from the history probe is treated as a
+# failure to check and reported as "pending" (finding AN3).
+_UNMATCHED_PATHSPEC = "did not match any file"
+
 # Minimum hex characters we will treat as a commit reference. Git itself
 # resolves a 4-character prefix in a small repository, which made
 # ``verify_commit`` accept four hex characters of prose as a hash and find a
@@ -119,9 +124,15 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
     ``confidence=high`` (audit 2026-09-08, finding AN1). A ref that walks out
     of the repository (``../outside``) is refused outright (finding AN11).
 
-    Returns ``"true"`` / ``"false"`` / ``"pending"`` (the last only on a
-    subprocess timeout). A missing git binary or a vanished repo path
-    yields ``"false"`` for *this* repo — the caller tries the next one.
+    Returns ``"true"`` / ``"false"`` / ``"pending"``. ``"false"`` is reserved
+    for a *completed* check that found nothing: git ran, answered, and the path
+    was absent from HEAD and from every ref's history. Anything that stopped us
+    checking — a missing git binary, an unreadable or unmounted repository, a
+    timeout, or an exit code we do not recognise — returns ``"pending"``, per
+    the module contract above. Returning ``"false"`` there was finding AN3: the
+    drift sweep wrote the fabricated failure to its append-only trend log, and
+    ``recover_anchors`` treated the anchor as a recovery candidate and rewrote
+    it.
     """
     if not relpath:
         return "false"
@@ -130,7 +141,9 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
         # to resolve here, and probing it would ask about a path outside the
         # checkout entirely.
         return "false"
-    # 1. Present at the current tip?
+    # 1. Present at the current tip? A non-zero exit here is inconclusive on
+    #    its own (an empty repository has no HEAD), so fall through to the
+    #    history probe rather than deciding.
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{relpath}"],
@@ -142,8 +155,9 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
     except subprocess.TimeoutExpired:
         return "pending"
     except (FileNotFoundError, OSError):
-        # git not installed, or repo path vanished mid-check
-        return "false"
+        # git not installed, or the repository vanished/unmounted mid-check:
+        # we did not check, so we must not say "absent".
+        return "pending"
     # 2. Ever in history (any ref)? Covers deleted-since + renames.
     try:
         result = subprocess.run(
@@ -153,13 +167,21 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
             timeout=_GIT_TIMEOUT_S,
             text=True,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return "true"
     except subprocess.TimeoutExpired:
         return "pending"
     except (FileNotFoundError, OSError):
+        return "pending"
+    if result.returncode == 0:
+        # git answered: output means the path is in history, no output means
+        # it never was. This is the only path that may return "false".
+        return "true" if (result.stdout or "").strip() else "false"
+    if result.returncode == 1:
         return "false"
-    return "false"
+    if result.returncode == 128 and _UNMATCHED_PATHSPEC in (result.stderr or ""):
+        # "did not match any file(s) known to git" — a completed check whose
+        # answer is "absent", not a broken repository.
+        return "false"
+    return "pending"
 
 
 def _relpath_in_repo(abspath: str, repo: Path) -> str | None:
@@ -194,8 +216,11 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
       * **Repo-relative** — ``stat`` against each repo as a prefix, then the
         same HEAD + history probe per repo.
 
-    Returns ``"true"`` on first hit, ``"false"`` if no path resolves,
-    ``"pending"`` on subprocess timeout.
+    Returns ``"true"`` on first hit, ``"false"`` only when every repository
+    was actually consulted and none of them knew the path, and ``"pending"``
+    whenever some check could not complete — a timeout, an unreadable or
+    unmounted repository, a missing git binary, or (for a relative ref) an
+    empty repo set, where nothing was checked at all (finding AN3/AN7).
 
     Note: a path-prefix *mismatch* (e.g. a bare ``continuity.md`` anchor for
     a file that lives at ``wiki/continuity.md``) is NOT rescued here — the
@@ -209,11 +234,17 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
     expanded = os.path.expanduser(path)
     repos = list(repo_set)
     pending_seen = False
+    checked_any = False
 
     if os.path.isabs(expanded):
-        # Absolute (or expanded-tilde): stat directly first.
-        if Path(expanded).exists():
-            return "true"
+        # Absolute (or expanded-tilde): stat directly first. A stat that
+        # RAISES (an unmounted mount, a permission wall) told us nothing.
+        try:
+            if Path(expanded).exists():
+                return "true"
+            checked_any = True
+        except OSError:
+            pending_seen = True
         # Miss — the file may have been deleted since the memory was
         # written. Fall back to git history for any repo containing it.
         for repo in repos:
@@ -225,25 +256,43 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
                 return "true"
             if status == "pending":
                 pending_seen = True
-        return "pending" if pending_seen else "false"
+            else:
+                checked_any = True
+        return "false" if checked_any and not pending_seen else "pending"
 
     # Repo-relative: working-tree stat against each repo as a prefix. The
     # candidate is normalised first, so ``../outside.txt`` cannot stat a file
     # that lives in no repository at all (finding AN11).
     for repo in repos:
         candidate = _under_repo(repo, expanded)
-        if candidate is not None and candidate.exists():
-            return "true"
+        if candidate is None:
+            continue
+        try:
+            if candidate.exists():
+                return "true"
+        except OSError:
+            pending_seen = True
 
     # Filesystem miss — try HEAD + history in each repo.
     for repo in repos:
+        if _under_repo(repo, expanded) is None:
+            # The ref escapes this repository: not absent from it, just not
+            # a question about it. An escaping ref that fits no repository
+            # therefore ends up "false" via the empty-checked branch below.
+            checked_any = True
+            continue
         status = _git_knows_path(repo, expanded)
         if status == "true":
             return "true"
         if status == "pending":
             pending_seen = True
+        else:
+            checked_any = True
 
-    return "pending" if pending_seen else "false"
+    # "false" is committal, so it requires a completed check. An empty repo
+    # set (a degraded machine, an unpopulated ~/Code) checks nothing and must
+    # not condemn every anchor in the corpus.
+    return "false" if checked_any and not pending_seen else "pending"
 
 
 def unique_suffix_match(ref: str, tracked_paths: Iterable[str]) -> str | None:
@@ -289,13 +338,18 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
     hex string). Handles partial hashes (e.g. 7-char) when git is
     configured to disambiguate.
 
-    Returns ``"true"`` on first hit, ``"false"`` if no repo recognises
-    the hash, ``"pending"`` on subprocess timeout.
+    Returns ``"true"`` on first hit, ``"false"`` when every repository was
+    consulted and none recognised the hash, and ``"pending"`` when a check
+    could not complete — a timeout, an unreadable repository, a missing git
+    binary, an exit code other than "no such object", or an empty repo set
+    (finding AN3). A ref that is not hash-shaped is ``"false"`` without any
+    subprocess: that is a completed check of the ref's own shape.
     """
     if not hash_ or not _looks_like_hash(hash_):
         return "false"
 
     pending_seen = False
+    checked_any = False
     for repo in repo_set:
         try:
             result = subprocess.run(
@@ -304,15 +358,22 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
                 capture_output=True,
                 timeout=_GIT_TIMEOUT_S,
             )
-            if result.returncode == 0:
-                return "true"
         except subprocess.TimeoutExpired:
             pending_seen = True
             continue
         except (FileNotFoundError, OSError):
+            pending_seen = True
             continue
+        if result.returncode == 0:
+            return "true"
+        if result.returncode == 1:
+            # rev-parse --verify --quiet: the object is not in this repo.
+            checked_any = True
+        else:
+            # 128 = not a repository, corrupt object store, and so on.
+            pending_seen = True
 
-    return "pending" if pending_seen else "false"
+    return "false" if checked_any and not pending_seen else "pending"
 
 
 def _looks_like_hash(s: str, *, min_len: int = _MIN_COMMIT_HEX) -> bool:
@@ -550,6 +611,7 @@ def bind_confidence(
     has_why: bool = False,
     has_how_to_apply: bool = False,
     is_guidance_category: bool = False,
+    current: str | None = None,
 ) -> str:
     """Map ``verified`` × structural completeness to a confidence level.
 
@@ -562,13 +624,21 @@ def bind_confidence(
       * ``verified == "true"`` and (not guidance category, or both
         ``why`` and ``how_to_apply`` populated) → ``"high"``
       * ``verified == "true"`` but guidance fields incomplete → ``"medium"``
-      * ``verified in {"tier3", "pending"}`` → ``"medium"``
+      * ``verified in {"tier3", "pending"}`` → ``"medium"``, or *current*
+        when the record already carries ``"high"``
       * ``verified == "false"`` → ``"low"``
       * ``verified is None`` (no anchors checked) → ``"low"``
 
     ``"tier3"`` is reserved for the Phase 0b transcript-grep fallback —
     not produced by this module yet, but the rubric handles it for
     forward compatibility.
+
+    *current* is the confidence the record already carries, and it exists so
+    that a re-verification pass cannot DEMOTE a record on the strength of a
+    check that did not complete. ``"pending"`` means "we could not look", not
+    "we looked and found nothing" (finding AN3): an unmounted repository
+    during one sweep must not cost a verified-true memory its ``high``.
+    A ``"false"`` verdict still demotes — that one is committal.
     """
     if verified == "true":
         if not is_guidance_category:
@@ -577,6 +647,6 @@ def bind_confidence(
             return "high"
         return "medium"
     if verified in ("tier3", "pending"):
-        return "medium"
+        return "high" if current == "high" else "medium"
     # 'false' or None — both treated as untrusted.
     return "low"

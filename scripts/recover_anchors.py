@@ -158,6 +158,9 @@ def plan_record(record, resolve, recover, reverify):
         has_why=bool(record.get("why")),
         has_how_to_apply=bool(record.get("how_to_apply")),
         is_guidance_category=(record.get("category") in GUIDANCE_CATEGORIES),
+        # A re-verification that could not complete ("pending") must not
+        # demote a record that already reads "high" (finding AN3).
+        current=record.get("confidence"),
     )
 
     return {

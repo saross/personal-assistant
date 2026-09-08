@@ -14,6 +14,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 # Hyphenated module names — import via __import__ after putting scripts/ on path.
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 ds = __import__("drift-sweep")
@@ -29,6 +31,7 @@ SAMPLE_RESULT = {
     "fail_count": 297,
     "fail_rate_pct": 18.4,
     "failing_file_ref_recovery": {"absent": 201, "recoverable": 95, "ambiguous": 65},
+    "repo_count": 36,
 }
 
 
@@ -50,6 +53,7 @@ def test_trend_line_maps_all_fields() -> None:
         "absent": 201,
         "recoverable": 95,
         "ambiguous": 65,
+        "repos": 36,
     }
 
 
@@ -138,4 +142,91 @@ def test_main_missing_memories_file_exits_2(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(ds, "load_records", _raise)
     rc = ds.main(["--memories", str(tmp_path / "nope.jsonl"),
                   "--log-path", str(tmp_path / "d.jsonl"), "--no-log"])
+    assert rc == 2
+
+
+# ============================================================================
+# The sweep refuses to log a run it could not trust (findings AN3 / AN7 / AN18)
+# ============================================================================
+
+
+def _fixed_sweep(monkeypatch, result: dict) -> None:
+    """Stub load_records + run_sweep with a caller-supplied sweep result."""
+    monkeypatch.setattr(ds, "load_records", lambda path: [])
+    monkeypatch.setattr(ds, "run_sweep", lambda records, **kw: result)
+
+
+def test_a_pending_dominated_sweep_writes_no_trend_row(tmp_path, monkeypatch):
+    """A sweep that could not check most anchors is not a drift measurement.
+
+    Kills the mutation removing the MAX_PENDING_PCT guard: the fabricated
+    spike lands in an append-only log and shows in [H] for ever.
+    """
+    _fixed_sweep(monkeypatch, dict(
+        SAMPLE_RESULT, verdicts={"true": 100, "pending": 900},
+        anchored_in_window=1000, fail_count=0, fail_rate_pct=0.0,
+    ))
+    log = tmp_path / "d.jsonl"
+    rc = ds.main(["--log-path", str(log)])
+    assert rc == 2
+    assert not log.exists(), "an unreliable sweep must not append a trend row"
+
+
+def test_a_pending_rate_under_the_floor_still_logs(tmp_path, monkeypatch):
+    """The control: the ordinary handful of pending verdicts is fine."""
+    _fixed_sweep(monkeypatch, SAMPLE_RESULT)
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log)]) == 0
+    assert json.loads(log.read_text(encoding="utf-8"))["repos"] == 36
+
+
+def test_an_empty_repo_set_refuses_the_sweep(tmp_path, monkeypatch):
+    """Discovery that found nothing is a failure, not a 100 % drift result."""
+    monkeypatch.setattr(ds, "load_records", lambda path: [])
+
+    def _raise(records, **kw):
+        raise ds.ta.RepoSetUnavailable("no git repositories discovered")
+
+    monkeypatch.setattr(ds, "run_sweep", _raise)
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log)]) == 2
+    assert not log.exists()
+
+
+def test_a_shrunken_repo_set_refuses_the_sweep(tmp_path, monkeypatch):
+    """run_sweep enforces the floor the last successful run recorded.
+
+    Kills the mutation dropping the ``len(repos) < min_repos`` guard: a run
+    on a machine where ~/Code is unpopulated would report every anchor in
+    those repositories as absent.
+    """
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [tmp_path])
+    with pytest.raises(ds.ta.RepoSetUnavailable):
+        ds.run_sweep([], as_of=FIXED_NOW, min_repos=12)
+
+
+def test_the_repo_floor_comes_from_the_last_logged_sweep(tmp_path) -> None:
+    """last_repo_count reads the most recent non-zero ``repos`` value."""
+    log = tmp_path / "d.jsonl"
+    log.write_text(
+        json.dumps({"run_at": "2031-01-01T00:00:00+00:00", "repos": 9}) + "\n"
+        + "{broken\n"
+        + json.dumps({"run_at": "2031-01-08T00:00:00+00:00", "repos": 11})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert ds.last_repo_count(log) == 11
+    assert ds.last_repo_count(tmp_path / "absent.jsonl") == 0
+
+
+def test_a_lost_trend_row_is_a_failed_run(tmp_path, monkeypatch) -> None:
+    """An unwritable trend log exits non-zero (finding AN18).
+
+    Kills the mutation that keeps the old ``return 0`` after a failed append:
+    a silent gap in the series is invisible when the trend is next read.
+    """
+    _fixed_sweep(monkeypatch, SAMPLE_RESULT)
+    blocker = tmp_path / "afile"
+    blocker.write_text("x", encoding="utf-8")
+    rc = ds.main(["--log-path", str(blocker / "d.jsonl")])
     assert rc == 2

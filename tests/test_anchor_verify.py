@@ -643,3 +643,112 @@ class TestCommitRefHexFloor:
     def test_a_short_word_is_still_a_plausible_filename(self):
         """The file gate keeps its looser six-character id floor."""
         assert av._looks_like_file_ref("cafe") is True
+
+
+# ============================================================================
+# "pending" vs "false" — a check that could not run is not an absent file
+# (finding AN3)
+# ============================================================================
+
+
+class TestTransientFailureIsPending:
+    """Every way a check can fail to complete must read "pending".
+
+    ``"false"`` is committal: it demotes the memory's confidence, feeds the
+    drift sweep's append-only trend log, and makes ``recover_anchors`` rewrite
+    the anchor. It must mean "we looked everywhere and it was not there".
+
+    The mutation each test kills: restoring ``except (FileNotFoundError,
+    OSError): return "false"`` in ``_git_knows_path`` / ``verify_commit``, or
+    the unconditional trailing ``return "false"`` in the history probe.
+    """
+
+    def test_missing_git_binary_is_pending(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError("git")):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+
+    def test_unreadable_repository_is_pending(self):
+        with patch("subprocess.run", side_effect=PermissionError("denied")):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+
+    def test_oserror_mid_history_probe_is_pending(self):
+        results = [MagicMock(returncode=1), OSError("mount went away")]
+
+        def run(*_a, **_kw):
+            item = results.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("subprocess.run", side_effect=run):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+
+    def test_unrecognised_git_exit_code_is_pending(self):
+        """rc 128 without the "did not match" text: a broken repository."""
+        results = [
+            MagicMock(returncode=1),
+            MagicMock(returncode=128, stdout="",
+                      stderr="fatal: not a git repository"),
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+
+    def test_unmatched_pathspec_is_a_completed_check(self):
+        """rc 128 WITH the marker means "checked, and absent"."""
+        results = [
+            MagicMock(returncode=1),
+            MagicMock(returncode=128, stdout="",
+                      stderr="fatal: ghost.py: did not match any file(s) "
+                             "known to git"),
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "ghost.py") == "false"
+
+    def test_verify_file_is_pending_when_every_repo_failed(self, tmp_path):
+        """The aggregate: no repository could answer, so neither can we."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        with patch("subprocess.run", side_effect=OSError("unmounted")):
+            assert av.verify_file("scripts/gone.py", [repo]) == "pending"
+
+    def test_verify_file_relative_with_no_repos_is_pending(self):
+        """An empty repo set checks nothing — it must not condemn the anchor.
+
+        Kills the mutation that returns "false" when discovery yields [].
+        """
+        assert av.verify_file("scripts/gone.py", []) == "pending"
+
+    def test_verify_file_is_false_only_when_every_repo_answered(self, tmp_path):
+        """The control: a completed check that found nothing is still false."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_file("scripts/ghost.py", [repo]) == "false"
+
+    def test_verify_commit_transient_failure_is_pending(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError("git")):
+            assert av.verify_commit("abc1234", [Path("/repo")]) == "pending"
+
+    def test_verify_commit_broken_repo_is_pending(self):
+        with patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=128)
+            assert av.verify_commit("abc1234", [Path("/repo")]) == "pending"
+
+    def test_verify_commit_with_no_repos_is_pending(self):
+        assert av.verify_commit("abc1234", []) == "pending"
+
+    def test_verify_commit_absent_everywhere_is_false(self, tmp_path):
+        """The control, against a real repository that lacks the object."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_commit("abc1234def", [repo]) == "false"
+
+    def test_a_pending_memory_verdict_does_not_demote_confidence(self):
+        """bind_confidence must not lower a record on an incomplete check.
+
+        Kills the mutation ``return "medium"`` for the pending branch: a
+        record that reads "high" today would be written back "medium" by the
+        next recovery pass simply because a mount was missing.
+        """
+        assert av.bind_confidence("pending", current="high") == "high"
+        assert av.bind_confidence("pending", current="low") == "medium"
+        assert av.bind_confidence("pending") == "medium"
+        # "false" is committal and still demotes, whatever the record says.
+        assert av.bind_confidence("false", current="high") == "low"
