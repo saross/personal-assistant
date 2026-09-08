@@ -1916,6 +1916,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.provider != "haiku":
             print("--haiku-apply is only valid with --provider haiku")
             return 2
+        if args.resubmit:
+            # Retrieval submits nothing, so there is no second submission
+            # to permit. Accepting the flag here would let an operator
+            # believe they had asked for a top-up when they had asked for
+            # a retrieval — and then wonder why no new batch appeared.
+            print(
+                "--resubmit submits a new batch; it cannot be combined with "
+                "--haiku-apply, which only retrieves an existing one. Run "
+                "the retrieval first, then re-run with --resubmit to send "
+                "whatever is still missing.",
+                file=sys.stderr,
+            )
+            return 2
         # Retrieval is FREE: the batch was billed when it was submitted, and
         # `batches.retrieve` / `batches.results` cost nothing. So it is
         # deliberately not behind the API Call Review Gate — but it still

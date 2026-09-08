@@ -1400,6 +1400,18 @@ class TestBatchSubmitIsNotRepeatable:
             capsys.readouterr().err
         )
 
+    def test_resubmit_cannot_be_combined_with_apply(self, tmp_path, capsys):
+        """Retrieval submits nothing, so there is no top-up to permit."""
+        code = bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_invented",
+            "--out-dir", str(tmp_path / "out"),
+            "--resubmit",
+        ])
+        assert code == 2
+        assert "cannot be combined with --haiku-apply" in capsys.readouterr().err
+        assert not (tmp_path / "out").exists()
+
     def test_resubmit_still_refuses_when_nothing_is_missing(
         self, tmp_path, capsys, submit_stub
     ):
