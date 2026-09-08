@@ -513,6 +513,30 @@ class TestCheckMode:
         assert "PermissionError" in failed.stderr
         assert failed.stdout.strip() == "", "a failure produced a corpus record"
 
+    def test_a_non_oserror_is_still_a_checker_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Audit (low, seventh re-audit): the catch has to be broad.
+
+        Narrowing it to OSError would let a parsing or logic error escape
+        as a traceback and a code the guard reads as a corpus verdict —
+        which is the whole of C2 from the sixth round.
+        """
+        target = tmp_path / "memories.jsonl"
+        target.write_text('{"id": "a"}\n', encoding="utf-8")
+
+        def explode(_lines: list[str]) -> None:
+            raise RuntimeError("not an OSError")
+
+        monkeypatch.setattr(rmc, "analyse", explode)
+        assert rmc.check(target) == rmc.CHECK_FAILED
+
+    def test_the_missing_file_branch_is_reached(self, tmp_path: Path) -> None:
+        """Audit (low, seventh re-audit): kill `return CHECK_MISSING` ->
+        `return CHECK_CLEAN`. A file that is not there is not clean."""
+        assert rmc.check(tmp_path / "absent.jsonl") == rmc.CHECK_MISSING
+        assert rmc.CHECK_MISSING != rmc.CHECK_CLEAN
+
     def test_check_and_resolve_agree_on_every_shape(self, tmp_path: Path) -> None:
         """The invariant: one predicate. What --check calls resolvable,
         resolve resolves; what it calls manual, resolve refuses; what it

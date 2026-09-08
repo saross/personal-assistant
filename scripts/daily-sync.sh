@@ -175,9 +175,11 @@ SYNC_GATE="$CACHE_DIR/daily-sync-gate"
 # had just recorded. The file now reflects the problems of the LATEST run
 # only, each exactly once; a clean run renders "0" and clears itself.
 sync_gate_details=()
-#: Set by on_signal. An interrupted run adds to the standing gate instead
-#: of replacing it: it never got far enough to judge what was already there.
-sync_interrupted=0
+#: Set at the one point the run is known to have done all of its work.
+#: Until then, anything it writes to the gate ADDS to what is already
+#: there rather than replacing it: a run that stopped early cannot have
+#: established that the previous run's findings are resolved.
+sync_run_completed=0
 
 add_sync_gate_detail() {
     # add_sync_gate_detail <detail>
@@ -210,11 +212,14 @@ render_sync_gate() {
     if [[ $DRY_RUN -eq 1 ]] || [[ ${#sync_gate_details[@]} -eq 0 ]]; then
         return 0
     fi
-    # An INTERRUPTED run did not get far enough to know whether the
-    # problems a previous run recorded are still there, so it adds to them
-    # rather than replacing them. A run that reached its own conclusions
-    # replaces: its findings are current.
-    if [[ $sync_interrupted -eq 1 ]] && [[ -f "$SYNC_GATE" ]]; then
+    # A run that did not COMPLETE — interrupted, or failed part-way — has
+    # not established that the problems a previous run recorded are gone,
+    # so it adds to them rather than replacing them (audit M1, seventh
+    # re-audit: a failing run used to erase the previous run's "was
+    # interrupted mid-rebase" line, which was the only record of why the
+    # tree was in the state it was). A run that got to the end replaces:
+    # its findings are current. Repeats are dropped either way.
+    if [[ $sync_run_completed -eq 0 ]] && [[ -f "$SYNC_GATE" ]]; then
         local -a _ours=("${sync_gate_details[@]}")
         local _previous
         sync_gate_details=()
@@ -240,6 +245,7 @@ clear_sync_gate() {
     fi
     mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
     printf '0\n' > "$SYNC_GATE" 2>/dev/null || true
+    return 0
 }
 
 on_signal() {
@@ -250,7 +256,6 @@ on_signal() {
     # and leave a gate line saying what happened — the EXIT trap renders
     # it on the way out.
     local name="$1" status="$2"
-    sync_interrupted=1
     log "INTERRUPTED by $name — exiting $status"
     add_sync_gate_detail \
         "daily-sync was INTERRUPTED by $name before it finished. The tree may be mid-operation and a stash it pushed may still be on the stack: check git -C $DATA_DIR status and git -C $DATA_DIR stash list before the next session."
@@ -342,7 +347,7 @@ push_with_retry() {
                 for _f in "${jsonl_conflicts[@]}"; do
                     jsonl_paths+=("$(pwd)/$_f")
                 done
-                "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
+                timeout 60 "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
                     "${jsonl_paths[@]}" >>"$LOG_FILE" 2>&1 \
                     || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: resolver failed during rebase" 3; }
                 # audit C2: the same invariant on the rebase path. The
@@ -350,6 +355,7 @@ push_with_retry() {
                 # (audit M2), because after it there is nothing to find.
                 memory_files_with_markers
                 if [[ ${#MEMORY_MARKER_RECORDS[@]} -gt 0 ]]; then
+                    local -a _marked=()
                     _marked=("${MEMORY_MARKER_RECORDS[@]}")
                     git rebase --abort >>"$LOG_FILE" 2>&1 || true
                     refuse_memory_markers "$context rebase" "${_marked[@]}"
@@ -475,14 +481,21 @@ memory_files_with_markers() {
     # capturing it with $( ) would run the whole thing in a SUBSHELL —
     # where an added gate line is discarded and a `fail` exits nothing but
     # the subshell. Found while wiring the checker-failure path.
-    local f detail errors rc
+    local f detail errors rc _record
     MEMORY_MARKER_RECORDS=()
     require_venv_python
-    errors="$(mktemp)"
+    # An unguarded `mktemp` failure aborts under set -e with status 1,
+    # which daily-sync-trigger.sh reports as benign lock contention.
+    errors="$(mktemp 2>/dev/null)" || fail "could not create a temporary file for the corpus check"
     for f in "${MEMORY_APPEND_FILES[@]}"; do
         [[ -f "$f" ]] || continue
         rc=0
-        detail="$("$PA_DIR/venv/bin/python3" "$RESOLVER" --check "$f" 2>"$errors")" || rc=$?
+        # audit (low, seventh re-audit): bounded. This runs inside a
+        # SessionStart hook with a 90 s budget; a checker that hangs would
+        # take the whole session with it. A timeout is a checker failure,
+        # not a corpus verdict — `timeout` exits 124, which the `*)` arm
+        # below already treats as one.
+        detail="$(timeout 60 "$PA_DIR/venv/bin/python3" "$RESOLVER" --check "$f" 2>"$errors")" || rc=$?
         case "$rc" in
             0)
                 ;;
@@ -528,21 +541,38 @@ refuse_memory_markers() {
     local context="$1"
     shift
     local line path field text
-    local -a resolvable=() manual=() details=()
+    local -a resolvable=() manual=() details=() unparsed=()
     for line in "$@"; do
-        [[ "$line" == *$'\t'*$'\t'* ]] || continue
+        [[ -n "$line" ]] || continue
+        if [[ "$line" != *$'\t'*$'\t'* ]]; then
+            unparsed+=("$line")
+            continue
+        fi
         path="${line%%$'\t'*}"
         field="${line#*$'\t'}"
         text="${field#*$'\t'}"
         field="${field%%$'\t'*}"
-        [[ -n "$path" ]] || continue
-        if [[ "$field" == "resolvable" ]]; then
+        if [[ -z "$path" ]]; then
+            unparsed+=("$line")
+        elif [[ "$field" == "resolvable" ]]; then
             resolvable+=("$path")
         elif [[ "$field" =~ ^[0-9]+$ ]]; then
             manual+=("$path")
             details+=("$path line $field: $text")
+        else
+            # audit M3 (seventh re-audit): FAIL CLOSED. A record this
+            # cannot read is a reason to refuse, never a reason to
+            # proceed: dropping it silently meant a corpus whose only
+            # problem was on line 13 was staged and pushed when the line
+            # number failed a too-narrow pattern.
+            unparsed+=("$line")
         fi
     done
+    if [[ ${#unparsed[@]} -gt 0 ]]; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: the corpus checker returned ${#unparsed[@]} record(s) this script could not read — ${unparsed[*]}. Refusing to stage anything on the strength of a verdict it does not understand. This is a bug in the sync, not in your corpus."
+        fail "$context: unreadable record(s) from the corpus check; refusing to stage or commit"
+    fi
     if [[ ${#resolvable[@]} -eq 0 ]] && [[ ${#manual[@]} -eq 0 ]]; then
         return 0
     fi
@@ -614,7 +644,7 @@ resolve_rebase_conflicts() {
     if [[ ${#jsonl[@]} -gt 0 ]]; then
         local -a paths=()
         for _f in "${jsonl[@]}"; do paths+=("$(pwd)/$_f"); done
-        if ! "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
+        if ! timeout 60 "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
                 "${paths[@]}" >>"$LOG_FILE" 2>&1; then
             git rebase --abort >>"$LOG_FILE" 2>&1 || true
             log "$context: resolver failed during rebase — aborted"
@@ -936,6 +966,44 @@ if [[ ! -e "$DATA_DIR/.git" ]]; then
 fi
 cd "$DATA_DIR" || fail "cannot enter the data submodule at $DATA_DIR"
 
+# audit M1/M2 (seventh re-audit): say what a previous run left behind
+# BEFORE trying to work around it. A run killed mid-rebase leaves
+# rebase-merge/ and an unmerged tree; the next run used to trip over that
+# three steps later and gate "stash push before branch switch failed",
+# never mentioning the rebase. And an unmerged corpus reached
+# reconcile_orphaned_stashes first, whose generic advice replaced the
+# specific "resolve the markers, then delete the entry".
+check_interrupted_state() {
+    local git_dir op unmerged
+    git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+    op=""
+    if [[ -n "$git_dir" ]]; then
+        if [[ -d "$git_dir/rebase-merge" ]] || [[ -d "$git_dir/rebase-apply" ]]; then
+            op="rebase"
+        elif [[ -f "$git_dir/MERGE_HEAD" ]]; then
+            op="merge"
+        fi
+    fi
+    if [[ -n "$op" ]]; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: a previous run was interrupted mid-$op in $DATA_DIR. Check what it was doing (git -C $DATA_DIR status), then clear it: git -C $DATA_DIR $op --abort. Nothing will sync until that is done."
+        fail "a previous run left a $op in progress in $DATA_DIR"
+    fi
+    unmerged="$(git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)"
+    if [[ -n "$unmerged" ]]; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: $DATA_DIR has unmerged paths from a previous run — ${unmerged//$'\n'/, }. Resolve them, then DELETE any stash entry this left behind (git -C $DATA_DIR stash list). Do NOT pop it: its content is already in the tree as those markers."
+        fail "$DATA_DIR has unmerged paths left by a previous run"
+    fi
+    return 0
+}
+check_interrupted_state
+
+# The corpus guard runs before recovery too: an unmerged or marker-laden
+# corpus has advice of its own, and reconcile's generic orphan message
+# used to replace it.
+refuse_if_memory_markers "start of run"
+
 # Crash-safe recovery FIRST — before anything reads or writes the tree.
 reconcile_orphaned_stashes
 
@@ -1251,7 +1319,7 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 resolver_paths+=("$DATA_DIR/$f")
             done
 
-            "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
+            timeout 60 "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
                 "${resolver_paths[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "resolve-merge-conflicts.py failed" 3
 
@@ -1795,6 +1863,7 @@ fi
 # audit C1 (sixth re-audit): the single point at which this run is known
 # to have done all of its work. Anything that exits earlier — contention,
 # a signal, a failure — leaves whatever gate is already on disk alone.
+sync_run_completed=1
 clear_sync_gate
 
 log "=== daily-sync complete on $HOST ==="
