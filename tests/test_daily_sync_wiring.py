@@ -19,6 +19,7 @@ import pytest
 from daily_sync_harness import build_world, SyncWorld
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -412,6 +413,65 @@ class TestTheCronWrittenGate:
         result = _run_gate_block(tmp_path, uptime_seconds=5 * 60)
 
         assert result.stdout.strip() == ""
+
+    def test_a_gate_stamped_in_the_future_is_reported(self, tmp_path):
+        """
+        Eleventh re-audit follow-up L6 — a clock that stepped backwards
+        left the gate dated ahead of now, the age came out NEGATIVE, and a
+        negative age can never exceed the window: the staleness rule went
+        quiet for exactly as long as the skew lasted, which is the window
+        in which a dead cron would otherwise have been caught. The stamp
+        is no evidence of a recent write, so it counts as "now" and the
+        anomaly is reported rather than trusted.
+
+        The mutation this kills: dropping the report, so a future stamp
+        is subtracted straight and says nothing at all. The clamp that
+        follows the report is belt-and-braces (a negative age never
+        exceeds the window and never predates boot, so it changes no
+        outcome today); the report is the behaviour.
+        """
+        _write_gates(tmp_path, age_minutes=-120)
+
+        result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+        assert "in the FUTURE" in result.stdout, result.stdout
+        # 119 or 120: the fixture stamps a fractional mtime, stat truncates
+        # it, and PG_NOW is read a moment later (re-audit M1).
+        assert re.search(r"\b1(19|20)m in the FUTURE", result.stdout), result.stdout
+        assert "timedatectl" in result.stdout
+        # And never a negative age, which is what the old arithmetic
+        # produced on its way to saying nothing.
+        assert "-" not in result.stdout.split("m in the FUTURE")[0][-4:]
+
+    def test_a_few_seconds_of_skew_is_not_a_clock_problem(self, tmp_path):
+        """
+        Filesystem timestamps drift by a second or two; a banner that
+        cried "the clock moved" over that would be noise, and noise is
+        how a real gate line stops being read. The mutation this kills:
+        reporting any stamp at all ahead of now.
+        """
+        _write_gates(tmp_path, age_minutes=-0.1)  # six seconds ahead
+
+        result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+        assert result.stdout.strip() == "", result.stdout
+
+    def test_the_hook_gates_keep_their_raw_stamp(self, tmp_path):
+        """
+        The clamp belongs to this branch alone. The hook gates compare two
+        FILES to each other, and a skewed clock moves both equally, so
+        clamping the gate there would invent an alarm: a session archived
+        before a future-stamped gate would suddenly read as archived after
+        it. The mutation this kills: moving the clamp above the branch.
+        """
+        _write_gates(tmp_path, names=HOOK_GATES, age_minutes=-120)
+        # Both stamps are ahead of now by the same skew; the session is
+        # still the EARLIER of the two, so the hook ran and nothing is late.
+        _archive_session(tmp_path, age_minutes=-90)
+
+        result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+        assert "session was archived" not in result.stdout, result.stdout
 
     def test_an_unreadable_uptime_falls_back_to_wall_clock_age(
         self, tmp_path,

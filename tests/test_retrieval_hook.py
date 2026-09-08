@@ -1710,8 +1710,8 @@ class TestDigestModeOutput:
 
     Every test here drives ``main()``, so it must neutralise EVERY path the
     hook reads or writes. Audit round two M7: these three patched
-    ``SCRATCHPAD_FILE`` but not ``SCRATCHPADS_DIR``, ``FOCUS_FILE``, or
-    ``surfacing_log.DEFAULT_LOG_PATH``, so a run read the operator's real
+    ``SCRATCHPAD_FILE`` but not ``SCRATCHPADS_DIR``, ``FOCUS_FILE``, or the
+    surfacing log, so a run read the operator's real
     ``data/scratchpads/<cwd-name>.md`` and could append to the repository's
     real ``data/logs/surfaced.log``. It passed only because no scratchpad
     happened to be named after the fixture's cwd.
@@ -1722,8 +1722,12 @@ class TestDigestModeOutput:
         """Point every remaining live path at *tmp_path*."""
         monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", tmp_path / "no-scratchpads")
         monkeypatch.setattr(retrieval, "FOCUS_FILE", tmp_path / "no-FOCUS.md")
-        monkeypatch.setattr(
-            retrieval.surfacing_log, "DEFAULT_LOG_PATH", tmp_path / "surfaced.log"
+        # Pinned through the environment variable production honours, not by
+        # rebinding a module constant: since audit S22 the unpinned default
+        # is dormant under pytest, and a pin here is what keeps these tests
+        # exercising the writer end to end rather than a no-op.
+        monkeypatch.setenv(
+            retrieval.surfacing_log.LOG_PATH_ENV, str(tmp_path / "surfaced.log")
         )
 
     def test_emits_digest_not_buckets(self, tmp_path, monkeypatch, capsys):
@@ -2161,8 +2165,9 @@ def _stage_digest_main(tmp_path, monkeypatch, records: list[dict]) -> None:
     The autouse ``_digest_flag_off`` fixture forces the machine-local gates
     off for the whole module, so the digest branch — the one this machine
     takes, since ``~/.pa-digest-stage1`` exists — is only reached by a test
-    that opts back in. ``surfacing_log.DEFAULT_LOG_PATH`` is redirected too,
-    so the item-16 side-log lands in the tmp dir rather than the repository.
+    that opts back in. The item-16 side-log is pinned to the tmp dir through
+    ``PA_SURFACED_LOG``, the variable production honours, so the writer is
+    exercised for real and still cannot reach the repository.
     """
     memories_file = tmp_path / "memories.jsonl"
     memories_file.write_text(
@@ -2173,8 +2178,8 @@ def _stage_digest_main(tmp_path, monkeypatch, records: list[dict]) -> None:
     monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", tmp_path / "no-scratchpads")
     monkeypatch.setattr(retrieval, "FOCUS_FILE", tmp_path / "no-FOCUS.md")
     monkeypatch.setattr(retrieval, "DIGEST_LOG", tmp_path / "digest.log")
-    monkeypatch.setattr(
-        retrieval.surfacing_log, "DEFAULT_LOG_PATH", tmp_path / "surfaced.log"
+    monkeypatch.setenv(
+        retrieval.surfacing_log.LOG_PATH_ENV, str(tmp_path / "surfaced.log")
     )
     monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 

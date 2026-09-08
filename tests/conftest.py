@@ -55,6 +55,18 @@ Path(_SUITE_HOME.name, ".gitconfig").write_text(
 )
 
 
+#: The pytest marker that quarantines a test needing a live service, and
+#: the exact name ``pytest.ini`` deselects with ``-m "not integration"``.
+#: Named here because the structural guard in
+#: ``test_hermeticity_fixture.py`` looks for this spelling on a decorator:
+#: with the word inlined in the guard, renaming the marker in ``pytest.ini``
+#: would leave the guard hunting for a decorator nobody writes any more,
+#: reporting a clean suite while every live-resource test ran (eleventh
+#: re-audit follow-up L1). ``test_the_marker_name_matches_pytest_ini`` ties
+#: the two together.
+INTEGRATION_MARKER = "integration"
+
+
 @pytest.fixture
 def tmp_pa_dir(tmp_path):
     """Create a temporary personal-assistant directory structure."""

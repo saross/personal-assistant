@@ -23,6 +23,17 @@ _spec = importlib.util.spec_from_file_location("sync_to_postgres", _sync_path)
 sync_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync_mod)
 
+# Loading the sync module above put scripts/ on sys.path, so the shared gate
+# module is importable from here. These are the message spellings asserted
+# below, shared with the code that writes them (eleventh re-audit follow-up
+# L1): inlined, a reworded gate message left every one of those guards
+# passing against a sentence the code no longer emits; imported, the rename
+# fails here first.
+from _sync_gate import (  # noqa: E402
+    CURSOR_RESET_PHRASE,
+    QUARANTINE_REFUSED_WORD,
+)
+
 
 def _seed_gate(gate: Path, detail: str) -> None:
     """Seed a standing fault through the state machine.
@@ -2117,7 +2128,7 @@ class TestParseLayerQuarantineReachesTheGate:
             logging.getLogger("sync-to-postgres").handlers.clear()
 
         gate = pinned_gate_file.read_text(encoding="utf-8")
-        assert "1 row(s) have been REFUSED" in gate
+        assert f"1 row(s) have been {QUARANTINE_REFUSED_WORD}" in gate
         assert str(quarantine) in gate
 
     def test_ack_quarantine_clears_it(
@@ -2145,7 +2156,7 @@ class TestParseLayerQuarantineReachesTheGate:
         monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
         try:
             sync_mod.main()
-            assert "REFUSED" in pinned_gate_file.read_text(encoding="utf-8")
+            assert QUARANTINE_REFUSED_WORD in pinned_gate_file.read_text(encoding="utf-8")
 
             monkeypatch.setattr(
                 sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
@@ -2366,7 +2377,7 @@ class TestAcknowledgementIsStateOnly:
         _sync_gate.render_gate(
             pinned_gate_file, state, logging.getLogger("test-repair"),
         )
-        assert "REFUSED" not in pinned_gate_file.read_text(encoding="utf-8")
+        assert QUARANTINE_REFUSED_WORD not in pinned_gate_file.read_text(encoding="utf-8")
 
     def test_a_successful_ack_leaves_both_artefacts_agreeing(
         self, monkeypatch, tmp_path, pinned_gate_file,
@@ -2398,7 +2409,7 @@ class TestAcknowledgementIsStateOnly:
         assert excinfo.value.code == 0
         state = _sync_gate.read_state(pinned_gate_file)
         assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
-        assert "REFUSED" not in pinned_gate_file.read_text(encoding="utf-8")
+        assert QUARANTINE_REFUSED_WORD not in pinned_gate_file.read_text(encoding="utf-8")
 
     def test_an_unreadable_sidecar_is_not_reported_as_nothing_to_do(
         self, monkeypatch, tmp_path, pinned_gate_file, caplog,
@@ -2967,7 +2978,7 @@ class TestARebuildWithNoSyncRunningIsStillDetected:
         )
         assert problem.count == 2
         assert "moved backwards" in caplog.text
-        assert "cursor was reset" in pinned_gate_file.read_text(
+        assert CURSOR_RESET_PHRASE in pinned_gate_file.read_text(
             encoding="utf-8",
         )
 
@@ -3344,7 +3355,7 @@ class TestAnExitSixDoesNotRepeatItself:
             logging.getLogger("sync-to-postgres").handlers.clear()
         assert excinfo.value.code == 6
         first = _sync_gate.read_state(pinned_gate_file)
-        assert "cursor was reset" in first.problems[
+        assert CURSOR_RESET_PHRASE in first.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail
 
@@ -3362,7 +3373,7 @@ class TestAnExitSixDoesNotRepeatItself:
         second = _sync_gate.read_state(pinned_gate_file)
         problem = second.problems[_sync_gate.PROBLEM_QUARANTINE]
         assert problem.count == 1, "the standing row should still be reported"
-        assert "cursor was reset" not in problem.detail, (
+        assert CURSOR_RESET_PHRASE not in problem.detail, (
             "one rebuild was announced twice"
         )
 

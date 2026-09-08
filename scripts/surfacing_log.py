@@ -59,12 +59,19 @@ Usage (import — for the hook and ``fetch-memories.py``):
     import surfacing_log
     surfacing_log.log_surfaced(result.entries, "digest")
     surfacing_log.log_surfaced(results, "fetch")
+
+The destination is resolved at call time by :func:`default_log_path`:
+``PA_SURFACED_LOG`` first, then nothing at all under pytest (audit S22 —
+a test exercising a surfacing path must not append to the operator's real
+log), then the shipped ``<root>/logs/surfaced.log``.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import sys
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +80,51 @@ from pathlib import Path
 # ``logs`` symlink at the root resolves to ``data/logs`` — the same
 # directory ``digest.log`` and ``fetch-memories.log`` live in.
 PA_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_LOG_PATH = PA_DIR / "logs" / "surfaced.log"
+
+#: Environment variable that pins the log destination. Honoured ahead of
+#: everything else, so an operator (or a test that wants the production
+#: resolution exercised) can point the writer somewhere harmless without
+#: touching the call sites.
+LOG_PATH_ENV = "PA_SURFACED_LOG"
+
+#: The shipped destination, derived from ``__file__`` rather than ``HOME``.
+#: Resolve through :func:`default_log_path` rather than reading this: the
+#: destination is deliberately absent under pytest, and this constant knows
+#: nothing about that.
+SHIPPED_LOG_PATH = PA_DIR / "logs" / "surfaced.log"
+
+
+def default_log_path() -> Path | None:
+    """Where an unpinned :func:`log_surfaced` call writes, or ``None``.
+
+    Resolved at CALL time, never at import: nothing here opens, creates,
+    or even stats a file until a surfacing path actually logs something.
+
+    The rules, in order:
+
+    1. ``PA_SURFACED_LOG`` wins whenever it is set to a non-empty value.
+    2. Under pytest there is NO destination — the caller gets ``None`` and
+       :func:`log_surfaced` writes nothing at all.
+    3. Otherwise :data:`SHIPPED_LOG_PATH`, the production destination.
+
+    Rule 2 is audit finding S22 (2026-09-08), whose third member this was.
+    ``SHIPPED_LOG_PATH`` comes from ``__file__``, so it points at the
+    operator's own checkout no matter where the suite's ``HOME`` is
+    pinned, and it runs through the ``logs`` symlink into the private
+    ``data`` submodule. Exercising the session-start retrieval hook in a
+    test therefore appended live-looking rows to the operator's real
+    ``surfaced.log`` — and this log is the earned-utility evidence base
+    (``wiki/planning/earned-utility-value-signal-proposal.md``), so
+    fabricated rows do not merely litter: they inflate the retrieval
+    counts a future archival decision will be made on. A test that wants
+    the writer exercised pins ``log_path=`` or sets the variable above.
+    """
+    override = os.environ.get(LOG_PATH_ENV)
+    if override:
+        return Path(override)
+    if "pytest" in sys.modules:
+        return None
+    return SHIPPED_LOG_PATH
 
 # The three surfacing paths (proposal §2). The writer does not *reject* an
 # unknown label (best-effort logging must not drop data), but the CLI
@@ -179,19 +230,27 @@ def log_surfaced(
     surfacing path that called it. Opens the log once and writes all lines
     in a single handle to minimise session-start I/O.
 
-    ``log_path`` resolves to :data:`DEFAULT_LOG_PATH` when ``None`` — read
-    at call time (not bound as a default argument) so the module attribute
-    can be overridden (e.g. in tests) and the production callers stay path-
-    agnostic.
+    ``log_path`` resolves through :func:`default_log_path` when ``None`` —
+    at call time, not as a bound default argument, so the production
+    callers stay path-agnostic. When that resolution yields ``None``
+    (under pytest with nothing pinned) this writes NOTHING and returns 0:
+    a surfacing path exercised by a test must not append to the
+    operator's real log (audit S22).
     """
     try:
         stamp = now or datetime.now(timezone.utc)
         lines = iter_surfacing_lines(memories, path, session=session, now=stamp)
         if not lines:
             return 0
-        log_path = log_path or DEFAULT_LOG_PATH
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:
+        target = log_path if log_path is not None else default_log_path()
+        if target is None:
+            return 0
+        # The mkdir is inside the resolution branch, not above it, so an
+        # unpinned call under pytest creates no directory either — the
+        # ``logs`` symlink runs into the private data submodule, where a
+        # bare mkdir is itself a write to the operator's state.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as fh:
             fh.writelines(lines)
         return len(lines)
     except Exception:  # noqa: BLE001 — instrumentation must never raise
