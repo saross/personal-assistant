@@ -2967,3 +2967,133 @@ class TestBinaryGateLineIsClassified:
             "a binary line cannot retire an earlier REFUSED line about the "
             "same entry"
         )
+
+
+class TestUnjudgeableMergeBesideATrailer:
+    """A trailer on one commit must not vouch for another commit that
+    never said anything. The merge is dismissed only when a trailered
+    commit's own transition spans the WHOLE observed drop."""
+
+    def _repo(self, tmp_path: Path, name: str, records: int) -> Path:
+        """A repo whose published corpus holds ``records`` lines."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main",
+             _git("rev-parse", "HEAD", cwd=repo).stdout.strip(), cwd=repo)
+        return repo
+
+    def _merge_of_two_strangers(self, repo: Path, records: int) -> str:
+        """A merge of two parentless corpus-less commits, holding
+        ``records`` corpus lines of its own."""
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        one = _git("commit-tree", empty, "-m", "side one", cwd=repo).stdout.strip()
+        two = _git("commit-tree", empty, "-m", "side two", cwd=repo).stdout.strip()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git("commit-tree", tree, "-p", one, "-p", two, "-m",
+                     "Merge two strangers", cwd=repo).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        return merge
+
+    def _archive(self, repo: Path, records: int) -> None:
+        """A trailered bulk rewrite down to ``records`` lines."""
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "kept{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+    def _guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+
+    def test_a_trailer_that_owns_only_part_of_the_shrink_does_not_excuse_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills the ordering defect: returning `allowed` before the
+        unjudgeable merge is ever promoted.
+
+        origin holds 5. The merge introduces a corpus of 4 -- one record
+        gone, unmeasurably, because neither of its parents held one -- and
+        a trailered archive commit then takes 4 to 2. The trailer accounts
+        for that second drop and says nothing about the first.
+        """
+        repo = self._repo(tmp_path, "part-owner", 5)
+        logs = tmp_path / "logs-part"
+        logs.mkdir()
+        merge = self._merge_of_two_strangers(repo, 4)
+        self._archive(repo, 2)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+        assert merge in written, written
+
+    def test_a_trailer_that_owns_the_whole_shrink_still_publishes(
+        self, tmp_path: Path
+    ) -> None:
+        """The other side. The merge restores the corpus in full, so
+        origin's count and the archive commit's own parent count are the
+        same, and its result is what HEAD holds -- there is no room left
+        for the merge to have taken anything.
+        """
+        repo = self._repo(tmp_path, "whole-owner", 5)
+        logs = tmp_path / "logs-whole"
+        logs.mkdir()
+        self._merge_of_two_strangers(repo, 5)
+        self._archive(repo, 1)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+    def test_every_unmeasurable_merge_is_recorded_even_when_allowed(
+        self, tmp_path: Path
+    ) -> None:
+        """Recording is not fatal; being silent is. A run that publishes
+        must still leave a trace that something in its range could not be
+        measured."""
+        repo = self._repo(tmp_path, "recorded", 5)
+        logs = tmp_path / "logs-recorded"
+        logs.mkdir()
+        merge = self._merge_of_two_strangers(repo, 5)
+        self._archive(repo, 1)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert merge[:8] in result.stderr, (
+            "an unmeasurable merge passed without a word: " + result.stderr
+        )
+        assert "cannot measure what it kept" in result.stderr, result.stderr
