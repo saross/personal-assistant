@@ -70,15 +70,16 @@ class Pipeline:
 
     def discover(self, **overrides) -> list[dict]:
         """Run ``discover`` at its defaults and return the manifest."""
-        args = argparse.Namespace(
-            mode="discover",
-            source_root=self.raw_root,
-            min_turns=0,
-            min_content_tokens=0,
-            min_content_chars=bulk_archive.MIN_CONTENT_CHARS,
-            layout="auto",
-            **overrides,
-        )
+        fields = {
+            "mode": "discover",
+            "source_root": self.raw_root,
+            "min_turns": 0,
+            "min_content_tokens": 0,
+            "min_content_chars": bulk_archive.MIN_CONTENT_CHARS,
+            "layout": "auto",
+        }
+        fields.update(overrides)
+        args = argparse.Namespace(**fields)
         bulk_archive.cmd_discover(args, LOGGER)
         return json.loads(self.manifest.read_text(encoding="utf-8"))
 
@@ -675,3 +676,45 @@ class TestCatalogueWrites:
         )
         assert [entry["id"] for entry in catalogue["sessions"]] == [SID_A]
         assert list(pipeline.archive_root.glob("CATALOG.json.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# AR15 — the token counter needs the toolkit already on sys.path
+# ---------------------------------------------------------------------------
+
+
+class TestTokenCounterOrdering:
+    """``--min-content-tokens`` used to be the one floor that could not run.
+
+    ``_make_token_counter`` importlib-loads ``extract-transcript-text.py``,
+    which imports ``cc_session_toolkit`` at module scope. It was built BEFORE
+    the toolkit's ``src`` was put on ``sys.path``, so the preferred floor died
+    with "No module named cc_session_toolkit" and exit 1.
+    """
+
+    def test_the_toolkit_path_is_added_before_the_counter_is_built(
+        self, pipeline: Pipeline, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        toolkit_src = tmp_path / "Code" / "cc-session-toolkit" / "src"
+        toolkit_src.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        pipeline.add_session(SID_A)
+
+        observed: dict[str, bool] = {}
+
+        def spy(logger):
+            observed["on_path"] = str(toolkit_src) in sys.path
+            return lambda jsonl_file: 10_000
+
+        monkeypatch.setattr(bulk_archive, "_make_token_counter", spy)
+        monkeypatch.setattr(
+            sys, "path", [p for p in sys.path if p != str(toolkit_src)]
+        )
+
+        pipeline.discover(min_content_tokens=1_000)
+
+        assert observed.get("on_path") is True, (
+            "the distilled-token counter was built before cc_session_toolkit "
+            "was importable; --min-content-tokens cannot run"
+        )
