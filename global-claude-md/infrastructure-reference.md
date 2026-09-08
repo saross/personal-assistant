@@ -246,6 +246,182 @@ retries next session on failure). It carries the git sync, the
 cc-archives convergence passes, the R2 push, the symlink refresh, and
 both drift checks.
 
+### Sync exit codes and gates (audit round two, 2026-09-08)
+
+The PostgreSQL pipeline scripts distinguish "retry later" from "a human
+must do something". Non-zero is not automatically an emergency — read the
+list, and read the gate line, which names the remedy.
+
+`sync-to-postgres.py` and `sync-sessions-to-postgres.py`:
+
+- **0** — ran to completion (possibly syncing nothing).
+- **1** — unexpected error.
+- **2** — schema-version mismatch: the script is older or newer than the
+  database.
+- **4** — the run stopped and the cursor did not move, for one of two
+  reasons the gate distinguishes. An *environment fault*: PostgreSQL is
+  reachable but not in the expected state — a revoked grant, a missing
+  table or column, a full disk. Or a *correlated refusal*: five or more
+  rows refused with the same SQLSTATE and none accepted, which is either
+  correlated poison or a schema fault (a migration adding a NOT NULL
+  column, a unique index the upsert does not name). Nothing was
+  quarantined in either case.
+- **6** — a rebuild cleared this sync's cursor key mid-run, so the
+  position was deliberately not written back. Confirm the rebuild was
+  intended; the next run replays from the canonical.
+- **7** — more rows were refused in one run than `PA_PG_QUARANTINE_CAP`
+  allows (default 200). The database is fine and the rows may genuinely
+  be poison; there are simply too many to skip without someone looking.
+- **8** — `--quarantine-anyway` was asked for but another instance held
+  the advisory lock, so the override did not run. Re-run it.
+
+
+`index-session-content.py`:
+
+- **0** — ran to completion.
+- **2** — psycopg2 missing, a schema-version mismatch, **or an archive
+  root that is absent, or exists but contains no `session.meta.json`**.
+  The last two are a missing mount or the wrong path, and the indexer
+  refuses to run on them rather than concluding that every archive was
+  deleted. Every variant raises a problem: a missing psycopg2 or a schema
+  mismatch raises `fault`, an absent or empty root raises `degraded`.
+- **3** — PostgreSQL unreachable, at connect time or mid-run. Not
+  critical: the archive tree is canonical and the index is rebuildable.
+  Feeds the `outage` streak, so three in a row raise a problem that the
+  next connected run lowers — a `fault` here could never be lowered,
+  because the run after an outage usually finds everything already
+  indexed and processes nothing.
+- **4** — environment fault, as above. Raises `fault`.
+- **5** — one or more transcripts were refused **this run**. A transcript
+  refused on an earlier run does not fail later runs; it is reported once
+  at WARNING and through the gate.
+
+`backfill-embeddings.py`:
+
+- **0** — ran (possibly embedding nothing).
+- **1** — Ollama unavailable, or the model not pulled.
+- **2** — schema-version mismatch.
+- **3** — the endpoint returned wrong-width vectors. Nothing was written.
+
+#### Session-start gates
+
+Three gate files, one per script, all relayed by
+`daily-sync-trigger.sh` under the "Infra gates — RELAY THESE TO SHAWN"
+header:
+
+- `~/.cache/postgres-sync-memories-gate`
+- `~/.cache/postgres-sync-sessions-gate`
+- `~/.cache/index-session-content-gate`
+
+Each has a sidecar `<gate>.state.json`, which is the source of truth; the
+gate file is *rendered* from it and should never be edited by hand. The
+state holds a set of **independent problems**, and the gate's first line
+is how many are standing, one detail line each. Problems therefore never
+overwrite each other, and the trigger prints all of them.
+
+The problems, and what lowers each — the rules live in
+`scripts/_sync_gate.py::next_state`, and the transition table is a test:
+
+| Problem | Raised by | Lowered by |
+|---|---|---|
+| `fault` | any non-zero exit (1, 2, 4, 6, 7, 8) | a later run of the same script that completed: connected, lock taken, ≥1 row processed, none refused |
+| `correlated` | a wholly-refused batch held rather than quarantined | the same as `fault` |
+| `quarantine` | any run that quarantined ≥1 row (running total of rows actually written to the quarantine file) | **only** `--ack-quarantine` on that script — later rows are not evidence about the rows that were dropped |
+| `degraded` | a missing canonical, an absent or unpopulated archive root, ids dropped with the cursor held | a later run that completes, or that is idle without being degraded again |
+| `outage` | three consecutive runs that could not reach PostgreSQL | any run that connected — and lowering it touches nothing else |
+| `refusals` | transcripts the indexer could not index (whole memory, not this run's scope) | any run after which the memory is empty — the count is already whole-memory, so the run's scope is irrelevant |
+
+**A PostgreSQL outage is not an exit code.** Both syncs exit 0 when the
+database is unreachable: the JSONL and the archive tree are canonical, so
+an outage is not a failure of the sync, and failing loudly every five
+minutes would train everyone to ignore it. The `outage` problem is what
+surfaces it, after about fifteen minutes.
+
+`--ack-quarantine` is a **state-only** operation: it runs no sync, takes
+no advisory lock, and opens no database connection, so a busy cron tick
+can never stop you dismissing something you have read. It records
+`{acked_at, acked_count}` in the sidecar, reports "nothing to do" when
+no problem stands, and exits **9** if the state on disk still carries the
+problem afterwards — its verdict comes from re-reading the file, not from
+what it meant to write.
+
+Every read-modify-write of a gate — including that one — is serialised by
+an exclusive `<gate>.lock` (bounded at ten seconds, then reported) and
+written atomically, so a tick and an acknowledgement cannot interleave to
+resurrect a dismissed problem.
+
+**A gate that cannot be written never changes what a script does.** If
+`~/.cache` is unwritable, a schema mismatch still exits 2 and an absent
+archive root still exits 2; the failure to persist is logged at ERROR in
+its own right. The acknowledgement is the one command for which a
+persistence failure *is* the error, and it exits 9.
+
+The trigger also reports a gate that has **never been written**: a script
+that is not running writes no gate at all, which is the one failure a
+gate cannot report about itself.
+
+Beyond that, the two kinds of gate are judged differently, because they
+fail differently:
+
+- **`postgres-sync-memories-gate` is written by cron every five
+  minutes**, so silence itself is the signal, and only the *kind* of
+  silence differs. A gate written since boot is late when its own age
+  passes 30 minutes (`PA_GATE_STALE_MINUTES`): cron was running and
+  stopped. A gate *older than the boot* means cron has not run at all
+  since the machine came up, and that is reported once the uptime passes
+  a 10-minute grace (`PA_GATE_BOOT_GRACE_MINUTES`) — waiting out the
+  full window there would only delay the news.
+- **`postgres-sync-sessions-gate` and `index-session-content-gate` are
+  written by session hooks**, and wall-clock age says nothing about
+  them: a fortnight away, or one very long session, leaves them
+  untouched and nothing is wrong. They are late only when a session has
+  *ended* and the hook did not run — that is, when a `session.meta.json`
+  under `~/cc-archives` (`PA_CC_ARCHIVES`) is more than 15 minutes
+  (`PA_HOOK_GATE_LAG_MINUTES`) newer than the gate. If that root does
+  not exist, the trigger says the liveness check is **off** rather than
+  saying nothing: a check that cannot run is not a clean bill of health.
+
+The freshness test looks at the newest of the gate file and its
+`.state.json` sidecar, so a run that saved its state but could not render
+the gate is reported as a missing gate file rather than as a dead script.
+
+To clear a quarantine problem once the rows have been dealt with:
+
+```bash
+~/personal-assistant/venv/bin/python3 \
+    ~/personal-assistant/scripts/sync-to-postgres.py --ack-quarantine
+```
+
+#### Environment variables
+
+- `PA_PG_QUARANTINE_CAP` (default 200) — how many rows one run may
+  quarantine before it stops and reports instead. `0` stops at the first
+  refusal. A negative or non-numeric value is warned about and ignored.
+- `PA_PG_QUARANTINE_ANYWAY=1` — for one run, quarantine a wholly-refused
+  batch instead of holding the cursor. Use after checking the schema.
+  Equivalent to `--quarantine-anyway`.
+- `OLLAMA_BASE_URL` — the embedding endpoint; an empty value falls back
+  to localhost.
+- `PA_GATE_STALE_MINUTES` (default 30) — how long the cron-written
+  memories gate may go unrefreshed before the trigger calls the sync
+  dead.
+- `PA_GATE_BOOT_GRACE_MINUTES` (default 10) — how long after boot the
+  cron gate is left alone.
+- `PA_HOOK_GATE_LAG_MINUTES` (default 15) — how much newer than a
+  hook-written gate an archived `session.meta.json` must be before the
+  hook is called late.
+- `PA_CC_ARCHIVES` (default `~/cc-archives`) — where the trigger looks
+  for archived sessions when judging the hook-written gates.
+- `PA_UPTIME_FILE` (default `/proc/uptime`) — where the trigger reads the
+  machine's uptime. Overridable so the boot rules can be tested without a
+  reboot.
+
+  Each of the three numeric values must be a positive integer; anything
+  else falls back to the default, because they are expanded inside
+  `$(( ))` where bash would otherwise evaluate them as arithmetic
+  expressions. `PA_GATE_STALE_HOURS` is retired — a single wall-clock age
+  described neither kind of gate.
+
 ### Test Suite
 
 Tests in `tests/` covering extraction hook, retrieval hook, fetch-memories,

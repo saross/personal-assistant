@@ -55,12 +55,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
+import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 # ============================================================================
 # Configuration
@@ -71,6 +75,9 @@ DATA_DIR = PA_DIR / "data"
 MEMORIES_FILE = DATA_DIR / "memories" / "memories.jsonl"
 ARCHIVE_DIR = DATA_DIR / "memories" / "archive"
 ARCHIVE_GLOB = "memories-archive-*.jsonl"
+#: How many times to retry taking a stable locked handle on the canonical
+#: before giving up. See :func:`_shared_locked_append_fd`.
+MAX_LOCK_ATTEMPTS = 10
 LOG_FILE = PA_DIR / "logs" / "memory-drift.log"
 DB_NAME = "claude_memories"
 
@@ -83,7 +90,17 @@ ALWAYS_FIELDS = [
     "licence", "extractor_model_id", "source_message_uuid", "summary",
 ]
 # Written only when populated — omitted rather than emitted as null.
-OPTIONAL_FIELDS = ["why", "how_to_apply", "anchors", "verified", "deadline_at", "zotero_key"]
+#
+# ``links``, ``revisions``, and ``superseded_by`` were missing until audit
+# round two, finding P8 (lens A-M6). Their absence made recovery lossy in
+# a way the docstring denied: a record recovered after a /forget came back
+# with its supersession and revision history destroyed. ``/forget`` writes
+# the reason into ``revisions[]``, so that history is the audit trail of
+# the deletion itself.
+OPTIONAL_FIELDS = [
+    "why", "how_to_apply", "anchors", "verified", "deadline_at",
+    "zotero_key", "links", "revisions", "superseded_by",
+]
 
 
 # ============================================================================
@@ -256,8 +273,25 @@ def check_drift(log: logging.Logger) -> DriftResult | None:
 # Recovery
 # ============================================================================
 
-def _pg_records(ids: list[str]) -> list[str]:
-    """Reconstruct extraction-shaped JSONL lines for the given ids from PostgreSQL."""
+def _pg_records(ids: list[str]) -> tuple[list[str], list[str]]:
+    """Reconstruct extraction-shaped JSONL lines for the given ids from PostgreSQL.
+
+    Returns ``(lines, soft_deleted_ids)``.
+
+    Audit round two, finding P8 (lens A-M6): the SELECT used to omit
+    ``is_active``, ``decayed_at``, ``links``, ``revisions``, and
+    ``superseded_by``. A recovered record therefore re-entered the
+    canonical with no ``is_active`` field, and ``sync-to-postgres.py``
+    reads ``record.get("is_active", True)`` — so a memory retired by
+    ``/forget`` came back **active**, with the revision entry recording
+    why it was retired destroyed along with it. The recovery was
+    presented as lossless.
+
+    A soft-deleted record is still recovered — leaving it in PostgreSQL
+    alone is its own kind of loss — but it is written back carrying
+    ``is_active: false``, exactly as ``/forget`` wrote it, and the
+    caller reports it separately so the operator can see what happened.
+    """
     sql = """SELECT row_to_json(t) FROM (
       SELECT id, session_id, project, source, category, content, confidence,
              research_tags, source_context,
@@ -267,10 +301,12 @@ def _pg_records(ids: list[str]) -> list[str]:
              why, how_to_apply, anchors, verified,
              to_char(deadline_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US')
                || '+00:00' AS deadline_at,
-             zotero_key
+             zotero_key, links, revisions, superseded_by,
+             is_active, decayed_at
       FROM memories) t;"""
     wanted = set(ids)
     lines: list[str] = []
+    soft_deleted: list[str] = []
     for raw in _psql(sql).splitlines():
         if not raw.strip():
             continue
@@ -283,22 +319,132 @@ def _pg_records(ids: list[str]) -> list[str]:
         for key in OPTIONAL_FIELDS:
             if row.get(key) not in (None, "", [], {}):
                 record[key] = row[key]
+        # Either flag means the record was retired: ``/forget`` sets
+        # is_active alone, while apply-decay.py and archive-memories.py
+        # set both. Emitted only when false, so an ordinary active record
+        # keeps the exact shape the extraction hook writes.
+        if row.get("is_active") is False or row.get("decayed_at") is not None:
+            record["is_active"] = False
+            # Carry the decay timestamp too (re-audit, low finding).
+            # Dropping it kept *when* the record was retired out of the
+            # canonical, and it is the only surviving evidence of that
+            # once the PostgreSQL row is rebuilt from this file.
+            if row.get("decayed_at") is not None:
+                record["decayed_at"] = row["decayed_at"]
+            soft_deleted.append(row["id"])
         lines.append(json.dumps(record, ensure_ascii=False))
     lines.sort(key=lambda line: (json.loads(line)["created_at"], json.loads(line)["id"]))
-    return lines
+    return lines, soft_deleted
+
+
+@contextmanager
+def _shared_locked_append_fd(target_path: Path) -> Iterator[int]:
+    """
+    Open ``target_path`` for appending under a shared (``LOCK_SH``) flock.
+
+    Mirrors ``hooks/extraction-hook.py::_shared_locked_append_fd``, which
+    documents the hazard in full. In short: a bulk rewriter
+    (``dedup-memories.py``, ``archive-memories.py``,
+    ``tag-gardening.py``) holds ``LOCK_EX`` via
+    ``_bulk_rewrite_guard.lock_jsonl_for_rewrite`` and finishes by
+    renaming a temp file over the canonical. An appender that opened the
+    path *before* that rename holds an fd to the now-orphaned inode, and
+    its writes vanish with it. Open, lock, then compare ``fstat`` to
+    ``stat`` and retry until the fd we hold is the inode the path
+    resolves to.
+
+    Audit round two, finding P9 (lens A-M7): this was the only canonical
+    writer that took no lock — and the one path where the records being
+    written are the *last surviving copy* of the data, so a lost append
+    here is unrecoverable rather than merely inconvenient.
+    """
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    for _attempt in range(MAX_LOCK_ATTEMPTS):
+        fd = os.open(
+            str(target_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644,
+        )
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        try:
+            fd_ino = os.fstat(fd).st_ino
+            path_ino = os.stat(target_path).st_ino
+        except FileNotFoundError:
+            # The path vanished between open and stat — retry.
+            _release(fd)
+            continue
+        if fd_ino != path_ino:
+            # We hold a lock on an orphan inode: a rewriter renamed under
+            # us. Drop it and take the new one.
+            _release(fd)
+            continue
+        break
+    else:
+        # Bounded rather than ``while True`` (re-audit, low finding): a
+        # rewriter renaming in a tight loop, or a path that keeps
+        # vanishing, would otherwise spin here forever holding nothing.
+        # Failing loudly is right — the caller is about to write the last
+        # surviving copy of these records.
+        raise RuntimeError(
+            f"could not obtain a stable handle on {target_path} after "
+            f"{MAX_LOCK_ATTEMPTS} attempts — a rewriter appears to be "
+            f"renaming it repeatedly; re-run once it settles"
+        )
+    try:
+        os.lseek(fd, 0, os.SEEK_END)
+        yield fd
+    finally:
+        _release(fd)
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    """Write every byte of ``payload`` to ``fd``, looping on short writes.
+
+    ``os.write`` may write fewer bytes than it was given and returns the
+    count; ignoring that return silently truncates a record (re-audit,
+    low finding). Called once per record, so a failure part-way through a
+    recovery loses at most the tail of one line rather than the middle of
+    the batch — and each iteration writes at least one byte or raises, so
+    the loop terminates.
+    """
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
+def _release(fd: int) -> None:
+    """Unlock and close a file descriptor, ignoring an already-gone lock."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
 
 
 def recover(result: DriftResult, log: logging.Logger) -> int:
-    """Append every drifted record back into the canonical file. Returns the count."""
-    lines = _pg_records(result.pg_only) if result.pg_only else []
+    """Append every drifted record back into the canonical file. Returns the count.
+
+    Writes under the same shared flock every other canonical writer takes
+    (finding P9), and never resurrects a soft-deleted memory as active
+    (finding P8).
+    """
+    lines: list[str] = []
+    soft_deleted: list[str] = []
+    if result.pg_only:
+        lines, soft_deleted = _pg_records(result.pg_only)
     for _, stash_lines in result.stash_only:
         lines.extend(stash_lines)
     if not lines:
         return 0
-    with MEMORIES_FILE.open("a", encoding="utf-8") as handle:
+    with _shared_locked_append_fd(MEMORIES_FILE) as fd:
         for line in lines:
-            handle.write(line + "\n")
+            _write_all(fd, (line + "\n").encode("utf-8"))
     log.warning("RECOVERED %d records into %s", len(lines), MEMORIES_FILE)
+    if soft_deleted:
+        log.warning(
+            "%d of those were soft-deleted (forgotten or decayed) and are "
+            "restored with is_active=false — NOT reactivated: %s",
+            len(soft_deleted), ", ".join(soft_deleted),
+        )
     return len(lines)
 
 

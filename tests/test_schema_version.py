@@ -129,15 +129,22 @@ def test_assertion_raises_on_db_error(schema_module, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Live-database smoke test (skipped if PG unavailable)
+# Live-database smoke test — NOT part of the ordinary suite
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 def test_live_pg_assertion_passes(schema_module):
     """The live ``claude_memories`` database has the seeded version.
 
-    Skips silently when psycopg2 / PG is not available — local CI
-    environments and the live deployment both run this.
+    Marked ``integration`` and therefore deselected by pytest.ini's
+    default ``-m "not integration"``. It was opening a real connection to
+    the operator's database on every plain ``pytest`` run: a suite that
+    reaches a live resource is not hermetic, its result depends on
+    whether a service happens to be up, and a test with credentials in
+    reach can do more than read (tenth re-audit, finding M5).
+
+    Run it deliberately with ``pytest -m integration``.
     """
     psycopg2 = pytest.importorskip("psycopg2")
     try:

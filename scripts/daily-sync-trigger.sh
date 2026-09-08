@@ -83,11 +83,14 @@ mkdir -p "$(dirname "$LOCK_FILE")"
 # print to STDOUT under an explicit surface-this header, so the assistant
 # sees them in context and relays them to Shawn.
 #
-# Four gates, same format (first line = problem count, rest = detail):
+# Seven gates, same format (first line = problem count, rest = detail):
 #   cc-archives-gate      metas whose transcript is absent locally (E4)
 #   syncthing-gate        mesh health (identity, binds, folder, peers)
 #   memory-drift-gate     memory records surviving in only one store
 #   cc-archive-drift-gate substantive raw sessions never archived
+#   postgres-sync-memories-gate   the memory sync stopped, or quarantined
+#   postgres-sync-sessions-gate   the session sync stopped, or quarantined
+#   index-session-content-gate    transcripts left out of the search index
 # ---------------------------------------------------------------------------
 GATE_LINES=()
 
@@ -166,6 +169,173 @@ if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
         GATE_LINES+=("[archive-drift gate] ${AD_COUNT} substantive raw session(s) not archived — run scripts/bulk-archive.py (${ARCHIVE_DRIFT_GATE} lists them)")
     fi
 fi
+
+# PostgreSQL pipeline gates (added 2026-09-08, audit round two finding C2;
+# split per script by the third re-audit, finding C1).
+#
+# ONE FILE PER SCRIPT, deliberately. A single shared file meant a clean
+# run of the memory sync erased the session sync's alarm on the next cron
+# tick — five minutes of visibility for a fault that needs a human. Each
+# script clears only its own gate, and only after a cycle that actually
+# completed.
+#
+# Raised on: exit 4 (environment fault — reachable database, wrong state),
+# exit 6 (a rebuild cleared the cursor mid-run), a cap overflow, a
+# correlated batch refusal, or rows quarantined (data that left the
+# pipeline). Lowered by the next completed cycle with nothing to report.
+#
+# These are the gates the September 2026 incident argued for: the sessions
+# table sat three weeks stale behind an error in a log nobody reads.
+#
+# --- Is each pipeline script still running? -----------------------------
+#
+# The two kinds of gate here fail in completely different ways, and a
+# single wall-clock rule cannot describe both (ninth re-audit, M4).
+#
+#   postgres-sync-memories-gate  is written by cron every five minutes.
+#       Silence for half an hour means the cron entry is gone. Measured
+#       from the LATER of the gate's own mtime and the machine's boot,
+#       because a gate cannot be refreshed while the machine is off — and
+#       with a short grace after boot, so the first session back does not
+#       report a script that has not had its turn yet.
+#
+#   postgres-sync-sessions-gate and index-session-content-gate are
+#       written by session hooks. Wall-clock age says nothing about them:
+#       a fortnight of no sessions, or one very long session, leaves them
+#       untouched and everything is fine. They are only late when a
+#       SESSION HAS ENDED and the hook did not run — which is exactly
+#       "there is a session.meta.json newer than the gate".
+#
+# Every override is validated before use: these values are expanded
+# inside $(( )), where bash evaluates a non-numeric value as an
+# arithmetic EXPRESSION and an array subscript runs a command
+# substitution (eighth re-audit, M6).
+_pa_gate_minutes() {
+    # $1 = the value from the environment, $2 = the shipped default.
+    if [[ "${1:-}" =~ ^[0-9]+$ ]] && (( 10#${1} > 0 )); then
+        printf '%s' "$(( 10#${1} ))"
+    else
+        printf '%s' "$2"
+    fi
+}
+PG_CRON_STALE_MINUTES="$(_pa_gate_minutes "${PA_GATE_STALE_MINUTES:-}" 30)"
+PG_BOOT_GRACE_MINUTES="$(_pa_gate_minutes "${PA_GATE_BOOT_GRACE_MINUTES:-}" 10)"
+PG_HOOK_LAG_MINUTES="$(_pa_gate_minutes "${PA_HOOK_GATE_LAG_MINUTES:-}" 15)"
+
+# Where session archives land. A session.meta.json newer than a
+# hook-written gate is the evidence that the hook did not run.
+PG_ARCHIVE_ROOT="${PA_CC_ARCHIVES:-${HOME}/cc-archives}"
+#: Say the liveness check is off at most once, however many gates use it.
+_pg_archive_reported=0
+
+# Uptime, for the boot reference and the post-boot grace. Overridable so
+# the guard can be tested without a reboot.
+PG_UPTIME_FILE="${PA_UPTIME_FILE:-/proc/uptime}"
+PG_UPTIME_SECONDS=""
+PG_BOOT_EPOCH=""
+_pg_uptime_raw=""
+_pg_uptime_rest=""
+PG_NOW="$(date +%s)"
+if [[ -r "$PG_UPTIME_FILE" ]]; then
+    read -r _pg_uptime_raw _pg_uptime_rest < "$PG_UPTIME_FILE" || true
+    if [[ "$_pg_uptime_raw" =~ ^([0-9]+) ]]; then
+        PG_UPTIME_SECONDS="${BASH_REMATCH[1]}"
+        PG_BOOT_EPOCH=$(( PG_NOW - PG_UPTIME_SECONDS ))
+    fi
+fi
+
+for _pg_gate_name in postgres-sync-memories-gate \
+                     postgres-sync-sessions-gate \
+                     index-session-content-gate; do
+    _pg_gate_file="${HOME}/.cache/${_pg_gate_name}"
+    # The sidecar is written by the same run that renders the gate, so it
+    # is independent evidence that the script is alive. A run that saved
+    # its state but could not write the gate is not a dead script, and
+    # saying so would send Shawn after the wrong thing (eighth re-audit,
+    # low).
+    _pg_state_file="${_pg_gate_file}.state.json"
+    if [[ ! -f "$_pg_gate_file" ]] && [[ ! -f "$_pg_state_file" ]]; then
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] has NEVER been written — that script has not completed a run on this machine. Check the cron entry and the session hooks.")
+        continue
+    fi
+    if [[ ! -f "$_pg_gate_file" ]]; then
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] the script is running but its gate file is missing — whatever it found is not reaching session start. Check the permissions on ${HOME}/.cache.")
+    fi
+
+    _pg_newest=0
+    for _pg_witness in "$_pg_gate_file" "$_pg_state_file"; do
+        [[ -f "$_pg_witness" ]] || continue
+        _pg_mtime="$(stat -c %Y "$_pg_witness" 2>/dev/null)" || _pg_mtime=""
+        if [[ "$_pg_mtime" =~ ^[0-9]+$ ]] && (( _pg_mtime > _pg_newest )); then
+            _pg_newest="$_pg_mtime"
+        fi
+    done
+
+    if (( _pg_newest == 0 )); then
+        continue
+    fi
+
+    if [[ "$_pg_gate_name" == "postgres-sync-memories-gate" ]]; then
+        # Cron-written: silence itself is the signal, and the question is
+        # only which silence we are measuring.
+        #
+        #   Gate written since boot → its own age against the stale
+        #       window. Cron has been running and stopped.
+        #   Gate older than the boot → the UPTIME against the grace. Cron
+        #       has not run at all since the machine came up, and after a
+        #       few minutes that is the whole story; waiting out the full
+        #       stale window here only delays the news (tenth re-audit,
+        #       finding M2, which is why the grace was inert before).
+        if [[ -n "$PG_BOOT_EPOCH" ]] && (( PG_BOOT_EPOCH > _pg_newest )); then
+            _pg_age_minutes=$(( PG_UPTIME_SECONDS / 60 ))
+            if (( _pg_age_minutes > PG_BOOT_GRACE_MINUTES )); then
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written in the ${_pg_age_minutes}m since this machine booted — the sync runs every five minutes, so it is not running. Check the cron entry.")
+            fi
+        else
+            _pg_age_minutes=$(( (PG_NOW - _pg_newest) / 60 ))
+            if (( _pg_age_minutes > PG_CRON_STALE_MINUTES )); then
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written for ${_pg_age_minutes}m — the sync runs every five minutes, so it is not running. Check the cron entry.")
+            fi
+        fi
+    else
+        # Hook-written: only a session that ENDED without the hook
+        # running is evidence. Wall-clock age is not — a long session, or
+        # a fortnight away, leaves these untouched and nothing is wrong.
+        if [[ -d "$PG_ARCHIVE_ROOT" ]]; then
+            # -H so a SYMLINKED archive root is followed. find's default
+            # is -P, which treats the root itself as a link, matches
+            # nothing under it, and reports every hook as healthy for
+            # ever (tenth re-audit, finding M3).
+            _pg_late="$(find -H "$PG_ARCHIVE_ROOT" -name session.meta.json \
+                -newermt "@$(( _pg_newest + PG_HOOK_LAG_MINUTES * 60 ))" \
+                -print -quit 2>/dev/null)"
+            if [[ -n "$_pg_late" ]]; then
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] a session was archived more than ${PG_HOOK_LAG_MINUTES}m after this gate was last written (${_pg_late}) — the session hooks are not running. Check the PreCompact and SessionEnd hooks in ~/.claude/settings.json.")
+            fi
+        elif (( _pg_archive_reported == 0 )); then
+            # A check that cannot run is not a clean bill of health, and
+            # saying nothing is how a mistyped path becomes permanent
+            # silence (tenth re-audit, finding M4).
+            _pg_archive_reported=1
+            GATE_LINES+=("[hook gates] liveness checking for the session sync and the content indexer is OFF: the archive root ${PG_ARCHIVE_ROOT} does not exist. A hook that stopped running would not be reported. Check the path, or set PA_CC_ARCHIVES.")
+        fi
+    fi
+
+    _pg_count="$(head -1 "$_pg_gate_file" 2>/dev/null)"
+    if [[ "$_pg_count" =~ ^[0-9]+$ ]] && [[ "$_pg_count" -gt 0 ]]; then
+        # EVERY detail line, not just the first: since the fifth re-audit
+        # these gates carry one line per INDEPENDENT problem (an outage,
+        # a fault, quarantined rows, ...), and printing only the first
+        # would silently drop the rest.
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] ${_pg_count} problem(s):")
+        while IFS= read -r _pg_line; do
+            [[ -n "$_pg_line" ]] && GATE_LINES+=("  ${_pg_line}")
+        done < <(tail -n +2 "$_pg_gate_file")
+    fi
+done
+unset _pg_gate_name _pg_gate_file _pg_state_file _pg_count _pg_line
+unset _pg_witness _pg_mtime _pg_newest _pg_uptime_raw _pg_uptime_rest
+unset _pg_age_minutes _pg_late _pg_archive_reported
 
 # ---------------------------------------------------------------------------
 # Slack dashboard refresh (added 2026-08-22)
