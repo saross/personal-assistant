@@ -51,10 +51,14 @@ class TriggerRig:
         """Did the stub sync actually get invoked?"""
         return self.ran_marker.exists()
 
-    def run(self, sync_rc: int = 0) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, sync_rc: int = 0, unset_home: bool = False
+    ) -> subprocess.CompletedProcess[str]:
         """Run the trigger with the stub sync exiting ``sync_rc``."""
         env = os.environ.copy()
         env.update({"HOME": str(self.home), "PA_TEST_SYNC_RC": str(sync_rc)})
+        if unset_home:
+            del env["HOME"]
         return subprocess.run(
             ["bash", str(self.scripts / "daily-sync-trigger.sh")],
             env=env,
@@ -141,6 +145,16 @@ class TestAlwaysExitsZero:
         assert result.returncode == 0, result.stderr
         assert not rig.lock_file.exists(), "a failed sync must not stamp the lock"
 
+    def test_unset_home_does_not_break_the_hook_chain(self, rig: TriggerRig) -> None:
+        """Audit L4: under `set -u` a bare ${HOME} aborted with status 1 —
+        the exact failure the always-exit-0 contract exists to prevent —
+        in any environment that does not export HOME (a systemd unit, a
+        bare cron, `env -i`)."""
+        result = rig.run(unset_home=True)
+        assert result.returncode == 0, (
+            f"trigger exited {result.returncode} with HOME unset\n{result.stderr}"
+        )
+
     def test_lock_contention_is_reported_as_such(self, rig: TriggerRig) -> None:
         """Exit 1 is benign contention, not a broken sync."""
         result = rig.run(sync_rc=1)
@@ -207,6 +221,20 @@ class TestGateRendering:
         assert "folder personal-docs is out of sync" in result.stdout
         assert "peer zbook last seen 9 days ago" in result.stdout
         assert "checked 2026-09-08" not in result.stdout
+
+    def test_a_problem_line_beginning_checked_is_not_swallowed(
+        self, rig: TriggerRig
+    ) -> None:
+        """Audit L4: only the gate's own `checked <date> <time> on <host>`
+        header may be skipped. A glob on `checked *` would swallow a real
+        problem line that happens to start with the word."""
+        self._add_syncthing_check(rig)
+        rig.gate("syncthing-gate").write_text(
+            "1\nchecked folder personal-docs by hand — still out of sync\n",
+            encoding="utf-8",
+        )
+        result = rig.run()
+        assert "checked folder personal-docs by hand" in result.stdout
 
     def test_syncthing_gate_early_exit_layout(self, rig: TriggerRig) -> None:
         """Audit S10: count then problems, with no `checked` line — the

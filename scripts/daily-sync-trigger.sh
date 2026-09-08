@@ -25,7 +25,16 @@
 # below.
 set -uo pipefail
 
-LOCK_FILE="${HOME}/.cache/daily-sync-last-run"
+# audit L4: `set -u` makes a bare ${HOME} abort with status 1 when HOME is
+# unset — a systemd unit, a bare cron environment, `env -i` — which breaks
+# the always-exit-0 contract this script exists to keep (see "Exit codes"
+# above): the SessionStart hook chain would be broken by the one guard
+# meant to protect it. Degrade instead: every read below tolerates a
+# missing file, and a lock that cannot be written just means the sync is
+# retried next session.
+CACHE_DIR="${HOME:-}/.cache"
+
+LOCK_FILE="${CACHE_DIR}/daily-sync-last-run"
 TODAY="$(date +%Y-%m-%d)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC_SCRIPT="${SCRIPT_DIR}/daily-sync.sh"
@@ -52,7 +61,7 @@ mkdir -p "$(dirname "$LOCK_FILE")"
 # ---------------------------------------------------------------------------
 GATE_LINES=()
 
-GATE_FILE="${HOME}/.cache/cc-archives-gate"
+GATE_FILE="${CACHE_DIR}/cc-archives-gate"
 if [[ -f "$GATE_FILE" ]]; then
     GATE_COUNT="$(head -1 "$GATE_FILE" 2>/dev/null)"
     if [[ "$GATE_COUNT" =~ ^[0-9]+$ ]] && [[ "$GATE_COUNT" -gt 0 ]]; then
@@ -62,7 +71,7 @@ fi
 
 # Syncthing: re-checked at most every 15 minutes so session start stays
 # snappy (the check SSHes to rpi-server); otherwise the cached verdict.
-SYNCTHING_GATE="${HOME}/.cache/syncthing-gate"
+SYNCTHING_GATE="${CACHE_DIR}/syncthing-gate"
 SYNCTHING_CHECK="${SCRIPT_DIR}/syncthing-health.sh"
 if [[ -x "$SYNCTHING_CHECK" ]]; then
     if [[ ! -f "$SYNCTHING_GATE" ]] || [[ -n "$(find "$SYNCTHING_GATE" -mmin +15 2>/dev/null)" ]]; then
@@ -82,14 +91,20 @@ if [[ -x "$SYNCTHING_CHECK" ]]; then
             # offset, so both layouts render.
             while IFS= read -r _gl; do
                 [[ -z "$_gl" ]] && continue
-                [[ "$_gl" == checked\ * ]] && continue
+                # Only the gate's own timestamp header, whose exact shape
+                # is `checked <date> <time> on <host>` (syncthing-health.sh
+                # writes it with `date '+%Y-%m-%d %H:%M:%S'`). Audit L4: a
+                # `checked *` glob would also swallow a genuine problem
+                # line that happened to start with the word.
+                [[ "$_gl" =~ ^checked\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ on\  ]] \
+                    && continue
                 GATE_LINES+=("  ${_gl}")
             done < <(tail -n +2 "$SYNCTHING_GATE")
         fi
     fi
 fi
 
-DRIFT_GATE="${HOME}/.cache/memory-drift-gate"
+DRIFT_GATE="${CACHE_DIR}/memory-drift-gate"
 if [[ -f "$DRIFT_GATE" ]]; then
     DRIFT_COUNT="$(head -1 "$DRIFT_GATE" 2>/dev/null)"
     if [[ "$DRIFT_COUNT" =~ ^[0-9]+$ ]] && [[ "$DRIFT_COUNT" -gt 0 ]]; then
@@ -100,7 +115,7 @@ fi
 # audit S3/S17: a sync that wedges on a conflicted tree stops running at
 # all — every later session re-enters the same failure and bails — and
 # until now that state was visible only in logs/daily-sync.log.
-SYNC_GATE="${HOME}/.cache/daily-sync-gate"
+SYNC_GATE="${CACHE_DIR}/daily-sync-gate"
 if [[ -f "$SYNC_GATE" ]]; then
     SYNC_COUNT="$(head -1 "$SYNC_GATE" 2>/dev/null)"
     if [[ "$SYNC_COUNT" =~ ^[0-9]+$ ]] && [[ "$SYNC_COUNT" -gt 0 ]]; then
@@ -108,7 +123,7 @@ if [[ -f "$SYNC_GATE" ]]; then
     fi
 fi
 
-ARCHIVE_DRIFT_GATE="${HOME}/.cache/cc-archive-drift-gate"
+ARCHIVE_DRIFT_GATE="${CACHE_DIR}/cc-archive-drift-gate"
 if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
     AD_COUNT="$(head -1 "$ARCHIVE_DRIFT_GATE" 2>/dev/null)"
     if [[ "$AD_COUNT" =~ ^[0-9]+$ ]] && [[ "$AD_COUNT" -gt 0 ]]; then
