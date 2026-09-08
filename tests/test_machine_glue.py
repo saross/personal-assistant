@@ -28,6 +28,7 @@ import importlib.util
 import json
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -208,6 +209,16 @@ def sync_sandbox(tmp_path: Path) -> dict[str, Path]:
     log = tmp_path / "argv.log"
     log.write_text("", encoding="utf-8")
     write_git_stub(bin_dir, log)
+    # An ORDINARY CLONE: .git is a DIRECTORY. Round 4d-4 (M3): the sandbox
+    # used to have no .git at all, so `[ -f "$PA_DIR/.git" ]` was false for
+    # the wrong reason in every clone test and relaxing it to `[ -e ... ]`
+    # went unnoticed — on a real machine that mutation makes every clone
+    # read as a worktree and never initialise its submodule. The
+    # worktree tests overwrite this with a FILE, as git does.
+    (pa_dir / ".git").mkdir()
+    (pa_dir / ".git" / "HEAD").write_text(
+        "ref: refs/heads/main\n", encoding="utf-8"
+    )
     return {
         "pa_dir": pa_dir,
         "home": home,
@@ -215,6 +226,22 @@ def sync_sandbox(tmp_path: Path) -> dict[str, Path]:
         "log": log,
         "script": pa_dir / "scripts" / "sync-symlinks.sh",
     }
+
+
+def _make_worktree(pa_dir: Path) -> None:
+    """Turn an ordinary-clone sandbox into a LINKED WORKTREE.
+
+    git marks a linked worktree by replacing the ``.git`` directory with a
+    FILE holding a ``gitdir:`` pointer at the main checkout's admin area.
+    The distinction is exactly what ``sync-symlinks.sh`` reads, so the
+    fixtures have to reproduce both shapes rather than neither.
+    """
+    git_path = pa_dir / ".git"
+    if git_path.is_dir():
+        shutil.rmtree(git_path)
+    git_path.write_text(
+        "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
+    )
 
 
 def _run_sync(
@@ -462,15 +489,57 @@ class TestSubmoduleUpdateIsGated:
         uninitialised. Round 4d-2 sent exactly that state into an init
         that git refuses.
         """
-        (sync_sandbox["pa_dir"] / ".git").write_text(
-            "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
-        )
+        _make_worktree(sync_sandbox["pa_dir"])
 
         result = _run_sync(
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
 
         assert result.returncode == 0, result.stderr
+        assert "belongs to the main checkout" in result.stdout
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_plain_clone_with_allow_worktree_still_initialises(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """M1 — the FLAG is not evidence about the checkout.
+
+        `--allow-worktree` says "I know what I am doing", not "this is a
+        worktree". Treating it as the fact made a plain clone announce
+        itself a worktree, skip an init it genuinely needed, relink all of
+        ~/.claude at that clone, and die at step 7 on the missing local
+        source — the half-migrated state the guard exists to prevent,
+        reached by a new route.
+        """
+        (sync_sandbox["home"] / "personal-assistant").mkdir()
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(
+            sync_sandbox,
+            "--allow-worktree",
+            submodule_status="-1234abcd data",
+        )
+
+        recorded = sync_sandbox["log"].read_text(encoding="utf-8")
+        assert "git submodule update --init --recursive --quiet" in recorded
+        assert "belongs to the main checkout" not in result.stdout, (
+            "a plain clone was reported as a worktree"
+        )
+
+    def test_the_worktree_skip_reads_the_checkout_not_the_flag(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """A real worktree skips WITHOUT the flag; the flag alone does not."""
+        _make_worktree(sync_sandbox["pa_dir"])
+
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
         assert "belongs to the main checkout" in result.stdout
         assert "submodule update" not in sync_sandbox["log"].read_text(
             encoding="utf-8"
@@ -487,9 +556,7 @@ class TestSubmoduleUpdateIsGated:
         at step 1 and ~/.claude was never created.
         """
         (sync_sandbox["home"] / "personal-assistant").mkdir()
-        (sync_sandbox["pa_dir"] / ".git").write_text(
-            "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
-        )
+        _make_worktree(sync_sandbox["pa_dir"])
         for stub in ("memories", "tasks", "logs"):
             (sync_sandbox["pa_dir"] / "data" / stub).mkdir()
 

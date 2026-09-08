@@ -279,7 +279,16 @@ if [ -z "$submodule_state" ]; then
     say_verbose "  No data submodule declared — nothing to initialise."
 elif [ "${submodule_state#-}" = "$submodule_state" ]; then
     say_verbose "  Submodule already initialised — leaving it alone."
-elif [ $IS_WORKTREE -eq 1 ] || [ $ALLOW_WORKTREE -eq 1 ]; then
+elif [ $IS_WORKTREE -eq 1 ]; then
+    # Round 4d-4 (M1): $ALLOW_WORKTREE must NOT appear in this test. It is
+    # the operator saying "I know this is a worktree, proceed anyway" —
+    # not evidence about the checkout. Treating the flag as the fact made
+    # a plain clone run with --allow-worktree announce itself a worktree,
+    # skip an init it genuinely needed, relink all of ~/.claude at that
+    # clone, and then die at step 7 on the missing local source: the
+    # half-migrated state this whole guard exists to prevent, reached by a
+    # new route. $IS_WORKTREE is derived from the checkout itself and
+    # already covers every case the flag was standing in for.
     say "  Worktree checkout — data/ belongs to the main checkout, skipping."
 elif [ -n "$(ls -A "$PA_DIR/data" 2>/dev/null || true)" ]; then
     say "  WARNING: data/ is uninitialised but not empty, so git cannot"
