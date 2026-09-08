@@ -329,8 +329,17 @@ async def search_memories(
             )
             and (not project or m.get("project") == project)
         ]
+        # Rank exactly as fetch-memories.fallback_jsonl does. This sorted
+        # raw strings, which ranks "2026-03-15T09:00:00" above
+        # "2026-03-15T10:00:00+10:00" (an earlier instant) and puts legacy
+        # date-only records last whatever their date, so the CLI and the
+        # MCP server disagreed about the same corpus. The shared helper
+        # normalises every stamp to an aware datetime (audit R1).
         filtered.sort(
-            key=lambda m: m.get("created_at", ""), reverse=True,
+            key=lambda m: fetch_memories._parse_datetime(
+                m.get("created_at", "")
+            ),
+            reverse=True,
         )
         served = filtered[:limit]
         _log_surfaced(served)

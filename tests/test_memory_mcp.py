@@ -1324,3 +1324,75 @@ class TestResultShapeAndMatching:
                           return_value=[{c: "x" for c in columns}]):
             searched = json.loads(_run(memory_mcp.search_memories(query="x")))
         assert set(recent["results"][0]) == set(searched["results"][0])
+
+
+# -------------------------------------------------------------------------
+# Lens B RT7: the JSONL fallback's own filtering and ranking
+# -------------------------------------------------------------------------
+
+class TestJsonlFallbackBehaviour:
+    """Exercises the fallback WITHOUT stubbing matches_filters.
+
+    The previous fallback test patched matches_filters to return True, so
+    dropping the project filter, reversing the sort, and dropping the
+    truncation all passed together.
+    """
+
+    @staticmethod
+    def _corpus() -> list[dict]:
+        """Three projects, three stamps, one of them legacy date-only."""
+        return [
+            {**SAMPLE_RESULTS[0], "id": "old-mine",
+             "project": "-home-shawn-personal-assistant",
+             "created_at": "2026-04-01T09:00:00+00:00"},
+            {**SAMPLE_RESULTS[0], "id": "new-mine",
+             "project": "-home-shawn-personal-assistant",
+             "created_at": "2026-04-03T08:00:00+10:00"},
+            {**SAMPLE_RESULTS[0], "id": "mid-mine",
+             "project": "-home-shawn-personal-assistant",
+             "created_at": "2026-04-02"},
+            {**SAMPLE_RESULTS[0], "id": "theirs",
+             "project": "-home-shawn-Code-inscriptions",
+             "created_at": "2026-04-09T09:00:00+00:00"},
+        ]
+
+    def _search(self, **kwargs):
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            return json.loads(_run(memory_mcp.search_memories(**kwargs)))
+
+    def test_project_filter_is_applied(self) -> None:
+        """Kills: dropping ``and (not project or m.get("project") == project)``."""
+        data = self._search(project="-home-shawn-personal-assistant")
+        assert "theirs" not in {r["id"] for r in data["results"]}
+
+    def test_sorted_newest_first_across_mixed_stamps(self) -> None:
+        """Kills: reversing the sort, or comparing the raw strings.
+
+        "2026-04-03T08:00:00+10:00" is 2026-04-02T22:00Z — newer than the
+        date-only record, which a string sort would rank above it.
+        """
+        data = self._search(project="-home-shawn-personal-assistant")
+        assert [r["id"] for r in data["results"]] == [
+            "new-mine", "mid-mine", "old-mine",
+        ]
+
+    def test_limit_truncates_the_fallback(self) -> None:
+        """Kills: dropping ``[:limit]`` (the whole corpus comes back)."""
+        data = self._search(
+            project="-home-shawn-personal-assistant", limit=2)
+        assert data["count"] == 2
+
+    def test_ranking_matches_the_cli_fallback(self) -> None:
+        """The CLI and the MCP server must agree about the same corpus."""
+        corpus = self._corpus()
+        with patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                          return_value=corpus):
+            cli = memory_mcp.fetch_memories.fallback_jsonl(category="decision")
+        data = self._search(category="decision")
+        assert [r["id"] for r in data["results"]] == [m["id"] for m in cli]
+        assert len(cli) == 4  # the comparison is not vacuous
