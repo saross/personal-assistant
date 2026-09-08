@@ -806,6 +806,63 @@ class TestShrinkDetector:
             "a shrunk corpus reached origin"
         )
 
+    def test_a_corpus_already_short_at_run_start_never_reaches_origin(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit S23 (tenth re-audit). The detector ran on the auto-sync
+        commit and nowhere else — but the append-only block commits
+        memories.jsonl FIRST and usually empties the tree, so the
+        auto-sync block takes its "nothing to commit" branch and the
+        ahead-of-origin push publishes the append-only commit unchecked. A
+        truncation already on disk when the run started therefore reached
+        origin with the detector switched on, rc 0, and a cleared gate.
+
+        Kills DS-S23: removing `abort_on_jsonl_shrink "append-only commit"`
+        from the append-only block.
+        """
+        machine = world.add_machine("a")
+        published_before = world.published_data_head()
+        # Something truncated the corpus before the sync ever started —
+        # an interrupted rewrite, a bad editor save, a botched recovery.
+        machine.memories.write_text("", encoding="utf-8")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 4, combined
+        assert "SHRINK DETECTED" in combined, combined
+        reports = list((machine.pa / "logs").glob("daily-sync-SHRINK-*.txt"))
+        assert reports, "no shrink report was written"
+        assert "append-only commit" in reports[0].read_text(encoding="utf-8")
+        assert world.published_data_head() == published_before, (
+            "a corpus truncated before the run reached origin"
+        )
+        # And the commit that carried it was undone.
+        assert machine.head("data") == published_before, (
+            "the shrinking commit is still on the local branch"
+        )
+
+    def test_a_bulk_rewrite_trailer_still_lets_a_shrink_through(
+        self, world: SyncWorld
+    ) -> None:
+        """The escape hatch has to keep working at the new site too, or a
+        legitimate archive run wedges the sync. The trailer is checked on
+        the commit that carries the shrink, so a run whose PREVIOUS commit
+        carries it is unaffected — this asserts the guard is a guard, not
+        a prohibition."""
+        machine = world.add_machine("a")
+        machine.memories.write_text("", encoding="utf-8")
+        machine.commit_data("prune", "memories/memories.jsonl")
+        git("commit", "-q", "--amend", "-m",
+            "chore(memories): monthly archive\n\nRewrite-Class: bulk\n",
+            cwd=machine.data)
+        machine.append_memory("2026-09-08-after-the-archive")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "2026-09-08-after-the-archive" in world.published_data_file(
+            "memories/memories.jsonl"
+        )
+
 
 # ============================================================================
 # Detached-HEAD ordering (audit S5)

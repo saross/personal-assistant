@@ -1483,6 +1483,89 @@ else
     log "[dry-run] would archive agent-mail into the data submodule"
 fi
 
+# ---------------------------------------------------------------------------
+# abort_on_jsonl_shrink — the invariant on EVERY commit of the corpus.
+#
+# No commit this script makes may record fewer lines of memories.jsonl than
+# the previous commit's version unless it carries the `Rewrite-Class: bulk`
+# trailer. Compare committed-tree line counts (HEAD~1 vs HEAD) — NOT
+# working-tree counts, which would both already reflect the resolver's
+# output and thus always match. On a shrink: undo the commit, write a
+# report, and exit 4 before anything is pushed.
+#
+# audit S23 (tenth re-audit): this used to live inline in the auto-sync
+# commit block and nowhere else, so it saw only the commit that block
+# makes. The append-only block above commits memories.jsonl FIRST and
+# usually empties the tree, which sends the auto-sync block down its
+# "nothing to commit" branch — and the ahead-of-origin push below then
+# publishes the append-only commit unchecked. A corpus already truncated on
+# disk when the run started therefore reached origin with the detector
+# switched on and rc 0. Called from both commit sites now.
+#
+# Scope is memories.jsonl alone, as before: tag-vocabulary.txt is the other
+# append-only file, but /tags gardening legitimately prunes it, and a guard
+# that wedges the sync on ordinary editing is worse than none.
+#
+# Must be called from inside the data submodule, immediately after a commit.
+# ---------------------------------------------------------------------------
+abort_on_jsonl_shrink() {
+    # abort_on_jsonl_shrink <context>
+    local context="$1" git_show_err lines_before lines_after head_msg shrink_report
+    local target="memories/memories.jsonl"
+    [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
+    # `git show HEAD~1:path | wc -l` correctly counts trailing-\n-terminated
+    # lines from the committed tree. HEAD~1 might not exist on a brand-new
+    # branch — guard with rev-parse.
+    git rev-parse --verify --quiet "HEAD~1" >/dev/null 2>&1 || return 0
+    # Audit 2026-05-02 (E daily-sync.sh:336-337): previously both
+    # `git show` calls discarded stderr and `wc -l` returned 0 on any
+    # error, so a path move (e.g. memories renamed) would evade the
+    # shrink check entirely. Capture stderr to a temp file and log a
+    # WARN if either side errors so the failure is visible.
+    git_show_err=$(mktemp 2>/dev/null) \
+        || fail "could not create a temporary file for the shrink check"
+    if ! lines_before=$(git show "HEAD~1:$target" 2>"$git_show_err" | wc -l); then
+        lines_before=0
+    fi
+    if [[ -s "$git_show_err" ]]; then
+        log "WARN: git show HEAD~1:$target emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
+    fi
+    : >"$git_show_err"
+    if ! lines_after=$(git show "HEAD:$target" 2>"$git_show_err" | wc -l); then
+        lines_after=0
+    fi
+    if [[ -s "$git_show_err" ]]; then
+        log "WARN: git show HEAD:$target emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
+    fi
+    rm -f "$git_show_err"
+    [[ "$lines_after" -lt "$lines_before" ]] || return 0
+    head_msg="$(git log -1 --format=%B)"
+    if echo "$head_msg" | grep -q "^Rewrite-Class: bulk"; then
+        return 0
+    fi
+    shrink_report="$LOG_DIR/daily-sync-SHRINK-$(date +'%Y-%m-%d-%H%M%S').txt"
+    {
+        echo "Detected unexpected shrink in memories.jsonl during daily-sync."
+        echo "Commit site:     $context"
+        echo "Before (HEAD~1): $lines_before lines"
+        echo "After  (HEAD):   $lines_after lines"
+        echo "Delta:           $((lines_after - lines_before))"
+        echo ""
+        echo "Head commit (pre-push):"
+        echo "$head_msg"
+        echo ""
+        echo "git diff --stat HEAD~1..HEAD -- $target:"
+        git diff --stat "HEAD~1..HEAD" -- "$target"
+    } > "$shrink_report" 2>&1
+    log "SHRINK DETECTED ($context): $lines_before -> $lines_after lines. Report: $shrink_report"
+    # Undo the commit so origin is not polluted with a suspect shrink.
+    # Files remain on disk for inspection.
+    if ! git reset --soft "HEAD~1" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: failed to reset soft HEAD~1 after shrink detection; manual recovery may be needed"
+    fi
+    fail "data submodule: unexpected shrink detected at the $context (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
+}
+
 # Commit the append-only memory files BEFORE considering a stash. They are
 # dirty on nearly every run, so this usually empties the tree and no stash
 # is taken at all — which removes the failure mode rather than handling it.
@@ -1514,6 +1597,11 @@ if [[ $DRY_RUN -eq 0 ]]; then
         if git commit -q -m "chore(memories): append-only capture from $HOST $(date +'%Y-%m-%d %H:%M')" \
                 -- "${memory_dirty[@]}" >>"$LOG_FILE" 2>&1; then
             committed_memory_appends=1
+            # audit S23: the corpus can already be short when the run
+            # starts — this block is where such a truncation is committed,
+            # and the ahead-of-origin push below publishes it whether or
+            # not the auto-sync block ever runs.
+            abort_on_jsonl_shrink "append-only commit"
         else
             log "data submodule: nothing to commit for memory files (raced)"
         fi
@@ -1675,65 +1763,7 @@ if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
     git add -A >>"$LOG_FILE" 2>&1
     git commit -m "chore(auto-sync): daily sync from $HOST $(date +'%Y-%m-%d')" \
         >>"$LOG_FILE" 2>&1 || fail "data commit failed"
-    # Shrink check (M3): compare committed-tree line counts (HEAD~1 vs
-    # HEAD) — NOT working-tree counts, which would both already reflect
-    # the resolver's output and thus always match. If memories.jsonl
-    # net-shrank in this commit and the commit message doesn't carry
-    # `Rewrite-Class: bulk`, undo the commit and bail before pushing so
-    # the state can be reviewed.
-    if [[ "$DETECT_JSONL_SHRINK" == "true" ]]; then
-        # `git show HEAD~1:path | wc -l` correctly counts trailing-\n-terminated
-        # lines from the committed tree. HEAD~1 might not exist on a
-        # brand-new branch — guard with rev-parse.
-        if git rev-parse --verify --quiet "HEAD~1" >/dev/null 2>&1; then
-            # Audit 2026-05-02 (E daily-sync.sh:336-337): previously
-            # both `git show` calls discarded stderr and `wc -l`
-            # returned 0 on any error, so a path move (e.g. memories
-            # renamed) would evade the shrink check entirely. Capture
-            # stderr to a temp file and log a WARN if either side
-            # errors so the failure is visible.
-            git_show_err=$(mktemp)
-            if ! lines_before=$(git show "HEAD~1:memories/memories.jsonl" 2>"$git_show_err" | wc -l); then
-                lines_before=0
-            fi
-            if [[ -s "$git_show_err" ]]; then
-                log "WARN: git show HEAD~1:memories/memories.jsonl emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
-            fi
-            : >"$git_show_err"
-            if ! lines_after=$(git show "HEAD:memories/memories.jsonl" 2>"$git_show_err" | wc -l); then
-                lines_after=0
-            fi
-            if [[ -s "$git_show_err" ]]; then
-                log "WARN: git show HEAD:memories/memories.jsonl emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
-            fi
-            rm -f "$git_show_err"
-            if [[ "$lines_after" -lt "$lines_before" ]]; then
-                head_msg="$(git log -1 --format=%B)"
-                if ! echo "$head_msg" | grep -q "^Rewrite-Class: bulk"; then
-                    shrink_report="$LOG_DIR/daily-sync-SHRINK-$(date +'%Y-%m-%d-%H%M%S').txt"
-                    {
-                        echo "Detected unexpected shrink in memories.jsonl during daily-sync."
-                        echo "Before (HEAD~1): $lines_before lines"
-                        echo "After  (HEAD):   $lines_after lines"
-                        echo "Delta:           $((lines_after - lines_before))"
-                        echo ""
-                        echo "Head commit (pre-push):"
-                        echo "$head_msg"
-                        echo ""
-                        echo "git diff --stat HEAD~1..HEAD -- memories/memories.jsonl:"
-                        git diff --stat "HEAD~1..HEAD" -- memories/memories.jsonl
-                    } > "$shrink_report" 2>&1
-                    log "SHRINK DETECTED: $lines_before -> $lines_after lines. Report: $shrink_report"
-                    # Undo the commit so origin is not polluted with a
-                    # suspect shrink. Files remain on disk for inspection.
-                    if ! git reset --soft "HEAD~1" >>"$LOG_FILE" 2>&1; then
-                        log "WARNING: failed to reset soft HEAD~1 after shrink detection; manual recovery may be needed"
-                    fi
-                    fail "data submodule: unexpected shrink detected (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
-                fi
-            fi
-        fi
-    fi
+    abort_on_jsonl_shrink "auto-sync commit"
     push_with_retry "data submodule"
 else
     log "data submodule: nothing to commit"
