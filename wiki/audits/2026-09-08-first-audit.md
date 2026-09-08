@@ -183,12 +183,12 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H22 (B) | `isMeta` / `isSidechain` entries are fed to the model as user turns; fixtures never carry them | fixed in PR #115 (squash-merged b0f3269) (filter; fixture from a real transcript shape) |
 | H23 (B) | Project-id encodings diverge on dotted segments between writer and reader (latent) | deferred |
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
-| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
-| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
+| H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
+| H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
 | H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
 | H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | fixed on PR #115 (fifth round, 943da8d) after two attempts that encoded the pending skip in the cursor POSITION and each broke an invariant: the cursor record is now `{uuid, skip_pending}` per session, so position and pending state are separate facts; ten tests through `main()` assert the cursor file after each firing |
-| H29 | `hooks/extraction-hook.py` marker branch — a non-meta user entry whose text merely contains a slash-command header (a tool result echoing `commands/*.md` or `scripts/_command_markers.py`) sets the skip flag and drops the next genuine assistant turn (SUSPECTED by the round-four re-audit; one such entry exists, created by this audit session) | deferred (round 3; require `isMeta` on the marker entry, which live data supports: 364 of 364 command entries are meta) |
-| H30 | `hooks/extraction-hook.py` — the command skip is a boolean, not a counter: `[cmd, cmd]` then `[resp, resp]` sends the second response to the model (CONFIRMED by the fifth re-audit; pre-existing) | deferred (round 3) |
+| H29 | `hooks/extraction-hook.py` marker branch — a non-meta user entry whose text merely contains a slash-command header (a tool result echoing `commands/*.md` or `scripts/_command_markers.py`) sets the skip flag and drops the next genuine assistant turn (SUSPECTED by the round-four re-audit; one such entry exists, created by this audit session) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
+| H30 | `hooks/extraction-hook.py` — the command skip is a boolean, not a counter: `[cmd, cmd]` then `[resp, resp]` sends the second response to the model (CONFIRMED by the fifth re-audit; pre-existing) | **round 3** (PR #118, `claude/audit-round3`; re-audit running) |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -232,7 +232,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed on PR #118 (lazy handler); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -473,9 +473,32 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     `mkdir -p` creates a phantom `HOME` before the sync's guard can refuse
     it; the orphan apply-by-commit fix has no discriminating test;
     `--dry-run` now writes a gate. Thirty-six real merge conflicts across
-    three conflict styles resolved correctly otherwise. Fifth round
-    running. Both machines at 14:30: no stash in either repository, no
-    marker line in either corpus, no `merge.conflictStyle` set.
+    three conflict styles resolved correctly otherwise. Fifth round done
+    (cef4743–daf5d7d; suite 1,414): the resolver is positional and leaves
+    a file with only stray marker-shaped lines byte-identical; `git stash
+    pop` is gone from the script — every restore applies by commit and
+    re-resolves the selector at the drop; every failure reason appends to
+    the gate; the trigger checks `HOME` first and prints the diagnosis on
+    stdout; a dry run never gates. Fifth pass: **do not merge** — three
+    criticals in the round-five fixes: the gate now duplicates its
+    paragraph on every failing run (nothing resets it); the guard and the
+    resolver still disagree on "has markers", so a corpus with a lone
+    `=======` wedges behind advice to run a resolver that then skips it;
+    a nested conflict is rewritten with live markers left in and reported
+    as resolved. Plus: the diff3 base section is dropped only to its first
+    `=======`; a failed drop after a successful apply is gated as
+    "unrecovered" work (popping it again would duplicate records); eight
+    call sites still truncate the gate. Sixth round running: the gate is
+    rendered once at exit from an in-run list; guard and resolver share
+    one marker predicate; an unbalanced block structure is refused.
+    Sixth round done (3530620–a2c84f5, merged with main as 4b451a2; suite
+    1,704): the gate is built in memory and rendered once from the EXIT
+    handler; the guard calls the resolver's new `--check` mode; unbalanced
+    structures exit 3 untouched; the separator is the last `=======`
+    before the closer; applied work is never called unrecovered; one relay
+    header; an unwritable lock surfaced. Sixth pass running. Both
+    machines' corpora pass `--check` at 15:20; no stash in either
+    repository; no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
@@ -559,7 +582,38 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     quarantine, degraded, outage streak, refusals), each with its own
     raise and lower evidence, a rendered gate derived from them, and a
     transition-matrix test.
-- Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
-  fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
+    Sixth round done (8b1abf7, 4026d9e; suite 1,618): the machine lives
+    once in `_sync_gate.py`; a quarantine carries a running count and
+    stands until `--ack-quarantine`; an outage lowers only itself; every
+    degraded return carries its reason; indexing either transcript form
+    forgets a refusal; thirty matrix rows are executable; the AST test
+    covers every reader and writer of a gate or its sidecar. Sixth pass:
+    **block** — the core transitions hold; three edge defects: the
+    acknowledgement ran a full sync and was silently dropped under lock
+    contention while logging success; the sidecar is an unlocked,
+    non-atomic read-modify-write (a cron tick can resurrect an acked
+    quarantine); the indexer gates nothing on a schema mismatch, an import
+    failure, or an absent root. Plus: fault coupled to quarantine; indexer
+    outages raise a fault an idle run cannot lower; idle runs never report
+    connected; the quarantine count tallies attempts, not rows written;
+    the matrix-coverage test cannot fail; the AST test is name-based.
+    Seventh round done (b4e87fe; suite 1,642): the ack is state-only
+    (no sync, no lock, exit 9 if unwritable); every sidecar read-modify-
+    write runs under a per-gate flock with atomic writes; a contended run
+    touches no state; the indexer gates a schema mismatch and a missing
+    driver as faults and an absent root as degraded; a completed run
+    lowers a fault regardless of quarantines; indexer outages use the
+    streak; the count is rows written; the AST test rejects direct writes;
+    the refusal memory is read-only against a foreign root. Seventh pass
+    running.
+- Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
+  on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
+  mergeable after two wording fixes in the digest (the new "nothing verified
+  is available" heading was false when the fallback fires on thin coverage;
+  "never checked" was false for pending records) and two counter edges (a
+  uuid-less trailing command double-counts; the count never decays). Closing
+  round running. H27's fixture on `main` is done (8e2425f). S23 and S26 sit
+  with PR #116; P17 with PR #117; `surfacing_log.py` (S22's third member)
+  is round 3b.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
