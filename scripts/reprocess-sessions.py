@@ -200,15 +200,30 @@ def setup_logging() -> logging.Logger:
 # ============================================================================
 
 
+#: Memory ``source`` values that mean "this session has already been mined".
+#: ``extraction`` is the live hook's stamp; ``reprocessing`` is THIS script's
+#: own (see :func:`format_memories`). Counting only the former made the run
+#: non-idempotent: a reprocessed session still showed zero, so the next run
+#: re-submitted it, paid for it again, and — because the memory ids are a
+#: deterministic hash of session, custom_id, and index — appended a set of
+#: byte-identical duplicate rows (audit 2026-09-08, finding AR6).
+ALREADY_MINED_SOURCES = frozenset({"extraction", "reprocessing"})
+
+
 def load_session_memory_counts() -> dict[str, int]:
-    """Count extraction-sourced memories per session ID."""
+    """Count memories already mined from each session ID.
+
+    Counts both the live hook's ``extraction`` rows and this script's own
+    ``reprocessing`` rows, so a session that has been reprocessed is not
+    selected again.
+    """
     counts: dict[str, int] = defaultdict(int)
     with open(MEMORIES_FILE, encoding="utf-8") as f:
         for line in f:
             try:
                 m = json.loads(line)
                 sid = m.get("session_id", "")
-                if sid and m.get("source") == "extraction":
+                if sid and m.get("source") in ALREADY_MINED_SOURCES:
                     counts[sid] += 1
             except json.JSONDecodeError:
                 continue
@@ -264,6 +279,17 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
 
     Returns list of {role, content} dicts, with slash commands filtered
     and messages truncated (mirrors extraction-hook.py logic).
+
+    **Machine-injected records are dropped exactly as the hook drops them**
+    (audit 2026-09-08, finding AR11). ``isSidechain`` entries are a subagent's
+    own conversation, not this session's; ``isMeta`` entries are text the
+    harness wrote into the transcript — system-reminder injections and
+    slash-command expansions — recorded with ``"role": "user"``. Feeding
+    either to the extractor invents memories out of the harness's prose or
+    out of a subagent's turns, and those memories then look exactly like the
+    operator's own. The ordering below is the hook's: ``isMeta`` user entries
+    survive to the slash-command branch (commands ARE delivered as isMeta
+    user entries), and are dropped immediately after it.
     """
     messages: list[dict[str, str]] = []
     skip_next_assistant = False
@@ -288,6 +314,15 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                 msg = entry.get("message", {})
                 role = msg.get("role", entry.get("type", ""))
                 content = msg.get("content", "")
+
+                # A subagent's turn belongs to that agent's transcript.
+                if entry.get("isSidechain"):
+                    continue
+
+                # ``isMeta`` on anything but a user entry cannot be a command
+                # invocation and is not conversation either.
+                if entry.get("isMeta") and role not in ("user", "human"):
+                    continue
 
                 # Handle structured content blocks
                 if isinstance(content, list):
@@ -314,8 +349,13 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                     if any(marker in content for marker in COMMAND_MARKERS):
                         skip_next_assistant = True
                         continue
-                    else:
-                        skip_next_assistant = False
+                    # Harness-injected user prose that was not a command:
+                    # dropped here, AFTER the marker branch, because slash
+                    # commands arrive as isMeta user entries and must reach
+                    # that branch to arm the skip.
+                    if entry.get("isMeta"):
+                        continue
+                    skip_next_assistant = False
                 elif role == "assistant" and skip_next_assistant:
                     skip_next_assistant = False
                     continue
@@ -637,7 +677,14 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
                 conversation=chunk_text,
             )
 
-            custom_id = f"reprocess-{sess['session_id'][:8]}-c{chunk_idx}"
+            # The FULL session id, not its first eight hex characters: two
+            # sessions sharing an 8-character prefix produced the same
+            # custom_id, and the batch API then either rejected the whole
+            # submission for duplicate ids or returned results that were
+            # attributed to the wrong session (audit finding AR7). A UUID
+            # plus the prefix and chunk suffix stays inside the API's
+            # 64-character custom_id limit.
+            custom_id = f"rp-{sess['session_id']}-c{chunk_idx}"
 
             requests.append({
                 "custom_id": custom_id,
@@ -752,6 +799,22 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
         logger.error("No batch state file: %s", BATCH_STATE_FILE)
         sys.exit(1)
 
+    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
+    if state.get("batch_id") != args.batch_id:
+        # The request_map is what turns a custom_id back into a session id.
+        # Applying batch A's results through batch B's map attributes every
+        # extracted memory to whichever session happens to sit at the same
+        # position — memories filed under the wrong session, with no signal
+        # that anything went wrong (audit finding AR8). Checked BEFORE the
+        # rewrite guard, so a refusal costs no lock and no git fetch.
+        logger.error(
+            "Batch state at %s describes batch %s, not %s. Refusing: "
+            "applying one batch's results through another's request map "
+            "files every memory under the wrong session.",
+            BATCH_STATE_FILE, state.get("batch_id"), args.batch_id,
+        )
+        sys.exit(1)
+
     # Guard against racing with extraction-hook appends or scheduled
     # sync. This path appends to memories.jsonl and modifies
     # tag-vocabulary.txt — bulk-rewrite class.
@@ -766,7 +829,6 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
         args.batch_id,
     )
 
-    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
     request_map = state.get("request_map", {})
 
     client = anthropic.Anthropic()
