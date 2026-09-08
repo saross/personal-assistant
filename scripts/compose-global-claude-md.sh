@@ -42,7 +42,6 @@ usage() {
 }
 
 DRY_RUN=false
-TARGET_OVERRIDDEN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -58,7 +57,6 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             TARGET="$2"
-            TARGET_OVERRIDDEN=true
             shift 2
             ;;
         -h|--help)
@@ -73,21 +71,64 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Audit round 4d (E11): the sources come from $SCRIPT_DIR but the default
-# target is the live ~/.claude/CLAUDE.md, so a run from a git worktree
-# would replace the operator's global instructions with whatever that
-# branch happens to contain. Refuse unless this checkout IS the live one,
-# or the caller has named a target explicitly. When there is no
-# $HOME/personal-assistant at all (a fresh machine, a pinned-HOME test)
-# there is nothing to protect and the guard stays out of the way.
+# Refuse to write into a directory. `mv` onto an existing directory moves
+# the temporary file INSIDE it, so `--target <a directory>` used to exit 0
+# having composed nothing and left a stray dot-file behind (round 4d-2).
+if [[ -d "$TARGET" ]]; then
+    echo "ERROR: --target must name a file, not a directory: $TARGET" >&2
+    exit 2
+fi
+
+# Audit round 4d (E11), tightened in round 4d-2: the sources come from
+# $SCRIPT_DIR but the protected artefact is the LIVE ~/.claude/CLAUDE.md,
+# so a run from a git worktree would replace the operator's global
+# instructions with whatever that branch happens to contain.
+#
+# The guard is keyed on the TARGET'S IDENTITY, not on the absence of
+# --target: naming the live file explicitly is exactly the case that
+# needs stopping, and round 4d's version waved it straight through.
+#
+# resolve_path <path> — absolute, symlink-resolved path, for a file that
+# need not exist yet (its parent directory must).
+resolve_path() {
+    local path="$1" dir base
+    dir="$(dirname "$path")"
+    base="$(basename "$path")"
+    if [[ -d "$dir" ]]; then
+        printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$base"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
 LIVE_ROOT="${HOME}/personal-assistant"
-if [[ "$TARGET_OVERRIDDEN" == false && -d "$LIVE_ROOT" ]]; then
-    live_real="$(cd "$LIVE_ROOT" && pwd -P)"
-    pa_real="$(cd "$PA_DIR" && pwd -P)"
-    if [[ "$live_real" != "$pa_real" ]]; then
-        echo "ERROR: refusing to write $TARGET from $PA_DIR (not $LIVE_ROOT);" \
-             "pass --target <path> to compose elsewhere" >&2
-        exit 2
+LIVE_TARGET="$(resolve_path "${HOME}/.claude/CLAUDE.md")"
+if [[ "$(resolve_path "$TARGET")" == "$LIVE_TARGET" ]]; then
+    if [[ -e "$LIVE_ROOT" || -L "$LIVE_ROOT" ]]; then
+        # An unusable live root — a plain file, or a symlink that does not
+        # resolve — means provenance cannot be established at all. Refuse
+        # rather than guess.
+        if [[ ! -d "$LIVE_ROOT" ]]; then
+            echo "ERROR: $LIVE_ROOT is not a usable checkout; refusing to" \
+                 "write the live $LIVE_TARGET" >&2
+            exit 2
+        fi
+        live_real="$(cd "$LIVE_ROOT" && pwd -P)"
+        pa_real="$(cd "$PA_DIR" && pwd -P)"
+        if [[ "$live_real" != "$pa_real" ]]; then
+            echo "ERROR: refusing to write $LIVE_TARGET from $PA_DIR" \
+                 "(not $live_real); pass --target <path> to compose" \
+                 "somewhere else" >&2
+            exit 2
+        fi
+    else
+        # No checkout at $LIVE_ROOT at all. On a real machine this script
+        # lives inside that checkout, so this state is a fresh bootstrap
+        # from a clone at some other path — or a test with a pinned HOME.
+        # There is no live checkout whose instructions could be clobbered,
+        # so this proceeds, loudly.
+        echo "WARNING: no checkout at $LIVE_ROOT; composing $LIVE_TARGET" \
+             "from $PA_DIR without a provenance check" >&2
     fi
 fi
 

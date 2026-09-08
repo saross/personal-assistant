@@ -656,6 +656,126 @@ class TestComposerRefusesFromAWorktree:
         assert "--target needs a path" in result.stderr
 
 
+class TestComposerTargetIdentity:
+    """Round 4d-2 — the guard keys on WHAT is written, not on a flag.
+
+    Round 4d's version stood down the moment ``--target`` was passed, so
+    ``--target "$HOME/.claude/CLAUDE.md"`` from a worktree overwrote the
+    protected file and exited 0 — the exact thing the guard existed to
+    prevent, reachable by naming it.
+    """
+
+    def test_naming_the_live_file_explicitly_is_still_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """--target cannot be used to reach the protected artefact."""
+        live = compose_sandbox["home"] / "personal-assistant"
+        live.mkdir()
+        target = compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("the live instructions\n", encoding="utf-8")
+
+        result = _run_compose(
+            compose_sandbox, "--target", str(target)
+        )
+
+        assert result.returncode == 2, result.stdout
+        assert "refusing to write" in result.stderr
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_a_symlinked_route_to_the_live_file_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """Identity is resolved, so a symlinked directory is no way round."""
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        claude = compose_sandbox["home"] / ".claude"
+        claude.mkdir()
+        target = claude / "CLAUDE.md"
+        target.write_text("the live instructions\n", encoding="utf-8")
+        alias = compose_sandbox["home"] / "claude-alias"
+        alias.symlink_to(claude)
+
+        result = _run_compose(
+            compose_sandbox, "--target", str(alias / "CLAUDE.md")
+        )
+
+        assert result.returncode == 2, result.stdout
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_an_unusable_live_root_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """A file (or dangling symlink) at the live root is not a checkout."""
+        (compose_sandbox["home"] / "personal-assistant").write_text(
+            "not a checkout\n", encoding="utf-8"
+        )
+        target = compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("the live instructions\n", encoding="utf-8")
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 2, result.stdout
+        assert "not a usable checkout" in result.stderr
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_a_dangling_symlink_live_root_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The same, by the route a moved checkout actually leaves behind."""
+        (compose_sandbox["home"] / "personal-assistant").symlink_to(
+            compose_sandbox["home"] / "moved-away"
+        )
+        target = compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("the live instructions\n", encoding="utf-8")
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 2, result.stdout
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_a_target_elsewhere_is_still_allowed(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The legitimate --target use is unaffected."""
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        elsewhere = compose_sandbox["home"] / "preview" / "CLAUDE.md"
+
+        result = _run_compose(compose_sandbox, "--target", str(elsewhere))
+
+        assert result.returncode == 0, result.stderr
+        assert "MARKER-LOCAL" in elsewhere.read_text(encoding="utf-8")
+
+    def test_a_missing_live_root_warns_rather_than_passing_silently(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """With no checkout to protect the run proceeds, but says so."""
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 0, result.stderr
+        assert "without a provenance check" in result.stderr
+
+
+class TestComposerRefusesADirectoryTarget:
+    """Round 4d-2 — `mv` onto a directory moves the temp file inside it."""
+
+    def test_a_directory_target_is_a_usage_error(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """Exit 2, nothing composed, and no stray temp file left behind."""
+        destination = compose_sandbox["home"] / "somewhere"
+        destination.mkdir()
+
+        result = _run_compose(
+            compose_sandbox, "--target", str(destination)
+        )
+
+        assert result.returncode == 2
+        assert "must name a file, not a directory" in result.stderr
+        assert list(destination.iterdir()) == [], list(destination.iterdir())
+
+
 # ---------------------------------------------------------------------------
 # env-fingerprint.sh
 #
