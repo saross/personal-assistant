@@ -388,9 +388,14 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     quote, so `A='abc'$(id)` (which bash executes) is unreported; no test
     covers a file without a trailing newline (dropping `|$` from the line
     splitter silences the whole parse); `tests/conftest.py` still carries
-    the real focus slots and an institution. Fourth round running. Merge
-    waits on D6; a squash merge would keep the private rows out of `main`'s
-    history whatever is decided about the branch.
+    the real focus slots and an institution. Fourth round done
+    (c6087ff–fc03226): the safe-advance position on all three cursor
+    writes (six tests including a two-firing run); subagent entries dropped
+    before the command branch; the checker guards on the closing quote,
+    adds `<`/`>`, scopes the operator scan to the value before a comment,
+    and decodes a BOM; `conftest.py` fixtures retired. Fourth, narrow pass
+    running. Merge strategy: squash, so the six commits carrying private
+    rows never enter `main`'s history; the branch itself is D6.
   - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
     guard pushes a second stash and only one is popped, so a run that
     reports success leaves the day's appends in a stash (the very loss
