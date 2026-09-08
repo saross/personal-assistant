@@ -126,10 +126,13 @@ def default_log_path() -> Path | None:
         return None
     return SHIPPED_LOG_PATH
 
-# The three surfacing paths (proposal §2). The writer does not *reject* an
-# unknown label (best-effort logging must not drop data), but the CLI
-# validates against this set so a typo is caught at the call site.
-VALID_PATHS = ("digest", "fetch", "recall")
+# The surfacing paths (proposal §2, plus ``mcp`` from audit R5, 2026-09-08).
+# The writer does not *reject* an unknown label (best-effort logging must not
+# drop data), but the CLI validates against this set so a typo is caught at
+# the call site. ``mcp`` is kept distinct from ``fetch`` so the aggregator can
+# tell a local depth-fetch from a memory served to another Claude instance;
+# ``surfacing_stats.ACTIVE_PATHS`` counts both as active retrieval.
+VALID_PATHS = ("digest", "fetch", "recall", "mcp")
 
 # Splits a CLI ``--ids`` value on commas and/or whitespace so callers may
 # pass either separator (or a mix).

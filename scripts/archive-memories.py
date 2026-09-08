@@ -547,8 +547,18 @@ def main(argv=None) -> int:
     # 2026-09-08, finding A9). monthly-archive.py syncs PG before it calls us,
     # so its gate passes; a standalone --apply is the exposed path.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from _sync_cursor import postgres_backlog_refusal, unsynced_line_backlog
-    backlog = unsynced_line_backlog(CORPUS, CURSOR_FILE)
+    from _sync_cursor import (
+        UnusableCursor, postgres_backlog_refusal, unsynced_line_backlog,
+        unusable_cursor_refusal,
+    )
+    try:
+        backlog = unsynced_line_backlog(CORPUS, CURSOR_FILE)
+    except UnusableCursor as exc:
+        # Fail CLOSED: an unreadable cursor is the state in which the effect
+        # of evicting lines cannot be reasoned about at all.
+        print(unusable_cursor_refusal("archive-memories", str(exc)),
+              file=sys.stderr)
+        return 1
     if backlog:
         print(postgres_backlog_refusal("archive-memories", backlog,
                                        CURSOR_FILE), file=sys.stderr)

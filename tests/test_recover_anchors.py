@@ -449,6 +449,37 @@ class TestApplyPlans:
         assert harness.order.index("commit") < harness.order.index("release")
 
 
+
+    def test_an_abort_mid_write_leaves_no_temp_file(
+        self, tmp_path: Path, harness: _Harness,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failure part-way through must not orphan memories.jsonl.tmp.
+
+        Kills the mutation that drops ``tmp.unlink(missing_ok=True)`` from
+        the abort path: the next run would inherit a stale half-file beside
+        the canonical, and the run after that would silently rename it over
+        the corpus. Round 4a-2 low finding.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record("2031-05-01-aaaabbbbcccc")
+        _write_corpus(corpus, [json.dumps(rec)])
+        before = corpus.read_bytes()
+
+        def explode(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("disk full part-way through the rewrite")
+
+        monkeypatch.setattr(ra, "add_revision", explode)
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            ra.apply_plans([_plan_for(rec)], corpus, do_postgres=False)
+
+        assert not corpus.with_suffix(".jsonl.tmp").exists(), (
+            "an aborted rewrite left its temp file behind")
+        assert corpus.read_bytes() == before, "the corpus must be untouched"
+        assert "commit" not in harness.order
+
+
 class TestApplyGate:
     """``--apply`` is the only path that may mutate anything."""
 

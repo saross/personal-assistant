@@ -230,6 +230,14 @@ fi
 # what it does when applying would overwrite local changes. Distinct from
 # a CONFLICTED apply, which writes markers.
 if [[ "$_saw_apply" -eq 1 && "$_in_target" -eq 1 ]]; then
+    # A concurrent session writing something unrelated in the window
+    # between the caller's snapshot and its classification. The apply
+    # itself still does nothing (audit C1, second re-audit): "the tree
+    # changed" must not be read as "this apply changed it".
+    if [[ -n "${PA_TEST_WRITE_DURING_APPLY:-}" ]]; then
+        printf 'a concurrent session was here\n' \
+            > "${PA_TEST_WRITE_DURING_APPLY}"
+    fi
     echo "error: Your local changes would be overwritten by merge." >&2
     exit 1
 fi
