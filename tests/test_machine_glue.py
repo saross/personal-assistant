@@ -616,6 +616,34 @@ class TestSyncSymlinksDryRun:
         assert "pip" not in sync_sandbox["log"].read_text(encoding="utf-8")
         assert "would run:" in result.stdout
 
+    def test_dry_run_narrates_in_the_future_tense(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """A preview must not read as a report of work already done."""
+        claude = sync_sandbox["home"] / ".claude"
+        commands = claude / "commands"
+        commands.mkdir(parents=True)
+        stale = commands / "retired.md"
+        stale.symlink_to(sync_sandbox["pa_dir"] / "commands" / "retired.md")
+
+        result = _run_sync(sync_sandbox, "--dry-run")
+
+        assert result.returncode == 0, result.stderr
+        assert "would prune" in result.stdout, result.stdout
+        assert "would link" in result.stdout, result.stdout
+        for past in ("— pruned stale", "— linked", "— updated symlink"):
+            assert past not in result.stdout, (past, result.stdout)
+
+    def test_a_real_run_still_reports_in_the_past_tense(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The negative half: a real run has actually done the work."""
+        result = _run_sync(sync_sandbox)
+
+        assert result.returncode == 0, result.stderr
+        assert "— linked" in result.stdout, result.stdout
+        assert "would link" not in result.stdout
+
     def test_unknown_argument_is_a_usage_error(
         self, sync_sandbox: dict[str, Path]
     ) -> None:

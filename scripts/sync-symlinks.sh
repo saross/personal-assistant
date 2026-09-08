@@ -111,6 +111,17 @@ say_verbose() {
     fi
 }
 
+did() {
+    # Narrate a completed action, or what --dry-run WOULD do. Round 4d-2:
+    # every line below said "pruned"/"linked" in the past tense even under
+    # --dry-run, so a preview read as a report of work already done.
+    if [[ $DRY_RUN -eq 1 ]]; then
+        say "  would $1"
+    else
+        say "  $2"
+    fi
+}
+
 run_action() {
     # Execute "$@" — or, under --dry-run, print it and change nothing.
     # Every filesystem mutation in this script goes through here so that
@@ -153,14 +164,16 @@ prune_stale_symlinks() {
                 # through untouched (audit round 4d, ET5).
                 if [ ! -e "$target" ]; then
                     run_action rm "$link"
-                    say "  $(basename "$link") — pruned stale $label symlink"
+                    did "prune the stale $label symlink $(basename "$link")" \
+                        "$(basename "$link") — pruned stale $label symlink"
                     removed=$((removed + 1))
                 fi
                 ;;
         esac
     done
     if [ "$removed" -gt 0 ]; then
-        say "  pruned $removed stale $label symlink(s)"
+        did "prune $removed stale $label symlink(s)" \
+            "pruned $removed stale $label symlink(s)"
     fi
     return 0
 }
@@ -182,7 +195,7 @@ ensure_symlink() {
             # "updated symlink" on every run, and a stray symlink is
             # deposited into the old source directory.
             run_action ln -sfn "$src" "$target"
-            say "  $label — updated symlink"
+            did "update the $label symlink" "$label — updated symlink"
         elif [ ! -e "$target" ]; then
             # Audit 2026-05-02 E-Medium: target string matches but the
             # source no longer exists. Previous code reported "already
@@ -200,7 +213,7 @@ ensure_symlink() {
         say "  $label — WARNING: file exists (not a symlink), skipping"
     else
         run_action ln -s "$src" "$target"
-        say "  $label — linked"
+        did "link $label" "$label — linked"
     fi
 }
 
@@ -370,7 +383,11 @@ print(' '.join(m for m in required if importlib.util.find_spec(m) is None))
         # machine nobody was watching. The requirement string is read back
         # out of requirements.txt so the git+ssh specification for
         # cc-session-toolkit is not duplicated here.
-        say "  Missing dependencies: $missing_imports — installing just those..."
+        if [[ $DRY_RUN -eq 1 ]]; then
+            say "  Missing dependencies: $missing_imports — would install just those"
+        else
+            say "  Missing dependencies: $missing_imports — installing just those..."
+        fi
         specs=()
         for import_name in $missing_imports; do
             case "$import_name" in
@@ -392,7 +409,7 @@ print(' '.join(m for m in required if importlib.util.find_spec(m) is None))
         # Result: the self-heal could fail silently and cron would
         # report success, defeating this step's whole purpose.
         if run_action "$PA_DIR/venv/bin/pip" install --quiet "${specs[@]}"; then
-            say "  Dependencies installed."
+            did "have installed them" "Dependencies installed."
         else
             pip_exit=$?
             say "  ERROR: pip install failed (exit $pip_exit); archive hooks will continue to fail silently. Resolve before next session."
