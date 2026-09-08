@@ -760,13 +760,19 @@ def parse_transcript(
             # dropped the next genuine assistant turn, losing a real exchange
             # for good (audit round four L-4, fixed as H29).
             #
-            # ``isMeta`` is the narrowing signal, and live data supports it:
-            # measured 2026-09-08 across
-            # ~/.claude/projects/-home-shawn-personal-assistant, all 364
-            # marker-bearing user entries were isMeta and no non-meta user
-            # entry carried a marker. A non-meta user entry quoting a header
-            # is ordinary prose, so it falls through to the append below and
-            # is extracted like any other turn.
+            # ``isMeta`` is the narrowing signal, and live data supports
+            # it. Measured 2026-09-08 across
+            # ~/.claude/projects/-home-shawn-personal-assistant: of 365
+            # marker-bearing user entries, 364 were isMeta and exactly one
+            # was not. That one is a tool result quoting a command header,
+            # written by the audit session itself — the false positive this
+            # branch exists to stop, so it is evidence FOR the narrowing,
+            # not against it. (An earlier draft of this comment said "all
+            # 364 ... and no non-meta user entry carried a marker", which
+            # was the count before that entry existed; corrected at the
+            # re-audit, L1.) A non-meta user entry quoting a header is
+            # ordinary prose, so it falls through to the append below and is
+            # extracted like any other turn.
             if entry.get("type") == "user":
                 if entry.get("isMeta") and any(
                     marker in content for marker in COMMAND_MARKERS
@@ -822,9 +828,11 @@ def parse_transcript(
             # This one check sits AFTER the slash-command branch, and that
             # ordering is load-bearing: slash commands ARE delivered as
             # ``isMeta`` user entries (measured 2026-09-08 across
-            # ~/.claude/projects/-home-shawn-personal-assistant: all 364
-            # marker-bearing user entries were isMeta, and no non-meta user
-            # entry carried a marker). Dropping them any earlier would stop
+            # ~/.claude/projects/-home-shawn-personal-assistant: 364 of the
+            # 365 marker-bearing user entries were isMeta; the one that was
+            # not is a tool result quoting a header, not an invocation —
+            # see the marker branch above). Dropping them any earlier would
+            # stop
             # the markers ever incrementing ``responses_owed``, letting every
             # /remember, /forget, and /update response back into extraction.
             #

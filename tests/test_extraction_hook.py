@@ -1747,13 +1747,13 @@ class TestTranscriptShapeFidelity:
     def test_a_meta_slash_command_still_suppresses_its_response(self, tmp_path):
         """Kills moving the isMeta guard ABOVE the command-marker branch.
 
-        Slash commands arrive as ``isMeta`` user entries (all 364
+        Slash commands arrive as ``isMeta`` user entries (364 of the 365
         marker-bearing user entries measured under
-        ~/.claude/projects/-home-shawn-personal-assistant on 2026-09-08).
-        Skipping meta entries before the marker test would leave
-        ``skip_next_assistant`` unset and let every /remember, /forget, and
-        /update response back into extraction — the duplication the marker
-        filter exists to stop.
+        ~/.claude/projects/-home-shawn-personal-assistant on 2026-09-08; the
+        one exception is a tool result quoting a header). Skipping meta
+        entries before the marker test would leave ``responses_owed`` at
+        zero and let every /remember, /forget, and /update response back
+        into extraction — the duplication the marker filter exists to stop.
         """
         marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
         transcript = tmp_path / "t.jsonl"
@@ -2735,9 +2735,10 @@ class TestQuotedCommandHeaders:
     ``commands/*.md`` or ``scripts/_command_markers.py`` — armed the skip
     and swallowed the next genuine assistant turn. That turn is gone for
     good: the cursor moves past it and nothing re-reads it. Live data says
-    the narrowing is safe (measured 2026-09-08: all 364 marker-bearing user
-    entries under the personal-assistant project were isMeta, and no
-    non-meta user entry carried a marker).
+    the narrowing is safe (measured 2026-09-08: of 365 marker-bearing user
+    entries under the personal-assistant project, 364 were isMeta and
+    exactly one was not — the tool result whose false positive this class
+    pins).
     """
 
     @staticmethod
