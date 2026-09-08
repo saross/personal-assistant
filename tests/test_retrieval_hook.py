@@ -725,9 +725,11 @@ class TestConstraintSpotlight:
 
         now = datetime.now(timezone.utc)
 
-        # Create more constraints than MAX_CONSTRAINTS (10)
+        # Audit H20 (2026-09-08): this loop ran to exactly MAX_CONSTRAINTS,
+        # so the assertion below held whether or not the cap fired. Feed the
+        # cap genuinely over-full instead.
         memories = []
-        for i in range(10):
+        for i in range(retrieval.MAX_CONSTRAINTS + 5):
             memories.append(self._make_memory(
                 f"err-{i}", "-home-shawn-paper", "error_mode",
                 ["tag"], (now - timedelta(days=i)).isoformat(),
@@ -1704,7 +1706,25 @@ class TestDigestModeFlag:
 
 
 class TestDigestModeOutput:
-    """End-to-end main() behaviour when the digest flag is ON."""
+    """End-to-end main() behaviour when the digest flag is ON.
+
+    Every test here drives ``main()``, so it must neutralise EVERY path the
+    hook reads or writes. Audit round two M7: these three patched
+    ``SCRATCHPAD_FILE`` but not ``SCRATCHPADS_DIR``, ``FOCUS_FILE``, or
+    ``surfacing_log.DEFAULT_LOG_PATH``, so a run read the operator's real
+    ``data/scratchpads/<cwd-name>.md`` and could append to the repository's
+    real ``data/logs/surfaced.log``. It passed only because no scratchpad
+    happened to be named after the fixture's cwd.
+    """
+
+    @staticmethod
+    def _isolate(tmp_path, monkeypatch) -> None:
+        """Point every remaining live path at *tmp_path*."""
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", tmp_path / "no-scratchpads")
+        monkeypatch.setattr(retrieval, "FOCUS_FILE", tmp_path / "no-FOCUS.md")
+        monkeypatch.setattr(
+            retrieval.surfacing_log, "DEFAULT_LOG_PATH", tmp_path / "surfaced.log"
+        )
 
     def test_emits_digest_not_buckets(self, tmp_path, monkeypatch, capsys):
         memories_file = tmp_path / "memories.jsonl"
@@ -1715,6 +1735,7 @@ class TestDigestModeOutput:
         )
         monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(retrieval, "DIGEST_LOG", tmp_path / "digest.log")
         monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 
@@ -1744,6 +1765,7 @@ class TestDigestModeOutput:
         log_path = tmp_path / "logs" / "digest.log"
         monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(retrieval, "DIGEST_LOG", log_path)
         monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 
@@ -1776,6 +1798,7 @@ class TestDigestModeOutput:
         blocker.write_text("not a dir")
         monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
         monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratch.md")
+        self._isolate(tmp_path, monkeypatch)
         monkeypatch.setattr(retrieval, "DIGEST_LOG", blocker / "sub" / "digest.log")
         monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
 
@@ -2085,3 +2108,295 @@ class TestDisprovedRecordsAreFiltered:
         assert {m["id"] for m in middle_hits} == {"mid-ok"}
         constraint_hits = retrieval.retrieve_constraints(memories, set(), "p")
         assert {m["id"] for m in constraint_hits} == {"con-ok"}
+
+
+# ============================================================================
+# Audit round two, Lens B (2026-09-08): H7 (the digest path this machine
+# actually takes) and H20 (output bounds)
+# ============================================================================
+
+
+def _recent_iso(days_old: float) -> str:
+    """ISO timestamp *days_old* days before now, in UTC."""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+
+
+def _digest_record(
+    ident: str,
+    summary: str,
+    *,
+    days_old: float = 1,
+    verified: object = "true",
+    anchors: list | None = None,
+    category: str = "decision",
+    tags: list[str] | None = None,
+) -> dict:
+    """Build a memory record in the shape the live corpus carries.
+
+    ``verified`` is a STRING in the corpus (``"true"`` / ``"false"``), and
+    ``summary`` is present on every record written since summary
+    extraction landed — the digest renders it verbatim, so a fixture
+    without one exercises the content fallback instead of the live branch.
+    """
+    record = {
+        "id": ident,
+        "category": category,
+        "content": f"Full content for {ident}, longer than the summary.",
+        "summary": summary,
+        "confidence": "high",
+        "research_tags": tags if tags is not None else ["audit-round-two"],
+        "created_at": _recent_iso(days_old),
+        "verified": verified,
+    }
+    if anchors is not None:
+        record["anchors"] = anchors
+    return record
+
+
+def _stage_digest_main(tmp_path, monkeypatch, records: list[dict]) -> None:
+    """Point every path ``main()`` reads or writes at *tmp_path*, digest ON.
+
+    The autouse ``_digest_flag_off`` fixture forces the machine-local gates
+    off for the whole module, so the digest branch — the one this machine
+    takes, since ``~/.pa-digest-stage1`` exists — is only reached by a test
+    that opts back in. ``surfacing_log.DEFAULT_LOG_PATH`` is redirected too,
+    so the item-16 side-log lands in the tmp dir rather than the repository.
+    """
+    memories_file = tmp_path / "memories.jsonl"
+    memories_file.write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+    )
+    monkeypatch.setattr(retrieval, "MEMORIES_FILE", memories_file)
+    monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", tmp_path / "no-scratchpad.md")
+    monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", tmp_path / "no-scratchpads")
+    monkeypatch.setattr(retrieval, "FOCUS_FILE", tmp_path / "no-FOCUS.md")
+    monkeypatch.setattr(retrieval, "DIGEST_LOG", tmp_path / "digest.log")
+    monkeypatch.setattr(
+        retrieval.surfacing_log, "DEFAULT_LOG_PATH", tmp_path / "surfaced.log"
+    )
+    monkeypatch.setenv(retrieval.DIGEST_FLAG_ENV, "1")
+
+
+def _run_main_capture(monkeypatch, capsys, cwd: str = "/home/shawn/Code/inscriptions"):
+    """Drive ``main()`` with a SessionStart payload and return stdout."""
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"cwd": cwd})))
+    try:
+        retrieval.main()
+    except SystemExit:
+        pass
+    return capsys.readouterr().out
+
+
+class TestDigestActuallySurfacesMemories:
+    """H7: the digest path is live on this machine and only its scaffolding
+    was asserted.
+
+    ``TestDigestModeOutput`` checks that ``# Session-start digest`` appears
+    and the legacy headers do not; both hold for a digest carrying zero
+    memories. Its fixtures are dated 2026-05-29, far outside the seven-day
+    selection window, so they could not have surfaced an entry even if the
+    assertions had asked for one.
+    """
+
+    def test_verified_memories_reach_stdout(self, tmp_path, monkeypatch, capsys):
+        """Kills ``return result.text`` → a header-only constant.
+
+        Also kills ``is_verified_true`` → ``False`` and any unwiring of
+        ``build_session_digest`` from ``main()``: with the mutation the
+        session gets scaffolding and no memory at all.
+        """
+        records = [
+            _digest_record("v1", "Cutover to the digest is wired end to end."),
+            _digest_record("v2", "Anchor verification runs before the append."),
+            _digest_record("v3", "The cursor advances only after a good append."),
+        ]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        out = _run_main_capture(monkeypatch, capsys)
+
+        assert "# Session-start digest" in out
+        for record in records:
+            assert record["summary"] in out, (
+                f"{record['id']} never reached the session; digest was:\n{out}"
+            )
+        assert "3 shown of 3 available" in out
+
+    def test_a_disproved_record_does_not_reach_stdout(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills ``is_verified_true`` → ``True`` (or dropping the filter).
+
+        A record whose anchors were mechanically disproved is never a fact
+        to inject. This pins it at the hook, where the previous assertion
+        lived only in the pure selector's unit tests.
+
+        Scope note: the disproved record here carries no ``anchors``, so it
+        is out of the promoted-recent fallback pool as well. An anchored
+        ``verified: "false"`` record IS admitted by ``rank_fallback`` by
+        design — see the NEW finding raised with this audit round.
+        """
+        records = [
+            _digest_record("good", "This one was verified against the repository."),
+            _digest_record(
+                "bad", "This one was mechanically disproved.", verified="false",
+            ),
+        ]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        out = _run_main_capture(monkeypatch, capsys)
+
+        assert "This one was verified against the repository." in out
+        assert "This one was mechanically disproved." not in out
+        assert "1 shown of 1 available" in out
+
+    def test_stdout_stays_within_the_digest_byte_budget(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills any removal of the greedy byte-cap walk in ``build_digest``.
+
+        SessionStart stdout is elevated straight into the model's context,
+        so this is the load-bearing bound and no test asserted it. The
+        corpus here is 200 verified in-window records — far past anything
+        the budget can hold.
+        """
+        records = [
+            _digest_record(
+                f"v{i:03d}",
+                f"Record {i:03d}: a summary long enough to occupy real bytes "
+                "in the rendered digest, as live summaries do.",
+                days_old=i / 100,
+            )
+            for i in range(200)
+        ]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        out = _run_main_capture(monkeypatch, capsys)
+
+        budget = retrieval.digest_selector.DEFAULT_BYTE_BUDGET
+        # ``print`` adds the trailing newline; everything else is the digest.
+        assert len(out.encode("utf-8")) <= budget + 1, (
+            f"digest stdout was {len(out.encode('utf-8'))} B against a "
+            f"{budget} B budget"
+        )
+        assert "of 200 available" in out, "the pool size is misreported"
+        # The cap must bind by dropping entries, not by emptying the digest.
+        assert "- [decision]" in out
+
+
+class TestRetrievalOutputBounds:
+    """H20: no bucket's bound was pinned with over-cap input.
+
+    ``test_respects_max_constraints_limit`` fed exactly MAX_CONSTRAINTS
+    records, so it passed whether or not the slice fired.
+    """
+
+    @staticmethod
+    def _bucket_record(ident: str, category: str, days_old: float) -> dict:
+        return {
+            "id": ident,
+            "project": "-home-shawn-paper",
+            "category": category,
+            "content": f"Memory {ident}",
+            "summary": f"Summary {ident}",
+            "confidence": "high",
+            "research_tags": ["tag"],
+            "created_at": _recent_iso(days_old),
+        }
+
+    def test_recent_bucket_is_capped(self):
+        """Kills ``merged = same[:same_limit] + other_take`` → ``same + …``.
+
+        The recent bucket is the largest one; unbounded it dumps every
+        record of the last fortnight into context.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        limit = retrieval.MAX_RECENT_SAME + retrieval.MAX_RECENT_OTHER
+        memories = [
+            self._bucket_record(f"r{i}", "progress", i / 10)
+            for i in range(limit + 15)
+        ]
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retrieval.RECENT_DAYS)
+        result = retrieval.retrieve_recent(memories, cutoff, "-home-shawn-paper")
+        assert len(result) == limit, (
+            f"{len(result)} returned from {len(memories)} candidates against a "
+            f"{limit} cap"
+        )
+
+    def test_permanent_bucket_is_capped(self):
+        """Kills ``merged = same[:same_limit] + other_take`` in retrieve_permanent."""
+        category = sorted(retrieval.PERMANENT_CATEGORIES)[0]
+        limit = retrieval.MAX_PERMANENT_SAME + retrieval.MAX_PERMANENT_OTHER
+        memories = [
+            self._bucket_record(f"p{i}", category, 200 + i)
+            for i in range(limit + 15)
+        ]
+        result = retrieval.retrieve_permanent(memories, set(), "-home-shawn-paper")
+        assert len(result) == limit, (
+            f"{len(result)} returned from {len(memories)} candidates against a "
+            f"{limit} cap"
+        )
+
+    def test_constraint_spotlight_is_capped(self):
+        """Kills ``return merged[:MAX_CONSTRAINTS]`` → ``return merged``.
+
+        The pre-existing cap test fed exactly MAX_CONSTRAINTS records, so
+        the slice could be deleted with it still green.
+        """
+        category = sorted(retrieval.CONSTRAINT_CATEGORIES)[0]
+        memories = [
+            self._bucket_record(f"c{i}", category, i)
+            for i in range(retrieval.MAX_CONSTRAINTS + 15)
+        ]
+        result = retrieval.retrieve_constraints(
+            memories, set(), "-home-shawn-paper"
+        )
+        assert len(result) == retrieval.MAX_CONSTRAINTS, (
+            f"{len(result)} returned from {len(memories)} candidates against a "
+            f"{retrieval.MAX_CONSTRAINTS} cap"
+        )
+
+
+class TestDigestModeReadsTheScratchpadPaths:
+    """Audit round two M7: prove the paths a main() test must neutralise.
+
+    ``TestDigestModeOutput`` patched ``SCRATCHPAD_FILE`` alone, which left
+    ``SCRATCHPADS_DIR`` pointed at the operator's real
+    ``data/scratchpads/``. These tests show both paths are genuinely read in
+    digest mode, so leaving either unpatched reads a live file.
+    """
+
+    def test_the_project_scratchpad_for_the_cwd_is_injected(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills dropping the project-scratchpad section from digest mode.
+
+        It also demonstrates the M7 hazard: the file is keyed on the
+        basename of the session's cwd, so an unpatched ``SCRATCHPADS_DIR``
+        reads whatever the operator happens to have under that name.
+        """
+        records = [_digest_record("v1", "A verified entry for the digest.")]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        scratchpads = tmp_path / "scratchpads"
+        scratchpads.mkdir()
+        (scratchpads / "inscriptions.md").write_text(
+            "PROJECT SCRATCHPAD MARKER\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(retrieval, "SCRATCHPADS_DIR", scratchpads)
+
+        out = _run_main_capture(monkeypatch, capsys)
+        assert "PROJECT SCRATCHPAD MARKER" in out
+        assert "# Project Scratchpad (inscriptions)" in out
+
+    def test_the_global_scratchpad_is_injected(self, tmp_path, monkeypatch, capsys):
+        """Kills dropping the global scratchpad section from digest mode."""
+        records = [_digest_record("v1", "A verified entry for the digest.")]
+        _stage_digest_main(tmp_path, monkeypatch, records)
+        scratchpad = tmp_path / "scratchpad.md"
+        scratchpad.write_text("GLOBAL SCRATCHPAD MARKER\n", encoding="utf-8")
+        monkeypatch.setattr(retrieval, "SCRATCHPAD_FILE", scratchpad)
+
+        out = _run_main_capture(monkeypatch, capsys)
+        assert "GLOBAL SCRATCHPAD MARKER" in out
+        assert "# Scratchpad" in out

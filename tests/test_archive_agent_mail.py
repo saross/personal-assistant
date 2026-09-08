@@ -91,11 +91,19 @@ def test_index_is_regenerated_and_stable(tmp_path):
     assert json.loads(first.splitlines()[0])["path"] == "codex/outbox/claude/m1.md"
 
 
-def test_commit_uses_an_explicit_pathspec(tmp_path):
+GIT_IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
+                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+
+
+def test_commit_uses_an_explicit_pathspec(tmp_path, monkeypatch):
+    # archive.commit() shells out with the inherited environment, so the
+    # identity must be in os.environ, not only in this test's env dict —
+    # or the test silently depends on the operator's ~/.gitconfig.
+    for key, value in GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+    env = {**os.environ}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
     # The identity has to live in the REPO: archive.commit() runs git
     # in-process and inherits os.environ, not `env` above. Under a pinned
@@ -133,12 +141,13 @@ def test_cli_reports_summary_without_bodies(tmp_path):
 
 # ---- added after the 2026-09-08 audit (Lens B findings C3, M1, M2 and lows) ----
 
-def test_commit_pathspec_leaves_another_sessions_staged_file_alone(tmp_path):
+def test_commit_pathspec_leaves_another_sessions_staged_file_alone(tmp_path, monkeypatch):
     """A file another session has already STAGED must not be swept into the commit."""
+    for key, value in GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+    env = {**os.environ}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
     # The identity has to live in the REPO: archive.commit() runs git
     # in-process and inherits os.environ, not `env` above. Under a pinned

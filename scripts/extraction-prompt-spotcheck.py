@@ -38,6 +38,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+# NOTE (audit round three L5): every path here is pinned to the HOME
+# checkout, not to the checkout this file happens to live in. Run from a
+# worktree, the script still imports ~/personal-assistant/hooks/
+# extraction-hook.py and still writes its report under
+# ~/personal-assistant/reports/ — so a spot-check run from a branch measures
+# main's prompt, not the branch's. That is deliberate (the point is to
+# sample what the LIVE hook does against the LIVE transcripts), but it is
+# surprising enough to state: to spot-check a change, merge it first.
 PA = Path.home() / "personal-assistant"
 HOOK_PATH = PA / "hooks" / "extraction-hook.py"
 TRANSCRIPT_GLOB = "*/*.jsonl"
@@ -140,7 +148,7 @@ def sample_windows(n_windows: int, max_transcripts: int) -> list[dict]:
     win = hook.MAX_EXCHANGES
     for tpath in transcripts:
         try:
-            messages, _ = hook.parse_transcript(str(tpath), None)
+            messages, _, _ = hook.parse_transcript(str(tpath), None)
         except Exception:
             continue
         # Non-overlapping consecutive tiles of `win` messages.
