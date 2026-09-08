@@ -502,13 +502,21 @@ sweep_orphaned_stash_state_temps() {
     # mktemp and its rename. A marker file dated NOW makes that explicit
     # anyway: only files older than this sweep are touched, so a
     # concurrent writer this reasoning has not anticipated still cannot
-    # lose its half-built sidecar. The marker's own name is longer than
-    # the six characters mktemp appends, so it never matches the glob.
+    # lose its half-built sidecar.
+    #
+    # audit L-a (fourth re-audit): the marker used to be named
+    # `<sidecar>.sweepmark.XXXXXX`, which the glob below cannot match —
+    # so a run killed between creating it and removing it left a file no
+    # sweep could ever remove, which is the very litter this function
+    # exists for. It now takes the same six-character shape as the
+    # sidecar temporaries, so a later run collects it. This sweep may
+    # collect its own marker (it is not NEWER than itself), which costs
+    # nothing: it is removed immediately afterwards either way.
     local dir base marker
     dir="$(dirname "$STASH_STATE_FILE")"
     base="$(basename "$STASH_STATE_FILE")"
     [[ -d "$dir" ]] || return 0
-    marker="$(mktemp "${STASH_STATE_FILE}.sweepmark.XXXXXX" 2>/dev/null)" || return 0
+    marker="$(mktemp "${STASH_STATE_FILE}.XXXXXX" 2>/dev/null)" || return 0
     find "$dir" -maxdepth 1 -type f -name "${base}.??????" \
         ! -newer "$marker" -delete 2>/dev/null || true
     rm -f "$marker" 2>/dev/null || true

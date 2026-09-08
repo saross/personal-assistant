@@ -2283,3 +2283,78 @@ class TestUnattributableShrinkFailsClosed:
         result = self._run_guard(repo, logs)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+
+class TestSweepNarrowing:
+    """The sweep deletes files in ~/.cache. Both of the clauses that keep
+    it from deleting the wrong ones have to stay."""
+
+    _FUNCTIONS = ("sweep_orphaned_stash_state_temps",)
+
+    def _cache(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A cache directory holding a real sidecar."""
+        cache = tmp_path / "cache-narrowing"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+        return cache, sidecar
+
+    def test_a_temp_newer_than_the_sweep_survives(self, tmp_path: Path) -> None:
+        """Kills: dropping `! -newer "$marker"`. The clause is what keeps a
+        writer this reasoning has not anticipated from losing its
+        half-built sidecar; without it the sweep takes whatever it finds."""
+        cache, sidecar = self._cache(tmp_path)
+        fresh = cache / "daily-sync-stash-state.Fr3sh1"
+        fresh.write_text("a writer that is still going\n", encoding="utf-8")
+        # Dated after the marker the sweep is about to create.
+        subprocess.run(["touch", "-d", "+1 hour", str(fresh)], check=True)
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert fresh.exists(), "the sweep took a file newer than itself"
+
+    def test_a_differently_named_neighbour_survives(self, tmp_path: Path) -> None:
+        """Kills: widening the glob to `${base}.*`. The six characters are
+        exactly what mktemp appends; anything else in that directory
+        belongs to something else."""
+        cache, sidecar = self._cache(tmp_path)
+        neighbour = cache / "daily-sync-stash-state.backup-before-the-upgrade"
+        neighbour.write_text("somebody kept this on purpose\n", encoding="utf-8")
+        orphan = cache / "daily-sync-stash-state.Ab12Cd"
+        orphan.write_text("half a row\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not orphan.exists(), "the orphan survived"
+        assert neighbour.exists(), (
+            "the sweep took a file that is not one of its temporaries"
+        )
+
+    def test_a_marker_a_killed_run_left_is_itself_sweepable(
+        self, tmp_path: Path
+    ) -> None:
+        """Audit L-a: the marker used to be named so that the glob could
+        never match it, so a run killed between creating it and removing
+        it left litter no sweep could collect -- the very thing this
+        function exists to prevent."""
+        cache, sidecar = self._cache(tmp_path)
+        stranded = cache / "daily-sync-stash-state.MRK123"
+        stranded.write_text("", encoding="utf-8")
+        subprocess.run(["touch", "-d", "-1 hour", str(stranded)], check=True)
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not stranded.exists(), (
+            "a marker a killed run left behind is unreachable by any sweep"
+        )
+        assert sidecar.exists(), "the sweep took the sidecar"
