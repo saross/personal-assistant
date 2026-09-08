@@ -345,6 +345,8 @@ _SIDECAR_FUNCTIONS = (
     "previously_recorded_stashes",
     "record_conflicted_stash",
     "record_partial_stash",
+    "partial_records_for",
+    "partial_repo_for",
     "describe_stash",
     "unrestored_untracked_paths",
 )
@@ -412,7 +414,7 @@ class TestWriteStashState:
             _sidecar_preamble(repo, sidecar)
             + "\n"
             + f'applied_stash_shas+=("{sha}")\n'
-            + f'record_partial_stash "{repo}" "{sha}" "reports/only-here.md"\n'
+            + f'record_partial_stash "{repo}" "{sha}" "missing\treports/only-here.md"\n'
             + "write_stash_state\n",
             _SIDECAR_FUNCTIONS,
         )
@@ -699,7 +701,9 @@ class TestUnrestoredUntrackedPaths:
             f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
         )
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "report.txt", result.stdout
+        # `differs`, not `missing`: a copy IS at that path, which is why
+        # the apply declined it, and why a checkout would overwrite it.
+        assert result.stdout.strip() == "differs\treport.txt", result.stdout
 
     def test_a_restored_file_is_not_reported(self, tmp_path: Path) -> None:
         """Byte-identical content means the entry holds nothing unique,
@@ -1034,6 +1038,198 @@ class TestDropAppliedStashGuard:
         )
         assert result.returncode == 0, result.stderr
         assert _stash_shas(repo) == [], "the entry was left on the stack"
+
+
+class TestUnrestoredUntrackedStates:
+    """`missing` and `differs` carry opposite recovery commands, and the
+    wrong one destroys the other machine's file (audit C1, eleventh
+    re-audit)."""
+
+    def _entry_with(self, tmp_path: Path, name: str, make) -> tuple[Path, str]:
+        """A repo holding one seed commit and a stash of one untracked
+        thing, built by ``make(repo)``."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        make(repo)
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def _report(self, repo: Path, sha: str) -> str:
+        """Run the predicate against one entry."""
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_an_absent_path_is_missing_not_differs(self, tmp_path: Path) -> None:
+        """The entry really does hold the only copy: a checkout is safe
+        and is the only way to get it back."""
+        repo, sha = self._entry_with(
+            tmp_path,
+            "absent",
+            lambda r: (r / "report.txt").write_text("only copy\n", encoding="utf-8"),
+        )
+        assert self._report(repo, sha).strip() == "missing\treport.txt"
+
+    def test_a_present_but_different_path_is_differs(self, tmp_path: Path) -> None:
+        """Kills DS-C1: reporting a bare path, so every gate says the file
+        exists "ONLY inside the entry" and offers `git checkout <sha>^3 --
+        <path>` -- which overwrites the copy that IS there, stages it, and
+        has the next run publish it."""
+        repo, sha = self._entry_with(
+            tmp_path,
+            "different",
+            lambda r: (r / "report.txt").write_text("ours\n", encoding="utf-8"),
+        )
+        (repo / "report.txt").write_text("the other machine's\n", encoding="utf-8")
+        assert self._report(repo, sha).strip() == "differs\treport.txt"
+
+    def test_an_identical_path_is_reported_at_all(self, tmp_path: Path) -> None:
+        """Byte-identical means the entry holds nothing unique, whatever
+        git said about it."""
+        repo, sha = self._entry_with(
+            tmp_path,
+            "identical",
+            lambda r: (r / "report.txt").write_text("same\n", encoding="utf-8"),
+        )
+        (repo / "report.txt").write_text("same\n", encoding="utf-8")
+        assert self._report(repo, sha).strip() == ""
+
+    def test_a_restored_symlink_is_not_reported_for_ever(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-M2: `hash-object` follows the link and hashes what is
+        at the other end -- for a dangling link it fails outright -- so
+        every untracked symlink was permanently unrestored, its entry
+        could never be dropped, and each run pushed another stash."""
+        def _make(repo: Path) -> None:
+            """A dangling symlink, which is what a relative link into an
+            unmounted tree looks like."""
+            (repo / "link").symlink_to("/nowhere/in/particular")
+
+        repo, sha = self._entry_with(tmp_path, "symlink", _make)
+        (repo / "link").symlink_to("/nowhere/in/particular")
+        assert self._report(repo, sha).strip() == "", (
+            "an untracked symlink is unrecoverable for ever"
+        )
+
+    def test_a_symlink_pointing_somewhere_else_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """The other direction: a link that now points elsewhere is a
+        different file and must still be reported."""
+        repo, sha = self._entry_with(
+            tmp_path, "symlink2", lambda r: (r / "link").symlink_to("/one/place")
+        )
+        (repo / "link").symlink_to("/somewhere/else")
+        assert self._report(repo, sha).strip() == "differs\tlink"
+
+
+class TestPartialRecoveryAdvice:
+    """The gate's words. The invariant: never advise a command that
+    overwrites a file present in the working tree."""
+
+    _FUNCTIONS = ("partial_recovery_advice", "partial_paths_list")
+
+    def test_a_missing_path_gets_a_checkout(self) -> None:
+        """Nothing is there, so writing the stashed copy destroys nothing."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "missing\tnotes/a.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "checkout 0badc0de^3" in result.stdout, result.stdout
+        assert "DIFFERENT" not in result.stdout, result.stdout
+
+    def test_a_differing_path_never_gets_a_checkout(self) -> None:
+        """Kills DS-C1's advice half: a bare checkout here replaces the
+        other machine's file, stages it, and the next run publishes it."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "differs\tnotes/a.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "checkout" not in result.stdout, (
+            "advised a command that overwrites a file that is present: "
+            + result.stdout
+        )
+        assert "show 0badc0de^3" in result.stdout, result.stdout
+        assert "merge by hand" in result.stdout, result.stdout
+
+    def test_both_kinds_in_one_entry_get_their_own_command(self) -> None:
+        """One entry can hold both, and the paths must not be pooled."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "missing\tnotes/gone.md\ndiffers\tnotes/here.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        before_show = result.stdout.split("DIFFERENT")[0]
+        assert "notes/gone.md" in before_show, result.stdout
+        assert "notes/here.md" not in before_show, (
+            "a path that is present was swept into the checkout advice: "
+            + result.stdout
+        )
+
+    def test_the_advice_always_says_how_to_finish(self) -> None:
+        """Audit low (eleventh re-audit): without this the entry sits on
+        the stack for ever and every run re-reports it."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "missing\tnotes/a.md"},
+        )
+        assert "stash drop <ref>" in result.stdout, result.stdout
+
+
+class TestStashAlreadyInTree:
+    """The re-apply guard in the EXIT handler. Applying an entry whose
+    content is already in the tree lays it on top of itself, which for a
+    corpus committed in between means UU markers in the live
+    memories.jsonl with rc 0."""
+
+    _FUNCTIONS = (
+        "stash_already_in_tree",
+        "stash_was_applied",
+        "stash_was_conflicted",
+        "stash_was_partial",
+    )
+
+    def _ask(self, setup: str) -> str:
+        """Run the predicate with the state arrays as ``setup`` leaves them."""
+        result = _run_shell(
+            "partial_stash_shas=()\napplied_stash_shas=()\n"
+            "conflicted_stash_shas=()\nblocked_stash_shas=()\n"
+            + setup
+            + '\nif stash_already_in_tree deadbeef; then echo SKIP; else echo APPLY; fi\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    @pytest.mark.parametrize(
+        "array",
+        ["applied_stash_shas", "conflicted_stash_shas", "partial_stash_shas"],
+    )
+    def test_every_state_that_reached_the_tree_blocks_a_re_apply(
+        self, array: str
+    ) -> None:
+        """Kills: dropping any one of the three from the predicate --
+        notably `stash_was_partial`, whose entry has its tracked half in
+        the tree already."""
+        assert self._ask(f'{array}+=("deadbeef")') == "SKIP"
+
+    def test_an_untouched_entry_is_still_restored(self) -> None:
+        """The guard must not become "never restore anything": that is the
+        failure mode the EXIT trap exists to prevent."""
+        assert self._ask("blocked_stash_shas+=(\"deadbeef\")") == "APPLY"
 
 
 class TestCarryForwardPartialStashes:

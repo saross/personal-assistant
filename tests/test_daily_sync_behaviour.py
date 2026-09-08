@@ -2810,9 +2810,25 @@ class TestPartiallyAppliedStash:
         assert kept == "the only copy of this exists in the stash\n", kept
 
         joined = "\n".join(gate_details(world))
-        assert report in joined, ("the gate does not name the file that is "
-                                  "only in the stash: " + joined)
-        assert "only then delete the entry" in joined, joined
+        assert report in joined, ("the gate does not name the file that did "
+                                  "not come back: " + joined)
+        # audit C1 (eleventh re-audit): the tree HOLDS the other machine's
+        # copy, tracked at HEAD after the pull. Saying the file exists
+        # "ONLY inside the entry" and offering a bare checkout is advice to
+        # overwrite it, stage it, and publish it on the next run.
+        assert "DIFFERENT copy" in joined, joined
+        assert "ONLY inside" not in joined, joined
+        assert f"checkout {sha}^3" not in joined, (
+            "the gate advised a command that overwrites a file present in "
+            "the worktree: " + joined
+        )
+        assert f"show {sha}^3" in joined, joined
+        assert "merge by hand" in joined, joined
+        assert "stash drop <ref>" in joined, joined
+        # The other machine's copy is untouched and still what is tracked.
+        assert (machine.data / report).read_text(encoding="utf-8") == (
+            "the other machine's copy\n"
+        )
         assert world.published_data_head() == published_before
 
     def test_a_clean_merge_with_an_untracked_collision_is_not_called_refused(
@@ -3110,6 +3126,174 @@ class TestParentCheckPrecedesTheBranchGuard:
 
 
 # ============================================================================
+# The gate never advises a command that overwrites a live file (audit C1)
+# ============================================================================
+
+
+class TestPartialAdviceNeverClobbers:
+    """A path the untracked restore declined is a path that ALREADY HOLDS
+    something — usually the other machine's copy, tracked at HEAD after
+    the pull. Every partial gate line said the file existed "ONLY inside
+    the entry" and offered `git checkout <sha>^3 -- <path>`, which
+    replaces it, stages it, and has the next run publish it."""
+
+    def test_following_the_gates_command_cannot_clobber_the_tracked_file(
+        self, world: SyncWorld
+    ) -> None:
+        """The exact sequence, then the gate's own command run verbatim.
+
+        Kills DS-C1: `unrestored_untracked_paths` printing a bare path, so
+        every consumer words it as `missing` and hands the operator a
+        checkout.
+        """
+        machine = world.add_machine("a")
+        report = "reports/field-notes.md"
+        theirs = "the other machine's copy\n"
+        world.publish_memory_append("2026-09-08-from-elsewhere")
+        world.publish_data_change(report, theirs)
+
+        base = machine.head("data")
+        machine.append_memory("2026-09-08-local-append")
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("the local copy\n", encoding="utf-8")
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+
+        assert world.run_sync(machine).returncode == 2
+        joined = "\n".join(gate_details(world))
+        sha = git("stash", "list", "--format=%H", cwd=machine.data).stdout.split()[0]
+
+        # The gate names the state, not a fiction about where the file is.
+        assert "DIFFERENT copy" in joined, joined
+        assert "ONLY inside" not in joined, joined
+        # …and offers no command that would write over what is there.
+        assert f"checkout {sha}^3" not in joined, joined
+        assert f"show {sha}^3" in joined, joined
+
+        # Run every `git` command the gate actually offers. None of them
+        # may change the tracked file or stage anything.
+        offered = [
+            line.strip().rstrip(".")
+            for line in joined.replace(". ", ".\n").splitlines()
+            if "git -C" in line and "show" in line
+        ]
+        assert offered, joined
+        before = (machine.data / report).read_text(encoding="utf-8")
+        # The conflicted apply already left the corpus in the index; what
+        # matters is that the advice adds nothing to it.
+        staged_before = git(
+            "diff", "--cached", "--name-only", cwd=machine.data
+        ).stdout
+        for command in offered:
+            snippet = command[command.index("git -C"):]
+            # `<path>` is a placeholder the operator fills in.
+            snippet = snippet.replace("<path>", report)
+            subprocess.run(snippet, shell=True, cwd=str(machine.data),
+                           capture_output=True, text=True, check=False)
+        assert (machine.data / report).read_text(encoding="utf-8") == before == theirs
+        assert git(
+            "diff", "--cached", "--name-only", cwd=machine.data
+        ).stdout == staged_before, "the gate's advice staged something"
+
+
+# ============================================================================
+# A partial found before the full EXIT handler exists (audit M1)
+# ============================================================================
+
+
+class TestPartialFoundDuringRecovery:
+    """reconcile_orphaned_stashes runs while only the EARLY trap is
+    installed, and its `partial` branch calls `fail`. Nothing wrote the
+    sidecar, so the warning lived exactly one run and the next clean run
+    cleared the gate over a file that was in no commit and no tree."""
+
+    def test_an_orphan_partial_is_still_reported_on_the_next_run(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M1 (eleventh): dropping the `write_stash_state` before
+        that `fail`, or the `partial_stash_records` guard in
+        render_on_early_exit."""
+        machine = world.add_machine("a")
+        report = "reports/orphan-notes.md"
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("the stashed copy\n", encoding="utf-8")
+        machine.append_memory("2026-09-08-orphaned")
+        git("stash", "push", "-u", "-q", "-m", "an orphan", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        # The corpus moved on, so the tracked half conflicts, and somebody
+        # else's copy of the report is in the way of the untracked half.
+        machine.memories.write_text('{"id": "moved on"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("a different copy\n", encoding="utf-8")
+
+        first = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
+        assert first.returncode == 2, first.stdout + first.stderr
+        joined = "\n".join(gate_details(world))
+        assert report in joined, joined
+        sidecar = world.home / ".cache" / "daily-sync-stash-state"
+        rows = [r for r in sidecar.read_text(encoding="utf-8").splitlines()
+                if "partial" in r]
+        assert rows, "the orphan's partial state was never recorded"
+        assert rows[0].split("\t")[1] == sha, rows
+
+        # A second run, with the markers resolved by hand: it completes,
+        # and must still say the report has not come back.
+        machine.memories.write_text('{"id": "resolved by hand"}\n', encoding="utf-8")
+        git("add", "--", "memories/memories.jsonl", cwd=machine.data)
+        second = world.run_sync(machine)
+        assert second.returncode == 0, second.stdout + second.stderr
+        again = "\n".join(gate_details(world))
+        assert report in again, (
+            "the warning was cleared while the file was still only in the "
+            "stash: " + again
+        )
+
+
+# ============================================================================
+# An untracked collision with IDENTICAL content (audit M3)
+# ============================================================================
+
+
+class TestIdenticalUntrackedCollision:
+    """Both machines write the same report. git declines the untracked
+    half just as loudly, having already applied the tracked one — and
+    that was classified `refused` ("the tree was left untouched"), so a
+    perfectly recovered entry was gated as unrecovered work, never
+    dropped, and re-stashed on every later run."""
+
+    def test_an_identical_collision_is_recovered_not_gated(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M3: requiring `apply_outcome_untracked` to be
+        non-empty before the tree-changed branch may classify anything."""
+        machine = world.add_machine("a")
+        report = "reports/shared-notes.md"
+        same = "both machines wrote this\n"
+        world.publish_data_change(report, same)
+
+        base = machine.head("data")
+        machine.append_memory("2026-09-08-identical")
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(same, encoding="utf-8")
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert world.gate("daily-sync-gate").strip() == "0", world.gate(
+            "daily-sync-gate"
+        )
+        assert not git("stash", "list", cwd=machine.data).stdout.strip(), (
+            "an entry whose content is entirely in the tree was kept"
+        )
+        assert "2026-09-08-identical" in world.published_data_file(
+            "memories/memories.jsonl"
+        )
+
+
+# ============================================================================
 # Nothing is PUSHED that shrinks the corpus against origin (audit M4)
 # ============================================================================
 
@@ -3177,55 +3361,59 @@ class TestPublishedShrinkGuard:
 
 
 # ============================================================================
-# A partial found before the full EXIT handler exists (audit M1)
+# The EXIT handler's own partial restore (audit M5)
 # ============================================================================
 
 
-class TestPartialFoundDuringRecovery:
-    """reconcile_orphaned_stashes runs while only the EARLY trap is
-    installed, and its `partial` branch calls `fail`. Nothing wrote the
-    sidecar, so the warning lived exactly one run and the next clean run
-    cleared the gate over a file that was in no commit and no tree."""
+class TestExitHandlerPartialRestore:
+    """The run stashes, something fails before its pop, and the EXIT
+    handler's restore is the one that half-lands: the pull has already
+    put the other machine's copy where the untracked file belongs."""
 
-    def test_an_orphan_partial_is_still_reported_on_the_next_run(
+    def test_a_partial_restore_is_recorded_gated_and_not_re_applied(
         self, world: SyncWorld
     ) -> None:
-        """Kills DS-M1 (eleventh): dropping the `write_stash_state` before
-        that `fail`, or the `partial_stash_records` guard in
-        render_on_early_exit."""
+        """Kills DS-M5: replacing `record_partial_stash` in the exit
+        handler's `partial` arm with `:` -- the entry is then reported as
+        UNRECOVERED and the operator is told to pop it, which re-applies
+        the tracked half on top of itself."""
         machine = world.add_machine("a")
-        report = "reports/orphan-notes.md"
+        report = "reports/exit-notes.md"
+        base = machine.head("data")
+        # main gains the other machine's copy of the report…
         target = machine.data / report
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("the stashed copy\n", encoding="utf-8")
-        machine.append_memory("2026-09-08-orphaned")
-        git("stash", "push", "-u", "-q", "-m", "an orphan", cwd=machine.data)
-        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
-        # The corpus moved on, so the tracked half conflicts, and somebody
-        # else's copy of the report is in the way of the untracked half.
-        machine.memories.write_text('{"id": "moved on"}\n', encoding="utf-8")
-        machine.commit_data("diverge", "memories/memories.jsonl")
+        target.write_text("main's copy\n", encoding="utf-8")
+        machine.commit_data("the other machine's report", report)
+        # …while the stash is taken on a detached HEAD that predates it.
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        machine.append_memory("2026-09-08-exit-handler")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("a different copy\n", encoding="utf-8")
+        target.write_text("the stashed copy\n", encoding="utf-8")
+        # The pull fails, so the run never reaches its own pop.
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
 
-        first = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
-        assert first.returncode == 2, first.stdout + first.stderr
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
         joined = "\n".join(gate_details(world))
+        assert "only PARTLY" in joined, joined
         assert report in joined, joined
+        assert "UNRECOVERED" not in joined, (
+            "a half-restored entry was reported as unrecovered work, whose "
+            "advice is to pop it: " + joined
+        )
+        assert "DIFFERENT copy" in joined, joined
+
         sidecar = world.home / ".cache" / "daily-sync-stash-state"
         rows = [r for r in sidecar.read_text(encoding="utf-8").splitlines()
-                if "partial" in r]
-        assert rows, "the orphan's partial state was never recorded"
-        assert rows[0].split("\t")[1] == sha, rows
+                if "\tpartial\t" in r]
+        assert rows, "no partial row was written for the restored entry"
+        assert rows[0].split("\t")[3] == report, rows
 
-        # A second run, with the markers resolved by hand: it completes,
-        # and must still say the report has not come back.
-        machine.memories.write_text('{"id": "resolved by hand"}\n', encoding="utf-8")
-        git("add", "--", "memories/memories.jsonl", cwd=machine.data)
-        second = world.run_sync(machine)
-        assert second.returncode == 0, second.stdout + second.stderr
-        again = "\n".join(gate_details(world))
-        assert report in again, (
-            "the warning was cleared while the file was still only in the "
-            "stash: " + again
-        )
+        # The tracked half landed exactly once.
+        corpus = machine.memories.read_text(encoding="utf-8")
+        assert corpus.count("2026-09-08-exit-handler") == 1, corpus
+        assert (machine.data / report).read_text(encoding="utf-8") == "main's copy\n"
