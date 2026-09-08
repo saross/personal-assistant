@@ -3067,3 +3067,105 @@ class TestOwedResponsesAreCounted:
         window = eh.parse_transcript(str(transcript), "u1", 1)
         assert [m["content"] for m in window.messages] == ["AN ORDINARY ANSWER"]
         assert window.skip_pending == 0
+
+
+class TestUnpositionableCommandEntries:
+    """M3: a command entry with no uuid was counted once per firing.
+
+    ``last_seen_uuid`` is only ever assigned from a uuid, so an entry
+    without one can never become a cursor position: every later window
+    re-reads it. Arming there made the owed count climb without limit until
+    it began swallowing genuine assistant turns, which are irrecoverable —
+    the cursor has moved past them and nothing re-reads them.
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _uuidless(marker: str) -> dict:
+        """A live-shape meta command entry with its ``uuid`` key removed."""
+        entry = make_live_shape_entry("user", marker + "\nsave", "dropped", is_meta=True)
+        del entry["uuid"]
+        return entry
+
+    # The same one-firing harness the owed-count tests use; there is one
+    # correct way to drive main() with the API mocked and it lives there.
+    _fire = staticmethod(TestOwedResponsesAreCounted._fire)
+
+    def test_the_uuidless_command_is_counted_zero_times_not_once_per_firing(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills dropping the ``if entry_uuid:`` guard (re-audit M3).
+
+        The exact two-window scenario from the re-audit. Without the guard
+        W1 ends owing 2 at position ``c1``; W2 seeds 2, re-arms at the
+        cursor, re-reads the uuid-less entry to owe 3, spends two on the
+        command responses and the third on the genuine turn — which is then
+        gone for good.
+        """
+        transcript, cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave one", "c1", is_meta=True),
+            self._uuidless(marker),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-M3", expect_call=False) is None
+        # One command was positionable, so exactly one response is owed and
+        # the cursor sits on that command.
+        assert _cursor_state(cursor_file, "sess-M3") == ("c1", 1)
+
+        entries += [
+            make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "r1"),
+            make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "r2"),
+            make_live_shape_entry(
+                "assistant", "THE GENUINE TURN THAT MUST SURVIVE " + "g" * 800, "g1"
+            ),
+        ]
+        _write_transcript(transcript, entries)
+        sent = self._fire(monkeypatch, transcript, "sess-M3", expect_call=True)
+        assert "THE GENUINE TURN THAT MUST SURVIVE" in sent, (
+            "the uuid-less command was counted again and ate a real turn"
+        )
+        assert "FIRST COMMAND RESPONSE" not in sent
+        assert _cursor_state(cursor_file, "sess-M3") == ("g1", 0)
+
+    def test_the_count_does_not_climb_across_repeated_firings(self, tmp_path):
+        """Kills the same guard at the parse level, over three windows.
+
+        Re-parsing an unchanged transcript must be idempotent: the owed
+        count is a property of the transcript, not of how often the hook
+        fired.
+        """
+        transcript = tmp_path / "t.jsonl"
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "c1", is_meta=True),
+                self._uuidless(marker),
+            ],
+        )
+        first = eh.parse_transcript(str(transcript), None)
+        assert (first.last_uuid, first.skip_pending) == ("c1", 1)
+        second = eh.parse_transcript(str(transcript), first.last_uuid, first.skip_pending)
+        assert (second.last_uuid, second.skip_pending) == (None, 1)
+        third = eh.parse_transcript(str(transcript), "c1", second.skip_pending)
+        assert third.skip_pending == 1, "the owed count climbed on a re-read"
+
+    def test_the_unpositionable_command_is_reported(self, tmp_path, caplog):
+        """Kills deleting the WARNING.
+
+        Its response WILL reach extraction once, as an ordinary turn. That
+        is the deliberate trade (a duplicate is dedupable, a lost turn is
+        not), but the operator's only signal that it happened is this line.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [self._uuidless(self._marker())])
+        with caplog.at_level("WARNING"):
+            window = eh.parse_transcript(str(transcript), None)
+        assert window.skip_pending == 0
+        assert "no uuid" in caplog.text
+        assert str(transcript) in caplog.text

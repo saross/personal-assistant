@@ -753,7 +753,31 @@ def parse_transcript(
                 if entry.get("isMeta") and any(
                     marker in content for marker in COMMAND_MARKERS
                 ):
-                    responses_owed += 1
+                    # Invariant: a command entry is counted at most ONCE.
+                    #
+                    # An entry with no uuid can never become a cursor
+                    # position — ``last_seen_uuid`` is only assigned from a
+                    # uuid — so every later window re-reads it and would
+                    # count it again. Measured shape of the bug (re-audit
+                    # M3, 2026-09-08): W1 ``[cmd c1, cmd no-uuid]`` ends
+                    # owing 2 at position c1; W2 seeds 2, re-arms 1 at the
+                    # cursor, re-reads the uuid-less entry and owes 3, and
+                    # the count keeps climbing on every firing until it eats
+                    # genuine assistant turns that belong to no command.
+                    #
+                    # A dropped genuine turn is irrecoverable; a leaked
+                    # command response is a duplicate the store can be
+                    # deduplicated of. So an unpositionable command arms
+                    # nothing, and says so.
+                    if entry_uuid:
+                        responses_owed += 1
+                    else:
+                        logger.warning(
+                            "Slash-command entry with no uuid in %s — cannot "
+                            "be positioned, so its response is not skipped; "
+                            "it may be extracted once as an ordinary turn",
+                            transcript_path,
+                        )
                     continue
             elif entry.get("type") == "assistant" and responses_owed:
                 # Assistant turns are often split: a tool-use-only entry
