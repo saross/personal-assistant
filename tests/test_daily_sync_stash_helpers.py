@@ -1882,6 +1882,29 @@ class TestTrackedHalfEvidenceIsTheHunks:
 
         assert self._ask(repo, sha, "", " M f.txt") == "LANDED"
 
+    def test_hunks_already_there_before_the_apply_are_not_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-C1's second conjunct: dropping the per-path status
+        test and resting on the reverse-apply alone.
+
+        The hunks reverse-apply because they ARE in the files -- somebody
+        put them there before this apply, which reported a failure and
+        moved nothing. `applied` is a claim about what THIS apply did, and
+        the entry is kept until something can say so.
+        """
+        repo, sha = self._two_path_entry(tmp_path, "already-there")
+        # The content the entry holds, put there by other means, and
+        # committed so the tree is clean and says nothing changed.
+        (repo / "t.txt").write_text("stashed\n", encoding="utf-8")
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "m1-only-in-stash"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the same edit from elsewhere", cwd=repo)
+
+        assert self._ask(repo, sha, "", "") == "NOT-LANDED"
+
     def test_a_binary_path_is_never_called_landed(self, tmp_path: Path) -> None:
         """`git diff` says "Binary files differ" and `git apply` refuses
         it. Reading that as not-landed keeps the entry, which is the safe
@@ -1918,22 +1941,24 @@ class TestCorpusLineCountIsBinarySafe:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "2", result.stdout
 
-    def test_a_count_that_cannot_be_produced_is_a_failure(
-        self, tmp_path: Path
-    ) -> None:
-        """Kills DS-L4: `|| true`. grep exits 2 on a read error and prints
-        nothing; the empty string then compared as 0 at every call site,
-        so a guard whose measurement failed passed in silence."""
+    def test_a_count_that_cannot_be_produced_is_a_failure(self) -> None:
+        """Kills DS-L4: `|| true` in the REAL corpus_line_count. grep
+        exits 2 on a read error and prints nothing; the empty string then
+        compared as 0 at every call site, so a guard whose measurement had
+        failed passed in silence.
+
+        `grep` is shadowed to behave as it does on a read error, which is
+        the one way to reach that branch without an unreadable file the
+        test would then have to create and clean up.
+        """
         result = _run_shell(
-            "corpus_line_count() {\n"
-            "    local count\n"
-            '    count="$(printf "" || true)"\n'
-            '    if [[ ! "$count" =~ ^[0-9]+$ ]]; then return 1; fi\n'
-            '    printf "%s" "$count"\n'
-            "}\n"
-            'if printf "" | corpus_line_count; then echo PASSED; else echo FAILED; fi\n'
+            "grep() { return 2; }\n"
+            'if printf "x\\n" | corpus_line_count; then\n'
+            "  echo PASSED\nelse\n  echo FAILED\nfi\n",
+            ("corpus_line_count",),
         )
-        assert "FAILED" in result.stdout, result.stdout
+        assert "FAILED" in result.stdout, result.stdout + result.stderr
+        assert "could not count the corpus" in result.stderr, result.stderr
 
     def test_an_unreadable_blob_stops_the_run(self, tmp_path: Path) -> None:
         """And the caller treats it as one: a guard that cannot measure
@@ -2071,3 +2096,99 @@ class TestAppendRowWriteFailure:
         # audit L2: and the gate says the kept file is an earlier run's.
         assert "EARLIER run's rows" in result.stdout, result.stdout
         assert not list(tmp_path.glob("sidecar.*")), "a temporary file was left"
+
+
+class TestRetryPushRechecksTheShrink:
+    """push_with_retry fetches, rebases, and re-pushes. Every shrink check
+    the run has made by then happened BEFORE that rebase -- which is
+    exactly where the append-safe resolver rewrites the corpus -- and once
+    the retry push succeeds nothing else looks.
+
+    Driven with a stub `git` rather than a real race: what has to be
+    pinned is the ORDER of the calls, and staging a genuine push race that
+    also conflicts on rebase depends on git's patch-offset heuristics
+    rather than on anything this script does.
+    """
+
+    def test_the_guard_runs_between_the_rebase_and_the_retry_push(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L5: dropping the post-rebase abort_on_published_shrink."""
+        trace = tmp_path / "trace"
+        result = _run_shell(
+            "\n".join(
+                [
+                    'RETRY_ON_REJECT="true"',
+                    "RETRY_ATTEMPTS=3",
+                    "RETRY_BACKOFF=0",
+                    'PA_DIR="/nonexistent"',
+                    'RESOLVER="/nonexistent"',
+                    "sleep() { :; }",
+                    f'trace="{trace}"',
+                    # A git that rejects the first push and takes the
+                    # second, and rebases cleanly in between.
+                    "git() {",
+                    '    case "$*" in',
+                    '        *"push origin main"*)',
+                    '            printf "push\\n" >> "$trace"',
+                    '            [[ -f "$trace.pushed" ]] && return 0',
+                    '            touch "$trace.pushed"',
+                    "            return 1 ;;",
+                    '        *"fetch origin main"*) printf "fetch\\n" >> "$trace" ;;',
+                    '        *"pull --rebase"*)     printf "rebase\\n" >> "$trace" ;;',
+                    '        *"status --porcelain"*) ;;',
+                    "    esac",
+                    "    return 0",
+                    "}",
+                    "abort_on_published_shrink() {",
+                    '    printf "shrink-check %s\\n" "$1" >> "$trace"',
+                    "}",
+                    'push_with_retry "data submodule"',
+                ]
+            ),
+            ("push_with_retry",),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        steps = trace.read_text(encoding="utf-8").split()
+        assert steps[:1] == ["push"], steps
+        assert "rebase" in steps, steps
+        rebase_at = steps.index("rebase")
+        assert "shrink-check" in steps[rebase_at:], (
+            "the corpus was never re-measured after the rebase: " + str(steps)
+        )
+        check_at = steps.index("shrink-check", rebase_at)
+        assert "push" in steps[check_at:], (
+            "the re-check did not precede the retry push: " + str(steps)
+        )
+
+    def test_the_parent_repo_is_not_measured(self, tmp_path: Path) -> None:
+        """The parent holds no corpus; asking about one there would fail
+        the run on a repository the guard knows nothing about."""
+        trace = tmp_path / "trace-parent"
+        result = _run_shell(
+            "\n".join(
+                [
+                    'RETRY_ON_REJECT="true"',
+                    "RETRY_ATTEMPTS=3",
+                    "RETRY_BACKOFF=0",
+                    'PA_DIR="/nonexistent"',
+                    'RESOLVER="/nonexistent"',
+                    "sleep() { :; }",
+                    f'trace="{trace}"',
+                    "git() {",
+                    '    case "$*" in',
+                    '        *"push origin main"*)',
+                    '            [[ -f "$trace.pushed" ]] && return 0',
+                    '            touch "$trace.pushed"',
+                    "            return 1 ;;",
+                    "    esac",
+                    "    return 0",
+                    "}",
+                    'abort_on_published_shrink() { printf "shrink-check\\n" >> "$trace"; }',
+                    'push_with_retry "parent repo"',
+                ]
+            ),
+            ("push_with_retry",),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not trace.exists(), "the parent repo was measured for a corpus"
