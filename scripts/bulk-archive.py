@@ -962,16 +962,53 @@ def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
             )
         return _empty_checkpoint()
     # Fill in anything a hand-edited or older file is missing, so the callers
-    # below can index without guarding every key.
+    # below can index without guarding every key. Each repair is REPORTED:
+    # discarding a wrongly-typed archived_ids silently is indistinguishable
+    # from having archived nothing, and an operator reading "0 already done"
+    # over a checkpoint that listed 600 sessions deserves to know which of
+    # those two happened (audit round 4c-3, finding L-5).
     checkpoint = _empty_checkpoint()
     checkpoint.update(loaded)
+    repairs: list[str] = []
     for key, empty in (
         ("archived_ids", []), ("skipped_trivial_ids", []), ("failed_ids", {}),
     ):
         if not isinstance(checkpoint.get(key), type(empty)):
+            repairs.append(
+                f"{key} was a {type(checkpoint.get(key)).__name__}, not a "
+                f"{type(empty).__name__} — discarded"
+            )
             checkpoint[key] = empty
+
+    # ``stats`` is filled key by key, not replaced wholesale. A checkpoint
+    # carrying `{"stats": {}}` — a hand edit, or an older writer — passed the
+    # isinstance test and then made `checkpoint["stats"]["total_archived"] +=
+    # 1` raise KeyError INSIDE the archive loop's try, so every session was
+    # recorded as failed although it had been archived correctly (audit round
+    # 4c-3, finding L-6).
+    default_stats = _empty_checkpoint()["stats"]
     if not isinstance(checkpoint.get("stats"), dict):
-        checkpoint["stats"] = _empty_checkpoint()["stats"]
+        repairs.append(
+            f"stats was a {type(checkpoint.get('stats')).__name__}, not an "
+            "object — replaced"
+        )
+        checkpoint["stats"] = dict(default_stats)
+    else:
+        missing = [
+            key for key, value in default_stats.items()
+            if not isinstance(checkpoint["stats"].get(key), type(value))
+        ]
+        if missing:
+            repairs.append(f"stats was missing {', '.join(sorted(missing))}")
+        for key, value in default_stats.items():
+            if not isinstance(checkpoint["stats"].get(key), type(value)):
+                checkpoint["stats"][key] = value
+
+    if repairs and logger is not None:
+        logger.warning(
+            "Checkpoint at %s needed repair before use: %s",
+            CHECKPOINT_FILE, "; ".join(repairs),
+        )
     return checkpoint
 
 

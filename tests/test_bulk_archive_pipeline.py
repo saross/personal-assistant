@@ -2138,3 +2138,91 @@ class TestFailureBookkeepingSaysWhatHappened:
             "the unbounded-retry decision is not stated beside the constant "
             "that implements it"
         )
+
+
+class TestCheckpointRepairsAreReported:
+    """Round 4c-3 findings L-5 and L-6 — repair loudly, and repair enough."""
+
+    def test_a_wrongly_typed_key_is_reported_not_silently_dropped(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L-5: "0 already done" must not be indistinguishable from a discard."""
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": "aaaa,bbbb", "failed_ids": 7,
+            "skipped_trivial_ids": [],
+            "stats": {"total_archived": 0, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            checkpoint = bulk_archive._load_checkpoint(LOGGER)
+
+        assert checkpoint["archived_ids"] == []
+        assert checkpoint["failed_ids"] == {}
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "needed repair" in messages
+        assert "archived_ids" in messages and "failed_ids" in messages
+
+    def test_an_empty_stats_object_does_not_break_the_archive_loop(
+        self, pipeline: Pipeline
+    ) -> None:
+        """L-6: `{"stats": {}}` passed isinstance and then raised KeyError.
+
+        Inside the loop's try, so every session was recorded as FAILED
+        although it had been archived correctly -- and the next run then
+        skipped them all.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [], "failed_ids": {}, "skipped_trivial_ids": [],
+            "stats": {},
+        }), encoding="utf-8")
+
+        pipeline.archive()
+
+        state = pipeline.checkpoint_state()
+        assert state["archived_ids"] == [SID_A], (
+            "a session that archived correctly was recorded as failed "
+            "because the checkpoint's stats block was empty"
+        )
+        assert state["failed_ids"] == {}
+        assert state["stats"]["total_archived"] == 1
+
+    def test_a_partially_filled_stats_object_is_completed(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [], "failed_ids": {}, "skipped_trivial_ids": [],
+            "stats": {"total_archived": 5},
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            checkpoint = bulk_archive._load_checkpoint(LOGGER)
+
+        assert checkpoint["stats"]["total_archived"] == 5, (
+            "an existing counter was reset instead of being kept"
+        )
+        assert checkpoint["stats"]["total_subagents"] == 0
+        assert checkpoint["stats"]["total_compressed_bytes"] == 0
+        assert any(
+            "stats was missing" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_a_healthy_checkpoint_is_repaired_silently_because_it_is_whole(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: no warning when there is nothing to repair."""
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [SID_A], "failed_ids": {},
+            "skipped_trivial_ids": [],
+            "stats": {"total_archived": 1, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            checkpoint = bulk_archive._load_checkpoint(LOGGER)
+
+        assert checkpoint["archived_ids"] == [SID_A]
+        assert caplog.records == []
