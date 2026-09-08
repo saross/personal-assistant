@@ -1732,6 +1732,22 @@ def main(argv: list[str] | None = None) -> int:
     # model, the mode, the request count, and the estimated cost before it
     # asks anything, so an operator who has not run --dry-run still sees the
     # four figures the gate requires.
+    #
+    # The figures describe what will ACTUALLY be sent: on a resumed run the
+    # sessions that already have a complete response are dropped first, so
+    # the count and the cost are the ones about to be incurred rather than
+    # the ones a first run would have incurred. The Batch arm is exempt —
+    # a batch is one job, and resume happens at --haiku-apply.
+    if args.provider != "haiku":
+        requests = pending_requests(
+            requests, provider_dir, force=args.force, tag=args.provider
+        )
+        if not requests:
+            print(
+                "Every session in the manifest already has a complete "
+                "response; nothing to send. Pass --force to re-run them."
+            )
+            return 0
     print(
         "Live mode requested. This will make billed API calls. "
         "Re-run with --dry-run first if you want the per-session breakdown."

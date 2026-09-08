@@ -940,3 +940,53 @@ class TestHaikuApplyBoundary:
         written = json.loads((out_dir / "known-session.json").read_text())
         assert written == fx.RESPONSE_OBJECT
         assert (out_dir / "known-session.raw.txt").exists()
+
+
+class TestGateQuotesWhatWillBeSent:
+    """A resumed run must be priced on the calls it is about to make."""
+
+    def _two_session_manifest(self, tmp_path):
+        rows = []
+        for session_id in ("resume-aaaa-1111", "resume-bbbb-2222"):
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=10
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        return fx.write_manifest(tmp_path / "manifest.json", rows)
+
+    def test_count_excludes_sessions_already_answered(
+        self, tmp_path, capsys, gemini_boundary
+    ):
+        manifest = self._two_session_manifest(tmp_path)
+        out_dir = tmp_path / "out"
+        (out_dir / "gemini").mkdir(parents=True)
+        (out_dir / "gemini" / "resume-aaaa-1111.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        assert bom.main(_live_argv(
+            manifest, _prompt_file(tmp_path), out_dir, "--yes"
+        )) == 0
+        printed = capsys.readouterr().out
+        assert "requests:       1" in printed
+        assert len([c for c in gemini_boundary if c["event"] == "generate"]) == 1
+
+    def test_all_answered_exits_before_the_gate(
+        self, tmp_path, monkeypatch, capsys, gemini_boundary
+    ):
+        manifest = self._two_session_manifest(tmp_path)
+        out_dir = tmp_path / "out"
+        (out_dir / "gemini").mkdir(parents=True)
+        for session_id in ("resume-aaaa-1111", "resume-bbbb-2222"):
+            (out_dir / "gemini" / f"{session_id}.json").write_text(
+                fx.RESPONSE_BARE + "\n", encoding="utf-8"
+            )
+
+        def refuse_input(_prompt=""):
+            raise AssertionError("nothing to send must not reach the prompt")
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        assert bom.main(_live_argv(
+            manifest, _prompt_file(tmp_path), out_dir
+        )) == 0
+        assert gemini_boundary == []
+        assert "nothing to send" in capsys.readouterr().out
