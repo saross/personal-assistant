@@ -429,8 +429,17 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     whose content holds a marker line is staged at any of the five sites;
     only a run's own stashes are popped or dropped; an unusable `HOME`
     fails at the start; orphans recovered by SHA; all seven surviving
-    mutations killed. Third pass running. Both machines: no stash in the
-    parent or data repositories at 14:05.
+    mutations killed. Third pass: merge after fixing two — diff3/zdiff3
+    `|||||||` markers pass the content check and the resolver keeps them
+    (a corpus with one reached origin, exit 0, clean gate; no such config
+    is set on either machine today); a resolved data conflict latches off
+    the parent-half stash restore. Also: five new mutations survive (the
+    marker regex, the file loop, two of the five refusal sites, orphan pop
+    by selector); every `fail` on the rebase and push paths wedges the
+    sync with no gate line; the marker re-scan runs after `rebase
+    --abort`. Fourth round running: `fail` itself gates every non-zero
+    exit. Both machines: no stash in the parent or data repositories at
+    14:05.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
