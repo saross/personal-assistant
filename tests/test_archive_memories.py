@@ -826,3 +826,32 @@ class TestApplyWiring:
 
         assert am.main([]) == 0
         assert corpus.read_bytes() == before
+
+
+def test_apply_refuses_when_the_cursor_is_unusable(main_env, capsys):
+    """A cursor present and unreadable must fail CLOSED, not read as caught up.
+
+    Kills the mutation that returns 0 for an unusable cursor: the sweep
+    would evict lines with nobody able to say which records end up stranded
+    below the cursor. Audit round 4a-2, M2.
+    """
+    corpus, cursor, applied = main_env
+    before = corpus.read_bytes()
+    cursor.write_text(json.dumps({"postgres_sync_line": "later"}),
+                      encoding="utf-8")
+
+    assert am.main(["--apply"]) == 1
+
+    assert applied == [], "apply_archive ran on an unreadable cursor"
+    assert corpus.read_bytes() == before
+    assert "cannot be read" in capsys.readouterr().err
+
+
+def test_apply_refuses_on_a_malformed_cursor_file(main_env, capsys):
+    """An unparseable cursor file is a refusal, not an absent cursor."""
+    corpus, cursor, applied = main_env
+    cursor.write_text("{truncated", encoding="utf-8")
+
+    assert am.main(["--apply"]) == 1
+    assert applied == []
+    assert "cannot be read" in capsys.readouterr().err

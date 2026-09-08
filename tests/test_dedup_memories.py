@@ -590,3 +590,30 @@ class TestPostgresBacklogGate:
         run_main(monkeypatch)
 
         assert len(store.read_text(encoding="utf-8").split("\n")[:-1]) == 2
+
+
+    def test_unusable_cursor_refuses_and_writes_nothing(
+        self, store: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cursor that is present and unreadable must fail CLOSED.
+
+        Kills the mutation that treats an unusable cursor as no backlog:
+        the sweep would delete lines with nobody able to say which records
+        would be stranded beneath the cursor. Audit round 4a-2, M2.
+        """
+        self._corpus_with_a_duplicate(store)
+        before = store.read_bytes()
+        dedup.CURSOR_FILE.write_text(
+            json.dumps({"postgres_sync_line": -4}), encoding="utf-8")
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the guard ran despite an unusable cursor")
+
+        monkeypatch.setattr(dedup, "ensure_safe_to_rewrite", refuse)
+
+        with pytest.raises(SystemExit) as excinfo:
+            run_main(monkeypatch)
+
+        assert excinfo.value.code == 1
+        assert store.read_bytes() == before
+        assert not dedup.removal_journal_path().exists()
