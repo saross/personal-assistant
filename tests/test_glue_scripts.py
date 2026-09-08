@@ -1141,6 +1141,39 @@ class TestR2PushSafety:
         assert self._run(sandbox).returncode == 0
         assert "--immutable" in self._argv(sandbox)
 
+    @pytest.mark.parametrize("args", [(), ("--dry-run",)])
+    def test_the_subcommand_is_always_copy_never_sync(
+        self, sandbox, args
+    ) -> None:
+        """``sync`` deletes from the destination; ``copy`` never does.
+
+        The header promises "Never deletes from R2. These are open-science
+        records we never want to lose". One word in the invocation inverts
+        that: `rclone sync` removes every object in the bucket that is absent
+        locally, so a canonical store that failed to mount, or one session
+        deliberately pruned, would take the offsite copies with it. Only the
+        dry-run branch asserted the subcommand, so the real branch could be
+        switched with the whole R2 suite green (round 4c-2, finding 17).
+        """
+        assert self._run(sandbox, *args).returncode == 0
+
+        argv = self._argv(sandbox)
+        assert argv[0] == "copy", (
+            f"the transfer ran `rclone {argv[0]}`; sync deletes from R2"
+        )
+        assert "sync" not in argv
+
+    @pytest.mark.parametrize("args", [(), ("--dry-run",)])
+    def test_no_deletion_flag_ever_reaches_rclone(self, sandbox, args) -> None:
+        """--delete-during and friends turn copy into sync by the back door."""
+        assert self._run(sandbox, *args).returncode == 0
+
+        offenders = [
+            argument for argument in self._argv(sandbox)
+            if argument.startswith("--delete")
+        ]
+        assert offenders == [], f"deletion flags reached rclone: {offenders}"
+
     def test_an_unmounted_canonical_refuses(self, sandbox) -> None:
         """The silent-empty-dir state must stop the push, not push nothing."""
         quiet_df = sandbox.bin_dir / "df"
