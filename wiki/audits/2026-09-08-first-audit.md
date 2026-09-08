@@ -604,6 +604,95 @@ correct: no output lands in the public tree; nothing here writes the
 memory store; no network call outside `bake-off-metadata.py`; no session
 sampled twice; no US spellings.
 
+## Tranche 7 — memory readers, reports, and anchors (Lens A, 2026-09-09; Lens B running)
+
+Scope: `memory-health-report.py`, `drift-sweep.py`, `anchor_verify.py`,
+`triage_anchors.py`, `audit-postgres-sync.py`, and the commands that invoke
+them. Lens A: 3 critical, 7 medium, 8 low. Fix round 4f on
+`claude/audit-round4f` once Lens B reports.
+
+### Critical (anchors)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| AN1 | `anchor_verify.py:98-106` — `git log --all -- <ref>` runs without `--literal-pathspecs`, so a file reference with glob characters is matched as a pattern and a junk anchor verifies true (then `confidence: high`); fifteen live records carry such a reference | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+| AN2 | `anchor_verify.py:195-222` with `triage_anchors.py:50-88` — the recovery index pools every repository's file list into one namespace, so a dead path in project A "recovers" to a same-suffix file in project B, verifies true, and `recover_anchors.py:131-155` writes the foreign reference into the corpus | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+| AN3 | `anchor_verify.py:93-95,109-110,258-259` — a missing `git`, an unreadable repository, or an unmounted mount returns "false", never "pending", against the module contract at `:32-35`; the drift sweep then logs a permanent bogus failure spike and `recover_anchors` rewrites `verified` and `confidence` from it | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+
+### Medium (readers)
+
+| # | Finding | Disposition |
+|---|---|---|
+| AN4 | `memory-health-report.py:721` reaches `audit-postgres-sync.py:246-250`, which `sys.exit(2)`s on a schema mismatch inside a library function, so a schema bump kills `/memory-health` with no report although most sections need no Postgres | **next** (round 4f, `claude/audit-round4f`) |
+| AN5 | `memory-health-report.py:197-224` — "anchored" counts records whose anchors are all of unknown type (103 live), overstating verifiable coverage; a string-valued `anchors` iterates per character | **next** (round 4f, `claude/audit-round4f`) |
+| AN6 | `drift-sweep.py:69-86` — a record with a missing or unparseable `created_at` is silently excluded from the "never ages out" back-set | **next** (round 4f, `claude/audit-round4f`) |
+| AN7 | `drift-sweep.py:79-86` — no floor on the repository set: a degraded set (other machine, unmounted repo) makes every anchor false and appends the fabricated spike to the append-only trend log | **next** (round 4f, `claude/audit-round4f`) |
+| AN8 | `memory-health-report.py:63,490-503` — an unreadable quarantine file becomes a count of zero and an overall PASS; the quarantine path is the one constant without the symlink fallback | **next** (round 4f, `claude/audit-round4f`) |
+| AN9 | `audit-postgres-sync.py:139-168,282-291` — the audit compares id sets only, so divergent content, duplicate lines collapsed to one id, and Postgres-only orphans all read "clean" although content divergence is the sync's expected failure mode | **next** (round 4f, `claude/audit-round4f`) |
+| AN10 | `drift-sweep.py:83-85`, `memory-health-report.py:771-773` — unmemoised resolvers: one unresolvable reference costs up to 72 git spawns, repeated per duplicate across 5,537 anchored records (SUSPECTED) | **next** (round 4f, `claude/audit-round4f`) |
+
+Lows recorded: AN11 `..` escapes the repository in the existence check; AN12
+four-character hex accepted as a commit reference across 36 repositories;
+AN13 the two surfaced-log readers still ignore `PA_SURFACED_LOG`; AN14 four
+schema-dependent queries before any schema check, no statement timeout; AN15
+659 absolute or tilde-rooted anchors have no recovery path; AN16 no
+`is_active` filter in any report section; AN17 top-five surfaced ids without
+a corpus membership check; AN18 the trend appender swallows every exception.
+Cross-file: three definitions of a line (the sync's is being unified on PR
+#123); `--literal-pathspecs` passed to `git add` and `git commit` in
+`recover_anchors` but not to the verifier's `git log`; two independently
+maintained repository sets that are identical today. Verified correct: no
+shell, every git call an argv list; empty-corpus arithmetic guarded; exactly
+one write site (the trend log); reports emit ids and counts only; UK
+spelling.
+
+## Tranche 8 — style-analyser scripts (Lens A, 2026-09-09; Lens B running)
+
+Scope: the fourteen scripts under `scripts/style-analyser/`. Lens A:
+5 critical, 10 medium, 18 low. No external call exists in any of them. Fix
+round 4g on `claude/audit-round4g` once Lens B reports.
+
+### Critical (style analyser)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| ST1 | `efficacy_score_judges.py:54` — any judge choice that is not the guide's side (a tie, a refusal, an empty string) is scored as a baseline win, biasing the headline result by the number of unusable judgements | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST2 | `efficacy_score_judges.py:47` — judgements parsed with a bare `json.loads`: a fenced or prose reply aborts, an empty file divides by zero, a duplicated pair id counts twice, a missing pair is silently dropped | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST3 | `efficacy_build_judge_tasks.py:129` — the unblinding key is written into the directory handed to the judge; pair ids also encode the key deterministically and each pair is emitted twice as identical files | CONFIRMED | **next** (round 4g, `claude/audit-round4g`) |
+| ST4 | `phase3_guide_verifier.py:394-403` — the count-over-words confabulation check matches the claimed number against any integer in the aggregate, so a figure attached to the wrong feature passes | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST5 | `phase1_pipeline.py:303-308` — hapax ratio divides by tokens while its docstring and the efficacy reference define it over types; the published figure is a different measure with a larger length artefact | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+
+### Medium (style analyser)
+
+| # | Finding | Disposition |
+|---|---|---|
+| ST6 | `phase3_guide_verifier.py:294-337` — an incidental word ("lower", "range") in the snippet downgrades a numeric FAIL to WARN | **next** (round 4g, `claude/audit-round4g`) |
+| ST7 | `phase3_guide_verifier.py:196,417-426` — any eight-character upper-case token is treated as a Zotero key, producing spurious FAILs | **next** (round 4g, `claude/audit-round4g`) |
+| ST8 | `phase1_pipeline.py:383-396` — passive counted per verb (ratio above one possible) where the definition says presence per sentence | **next** (round 4g, `claude/audit-round4g`) |
+| ST9 | `phase1_pipeline.py:397` — nominalisation per 1k words uses a punctuation-inclusive denominator unlike every other per-1k rate | **next** (round 4g, `claude/audit-round4g`) |
+| ST10 | `efficacy_build_reference.py:137,146` — windows measured before citation stripping land about a seventh short of the length they are matched to | **next** (round 4g, `claude/audit-round4g`) |
+| ST11 | `phase5_evaluator.py:948,1002-1012` — the "held-out real" sanity fixture is scored against a fit that includes itself (SUSPECTED) | **next** (round 4g, `claude/audit-round4g`) |
+| ST12 | `phase5_evaluator.py:1019-1021` — the sanity footer can say PASS over a table showing a fixture that is not farther | **next** (round 4g, `claude/audit-round4g`) |
+| ST13 | `efficacy_score_judges.py:36-39,83-89` — counterbalanced orders counted as independent trials, no test or interval, and the provenance line hard-coded | **next** (round 4g, `claude/audit-round4g`) |
+| ST14 | Both validators read a stale `/tmp` corpus layout: one crashes, the other silently reports zero examples, so neither precision estimate can be re-derived | **next** (round 4g, `claude/audit-round4g`) |
+| ST15 | `phase1_pipeline.py:106-148` — a body line beginning "References" in the last third truncates the document, including already-clean text | **next** (round 4g, `claude/audit-round4g`) |
+
+Lows recorded: ST16-ST33 (indentation collapsed in the injected guide;
+citation stripping mismatches its docstring; curly quotes and a numeric
+colon case; no NFC normalisation; MATTR silently becomes TTR under 100
+words; "exclude" matches "not excluded"; cross-paragraph exemplar splicing;
+documented counts wrong; suffix scan false positives; a length mismatch
+disarms the promotion guard; always-positive metrics auto-promote; excluded
+topics enter the feature profile; dead code and an unreachable allow-list;
+absolute thresholds on short passages; a re-run deletes collected
+judgements; the manifest written a level up; sentence filters that exclude
+words from one denominator but not another). Cross-file: three definitions
+of "passive" and two of "announcement colon"; no atomic write in twenty-odd
+output paths; no provenance (no hash, commit, model version, judge model,
+or prompt hash) in any output. Verified correct: MATTR windows; genuine
+leave-one-out; zero-variance guard; the exact sign-flip test; pairing by
+topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
@@ -1175,7 +1264,6 @@ sampled twice; no US spellings.
   is silent: a production process that happens to import `pytest` would
   lose the surfacing log without a diagnostic.
 - Tranches 3b, 3c, 4, 5, and 6 ran on 2026-09-08/09 against corrected code
-  (sections above). Still unaudited: the memory readers and reports
-  (`memory-health-report.py`, `drift-sweep.py`, `anchor_verify.py`,
-  `triage_anchors.py`, `audit-postgres-sync.py`) and the fourteen scripts
-  under `scripts/style-analyser/`.
+  (sections above); tranches 7 and 8 (the memory readers and the
+  style-analyser scripts) have their Lens A sections above and Lens B running.
+  Every script under `scripts/` and `hooks/` is now covered by a tranche.
