@@ -437,7 +437,12 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     round: classify by SQLSTATE class (22/23 row; 42/53/54/55/57/58/25/0A
     environment; connection-level outage), tunable cap, a
     `postgres-sync-gate` relayed at session start, indexer refusals
-    remembered and reported. Running.
+    remembered and reported. Done (4183962–dc7f782; the agent also caught
+    two of its own tests writing fabricated gate and refusal files under
+    the real `~/.cache` and fixed them). Third pass running. After merge
+    the PreCompact and SessionEnd hook commands in `~/.claude/settings.json`
+    on both machines must follow the new template (indexer runs whatever
+    the sync exits).
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
