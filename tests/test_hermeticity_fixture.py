@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import INTEGRATION_MARKER
+
 REPO_CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 
 #: A conftest that re-exports only the fixture under test, so the child
@@ -312,13 +314,28 @@ def _live_resource_calls(source: str) -> list[str]:
     Looks for a CALL to ``connect`` on something named psycopg2 — the
     mocked uses pass the name as a string to ``patch`` and so are not
     calls at all — and requires the enclosing test, or its class, to
-    carry ``@pytest.mark.integration``.
+    carry ``@pytest.mark.<INTEGRATION_MARKER>``.
+
+    The marker is matched STRUCTURALLY, against the constant ``pytest.ini``
+    is checked against, not by looking for the word anywhere in the
+    decorator's source: a substring test excused
+    ``@pytest.mark.skipif(reason="integration coming later")`` — a
+    decorator that grants no deselection at all — and would have gone on
+    excusing it after a rename (eleventh re-audit follow-up L1).
     """
     import ast
 
     def marked(node) -> bool:
         for decorator in getattr(node, "decorator_list", []):
-            if "integration" in ast.unparse(decorator):
+            # ``@pytest.mark.integration`` and its called form
+            # ``@pytest.mark.integration(...)`` both count; nothing else does.
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == INTEGRATION_MARKER
+                and isinstance(target.value, ast.Attribute)
+                and target.value.attr == "mark"
+            ):
                 return True
         return False
 
@@ -403,6 +420,38 @@ def test_the_guard_would_see_an_unmarked_connection():
         "        pass\n"
     )
     assert _live_resource_calls(patched) == []
+
+    # A decorator that merely mentions the word grants no deselection, so
+    # it must not excuse the connection either (follow-up L1).
+    merely_mentions = (
+        "import psycopg2\n"
+        '@pytest.mark.skipif(False, reason="integration coming later")\n'
+        "def test_thing():\n"
+        "    conn = psycopg2.connect(dbname='claude_memories')\n"
+    )
+    assert _live_resource_calls(merely_mentions)
+
+
+def test_the_marker_name_matches_pytest_ini():
+    """The guard's marker and the deselection must be the same word.
+
+    ``INTEGRATION_MARKER`` is only worth having if it is the name pytest
+    actually acts on: a rename in ``pytest.ini`` that left the constant
+    behind would deselect nothing while the guard reported every
+    live-resource test as properly quarantined.
+
+    The mutation this kills: changing either the constant or the
+    ``pytest.ini`` marker without changing the other.
+    """
+    ini = (Path(__file__).resolve().parent.parent / "pytest.ini").read_text(
+        encoding="utf-8"
+    )
+    assert f'-m "not {INTEGRATION_MARKER}"' in ini, (
+        f"pytest.ini does not deselect {INTEGRATION_MARKER!r}: {ini}"
+    )
+    assert f"\n    {INTEGRATION_MARKER}:" in ini, (
+        f"pytest.ini does not register {INTEGRATION_MARKER!r}: {ini}"
+    )
 
 
 def test_a_set_xdg_cache_home_does_not_move_the_suite_cache(tmp_path):

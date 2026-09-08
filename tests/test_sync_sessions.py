@@ -25,6 +25,17 @@ _spec = importlib.util.spec_from_file_location("sync_sessions", _sync_path)
 sync_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync_mod)
 
+# Loading the sync module above put scripts/ on sys.path, so the shared gate
+# module is importable from here. These are the message spellings asserted
+# below, shared with the code that writes them (eleventh re-audit follow-up
+# L1): inlined, a reworded gate message left every one of those guards
+# passing against a sentence the code no longer emits; imported, the rename
+# fails here first.
+from _sync_gate import (  # noqa: E402
+    CURSOR_RESET_PHRASE,
+    QUARANTINE_REFUSED_WORD,
+)
+
 
 # ============================================================================
 # Fixtures
@@ -1742,7 +1753,7 @@ class TestCorrelatedRefusalAtTheSyncLevel:
         lines = pinned_gate_file.read_text(encoding="utf-8").splitlines()
         assert lines[0] == "1", "one standing problem: the quarantine"
         assert "2 row(s)" in lines[1]
-        assert "REFUSED" in lines[1]
+        assert QUARANTINE_REFUSED_WORD in lines[1]
         assert "--ack-quarantine" in lines[1]
 
     def test_the_escape_hatch_lets_the_batch_through(
@@ -2460,7 +2471,7 @@ class TestAnUnusableCursorReachesTheGate:
         )
         state = _tick()
 
-        assert "cursor was reset" not in state.problems[
+        assert CURSOR_RESET_PHRASE not in state.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail, "repairing the cursor was reported as a rebuild"
 
@@ -2569,7 +2580,7 @@ class TestTheSessionsExitSixDoesNotRepeatItself:
             logging.getLogger("sync-sessions-to-postgres").handlers.clear()
         assert excinfo.value.code == 6
         first = _sync_gate.read_state(pinned_gate_file)
-        assert "cursor was reset" in first.problems[
+        assert CURSOR_RESET_PHRASE in first.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail
 
@@ -2584,7 +2595,7 @@ class TestTheSessionsExitSixDoesNotRepeatItself:
         second = _sync_gate.read_state(pinned_gate_file)
         problem = second.problems[_sync_gate.PROBLEM_QUARANTINE]
         assert problem.count == 1
-        assert "cursor was reset" not in problem.detail, (
+        assert CURSOR_RESET_PHRASE not in problem.detail, (
             "one rebuild was announced twice"
         )
 
