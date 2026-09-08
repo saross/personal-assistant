@@ -623,7 +623,16 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     exit code; an outage during the advisory-lock query is an unexpected
     fault, not an outage; degraded returns drop proven connectivity; the
     ack lowers a degraded problem; the AST test is defeated by a one-line
-    alias; the trigger cannot see a dead pipeline. Eighth round running.
+    alias; the trigger cannot see a dead pipeline. Eighth round done
+    (aeab185; suite 1,656): the verdict is keyed to what is on disk after
+    a re-read inside the lock; only newly written rows reach the count; a
+    gate or lock failure never changes an exit code; outages during the
+    schema check or lock query feed the streak; the acknowledgement is
+    its own event; the AST check resolves aliases; an autouse session
+    fixture asserts the suite left nothing under the real `~/.cache`; the
+    trigger reports a never-written or stale gate; the flock is bounded.
+    Eighth pass running. First session after merge will report all three
+    gates as never written until each script has run once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
