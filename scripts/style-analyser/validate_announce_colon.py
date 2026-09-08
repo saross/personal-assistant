@@ -1,28 +1,55 @@
 #!/usr/bin/env python3
 """
-validate_announce_colon.py — sample-check `_ANNOUNCE_COLON_RE` precision.
+validate_announce_colon.py — HUMAN-AUDIT PRINTER for ``_ANNOUNCE_COLON_RE``.
 
-Loads three target papers from /tmp/style-corpus-extract/, strips references via
-phase1_pipeline.strip_references, finds every announcement-colon regex match,
-draws 10 samples per paper with a fixed seed (42), and prints a 120-char window
-centred on each colon. Classification is performed by string heuristics that
-mirror the typology requested in the validation task (sub-heading, table/list,
-metadata, caption, URL/time/ratio, other, true).
+**This script asserts nothing and decides nothing.** It samples announcement-
+colon regex hits from a handful of corpus papers, labels each one with crude
+string heuristics, and prints the surrounding window so that *a person* can
+read the sample and judge whether the regex is measuring announcement colons
+or extraction artefacts (sub-headings, table cells, metadata rows, captions,
+URLs). The verdicts printed below are a first pass for that reader to
+overrule, not a test result: nothing here fails a build, and the "corrected"
+rates are only as good as the heuristics plus the human classification that
+follows them.
+
+Corpus layout
+-------------
+Reads the clean extraction at ``data/style-corpus/extracted/<key>/body.md``,
+resolved against the repository root derived from ``__file__`` — so the script
+behaves the same from any working directory, and never depends on ``~``.
+``--corpus-dir`` points it at some other extraction and ``--keys`` chooses the
+papers. The pre-2026-05-24 layout it used to read
+(``/tmp/style-corpus-extract/<key>.txt``) no longer exists; reading it, and
+dying with an unhandled ``FileNotFoundError`` when it was absent, was audit
+finding ST14.
+
+Exit status
+-----------
+``0`` when at least one example was printed; ``1`` when the sample came out
+empty — no paper readable, or no regex match in any paper that was. An audit
+printer that printed nothing must not be mistaken for a pass.
 
 Outputs:
-  * 30 numbered examples with offset, window, verdict, rationale
-  * Per-paper verdict tallies
-  * Corrected announcement_colon_per_1k estimates
-  * Corpus-wide corrected aggregate
+  * numbered examples with offset, window, verdict, and rationale
+  * per-paper verdict tallies
+  * corrected ``announcement_colon_per_1k`` estimates where phase 1 reported a
+    rate to correct, and an explicit "not available" where it did not (a
+    missing ``phase1-results.json`` used to be reported as a rate of 0.000/1k,
+    indistinguishable from a measured zero — audit finding L2)
+  * an unweighted mean over exactly those papers that had both a reported rate
+    and a non-empty sample, with the count of those papers derived from the
+    data rather than hard-coded (audit finding L1)
 
-Run with the write-like-me venv interpreter:
-    ~/Code/write-like-me/.venv/bin/python validate_announce_colon.py
+Run with this repository's interpreter, e.g.:
+    ~/personal-assistant/venv/bin/python3 \\
+        scripts/style-analyser/validate_announce_colon.py --help
 """
 
 # UK/Australian spelling preserved throughout per global CLAUDE.md.
 
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import re
@@ -35,18 +62,78 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from phase1_pipeline import _ANNOUNCE_COLON_RE, strip_references  # noqa: E402
 
-CORPUS_DIR = Path("/tmp/style-corpus-extract")
-RESULTS_JSON = CORPUS_DIR / "analysis" / "phase1-results.json"
+#: Repository root, derived from this file's location (``<root>/scripts/
+#: style-analyser/``). Deliberately not ``Path.home()``: the script must work
+#: from a worktree, a checkout under another name, or any working directory.
+REPO_ROOT = SCRIPT_DIR.parent.parent
 
-# Per-paper reported announcement-colon rates (per 1k words) from the v2
-# pipeline run. Pulled live below from phase1-results.json for honesty;
-# this dict is a fallback if the JSON is unreadable.
-TARGETS = ["5INAFTVT", "5Y4VT9VK", "GNPTJ3EZ"]
+#: The QA-passed clean extraction: one directory per paper, prose in body.md.
+DEFAULT_CORPUS_DIR = REPO_ROOT / "data" / "style-corpus" / "extracted"
+
+#: Papers sampled when ``--keys`` is not given. Chosen in the original
+#: validation task as the three highest reported announcement-colon rates.
+DEFAULT_KEYS = ["5INAFTVT", "5Y4VT9VK", "GNPTJ3EZ"]
 
 SEED = 42
 SAMPLES_PER_PAPER = 10
 LEFT_CHARS = 50
 RIGHT_CHARS = 70
+
+
+# ---------------------------------------------------------------------------
+# Corpus access
+# ---------------------------------------------------------------------------
+
+def body_path(corpus_dir: Path, key: str) -> Path:
+    """Return the prose file for paper ``key`` in the clean-extraction layout."""
+    return corpus_dir / key / "body.md"
+
+
+def default_results_json(corpus_dir: Path) -> Path:
+    """Return the phase 1 results file that accompanies ``corpus_dir``.
+
+    Kept relative to the corpus directory, as it was under the old layout, so
+    pointing ``--corpus-dir`` at a different extraction picks up that
+    extraction's own results without a second flag.
+    """
+    return corpus_dir / "analysis" / "phase1-results.json"
+
+
+def read_body(path: Path) -> str | None:
+    """Return the text of ``path``, or ``None`` if it cannot be read.
+
+    A missing or unreadable paper is a diagnostic on stderr and a skipped
+    paper, never a traceback: one absent extraction must not stop the operator
+    from auditing the papers that *are* present (audit finding ST14).
+    """
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"  SKIPPED: cannot read {path} ({exc})", file=sys.stderr)
+        return None
+
+
+def load_reported_rates(results_json: Path) -> dict[str, float]:
+    """Map paper key to its phase 1 ``announcement_colon_per_1k``.
+
+    An empty mapping means "no reported rate is available", which the caller
+    renders as "not available" rather than as a rate of zero.
+    """
+    if not results_json.exists():
+        print(f"  NOTE: no phase 1 results at {results_json}; reported and "
+              f"corrected rates will be shown as not available",
+              file=sys.stderr)
+        return {}
+    data = json.loads(results_json.read_text(encoding="utf-8"))
+    pp = data.get("per_paper", data)
+    rates: dict[str, float] = {}
+    if isinstance(pp, list):
+        for entry in pp:
+            k = entry.get("key")
+            v = entry.get("announcement_colon_per_1k")
+            if k and v is not None:
+                rates[k] = float(v)
+    return rates
 
 
 # ---------------------------------------------------------------------------
@@ -143,22 +230,8 @@ def classify(left: str, right: str, full_match: str) -> tuple[str, str]:
 # Main
 # ---------------------------------------------------------------------------
 
-def load_reported_rates() -> dict[str, float]:
-    if not RESULTS_JSON.exists():
-        return {}
-    data = json.loads(RESULTS_JSON.read_text(encoding="utf-8"))
-    pp = data.get("per_paper", data)
-    rates = {}
-    if isinstance(pp, list):
-        for entry in pp:
-            k = entry.get("key")
-            v = entry.get("announcement_colon_per_1k")
-            if k and v is not None:
-                rates[k] = float(v)
-    return rates
-
-
 def window(stripped: str, colon_pos: int) -> tuple[str, str, str]:
+    """Return (left context, right context, printable window) around a colon."""
     lo = max(0, colon_pos - LEFT_CHARS)
     hi = min(len(stripped), colon_pos + 1 + RIGHT_CHARS)
     left = stripped[lo:colon_pos]
@@ -167,29 +240,69 @@ def window(stripped: str, colon_pos: int) -> tuple[str, str, str]:
     return left, right, centred
 
 
-def main() -> int:
-    reported = load_reported_rates()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the command line for this printer.
+
+    Every path default is a *default*, not a constant: an operator auditing a
+    re-extraction points ``--corpus-dir`` at it and gets the same report.
+    """
+    parser = argparse.ArgumentParser(
+        description="Print a sample of announcement-colon regex hits for a "
+                    "human to classify. Asserts nothing.",
+    )
+    parser.add_argument(
+        "--corpus-dir", type=Path, default=DEFAULT_CORPUS_DIR,
+        help="directory of <key>/body.md bundles "
+             f"(default: {DEFAULT_CORPUS_DIR})",
+    )
+    parser.add_argument(
+        "--keys", nargs="+", default=list(DEFAULT_KEYS),
+        help=f"paper keys to sample (default: {' '.join(DEFAULT_KEYS)})",
+    )
+    parser.add_argument(
+        "--results-json", type=Path, default=None,
+        help="phase 1 results file supplying the reported per-1k rates "
+             "(default: <corpus-dir>/analysis/phase1-results.json)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Print the sample and return a process exit status.
+
+    Returns ``1`` when nothing was printed, so that a run against a missing or
+    empty extraction cannot be mistaken for a clean audit.
+    """
+    args = parse_args(argv)
+    corpus_dir: Path = args.corpus_dir
+    results_json: Path = args.results_json or default_results_json(corpus_dir)
+    reported = load_reported_rates(results_json)
     rng = random.Random(SEED)
 
     per_paper_tallies: dict[str, dict[str, int]] = {}
     corrected_rates: dict[str, float] = {}
+    examples_printed = 0
 
-    for key in TARGETS:
-        path = CORPUS_DIR / f"{key}.txt"
-        raw = path.read_text(encoding="utf-8", errors="replace")
+    for key in args.keys:
+        raw = read_body(body_path(corpus_dir, key))
+        if raw is None:
+            continue
         stripped, method = strip_references(raw)
 
         matches = list(_ANNOUNCE_COLON_RE.finditer(stripped))
         total = len(matches)
+        reported_rate = reported.get(key)
+        reported_str = "not available" if reported_rate is None else f"{reported_rate:.3f}/1k"
 
         print("=" * 78)
         print(f"Paper {key}  |  strip-method={method}  |  total matches={total}"
-              f"  |  reported rate={reported.get(key, 'NA')}/1k")
+              f"  |  reported rate={reported_str}")
         print("=" * 78)
 
         if total == 0:
+            # No corrected estimate is recorded: there is no sample to correct
+            # with, and a stored 0.0 would later be averaged as if it were one.
             per_paper_tallies[key] = {}
-            corrected_rates[key] = 0.0
             continue
 
         # Sample without replacement; fall back to all matches if fewer than 10.
@@ -202,6 +315,7 @@ def main() -> int:
             left, right, centred = window(stripped, colon_offset)
             verdict, rationale = classify(left, right, m.group(0))
             tally[verdict] = tally.get(verdict, 0) + 1
+            examples_printed += 1
             print(f"\n  [{i:02d}] offset={colon_offset}  verdict={verdict}")
             if rationale:
                 print(f"       rationale: {rationale}")
@@ -211,36 +325,56 @@ def main() -> int:
         true_count = tally.get("TRUE ANNOUNCEMENT COLON", 0)
         n_sampled = len(sample)
         precision = true_count / n_sampled if n_sampled else 0.0
-        reported_rate = reported.get(key, 0.0)
-        corrected_rates[key] = precision * reported_rate
 
         print()
         print(f"  Tally for {key} (n={n_sampled}):")
         for v, c in sorted(tally.items(), key=lambda x: -x[1]):
             print(f"    {v:<28s} {c}")
         print(f"  Sample precision: {true_count}/{n_sampled} = {precision:.2f}")
-        print(f"  Corrected rate (precision × reported): {corrected_rates[key]:.3f}/1k")
+        if reported_rate is None:
+            print(f"  Corrected rate: not available "
+                  f"(no reported rate for {key} in {results_json})")
+        else:
+            corrected_rates[key] = precision * reported_rate
+            print(f"  Corrected rate (precision × reported): {corrected_rates[key]:.3f}/1k")
 
-    # Corpus-wide corrected aggregate — weight per-paper corrected rate by the
-    # paper's word count, which is implicit in reported_rate × words_per_paper.
-    # We don't have words readily; instead compute a simple unweighted mean
-    # over the three targets for the corrected estimate. The user can rerun
-    # on the full corpus from per_paper.json if desired.
+    # Corpus-wide corrected aggregate — an unweighted mean over the papers that
+    # produced BOTH a sample and a reported rate. It is unweighted because
+    # per-paper word counts are not read here; weight it by words from
+    # phase1-results.json if a corpus-level figure is wanted.
     print()
     print("=" * 78)
     print("Summary")
     print("=" * 78)
-    for k in TARGETS:
-        r = reported.get(k, 0.0)
-        c = corrected_rates.get(k, 0.0)
-        print(f"  {k}: reported {r:.3f}/1k  ->  corrected {c:.3f}/1k")
+    for k in args.keys:
+        r = reported.get(k)
+        c = corrected_rates.get(k)
+        r_str = "not available" if r is None else f"{r:.3f}/1k"
+        c_str = "not available" if c is None else f"{c:.3f}/1k"
+        print(f"  {k}: reported {r_str}  ->  corrected {c_str}")
 
     if corrected_rates:
-        mean_corrected = sum(corrected_rates.values()) / len(corrected_rates)
-        mean_reported = sum(reported.get(k, 0.0) for k in TARGETS) / len(TARGETS)
-        print(f"\n  Unweighted mean (n=3) — reported: {mean_reported:.3f}/1k  "
+        # n is counted from the papers that actually contributed, not assumed:
+        # with a skipped paper or a missing reported rate the old hard-coded
+        # "n=3" divided by a denominator no paper stood behind (finding L1).
+        contributing = sorted(corrected_rates)
+        n_papers = len(contributing)
+        mean_corrected = sum(corrected_rates[k] for k in contributing) / n_papers
+        mean_reported = sum(reported[k] for k in contributing) / n_papers
+        print(f"\n  Unweighted mean (n={n_papers}) — reported: {mean_reported:.3f}/1k  "
               f"corrected: {mean_corrected:.3f}/1k")
+    else:
+        print("\n  Unweighted mean: not available (no paper produced both a "
+              "sample and a reported rate)")
 
+    if examples_printed == 0:
+        print(
+            "EMPTY SAMPLE: no example was printed — every paper was unreadable "
+            "or contained no announcement-colon match. Nothing was audited; "
+            "check --corpus-dir and --keys.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
