@@ -433,3 +433,28 @@ def test_an_older_version_is_refused_with_both_numbers():
 
     assert "version is 1" in message
     assert f"version {style_support.METRIC_SCHEMA_VERSION}" in message
+
+
+def test_the_temporary_file_is_created_beside_its_destination(tmp_path,
+                                                              monkeypatch):
+    """``os.replace`` is only atomic within one filesystem.
+
+    Writing the temporary file to the system temp directory and renaming it
+    across a mount boundary is not a rename at all — it is a copy, and a copy
+    can be interrupted half way, which is the failure this helper exists to
+    prevent. The mutation this kills: dropping ``dir=str(path.parent)`` from
+    the ``mkstemp`` call.
+    """
+    recorded: dict[str, object] = {}
+    real_mkstemp = style_support.tempfile.mkstemp
+
+    def spy(*args, **kwargs):
+        recorded.update(kwargs)
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(style_support.tempfile, "mkstemp", spy)
+    target = tmp_path / "nested" / "out.json"
+
+    style_support.atomic_write_text(target, "payload\n")
+
+    assert recorded["dir"] == str(target.parent)

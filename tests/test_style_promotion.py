@@ -285,3 +285,45 @@ def test_the_verdict_file_carries_the_stamp_forward(tmp_path, monkeypatch):
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["metric_schema"]["version"] == \
         style_support.METRIC_SCHEMA_VERSION
+
+
+def test_the_cli_paths_are_honoured_rather_than_the_module_defaults(tmp_path,
+                                                                    monkeypatch):
+    """--phase1 and --out must actually be read and written.
+
+    The mutation this kills: reverting `phase1_path, out_path = args.phase1,
+    args.out` to the module constants, which would read and overwrite the
+    production files whatever the operator asked for.
+    """
+    chosen_in = tmp_path / "chosen-phase1.json"
+    chosen_in.write_text(
+        '{"metric_schema": ' + _STAMP + ', '
+        '"per_paper": [{"key": "CHOSEN11", "mattr_100": 0.7}], '
+        '"aggregate": {"regression": {}}}', encoding="utf-8")
+    chosen_out = tmp_path / "chosen-out.json"
+    # The module defaults point at paths this test must never touch.
+    monkeypatch.setattr(promotion, "PHASE1", tmp_path / "default-phase1.json")
+    monkeypatch.setattr(promotion, "OUT", tmp_path / "default-out.json")
+
+    assert promotion.main(["--phase1", str(chosen_in),
+                           "--out", str(chosen_out)]) == 0
+
+    payload = json.loads(chosen_out.read_text(encoding="utf-8"))
+    assert payload["phase1_input"] == str(chosen_in)
+    assert not (tmp_path / "default-out.json").exists()
+
+
+def test_mattr_is_treated_as_a_continuous_metric():
+    """MATTR is positive in every paper that has one, so presence proves nothing.
+
+    The mutation this kills: removing ``mattr_100`` from CONTINUOUS_METRICS,
+    which returns it to being promoted to `attested` because "every paper has
+    a MATTR value".
+    """
+    assert "mattr_100" in promotion.CONTINUOUS_METRICS
+
+    verdict = promotion.promote("mattr_100", [0.70, 0.71, 0.72, 0.73, 0.74,
+                                              0.75], paper_keys=KEYS)
+
+    assert verdict["presence_rule_applies"] is False
+    assert verdict["promotion_basis"] == "papers measured"
