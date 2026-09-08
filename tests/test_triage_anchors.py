@@ -244,3 +244,40 @@ class TestMainNeverWrites:
         ta.main()
         assert snapshot() == before
         assert "verified=false anchored records" in capsys.readouterr().out
+
+
+class TestDiscoveryOnlyCount:
+    """The count that travels between runs must not depend on the checkout."""
+
+    def test_the_augmentation_is_excluded(self, tmp_path, monkeypatch) -> None:
+        """Kills the mutation returning ``len(repos)`` as the discovery count.
+
+        broad_repo_set adds this copy's own checkout when HOME-based
+        discovery missed it. That is right for RESOLUTION and wrong for any
+        count compared across runs: a worktree would report one more than the
+        main checkout, ratcheting the drift sweep's append-only floor above
+        what the main checkout can ever reach (finding C1).
+        """
+        home_repo = _init_repo(tmp_path / "home" / "personal-assistant")
+        worktree = _init_repo(tmp_path / "worktrees" / "pa-copy")
+        monkeypatch.setattr(ta.project_id, "repo_set", lambda: [home_repo])
+        monkeypatch.setattr(ta, "PA_DIR", worktree)
+
+        repos, discovered = ta.broad_repo_set_detail()
+        assert discovered == 1, "the worktree must not inflate the count"
+        assert set(repos) == {home_repo, worktree}, "but it IS resolved against"
+
+    def test_the_main_checkout_reports_the_same_number(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """The control: no augmentation, same discovery, same count."""
+        home_repo = _init_repo(tmp_path / "home" / "personal-assistant")
+        monkeypatch.setattr(ta.project_id, "repo_set", lambda: [home_repo])
+        monkeypatch.setattr(ta, "PA_DIR", home_repo)
+        assert ta.broad_repo_set_detail() == ([home_repo], 1)
+
+    def test_an_empty_discovery_still_raises(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(ta.project_id, "repo_set", list)
+        monkeypatch.setattr(ta, "PA_DIR", tmp_path / "nowhere")
+        with pytest.raises(ta.RepoSetUnavailable):
+            ta.broad_repo_set_detail()

@@ -202,7 +202,7 @@ def test_a_shrunken_repo_set_refuses_the_sweep(tmp_path, monkeypatch):
     on a machine where ~/Code is unpopulated would report every anchor in
     those repositories as absent.
     """
-    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [tmp_path])
+    _pin_repos(monkeypatch, [tmp_path])
     with pytest.raises(ds.ta.RepoSetUnavailable):
         ds.run_sweep([], as_of=FIXED_NOW, min_repos=12)
 
@@ -259,6 +259,19 @@ def _init_repo(path: Path, relpath: str) -> Path:
     return path
 
 
+def _pin_repos(monkeypatch, repos, discovered=None) -> None:
+    """Pin discovery to *repos*, with an optional discovery-only count.
+
+    ``run_sweep`` reads ``broad_repo_set_detail``; the plain
+    ``broad_repo_set`` is pinned too so a test reaching either is served.
+    """
+    count = len(repos) if discovered is None else discovered
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: list(repos))
+    monkeypatch.setattr(
+        ds.ta, "broad_repo_set_detail", lambda: (list(repos), count),
+    )
+
+
 def _record(mid: str, ref: str, created: str) -> dict:
     """One anchored synthetic memory."""
     return {
@@ -279,7 +292,7 @@ def test_run_sweep_resolves_the_full_back_set(tmp_path, monkeypatch) -> None:
     the 2026-01 record and defeat the module docstring's "never ages out".
     """
     repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
-    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    _pin_repos(monkeypatch, [repo])
     records = [
         _record("m-old", "wiki/notes.md", OLD),
         _record("m-recent", "wiki/notes.md", RECENT),
@@ -296,7 +309,7 @@ def test_run_sweep_resolves_the_full_back_set(tmp_path, monkeypatch) -> None:
 def test_run_sweep_honours_a_narrow_window(tmp_path, monkeypatch) -> None:
     """The control: ``days`` still narrows the population when asked."""
     repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
-    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    _pin_repos(monkeypatch, [repo])
     result = ds.run_sweep(
         [_record("m-old", "wiki/notes.md", OLD),
          _record("m-recent", "wiki/notes.md", RECENT)],
@@ -308,7 +321,7 @@ def test_run_sweep_honours_a_narrow_window(tmp_path, monkeypatch) -> None:
 def test_run_sweep_recovers_a_prefix_mismatch(tmp_path, monkeypatch) -> None:
     """The recovery split comes from the real basename index, not a stub."""
     repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
-    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    _pin_repos(monkeypatch, [repo])
     result = ds.run_sweep(
         [_record("m-1", "notes.md", OLD)], as_of=FIXED_NOW,
     )
@@ -325,7 +338,7 @@ def test_run_sweep_resolves_each_ref_once(tmp_path, monkeypatch) -> None:
     per record.
     """
     repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
-    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    _pin_repos(monkeypatch, [repo])
     calls: list[str] = []
     real_verify_file = ds.av.verify_file
 
@@ -353,7 +366,7 @@ def test_main_reads_the_corpus_it_was_given(tmp_path, monkeypatch, capsys) -> No
     the one swept, and its record count reaches the rendered summary.
     """
     repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
-    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    _pin_repos(monkeypatch, [repo])
     corpus = tmp_path / "elsewhere.jsonl"
     corpus.write_text(
         "\n".join(json.dumps(_record(f"m-{i}", "wiki/notes.md", OLD))
@@ -363,3 +376,118 @@ def test_main_reads_the_corpus_it_was_given(tmp_path, monkeypatch, capsys) -> No
     rc = ds.main(["--memories", str(corpus), "--no-log"])
     assert rc == 0
     assert "Anchored swept:   4" in capsys.readouterr().out
+
+
+# ============================================================================
+# The repository floor must not become a one-way ratchet (finding C1)
+# ============================================================================
+
+
+def test_the_logged_repo_count_is_discovery_only(tmp_path, monkeypatch) -> None:
+    """A worktree and the main checkout must log the SAME number.
+
+    broad_repo_set adds the running copy's own checkout when HOME-based
+    discovery missed it, so a sweep from ~/worktrees sees one repository more
+    than a sweep from ~/personal-assistant. Recording that augmented number
+    would ratchet the floor to a value the main checkout can never reach, and
+    the trend log is append-only.
+
+    Kills the mutation ``result["repo_count"] = len(repos)``.
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    worktree = _init_repo(tmp_path / "worktree", "wiki/notes.md")
+    records = [_record("m-1", "wiki/notes.md", OLD)]
+
+    # From the main checkout: discovery finds one, nothing is added.
+    _pin_repos(monkeypatch, [repo], discovered=1)
+    from_main = ds.run_sweep(records, as_of=FIXED_NOW)
+
+    # From a worktree: the same discovery, plus this copy's own checkout.
+    _pin_repos(monkeypatch, [repo, worktree], discovered=1)
+    from_worktree = ds.run_sweep(records, as_of=FIXED_NOW)
+
+    assert from_main["repo_count"] == from_worktree["repo_count"] == 1
+    assert ds.trend_line(from_worktree, as_of=FIXED_NOW)["repos"] == 1
+
+
+def test_a_smaller_set_warns_and_names_the_override(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """The refusal has to tell the operator how to get past it.
+
+    Kills the mutation dropping the RepoSetShrunk branch: the run would still
+    refuse, but with no way to reset a floor written into an append-only log.
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    _pin_repos(monkeypatch, [repo], discovered=1)
+    log = tmp_path / "d.jsonl"
+    log.write_text(json.dumps({"run_at": "2031-01-01", "repos": 5}) + "\n",
+                   encoding="utf-8")
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    rc = ds.main(["--memories", str(corpus), "--log-path", str(log)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "WARN: discovery found 1 repositories" in err
+    assert "--min-repos 1" in err
+    assert log.read_text(encoding="utf-8").count("\n") == 1, "no row appended"
+
+
+def test_the_override_lets_the_sweep_run(tmp_path, monkeypatch) -> None:
+    """--min-repos resets the floor, and the new count is what gets logged."""
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    _pin_repos(monkeypatch, [repo], discovered=1)
+    log = tmp_path / "d.jsonl"
+    log.write_text(json.dumps({"run_at": "2031-01-01", "repos": 5}) + "\n",
+                   encoding="utf-8")
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    rc = ds.main(["--memories", str(corpus), "--log-path", str(log),
+                  "--min-repos", "1"])
+    assert rc == 0
+    rows = [json.loads(ln) for ln in
+            log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert rows[-1]["repos"] == 1
+
+
+def test_no_log_drops_the_floor(tmp_path, monkeypatch) -> None:
+    """A run that records nothing cannot corrupt the series, so it may run."""
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    _pin_repos(monkeypatch, [repo], discovered=1)
+    log = tmp_path / "d.jsonl"
+    log.write_text(json.dumps({"run_at": "2031-01-01", "repos": 5}) + "\n",
+                   encoding="utf-8")
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log),
+                    "--no-log"]) == 0
+    assert log.read_text(encoding="utf-8").count("\n") == 1
+
+
+def test_main_applies_the_floor_from_the_log(tmp_path, monkeypatch) -> None:
+    """main() must pass the logged floor down, not a hard-coded zero.
+
+    run_sweep is NOT stubbed here: the floor travels from the log through
+    main() into the real sweep. Kills the mutation ``min_repos=0``.
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    _pin_repos(monkeypatch, [repo], discovered=2)
+    log = tmp_path / "d.jsonl"
+    log.write_text(json.dumps({"run_at": "2031-01-01", "repos": 9}) + "\n",
+                   encoding="utf-8")
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
+    assert log.read_text(encoding="utf-8").count("\n") == 1

@@ -28,9 +28,10 @@ Exit codes:
   1 — fail rate exceeds ``--alert-threshold``
   2 — the sweep could not be trusted or could not be recorded: the corpus
       was unreadable, repository discovery was empty or smaller than the
-      last successful run, more than ``MAX_PENDING_PCT`` of records could
-      not be checked, or the trend row could not be appended. No trend row
-      is written in the unreliable cases.
+      floor, more than ``MAX_PENDING_PCT`` of records could not be checked,
+      or the trend row could not be appended. No trend row is written in the
+      unreliable cases. The repository floor comes from the last logged
+      sweep and is overridden with ``--min-repos`` (see ``--help``).
 
 **Read-only** with respect to the corpus and PostgreSQL: it mutates nothing,
 takes no locks, and only appends to its own trend log. Safe to run during
@@ -89,20 +90,30 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     only difference is ``days`` defaults to the full back-set. Scans the broad
     repo set once (working tree + git history of every relevant repo).
 
-    *min_repos* is the repository count the last successful sweep recorded.
-    A run that discovers FEWER repositories than that is running on a
-    degraded machine — a different host, an unpopulated ``~/Code``, an
-    unmounted volume — and every anchor in the missing repositories would
-    resolve as absent, so it raises :class:`triage_anchors.RepoSetUnavailable`
-    rather than reporting a drift spike that is really a discovery failure
-    (finding AN7). The returned dict carries ``repo_count`` so the next run
-    can apply the same floor.
+    *min_repos* is a floor on the DISCOVERY-ONLY repository count. A run that
+    discovers fewer repositories than that is probably running on a degraded
+    machine — a different host, an unpopulated ``~/Code``, an unmounted volume
+    — and every anchor in the missing repositories would resolve as absent, so
+    it raises :class:`triage_anchors.RepoSetShrunk` rather than reporting a
+    drift spike that is really a discovery failure (finding AN7). The returned
+    dict carries ``repo_count`` so the next run can apply the same floor.
+
+    The count deliberately EXCLUDES ``broad_repo_set``'s ``PA_DIR``
+    augmentation. That augmentation depends on where the running copy lives —
+    a worktree adds one repository, the main checkout adds none — so counting
+    it would let a single sweep from a second checkout ratchet the floor above
+    what the main checkout can ever reach, permanently bricking an append-only
+    series that has no way back (finding C1). The floor is also an operator
+    decision, not a law: ``--min-repos`` overrides it, and the refusal names
+    the value to pass.
     """
-    repos = ta.broad_repo_set()   # raises RepoSetUnavailable when empty
-    if len(repos) < min_repos:
-        raise ta.RepoSetUnavailable(
-            f"discovered {len(repos)} repositories, fewer than the "
-            f"{min_repos} the last successful sweep saw"
+    repos, discovered = ta.broad_repo_set_detail()  # raises when empty
+    if discovered < min_repos:
+        raise ta.RepoSetShrunk(
+            discovered, min_repos,
+            f"re-run with --min-repos {discovered} if the set legitimately "
+            "shrank (a repository archived or removed), or --min-repos 0 to "
+            "drop the floor entirely",
         )
     basename_index = ta.build_basename_index(repos)
     # Memoise both ref-level resolvers: verify_file walks every repository and
@@ -128,7 +139,8 @@ def run_sweep(records: list[dict], *, as_of: datetime,
         recover=_memoised("recover", lambda ref: ta.recovery_status(
             ref, basename_index)),
     )
-    result["repo_count"] = len(repos)
+    # Discovery-only, for the reason in the docstring above.
+    result["repo_count"] = discovered
     return result
 
 
@@ -223,7 +235,15 @@ def main(argv: list[str] | None = None) -> int:
                         default=DEFAULT_ALERT_THRESHOLD,
                         help="Exit 1 if fail%% exceeds this (default 25).")
     parser.add_argument("--no-log", action="store_true",
-                        help="Run the sweep but do not append to the trend log.")
+                        help=("Run the sweep but do not append to the trend "
+                              "log. Also drops the repository floor: nothing "
+                              "is being recorded, so nothing can be corrupted."))
+    parser.add_argument("--min-repos", type=int, default=None,
+                        help=("Minimum repositories discovery must find, "
+                              "overriding the floor taken from the last "
+                              "logged sweep. Pass the current count to reset "
+                              "the floor after a repository is legitimately "
+                              "archived or removed; pass 0 to disable it."))
     parser.add_argument("--json", action="store_true",
                         help="Emit the trend record as JSON.")
     args = parser.parse_args(argv)
@@ -236,9 +256,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[drift-sweep] ERROR: cannot read {args.memories}: {exc}",
               file=sys.stderr)
         return 2
+    # Floor precedence: an explicit --min-repos wins; otherwise a run that
+    # writes no trend row imposes none (there is no series to protect); and
+    # otherwise the last logged sweep's discovery-only count.
+    if args.min_repos is not None:
+        floor = args.min_repos
+    elif args.no_log:
+        floor = 0
+    else:
+        floor = last_repo_count(args.log_path)
     try:
-        result = run_sweep(records, as_of=now, days=args.days,
-                           min_repos=last_repo_count(args.log_path))
+        result = run_sweep(records, as_of=now, days=args.days, min_repos=floor)
+    except ta.RepoSetShrunk as exc:
+        # Discovery WORKED and found less than the floor. Say what changed
+        # before refusing, and name the override — an archived repository is
+        # a legitimate reason for the set to shrink, and the operator must be
+        # able to say so without editing an append-only log.
+        print(f"[drift-sweep] WARN: discovery found {exc.discovered} "
+              f"repositories; the floor from the last logged sweep is "
+              f"{exc.floor}", file=sys.stderr)
+        print(f"[drift-sweep] ERROR: sweep unreliable — {exc}; no trend row "
+              "written", file=sys.stderr)
+        return 2
     except ta.RepoSetUnavailable as exc:
         # Not a drift result: a discovery failure wearing one. Log nothing.
         print(f"[drift-sweep] ERROR: sweep unreliable — {exc}; no trend row "

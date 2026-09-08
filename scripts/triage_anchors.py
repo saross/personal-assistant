@@ -151,6 +151,53 @@ class RepoSetUnavailable(RuntimeError):
     """
 
 
+class RepoSetShrunk(RepoSetUnavailable):
+    """Discovery succeeded but found fewer repositories than a caller's floor.
+
+    Distinct from a total discovery failure: the caller can tell the operator
+    which floor was applied and how to reset it, because a repository that was
+    archived or removed on purpose is a legitimate reason for the set to
+    shrink (audit round 4f-3, finding C1).
+    """
+
+    def __init__(self, discovered: int, floor: int, hint: str = "") -> None:
+        self.discovered = discovered
+        self.floor = floor
+        super().__init__(
+            f"discovered {discovered} repositories, fewer than the {floor} "
+            f"the floor requires{('; ' + hint) if hint else ''}"
+        )
+
+
+def broad_repo_set_detail() -> tuple[list[Path], int]:
+    """Return ``(repos, discovered_count)``.
+
+    ``discovered_count`` counts ONLY what :func:`project_id.repo_set` found —
+    it excludes the :data:`PA_DIR` augmentation below. The augmentation
+    depends on where the running copy lives (a worktree contributes one extra
+    repository, the main checkout none), so a count that included it would
+    differ between checkouts of the same machine. Anything comparing counts
+    ACROSS runs — the drift sweep's append-only floor — must use the
+    discovery-only number, or one sweep from a second checkout ratchets the
+    floor above what any other checkout can ever reach (finding C1).
+
+    See :func:`broad_repo_set` for what the repository list itself contains.
+    """
+    discovered = list(project_id.repo_set())
+    repos = list(discovered)
+    known = {str(r) for r in repos}
+    for candidate in (PA_DIR, PA_DIR / "data"):
+        if (candidate / ".git").exists() and str(candidate) not in known:
+            repos.append(candidate)
+            known.add(str(candidate))
+    if not repos:
+        raise RepoSetUnavailable(
+            "no git repositories discovered — anchor resolution would report "
+            "every anchor as absent"
+        )
+    return repos, len(discovered)
+
+
 def broad_repo_set() -> list[Path]:
     """Every discovered git repository, plus this checkout.
 
@@ -168,19 +215,11 @@ def broad_repo_set() -> list[Path]:
     Raises :class:`RepoSetUnavailable` when nothing is found: on a fresh
     machine, an unmounted home, or a container, ``[]`` would silently condemn
     every anchored memory instead of reporting that we could not look.
+
+    A caller that needs the discovery-only count (rather than this augmented
+    list) wants :func:`broad_repo_set_detail`.
     """
-    repos = list(project_id.repo_set())
-    known = {str(r) for r in repos}
-    for candidate in (PA_DIR, PA_DIR / "data"):
-        if (candidate / ".git").exists() and str(candidate) not in known:
-            repos.append(candidate)
-            known.add(str(candidate))
-    if not repos:
-        raise RepoSetUnavailable(
-            "no git repositories discovered — anchor resolution would report "
-            "every anchor as absent"
-        )
-    return repos
+    return broad_repo_set_detail()[0]
 
 
 def _make_resolver(repos: list[Path]):
