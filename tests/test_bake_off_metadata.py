@@ -324,16 +324,20 @@ class TestApiCallReviewGate:
         assert bom.HAIKU_MODEL in lines
         assert "mode:           batch" in lines
 
-    def test_declining_makes_no_call_and_exits_0(
+    def test_declining_makes_no_call_and_exits_3(
         self, tmp_path, monkeypatch, capsys, gemini_boundary
     ):
-        """The negative: a 'no' must reach the provider adapter never."""
+        """The negative: a 'no' must reach the provider adapter never.
+
+        The exit code is 3, not 0: a wrapper that reads 0 as success would
+        record a refused run as a completed bake-off.
+        """
         manifest = _one_session_manifest(tmp_path)
         prompt = _prompt_file(tmp_path)
         out_dir = tmp_path / "out"
         monkeypatch.setattr("builtins.input", lambda _prompt="": "no")
         code = bom.main(_live_argv(manifest, prompt, out_dir))
-        assert code == 0
+        assert code == bom.EXIT_REFUSED_AT_GATE == 3
         assert gemini_boundary == []
         printed = capsys.readouterr().out
         assert bom.GEMINI_MODEL in printed  # the figures were shown first
@@ -351,7 +355,7 @@ class TestApiCallReviewGate:
 
         monkeypatch.setattr("builtins.input", raise_eof)
         code = bom.main(_live_argv(manifest, prompt, tmp_path / "out"))
-        assert code == 0
+        assert code == bom.EXIT_REFUSED_AT_GATE == 3
         assert gemini_boundary == []
         assert "stdin is closed" in capsys.readouterr().out
 
@@ -1125,3 +1129,24 @@ class TestBatchSubmitIsNotRepeatable:
             )
         assert submit_stub == []
         assert not (out_dir / "batch-state.json").exists()
+
+
+class TestRefusalExitCodesAreDistinct:
+    """A wrapper must be able to tell refusal from success and from misuse."""
+
+    def test_nothing_to_do_is_still_success(self, tmp_path, gemini_boundary):
+        """An empty manifest is not a refusal: there was nothing to approve."""
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [])
+        code = bom.main(_live_argv(
+            manifest, _prompt_file(tmp_path), tmp_path / "out"
+        ))
+        assert code == 0
+
+    def test_usage_error_is_two_not_three(self, tmp_path):
+        code = bom.main([
+            "--build-rubric",
+            "--manifest", str(_one_session_manifest(tmp_path)),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+        ])
+        assert code == 2

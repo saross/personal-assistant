@@ -176,6 +176,14 @@ FLEX_RETRY_WAITS_SECONDS = (30, 60, 120)
 # under-counted by ``SYSTEM_PROMPT_TOKENS_APPROX * n_requests`` tokens.
 SYSTEM_PROMPT_TOKENS_APPROX = 1500
 
+#: Exit code for a live run that was declined at the API Call Review Gate,
+#: whether the operator typed something other than "yes" or no operator was
+#: there at all (closed stdin). It is deliberately NOT 0: a cron or CI
+#: wrapper that reads 0 as "the run happened" would record a refusal as a
+#: completed bake-off. It is deliberately not 2 either, which this file uses
+#: for a usage error the caller can fix by changing the command line.
+EXIT_REFUSED_AT_GATE = 3
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -1667,7 +1675,9 @@ def confirm_live_run(
 
     A closed stdin (cron, a pipeline, a captured subprocess) raises
     ``EOFError`` from ``input()``. That must read as "no one is here to
-    approve", not as an unhandled traceback.
+    approve", not as an unhandled traceback — and the caller turns the
+    False returned here into ``EXIT_REFUSED_AT_GATE``, so an unattended
+    wrapper cannot mistake the refusal for a completed run.
     """
     print("\n--- API Call Review Gate — these calls are BILLED ---")
     for line in gate_summary_lines(requests, provider):
@@ -1876,7 +1886,7 @@ def main(argv: list[str] | None = None) -> int:
         "Re-run with --dry-run first if you want the per-session breakdown."
     )
     if not confirm_live_run(requests, args.provider, assume_yes=args.yes):
-        return 0
+        return EXIT_REFUSED_AT_GATE
 
     # Credentials are hydrated only once the run is approved.
     load_env()
