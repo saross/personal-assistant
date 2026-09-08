@@ -271,26 +271,55 @@ def roundtrip_home(project_id_module):
     the decoded candidate never matched a discovered repo, ``primary`` was
     always empty, and the test passed under ``return primary or rest`` just
     as it did under ``primary + rest`` -- it was asserting nothing (audit
-    M4). This root is named from a uuid hex, which is alphanumeric by
-    construction, so the round trip is exact and prioritisation is reachable.
+    M4).
+
+    The root is a uuid-hex directory directly under ``/tmp``. Every
+    component of that absolute path is alphanumeric, so the round trip is
+    exact by construction. ``tempfile.mkdtemp`` is deliberately NOT used to
+    make it: its random suffix is drawn from
+    ``ascii_lowercase + digits + "_"``, and a single underscore anywhere in
+    the path -- including in a parent directory it created -- is a character
+    the encoder rewrites, which breaks the premise about one run in five.
+    ``/tmp`` is named explicitly rather than taken from
+    ``tempfile.gettempdir()`` for the same reason: the premise must not
+    depend on the environment. ``mkdir`` without ``exist_ok`` supplies the
+    uniqueness mkdtemp would have.
+
+    It **fails** rather than skips if the premise does not hold (audit
+    L-2): a skip on a machine with an awkward temp directory would silently
+    retire the M4 fix in CI and leave the prioritisation unpinned again --
+    the same vacuity in another costume.
     """
     import shutil
-    import tempfile
     import uuid
 
-    root = Path(tempfile.gettempdir()) / f"pa{uuid.uuid4().hex}"
+    base = Path("/tmp")
+    assert base.is_dir(), "/tmp must exist for the encoder round-trip premise"
+    root = base / f"pa{uuid.uuid4().hex}"
     root.mkdir()
     try:
-        # If TMPDIR itself carries a hyphen or underscore the premise fails;
-        # say so rather than passing vacuously all over again.
         encoded = project_id_module.encode_project_id(str(root))
-        if project_id_module.decode_project_id(encoded) != root:
-            pytest.skip(f"temp root {root} does not round-trip through the encoder")
+        assert project_id_module.decode_project_id(encoded) == root, (
+            f"the encoder must round-trip {root}; this fixture's whole "
+            f"purpose is to give the prioritisation something to match "
+            f"(encoded: {encoded})"
+        )
         yield root
     finally:
-        # Created by this fixture, inside the system temp directory, and
+        # Created by this fixture, under the system temp directory, and
         # never anything the operator owns.
         shutil.rmtree(root, ignore_errors=True)
+
+
+def test_roundtrip_home_premise_holds(project_id_module, roundtrip_home: Path):
+    """The fixture's premise, asserted on its own.
+
+    Audit L-2: this used to be a ``pytest.skip``, so an environment where
+    the premise failed lost the M4 coverage without anything going red.
+    """
+    encoded = project_id_module.encode_project_id(str(roundtrip_home))
+    assert "-" not in roundtrip_home.name
+    assert project_id_module.decode_project_id(encoded) == roundtrip_home
 
 
 class TestRepoSetFor:
@@ -319,14 +348,21 @@ class TestRepoSetFor:
         assert ordered[0] == target
         assert set(ordered) == {target, other}
 
-    def test_discovery_order_alone_would_not_pass(
+    def test_prioritisation_actually_reorders(
         self, project_id_module, roundtrip_home: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Prioritisation must reorder, not merely agree with the walk.
+        """Kills: ``primary + rest`` -> ``primary or rest``, from the other end.
 
-        Checks the unprioritised order for both repos and then asserts the
-        prioritised call puts the decoded one first regardless.
+        The previous version of this test asked only that each repo comes
+        first when it is the one named -- which ``primary or rest``
+        satisfies for the named repo while silently dropping every other
+        repo from the result (audit L-3: it survived the mutation it was
+        written to accompany).
+
+        This asserts the two properties that mutation breaks: the named
+        repo moves to the front *out of discovery order*, and the rest are
+        all still there.
         """
         TestRepoSet._make_repo(roundtrip_home / "Code" / "alpha")
         TestRepoSet._make_repo(roundtrip_home / "Code" / "zulu")
@@ -335,9 +371,14 @@ class TestRepoSetFor:
         )
         discovered = project_id_module.repo_set()
         assert len(discovered) == 2
-        for repo in discovered:
-            encoded = project_id_module.encode_project_id(str(repo))
-            assert project_id_module.repo_set_for(encoded)[0] == repo
+        # Name the repo the walk found LAST, so a correct implementation has
+        # to move it and an "or" cannot coincidentally agree.
+        last = discovered[-1]
+        encoded = project_id_module.encode_project_id(str(last))
+        ordered = project_id_module.repo_set_for(encoded)
+        assert ordered[0] == last
+        assert set(ordered) == set(discovered), "no repo may be dropped"
+        assert len(ordered) == len(discovered)
 
     def test_none_project_returns_discovery_order(
         self, project_id_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
