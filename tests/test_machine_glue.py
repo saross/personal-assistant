@@ -974,6 +974,57 @@ class TestComposerTargetIdentity:
         assert result.returncode == 2, result.stdout
         assert target.read_text(encoding="utf-8") == "the live instructions\n"
 
+    def test_a_symlink_file_to_the_live_target_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """Round 4d-3 — the LEAF is resolved, not only its directory.
+
+        Resolving the directory alone left a symlink FILE naming the live
+        CLAUDE.md unrecognised: it compared as itself, so the guard did
+        not fire. ``mv`` would then have replaced the operator's symlink
+        with a regular file and left the live instructions stale but
+        present — a quiet failure, and plainly the intent the guard is
+        there to refuse.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        claude = compose_sandbox["home"] / ".claude"
+        claude.mkdir()
+        target = claude / "CLAUDE.md"
+        target.write_text("the live instructions\n", encoding="utf-8")
+        link = compose_sandbox["home"] / "link-to-claude-md"
+        link.symlink_to(target)
+
+        result = _run_compose(compose_sandbox, "--target", str(link))
+
+        assert result.returncode == 2, result.stdout
+        assert "refusing to write" in result.stderr
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_a_symlink_file_elsewhere_is_still_allowed(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The negative half: a link to an ordinary file still composes.
+
+        Note what the atomic write does to it: ``mv`` replaces the link
+        rather than following it, so the composed document lands AT the
+        target path and the link's former destination is untouched. That
+        is pre-existing, and safe — it is why the guard above has to work
+        on identity rather than on where a write would land.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        real = compose_sandbox["home"] / "preview" / "CLAUDE.md"
+        real.parent.mkdir()
+        real.write_text("placeholder\n", encoding="utf-8")
+        link = compose_sandbox["home"] / "link-to-preview"
+        link.symlink_to(real)
+
+        result = _run_compose(compose_sandbox, "--target", str(link))
+
+        assert result.returncode == 0, result.stderr
+        assert "MARKER-LOCAL" in link.read_text(encoding="utf-8")
+        assert not link.is_symlink(), "mv followed the link instead"
+        assert real.read_text(encoding="utf-8") == "placeholder\n"
+
     def test_an_unusable_live_root_is_refused(
         self, compose_sandbox: dict[str, Path]
     ) -> None:
