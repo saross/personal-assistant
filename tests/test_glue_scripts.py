@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1045,3 +1046,178 @@ class TestCommitDataSafetyContracts:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "already on origin" in result.stdout
         assert "already-pushed data commit" in result.stdout            # the final line
+
+
+# ----------------------------------------------------------------------------
+# AR17 — push-archives-to-r2.sh: read .env, never execute it; never overwrite
+# ----------------------------------------------------------------------------
+
+
+class TestR2PushSafety:
+    """The offsite push handled credentials and overwrites unsafely.
+
+    ``set -a; . "$ENV_FILE"; set +a`` EXECUTED the .env file — command
+    substitutions in it would run — and exported every secret it contained
+    into the environment of rclone, df, and grep. And ``rclone copy`` with
+    ``--s3-disable-checksum`` decides "changed" on size and modtime, so a
+    truncated canonical file with a fresh mtime overwrote the last good
+    offsite copy of a session that can no longer be recovered from anywhere.
+
+    Nothing here contacts R2: ``rclone`` and ``df`` are stubs on PATH that
+    record their arguments and environment.
+    """
+
+    @pytest.fixture()
+    def sandbox(self, tmp_path: Path):
+        """A fake PA tree, a mounted-looking canonical, and stub binaries."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "push-archives-to-r2.sh").symlink_to(R2_PUSH_SCRIPT)
+
+        home = tmp_path / "home"
+        canonical = home / "mnt" / "rpi-shares" / "cc-archives-consolidated"
+        canonical.mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        argv_log = tmp_path / "rclone-argv.txt"
+        env_log = tmp_path / "rclone-env.txt"
+
+        rclone = bin_dir / "rclone"
+        rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'printf "%s\\n" "$@" > {argv_log}\n'
+            f"env > {env_log}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        rclone.chmod(0o755)
+
+        # A df that claims the mount is live, so the run reaches the transfer.
+        df_stub = bin_dir / "df"
+        df_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "Filesystem Size Used Avail Use% Mounted on"\n'
+            'echo "//rpi-server/shares 100G 1G 99G 1% /mnt"\n',
+            encoding="utf-8",
+        )
+        df_stub.chmod(0o755)
+
+        return SimpleNamespace(
+            script=pa_dir / "scripts" / "push-archives-to-r2.sh",
+            pa_dir=pa_dir, home=home, bin_dir=bin_dir,
+            argv_log=argv_log, env_log=env_log, rclone=rclone,
+            canonical=canonical, tmp_path=tmp_path,
+        )
+
+    def _run(self, sandbox, *args: str, mount: bool = True):
+        env = {
+            "RCLONE_BIN": str(sandbox.rclone),
+            "PATH": f"{sandbox.bin_dir}:{os.environ['PATH']}",
+        }
+        return _run_script(
+            sandbox.script, *args, home=sandbox.home, extra_env=env
+        )
+
+    def _argv(self, sandbox) -> list[str]:
+        assert sandbox.argv_log.exists(), "rclone was never invoked"
+        return sandbox.argv_log.read_text(encoding="utf-8").split("\n")
+
+    def test_dry_run_reaches_rclone_with_dry_run(self, sandbox) -> None:
+        """--dry-run must survive all the way to the transfer's argv."""
+        result = self._run(sandbox, "--dry-run")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        argv = self._argv(sandbox)
+        assert argv[0] == "copy"
+        assert "--dry-run" in argv
+
+    def test_the_transfer_refuses_to_modify_an_existing_object(
+        self, sandbox
+    ) -> None:
+        """An append-only archive: a changed object is corruption, not news."""
+        assert self._run(sandbox).returncode == 0
+        assert "--immutable" in self._argv(sandbox)
+
+    def test_an_unmounted_canonical_refuses(self, sandbox) -> None:
+        """The silent-empty-dir state must stop the push, not push nothing."""
+        quiet_df = sandbox.bin_dir / "df"
+        quiet_df.write_text(
+            "#!/usr/bin/env bash\necho 'tmpfs 1G 0 1G 0% /tmp'\n",
+            encoding="utf-8",
+        )
+        quiet_df.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 1
+        assert "not mounted" in (result.stdout + result.stderr)
+        assert not sandbox.argv_log.exists(), "a transfer ran anyway"
+
+    def test_a_command_substitution_in_env_is_never_executed(
+        self, sandbox
+    ) -> None:
+        """.env is read as text. It used to be executed as a shell script."""
+        marker = sandbox.tmp_path / "SHOULD-NOT-EXIST"
+        (sandbox.pa_dir / ".env").write_text(
+            "# invented credentials for this test\n"
+            f'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=$(touch {marker})\n'
+            'RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY="s3cret-not-real"\n',
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox).returncode == 0
+
+        assert not marker.exists(), (
+            "sourcing .env executed a command substitution inside it"
+        )
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert (
+            f"RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=$(touch {marker})"
+            in env_text
+        ), "the value was not passed through literally"
+
+    def test_only_the_two_r2_variables_are_exported(self, sandbox) -> None:
+        """Every other secret in .env used to reach every child process."""
+        (sandbox.pa_dir / ".env").write_text(
+            "OPENAI_API_KEY=sk-invented-not-a-real-key\n"
+            "ANTHROPIC_API_KEY=ant-invented-not-a-real-key\n"
+            'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="r2-id-invented"\n'
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY='r2-secret-invented'\n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "OPENAI_API_KEY" not in env_text
+        assert "ANTHROPIC_API_KEY" not in env_text
+        # The two that are needed arrive, with their quotes stripped.
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented" in env_text
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2-secret-invented"
+            in env_text
+        )
+
+    def test_an_ambient_credential_is_not_overwritten_by_env(
+        self, sandbox
+    ) -> None:
+        """The loader is idempotent: what is already exported wins."""
+        (sandbox.pa_dir / ".env").write_text(
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-dot-env\n",
+            encoding="utf-8",
+        )
+        env = {
+            "RCLONE_BIN": str(sandbox.rclone),
+            "PATH": f"{sandbox.bin_dir}:{os.environ['PATH']}",
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID": "from-ambient",
+        }
+        result = _run_script(
+            sandbox.script, home=sandbox.home, extra_env=env
+        )
+
+        assert result.returncode == 0
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-ambient" in env_text

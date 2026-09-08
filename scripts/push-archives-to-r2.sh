@@ -11,13 +11,24 @@
 # reading the canonical store via the rpi-shares mount and pushing UP to
 # R2. R2 is offsite backup + travel bridge, never the primary.
 #
-# Semantics — ``rclone copy`` (NOT ``sync``):
-# - Additive + updates: new files uploaded, changed files (e.g. a
-#   v1.2→v1.3 metadata rewrite) overwritten with the newer copy.
+# Semantics — ``rclone copy --immutable`` (NOT ``sync``):
+# - Additive: new files are uploaded.
 # - Never deletes from R2. These are open-science records we never want
 #   to lose; if a session is removed from canonical we still keep the R2
 #   copy. (Use ``rclone sync`` instead only if exact mirroring with
 #   deletion is ever explicitly wanted.)
+# - Never MODIFIES an object already in R2 (audit 2026-09-08, AR17).
+#   ``--immutable`` is rclone's documented flag for exactly this: an
+#   existing destination file whose size or modtime differs from the
+#   source raises an error and aborts that transfer instead of
+#   overwriting. The archive is append-only, so a canonical file that
+#   changed is a corruption signal — a truncated transcript with a fresh
+#   mtime, which ``--s3-disable-checksum``'s size+modtime comparison
+#   would happily push over the last good offsite copy — and not an
+#   update. The cost of the guard is that a deliberate metadata rewrite
+#   (a v1.2→v1.3 schema bump) now errors here rather than propagating;
+#   that is the intended trade, and such a rewrite is republished by
+#   removing the old object deliberately, not by a cron job.
 #
 # R2 quirks handled:
 # - --s3-no-check-bucket: bucket-scoped R2 tokens reject the HEAD/
@@ -63,11 +74,43 @@ log() {
 }
 
 # --- Load R2 credentials from .env (idempotent if already in env) --------
+# Read the two variables we need; do NOT source the file. `set -a; . .env`
+# executed .env as a shell script — command substitutions in it would run,
+# and every other secret in the file was exported into the environment of
+# rclone, df, and grep (audit 2026-09-08, finding AR17). Here the file is
+# only ever read as text: the value after the first `=` is assigned
+# literally, so `KEY=$(rm -rf ~)` becomes those nine characters and nothing
+# more.
+R2_VARS=(
+    RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID
+    RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY
+)
+
+load_r2_var() {
+    local name="$1" line value
+    # Already in the ambient environment: leave it alone.
+    if [[ -n "${!name:-}" ]]; then
+        return 0
+    fi
+    line="$(grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?${name}=" \
+        "$ENV_FILE" 2>/dev/null || true)"
+    [[ -z "$line" ]] && return 0
+    value="${line#*=}"
+    value="${value%$'\r'}"                 # tolerate CRLF .env files
+    # Strip one matching pair of surrounding quotes, nothing else.
+    if [[ "$value" == \"*\" ]]; then
+        value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+    export "${name}=${value}"
+}
+
 if [[ -f "$ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$ENV_FILE"
-    set +a
+    for _r2_var in "${R2_VARS[@]}"; do
+        load_r2_var "$_r2_var"
+    done
+    unset _r2_var
 else
     log "r2-push: .env not found at $ENV_FILE — relying on ambient env"
 fi
@@ -125,6 +168,10 @@ fi
 
 # --- Push ----------------------------------------------------------------
 RCLONE_FLAGS=(
+    # Refuse to modify an object already in R2 — see the header. An
+    # existing file whose size or modtime differs from the source is a
+    # corruption signal in an append-only archive, not an update.
+    --immutable
     --s3-no-check-bucket
     --s3-disable-checksum
     --fast-list
@@ -143,7 +190,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
     exit 0
 fi
 
-log "r2-push: copy $CANON/ → $DEST/ (additive, no delete)"
+log "r2-push: copy $CANON/ → $DEST/ (additive, no delete, no overwrite)"
 if "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" "$CANON/" "$DEST/"; then
     log "r2-push: complete"
     exit 0
