@@ -234,6 +234,14 @@ ensure_symlink() {
 
 say "[1/8] Ensuring data submodule is initialised..."
 cd "$PA_DIR"
+
+#: The one remedy that actually works for a non-empty, uninitialised
+#: data/. Named once so step 1 and the final summary cannot drift apart.
+DATA_REMEDY="remove $PA_DIR/data entirely (git will not clone into a \
+non-empty directory), then re-run this script."
+#: The composer's only data/-borne source; step 7 fails without it.
+COMPOSER_LOCAL="$PA_DIR/data/global-claude-md/local.md"
+SKIP_COMPOSE=0
 # Audit round 4d (E10): run this ONLY when data/ is uninitialised. On an
 # already-initialised submodule `git submodule update` checks out the
 # gitlink SHA recorded in the superproject, which detaches data/ from its
@@ -291,12 +299,44 @@ elif [ $IS_WORKTREE -eq 1 ]; then
     # already covers every case the flag was standing in for.
     say "  Worktree checkout — data/ belongs to the main checkout, skipping."
 elif [ -n "$(ls -A "$PA_DIR/data" 2>/dev/null || true)" ]; then
+    # Round 4d-4 (M2): the remedy here used to offer
+    # "run 'git submodule update --init' by hand", which is the very
+    # command that cannot work — git refuses to clone into a non-empty
+    # directory, by hand or otherwise (verified against git 2.48.1 on a
+    # throwaway superproject). Emptying data/ is the only thing that
+    # helps, so it is the only thing offered.
     say "  WARNING: data/ is uninitialised but not empty, so git cannot"
-    say "    clone into it. Clear $PA_DIR/data, or run"
-    say "    'git submodule update --init' by hand."
+    say "    clone into it. $DATA_REMEDY"
 else
     run_action git submodule update --init --recursive --quiet
     did_verbose "have the submodule ready" "Submodule ready."
+fi
+
+# Round 4d-4 (M2): step 7 composes ~/.claude/CLAUDE.md from three sources,
+# one of which lives in data/. If that source is absent the composer
+# CANNOT succeed — and discovering it at step 7, after steps 2-6 have
+# relinked every ~/.claude symlink, leaves exactly the half-migrated
+# machine this script works to avoid, with step 1's warning long scrolled
+# away. Decide it here instead, while nothing has been changed yet.
+#
+# --dry-run is exempt: it changes nothing, so there is nothing to protect,
+# and previewing an incomplete checkout is legitimate.
+if [ $DRY_RUN -eq 0 ] && [ ! -f "$COMPOSER_LOCAL" ]; then
+    if [ $IS_WORKTREE -eq 1 ]; then
+        # A worktree's data/ is the main checkout's, so this is expected
+        # rather than broken. Steps 2-6 are what --allow-worktree is for;
+        # step 7 is skipped and said so, twice.
+        say "  NOTE: $COMPOSER_LOCAL is absent (data/ belongs to the main"
+        say "    checkout), so step 7 will be SKIPPED and"
+        say "    $CLAUDE_DIR/CLAUDE.md left as it is."
+        SKIP_COMPOSE=1
+    else
+        say "ERROR: $COMPOSER_LOCAL is missing, so step 7 cannot succeed."
+        say "  Stopping now, before any symlink is changed, rather than"
+        say "  relinking $CLAUDE_DIR and failing half-way through."
+        say "  Remedy: $DATA_REMEDY"
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -381,7 +421,13 @@ say "[7/8] Composing global CLAUDE.md..."
 # step 7 refusing — the half-migrated state the guard above exists to stop.
 compose_args=()
 [[ $ALLOW_WORKTREE -eq 1 ]] && compose_args+=(--allow-foreign-root)
-if [[ $DRY_RUN -eq 1 ]]; then
+if [[ $SKIP_COMPOSE -eq 1 ]]; then
+    # Decided at step 1, repeated here so the reason is beside the gap it
+    # explains rather than scrolled off the top of a cron log (round
+    # 4d-4, M2).
+    say "  SKIPPED: $COMPOSER_LOCAL is absent, so there is nothing to"
+    say "    compose from. $CLAUDE_DIR/CLAUDE.md is unchanged."
+elif [[ $DRY_RUN -eq 1 ]]; then
     # The composer has its own --dry-run, so pass the flag through rather
     # than skipping the step: the operator still sees what would be written.
     bash "$PA_DIR/scripts/compose-global-claude-md.sh" --dry-run \

@@ -40,6 +40,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
+COMPOSE_SCRIPT = SCRIPTS / "compose-global-claude-md.sh"
 
 
 
@@ -608,6 +609,162 @@ class TestSubmoduleUpdateIsGated:
         assert "submodule update" not in sync_sandbox["log"].read_text(
             encoding="utf-8"
         )
+
+class TestUnusableDataStopsBeforeAnythingIsRelinked:
+    """M2 — a failure at step 7 arrives after ~/.claude has been rewired.
+
+    Step 7 composes from three sources, one of them inside ``data/``. When
+    that source is absent the composer cannot succeed, and finding out at
+    step 7 leaves every ~/.claude symlink already repointed and step 1's
+    warning long scrolled off a cron log.
+    """
+
+    @staticmethod
+    def _strip_local(pa_dir: Path) -> None:
+        """Remove the composer's data/-borne source, leaving data/ non-empty."""
+        (pa_dir / "data" / "global-claude-md" / "local.md").unlink()
+        (pa_dir / "data" / "global-claude-md").rmdir()
+        (pa_dir / "data" / "stray-file.md").write_text("x\n", encoding="utf-8")
+
+    def test_a_clone_stops_at_step_one_with_nothing_relinked(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """Not one symlink is created, and the exit status says so."""
+        self._strip_local(sync_sandbox["pa_dir"])
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(
+            sync_sandbox, submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 1, result.stdout
+        assert "[2/8]" not in result.stdout, result.stdout
+        assert snapshot(sync_sandbox["home"]) == before
+
+    def test_the_remedy_is_the_one_that_works(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """`git submodule update --init` cannot clone into a non-empty
+        directory, so it must not be offered as the fix for one."""
+        self._strip_local(sync_sandbox["pa_dir"])
+
+        result = _run_sync(
+            sync_sandbox, submodule_status="-1234abcd data"
+        )
+
+        assert "remove" in result.stdout.lower()
+        assert "data" in result.stdout
+        remedy_lines = [
+            line for line in result.stdout.splitlines()
+            if "Remedy:" in line or "WARNING: data/" in line
+        ]
+        assert remedy_lines, result.stdout
+
+    def test_the_non_empty_warning_does_not_offer_the_impossible_command(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """`git submodule update --init` must not be offered as the fix
+        for a non-empty data/, in the output or in the source.
+
+        Checked on the OUTPUT of the failing run, because a line-by-line
+        source scan misses an advisory that sits on the line after the
+        diagnosis — which is exactly where it sat.
+        """
+        self._strip_local(sync_sandbox["pa_dir"])
+
+        result = _run_sync(
+            sync_sandbox, submodule_status="-1234abcd data"
+        )
+
+        assert "not empty" in result.stdout or "Remedy:" in result.stdout
+        assert "submodule update --init" not in result.stdout, result.stdout
+
+    def test_the_warning_branch_uses_the_shared_remedy(self) -> None:
+        """One remedy string, so step 1 and the summary cannot diverge."""
+        source = (SCRIPTS / "sync-symlinks.sh").read_text(encoding="utf-8")
+        assert "DATA_REMEDY=" in source
+        assert 'clone into it. $DATA_REMEDY' in source
+        # Only executable lines: the comment above that branch quotes the
+        # withdrawn advice on purpose, so the reason stays on record.
+        code = [
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        assert not [
+            line for line in code if "submodule update --init' by hand" in line
+        ], "an advisory survives that git cannot honour"
+
+    def test_a_worktree_skips_step_seven_and_completes(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """A worktree's data/ is the main checkout's; steps 2-6 still run."""
+        _make_worktree(sync_sandbox["pa_dir"])
+        self._strip_local(sync_sandbox["pa_dir"])
+
+        result = _run_sync(
+            sync_sandbox,
+            "--allow-worktree",
+            submodule_status="-1234abcd data",
+        )
+
+        assert result.returncode == 0, result.stdout
+        assert "will be SKIPPED" in result.stdout
+        assert "SKIPPED:" in result.stdout
+        claude = sync_sandbox["home"] / ".claude"
+        assert (claude / "commands" / "fossick.md").is_symlink()
+        assert not (claude / "CLAUDE.md").exists(), (
+            "step 7 wrote despite having no source"
+        )
+
+    def test_a_dry_run_is_exempt_from_the_stop(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """Previewing an incomplete checkout changes nothing, so it is allowed."""
+        self._strip_local(sync_sandbox["pa_dir"])
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+
+        assert "[2/8]" in result.stdout, result.stdout
+        assert snapshot(sync_sandbox["home"]) == before
+
+
+class TestComposerNamesTheRightRemedy:
+    """M2 — the composer's own error had the same impossible advice."""
+
+    def test_a_non_empty_data_says_remove_not_init(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The state git cannot clone into gets the remedy that works."""
+        local = compose_sandbox["pa_dir"] / "data" / "global-claude-md"
+        (local / "local.md").unlink()
+        local.rmdir()
+        (compose_sandbox["pa_dir"] / "data" / "stray.md").write_text(
+            "x\n", encoding="utf-8"
+        )
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 1
+        assert "Remove" in result.stderr
+        assert "not empty" in result.stderr
+
+    def test_an_absent_data_still_says_init(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """When data/ is genuinely absent, an init IS the remedy."""
+        local = compose_sandbox["pa_dir"] / "data" / "global-claude-md"
+        (local / "local.md").unlink()
+        local.rmdir()
+        (compose_sandbox["pa_dir"] / "data").rmdir()
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 1
+        assert "submodule update --init" in result.stderr
+
 
 class TestSyncSymlinksRefusesFromAWorktree:
     """Round 4d-2 — steps 2-6 relink the LIVE ~/.claude before step 7 dies.

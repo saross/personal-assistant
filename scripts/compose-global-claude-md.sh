@@ -172,7 +172,19 @@ fi
 
 if [[ ! -f "$LOCAL" ]]; then
     echo "ERROR: Local section not found: $LOCAL" >&2
-    echo "  (Is the data submodule initialised? Run: git submodule update --init)" >&2
+    # Round 4d-4 (M2): this used to advise `git submodule update --init`,
+    # which is the one command that cannot help when data/ exists and is
+    # not empty — git refuses to clone into a non-empty directory
+    # (verified against git 2.48.1). Say which of the two states this is,
+    # and give the remedy that fits it.
+    if [[ -d "$PA_DIR/data" ]] && [[ -n "$(ls -A "$PA_DIR/data" 2>/dev/null)" ]]; then
+        echo "  data/ exists and is not empty, so the submodule cannot be" >&2
+        echo "  cloned into it. Remove $PA_DIR/data entirely, then run:" >&2
+        echo "    git -C $PA_DIR submodule update --init" >&2
+    else
+        echo "  (Is the data submodule initialised?" \
+             "Run: git -C $PA_DIR submodule update --init)" >&2
+    fi
     exit 1
 fi
 
