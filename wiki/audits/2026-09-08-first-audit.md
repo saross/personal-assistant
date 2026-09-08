@@ -245,6 +245,10 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    append-only paths (memories, scratchpads, notes inbox); (b) keep sweeping
    everything; (c) sweep but never push a commit that touched `tasks/` or
    `wiki/`. Recommendation: (a).
+3. **Sessions table stale since 17 August (P1).** Fixing the error split and
+   sanitising NUL will let 48+ sessions sync on the next run. No decision needed
+   unless you want to inspect the two affected archive files first.
+
 4. **D4 — the tripwire's `Claude-Session` exemption.** A Claude-session
    commit that credits the Codex agent as co-author (every reviewed patch)
    would otherwise trip the wire on every machine until acked there, since
@@ -253,9 +257,6 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    adversary (a Codex author identity is still flagged). Options: keep it
    (recommended, matching the guardrails-not-obstacles stance), or drop it
    and ack each such commit on each machine.
-3. **Sessions table stale since 17 August (P1).** Fixing the error split and
-   sanitising NUL will let 48+ sessions sync on the next run. No decision needed
-   unless you want to inspect the two affected archive files first.
 
 ## Fix rounds
 
