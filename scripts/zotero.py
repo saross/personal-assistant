@@ -413,9 +413,21 @@ def _normalise_doi(doi: str) -> str:
 #: trims the lookup one. SQLite's bare ``TRIM`` removes SPACES only, so a
 #: value pasted with a trailing newline — what a copy out of a PDF or a
 #: web form leaves — stayed unmatched while the Python side had already
-#: stripped it (round 4d-2). Tab, newline, carriage return, and space.
+#: stripped it (round 4d-2).
+#:
+#: The character set is tab, newline, carriage return, space, and
+#: non-breaking space. That is NOT the whole of what ``str.strip`` removes
+#: (round 4d-3): ``\x0b`` (vertical tab), ``\x0c`` (form feed), and
+#: ``\x85`` (next line) are still stripped on the Python side and kept on
+#: the SQL side, so a DOI stored with one of those around it would go
+#: unmatched. They are vanishingly rare in a pasted identifier, whereas
+#: U+00A0 is what a copy out of a rendered web page routinely leaves, so
+#: it is worth the character and the others are not worth an unreadable
+#: expression. If this ever needs to be exact, normalise on the way in
+#: rather than lengthening this list.
 _SQL_TRIMMED_DOI = (
-    "TRIM(LOWER(idv.value), char(9) || char(10) || char(13) || char(32))"
+    "TRIM(LOWER(idv.value), "
+    "char(9) || char(10) || char(13) || char(32) || char(160))"
 )
 
 
