@@ -324,10 +324,25 @@ def cursor_went_backwards(
     if current is None:
         return True
     try:
-        return current < recorded
+        return _comparable_cursor(current) < _comparable_cursor(recorded)
     except TypeError:
         # Two different shapes of cursor: a version change, not a rewind.
         return False
+
+
+def _comparable_cursor(value: int | str) -> int | str:
+    """Put a timestamp cursor into one spelling before comparing it.
+
+    The sessions cursor is an ISO-8601 instant compared LEXICALLY, and
+    the same instant has two spellings: ``...T00:00:00Z`` and
+    ``...T00:00:00+00:00``. ``+`` sorts before ``Z``, so a writer that
+    changed spelling would look like a cursor that had gone backwards and
+    a rebuild would be announced that never happened (tenth re-audit,
+    low L1).
+    """
+    if isinstance(value, str) and value[-1:] in ("Z", "z"):
+        return value[:-1] + "+00:00"
+    return value
 
 
 def outage_detail(script: str, streak: int) -> str:

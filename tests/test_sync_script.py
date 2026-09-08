@@ -3164,3 +3164,119 @@ class TestARebuildWithNoSyncRunningIsStillDetected:
         assert _sync_gate.PROBLEM_QUARANTINE not in state.problems, (
             "a cursor that moved forward was read as a rebuild"
         )
+
+
+class TestAnExitSixDoesNotRepeatItself:
+    """
+    Tenth re-audit, L5 — exit 6 IS a rebuild, and the path that reported
+    it left the pre-rebuild position recorded. The next ordinary run then
+    compared against that stale value, saw the same rewind, and told the
+    operator all over again that the cursor had been reset — over rows it
+    had already reported.
+    """
+
+    def _canonical(self, path: Path, ids: list[str]) -> None:
+        """Write a small valid canonical file."""
+        path.write_text(
+            "".join(
+                json.dumps({
+                    "id": mid, "category": "progress", "content": "c",
+                    "created_at": "2026-09-01T00:00:00+00:00",
+                }) + "\n"
+                for mid in ids
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_next_run_does_not_announce_the_rebuild_again(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: leaving ``cursor_seen`` off the exit-6
+        gate event, so the position it recorded is the one from before
+        the rebuild.
+        """
+        import _sync_gate
+
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1", "m2"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 0}), encoding="utf-8",
+        )
+        quarantine = tmp_path / "quarantine.jsonl"
+        quarantine.write_text(
+            '{"reason": "postgres_refused_row", "record": {"id": "old"}}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m1", "m2"],
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        # One ordinary tick first, so there IS a recorded position for
+        # the exit-6 run to leave stale.
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 2
+
+        # More rows arrive, and the rebuild lands while they are syncing.
+        self._canonical(memories, ["m1", "m2", "m3", "m4"])
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[],
+            returned_ids=["m3", "m4"],
+        )
+
+        original_insert = sync_mod.insert_memories
+
+        def _rebuild_runs_now(
+            records, logger, quarantine_cap=None, quarantine_anyway=False,
+        ):
+            """Simulate rebuild-postgres.py clearing the cursors mid-cycle."""
+            cursor_file.write_text(json.dumps({}), encoding="utf-8")
+            return original_insert(
+                records, logger, quarantine_cap, quarantine_anyway,
+            )
+
+        monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+        assert excinfo.value.code == 6
+        first = _sync_gate.read_state(pinned_gate_file)
+        assert "cursor was reset" in first.problems[
+            _sync_gate.PROBLEM_QUARANTINE
+        ].detail
+
+        # The next tick resyncs from the beginning and completes.
+        monkeypatch.setattr(sync_mod, "insert_memories", original_insert)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[],
+            returned_ids=["m1", "m2", "m3", "m4"],
+        )
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        second = _sync_gate.read_state(pinned_gate_file)
+        problem = second.problems[_sync_gate.PROBLEM_QUARANTINE]
+        assert problem.count == 1, "the standing row should still be reported"
+        assert "cursor was reset" not in problem.detail, (
+            "one rebuild was announced twice"
+        )

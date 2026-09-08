@@ -1609,6 +1609,21 @@ def _gate_fault(
             reset_quarantine_ack=reset_quarantine_ack,
             quarantine_entries=count_quarantine_entries(QUARANTINE_FILE),
             quarantine_file=QUARANTINE_FILE,
+            # Record where the cursor has ended up, even on the way out.
+            # Exit 6 IS a rebuild, so leaving the pre-rebuild position
+            # recorded made the very next run see the same rewind again
+            # and repeat the "cursor was reset" sentence over rows it had
+            # already reported (tenth re-audit, low L5).
+            cursor_seen=reset_quarantine_ack,
+            cursor_position_after=(
+                normalise_line_cursor(
+                    read_cursor_file_locked(CURSOR_FILE).get(
+                        "postgres_sync_line",
+                    ),
+                    key="postgres_sync_line", logger=logger,
+                )
+                if reset_quarantine_ack else None
+            ),
             script=SCRIPT_NAME,
         ),
         gate_path=GATE_FILE,

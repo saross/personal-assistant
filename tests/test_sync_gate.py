@@ -2041,3 +2041,88 @@ class TestTheCursorGoingBackwardsIsARebuild:
             processed=1, refusals=0,
         )
         assert self._state_file(gate)["cursor_position"] == 7
+
+
+class TestATimestampCursorHasOneSpelling:
+    """
+    Tenth re-audit, L1 — the sessions cursor is an ISO instant compared
+    lexically, and the same instant has two spellings. ``+`` sorts before
+    ``Z``, so a writer that changed spelling looked like a cursor going
+    backwards and announced a rebuild that never happened.
+    """
+
+    @pytest.mark.parametrize("recorded,current", [
+        ("2026-09-01T00:00:00Z", "2026-09-01T00:00:00+00:00"),
+        ("2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00Z"),
+        ("2026-09-01T00:00:00z", "2026-09-01T00:00:00+00:00"),
+    ])
+    def test_the_same_instant_is_not_a_rewind(self, recorded, current):
+        """The mutation this kills: comparing the raw strings."""
+        assert _sync_gate.cursor_went_backwards(recorded, current) is False
+
+    def test_a_real_rewind_is_still_seen_across_spellings(self):
+        """The guard must not flatten every timestamp into equality."""
+        assert _sync_gate.cursor_went_backwards(
+            "2026-09-02T00:00:00Z", "2026-09-01T00:00:00+00:00",
+        ) is True
+
+    def test_ordinary_progress_across_spellings_is_not_a_rewind(self):
+        """Forward is forward whichever spelling each end uses."""
+        assert _sync_gate.cursor_went_backwards(
+            "2026-09-01T00:00:00Z", "2026-09-02T00:00:00+00:00",
+        ) is False
+
+
+class TestAnExitSixRecordsWhereTheCursorEndedUp:
+    """
+    Tenth re-audit, L5 — exit 6 IS a rebuild, and the path that reports
+    it left the PRE-rebuild position recorded. The very next ordinary run
+    then compared against that stale value, saw the same rewind again,
+    and repeated the "cursor was reset" sentence over rows it had already
+    reported.
+    """
+
+    def _apply(self, gate: Path, **kwargs):
+        return _sync_gate.apply_gate(
+            _sync_gate.GateEvent(script="test", **kwargs),
+            gate_path=gate, logger=logging.getLogger("test-exit-six"),
+        )
+
+    def test_the_reset_is_announced_once(self, tmp_path):
+        """
+        The mutation this kills: leaving ``cursor_seen`` off the exit-6
+        event, so the stale position survives and the sentence repeats.
+        """
+        gate = tmp_path / "g"
+        # A healthy run leaves the cursor at 9.
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=3, quarantine_entries=2, cursor_seen=True,
+            cursor_position=4, cursor_position_after=9,
+        )
+        self._apply(gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=2)
+
+        # A rebuild lands mid-run: exit 6, which records where the cursor
+        # ended up (nowhere — the key is gone).
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_DEGRADED,
+            fault_detail="a rebuild removed the cursor key mid-run",
+            reset_quarantine_ack=True, quarantine_entries=2,
+            cursor_seen=True, cursor_position_after=None,
+        )
+        assert "cursor was reset" in state.problems[
+            _sync_gate.PROBLEM_QUARANTINE
+        ].detail
+
+        # The next ordinary run resyncs from the beginning and reaches 9
+        # again. The rows are still outstanding, but the reset is old
+        # news and must not be announced a second time.
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=3, quarantine_entries=2, cursor_seen=True,
+            cursor_position=None, cursor_position_after=9,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+        assert "cursor was reset" not in state.problems[
+            _sync_gate.PROBLEM_QUARANTINE
+        ].detail, "the reset was announced twice for one rebuild"
