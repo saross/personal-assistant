@@ -55,6 +55,61 @@ Path(_SUITE_HOME.name, ".gitconfig").write_text(
 )
 
 
+# ---------------------------------------------------------------------------
+# Hermeticity: no route to a real PostgreSQL, for ANY caller
+#
+# The ``no_live_postgres`` fixture below patches ``psycopg2.connect``. Two
+# holes survived that (audit round 4a-2, finding M8):
+#
+#   * a module that did ``from psycopg2 import connect`` at import time bound
+#     the REAL function before the fixture ever ran, and calling it reached
+#     the driver;
+#   * scripts that shell out to ``psql`` (monthly-archive.py,
+#     check-memory-drift.py) never touch psycopg2 at all.
+#
+# Both are closed here, at import time so that env changes are in place before
+# any module constant is baked and before any subprocess is spawned:
+#
+#   * ``PGHOST`` points at an empty directory inside the suite's own home, so
+#     libpq looks for a Unix socket that cannot be there and fails
+#     immediately. ``PGHOSTADDR`` is removed (it would override PGHOST) and
+#     ``PGPORT`` is pinned so a TCP fallback has nothing to reach either.
+#     This covers psycopg2 and psql alike, since both go through libpq.
+#   * a stub ``psql`` is placed FIRST on ``PATH``; it exits 1 with a message
+#     naming the suite, so a script that shells out gets a clean refusal
+#     rather than the operator's database.
+#
+# All of this lives in this process's environment only: it is inherited by
+# test subprocesses and by nothing else. No shell profile, no settings file,
+# and no file outside the suite's temporary home is touched, so nothing here
+# can reach a cron run, a hook, or an interactive session.
+# ---------------------------------------------------------------------------
+
+#: An empty directory: libpq will look for ``.s.PGSQL.<port>`` in it and fail.
+_NO_PG_SOCKET_DIR = Path(_SUITE_HOME.name, "no-postgres-here")
+_NO_PG_SOCKET_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["PGHOST"] = str(_NO_PG_SOCKET_DIR)
+os.environ.pop("PGHOSTADDR", None)  # would take precedence over PGHOST
+os.environ["PGPORT"] = "1"          # nothing listens on port 1
+os.environ.pop("PGSERVICE", None)   # a service file could name a real host
+os.environ.pop("PGSERVICEFILE", None)
+
+#: Text the stub prints, asserted by ``test_hermeticity_fixture.py``.
+PSQL_STUB_MESSAGE = "psql refused by the test suite"
+
+_STUB_BIN = Path(_SUITE_HOME.name, "bin")
+_STUB_BIN.mkdir(parents=True, exist_ok=True)
+_PSQL_STUB = _STUB_BIN / "psql"
+_PSQL_STUB.write_text(
+    "#!/bin/sh\n"
+    f'echo "{PSQL_STUB_MESSAGE}: $*" >&2\n'
+    "exit 1\n",
+    encoding="utf-8",
+)
+_PSQL_STUB.chmod(0o755)
+os.environ["PATH"] = f"{_STUB_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
 #: The pytest marker that quarantines a test needing a live service, and
 #: the exact name ``pytest.ini`` deselects with ``-m "not integration"``.
 #: Named here because the structural guard in

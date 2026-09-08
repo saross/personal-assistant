@@ -16,6 +16,7 @@ Nothing here touches the operator's real ``~/.cache``: the child run's
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -762,3 +763,87 @@ def test_the_session_fixture_calls_the_store_assertion():
     assert "assert_canonical_store_untouched" in called, (
         "the session fixture no longer checks the canonical store")
     assert "_canonical_store_snapshot" in called
+
+
+# ===========================================================================
+# The two holes under the runtime PG net (audit round 4a-2, finding M8)
+#
+# Patching psycopg2.connect does not stop a module that bound the real
+# function at import time with `from psycopg2 import connect`, and it does
+# nothing at all for a script that shells out to psql. conftest closes both
+# through the environment: PGHOST at an empty socket directory, and a stub
+# psql first on PATH.
+# ===========================================================================
+
+
+#: Bound at MODULE import — that is, during collection, before any fixture
+#: has run. This is exactly the shape of the hole: a production module doing
+#: ``from psycopg2 import connect`` at import time holds the real driver
+#: function, and patching the module attribute later cannot reach it.
+from psycopg2 import OperationalError as _PG_OPERATIONAL_ERROR  # noqa: E402
+from psycopg2 import connect as _IMPORT_BOUND_CONNECT  # noqa: E402
+
+
+def test_an_import_bound_connector_cannot_reach_a_server():
+    """`from psycopg2 import connect` must still fail to connect.
+
+    The mutation this kills: dropping the PGHOST/PGPORT repoint from
+    conftest. The fixture's attribute patch cannot help here -- this is the
+    real driver function, bound before any fixture ran -- so the only thing
+    standing between it and the operator's database is libpq's environment.
+    """
+    with pytest.raises(_PG_OPERATIONAL_ERROR) as excinfo:
+        _IMPORT_BOUND_CONNECT(dbname="claude_memories")
+
+    # libpq's message names the socket path it tried; assert it is the
+    # suite's dead end, not a real server refusing us.
+    assert conftest._NO_PG_SOCKET_DIR.name in str(excinfo.value), str(
+        excinfo.value)
+
+
+def test_the_pg_environment_points_nowhere():
+    """PGHOST names an empty directory, and nothing overrides it."""
+    assert os.environ["PGHOST"] == str(conftest._NO_PG_SOCKET_DIR)
+    assert conftest._NO_PG_SOCKET_DIR.is_dir()
+    assert not any(conftest._NO_PG_SOCKET_DIR.iterdir()), (
+        "the dead-end socket directory must stay empty")
+    assert "PGHOSTADDR" not in os.environ, (
+        "PGHOSTADDR would take precedence over PGHOST")
+    assert os.environ["PGPORT"] == "1"
+    assert str(conftest._SUITE_HOME.name) in os.environ["PGHOST"], (
+        "the dead end must live inside the suite's own home")
+
+
+def test_a_script_shelling_out_to_psql_is_refused():
+    """A stub psql is first on PATH and exits non-zero.
+
+    The mutation this kills: dropping the PATH stub from conftest.
+    monthly-archive.py and check-memory-drift.py reach PostgreSQL by
+    subprocess, so psycopg2 patching never sees them.
+    """
+    resolved = shutil.which("psql")
+    assert resolved is not None
+    assert Path(resolved).parent == Path(conftest._STUB_BIN), (
+        f"the real psql is first on PATH: {resolved}")
+
+    result = subprocess.run(
+        ["psql", "-t", "-A", "-c", "SELECT count(*) FROM memories"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert conftest.PSQL_STUB_MESSAGE in result.stderr
+    assert result.stdout == ""
+
+
+def test_the_stub_is_inherited_by_a_child_process():
+    """A grandchild sees the stub too, so a script's own subprocess is covered."""
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import subprocess, sys;"
+         "r = subprocess.run(['psql', '-c', 'select 1'],"
+         " capture_output=True, text=True);"
+         "sys.stdout.write(str(r.returncode)); sys.stderr.write(r.stderr)"],
+        capture_output=True, text=True,
+    )
+    assert result.stdout == "1"
+    assert conftest.PSQL_STUB_MESSAGE in result.stderr
