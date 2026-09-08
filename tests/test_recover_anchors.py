@@ -124,3 +124,89 @@ class TestAddRevision:
         ra.add_revision(rec, when="2026-05-31T00:00:00+00:00", ref_rewrites=[],
                         stripped=[{"type": "file", "ref": "junk prose here"}])
         assert "stripped 1 junk anchor" in rec["revisions"][0]["reason"]
+
+
+# ===========================================================================
+# _git_commit — the explicit, literal pathspec
+#
+# Added by the PR #114 re-audit (2026-09-08). Same class as audit finding
+# S16: a bare ``git commit`` after ``git add`` publishes whatever a
+# concurrent session has already staged in the shared index, under this
+# script's bulk-rewrite subject and trailer; and an unqualified pathspec is a
+# GLOB, so a metacharacter in the path sweeps its lookalikes.
+# ===========================================================================
+
+import subprocess  # noqa: E402
+
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "Test Bot",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "Test Bot",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+}
+
+
+def _seed_repo(data_dir, monkeypatch):
+    """Initialise a throwaway data repo with a deterministic git identity."""
+    for key, value in GIT_ENV.items():
+        monkeypatch.setenv(key, value)
+    subprocess.run(["git", "-C", str(data_dir), "init", "-q", "-b", "main"],
+                   check=True)
+    subprocess.run(["git", "-C", str(data_dir), "commit", "-q", "--allow-empty",
+                    "-m", "seed"], check=True)
+
+
+def _tracked_in_head(data_dir):
+    return subprocess.run(
+        ["git", "-C", str(data_dir), "show", "--name-only", "--pretty=format:",
+         "HEAD"], capture_output=True, text=True, check=True).stdout.split()
+
+
+def _staged(data_dir):
+    return subprocess.run(
+        ["git", "-C", str(data_dir), "diff", "--cached", "--name-only"],
+        capture_output=True, text=True, check=True).stdout.split()
+
+
+def test_git_commit_leaves_another_sessions_staged_file_alone(tmp_path,
+                                                              monkeypatch):
+    data_dir = tmp_path / "data"
+    corpus = data_dir / "memories" / "memories.jsonl"
+    corpus.parent.mkdir(parents=True)
+    corpus.write_text("{}\n", encoding="utf-8")
+    _seed_repo(data_dir, monkeypatch)
+    (data_dir / "unrelated.md").write_text("half-written prose\n",
+                                           encoding="utf-8")
+    subprocess.run(["git", "-C", str(data_dir), "add", "unrelated.md"],
+                   check=True)
+
+    ra._git_commit(corpus, 3, lambda subject, **kw: subject)
+
+    committed = _tracked_in_head(data_dir)
+    assert "memories/memories.jsonl" in committed
+    assert "unrelated.md" not in committed, (
+        "the anchor-recovery commit swept another session's staged file")
+    assert _staged(data_dir) == ["unrelated.md"]
+
+
+def test_git_commit_pathspec_is_matched_literally(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    corpus = data_dir / "memories[1]" / "memories.jsonl"
+    decoy = data_dir / "memories1" / "memories.jsonl"     # glob lookalike
+    corpus.parent.mkdir(parents=True)
+    decoy.parent.mkdir(parents=True)
+    corpus.write_text("{}\n", encoding="utf-8")
+    _seed_repo(data_dir, monkeypatch)
+    decoy.write_text("another session's work\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(data_dir), "add",
+                    "memories1/memories.jsonl"], check=True)
+
+    ra._git_commit(corpus, 1, lambda subject, **kw: subject)
+
+    committed = _tracked_in_head(data_dir)
+    assert "memories[1]/memories.jsonl" in committed
+    assert "memories1/memories.jsonl" not in committed, (
+        "the glob pathspec swept a lookalike directory")
+    assert _staged(data_dir) == ["memories1/memories.jsonl"]

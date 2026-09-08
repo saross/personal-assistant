@@ -99,7 +99,22 @@ if $DRY_RUN; then
     echo "Total bytes: $(wc -c < "$PREVIEW")"
 else
     mkdir -p "$(dirname "$TARGET")"
-    compose > "$TARGET"
+    # Audit 2026-09-08 S13: compose into a temporary file in the SAME
+    # directory, then rename. `compose > "$TARGET"` truncated the target
+    # before the first byte was written, so any failure inside compose (the
+    # data submodule unmounted between the check above and the write, ENOSPC,
+    # an unreadable source) left ~/.claude/CLAUDE.md truncated — silently
+    # dropping the outbound-message rule and the ownership boundaries — and
+    # `set -e` then aborted without restoring it. mv(1) within one directory
+    # is atomic: a reader sees either the previous file or the complete new
+    # one, never a partial write.
+    TMP_TARGET="$(mktemp "$(dirname "$TARGET")/.CLAUDE.md.XXXXXX")"
+    trap 'rm -f "$TMP_TARGET"' EXIT
+    compose > "$TMP_TARGET"
+    # mktemp creates 0600; the composed instructions are ordinary readable
+    # config, so restore the mode a plain redirect would have produced.
+    chmod 0644 "$TMP_TARGET"
+    mv "$TMP_TARGET" "$TARGET"
     echo "Composed ~/.claude/CLAUDE.md from:"
     # Byte counts matter for the cross-harness instruction budget (plan §6):
     # common.md is also loaded by Codex, where oversized global instructions

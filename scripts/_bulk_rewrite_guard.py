@@ -371,15 +371,20 @@ def mark_bulk_rewrite_commit_msg(subject: str, *, rewrite_class: str = "bulk") -
     appended, so the post-sync shrink check (scripts/daily-sync.sh) can
     distinguish intentional net-deletion commits from accidental ones.
 
-    Use with ``git commit -m "$(python3 _bulk_rewrite_guard.py --msg ...)"``
-    or wire programmatically::
+    Always name an explicit, literally-matched pathspec on the commit — the
+    example below is the shape every caller should copy. A bare
+    ``git commit`` publishes whatever a concurrent session has already staged
+    in the shared index under your bulk-rewrite subject and trailer (audit
+    finding S16), and an unqualified pathspec is a GLOB, so a path containing
+    ``[``, ``*``, or ``?`` sweeps its lookalikes (PR #114 re-audit)::
 
         import subprocess
         from _bulk_rewrite_guard import mark_bulk_rewrite_commit_msg
         msg = mark_bulk_rewrite_commit_msg(
             "dedup: collapse 123 duplicate memory records",
         )
-        subprocess.run(["git", "commit", "-m", msg], check=True)
+        subprocess.run(["git", "--literal-pathspecs", "commit", "-m", msg,
+                        "--", "memories/memories.jsonl"], check=True)
     """
     trailer = f"Rewrite-Class: {rewrite_class}"
     # Ensure exactly one blank line between subject and trailer
