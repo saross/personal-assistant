@@ -529,9 +529,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     gate is lowered only by evidence that the fault is gone; absence of
     work is not evidence (an idle outcome that never touches the gate;
     the indexer gate reflects the whole refusal memory; an outage counter
-    that gates after three consecutive runs). After merge the PreCompact
-    and SessionEnd hook commands in `~/.claude/settings.json` on both
-    machines must follow the new template.
+    that gates after three consecutive runs). Fifth round done (suite
+    1,573 measured): the rule lives once in `_sync_gate.py`; idle never
+    touches a gate; completed needs a processed row; absent or empty
+    root is degraded; the indexer gate reflects the whole memory and an
+    empty root is refused; exits 1/2 gate; a degraded run's quarantines
+    gate; outage streak of three gates; AST structural test; a test-count
+    tripwire after a scripted edit silently truncated fourteen tests (the
+    agent also reported destroying its own uncommitted work with a
+    `git checkout --` and redoing it). Fifth pass running. After merge
+    the PreCompact and SessionEnd hook commands in `~/.claude/settings.json`
+    on both machines must follow the new template, and `~/cc-archives`
+    must be mounted when the sessions sync runs.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
