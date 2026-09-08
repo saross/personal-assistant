@@ -486,3 +486,226 @@ class TestAuditRoundTwo:
         assert slots[0]["deadline"].startswith("~26 Aug")
         status = accountability.format_deadline_status(slots[0]["deadline"])
         assert "UNPARSEABLE" in status and "~26 Aug" in status
+
+
+# ============================================================================
+# Audit round two, Lens B (2026-09-08): H6 — the banner itself
+# ============================================================================
+
+
+def _iso(days_from_today: int) -> str:
+    """Return an ISO date *days_from_today* away from today."""
+    return (datetime.now().date() + timedelta(days=days_from_today)).isoformat()
+
+
+def _stage_task_files(
+    tmp_path,
+    monkeypatch,
+    *,
+    focus: str | None = None,
+    inbox: str | None = None,
+    waiting: str | None = None,
+    system: str | None = None,
+) -> None:
+    """Point every task-file path at *tmp_path*, writing only what is given.
+
+    A file left as ``None`` is pointed at a path that does not exist, which
+    is the "degrade gracefully if some files are missing" branch. At least
+    one must be written or ``build_banner`` raises ``TaskFilesMissing``.
+    """
+    for attr, name, text in (
+        ("FOCUS_FILE", "FOCUS.md", focus),
+        ("INBOX_FILE", "inbox.md", inbox),
+        ("WAITING_FILE", "waiting-for.md", waiting),
+        ("SYSTEM_FILE", "SYSTEM.md", system),
+    ):
+        path = tmp_path / name
+        if text is None:
+            monkeypatch.setattr(accountability, attr, tmp_path / f"absent-{name}")
+            continue
+        path.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(accountability, attr, path)
+
+
+# Live conventions, as they appear in ~/personal-assistant/tasks (read
+# 2026-09-08): bold field labels, a ``- **Rotated in:**`` date with prose
+# after it, ``---`` between slot blocks, and a waiting-for table whose
+# completed rows close the strikethrough mid-cell and append an un-struck
+# project tag.
+_WAITING_LIVE = """# Waiting For
+
+| Item | Waiting On | Since | Last Poked | Next Action If No Response |
+|------|------------|-------|------------|---------------------------|
+| **Consent-orders filing date** (`personal`/move) | Sarah | 2026-09-08 | — | Call Wed. |
+| **Container quote** (`personal`/move) | Red Truck | 2026-08-27 | 2026-08-28 | Call Monday. |
+| **Logo artwork** (`efn`) | Jody | 2026-09-04 | 2026-09-04 | Chase Mon 8 Sept. |
+| ~~Car service — slot requested via web form~~ (`personal`) | ~~Skoda~~ | 2026-08-18 | — | Resolved same day. |
+| ~~Flinders trainee profile info~~ | ~~Talia Barnes~~ | ~~2026-03-17~~ | — | Received. |
+"""
+
+_INBOX_LIVE = """# Inbox
+
+- [ ] Ring the conveyancer first thing
+- [x] File the RDA screenshot
+- [ ] Book the Salvos drop-off
+"""
+
+
+class TestBannerRendering:
+    """H6: build_banner() had no assertions on its content.
+
+    Replacing its whole body with a constant list passed all 1,208 tests
+    at the branch point, as did swapping the two counts, dropping the last
+    empty slot, and deleting the slot-block delimiter. The counting
+    functions were well pinned; the banner that renders them into every
+    session's context was not pinned at all.
+    """
+
+    def test_counts_are_rendered_in_the_right_order(self, tmp_path, monkeypatch):
+        """Kills swapping the two counts on the ``Inbox: … | Waiting for: …`` line.
+
+        The two numbers differ (2 open inbox items, 3 open waiting-for
+        rows), and the struck rows carry the live trailing project tag, so
+        a strikethrough regression shows up here as well.
+        """
+        _stage_task_files(
+            tmp_path, monkeypatch, inbox=_INBOX_LIVE, waiting=_WAITING_LIVE,
+        )
+        lines = accountability.build_banner()
+        assert "Inbox: 2 items | Waiting for: 3 items" in lines
+
+    def test_every_unfilled_slot_up_to_the_system_limit_is_listed(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``range(1, focus_limit + 1)`` → ``range(1, focus_limit)``.
+
+        With the mutation the highest-numbered empty slot is never shown —
+        the banner reports a full desk while a slot is free.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: EFN — website content\n\n"
+            "- **Project:** business/efn (slug `efn`)\n\n"
+            "---\n\n"
+            "## Slot 3: RDA IG application\n\n"
+            "- **Project:** research/rda\n\n"
+            "---\n"
+        )
+        system = (
+            "# System Configuration\n\n"
+            "| Parameter | Current | Default | Notes |\n"
+            "|-----------|---------|---------|-------|\n"
+            "| focus_limit | 4 | 3 | Max items in FOCUS.md |\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus, system=system)
+        lines = accountability.build_banner()
+        assert "  Slot 2: [Empty]" in lines
+        assert "  Slot 4: [Empty]" in lines
+        assert not any(line.startswith("  Slot 5:") for line in lines)
+
+    def test_three_slots_are_shown_when_system_md_is_absent(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``DEFAULT_FOCUS_LIMIT = 3`` → any other value.
+
+        ``test_default_when_missing`` compares get_focus_limit() with the
+        constant itself, which is a tautology; the documented value of 3
+        was pinned nowhere.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: EFN — website content\n\n"
+            "- **Project:** business/efn\n\n"
+            "---\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus)
+        lines = accountability.build_banner()
+        assert "  Slot 2: [Empty]" in lines
+        assert "  Slot 3: [Empty]" in lines
+        assert not any(line.startswith("  Slot 4:") for line in lines)
+
+    def test_slot_fields_stop_at_the_block_delimiter(self, tmp_path, monkeypatch):
+        """Kills ``end_match = re.search(r"^(---|## )", …)`` → ``end_match = None``.
+
+        With the mutation every slot's block runs to end of file, so a slot
+        with no dates of its own silently inherits the next slot's
+        ``Rotated in`` and ``Deadline`` — the banner then reports a day
+        counter and a deadline that belong to a different task.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: Alpha — no dates of its own\n\n"
+            "- **Project:** research/alpha\n"
+            "- **Next action:** start it\n\n"
+            "---\n\n"
+            "## Slot 2: Beta — dated\n\n"
+            "- **Project:** business/beta\n"
+            f"- **Rotated in:** {_iso(-2)}, per the dated trigger recorded below\n"
+            f"- **Deadline:** {_iso(3)}\n\n"
+            "---\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus)
+        lines = accountability.build_banner()
+        slot_1 = next(line for line in lines if line.startswith("  Slot 1:"))
+        slot_2 = next(line for line in lines if line.startswith("  Slot 2:"))
+
+        assert "(day" not in slot_1, f"Slot 1 inherited a start date: {slot_1!r}"
+        assert "[" not in slot_1, f"Slot 1 inherited a deadline: {slot_1!r}"
+        # Slot 2 keeps its own, and the numbers are the file's, not a constant.
+        assert "(day 3)" in slot_2, slot_2
+        assert "[deadline in 3 days]" in slot_2, slot_2
+
+    def test_the_seven_day_deadline_boundary_is_inclusive(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``elif delta <= 7:`` → ``elif delta < 7:``.
+
+        At exactly seven days the mutation drops to the bare-date branch,
+        so the last week before a deadline reads as a distant one.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: Seven days out\n\n"
+            f"- **Deadline:** {_iso(7)}\n\n"
+            "---\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus)
+        lines = accountability.build_banner()
+        slot_1 = next(line for line in lines if line.startswith("  Slot 1:"))
+        assert "[deadline in 7 days]" in slot_1, slot_1
+
+    def test_main_emits_the_real_counts_not_scaffolding(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills replacing the body of build_banner() with a constant list.
+
+        ``test_normal_banner_when_files_present`` asserts only that
+        ``# Task Status`` and the slot name appear, both of which a
+        hardcoded banner satisfies. This asserts the numbers and the slot
+        rendering come from the staged files.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: EFN — website content\n\n"
+            "- **Project:** business/efn (slug `efn`)\n"
+            f"- **Rotated in:** {_iso(-21)}, per the dated trigger\n"
+            "- **Deadline:** None\n\n"
+            "---\n"
+        )
+        _stage_task_files(
+            tmp_path,
+            monkeypatch,
+            focus=focus,
+            inbox=_INBOX_LIVE,
+            waiting=_WAITING_LIVE,
+        )
+        import io
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"source": "startup"}'))
+
+        accountability.main()
+
+        out = capsys.readouterr().out
+        assert "  Slot 1: EFN — website content (day 22)" in out
+        assert "Inbox: 2 items | Waiting for: 3 items" in out
+        assert "  Slot 2: [Empty]" in out
+        assert "  Slot 3: [Empty]" in out
