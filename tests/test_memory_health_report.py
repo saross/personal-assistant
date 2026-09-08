@@ -14,6 +14,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 # Hyphenated filename → import via importlib.
 _path = Path(__file__).parent.parent / "scripts" / "memory-health-report.py"
 _spec = importlib.util.spec_from_file_location("memory_health_report", _path)
@@ -290,3 +292,66 @@ def test_surfacing_section_recency_tiebreak() -> None:
     }
     out = mhr.surfacing_section(stats)
     assert out["top"][0]["id"] == "newer"
+
+
+# ---------------------------------------------------------------------------
+# Tenth re-audit, L4 — /memory-health and the gate read one file, so they
+# must read it the same way
+# ---------------------------------------------------------------------------
+
+
+class TestTheQuarantineCountAgreesWithTheGate:
+    """
+    Two counts of the same file that disagree send the operator looking
+    for a row one of them cannot see. The report and the session-start
+    gate now share the sync pipeline's parser.
+    """
+
+    def _both(self, monkeypatch, tmp_path, body: str):
+        """Count one quarantine file through the report and the gate."""
+        import sys
+
+        sys.path.insert(
+            0, str(Path(__file__).resolve().parent.parent / "scripts"),
+        )
+        import _sync_cursor
+
+        path = tmp_path / "quarantine-postgres-drops.jsonl"
+        path.write_text(body, encoding="utf-8")
+        monkeypatch.setattr(mhr, "QUARANTINE_FILE", path)
+        return mhr.quarantine_count(), _sync_cursor.count_quarantine_entries(
+            path,
+        )
+
+    @pytest.mark.parametrize("label,body", [
+        ("complete rows", '{"reason": "a"}\n{"reason": "b"}\n'),
+        ("last row unterminated", '{"reason": "a"}\n{"reason": "b"}'),
+        ("damaged last row", '{"reason": "a"}\n{"reason": "b'),
+        ("blank lines about", '\n{"reason": "a"}\n\n   \n'),
+        ("a non-object line", '{"reason": "a"}\n[1, 2]\n'),
+        ("nothing at all", ""),
+    ])
+    def test_the_two_counts_are_the_same(
+        self, monkeypatch, tmp_path, label, body,
+    ):
+        """
+        The mutation this kills: counting non-blank lines here instead of
+        parsing — "damaged last row" and "a non-object line" then report
+        one row more than the gate can see.
+        """
+        reported, gated = self._both(monkeypatch, tmp_path, body)
+        assert reported == gated, (
+            f"{label}: /memory-health says {reported}, the gate says {gated}"
+        )
+
+    def test_a_missing_file_reports_zero_here(self, monkeypatch, tmp_path):
+        """
+        The report is a summary line, not an alarm: an absent file is
+        nothing to show. The gate treats the same absence as UNKNOWN and
+        keeps its standing problem — deliberately different jobs, on the
+        same reading of the file's contents.
+        """
+        monkeypatch.setattr(
+            mhr, "QUARANTINE_FILE", tmp_path / "not-there.jsonl",
+        )
+        assert mhr.quarantine_count() == 0

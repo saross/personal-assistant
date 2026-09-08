@@ -115,11 +115,13 @@ def _iso_now() -> str:
 
 
 def _ends_mid_line(path: Path) -> bool:
-    """Does this file end without a newline — i.e. mid-entry?
+    """Does this file end without a trailing newline?
 
-    A run killed between the write and its newline leaves a half-written
-    line. Appending straight onto it would join two entries into one
-    unparseable line, so the writer starts a fresh line first.
+    Appending straight onto such a file would join two entries into one
+    line, so the writer starts a fresh line first. This asks only about
+    the newline, not about whether the last line parses: a COMPLETE
+    record whose newline was lost still needs a separator before the next
+    one, and a partial line needs one too.
     """
     try:
         with path.open("rb") as handle:
@@ -129,6 +131,53 @@ def _ends_mid_line(path: Path) -> bool:
             return handle.read(1) != b"\n"
     except OSError:
         return False
+
+
+def read_quarantine_entries(quarantine_path: Path) -> list[dict] | None:
+    """
+    Every complete record in a quarantine file, or ``None`` if unreadable.
+
+    THE one parser for this format. The gate's count, the writer's
+    duplicate check, and ``/memory-health`` all read the file through
+    here, because two readers that disagree about what a record is
+    produce a row that is invisible to one of them for ever — which is
+    exactly what happened when the counter skipped a trailing line the
+    deduper still matched against (tenth re-audit, finding C1).
+
+    What counts as a record:
+
+    * a non-blank line that parses as a JSON object;
+    * including the LAST line when the file ends without a newline, if it
+      parses — an interrupted write that got all the way to the closing
+      brace produced a whole record, and the missing newline is a
+      separator problem, not a content one.
+
+    What does not:
+
+    * blank lines;
+    * anything that does not parse, or parses to something other than an
+      object — damage, hand-editing, or a write cut off mid-record.
+
+    ``None`` (missing or unreadable) is emphatically not "empty": the
+    data submodule being unmounted must not erase a standing alarm
+    (ninth re-audit, finding M1).
+    """
+    try:
+        with quarantine_path.open("r", encoding="utf-8") as handle:
+            entries: list[dict] = []
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    entries.append(parsed)
+            return entries
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def count_quarantine_entries(quarantine_path: Path) -> int | None:
@@ -143,41 +192,12 @@ def count_quarantine_entries(quarantine_path: Path) -> int | None:
     misses a path that never reported at all; a re-derived count repairs
     itself on the next tick.
 
-    ``None`` (missing or unreadable) is not zero: the caller must leave
-    the standing problem alone rather than declare it resolved. A MISSING
-    file is emphatically not an empty one — the data submodule being
-    unmounted would otherwise erase every quarantine alarm on the machine
-    at the next cron tick (ninth re-audit, finding M1).
-
-    Only COMPLETE, PARSEABLE lines count. A run killed between the write
-    and the newline leaves a partial trailing line: counting it would
-    report a row that is not really recorded, and the next append repairs
-    the file by starting a fresh line rather than concatenating onto it —
-    after which the damaged line is newline-terminated but still not an
-    entry. This counts exactly what :func:`_existing_fingerprints`
-    considers present, so the gate's number always matches the number of
-    rows an operator can actually find and replay.
+    Counts exactly what :func:`read_quarantine_entries` returns, which is
+    exactly what the duplicate check matches against, so the gate's
+    number is always the number of rows an operator can find and replay.
     """
-    try:
-        with quarantine_path.open("r", encoding="utf-8") as handle:
-            entries = 0
-            for line in handle:
-                if not line.endswith("\n"):
-                    # Only the last line can lack its newline, and a
-                    # half-written entry is not an entry.
-                    break
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    parsed = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(parsed, dict):
-                    entries += 1
-            return entries
-    except (OSError, UnicodeDecodeError):
-        return None
+    entries = read_quarantine_entries(quarantine_path)
+    return None if entries is None else len(entries)
 
 
 def _entry_fingerprint(reason: str, record: Any) -> str:
@@ -225,33 +245,18 @@ def _existing_fingerprints(quarantine_path: Path) -> set[str]:
     if cached is not None and cached[0] == signature:
         return cached[1]
 
-    fingerprints: set[str] = set()
-    try:
-        with quarantine_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                # Deliberately NOT skipping a newline-less trailing line
-                # the way the counter does. The two guards have opposite
-                # jobs: the counter must not claim a row is recorded
-                # until the write completed, and the deduper must not
-                # write a second copy of a row that is already there in
-                # part. Erring safely means opposite answers about the
-                # same line (ninth re-audit, low).
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    entry = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                fingerprints.add(
-                    _entry_fingerprint(
-                        str(entry.get("reason", "")), entry.get("record"),
-                    )
-                )
-    except OSError:
+    # THE same parser the gate counts with. Two readers of one file that
+    # disagree about what a record is will always leave some row visible
+    # to one and invisible to the other (tenth re-audit, finding C1).
+    entries = read_quarantine_entries(quarantine_path)
+    if entries is None:
         return set()
+    fingerprints = {
+        _entry_fingerprint(
+            str(entry.get("reason", "")), entry.get("record"),
+        )
+        for entry in entries
+    }
 
     _FINGERPRINT_CACHE[quarantine_path] = (signature, fingerprints)
     return fingerprints

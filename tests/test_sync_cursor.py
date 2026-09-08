@@ -526,29 +526,96 @@ class TestCountingQuarantineEntries:
         )
         assert _sync_cursor.count_quarantine_entries(path) == 2
 
-    def test_a_half_written_last_line_is_not_counted(self, tmp_path):
+    def test_a_complete_last_row_with_no_newline_is_counted(self, tmp_path):
         """
-        A run killed between the write and its newline leaves a partial
-        entry. Counting it reports a row that is not really recorded, and
-        the acknowledged position would then be set past a line the
-        operator never saw. The mutation this kills: counting a line that
-        does not end in a newline.
+        An interrupted write that reached the closing brace produced a
+        whole record; the missing newline is a separator problem, not a
+        content one. Counting it as nothing made that row invisible to
+        the gate for ever, because the deduper still matched it and so
+        the row was never written again (tenth re-audit, finding C1).
+
+        The mutation this kills: skipping a trailing line that has no
+        newline.
         """
         path = tmp_path / "quarantine.jsonl"
         path.write_text(
             '{"reason": "a"}\n{"reason": "b"}\n{"reason": "c"}',
             encoding="utf-8",
         )
+        assert _sync_cursor.count_quarantine_entries(path) == 3
+
+    def test_a_truly_partial_last_line_is_not_counted(self, tmp_path):
+        """
+        A write cut off mid-record is not a record. The mutation this
+        kills: counting anything non-blank.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text(
+            '{"reason": "a"}\n{"reason": "b"}\n{"reason": "hal',
+            encoding="utf-8",
+        )
         assert _sync_cursor.count_quarantine_entries(path) == 2
 
-    def test_the_deduper_still_sees_a_half_written_last_line(self, tmp_path):
+    def test_a_new_row_after_an_unterminated_one_starts_its_own_line(
+        self, tmp_path,
+    ):
         """
-        The counter and the deduper answer differently about the same
-        line, on purpose: the counter must not claim a row is recorded
-        until its write completed, and the deduper must not append a
-        second copy of a row that is already there in part. The mutation
-        this kills: making the deduper skip the trailing line too, which
-        turns every interrupted write into a duplicate entry.
+        A complete row that lost its newline is still a row, so the next
+        append must not run onto the end of it — that would turn two
+        records into one unreadable line and lose them both. The mutation
+        this kills: dropping the separator when the trailing line parses.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text('{"reason": "a", "record": 1}', encoding="utf-8")
+        _sync_cursor._FINGERPRINT_CACHE.clear()
+
+        _sync_cursor.quarantine_record(path, {"id": "m2"}, "refused")
+
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+        for line in path.read_text(encoding="utf-8").splitlines():
+            json.loads(line)
+
+    def test_the_counter_and_the_deduper_never_disagree(self, tmp_path):
+        """
+        The invariant behind finding C1: a row either counts and dedups,
+        or does neither. Any file where one says "present" and the other
+        says "absent" leaves that row permanently invisible to the gate —
+        the deduper refuses to write it again, so the count never rises.
+
+        The mutation this kills: giving either reader its own parsing
+        rule.
+        """
+        cases = {
+            "complete rows": '{"reason": "a", "record": 1}\n'
+                             '{"reason": "b", "record": 2}\n',
+            "last row unterminated": '{"reason": "a", "record": 1}\n'
+                                     '{"reason": "b", "record": 2}',
+            "damaged last row": '{"reason": "a", "record": 1}\n{"reason": "b',
+            "blank lines about": '\n{"reason": "a", "record": 1}\n\n  \n',
+            "a non-object line": '{"reason": "a", "record": 1}\n[1, 2]\n',
+            "nothing at all": "",
+        }
+        for label, body in cases.items():
+            path = tmp_path / f"q-{abs(hash(label))}.jsonl"
+            path.write_text(body, encoding="utf-8")
+            _sync_cursor._FINGERPRINT_CACHE.clear()
+
+            counted = _sync_cursor.count_quarantine_entries(path)
+            fingerprinted = _sync_cursor._existing_fingerprints(path)
+
+            assert counted == len(fingerprinted), (
+                f"{label}: the gate counts {counted} and the deduper sees "
+                f"{len(fingerprinted)}"
+            )
+
+    def test_a_row_whose_newline_was_lost_is_not_written_twice(
+        self, tmp_path,
+    ):
+        """
+        The other half of the invariant: the row counts, AND a re-offer
+        of it is recognised as a duplicate. The mutation this kills:
+        making the deduper skip the trailing line, which turns every
+        interrupted write into a second copy.
         """
         path = tmp_path / "quarantine.jsonl"
         _sync_cursor.quarantine_record(path, {"id": "m1"}, "refused")
@@ -557,13 +624,12 @@ class TestCountingQuarantineEntries:
         path.write_text(text.rstrip("\n"), encoding="utf-8")
         _sync_cursor._FINGERPRINT_CACHE.clear()
 
-        assert _sync_cursor.count_quarantine_entries(path) == 0
+        assert _sync_cursor.count_quarantine_entries(path) == 1
 
         status = _sync_cursor.quarantine_record(path, {"id": "m1"}, "refused")
 
-        assert status == _sync_cursor.QUARANTINE_DUPLICATE, (
-            "the interrupted entry was written a second time"
-        )
+        assert status == _sync_cursor.QUARANTINE_DUPLICATE
+        assert _sync_cursor.count_quarantine_entries(path) == 1
 
     def test_an_append_repairs_a_half_written_last_line(self, tmp_path):
         """
@@ -585,5 +651,6 @@ class TestCountingQuarantineEntries:
         assert len(lines) == 3, lines
         assert lines[1] == '{"reason": "half'
         json.loads(lines[2])
-        # The complete entries either side of the damage are countable.
+        # The complete entries either side of the damage are countable,
+        # and the damaged line is not one of them.
         assert _sync_cursor.count_quarantine_entries(path) == 2

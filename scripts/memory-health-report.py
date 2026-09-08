@@ -61,6 +61,10 @@ if not ARCHIVE_DIR.exists():
     ARCHIVE_DIR = PA_DIR / "memories" / "archive"
 ARCHIVE_RUNS_LOG = ARCHIVE_DIR / "archive-runs.jsonl"
 QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-postgres-drops.jsonl"
+# One parser for the quarantine file, shared with the sync pipeline
+# and the session-start gate (tenth re-audit, L4).
+from _sync_cursor import read_quarantine_entries  # noqa: E402
+
 CONFAB_LOG = PA_DIR / "data" / "logs" / "confab-flags.log"
 if not CONFAB_LOG.exists():
     CONFAB_LOG = PA_DIR / "logs" / "confab-flags.log"
@@ -484,15 +488,19 @@ def pg_snapshot(logger: logging.Logger) -> dict[str, Any] | None:
 
 
 def quarantine_count() -> int:
-    """Number of records sitting in the PG-drop quarantine (0 expected)."""
-    if not QUARANTINE_FILE.exists():
-        return 0
-    n = 0
-    with QUARANTINE_FILE.open(encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                n += 1
-    return n
+    """Number of records sitting in the PG-drop quarantine (0 expected).
+
+    Read through the sync pipeline's own parser, so ``/memory-health``
+    and the session-start gate can never report different numbers for
+    the same file. Counting every non-blank line here made them
+    disagree over damage and over a row whose newline was lost (tenth
+    re-audit, finding C1 / L4).
+
+    An unreadable file reports 0 rather than raising: this is one line
+    of a health summary, and the gate is what escalates.
+    """
+    entries = read_quarantine_entries(QUARANTINE_FILE)
+    return 0 if entries is None else len(entries)
 
 
 # ============================================================================
