@@ -72,9 +72,19 @@ if [[ -x "$SYNCTHING_CHECK" ]]; then
         ST_COUNT="$(head -1 "$SYNCTHING_GATE" 2>/dev/null)"
         if [[ "$ST_COUNT" =~ ^[0-9]+$ ]] && [[ "$ST_COUNT" -gt 0 ]]; then
             GATE_LINES+=("[syncthing gate] ${ST_COUNT} problem(s) with the Syncthing mesh (personal-docs sync, NOT cc-archives):")
+            # audit S10: syncthing-health.sh writes two layouts — the
+            # normal path emits `count`, a `checked …` line, then the
+            # problems; the early-exit path (expectations file missing)
+            # emits `count` then the problems with no `checked` line. A
+            # fixed `tail -n +3` swallowed the only detail line of the
+            # second layout, so the header was printed with nothing under
+            # it. Skip the optional `checked …` line instead of a fixed
+            # offset, so both layouts render.
             while IFS= read -r _gl; do
+                [[ -z "$_gl" ]] && continue
+                [[ "$_gl" == checked\ * ]] && continue
                 GATE_LINES+=("  ${_gl}")
-            done < <(tail -n +3 "$SYNCTHING_GATE")
+            done < <(tail -n +2 "$SYNCTHING_GATE")
         fi
     fi
 fi
