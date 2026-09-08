@@ -514,9 +514,17 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     than one separator is refused; and the agent found the corpus guard
     was being called inside `$(...)`, so its gate details were discarded
     and its `fail` exited only the subshell — now an array in the main
-    shell. Seventh pass running. Both machines' corpora pass `--check`
-    at 15:50; no stash in either repository; no `merge.conflictStyle`
-    set.
+    shell. Seventh pass: **merge after fixing two** — the third state was
+    added on the data half only (a conflicted parent apply is still told
+    to pop, and a test pinned that advice); the exit handler re-applies a
+    stash the run already applied when its drop failed, leaving markers
+    in the live corpus with exit 0. Plus: a run killed mid-rebase is
+    misdiagnosed by every later run; the third-state advice survives one
+    run; every marker fixture puts its problem on a single-digit line, so
+    narrowing the line-number regex publishes markers with the suite
+    green; the checker's broad exception handler is untested. Eighth
+    round running. Both machines' corpora pass `--check` at 15:50; no
+    stash in either repository; no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
