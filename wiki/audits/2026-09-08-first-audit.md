@@ -496,9 +496,20 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     handler; the guard calls the resolver's new `--check` mode; unbalanced
     structures exit 3 untouched; the separator is the last `=======`
     before the closer; applied work is never called unrecovered; one relay
-    header; an unwritable lock surfaced. Sixth pass running. Both
-    machines' corpora pass `--check` at 15:20; no stash in either
-    repository; no `merge.conflictStyle` set.
+    header; an unwritable lock surfaced. Sixth pass: **do not merge** —
+    three new criticals in the round-six wiring: the exit-time render
+    writes `0` over a live gate on lock contention, SIGTERM, or SIGINT
+    (and a test pinned that design); a resolver crash exits 1, which the
+    guard reads as "resolvable" and gates the traceback as marker lines;
+    a missing venv interpreter accuses a clean corpus. Plus: a conflicted
+    apply is still told to pop; the `applied` classification is untested;
+    a THEIRS line that is literally `=======` is deleted under the
+    last-separator rule; a vanished file reads as "manual". Seventh
+    round running: the gate is cleared only where the run completed;
+    `--check` has its own failure code and the guard maps only 0/1/3 to
+    corpus verdicts; the interpreter is verified first. Both machines'
+    corpora pass `--check` at 15:20; no stash in either repository; no
+    `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
