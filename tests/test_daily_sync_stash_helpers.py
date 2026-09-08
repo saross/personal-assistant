@@ -2226,7 +2226,12 @@ class TestUnattributableShrinkFailsClosed:
                     "echo REACHED-THE-PUSH",
                 ]
             ),
-            ("abort_on_published_shrink", "corpus_lines_at", "corpus_line_count"),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
         )
 
     def test_a_shrink_no_commit_explains_is_refused(self, tmp_path: Path) -> None:
@@ -2358,3 +2363,108 @@ class TestSweepNarrowing:
             "a marker a killed run left behind is unreachable by any sweep"
         )
         assert sidecar.exists(), "the sweep took the sidecar"
+
+
+class TestRenameOnlyStash:
+    """Git reports a rename by its DESTINATION alone, so a rename-only
+    entry contributed one path and the pathspec-limited diff then dropped
+    the source's deletion."""
+
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+
+    def _renaming_entry(self, tmp_path: Path) -> tuple[Path, str]:
+        """A repo whose stash is a pure rename."""
+        repo = tmp_path / "renaming"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "old.md").write_text("content that stays identical\n",
+                                     encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", "old.md", "new.md", cwd=repo)
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
+        """Run the predicate over two recorded porcelain snapshots."""
+        result = _run_shell(
+            'apply_before_status="$PA_TEST_BEFORE"\n'
+            'apply_after_status="$PA_TEST_AFTER"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+            {"PA_TEST_BEFORE": before, "PA_TEST_AFTER": after},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_a_half_done_rename_is_not_landed(self, tmp_path: Path) -> None:
+        """Kills DS-L-d: `--name-only` without `--no-renames`.
+
+        The destination arrived and the source was never removed. With
+        only the destination in the path set, what was left of the diff --
+        "create new.md" -- reverse-applied cleanly while old.md was still
+        sitting there, and the entry was called landed and dropped though
+        the rename had never completed.
+        """
+        repo, sha = self._renaming_entry(tmp_path)
+        (repo / "new.md").write_text("content that stays identical\n",
+                                     encoding="utf-8")
+        assert (repo / "old.md").exists(), "the fixture did not model a half-rename"
+        assert self._ask(repo, sha, "", " M old.md\n?? new.md") == "NOT-LANDED"
+
+    def test_a_completed_rename_is_landed(self, tmp_path: Path) -> None:
+        """The other direction: a rename the apply really did complete."""
+        repo, sha = self._renaming_entry(tmp_path)
+        _git("stash", "apply", sha, cwd=repo)
+        assert not (repo / "old.md").exists()
+        assert self._ask(repo, sha, "", "R  old.md -> new.md") == "LANDED"
+
+
+class TestBinaryStashIsNotCalledRefused:
+    """`git apply` will not take a binary diff, so the tracked-half check
+    says "not landed" about an entry that may have landed perfectly well.
+    Keeping it is right; telling the operator git declined the merge is
+    not."""
+
+    def test_a_binary_tracked_half_is_recognised(self, tmp_path: Path) -> None:
+        """Kills DS-L-c: no binary case at all, so the `refused` wording
+        was given to an entry nothing had refused."""
+        repo = tmp_path / "binary-detect"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01seed\n")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01stashed\n")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            f'if stash_tracked_half_is_binary "{repo}" "{sha}"; then\n'
+            "  echo BINARY\nelse\n  echo TEXT\nfi\n",
+            ("stash_tracked_half_is_binary",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "BINARY", result.stdout
+
+    def test_a_text_tracked_half_is_not_called_binary(
+        self, tmp_path: Path
+    ) -> None:
+        """Or every ordinary entry would get the binary wording."""
+        repo = tmp_path / "text-detect"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes.md").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "notes.md").write_text("stashed\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            f'if stash_tracked_half_is_binary "{repo}" "{sha}"; then\n'
+            "  echo BINARY\nelse\n  echo TEXT\nfi\n",
+            ("stash_tracked_half_is_binary",),
+        )
+        assert result.stdout.strip() == "TEXT", result.stdout
