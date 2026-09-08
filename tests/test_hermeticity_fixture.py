@@ -19,6 +19,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from conftest import INTEGRATION_MARKER
 
@@ -513,3 +516,37 @@ def test_a_set_xdg_cache_home_does_not_move_the_suite_cache(tmp_path):
     assert not any(stray.iterdir()), (
         "the child run wrote into a cache directory outside its home"
     )
+
+
+# ===========================================================================
+# The runtime net under the static database guard
+#
+# The AST scan above names a TEST that calls psycopg2.connect itself. It
+# cannot see a test that calls production code which connects — and during
+# audit round 4a a new surgical UPDATE in tag-gardening did exactly that,
+# opening the operator's live claude_memories from a plain unit test. The
+# conftest fixture ``no_live_postgres`` is the runtime net; this pins it.
+# ===========================================================================
+
+
+def test_the_runtime_guard_refuses_a_real_connection():
+    """A non-integration test cannot reach the live server.
+
+    The mutation this kills: deleting the ``no_live_postgres`` fixture from
+    ``conftest.py``. The connector is fetched through ``getattr`` so the
+    static scan above does not read this test as an offender itself.
+    """
+    import psycopg2
+
+    connector = getattr(psycopg2, "connect")
+    with pytest.raises(AssertionError, match="real PostgreSQL connection"):
+        connector(dbname="claude_memories")
+
+
+def test_a_test_may_still_patch_the_connector():
+    """A test's own patch wins over the guard, so fakes keep working."""
+    import psycopg2
+
+    sentinel = object()
+    with patch("psycopg2.connect", return_value=sentinel):
+        assert getattr(psycopg2, "connect")() is sentinel

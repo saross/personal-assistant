@@ -250,6 +250,44 @@ def _pipeline_cache_snapshot() -> dict[str, tuple[int, int]]:
     return snapshot
 
 
+# ---------------------------------------------------------------------------
+# Hermeticity: no test may open a real PostgreSQL connection
+#
+# ``test_hermeticity_fixture.py`` already refuses a TEST that calls
+# ``psycopg2.connect`` itself without the integration marker. It cannot see a
+# test that calls production code which connects — and during audit round 4a a
+# new surgical UPDATE in tag-gardening did exactly that: the merge tests opened
+# the operator's live ``claude_memories`` and committed a transaction against
+# it. The static guard stays (it names the offending line); this is the runtime
+# net underneath it.
+#
+# A test that wants a fake connection patches ``psycopg2.connect`` itself, and
+# that patch simply wins over this one. A test that genuinely needs the live
+# server carries the ``integration`` marker and is deselected by default.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def no_live_postgres(request, monkeypatch):
+    """Refuse a real ``psycopg2.connect`` from any non-integration test."""
+    if request.node.get_closest_marker(INTEGRATION_MARKER) is not None:
+        return
+    try:
+        import psycopg2
+    except ImportError:  # pragma: no cover — no driver, nothing to guard
+        return
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "this test opened a real PostgreSQL connection. Production code "
+            "reached psycopg2.connect with nothing stubbed: inject a fake "
+            "connection, patch psycopg2.connect, or mark the test "
+            f"'{INTEGRATION_MARKER}' if it truly needs the live server."
+        )
+
+    monkeypatch.setattr(psycopg2, "connect", refuse)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def no_real_cache_writes():
     """Fail the run if the suite touched a real pipeline file in ~/.cache.
