@@ -421,6 +421,16 @@ def test_the_guard_would_see_an_unmarked_connection():
     )
     assert _live_resource_calls(patched) == []
 
+    # The marker name under some other attribute is not the marker
+    # (re-audit L3: `@helpers.integration` deselects nothing).
+    other_owner = (
+        "import psycopg2\n"
+        "@helpers.integration\n"
+        "def test_thing():\n"
+        "    conn = psycopg2.connect(dbname='claude_memories')\n"
+    )
+    assert _live_resource_calls(other_owner)
+
     # A decorator that merely mentions the word grants no deselection, so
     # it must not excuse the connection either (follow-up L1).
     merely_mentions = (

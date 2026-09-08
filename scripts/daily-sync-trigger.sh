@@ -292,6 +292,10 @@ for _pg_gate_name in postgres-sync-memories-gate \
         # archive-root rule above, applied here; eleventh re-audit
         # follow-up L6).
         #
+        # The report is the behaviour; the clamp that follows it is
+        # belt-and-braces (a negative age can neither exceed the window
+        # nor predate boot, so today it changes no outcome).
+        #
         # Only this branch clamps. The hook gates below compare two files
         # to each other, which a skewed clock shifts equally, so the raw
         # stamp is the right one there.

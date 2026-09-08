@@ -19,6 +19,7 @@ import pytest
 from daily_sync_harness import build_world, SyncWorld
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -423,15 +424,20 @@ class TestTheCronWrittenGate:
         is no evidence of a recent write, so it counts as "now" and the
         anomaly is reported rather than trusted.
 
-        The mutation this kills: dropping the clamp, so a future stamp is
-        subtracted straight and reports nothing at all.
+        The mutation this kills: dropping the report, so a future stamp
+        is subtracted straight and says nothing at all. The clamp that
+        follows the report is belt-and-braces (a negative age never
+        exceeds the window and never predates boot, so it changes no
+        outcome today); the report is the behaviour.
         """
         _write_gates(tmp_path, age_minutes=-120)
 
         result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
 
         assert "in the FUTURE" in result.stdout, result.stdout
-        assert "120m" in result.stdout
+        # 119 or 120: the fixture stamps a fractional mtime, stat truncates
+        # it, and PG_NOW is read a moment later (re-audit M1).
+        assert re.search(r"\b1(19|20)m in the FUTURE", result.stdout), result.stdout
         assert "timedatectl" in result.stdout
         # And never a negative age, which is what the old arithmetic
         # produced on its way to saying nothing.
