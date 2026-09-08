@@ -1792,7 +1792,8 @@ if args and args[0] == "exec":
         if "system" in rest:
             emit({"myID": os.environ["STUB_DEVICE_ID"]})
         if "folders" in rest:
-            print(os.environ["STUB_FOLDER_ID"])
+            # Every configured folder, one per line, as the real CLI does.
+            print(os.environ["STUB_FOLDER_LIST"])
             raise SystemExit(0)
         if "connections" in rest:
             emit({"connections": {}})
@@ -1890,8 +1891,15 @@ def _run_health(
     sandbox: dict[str, Any],
     device_stats: dict,
     folder_id: str = "synthetic-folder",
+    folder_list: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], str]:
-    """Run the monitor against the synthetic mesh; return result and gate."""
+    """Run the monitor against the synthetic mesh; return result and gate.
+
+    ``folder_id`` is what the expectations file declares; ``folder_list``
+    is what the running daemon reports (defaulting to the same single id).
+    They differ only where a test needs the daemon to list a folder whose
+    id merely CONTAINS the expected one.
+    """
     expectations = _mesh_expectations(
         sandbox["tmp"] / "expected.json",
         socket.gethostname(),
@@ -1908,7 +1916,7 @@ def _run_health(
             "SYNCTHING_EXPECTED_FILE": str(expectations),
             "STUB_CONFIG_DIR": str(sandbox["config_dir"]),
             "STUB_DEVICE_ID": _THIS_NODE,
-            "STUB_FOLDER_ID": folder_id,
+            "STUB_FOLDER_LIST": folder_list or folder_id,
             "STUB_DEVICE_STATS": json.dumps(device_stats),
             "STUB_URL_LOG": str(sandbox["url_log"]),
         },
@@ -1970,6 +1978,113 @@ class TestPeerAbsenceAlertActuallyFires:
 
         recorded = health_sandbox["url_log"].read_text(encoding="utf-8")
         assert "synthetic-folder" in recorded, recorded
+
+
+class TestFolderMembershipIsAWholeLineMatch:
+    """Round 4d-3 — ``grep -qxF`` must not relax to ``grep -qF``.
+
+    Without ``-x`` the membership test passes whenever the expected id is
+    a SUBSTRING of any configured folder id. A mesh carrying both
+    ``pa-data`` and ``pa-data-archive`` would then report the folder
+    present when only the archive one existed — the check would pass while
+    nothing was syncing the folder that matters.
+    """
+
+    def test_a_substring_match_is_not_membership(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The daemon lists only a SUPERSTRING of the expected id."""
+        result, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data",
+            folder_list="pa-data-archive",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "is MISSING from the running config" in gate, gate
+
+    def test_a_prefix_in_the_list_does_not_satisfy_a_longer_id(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """And the other direction: a shorter listed id is not a match."""
+        _, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data-archive",
+            folder_list="pa-data",
+        )
+
+        assert "is MISSING from the running config" in gate, gate
+
+    def test_a_metacharacter_in_the_id_is_matched_literally(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """``-F`` matters too: an id is data, not a regular expression.
+
+        The dot in ``pa.data`` matches any character once the id is used
+        as a pattern, so a daemon carrying only ``paXdata`` would report
+        the expected folder present.
+        """
+        _, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa.data",
+            folder_list="paXdata",
+        )
+
+        assert "is MISSING from the running config" in gate, gate
+
+    def test_an_exact_id_among_several_is_membership(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The positive half: the real id listed beside its look-alikes."""
+        _, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data",
+            folder_list="pa-data-archive\npa-data\nother-folder",
+        )
+
+        assert "is MISSING from the running config" not in gate, gate
+        # The run got past check D, so the peer-absence alert still fires.
+        assert "peer(s) absent beyond" in gate, gate
+
+
+class TestSyncthingHealthUnknownArguments:
+    """L4 — a typo'd flag ran the full check in silence."""
+
+    def test_a_typo_warns_and_still_exits_zero(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """`--local-onlt` must say so rather than silently probing SSH."""
+        expectations = _mesh_expectations(
+            health_sandbox["tmp"] / "expected.json",
+            socket.gethostname(),
+            health_sandbox["config_dir"],
+            "synthetic-folder",
+        )
+
+        result = run_script(
+            HEALTH,
+            "--quiet",
+            "--local-onlt",
+            home=health_sandbox["home"],
+            path_prefix=health_sandbox["bin"],
+            extra_env={
+                "SYNTHETIC_UNUSED": "1",
+                "SYNCTHING_EXPECTED_FILE": str(expectations),
+                "STUB_CONFIG_DIR": str(health_sandbox["config_dir"]),
+                "STUB_DEVICE_ID": _THIS_NODE,
+                "STUB_FOLDER_LIST": "synthetic-folder",
+                "STUB_DEVICE_STATS": "{}",
+                "STUB_URL_LOG": str(health_sandbox["url_log"]),
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "unknown argument '--local-onlt'" in result.stderr
+        assert "Usage: syncthing-health.sh" in result.stderr
 
 
 # ---------------------------------------------------------------------------
