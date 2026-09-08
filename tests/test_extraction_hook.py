@@ -837,6 +837,27 @@ class TestExtractMemoriesTransientErrors:
     (API succeeded or input was hopeless).
     """
 
+    @pytest.fixture(autouse=True)
+    def _isolate_seed_tag_sources(self, tmp_path, monkeypatch):
+        """Keep ``recent_seed_tags`` away from the operator's real store.
+
+        ``extract_memories`` seeds its prompt from the newest records in
+        ``MEMORIES_FILE``, falling back to ``VOCABULARY_FILE``. Neither was
+        redirected in this class (audit round five L-5), so every test here
+        read the tail of the live corpus into the prompt it built — real
+        memory content in a test process, and a suite whose prompts differed
+        by machine. These fixtures are deliberately tiny and fixed.
+        """
+        store = tmp_path / "seed-memories.jsonl"
+        store.write_text(
+            json.dumps({"id": "seed-1", "research_tags": ["fixture-tag"]}) + "\n",
+            encoding="utf-8",
+        )
+        vocab = tmp_path / "seed-vocabulary.txt"
+        vocab.write_text("fixture-tag\n", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+
     def test_internal_server_error_returns_none(self):
         """A 5xx (overload, 529) is transient — return None."""
         with patch.object(eh, "load_seed_tags", return_value=["tag1"]):
@@ -1105,6 +1126,27 @@ class TestSalvageTruncatedArray:
 
 class TestTruncationRouting:
     """A max_tokens stop_reason routes to salvage instead of dropping the window."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_seed_tag_sources(self, tmp_path, monkeypatch):
+        """Keep ``recent_seed_tags`` away from the operator's real store.
+
+        ``extract_memories`` seeds its prompt from the newest records in
+        ``MEMORIES_FILE``, falling back to ``VOCABULARY_FILE``. Neither was
+        redirected in this class (audit round five L-5), so every test here
+        read the tail of the live corpus into the prompt it built — real
+        memory content in a test process, and a suite whose prompts differed
+        by machine. These fixtures are deliberately tiny and fixed.
+        """
+        store = tmp_path / "seed-memories.jsonl"
+        store.write_text(
+            json.dumps({"id": "seed-1", "research_tags": ["fixture-tag"]}) + "\n",
+            encoding="utf-8",
+        )
+        vocab = tmp_path / "seed-vocabulary.txt"
+        vocab.write_text("fixture-tag\n", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
 
     @staticmethod
     def _mock_response(text: str, stop_reason: str):
