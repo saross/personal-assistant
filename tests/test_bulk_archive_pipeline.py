@@ -105,9 +105,12 @@ class Pipeline:
         )
         bulk_archive.cmd_archive(args, LOGGER)
 
-    def verify(self, *, fix_catalogue: bool = False) -> None:
-        """Run ``verify``, optionally rebuilding the catalogue."""
-        bulk_archive.cmd_verify(
+    def verify(self, *, fix_catalogue: bool = False) -> int:
+        """Run ``verify``, optionally rebuilding the catalogue.
+
+        Returns its exit status, so callers can assert on it.
+        """
+        return bulk_archive.cmd_verify(
             argparse.Namespace(mode="verify", fix_catalogue=fix_catalogue),
             LOGGER,
         )
@@ -1318,3 +1321,81 @@ class TestCheckpointDurability:
         assert staged, "no atomic rename was performed"
         assert staged[0].parent == pipeline.checkpoint.parent
         assert list(pipeline.checkpoint.parent.glob("*.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-2 finding 4 — a check that always exits 0 is not a check
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyExitStatus:
+    """daily-sync and cron read the exit status, not the report.
+
+    verify printed size mismatches and non-canonical entries and then
+    reported success, so AR3's detection half and AR21 were invisible to
+    every automated caller.
+    """
+
+    def test_a_clean_archive_exits_zero(self, pipeline: Pipeline) -> None:
+        make_archive_entry(pipeline.archive_root, SID_A)
+
+        assert pipeline.verify() == 0
+
+    def test_a_size_mismatch_exits_non_zero(
+        self, pipeline: Pipeline, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        entry = make_archive_entry(pipeline.archive_root, SID_A)
+        with gzip.open(entry / "session.jsonl.gz", "wb") as handle:
+            handle.write(b'{"type": "user"}\n')
+
+        status = pipeline.verify()
+
+        assert status == 1
+        assert "Size mismatch" in capsys.readouterr().out
+
+    def test_a_missing_transcript_exits_non_zero(
+        self, pipeline: Pipeline
+    ) -> None:
+        make_archive_entry(pipeline.archive_root, SID_A, with_transcript=False)
+
+        assert pipeline.verify() == 1
+
+    def test_a_raw_only_entry_exits_non_zero(
+        self, pipeline: Pipeline
+    ) -> None:
+        entry = make_archive_entry(
+            pipeline.archive_root, SID_A, with_transcript=False
+        )
+        (entry / "session.jsonl").write_text("{}\n", encoding="utf-8")
+
+        assert pipeline.verify() == 1
+
+    def test_rebuilding_the_catalogue_is_a_repair_not_a_finding(
+        self, pipeline: Pipeline
+    ) -> None:
+        """An out-of-date index is fixed by the run, so the run is clean."""
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": []}), encoding="utf-8"
+        )
+
+        assert pipeline.verify(fix_catalogue=True) == 0
+
+    def test_main_propagates_the_verify_status(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wiring, not just the return value: main() must hand it on."""
+        make_archive_entry(pipeline.archive_root, SID_A, with_transcript=False)
+        monkeypatch.setattr(sys, "argv", ["bulk-archive.py", "verify"])
+        monkeypatch.setattr(bulk_archive, "setup_logging", lambda: LOGGER)
+
+        assert bulk_archive.main() == 1
+
+    def test_main_returns_zero_for_a_clean_verify(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        make_archive_entry(pipeline.archive_root, SID_A)
+        monkeypatch.setattr(sys, "argv", ["bulk-archive.py", "verify"])
+        monkeypatch.setattr(bulk_archive, "setup_logging", lambda: LOGGER)
+
+        assert bulk_archive.main() == 0

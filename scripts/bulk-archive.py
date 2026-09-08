@@ -2748,8 +2748,17 @@ def _recorded_transcript_bytes(meta: dict[str, Any]) -> int | None:
     return None
 
 
-def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
-    """Run integrity checks and optionally rebuild the catalogue."""
+def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> int:
+    """Run integrity checks and optionally rebuild the catalogue.
+
+    Returns 1 when any integrity issue was found, 0 otherwise. This is a
+    check, and a check that always exits 0 is not a check: verify printed
+    size mismatches and non-canonical entries to stdout and then reported
+    success, so AR3's detection half and AR21 were invisible to daily-sync
+    and to cron, which read the exit status and not the report (audit round
+    4c-2, finding 4). ``check-archive-drift.py`` and
+    ``normalise-archive-storage.py`` already work this way.
+    """
     # Add cc-session-toolkit to path
     toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
     if str(toolkit_src) not in sys.path:
@@ -2842,6 +2851,10 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
         print(f"\nIssues ({len(issues)}):")
         for issue in issues:
             print(f"  - {issue}")
+        logger.warning(
+            "Archive verification found %d issue(s) — exiting non-zero",
+            len(issues),
+        )
     else:
         print("\nNo integrity issues found.")
 
@@ -2860,14 +2873,22 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
             "--full-resync"
         )
 
+    # The catalogue rebuild is a repair, not a finding: an archive whose only
+    # complaint was an out-of-date index is clean once it has been rebuilt.
+    return 1 if issues else 0
+
 
 # ============================================================================
 # CLI
 # ============================================================================
 
 
-def main() -> None:
-    """Parse arguments and dispatch to the appropriate mode."""
+def main() -> int:
+    """Parse arguments and dispatch to the appropriate mode.
+
+    Returns the process exit status: non-zero when a checking mode found
+    something wrong.
+    """
     parser = argparse.ArgumentParser(
         description="Bulk archive historical Claude Code sessions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3060,6 +3081,9 @@ def main() -> None:
     args = parser.parse_args()
     logger = setup_logging()
 
+    # Modes that CHECK return a status; modes that DO return None and are
+    # reported through their own logging. A caller (daily-sync, cron) reads
+    # the exit status, so a check that cannot fail the process is decoration.
     if args.mode == "discover":
         cmd_discover(args, logger)
     elif args.mode == "archive":
@@ -3069,8 +3093,9 @@ def main() -> None:
     elif args.mode == "subagents":
         cmd_subagents(args, logger)
     elif args.mode == "verify":
-        cmd_verify(args, logger)
+        return cmd_verify(args, logger)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
