@@ -19,6 +19,7 @@ submodule or ``~/.claude`` tree.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 from pathlib import Path
@@ -445,3 +446,104 @@ class TestDailySyncParentBranchGuard:
         assert "failed to switch parent repo to main" in source, (
             "daily-sync.sh missing parent branch-switch failure path."
         )
+
+
+# ============================================================================
+# Audit round two (2026-09-08), tranche 2 — git and sync writers.
+#
+# Findings S11 (sync-symlinks retargeting), S13 (compose-global-claude-md
+# truncation), S14 (the R2 version probe killing the script), S16 (commit-data
+# committing without a pathspec), and S20 (commit-data's lock and parent guard
+# removable with the suite green).
+#
+# Every test below runs the live script in a throwaway tree with HOME pinned
+# into tmp_path: none of them may reach the real ~/.claude, the real data
+# submodule, the real cc-archives mount, or the network.
+# ============================================================================
+
+COMPOSE_SCRIPT = REPO_ROOT / "scripts" / "compose-global-claude-md.sh"
+R2_PUSH_SCRIPT = REPO_ROOT / "scripts" / "push-archives-to-r2.sh"
+
+GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Test Bot",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "Test Bot",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+}
+
+
+def _run_script(script: Path, *args: str, home: Path, cwd: Path | None = None,
+                extra_env: dict[str, str] | None = None
+                ) -> subprocess.CompletedProcess[str]:
+    """Run a shell script with HOME pinned into the test tree."""
+    env = os.environ.copy()
+    env.update(GIT_IDENTITY)
+    env["HOME"] = str(home)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", str(script), *args],
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+# ----------------------------------------------------------------------------
+# S11 — ensure_symlink must RETARGET a symlink-to-directory, not write inside it
+# ----------------------------------------------------------------------------
+
+
+class TestSyncSymlinksRetargetsDirectoryLinks:
+    """``ln -sf`` follows a symlink that points at a DIRECTORY and creates the
+    new link *inside* it. Every skill link (step 4) is exactly that shape, so
+    retargeting a renamed skill silently failed, the script logged "updated
+    symlink" on every run, and a stray symlink was deposited into the old
+    source directory. ``ln -sfn`` retargets the link itself.
+    """
+
+    def _ensure_symlink(self, src: Path, target: Path, home: Path
+                        ) -> subprocess.CompletedProcess[str]:
+        """Source only the helper half of the script (function definitions and
+        constants — everything above the first step) and call the helper.
+
+        The script's steps are never executed, so this cannot touch the real
+        ~/.claude; HOME is pinned as a second line of defence.
+        """
+        script = SYNC_SYMLINKS_SCRIPT.read_text(encoding="utf-8")
+        helper_body, _, _ = script.partition("# Step 1: Submodule init/update")
+        wrapper = f'{helper_body}\nensure_symlink "{src}" "{target}" "skill-x"\n'
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        return subprocess.run(["bash", "-c", wrapper], env=env,
+                              capture_output=True, text=True, check=False)
+
+    def test_symlinked_directory_is_retargeted_not_populated(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        old_skill = tmp_path / "skills-old"
+        new_skill = tmp_path / "skills-new"
+        old_skill.mkdir()
+        new_skill.mkdir()
+        link = tmp_path / "linked-skill"
+        link.symlink_to(old_skill)
+
+        result = self._ensure_symlink(new_skill, link, home)
+
+        assert result.returncode == 0, result.stderr
+        assert os.readlink(link) == str(new_skill), (
+            "the symlink was not retargeted (ln -sf followed it into the "
+            "old directory instead)"
+        )
+        assert list(old_skill.iterdir()) == [], (
+            f"a stray link was deposited inside the old target: "
+            f"{[p.name for p in old_skill.iterdir()]}"
+        )
+
+
