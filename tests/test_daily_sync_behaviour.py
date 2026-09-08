@@ -2730,6 +2730,296 @@ class TestParentBranchGuard:
 
 
 # ============================================================================
+# A stash that applied only PART of itself (audit S27)
+# ============================================================================
+
+
+class TestPartiallyAppliedStash:
+    """``git stash apply`` restores the untracked tree AFTER merging the
+    tracked one, and abandons the whole untracked half the moment one of
+    its paths already exists. One command therefore writes conflict
+    markers for a tracked path and leaves an untracked file unrestored —
+    and the untracked file is in no commit, no index and no working tree,
+    so the entry holds its only copy. The conflicted path resolved the
+    markers and dropped the entry, with rc 0 and a clean gate."""
+
+    def _stage(self, world: SyncWorld, *, diverge_corpus: bool) -> tuple[object, str]:
+        """
+        Build the shape: a detached HEAD holding a local append and an
+        untracked report, against an origin that published a report of the
+        same name (and, optionally, a divergent append).
+
+        Returns the machine and the untracked path.
+        """
+        machine = world.add_machine("a")
+        report = "reports/field-notes.md"
+        if diverge_corpus:
+            world.publish_memory_append("2026-09-08-from-elsewhere")
+        world.publish_data_change(report, "the other machine's copy\n")
+
+        base = machine.head("data")
+        machine.append_memory("2026-09-08-local-append")
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("the only copy of this exists in the stash\n",
+                          encoding="utf-8")
+        # Detached HEAD makes the branch guard stash first, untracked
+        # files included — the ordinary shape after `submodule update`.
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        return machine, report
+
+    def test_an_untracked_file_survives_a_conflicted_apply(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-S27: with the drop guard removed, the resolver cleans
+        the markers, ``drop_applied_stash`` drops the entry, and the only
+        copy of the report is gone with rc 0."""
+        machine, report = self._stage(world, diverge_corpus=True)
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        # The entry is still on the stack, and still holds the file.
+        listed = git("stash", "list", "--format=%H", cwd=machine.data).stdout.split()
+        assert listed, "the entry that holds the only copy was dropped"
+        sha = listed[0]
+        kept = git("show", f"{sha}^3:{report}", cwd=machine.data).stdout
+        assert kept == "the only copy of this exists in the stash\n", kept
+
+        joined = "\n".join(gate_details(world))
+        assert report in joined, ("the gate does not name the file that is "
+                                  "only in the stash: " + joined)
+        assert "only then delete the entry" in joined, joined
+        assert world.published_data_head() == published_before
+
+    def test_a_clean_merge_with_an_untracked_collision_is_not_called_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """The same failure without markers: the tracked half merges
+        cleanly and git still gives up on the untracked half. That was
+        classified ``refused`` — "the tree was left untouched and the work
+        is only in the stash" — about a tree it had just written to, with
+        advice (pop it) that git refuses again for the same reason."""
+        machine, report = self._stage(world, diverge_corpus=False)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        joined = "\n".join(gate_details(world))
+        assert "only PARTLY" in joined, joined
+        assert report in joined, joined
+        assert "was refused" not in joined, (
+            "a half-applied entry was reported as a refusal that left the "
+            "tree untouched: " + joined
+        )
+        assert "left untouched" not in joined, joined
+        # And the local append really is in the tree, which is why
+        # "untouched" was false.
+        assert "2026-09-08-local-append" in machine.memories.read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_partial_warning_survives_the_next_run(
+        self, world: SyncWorld
+    ) -> None:
+        """A gate line lives one run: the next run replaces it, and a run
+        with nothing to say clears it. The file would still be in no
+        commit and no tree. Every later run re-reads the sidecar and says
+        so again, until the file comes back."""
+        machine = world.add_machine("a")
+        report = "reports/only-in-the-stash.md"
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("nowhere else\n", encoding="utf-8")
+        git("stash", "push", "-u", "-q", "-m", "a previous run", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        assert not target.exists(), "the fixture did not model an unrestored file"
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tpartial\t{report}\n", encoding="utf-8"
+        )
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        # Nothing failed — the sync ran — but the warning still stands.
+        assert result.returncode == 0, combined
+        joined = "\n".join(gate_details(world))
+        assert report in joined, joined
+        assert f"checkout {sha}^3" in joined, joined
+        assert git("stash", "list", cwd=machine.data).stdout.strip(), (
+            "the entry holding the only copy was dropped by a clean run"
+        )
+
+    def test_a_recovered_file_stops_the_nagging(self, world: SyncWorld) -> None:
+        """The other side of it: once the file is back, the entry holds
+        nothing unique and the gate must fall silent — or the operator
+        learns to ignore it."""
+        machine = world.add_machine("a")
+        report = "reports/only-in-the-stash.md"
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("nowhere else\n", encoding="utf-8")
+        git("stash", "push", "-u", "-q", "-m", "a previous run", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tpartial\t{report}\n", encoding="utf-8"
+        )
+        # The operator recovers it, byte for byte. `stash push -u` took
+        # the directory away with the file, so it has to come back too.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("nowhere else\n", encoding="utf-8")
+        git("add", "--", report, cwd=machine.data)
+        machine.commit_data("recovered by hand", report)
+
+        assert world.run_sync(machine).returncode == 0
+        assert world.gate("daily-sync-gate").strip() == "0", world.gate(
+            "daily-sync-gate"
+        )
+
+
+# ============================================================================
+# The sidecar outlives a run that only read it (audit M1, tenth re-audit)
+# ============================================================================
+
+
+class TestSidecarLifetime:
+    """``render_on_early_exit`` rewrote the sidecar from arrays that did
+    not exist yet, so the very run that READ it — check_interrupted_state,
+    naming whose markers a half-merged tree holds — truncated it on the
+    way out and the next run decayed to the generic wording."""
+
+    def _stage_recorded_conflict(self, world: SyncWorld) -> tuple[object, str]:
+        """A live stash, a real unmerged path, and a sidecar row tying
+        the two together — the state a conflicted run leaves behind."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-recorded")
+        git("stash", "push", "-q", "-m", "recorded as conflicted", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tconflicted\tmemories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+        return machine, sha
+
+    def test_a_run_that_only_read_the_sidecar_does_not_wipe_it(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-S28-M1: restoring `write_stash_state` to
+        `render_on_early_exit` empties the file on the way out of run 1,
+        and run 2 can no longer name the stash."""
+        machine, sha = self._stage_recorded_conflict(world)
+        sidecar = world.home / ".cache" / "daily-sync-stash-state"
+
+        first = world.run_sync(machine)
+        assert first.returncode == 2, first.stdout + first.stderr
+        joined = "\n".join(gate_details(world))
+        assert "these markers ARE that stash's content" in joined, joined
+        assert sidecar.read_text(encoding="utf-8").strip(), (
+            "the run that read the sidecar truncated it on the way out"
+        )
+
+        # Nothing has changed on disk; the second run must say the same.
+        second = world.run_sync(machine)
+        assert second.returncode == 2, second.stdout + second.stderr
+        again = "\n".join(gate_details(world))
+        assert "these markers ARE that stash's content" in again, (
+            "attribution decayed to the generic wording on the second run: "
+            + again
+        )
+        assert sha[:8] in again, again
+
+
+class TestGateSupersessionRoundTrip:
+    """Three runs, verbatim. A run that can attribute nothing LISTS every
+    entry on the stack — and the SHAs were harvested from the whole line,
+    so that listing superseded every still-true, specific line about every
+    entry it mentioned."""
+
+    def test_a_blocked_stashs_fact_survives_to_the_third_run(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-S28-M2 (and DS-S28-M1 with it).
+
+        Run 1 conflicts on one stash and is BLOCKED on a second, whose
+        work is nowhere else. Runs 2 and 3 find the half-merged tree. With
+        the sidecar wiped by run 2's early exit, run 3 fell through to the
+        generic listing — which named the blocked stash, and so erased the
+        one line saying its records exist nowhere else.
+        """
+        machine = world.add_machine("a")
+        inbox = machine.data / "tasks" / "inbox.md"
+        base = machine.head("data")
+        inbox.write_text("# Inbox\n\n- the version on main\n", encoding="utf-8")
+        machine.commit_data("main version", "tasks/inbox.md")
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        inbox.write_text("# Inbox\n\n- the version in the stash\n", encoding="utf-8")
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        first = world.run_sync(
+            machine, PA_TEST_ARCHIVER_DIRTIES="# Inbox\n\n- written mid-run\n"
+        )
+        assert first.returncode == 2, first.stdout + first.stderr
+        joined = "\n".join(gate_details(world))
+        assert "ALREADY unmerged" in joined, joined
+        blocked_sha = git(
+            "rev-parse", "--short=8", "stash@{0}", cwd=machine.data
+        ).stdout.strip()
+
+        for run in (2, 3):
+            result = world.run_sync(machine)
+            assert result.returncode == 2, (run, result.stdout + result.stderr)
+
+        final = "\n".join(gate_details(world))
+        assert "ALREADY unmerged" in final, (
+            "a run that could attribute nothing erased the one line saying "
+            "the blocked stash's work is nowhere else: " + final
+        )
+        assert blocked_sha in final, final
+        assert "their work is\nnowhere else" in final or "nowhere else" in final, final
+
+
+# ============================================================================
+# The sidecar file itself (audit C2, ninth re-audit — kept honest)
+# ============================================================================
+
+
+class TestSidecarIsNeverStale:
+    """A sidecar that cannot be truncated must not keep serving the
+    previous run's rows: a stale row is an instruction to delete an
+    entry."""
+
+    def test_an_unwritable_sidecar_is_unlinked_rather_than_left_stale(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills: dropping the `rm -f "$STASH_STATE_FILE"` before the
+        truncating write. With only `: > file`, a read-only sidecar
+        survives untouched and every later run reads a row about a stash
+        that conflicted weeks ago."""
+        machine = world.add_machine("a")
+        sidecar = world.home / ".cache" / "daily-sync-stash-state"
+        sidecar.write_text(
+            "/gone\tdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\tconflicted\t"
+            "memories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+        sidecar.chmod(0o444)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "deadbeef" not in sidecar.read_text(encoding="utf-8"), (
+            "a read-only sidecar kept serving the previous run's row"
+        )
+        assert "could not write" not in combined, combined
+
+
+# ============================================================================
 # A bisect is never told to "finish it" (audit L4, tenth re-audit)
 # ============================================================================
 

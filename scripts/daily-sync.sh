@@ -197,19 +197,62 @@ add_sync_gate_detail() {
     sync_gate_details+=("$detail")
 }
 
+#: SHAs write_stash_state has already emitted a row for this run, so the
+#: precedence below is applied once per ENTRY rather than once per record.
+stash_state_written_shas=()
+
+append_stash_state_row() {
+    # append_stash_state_row <repo> <sha> <state> <newline-separated paths>
+    #
+    # One row per PATH — or a single path-less row for a state that
+    # carries none — and nothing at all for a SHA a higher-precedence
+    # state has already claimed, or for an entry no longer on the stack (a
+    # stash that is gone cannot be the source of anything).
+    local repo="$1" sha="$2" state="$3" paths="$4" written path
+    for written in ${stash_state_written_shas[@]+"${stash_state_written_shas[@]}"}; do
+        [[ "$written" == "$sha" ]] && return 0
+    done
+    stash_ref_for "$repo" "$sha" >/dev/null || return 0
+    stash_state_written_shas+=("$sha")
+    if [[ -z "$paths" ]]; then
+        printf '%s\t%s\t%s\t\n' "$repo" "$sha" "$state" \
+            >> "$STASH_STATE_FILE" 2>/dev/null || true
+        return 0
+    fi
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        printf '%s\t%s\t%s\t%s\n' "$repo" "$sha" "$state" "$path" \
+            >> "$STASH_STATE_FILE" 2>/dev/null || true
+    done <<<"$paths"
+    return 0
+}
+
 write_stash_state() {
-    # One row per stash whose content this run put into a working tree:
+    # One row per stash-and-path this run put into a working tree:
     #
-    #     <repo><TAB><sha><TAB>conflicted|applied<TAB><paths it left unmerged>
+    #     <repo><TAB><sha><TAB>partial|applied|conflicted<TAB><one path>
     #
-    # audit C2 (ninth re-audit). A row names a stash TOGETHER WITH the
-    # paths it produced, so the next run can attribute markers path by
-    # path instead of blaming whatever it finds. Rows for entries no
-    # longer on the stack are dropped as they are written — a stash that
-    # is gone cannot be the source of anything. The file is unlinked
-    # first, so an unwritable path cannot keep serving stale content, and
-    # a failure to write is a warning: the next run then finds nothing and
-    # says so, which is the safe direction.
+    # audit C2 (ninth re-audit). A row names a stash TOGETHER WITH a path
+    # it produced, so the next run can attribute markers path by path
+    # instead of blaming whatever it finds. The file is unlinked first, so
+    # an unwritable path cannot keep serving stale content, and a failure
+    # to write is a warning: the next run then finds nothing and says so,
+    # which is the safe direction.
+    #
+    # audit L1 (tenth re-audit): ONE PATH PER ROW. The paths used to be
+    # comma-joined into one field and word-split on the way back, so
+    # `notes/a b.md` and `notes/a,b.md` were each read as two paths,
+    # matched nothing, and lost their attribution — for exactly the
+    # filenames a human is most likely to create. A TAB-delimited field is
+    # safe: git C-quotes any path holding a tab or a newline, and neither
+    # a space nor a comma is a delimiter here.
+    #
+    # audit M3 (tenth re-audit): ONE STATE PER SHA, in the precedence
+    # stranded_stashes uses on the read side — `partial` outranks
+    # `applied` outranks `conflicted`. A conflicted-then-resolved entry
+    # whose drop failed used to emit BOTH a conflicted row and an applied
+    # row, and the stale conflicted row was then matched against an
+    # unrelated conflict in the same path on a later run.
     local record sha repo paths
     if [[ $DRY_RUN -eq 1 ]]; then
         return 0
@@ -220,14 +263,13 @@ write_stash_state() {
         log "WARNING: could not write $STASH_STATE_FILE; the next run will not be able to attribute any conflict markers to a stash"
         return 0
     fi
-    for record in ${conflicted_stash_records[@]+"${conflicted_stash_records[@]}"}; do
+    stash_state_written_shas=()
+    for record in ${partial_stash_records[@]+"${partial_stash_records[@]}"}; do
         sha="${record%%$'\t'*}"
         paths="${record##*$'\t'}"
         repo="${record#*$'\t'}"
         repo="${repo%%$'\t'*}"
-        stash_ref_for "$repo" "$sha" >/dev/null || continue
-        printf '%s\t%s\tconflicted\t%s\n' "$repo" "$sha" "$paths" \
-            >> "$STASH_STATE_FILE" 2>/dev/null || true
+        append_stash_state_row "$repo" "$sha" partial "$paths"
     done
     for sha in ${applied_stash_shas[@]+"${applied_stash_shas[@]}"}; do
         # An applied entry is never a marker source; the row exists so the
@@ -235,11 +277,108 @@ write_stash_state() {
         # and it carries no paths for exactly that reason.
         for repo in "$DATA_DIR" "$PA_DIR"; do
             stash_ref_for "$repo" "$sha" >/dev/null || continue
-            printf '%s\t%s\tapplied\t\n' "$repo" "$sha" \
-                >> "$STASH_STATE_FILE" 2>/dev/null || true
+            append_stash_state_row "$repo" "$sha" applied ""
             break
         done
     done
+    for record in ${conflicted_stash_records[@]+"${conflicted_stash_records[@]}"}; do
+        sha="${record%%$'\t'*}"
+        paths="${record##*$'\t'}"
+        repo="${record#*$'\t'}"
+        repo="${repo%%$'\t'*}"
+        append_stash_state_row "$repo" "$sha" conflicted "$paths"
+    done
+    return 0
+}
+
+gate_line_class() {
+    # gate_line_class <line>
+    # The KIND of statement a gate line makes. A later run's line
+    # supersedes an earlier one only when the two make the same kind of
+    # statement about the same subject (audit M2, tenth re-audit): a SHA
+    # in the text is not enough on its own, because a line may merely
+    # LIST an entry it says nothing about.
+    #
+    # Matched on the phrases the gate writers below own. `unattributed`
+    # is checked first because that line lists other stashes; `partial`
+    # before `applied` because a partly-applied entry is also one that
+    # was not dropped. Anything unrecognised is `other`, which carries no
+    # key at all and therefore supersedes nothing.
+    local line="$1"
+    case "$line" in
+        *"cannot identify"*)                        printf 'unattributed' ;;
+        *"these markers ARE that stash's content"*) printf 'attribution' ;;
+        *"only PARTLY"*|*"restored only part"*)     printf 'partial' ;;
+        *"UNRECOVERED"*)                            printf 'unrecovered' ;;
+        *"WITH CONFLICTS"*|*"did not apply cleanly"*|*" conflicted."*)
+                                                    printf 'conflicted' ;;
+        *"ALREADY unmerged"*|*"BLOCKED by an earlier"*)
+                                                    printf 'blocked' ;;
+        *"could not drop"*)                         printf 'applied' ;;
+        *"REFUSED"*)                                printf 'refused' ;;
+        *)                                          printf 'other' ;;
+    esac
+}
+
+gate_sha_keys() {
+    # gate_sha_keys <line> — `stash:<sha8>` for every SHA on the line.
+    #
+    # One namespace for every statement about the STATE of an entry
+    # (`unrecovered`, `conflicted`, `blocked`, `applied`, `partial`,
+    # `refused`, `attribution`), because those states are mutually
+    # exclusive descriptions of one thing: a later run saying "its markers
+    # are in your tree" must retire an earlier run's "its work is nowhere
+    # else, pop it" (audit M1, ninth re-audit). What must NOT happen is a
+    # line that merely LISTS an entry retiring a claim about it, and that
+    # is decided by the class, not by the namespace.
+    local line="$1" sha
+    while read -r sha; do
+        [[ -n "$sha" ]] && printf 'stash:%s\n' "$sha"
+    done < <(grep -oE '\b[0-9a-f]{8}\b' <<<"$line" || true)
+    return 0
+}
+
+gate_claim_keys() {
+    # gate_claim_keys <line>
+    # What THIS RUN's line claims, and may therefore supersede. A line
+    # this cannot classify claims nothing — it neither supersedes nor is
+    # protected, which is what the gate did before any of this existed.
+    local line="$1" class
+    class="$(gate_line_class "$line")"
+    case "$class" in
+        other)
+            return 0
+            ;;
+        unattributed)
+            # Deliberately claims no SHA: the SHAs on this line are a
+            # listing of what is on the stack, not a claim about any of
+            # them (audit M2, tenth re-audit). Its own singleton key means
+            # a later "cannot identify" replaces an earlier one.
+            printf 'unattributed\n'
+            return 0
+            ;;
+        attribution)
+            # Attribution is exactly the resolution of "cannot identify"
+            # for the same markers, so it retires that line too.
+            printf 'unattributed\n'
+            ;;
+    esac
+    gate_sha_keys "$line"
+    return 0
+}
+
+gate_subject_keys() {
+    # gate_subject_keys <line>
+    # What a PREVIOUS run's line is about, and may therefore be superseded
+    # on. Unlike a claim, an unclassifiable line still has a subject: an
+    # earlier run's free-text line naming a stash is retired by this run's
+    # word about that stash.
+    local line="$1"
+    if [[ "$(gate_line_class "$line")" == "unattributed" ]]; then
+        printf 'unattributed\n'
+        return 0
+    fi
+    gate_sha_keys "$line"
     return 0
 }
 
@@ -270,28 +409,34 @@ render_sync_gate() {
     # its findings are current. Repeats are dropped either way.
     if [[ $sync_run_completed -eq 0 ]] && [[ -f "$SYNC_GATE" ]]; then
         local -a _ours=("${sync_gate_details[@]}")
-        local _previous _sha _mine _superseded
+        local _previous _mine _keys _our_keys=""
         # audit M1 (ninth re-audit): this run's word about a given stash
         # supersedes an earlier run's. Keeping both left contradictory
         # advice about the same SHA standing side by side — "pop it" from
         # one run and "delete it" from the next.
-        local -a _our_shas=()
+        #
+        # audit M2 (tenth re-audit): but only when both lines make the
+        # SAME KIND of claim about that stash. The SHAs used to be
+        # harvested from the whole line, so the generic "this run cannot
+        # identify these markers" line — which LISTS every entry on the
+        # stack precisely because it can attribute nothing — superseded
+        # every still-true, specific line about every one of them. A
+        # blocked stash's "its work is nowhere else" survived exactly one
+        # further run before a line that said nothing about it erased it.
         for _mine in "${_ours[@]}"; do
-            while read -r _sha; do
-                [[ -n "$_sha" ]] && _our_shas+=("$_sha")
-            done < <(grep -oE '\b[0-9a-f]{8}\b' <<<"$_mine" || true)
+            _keys="$(gate_claim_keys "$_mine")"
+            [[ -n "$_keys" ]] && _our_keys+="$_keys"$'\n'
         done
         sync_gate_details=()
         while IFS= read -r _previous; do
             [[ -n "$_previous" ]] || continue
-            _superseded=0
-            for _sha in ${_our_shas[@]+"${_our_shas[@]}"}; do
-                if [[ "$_previous" == *"$_sha"* ]]; then
-                    _superseded=1
-                    break
-                fi
-            done
-            [[ $_superseded -eq 1 ]] || add_sync_gate_detail "$_previous"
+            _keys="$(gate_subject_keys "$_previous")"
+            if [[ -n "$_keys" ]] && [[ -n "$_our_keys" ]] \
+                    && printf '%s\n' "$_keys" \
+                        | grep -qxF -f <(printf '%s' "$_our_keys"); then
+                continue
+            fi
+            add_sync_gate_detail "$_previous"
         done < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
         for _previous in "${_ours[@]}"; do
             add_sync_gate_detail "$_previous"
@@ -337,12 +482,17 @@ trap 'on_signal SIGTERM 143' TERM
 # a reason nobody ever sees. It is replaced further down by the full EXIT
 # handler, which renders the gate as its own last act.
 render_on_early_exit() {
-    # The early trap: everything the full handler does at the end, minus
-    # the stash bookkeeping it does not yet have. audit C2 (ninth
-    # re-audit): the sidecar is rewritten by EVERY non-dry run, including
-    # one that fails before the full handler is installed — otherwise a
-    # stale row survives a run that would have cleared it.
-    write_stash_state
+    # The early trap renders the gate, and nothing else.
+    #
+    # audit M1 (tenth re-audit): it used to call write_stash_state too,
+    # before the stash arrays that function reads exist — so the very run
+    # that READ the sidecar (check_interrupted_state, naming whose markers
+    # a half-merged tree holds) truncated it on the way out, and the next
+    # run decayed to the generic "this run cannot identify" wording. The
+    # sidecar is rewritten only from the full EXIT handler, after this
+    # run's own stash bookkeeping has run. A row left standing costs
+    # nothing: previously_recorded_stashes drops any row whose entry has
+    # left the stack or whose path is not unmerged now.
     render_sync_gate
 }
 trap render_on_early_exit EXIT
@@ -875,6 +1025,74 @@ conflicted_stash_records=()
 #: Entries git refused because the index was already unmerged. Their work
 #: is intact and only in the stash (audit C1).
 blocked_stash_shas=()
+#: Entries only PART of which reached the tree: the tracked half applied
+#: (cleanly or as markers) and the untracked half did not, so the entry
+#: still holds the only copy of files that are in no commit and no tree
+#: (audit S27, tenth re-audit). Never droppable, never "refused".
+partial_stash_shas=()
+#: `<sha><TAB><repo><TAB><newline-separated unrestored paths>` for each.
+partial_stash_records=()
+
+unrestored_untracked_paths() {
+    # unrestored_untracked_paths <repo> <sha>
+    # Print every path in the stash entry's UNTRACKED tree (`<sha>^3`)
+    # that is missing from the working tree or differs from the copy the
+    # entry holds — i.e. every file whose only copy is still inside it.
+    #
+    # audit S27 (tenth re-audit). `git stash apply` restores the untracked
+    # tree AFTER merging the tracked one, and abandons the whole untracked
+    # half the moment one of its paths already exists ("<path> already
+    # exists, no checkout" / "could not restore untracked files from
+    # stash"). ONE command therefore both writes conflict markers for a
+    # tracked path and leaves an untracked file unrestored — measured on
+    # git 2.48.1. The tracked half then resolves, and dropping the entry
+    # destroys the only copy of the untracked file: it is in no commit, no
+    # index, and no working tree, so nothing else in this script can see
+    # it. This is the predicate the drop guard below is built on.
+    #
+    # `ls-tree -z` gives raw (unquoted) paths, which is what the
+    # filesystem comparison needs; the newline-joined result carries a
+    # path holding a space or a comma correctly, and shares the whole
+    # script's one limitation — a path holding a newline.
+    local repo="$1" sha="$2" entry blob path
+    git -C "$repo" rev-parse --verify --quiet "${sha}^3" >/dev/null 2>&1 || return 0
+    while IFS= read -r -d '' entry; do
+        [[ -n "$entry" ]] || continue
+        # "<mode> <type> <object><TAB><path>"
+        blob="${entry%%$'\t'*}"
+        blob="${blob##* }"
+        path="${entry#*$'\t'}"
+        if [[ ! -e "$repo/$path" ]]; then
+            printf '%s\n' "$path"
+        elif [[ "$(git -C "$repo" hash-object -- "$repo/$path" 2>/dev/null || true)" \
+                != "$blob" ]]; then
+            printf '%s\n' "$path"
+        fi
+    done < <(git -C "$repo" ls-tree -r -z "${sha}^3" 2>/dev/null || true)
+    return 0
+}
+
+record_partial_stash() {
+    # record_partial_stash <repo> <sha> <newline-separated paths>
+    # Idempotent: the classifier and the drop guard can both reach the
+    # same entry, and it must be named once.
+    local repo="$1" sha="$2" paths="$3" entry
+    for entry in ${partial_stash_shas[@]+"${partial_stash_shas[@]}"}; do
+        [[ "$entry" == "$sha" ]] && return 0
+    done
+    partial_stash_shas+=("$sha")
+    partial_stash_records+=("$(printf '%s\t%s\t%s' "$sha" "$repo" "$paths")")
+    return 0
+}
+
+stash_was_partial() {
+    # stash_was_partial <sha>
+    local sha="$1" entry
+    for entry in ${partial_stash_shas[@]+"${partial_stash_shas[@]}"}; do
+        [[ "$entry" == "$sha" ]] && return 0
+    done
+    return 1
+}
 
 stash_was_blocked() {
     # stash_was_blocked <sha>
@@ -886,10 +1104,13 @@ stash_was_blocked() {
 }
 
 record_conflicted_stash() {
-    # record_conflicted_stash <repo> <sha> <paths>
+    # record_conflicted_stash <repo> <sha> <newline-separated paths>
+    # audit L1 (tenth re-audit): the paths stay newline-separated. They
+    # used to be comma-joined here and word-split on the way back out of
+    # the sidecar, which lost every path holding a space or a comma.
     local repo="$1" sha="$2" paths="$3"
     conflicted_stash_shas+=("$sha")
-    conflicted_stash_records+=("$(printf '%s\t%s\t%s' "$sha" "$repo" "${paths//$'\n'/,}")")
+    conflicted_stash_records+=("$(printf '%s\t%s\t%s' "$sha" "$repo" "$paths")")
 }
 
 stash_was_conflicted() {
@@ -914,7 +1135,22 @@ drop_applied_stash() {
     # drop_applied_stash <repo> <sha> <label>
     # The entry's contents are in the working tree; the entry itself has to
     # go, or the next run applies it again and duplicates those records.
-    local repo="$1" sha="$2" label="$3"
+    #
+    # audit S27 (tenth re-audit): THE INVARIANT, enforced at the one place
+    # that drops an applied entry. An entry is never dropped while any
+    # file in its untracked tree is missing from the working tree or
+    # differs from the copy it holds — because that copy is then the only
+    # one anywhere. `git stash apply` can conflict on a tracked path and
+    # silently give up on the untracked half in the same command; the
+    # conflicted-then-resolved path then reached this function with rc 0
+    # and a clean gate, and the file was gone.
+    local repo="$1" sha="$2" label="$3" unrestored
+    unrestored="$(unrestored_untracked_paths "$repo" "$sha")"
+    if [[ -n "$unrestored" ]]; then
+        record_partial_stash "$repo" "$sha" "$unrestored"
+        log "$label: NOT dropping $(describe_stash "$repo" "$sha") — it still holds the only copy of ${unrestored//$'\n'/, }"
+        return 1
+    fi
     applied_stash_shas+=("$sha")
     if drop_stash_by_sha "$repo" "$sha"; then
         return 0
@@ -953,7 +1189,13 @@ stranded_stashes() {
         # the markers" that are no longer there. Only an apply that
         # conflicted and was abandoned stays `conflicted` — nothing marks
         # it applied, because nothing ever used it.
-        if stash_was_applied "$sha"; then
+        #
+        # audit S27 (tenth re-audit): and `partial` outranks `applied`,
+        # because a partly-applied entry is the one case where "delete
+        # the entry" destroys the only copy of something.
+        if stash_was_partial "$sha"; then
+            state=partial
+        elif stash_was_applied "$sha"; then
             state=applied
         elif stash_was_conflicted "$sha"; then
             state=conflicted
@@ -1040,6 +1282,7 @@ reconcile_orphaned_stashes() {
         # re-resolve it immediately afterwards, when the window is a
         # single command wide and applying the wrong entry is no longer
         # possible.
+        snapshot_before_apply "$DATA_DIR"
         if apply_stash_by_sha "$DATA_DIR" "$sha"; then
             # audit (low, fourth re-audit): applied is not recovered. An
             # entry still on the stack is applied again next run and
@@ -1047,6 +1290,13 @@ reconcile_orphaned_stashes() {
             # a failed drop and only a clean one earns the word.
             if drop_applied_stash "$DATA_DIR" "$sha" "orphan recovery"; then
                 log "  recovered ${sha:0:8}"
+            elif stash_was_partial "$sha"; then
+                # audit S27: the drop was refused because the entry still
+                # holds the only copy of an untracked file. The partial
+                # group in the EXIT handler names it, and its paths, in
+                # full; saying it here as well would tell the operator
+                # twice, and "delete the entry" below would be wrong.
+                log "  applied ${sha:0:8} only partly — its entry is kept"
             else
                 # audit L2 (ninth re-audit): the applied GROUP in the exit
                 # handler covers the run's own stashes, but not an orphan
@@ -1068,6 +1318,17 @@ reconcile_orphaned_stashes() {
             # never reaches the sync. Nothing surfaced that state but the
             # log, so write the gate as well.
             stash_restore_allowed=0
+            # audit S27 (tenth re-audit): the same apply can conflict on a
+            # tracked path AND fail to restore an untracked one. Say so:
+            # "resolve the markers" alone would leave the untracked file
+            # inside an entry the operator then deletes.
+            classify_apply_failure "$DATA_DIR" "$sha"
+            if [[ "$apply_outcome" == "partial" ]]; then
+                record_partial_stash "$DATA_DIR" "$sha" "$apply_outcome_untracked"
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: orphaned stash ${sha:0:8} ($ref) restored only part of itself — ${apply_outcome_untracked//$'\n'/, } exist ONLY inside the entry, and whatever it did apply is in $DATA_DIR now. Recover those files (git -C $DATA_DIR checkout ${sha}^3 -- <path>), resolve any markers, and only then delete the entry."
+                fail "ORPHANED STASH ${sha:0:8} ($ref) restored only part of itself; the entry is preserved and holds the only copy of ${apply_outcome_untracked//$'\n'/, }"
+            fi
             add_sync_gate_detail \
                 "daily-sync STOPPED: orphaned stash ${sha:0:8} ($ref) did not apply cleanly; $DATA_DIR is conflicted and every session start will fail here until it is resolved by hand (git -C $DATA_DIR status; git -C $DATA_DIR stash show -p $ref)"
             fail "ORPHANED STASH ${sha:0:8} ($ref) did not apply cleanly; tree is conflicted and the stash is preserved. Resolve by hand: git -C $DATA_DIR stash show -p $ref"
@@ -1099,16 +1360,50 @@ cd "$DATA_DIR" || fail "cannot enter the data submodule at $DATA_DIR"
 # specific "resolve the markers, then delete the entry".
 unmerged_paths() {
     # unmerged_paths <repo> — one path per line, sorted, possibly empty.
-    git -C "$1" diff --name-only --diff-filter=U 2>/dev/null | sort -u || true
+    #
+    # The sort is load-bearing, not cosmetic: classify_apply_failure feeds
+    # two of these lists to `comm`, which compares them with the LOCALE's
+    # collating sequence, while git emits paths in byte order. On a repo
+    # holding `B.md` and `a.md` the two orders disagree, and unsorted
+    # input makes comm report a path that was already unmerged as new —
+    # i.e. blame this apply for somebody else's conflict.
+    #
+    # audit L3 (tenth re-audit): the parent's `data` gitlink is excluded,
+    # exactly as the parent stash's own pathspec excludes it. The parent
+    # stash can never contain the gitlink, so a conflict there can never
+    # be a parent stash's doing — and attributing one to a stash is how an
+    # entry gets deleted. `git status --porcelain` in
+    # check_interrupted_state still sees it, so it is not hidden, only
+    # kept out of the stash attribution.
+    local repo="$1"
+    local -a pathspec=()
+    [[ "$repo" == "$PA_DIR" ]] && pathspec=(-- ':!data')
+    git -C "$repo" diff --name-only --diff-filter=U \
+        ${pathspec[@]+"${pathspec[@]}"} 2>/dev/null | sort -u || true
 }
 
-#: Set by classify_apply_failure: `conflicted`, `blocked`, or `refused`,
-#: and the paths THIS apply left unmerged.
+#: Set by classify_apply_failure: `partial`, `conflicted`, `blocked`, or
+#: `refused`; the paths THIS apply left unmerged; and the paths of the
+#: entry's untracked tree it did not restore.
 apply_outcome=""
 apply_outcome_paths=""
+apply_outcome_untracked=""
+#: What the tree looked like immediately before an apply, so an apply that
+#: did NOTHING can be told from one that did half of what it was asked.
+apply_before_unmerged=""
+apply_before_status=""
+
+snapshot_before_apply() {
+    # snapshot_before_apply <repo>
+    # Call immediately before every `git stash apply`; classify_apply_failure
+    # reads what it records.
+    apply_before_unmerged="$(unmerged_paths "$1")"
+    apply_before_status="$(git -C "$1" status --porcelain 2>/dev/null || true)"
+    return 0
+}
 
 classify_apply_failure() {
-    # classify_apply_failure <repo> <unmerged-paths-before>
+    # classify_apply_failure <repo> <sha>
     #
     # audit C1 (ninth re-audit): by what THIS apply changed, not by
     # whether the repository happens to hold any unmerged path. Scanning
@@ -1116,23 +1411,50 @@ classify_apply_failure() {
     # which git then REFUSES outright, leaving its entry untouched — was
     # recorded as conflicted too, and the gate condemned the only copy of
     # its records.
-    local repo="$1" before="$2" after new_paths
+    #
+    # audit S27 (tenth re-audit): four outcomes, not three. An apply that
+    # put PART of the entry in the tree and left the rest inside it is
+    # neither `conflicted` (resolving the markers does not make the entry
+    # safe to drop) nor `refused` (the tree is emphatically not
+    # untouched). It is `partial`, and the only outcome that must survive
+    # every later "delete the entry" instinct.
+    local repo="$1" sha="$2" after new_paths after_status
     after="$(unmerged_paths "$repo")"
-    new_paths="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") \
-        | grep -v '^$' || true)"
+    # audit L2 (tenth re-audit): no `grep -v '^$'` filter. `printf '%s\n'`
+    # puts an empty line on BOTH sides, so comm suppresses it and can
+    # never emit one — the filter was dead from the day it was written.
+    new_paths="$(comm -13 <(printf '%s\n' "$apply_before_unmerged") \
+        <(printf '%s\n' "$after") || true)"
+    after_status="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
+    apply_outcome_untracked="$(unrestored_untracked_paths "$repo" "$sha")"
     if [[ -n "$new_paths" ]]; then
-        apply_outcome="conflicted"
+        # The apply certainly ran: it wrote markers. Whether it also
+        # finished is what the untracked tree says.
+        if [[ -n "$apply_outcome_untracked" ]]; then
+            apply_outcome="partial"
+        else
+            apply_outcome="conflicted"
+        fi
         apply_outcome_paths="$new_paths"
-    elif [[ -n "$before" ]]; then
-        # git refused because the index was ALREADY unmerged. The entry is
-        # intact and its work is nowhere else: resolve the earlier
-        # conflict, then pop this one.
+    elif [[ "$after_status" != "$apply_before_status" ]] \
+            && [[ -n "$apply_outcome_untracked" ]]; then
+        # No markers, but the tree changed and the untracked half did not
+        # land: the tracked changes merged cleanly and git then gave up on
+        # the untracked files. Measured on git 2.48.1.
+        apply_outcome="partial"
+        apply_outcome_paths=""
+    elif [[ -n "$apply_before_unmerged" ]]; then
+        # git refused because the index was ALREADY unmerged; it never
+        # reached the untracked half, so an unrestored path there says
+        # nothing. The entry is intact and its work is nowhere else:
+        # resolve the earlier conflict, then pop this one.
         apply_outcome="blocked"
         apply_outcome_paths=""
     else
         apply_outcome="refused"
         apply_outcome_paths=""
     fi
+    return 0
 }
 
 describe_stash() {
@@ -1152,32 +1474,78 @@ list_stash_entries() {
         | while read -r _sha _rest; do printf '%s %s; ' "${_sha:0:8}" "$_rest"; done
 }
 
-previously_conflicted_stashes() {
-    # previously_conflicted_stashes <repo> <current-unmerged-paths>
+previously_recorded_stashes() {
+    # previously_recorded_stashes <repo> <state> <current-unmerged-paths>
     #
-    # Stashes an EARLIER run recorded as applied-with-conflicts, still on
-    # the stack, AND whose recorded paths intersect the paths that are
-    # unmerged now. Only those may be described as the source of these
-    # markers — path by path (audit C2, ninth re-audit). A stale row about
-    # a stash that conflicted last week says nothing about a fresh
-    # conflict somewhere else, and acting on it means deleting work.
-    local repo="$1" current="$2" line entry_repo sha state paths path shared
+    # Stashes an EARLIER run recorded in <state> (`conflicted` or
+    # `partial`), still on the stack, AND whose recorded paths intersect
+    # the paths that are unmerged now. Only those may be described as the
+    # source of these markers — path by path (audit C2, ninth re-audit). A
+    # stale row about a stash that conflicted last week says nothing about
+    # a fresh conflict somewhere else, and acting on it means deleting
+    # work.
+    #
+    # `grep -qxF` — anchored, not a substring search. Without `-x`, a row
+    # recording `notes/a.md` would claim the markers in `notes/a.md.bak`,
+    # which is a different file and somebody else's conflict.
+    #
+    # audit L1 (tenth re-audit): one path per ROW, so a path holding a
+    # space or a comma survives the round trip. Two passes because the
+    # rows for one entry have to be gathered back together.
+    local repo="$1" want_state="$2" current="$3"
+    local entry_repo sha state path shared known candidate
+    local -a matched=()
     [[ -f "$STASH_STATE_FILE" ]] || return 0
-    while IFS=$'\t' read -r entry_repo sha state paths; do
+    while IFS=$'\t' read -r entry_repo sha state path; do
         [[ "$entry_repo" == "$repo" ]] || continue
-        [[ "$state" == "conflicted" ]] || continue
-        [[ -n "$paths" ]] || continue
+        [[ "$state" == "$want_state" ]] || continue
+        # An applied row carries no path and is never a marker source; so
+        # is any row whose path field is empty.
+        [[ -n "$path" ]] || continue
         stash_ref_for "$repo" "$sha" >/dev/null || continue
-        shared=""
-        for path in ${paths//,/ }; do
-            if printf '%s\n' "$current" | grep -qxF -- "$path"; then
-                shared+="$path "
-            fi
+        printf '%s\n' "$current" | grep -qxF -- "$path" || continue
+        for known in ${matched[@]+"${matched[@]}"}; do
+            [[ "$known" == "$sha" ]] && continue 2
         done
-        [[ -n "$shared" ]] || continue
-        printf '%s (its markers are in %s); ' \
-            "$(describe_stash "$repo" "$sha")" "${shared% }"
+        matched+=("$sha")
     done < "$STASH_STATE_FILE"
+    for candidate in ${matched[@]+"${matched[@]}"}; do
+        shared=""
+        while IFS=$'\t' read -r entry_repo sha state path; do
+            [[ "$sha" == "$candidate" ]] || continue
+            [[ "$state" == "$want_state" ]] || continue
+            [[ -n "$path" ]] || continue
+            printf '%s\n' "$current" | grep -qxF -- "$path" || continue
+            shared+="$path "
+        done < "$STASH_STATE_FILE"
+        printf '%s (its markers are in %s); ' \
+            "$(describe_stash "$repo" "$candidate")" "${shared% }"
+    done
+    return 0
+}
+
+carry_forward_partial_stashes() {
+    # Re-record every entry an EARLIER run left partly applied that is
+    # still on the stack and still holds the only copy of something.
+    #
+    # audit S27 (tenth re-audit). Without this the warning lives exactly
+    # one run: the gate is replaced by whatever the next run has to say,
+    # and a run with nothing to say clears it — while the file is still in
+    # no commit and no tree. Re-recording puts the entry back into this
+    # run's own bookkeeping, so the EXIT handler raises the same gate line
+    # again, and keeps raising it until the files are recovered. It costs
+    # one `ls-tree` per recorded row.
+    local repo sha state path unrestored
+    [[ -f "$STASH_STATE_FILE" ]] || return 0
+    while IFS=$'\t' read -r repo sha state path; do
+        [[ "$state" == "partial" ]] || continue
+        [[ "$repo" == "$DATA_DIR" ]] || [[ "$repo" == "$PA_DIR" ]] || continue
+        stash_ref_for "$repo" "$sha" >/dev/null || continue
+        unrestored="$(unrestored_untracked_paths "$repo" "$sha")"
+        [[ -n "$unrestored" ]] || continue
+        record_partial_stash "$repo" "$sha" "$unrestored"
+    done < "$STASH_STATE_FILE"
+    return 0
 }
 
 check_interrupted_state() {
@@ -1262,8 +1630,18 @@ check_interrupted_state() {
         # "delete any stash entry this left behind" was advice to destroy
         # the only copy of an orphan — given before reconciliation had so
         # much as listed what was on the stack.
-        named="$(previously_conflicted_stashes "$repo" "$(unmerged_paths "$repo")")"
-        if [[ -n "$named" ]]; then
+        local _current_unmerged partly
+        _current_unmerged="$(unmerged_paths "$repo")"
+        named="$(previously_recorded_stashes "$repo" conflicted "$_current_unmerged")"
+        # audit S27 (tenth re-audit): a PARTLY applied entry produced
+        # these markers too — but it also still holds the only copy of
+        # files it could not restore, so "delete that entry" is the one
+        # instruction that must not be given about it.
+        partly="$(previously_recorded_stashes "$repo" partial "$_current_unmerged")"
+        if [[ -n "$partly" ]]; then
+            add_sync_gate_detail \
+                "daily-sync STOPPED: $repo ($label) has unmerged paths — ${unmerged//$'\n'/, }. A previous run applied ${partly%; } and it conflicted, so these markers ARE that stash's content — but only PARTLY: the same entry still holds the only copy of untracked files it could not write. Resolve the markers, then recover those files (git -C $repo checkout <sha>^3 -- <path>) BEFORE you delete the entry. Do NOT pop it: that would apply the same content again."
+        elif [[ -n "$named" ]]; then
             add_sync_gate_detail \
                 "daily-sync STOPPED: $repo ($label) has unmerged paths — ${unmerged//$'\n'/, }. A previous run applied ${named%; } and it conflicted, so these markers ARE that stash's content. Resolve them, then delete that entry. Do NOT pop it: that would apply the same content again."
         else
@@ -1284,6 +1662,10 @@ check_interrupted_state() {
 # memory sync, which is the half that loses data when it does not run;
 # the parent check happens further down, just before the parent half.
 check_interrupted_state "$DATA_DIR" "data submodule"
+
+# audit S27: an entry an earlier run only PARTLY applied keeps being
+# reported until its unrestored files are back, in either repository.
+carry_forward_partial_stashes
 
 # The corpus guard runs before recovery too: an unmerged or marker-laden
 # corpus has advice of its own, and reconcile's generic orphan message
@@ -1313,7 +1695,7 @@ reconcile_orphaned_stashes
 # pushed is still on the stack without saying so, by SHA and message, where
 # session start will show it.
 restore_stash_on_exit() {
-    local _i _ref _sha _repo _line _entry _before_unmerged _stranded=()
+    local _i _ref _sha _repo _line _entry _stranded=()
     local -a _shas=()
     if [[ $stash_restore_allowed -eq 1 ]]; then
         for _repo in "$DATA_DIR" "$PA_DIR"; do
@@ -1337,12 +1719,16 @@ restore_stash_on_exit() {
                 # consulted — an earlier iteration of THIS loop can record
                 # one, and re-applying it would put the same content on
                 # top of the markers it just wrote.
-                if stash_was_applied "$_sha" || stash_was_conflicted "$_sha"; then
+                # audit S27 (tenth re-audit): a PARTLY applied entry is in
+                # the same position — its tracked half is already in the
+                # tree, and re-applying would layer it on itself.
+                if stash_was_applied "$_sha" || stash_was_conflicted "$_sha" \
+                        || stash_was_partial "$_sha"; then
                     log "not restoring ${_sha:0:8} in $_repo — this run already applied it"
                     continue
                 fi
                 log "WARNING: aborting before stash pop — restoring ${_sha:0:8} in $_repo"
-                _before_unmerged="$(unmerged_paths "$_repo")"
+                snapshot_before_apply "$_repo"
                 if ! apply_then_drop "$_repo" "$_sha" "restore"; then
                     # audit C-A (eighth re-audit): the apply failed, and
                     # HOW it failed decides the advice. audit C1 (ninth):
@@ -1350,8 +1736,16 @@ restore_stash_on_exit() {
                     # stash that git refused because the first one had
                     # already left the index unmerged is not condemned as
                     # the source of those markers.
-                    classify_apply_failure "$_repo" "$_before_unmerged"
+                    classify_apply_failure "$_repo" "$_sha"
                     case "$apply_outcome" in
+                        partial)
+                            # audit S27: NOT "refused, the tree is
+                            # untouched" — half of this entry is in the
+                            # tree and the other half is only in the
+                            # entry, which is why it must not be dropped.
+                            record_partial_stash "$_repo" "$_sha" "$apply_outcome_untracked"
+                            log "ERROR: restoring $(describe_stash "$_repo" "$_sha") restored only part of it; ${apply_outcome_untracked//$'\n'/, } exist only inside the entry"
+                            ;;
                         conflicted)
                             record_conflicted_stash "$_repo" "$_sha" "$apply_outcome_paths"
                             log "ERROR: restoring $(describe_stash "$_repo" "$_sha") conflicted; its content is in the tree as markers in ${apply_outcome_paths//$'\n'/, }"
@@ -1372,6 +1766,20 @@ restore_stash_on_exit() {
     # The invariant. Anything of ours still on a stack needs saying — but
     # the advice depends on whether its work reached the tree (audit M2).
     local _applied=() _conflicted=() _blocked=()
+    # audit S27: the partial group is rendered from its OWN records rather
+    # than from stranded_stashes, because the operator needs the paths —
+    # "one of your stashes is half-applied" is not something anyone can
+    # act on. Entries no longer on the stack are skipped, as everywhere.
+    local _p_record _p_sha _p_repo _p_paths
+    local -a _partial=()
+    for _p_record in ${partial_stash_records[@]+"${partial_stash_records[@]}"}; do
+        _p_sha="${_p_record%%$'\t'*}"
+        _p_paths="${_p_record##*$'\t'}"
+        _p_repo="${_p_record#*$'\t'}"
+        _p_repo="${_p_repo%%$'\t'*}"
+        stash_ref_for "$_p_repo" "$_p_sha" >/dev/null || continue
+        _partial+=("$(describe_stash "$_p_repo" "$_p_sha") in $_p_repo still holds the only copy of ${_p_paths//$'\n'/, } — recover each with: git -C $_p_repo checkout ${_p_sha}^3 -- <path> (inspect first: git -C $_p_repo show ${_p_sha}^3:<path>)")
+    done
     for _repo in "$DATA_DIR" "$PA_DIR"; do
         if [[ "$_repo" == "$DATA_DIR" ]]; then
             _shas=(${data_stash_shas[@]+"${data_stash_shas[@]}"})
@@ -1383,7 +1791,10 @@ restore_stash_on_exit() {
         [[ ${#_shas[@]} -gt 0 ]] || continue
         while IFS= read -r _entry; do
             [[ -n "$_entry" ]] || continue
-            if [[ "$_entry" == applied\ * ]]; then
+            if [[ "$_entry" == partial\ * ]]; then
+                # Already named above, with its paths.
+                continue
+            elif [[ "$_entry" == applied\ * ]]; then
                 _applied+=("$_line: ${_entry#applied }")
             elif [[ "$_entry" == conflicted\ * ]]; then
                 _conflicted+=("$_line: ${_entry#conflicted }")
@@ -1411,6 +1822,12 @@ restore_stash_on_exit() {
         for _i in "${_blocked[@]}"; do log "  $_i"; done
         add_sync_gate_detail \
             "daily-sync could not apply ${#_blocked[@]} of its own stash(es) because the index was ALREADY unmerged: ${_blocked[*]}. Their entries are intact and their work is nowhere else. Resolve the earlier conflict first, then pop these — do not delete them."
+    fi
+    if [[ ${#_partial[@]} -gt 0 ]]; then
+        log "PARTIAL STASH: ${#_partial[@]} stash(es) were only PARTLY applied:"
+        for _i in "${_partial[@]}"; do log "  $_i"; done
+        add_sync_gate_detail \
+            "daily-sync applied ${#_partial[@]} of its own stash(es) only PARTLY: ${_partial[*]}. Their tracked changes are in the working tree; the untracked files named are NOT, and exist ONLY inside the stash entry — in no commit, no index, and no working tree. Recover them first. Do NOT delete the entry until you have, and do NOT pop it: that would apply the tracked half a second time."
     fi
     if [[ ${#_applied[@]} -gt 0 ]]; then
         log "APPLIED STASH: ${#_applied[@]} stash(es) were applied but not dropped:"
@@ -1656,7 +2073,7 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             log "data submodule: stash ${_sha:0:8} is no longer on the stack — skipping"
             continue
         fi
-        _before_unmerged="$(unmerged_paths "$DATA_DIR")"
+        snapshot_before_apply "$DATA_DIR"
         if ! apply_stash_by_sha "$DATA_DIR" "$_sha"; then
             # The apply either left the tree conflicted (git preserves the
             # entry) or refused to apply at all. Either way the EXIT
@@ -1667,7 +2084,20 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # in the tree — as markers. That is neither lost work to pop
             # nor clean work to delete, and it gets its own advice.
             # audit C1 (ninth): by what THIS apply changed.
-            classify_apply_failure "$DATA_DIR" "$_before_unmerged"
+            classify_apply_failure "$DATA_DIR" "$_sha"
+            if [[ "$apply_outcome" == "partial" ]]; then
+                # audit S27 (tenth re-audit): STOP HERE. Resolving the
+                # markers below and dropping the entry — which is what
+                # the conflicted path does, with rc 0 and a clean gate —
+                # destroys the only copy of the untracked files this
+                # apply could not write. Recovering them means choosing
+                # between the entry's copy and whatever is in the tree,
+                # which is a decision for a human, not a resolver.
+                record_partial_stash "$DATA_DIR" "$_sha" "$apply_outcome_untracked"
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: applying stash $(describe_stash "$DATA_DIR" "$_sha") in $DATA_DIR succeeded only PARTLY — it restored the tracked changes but NOT ${apply_outcome_untracked//$'\n'/, }, and those files exist ONLY inside the entry. Recover them (git -C $DATA_DIR checkout ${_sha}^3 -- <path>; inspect with git -C $DATA_DIR show ${_sha}^3:<path>), resolve any conflict markers, and only then delete the entry."
+                fail "data submodule: applying stash ${_sha:0:8} restored only part of it — ${apply_outcome_untracked//$'\n'/, } are still only in the entry; manual recovery required"
+            fi
             if [[ "$apply_outcome" == "conflicted" ]]; then
                 record_conflicted_stash "$DATA_DIR" "$_sha" "$apply_outcome_paths"
             elif [[ "$apply_outcome" == "blocked" ]]; then
@@ -1870,7 +2300,7 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             log "parent repo: stash ${_sha:0:8} is no longer on the stack — skipping"
             continue
         fi
-        _before_unmerged="$(unmerged_paths "$PA_DIR")"
+        snapshot_before_apply "$PA_DIR"
         if ! apply_stash_by_sha "$PA_DIR" "$_sha"; then
             # The entry is preserved by git either way, and the EXIT
             # handler must not try again.
@@ -1886,7 +2316,19 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # as markers — popping it again would apply the same content
             # on top of them — while a refused one left the tree untouched
             # and its work only in the stash, where a pop is exactly right.
-            classify_apply_failure "$PA_DIR" "$_before_unmerged"
+            #
+            # audit S27 (tenth re-audit): and PARTIAL is a fourth state
+            # this branch used to call REFUSED — telling the operator
+            # "the tree was left untouched and the work is only in the
+            # stash" about a tree that had just been half-written, and
+            # inviting a pop that git refuses again for the same reason.
+            classify_apply_failure "$PA_DIR" "$_sha"
+            if [[ "$apply_outcome" == "partial" ]]; then
+                record_partial_stash "$PA_DIR" "$_sha" "$apply_outcome_untracked"
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR restored only part of it — ${apply_outcome_untracked//$'\n'/, } exist ONLY inside the entry, and the rest is already in the tree. Recover those files (git -C $PA_DIR checkout ${_sha}^3 -- <path>) before you delete the entry, and do NOT pop it."
+                fail "parent repo: applying stash ${_sha:0:8} restored only part of it — manual recovery required"
+            fi
             if [[ "$apply_outcome" == "conflicted" ]]; then
                 # audit L9 (eighth re-audit): the diagnosis only. The
                 # recovery advice comes from the conflicted group in the
