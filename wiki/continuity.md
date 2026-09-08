@@ -2397,12 +2397,14 @@ every round with its re-audit outcome, six decisions for Shawn).
   a tranche (report sections 0-8). Merged 2026-09-08/09: PR #121 (memory-store
   writers, d1c3773), #122 (retrieval, 46e7dac), #123 (writer follow-ups and
   the hermeticity guards: no network, no live Postgres, store snapshots,
-  bb616b7), #126 (bake-off tooling, 81eb4d3). Open with re-audits or fix
-  rounds in flight: #124 (archive pipeline, refused once), #125 (external
-  services, refused once), #127 (concurrency-tolerant guard, midnight
-  flake); rounds 4f (memory readers and anchors) and 4g (style-analyser
-  scripts) done and awaiting PRs; follow-up rounds 3c-5, 4b-3, 4e-2
-  running. Main suite about 2,900. Two operational lessons recorded in the
+  bb616b7), #126 (bake-off tooling, 81eb4d3), #130 (retrieval follow-ups,
+  552af25), #125 (external services, 23a85ef, after two re-audits). Open
+  with re-audits or fix rounds in flight: #124 (archive pipeline, round
+  4c-2), #127 (hermeticity guards and the midnight flake, round 4a-4),
+  #128 (style-analyser scripts, round 4g-2), #129 (memory readers and
+  anchors), #131 (bake-off follow-ups), #132 (daily-sync follow-ups);
+  round 4d-3 (external-services follow-ups) running. Main suite about
+  3,100. Two operational lessons recorded in the
   scratchpad: concurrent agents need private scratch directories, and
   concurrent suites need isolated `--basetemp` and a bounded /tmp
   footprint (the 16 GB tmpfs filled and ran out of inodes twice). Decisions
