@@ -585,9 +585,21 @@ committed_memory_appends=0
 if [[ $DRY_RUN -eq 0 ]]; then
     memory_dirty=()
     for _mf in "${MEMORY_APPEND_FILES[@]}"; do
-        if [[ -n "$(git status --porcelain -- "$_mf")" ]]; then
-            memory_dirty+=("$_mf")
+        _mf_status="$(git status --porcelain -- "$_mf")"
+        [[ -n "$_mf_status" ]] || continue
+        # audit C2: an UNMERGED path is "dirty" too. A previous run that
+        # bailed on a conflicted stash pop (audit S3) leaves markers in the
+        # tree, and staging one here commits git's `<<<<<<<` lines into the
+        # append-only corpus. Once the human resolves the prose file that
+        # stopped that run, the push publishes the markers and BOTH
+        # machines pull a memories.jsonl that no longer parses. Refuse, and
+        # say so where session start will show it.
+        if [[ "$_mf_status" =~ ^(UU|AA|DD|AU|UA|DU|UD)\  ]]; then
+            write_sync_gate 1 \
+                "daily-sync STOPPED: $_mf is unmerged in $DATA_DIR (conflict markers in the corpus). Resolve it by hand — scripts/resolve-merge-conflicts.py $DATA_DIR/$_mf, then git -C $DATA_DIR add $_mf — before the next sync."
+            fail "$_mf is unmerged (conflict markers present); refusing to commit it"
         fi
+        memory_dirty+=("$_mf")
     done
     if [[ ${#memory_dirty[@]} -gt 0 ]]; then
         log "data submodule: committing append-only memory files (${memory_dirty[*]})"

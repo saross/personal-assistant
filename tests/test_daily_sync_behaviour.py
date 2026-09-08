@@ -394,6 +394,51 @@ class TestStashPopConflictPartitioning:
         assert gate and gate[0] == "1", gate
         assert "tasks/inbox.md" in gate[1]
 
+    def test_next_run_refuses_to_commit_the_conflicted_corpus(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C2, end to end over two runs.
+
+        Run one takes the S3 abort with markers left in both a prose file
+        and memories.jsonl. Run two used to see ``UU memories/…`` as merely
+        "dirty", stage it, and commit git's conflict markers into the
+        append-only corpus — which the S1 push then publishes to both
+        machines as unparseable JSONL.
+        """
+        machine = world.add_machine("a")
+        # Both files conflict, and both are in the branch-switch stash
+        # (which is the only stash that can carry memories.jsonl).
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        world.publish_data_change("tasks/inbox.md", "# Inbox\n\n- theirs\n")
+        world.publish_memory_append("2026-09-08-theirs")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- ours\n", encoding="utf-8"
+        )
+        machine.append_memory("2026-09-08-ours")
+
+        first = world.run_sync(machine)
+        assert first.returncode == 2, first.stdout + first.stderr
+        corpus = machine.memories.read_text(encoding="utf-8")
+        assert "<<<<<<<" in corpus, "expected run one to leave the corpus unmerged"
+        published_before = world.published_data_head()
+
+        second = world.run_sync(machine)
+        combined = second.stdout + second.stderr
+        assert second.returncode == 2, combined
+        assert "unmerged" in combined
+        # The direct harm: markers must never enter a commit. (They reach
+        # origin one step later, when the human resolves the prose file
+        # that stopped the run and the S1 push finds HEAD ahead.)
+        committed = git("show", "HEAD:memories/memories.jsonl", cwd=machine.data).stdout
+        assert "<<<<<<<" not in committed, "conflict markers were committed"
+        assert world.published_data_head() == published_before, (
+            "conflict markers were committed and published"
+        )
+        assert "<<<<<<<" not in world.published_data_file("memories/memories.jsonl")
+        gate = world.gate("daily-sync-gate").splitlines()
+        assert gate and gate[0] == "1", gate
+        assert "memories/memories.jsonl" in gate[1]
+
     def test_clean_run_clears_the_gate(self, world: SyncWorld) -> None:
         """A gate left by an earlier wedge must not nag forever."""
         machine = world.add_machine("a")
