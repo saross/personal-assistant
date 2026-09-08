@@ -179,7 +179,7 @@ def parse_focus_slots() -> list[dict]:
         # reports it as UNPARSEABLE instead of "no deadline" (audit H10).
         deadline_match = re.search(r"\*\*\s*Deadline\s*:\s*\*\*\s*(.+?)\s*$", block, re.M)
         if deadline_match:
-            val = deadline_match.group(1).strip().strip("*").strip()
+            val = deadline_match.group(1).replace("**", "").strip()
             if val == "None":
                 slot_info["deadline"] = None
             elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", val):

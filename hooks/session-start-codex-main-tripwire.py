@@ -18,7 +18,11 @@ Rule: a commit is flagged when all of these hold —
   is how a "Squash and merge" by Shawn would look;
 - it is dated on or after the ruling; and
 - it carries a ``Co-Authored-By`` trailer naming Codex, or its author
-  identity names Codex.
+  identity names Codex; and
+- it does not carry a ``Claude-Session`` trailer. A commit made from a
+  Claude Code session carries that trailer and may credit the Codex agent
+  as co-author for a reviewed patch; the Codex agent's own commits never
+  carry it. (Forgeable, like everything here; this is a tripwire.)
 
 Subject lines mentioning Codex are deliberately not a signal: Claude's own
 documentation commits mention Codex constantly.
@@ -55,7 +59,7 @@ MAX_COMMITS = 500
 # fields, so a hostile subject or trailer cannot shift or forge a record.
 FIELD_SEP = "\x00"
 FIELD_SEP_FMT = "%x00"
-FIELDS = 7
+FIELDS = 8
 
 
 def git(repo: Path, *args: str, timeout: int = 15) -> str:
@@ -94,6 +98,7 @@ def flagged_commits(
     fmt = FIELD_SEP_FMT.join((
         "%H", "%an", "%ae", "%ce", "%cs", "%s",
         "%(trailers:key=Co-Authored-By,valueonly,separator=%x2c)",
+        "%(trailers:key=Claude-Session,valueonly)",
     )) + FIELD_SEP_FMT
     # No --max-count: git applies it before --reverse, which would drop the
     # OLDEST commits in the window — the ones this hook most needs to see.
@@ -103,17 +108,19 @@ def flagged_commits(
     )
     # Output is: f1 NUL f2 NUL … f7 NUL "\n" per commit — the newline git adds
     # after each record is glued to the next record's SHA, so groups are
-    # exactly seven wide and the SHA is stripped of it.
+    # exactly FIELDS wide and the SHA is stripped of it.
     parts = out.split(FIELD_SEP)
     flagged: list[dict[str, str]] = []
     for start in range(0, len(parts) - FIELDS + 1, FIELDS):
-        sha, author, author_email, committer_email, date, subject, trailers = (
-            parts[start:start + FIELDS])
+        (sha, author, author_email, committer_email, date, subject, trailers,
+         claude_session) = parts[start:start + FIELDS]
         sha = sha.strip()
         if not sha:
             continue
         if sha in acked or committer_email.strip().lower() == WEB_FLOW_EMAIL:
             continue
+        if claude_session.strip():
+            continue          # made from a Claude session; a co-author credit is not a push
         if names_codex(trailers) or names_codex(author) or names_codex(author_email):
             flagged.append({
                 "sha": sha, "date": date, "subject": printable(subject),

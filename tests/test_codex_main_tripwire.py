@@ -184,3 +184,12 @@ def test_ack_without_an_argument_is_a_usage_error(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["tripwire", "--ack"])
     assert tripwire.main() == 2
     assert "usage" in capsys.readouterr().err
+
+
+def test_claude_session_commit_crediting_codex_is_not_flagged(repo):
+    """A reviewed patch committed from a Claude session credits the Codex agent as
+    co-author; the Claude-Session trailer marks it as Claude's own commit."""
+    trailer = CODEX_TRAILER + "\nClaude-Session: https://claude.ai/code/session_x"
+    commit(repo, "a", "fix: apply the peer's patch" + trailer)
+    sha = commit(repo, "b", "feat: a real direct push" + CODEX_TRAILER)
+    assert flagged(repo) == [sha]

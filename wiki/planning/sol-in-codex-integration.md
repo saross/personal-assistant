@@ -385,7 +385,10 @@ behavioural controls are inadequate.
   built the same day:** `hooks/session-start-codex-main-tripwire.py`, a
   SessionStart hook on amd-tower and zbook, flags any non-merge commit on
   the first-parent chain of PA `main` since the ruling that carries a Codex
-  co-author trailer or author identity and was not a GitHub web squash.
+  co-author trailer or author identity, was not a GitHub web squash, and
+  carries no `Claude-Session` trailer (a Claude-session commit may credit
+  the Codex agent for a reviewed patch; the agent's own commits never carry
+  that trailer).
   Silent when clean; a reviewed hit is silenced with `--ack <sha>`. A
   tripwire, not a control: trailers and dates are forgeable.
 - **Zero-byte `CLAUDE.md` and `.claude` inside Codex workspace roots** (seen
