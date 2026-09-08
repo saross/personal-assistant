@@ -507,34 +507,34 @@ survived (eleven applied at once still pass the full suite); 5 critical,
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| E1 | `lit-scout-zotero-import.py:894` — the only duplicate guard on both Zotero write paths is an exact DOI match with no URL or scheme normalisation, while `zotero.py:328-372` normalises; an item stored as `https://doi.org/…` (the connector's form) is invisible, so `--live` imports and `add-doi-to-zotero.py` create duplicates and the latter's safety claim is false | CONFIRMED by repro | **next** (round 4d, `claude/audit-round4d`) |
-| ET1 | `lit-scout-zotero-import.py:1341-1560` — the whole write path is untested: always-create, publish-on-dry-run, wrong collection, no credential check, read-write SQLite, and no manifest idempotency each stay green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET2 | `publish-dashboard.py:540` — `main()` is never invoked: publish without `--publish`, without a token or canvas id, a failed Slack call reporting success, an empty dashboard published, and a repointed API host all stay green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET3 | `zotero.py:70` — the read-only (`immutable=1`) promise is untested because every test replaces `_connect`; a read-write open of the live Zotero database stays green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET4 | `lit-search.py:262,395` — per-host pacing and `Retry-After` handling are deletable (the suite pays the pacing cost without asserting it) | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
-| ET5 | `sync-symlinks.sh:61-75` — `prune_stale_symlinks`, the only `rm` in the tranche, has zero coverage: `-L` to `-e` and `rm` to `rm -rf` stay green and would together delete real directories under `~/.claude` | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+| E1 | `lit-scout-zotero-import.py:894` — the only duplicate guard on both Zotero write paths is an exact DOI match with no URL or scheme normalisation, while `zotero.py:328-372` normalises; an item stored as `https://doi.org/…` (the connector's form) is invisible, so `--live` imports and `add-doi-to-zotero.py` create duplicates and the latter's safety claim is false | CONFIRMED by repro | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET1 | `lit-scout-zotero-import.py:1341-1560` — the whole write path is untested: always-create, publish-on-dry-run, wrong collection, no credential check, read-write SQLite, and no manifest idempotency each stay green | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET2 | `publish-dashboard.py:540` — `main()` is never invoked: publish without `--publish`, without a token or canvas id, a failed Slack call reporting success, an empty dashboard published, and a repointed API host all stay green | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET3 | `zotero.py:70` — the read-only (`immutable=1`) promise is untested because every test replaces `_connect`; a read-write open of the live Zotero database stays green | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET4 | `lit-search.py:262,395` — per-host pacing and `Retry-After` handling are deletable (the suite pays the pacing cost without asserting it) | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET5 | `sync-symlinks.sh:61-75` — `prune_stale_symlinks`, the only `rm` in the tranche, has zero coverage: `-L` to `-e` and `rm` to `rm -rf` stay green and would together delete real directories under `~/.claude` | CONFIRMED (mutation) | **PR #125** (`claude/audit-round4d`; re-audit running) |
 
 ### Medium (external)
 
 | # | Finding | Disposition |
 |---|---|---|
-| E2 | `lit-scout-zotero-import.py:463-477` — `.env` loader keeps surrounding quotes and mis-parses `export` lines; `env-fingerprint.sh` reports the same file healthy | **next** (round 4d, `claude/audit-round4d`) |
-| E3 | `lit-search.py:203` — the Semantic Scholar key is set client-wide and sent to CrossRef, OpenAlex, and DataCite, against the rule the docstring above it states | **next** (round 4d, `claude/audit-round4d`) |
-| E4 | `lit-scout-zotero-import.py:1117` — CrossRef `date-parts: [[null]]` writes the literal string "None" as the Zotero date | **next** (round 4d, `claude/audit-round4d`) |
-| E5 | `lit-scout-zotero-import.py:1099` — the title is written with HTML intact while the abstract is stripped | **next** (round 4d, `claude/audit-round4d`) |
-| E6 | `add-doi-to-zotero.py:139` — reads only the retirement-candidate key; breaks when it is revoked (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E7 | `publish-dashboard.py:479` — the bearer token follows redirects to any host (stdlib redirect handler) | **next** (round 4d, `claude/audit-round4d`) |
-| E8 | `lit-scout-zotero-import.py:1277` — `ensure_subcollection` reads one unpaginated page, so a same-named twin is created once the staging collection grows (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E9 | `sync-symlinks.sh:243` — `pip install --upgrade -r requirements.txt` runs unattended at session start whenever one probe import is missing (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E10 | `sync-symlinks.sh:133` — `git submodule update --init --recursive` at every session start detaches an initialised `data/` and can orphan a concurrent session's commits (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
-| E11 | `compose-global-claude-md.sh:25-30` — sources from the script's tree, target from `$HOME`: run from a worktree it overwrites the live global instructions with the branch's content | CONFIRMED in sandbox; **next** (round 4d, `claude/audit-round4d`) |
-| ET6-7 | `_http_retry.py:249,265` — the timeout kwarg and the exception tuple are mutable unnoticed | **next** (round 4d, `claude/audit-round4d`) |
-| ET8-10 | `compose-global-claude-md.sh:85,78,117` — `--dry-run` writing, layer order, and a write to a Sol-owned surface all stay green | **next** (round 4d, `claude/audit-round4d`) |
-| ET11 | `sync-symlinks.sh:120` — the "real file, leave it" branch untested | **next** (round 4d, `claude/audit-round4d`) |
-| ET12 | `zotero.py:397,406` — `_normalise_doi` and `find_by_doi` have no test anywhere (a prior silent-failure defect is recorded in `wiki/working-notes.md:577`) | **next** (round 4d, `claude/audit-round4d`) |
-| ET13 | `lit-scout-zotero-import.py:1271` — subcollection idempotency untested | **next** (round 4d, `claude/audit-round4d`) |
-| ET14 | `env-fingerprint.sh` — zero tests for the one script whose purpose is handling secrets safely | **next** (round 4d, `claude/audit-round4d`) |
-| ET15 | `syncthing-bind-heal.sh:43-46` — the precondition before `docker compose up --force-recreate` is untested | **next** (round 4d, `claude/audit-round4d`) |
+| E2 | `lit-scout-zotero-import.py:463-477` — `.env` loader keeps surrounding quotes and mis-parses `export` lines; `env-fingerprint.sh` reports the same file healthy | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E3 | `lit-search.py:203` — the Semantic Scholar key is set client-wide and sent to CrossRef, OpenAlex, and DataCite, against the rule the docstring above it states | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E4 | `lit-scout-zotero-import.py:1117` — CrossRef `date-parts: [[null]]` writes the literal string "None" as the Zotero date | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E5 | `lit-scout-zotero-import.py:1099` — the title is written with HTML intact while the abstract is stripped | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E6 | `add-doi-to-zotero.py:139` — reads only the retirement-candidate key; breaks when it is revoked (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E7 | `publish-dashboard.py:479` — the bearer token follows redirects to any host (stdlib redirect handler) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E8 | `lit-scout-zotero-import.py:1277` — `ensure_subcollection` reads one unpaginated page, so a same-named twin is created once the staging collection grows (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E9 | `sync-symlinks.sh:243` — `pip install --upgrade -r requirements.txt` runs unattended at session start whenever one probe import is missing (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E10 | `sync-symlinks.sh:133` — `git submodule update --init --recursive` at every session start detaches an initialised `data/` and can orphan a concurrent session's commits (SUSPECTED) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| E11 | `compose-global-claude-md.sh:25-30` — sources from the script's tree, target from `$HOME`: run from a worktree it overwrites the live global instructions with the branch's content | CONFIRMED in sandbox; **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET6-7 | `_http_retry.py:249,265` — the timeout kwarg and the exception tuple are mutable unnoticed | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET8-10 | `compose-global-claude-md.sh:85,78,117` — `--dry-run` writing, layer order, and a write to a Sol-owned surface all stay green | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET11 | `sync-symlinks.sh:120` — the "real file, leave it" branch untested | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET12 | `zotero.py:397,406` — `_normalise_doi` and `find_by_doi` have no test anywhere (a prior silent-failure defect is recorded in `wiki/working-notes.md:577`) | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET13 | `lit-scout-zotero-import.py:1271` — subcollection idempotency untested | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET14 | `env-fingerprint.sh` — zero tests for the one script whose purpose is handling secrets safely | **PR #125** (`claude/audit-round4d`; re-audit running) |
+| ET15 | `syncthing-bind-heal.sh:43-46` — the precondition before `docker compose up --force-recreate` is untested | **PR #125** (`claude/audit-round4d`; re-audit running) |
 
 Lows recorded: E12 dead "n.d." default; E13 only the exact `--dry-run`
 spelling is safe; E14 POST retried without an idempotency rule; E15
