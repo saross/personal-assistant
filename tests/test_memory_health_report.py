@@ -344,19 +344,56 @@ class TestTheQuarantineCountAgreesWithTheGate:
             f"{label}: /memory-health says {reported}, the gate says {gated}"
         )
 
-    def test_a_missing_file_is_unknown_not_zero(self, monkeypatch, tmp_path):
+    def test_an_absent_file_counts_zero(self, monkeypatch, tmp_path):
         """
-        The report and the gate now agree about absence too. Mapping an
-        unreadable file to 0 printed "0 (expect 0)" and an overall PASS
-        while the data submodule was unmounted — the one state in which a
-        standing alarm most needs to survive (audit 2026-09-08, AN8).
+        No file is the ordinary state of a machine whose sync has never
+        dropped a row: ``sync-to-postgres.py`` creates it on the first drop.
+        Reporting a fault here would leave the report permanently red on a
+        healthy machine, and an alarm that is always on is not an alarm.
 
-        Kills the mutation ``return 0 if entries is None else len(entries)``.
+        Kills the mutation that folds "absent" into the unreadable branch.
         """
         monkeypatch.setattr(
             mhr, "QUARANTINE_FILE", tmp_path / "not-there.jsonl",
         )
+        assert mhr.quarantine_state() == (0, mhr.QUARANTINE_ABSENT)
+        assert mhr.quarantine_count() == 0
+
+    def test_a_file_that_exists_but_cannot_be_decoded_is_unknown(
+        self, monkeypatch, tmp_path,
+    ):
+        """
+        The state AN8 was about: the file is THERE and we cannot read it, so
+        we do not know whether it holds nothing or a hundred dropped rows.
+
+        Kills the mutation ``return 0 if entries is None else len(entries)``,
+        which printed "0 (expect 0)" over exactly that file.
+        """
+        damaged = tmp_path / "quarantine-postgres-drops.jsonl"
+        damaged.write_bytes(b"\xff\xfe{\"reason\": \"a\"}\n")
+        monkeypatch.setattr(mhr, "QUARANTINE_FILE", damaged)
+        assert mhr.quarantine_state() == (None, mhr.QUARANTINE_UNREADABLE)
         assert mhr.quarantine_count() is None
+
+    def test_a_path_that_cannot_be_opened_is_unknown(
+        self, monkeypatch, tmp_path,
+    ):
+        """A directory where the file should be is not "no quarantined rows"."""
+        blocked = tmp_path / "quarantine-postgres-drops.jsonl"
+        blocked.mkdir()
+        monkeypatch.setattr(mhr, "QUARANTINE_FILE", blocked)
+        assert mhr.quarantine_state() == (None, mhr.QUARANTINE_UNREADABLE)
+
+    def test_a_readable_file_reports_its_real_count(
+        self, monkeypatch, tmp_path,
+    ):
+        """The third state, for completeness: read it and say what is there."""
+        path = tmp_path / "quarantine-postgres-drops.jsonl"
+        path.write_text(
+            '{"reason": "a"}\n{"reason": "b"}\n', encoding="utf-8",
+        )
+        monkeypatch.setattr(mhr, "QUARANTINE_FILE", path)
+        assert mhr.quarantine_state() == (2, mhr.QUARANTINE_READ)
 
 
 # ============================================================================
@@ -461,18 +498,39 @@ class TestBuildReportVerdict:
     def test_an_unreadable_quarantine_file_is_unknown_and_fails(
         self, report_paths, fake_pg, monkeypatch,
     ) -> None:
-        """AN8: absence must not read as "0 (expect 0)" and PASS."""
+        """AN8: a file we cannot read must not print "0 (expect 0)" and PASS."""
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        damaged = report_paths / "quarantine-postgres-drops.jsonl"
+        damaged.write_bytes(b"\xff\xfe{\"reason\": \"a\"}\n")
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, clean = _build()
+        assert report["integrity"]["quarantine_count"] is None
+        assert report["integrity"]["quarantine_state"] == mhr.QUARANTINE_UNREADABLE
+        assert clean is False
+        rendered = "\n".join(mhr.render_report(report))
+        assert "UNKNOWN — quarantine file present but unreadable" in rendered
+        assert "overall                 : FAIL" in rendered
+
+    def test_an_absent_quarantine_file_passes_and_says_so(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """The state of this machine today: no file, nothing ever dropped.
+
+        Kills the mutation that fails the verdict on absence — which would
+        make /memory-health permanently red on a healthy machine.
+        """
         _write_corpus(report_paths, [_anchored(id="m-1")])
         monkeypatch.setattr(
             mhr, "QUARANTINE_FILE", report_paths / "not-there.jsonl",
         )
         fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
         report, clean = _build()
-        assert report["integrity"]["quarantine_count"] is None
-        assert clean is False
+        assert report["integrity"]["quarantine_count"] == 0
+        assert report["integrity"]["quarantine_state"] == mhr.QUARANTINE_ABSENT
+        assert clean is True
         rendered = "\n".join(mhr.render_report(report))
-        assert "UNKNOWN" in rendered
-        assert "overall                 : FAIL" in rendered
+        assert "0 (expect 0; never written on this machine)" in rendered
+        assert "overall                 : PASS" in rendered
 
     def test_an_archive_leak_fails(self, report_paths, fake_pg) -> None:
         """An archived id still is_active=TRUE is a recall leak.

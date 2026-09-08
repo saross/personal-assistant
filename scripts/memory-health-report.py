@@ -592,8 +592,20 @@ def pg_snapshot(logger: logging.Logger) -> dict[str, Any] | None:
         conn.close()
 
 
-def quarantine_count() -> int | None:
-    """Number of records in the PG-drop quarantine, or ``None`` if unknown.
+#: No quarantine file at all. ``sync-to-postgres.py`` creates it on the FIRST
+#: dropped row, so its absence is the ordinary state of a machine whose sync
+#: has never dropped one — not a fault.
+QUARANTINE_ABSENT = "absent"
+#: The file was there and parsed.
+QUARANTINE_READ = "read"
+#: The file EXISTS and could not be read or decoded: damage, a permission
+#: wall, a directory in its place, an unmounted submodule. This is the state
+#: that must not launder into "0".
+QUARANTINE_UNREADABLE = "unreadable"
+
+
+def quarantine_state() -> tuple[int | None, str]:
+    """Return ``(count, state)`` for the PG-drop quarantine file.
 
     Read through the sync pipeline's own parser, so ``/memory-health``
     and the session-start gate can never report different numbers for
@@ -601,15 +613,43 @@ def quarantine_count() -> int | None:
     disagree over damage and over a row whose newline was lost (tenth
     re-audit, finding C1 / L4).
 
-    ``None`` — the file is missing or unreadable — is reported as UNKNOWN and
-    FAILS the verdict. Mapping it to 0 printed "0 (expect 0)" and an overall
-    PASS while the data submodule was unmounted, which is the one state where
-    a standing alarm most needs to survive; the gate has said as much since
-    the ninth re-audit ("None is emphatically not empty"), and the report now
-    agrees with it (audit 2026-09-08, finding AN8).
+    Three states, deliberately distinguished (audit 2026-09-08, finding AN8,
+    as corrected on review):
+
+    * **absent** — ``(0, "absent")``. ``sync-to-postgres.py`` writes this file
+      only when it first drops a row, so no file means no row has ever been
+      dropped on this machine. Reporting a fault here would make the report
+      permanently red on a healthy machine, and an alarm that is always on is
+      not an alarm.
+    * **read** — ``(n, "read")``, the real count.
+    * **unreadable** — ``(None, "unreadable")``, when the file EXISTS but
+      :func:`read_quarantine_entries` cannot parse or decode it. That is the
+      case AN8 was about: mapping it to 0 printed "0 (expect 0)" and an
+      overall PASS over a file that might hold a hundred dropped rows. The
+      session-start gate has said as much since the ninth re-audit ("None is
+      emphatically not empty"), and the report now agrees with it.
     """
+    try:
+        present = QUARANTINE_FILE.exists()
+    except OSError:
+        # Even the existence check failed (a broken mount, a permission wall
+        # on the parent): we cannot say the file is absent, so we do not.
+        return None, QUARANTINE_UNREADABLE
+    if not present:
+        return 0, QUARANTINE_ABSENT
     entries = read_quarantine_entries(QUARANTINE_FILE)
-    return None if entries is None else len(entries)
+    if entries is None:
+        return None, QUARANTINE_UNREADABLE
+    return len(entries), QUARANTINE_READ
+
+
+def quarantine_count() -> int | None:
+    """The quarantine count, or ``None`` when a file that EXISTS is unreadable.
+
+    Thin accessor over :func:`quarantine_state`; see it for the three-state
+    contract. An absent file counts 0.
+    """
+    return quarantine_state()[0]
 
 
 # ============================================================================
@@ -704,12 +744,15 @@ def render_report(report: dict[str, Any]) -> list[str]:
         out.append("  archive↔PG parity       : (PG unavailable — skipped)")
     out.append(f"  dup-id tripwire         : {i['duplicate_id_groups']} (expect 0)")
     quarantine = i["quarantine_count"]
-    out.append(
-        "  quarantine (PG drops)   : "
-        + ("UNKNOWN — quarantine file missing or unreadable "
-           f"({QUARANTINE_FILE})"
-           if quarantine is None else f"{quarantine} (expect 0)")
-    )
+    if quarantine is None:
+        quarantine_line = (
+            f"UNKNOWN — quarantine file present but unreadable ({QUARANTINE_FILE})"
+        )
+    elif i.get("quarantine_state") == QUARANTINE_ABSENT:
+        quarantine_line = "0 (expect 0; never written on this machine)"
+    else:
+        quarantine_line = f"{quarantine} (expect 0)"
+    out.append(f"  quarantine (PG drops)   : {quarantine_line}")
 
     e = report["confab"]
     out.append("\n[E] Confab-flag rate (§8 measurement 3)")
@@ -863,9 +906,11 @@ def build_report(
 
     # PG-dependent integrity
     pg = pg_snapshot(logger)
+    quarantine, quarantine_status = quarantine_state()
     integrity: dict[str, Any] = {
         "duplicate_id_groups": corpus["duplicate_id_groups"],
-        "quarantine_count": quarantine_count(),
+        "quarantine_count": quarantine,
+        "quarantine_state": quarantine_status,
     }
     archive_parity_dict = None
     if pg is not None:
@@ -901,8 +946,10 @@ def build_report(
     # KNOWN and zero, no archive leak, and (when PG is reachable) no #55
     # missing-id beyond a small unsynced tail. A missing-id only fails when PG
     # is reachable AND a leak/dup is present; the unsynced tail (live\PG) is
-    # expected and does NOT fail the report. An UNKNOWN quarantine count fails:
-    # an unreadable standing alarm is not a quiet one (finding AN8).
+    # expected and does NOT fail the report. An UNKNOWN quarantine count fails
+    # — an unreadable standing alarm is not a quiet one — while an ABSENT
+    # quarantine file counts 0 and passes, because the sync creates it only on
+    # its first dropped row (finding AN8).
     clean = (
         integrity["duplicate_id_groups"] == 0
         and integrity["quarantine_count"] == 0
