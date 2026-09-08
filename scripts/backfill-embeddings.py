@@ -26,6 +26,13 @@ Options:
                     individual batch failures rather than aborting on
                     the first all-failed batch (the default behaviour
                     aborts to surface a sustained Ollama outage).
+
+Exit codes:
+    0 - backfill ran (possibly embedding nothing)
+    1 - Ollama unavailable or the model is not pulled
+    2 - schema-version mismatch
+    3 - the endpoint returned wrong-width vectors (finding P12); nothing
+        was written, and the endpoint's model must be fixed first
 """
 
 import argparse
@@ -49,7 +56,12 @@ DEFAULT_BATCH_SIZE = 200
 
 # Import embed module from same directory
 sys.path.insert(0, str(PA_DIR / "scripts"))
-from embed import build_embed_text, generate_embeddings, is_ollama_available
+from embed import (  # noqa: E402
+    EmbeddingDimensionError,
+    build_embed_text,
+    generate_embeddings,
+    is_ollama_available,
+)
 # Schema-version guard (audit IC5 / B-X1).
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 
@@ -236,9 +248,19 @@ def backfill(
             })
             records.append((mid, text))
 
-        # Generate embeddings
+        # Generate embeddings. A wrong-width model is a configuration
+        # fault, not a transient failure: stop rather than re-queue the
+        # same rows on every invocation (audit round two, finding P12).
         texts = [text for _, text in records]
-        embeddings = generate_embeddings(texts)
+        try:
+            embeddings = generate_embeddings(texts)
+        except EmbeddingDimensionError as exc:
+            logger.error(
+                "Aborting backfill — %s Nothing from this batch was "
+                "written, so no row is left half-embedded.", exc,
+            )
+            conn.close()
+            sys.exit(3)
 
         # Pair successful embeddings with IDs
         pairs = []

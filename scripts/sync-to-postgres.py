@@ -42,6 +42,7 @@ try:
         build_embed_text,
         generate_embeddings,
         is_ollama_available,
+        EmbeddingDimensionError,
     )
     HAS_EMBED = True
 except ImportError:
@@ -937,6 +938,17 @@ def _update_embeddings(logger: logging.Logger) -> None:
                 len(pairs), len(rows) - len(pairs),
             )
 
+    except EmbeddingDimensionError as exc:
+        # Deliberately ahead of the broad handler below: a wrong-width
+        # model is a configuration fault that repeats on every tick, and
+        # the old code turned PostgreSQL's rejection into a warning and
+        # re-embedded the same rows forever. ERROR (not WARNING) so it
+        # reaches cron's stderr capture (audit round two, finding P12).
+        logger.error(
+            "Embedding update ABORTED — %s Rows stay unembedded (and so "
+            "absent from semantic /recall) until the endpoint is fixed; "
+            "content sync is unaffected.", exc,
+        )
     except Exception as exc:
         logger.warning("Embedding update failed (non-fatal): %s", exc)
     finally:

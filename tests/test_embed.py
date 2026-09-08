@@ -186,10 +186,14 @@ class TestGenerateEmbeddings:
     """Tests for batch embedding generation."""
 
     def test_successful_batch(self) -> None:
-        """Should return embeddings for all inputs."""
-        mock_response = json.dumps({
-            "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        }).encode()
+        """Should return embeddings for all inputs.
+
+        Vectors are the real 768 width (finding P12 added a dimension
+        guard, and a three-element toy vector is now correctly refused).
+        """
+        first = [0.1] * embed.EXPECTED_EMBEDDING_DIM
+        second = [0.4] * embed.EXPECTED_EMBEDDING_DIM
+        mock_response = json.dumps({"embeddings": [first, second]}).encode()
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = mock_response
@@ -200,8 +204,8 @@ class TestGenerateEmbeddings:
             result = embed.generate_embeddings(["text1", "text2"])
 
         assert len(result) == 2
-        assert result[0] == [0.1, 0.2, 0.3]
-        assert result[1] == [0.4, 0.5, 0.6]
+        assert result[0] == first
+        assert result[1] == second
 
     def test_connection_error(self) -> None:
         """Should return list of None on connection failure."""
@@ -235,9 +239,8 @@ class TestGenerateEmbeddings:
 
     def test_fewer_embeddings_than_inputs(self) -> None:
         """Should pad with None if server returns too few embeddings."""
-        mock_response = json.dumps({
-            "embeddings": [[0.1, 0.2]]
-        }).encode()
+        only = [0.1] * embed.EXPECTED_EMBEDDING_DIM
+        mock_response = json.dumps({"embeddings": [only]}).encode()
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = mock_response
@@ -248,7 +251,7 @@ class TestGenerateEmbeddings:
             result = embed.generate_embeddings(["text1", "text2", "text3"])
 
         assert len(result) == 3
-        assert result[0] == [0.1, 0.2]
+        assert result[0] == only
         assert result[1] is None
         assert result[2] is None
 
@@ -262,10 +265,9 @@ class TestEmbedSingle:
     """Tests for single-text embedding convenience wrapper."""
 
     def test_returns_vector(self) -> None:
-        """Should return a single vector."""
-        mock_response = json.dumps({
-            "embeddings": [[0.1, 0.2, 0.3]]
-        }).encode()
+        """Should return a single vector, at the pipeline's real width."""
+        vector = [0.1] * embed.EXPECTED_EMBEDDING_DIM
+        mock_response = json.dumps({"embeddings": [vector]}).encode()
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = mock_response
@@ -275,7 +277,7 @@ class TestEmbedSingle:
         with patch("embed.urllib.request.urlopen", return_value=mock_resp):
             result = embed.embed_single("test text")
 
-        assert result == [0.1, 0.2, 0.3]
+        assert result == vector
 
     def test_returns_none_on_failure(self) -> None:
         """Should return None when embedding fails."""
@@ -356,3 +358,76 @@ class TestOllamaBaseUrlFallback:
             assert reloaded.is_ollama_available() is False
         finally:
             self._reload_with_env(monkeypatch, None)
+
+
+# ============================================================================
+# Audit round two, finding P12 (lens A-M10) — embedding dimension is
+# validated once, loudly, instead of being re-attempted forever
+# ============================================================================
+
+
+class TestEmbeddingDimensionGuard:
+    """A wrong-width model must stop the run, not silently re-queue rows."""
+
+    def _mock_response(self, embeddings):
+        """Build a mocked Ollama /api/embed response."""
+        payload = json.dumps({"embeddings": embeddings}).encode()
+        resp = MagicMock()
+        resp.read.return_value = payload
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_wrong_dimension_raises(self) -> None:
+        """
+        768 is the pipeline's width (``vector(768)`` in schema.sql). A
+        1024-wide vector used to be pushed straight at PostgreSQL, which
+        rejected the UPDATE; the caller's broad handler logged a warning
+        and the same rows were re-fetched and re-embedded on every cron
+        tick, indefinitely. The mutation this kills: dropping the
+        ``_assert_embedding_dimension`` call.
+        """
+        resp = self._mock_response([[0.1] * 1024, [0.2] * 1024])
+        with patch("embed.urlopen_with_retry", return_value=resp):
+            with pytest.raises(embed.EmbeddingDimensionError) as excinfo:
+                embed.generate_embeddings(["a", "b"])
+        assert "1024" in str(excinfo.value)
+        assert "768" in str(excinfo.value)
+
+    def test_correct_dimension_passes(self) -> None:
+        """The expected width is returned untouched."""
+        resp = self._mock_response([[0.1] * 768, [0.2] * 768])
+        with patch("embed.urlopen_with_retry", return_value=resp):
+            result = embed.generate_embeddings(["a", "b"])
+        assert len(result) == 2
+        assert len(result[0]) == 768
+
+    def test_dimension_error_is_not_swallowed_by_the_ladder(self) -> None:
+        """
+        ``generate_embeddings`` degrades to ``[None, ...]`` for transient
+        failures. The dimension error must escape that ladder — returning
+        Nones would look like an ordinary Ollama hiccup and the run would
+        keep going.
+        """
+        resp = self._mock_response([[0.1] * 512])
+        with patch("embed.urlopen_with_retry", return_value=resp):
+            with pytest.raises(embed.EmbeddingDimensionError):
+                embed.generate_embeddings(["a"])
+
+    def test_none_entries_do_not_trip_the_guard(self) -> None:
+        """A failed element is None, not a short vector — skip it."""
+        resp = self._mock_response([None, [0.2] * 768])
+        with patch("embed.urlopen_with_retry", return_value=resp):
+            result = embed.generate_embeddings(["a", "b"])
+        assert result[0] is None
+        assert len(result[1]) == 768
+
+    def test_expected_dimension_matches_the_schema(self) -> None:
+        """
+        The constant must track ``vector(768)`` in scripts/schema.sql. If
+        the schema ever changes, this test is the tripwire.
+        """
+        schema = (
+            Path(__file__).resolve().parent.parent / "scripts" / "schema.sql"
+        ).read_text(encoding="utf-8")
+        assert f"vector({embed.EXPECTED_EMBEDDING_DIM})" in schema
