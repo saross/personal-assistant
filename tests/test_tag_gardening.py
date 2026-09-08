@@ -1985,3 +1985,46 @@ class TestRewriteVocabularyEdgeCases:
         tag_gardening.rewrite_vocabulary(vocab, {"kiln", "api"})
 
         assert vocab.read_text(encoding="utf-8") == "api\nkiln\n"
+
+
+    def test_two_winners_differing_only_by_case_collapse_to_one(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """A second winner spelt differently must not land beside the first.
+
+        Kills the mutation that drops ``kept_lower.add(winner.lower())``:
+        the running set never learns about the winner just added, so a plan
+        naming both "api" and "API" as winners writes both into the
+        vocabulary, and every later orphan report calls one of them unused.
+        Audit round 4a-3, surviving mutation.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-601", "content": "First loser.",
+             "research_tags": ["pipelines"]},
+            {"id": "mem-602", "content": "Second loser.",
+             "research_tags": ["kilns"]},
+        ])
+        vocab.write_text("pipelines\nkilns\n", encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([
+                {"winner": "api", "losers": ["pipelines"]},
+                {"winner": "API", "losers": ["kilns"]},
+            ]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
+        assert len(tags) == 1, f"two spellings of one winner landed: {tags}"
+        assert tags[0].lower() == "api"
