@@ -523,8 +523,16 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     run; every marker fixture puts its problem on a single-digit line, so
     narrowing the line-number regex publishes markers with the suite
     green; the checker's broad exception handler is untested. Eighth
-    round running. Both machines' corpora pass `--check` at 15:50; no
-    stash in either repository; no `merge.conflictStyle` set.
+    round done (1fa64df, 99b7672; suite 1,727): the parent half has the
+    third state and distinguishes a refused from a conflicted apply; the
+    exit handler never re-applies what the run applied; an in-progress
+    rebase, merge, or unmerged tree is named at the start; a failing run
+    keeps the previous interruption line; the guard and the interrupted
+    check run before orphan reconciliation; the marker parser fails
+    closed (tested at line 13); the resolver runs under `timeout 60`.
+    Eighth pass running. Both machines at 16:15: corpora pass `--check`,
+    no stash, no in-progress rebase or merge, no unmerged path, no
+    `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
