@@ -487,3 +487,191 @@ class TestCrossMachineTieBreak:
             "the smaller copy won the cross-machine tie-break; a 0-byte "
             "transcript would beat a complete one"
         )
+
+
+# ---------------------------------------------------------------------------
+# AR13, AR14, AR16 — nothing good is overwritten, nothing is half-written
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentArchivesAreNotClobbered:
+    """A subagent transcript is a research record in its own right."""
+
+    def _source(self, tmp_path: Path, body: str) -> Path:
+        source = tmp_path / "source"
+        (source / "subagents").mkdir(parents=True, exist_ok=True)
+        (source / "subagents" / "agent-7c31.jsonl").write_text(
+            body, encoding="utf-8"
+        )
+        return source
+
+    def test_an_existing_archive_is_left_alone(self, tmp_path: Path) -> None:
+        """A re-run must not replace a good archive with today's source."""
+        source = self._source(tmp_path, '{"turn": "complete record"}\n')
+        archive_dir = tmp_path / "entry"
+        archive_dir.mkdir()
+        assert bulk_archive.archive_subagents(source, archive_dir, LOGGER) == 1
+
+        # The source has since been truncated — a live store being cleaned.
+        (source / "subagents" / "agent-7c31.jsonl").write_text(
+            "", encoding="utf-8"
+        )
+        assert bulk_archive.archive_subagents(source, archive_dir, LOGGER) == 0
+
+        with gzip.open(
+            archive_dir / "subagents" / "agent-7c31.jsonl.gz", "rt"
+        ) as handle:
+            assert handle.read() == '{"turn": "complete record"}\n'
+
+    def test_force_overwrites_deliberately(self, tmp_path: Path) -> None:
+        """The escape hatch exists, and it is opt-in."""
+        source = self._source(tmp_path, '{"turn": "first"}\n')
+        archive_dir = tmp_path / "entry"
+        archive_dir.mkdir()
+        bulk_archive.archive_subagents(source, archive_dir, LOGGER)
+        (source / "subagents" / "agent-7c31.jsonl").write_text(
+            '{"turn": "second"}\n', encoding="utf-8"
+        )
+
+        assert bulk_archive.archive_subagents(
+            source, archive_dir, LOGGER, force=True
+        ) == 1
+        with gzip.open(
+            archive_dir / "subagents" / "agent-7c31.jsonl.gz", "rt"
+        ) as handle:
+            assert handle.read() == '{"turn": "second"}\n'
+
+    def test_a_failed_write_leaves_no_partial_archive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An interrupted compression must not look like a finished one."""
+        source = self._source(tmp_path, '{"turn": "complete record"}\n')
+        archive_dir = tmp_path / "entry"
+        archive_dir.mkdir()
+
+        real_open = gzip.open
+
+        def boom(*args, **kwargs):
+            handle = real_open(*args, **kwargs)
+            handle.write(b'{"turn": "par')
+            raise OSError("interrupted mid-write")
+
+        monkeypatch.setattr(bulk_archive.gzip, "open", boom)
+        assert bulk_archive.archive_subagents(source, archive_dir, LOGGER) == 0
+        monkeypatch.setattr(bulk_archive.gzip, "open", real_open)
+
+        dest = archive_dir / "subagents"
+        assert not (dest / "agent-7c31.jsonl.gz").exists(), (
+            "a truncated archive was left where a complete one belongs"
+        )
+        assert list(dest.glob("*.tmp")) == []
+
+
+class TestEnrichApplyPreservesExistingMetadata:
+    """AR13 — a Haiku batch must not delete a Terra three-Ps block."""
+
+    def test_three_ps_survives_a_batch_apply(self, tmp_path: Path) -> None:
+        meta_path = tmp_path / "session.meta.json"
+        meta_path.write_text(json.dumps({
+            "session": {"id": SID_A},
+            "auto_generated": {
+                "title": "Old title",
+                "purpose": "Old purpose",
+                "tags": ["old"],
+                "three_ps": {
+                    "prompt_summary": "What was asked.",
+                    "process_summary": "What was done.",
+                    "provenance_summary": "Where it came from.",
+                },
+            },
+        }), encoding="utf-8")
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        existing = meta.get("auto_generated") or {}
+        meta["auto_generated"] = {
+            **existing,
+            "title": "New title",
+            "purpose": "New purpose",
+            "tags": ["new"],
+        }
+        tmp = meta_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        tmp.replace(meta_path)
+
+        after = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert after["auto_generated"]["title"] == "New title"
+        assert after["auto_generated"]["three_ps"]["provenance_summary"] == (
+            "Where it came from."
+        )
+
+    def test_the_production_apply_path_merges(self, tmp_path: Path) -> None:
+        """The same assertion, through the code that actually runs."""
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+        apply_body = source.split("def _enrich_apply(")[1].split("\ndef ")[0]
+        assert "**existing," in apply_body, (
+            "_enrich_apply replaces auto_generated wholesale again; the "
+            "Terra three_ps block is dropped by every Haiku batch apply"
+        )
+        assert "tmp.replace(meta_path)" in apply_body, (
+            "_enrich_apply writes the metadata non-atomically again"
+        )
+
+
+class TestCatalogueWrites:
+    """AR16 — the catalogue is rebuilt atomically and read defensively."""
+
+    def test_a_crash_leaves_the_previous_catalogue_intact(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": [{"id": SID_B}]}), encoding="utf-8"
+        )
+        before = pipeline.catalogue.read_text(encoding="utf-8")
+
+        real_replace = Path.replace
+
+        def boom(self, target):
+            raise OSError("interrupted")
+
+        monkeypatch.setattr(Path, "replace", boom)
+        with pytest.raises(OSError):
+            bulk_archive.write_catalogue({"sessions": []}, LOGGER)
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert pipeline.catalogue.read_text(encoding="utf-8") == before
+
+    @pytest.mark.parametrize("corruption", [
+        # A write cut off mid-array: the shape a crashed rebuild leaves.
+        '{"sessions": [',
+        # Valid JSON of the wrong shape — the toolkit's own guard catches
+        # JSONDecodeError and KeyError, so this is the case that reached
+        # discover as an unhandled TypeError and took the command down.
+        '{"sessions": [1, 2, 3]}',
+        '{"sessions": "not-a-list"}',
+    ])
+    def test_a_corrupt_catalogue_does_not_stop_discovery(
+        self, pipeline: Pipeline, corruption: str
+    ) -> None:
+        """discover reads the catalogue on every run; it must not die on it."""
+        pipeline.add_session(SID_A)
+        pipeline.catalogue.write_text(corruption, encoding="utf-8")
+
+        manifest = pipeline.discover()
+
+        assert [entry["session_id"] for entry in manifest] == [SID_A]
+
+    def test_verify_rebuilds_the_catalogue_from_disk(
+        self, pipeline: Pipeline
+    ) -> None:
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": []}), encoding="utf-8"
+        )
+
+        pipeline.verify(fix_catalogue=True)
+
+        catalogue = json.loads(
+            pipeline.catalogue.read_text(encoding="utf-8")
+        )
+        assert [entry["id"] for entry in catalogue["sessions"]] == [SID_A]
+        assert list(pipeline.archive_root.glob("CATALOG.json.tmp")) == []

@@ -22,6 +22,7 @@ Modes:
 """
 
 import argparse
+import fcntl
 import gzip
 import importlib.util
 import json
@@ -570,7 +571,17 @@ def discover_sessions(
         DEFAULT_ARCHIVE_ROOT, logger
     )
     if CATALOGUE_FILE.exists():
-        catalogued = get_archived_session_ids(CATALOGUE_FILE)
+        try:
+            catalogued = get_archived_session_ids(CATALOGUE_FILE)
+        except Exception as exc:
+            # The catalogue is a derived index; a corrupt one costs us a
+            # ghost count and nothing else. Taking discovery down over it
+            # would stop archiving entirely until someone noticed (AR16).
+            logger.warning(
+                "CATALOG.json is unreadable (%s) — treating it as empty; "
+                "rebuild it with `verify --fix-catalogue`", exc,
+            )
+            catalogued = set()
         ghosts = catalogued - archived_ids
         if ghosts:
             logger.warning(
@@ -845,13 +856,24 @@ def archive_subagents(
     source_session_dir: Path,
     archive_dir: Path,
     logger: logging.Logger,
+    force: bool = False,
 ) -> int:
     """
     Compress subagent JSONL files from a session's subagents directory
     into the archive directory.
 
+    Written via a temporary file and an atomic rename, and an existing
+    archived subagent is left alone unless *force* is set. The old version
+    wrote straight to the destination, so an interrupted run left a truncated
+    ``.gz`` that every later check accepted as the subagent's transcript, and
+    a re-run overwrote a good archived subagent with whatever the source held
+    now (audit 2026-09-08, finding AR14). ``cmd_subagents`` a few hundred
+    lines below already did it this way; this is the same discipline applied
+    to the path that runs far more often.
+
     Returns:
-        Number of subagents archived.
+        Number of subagents archived (files skipped as already present are
+        not counted).
     """
     subagent_source = source_session_dir / "subagents"
     if not subagent_source.is_dir():
@@ -865,24 +887,36 @@ def archive_subagents(
     subagent_dest.mkdir(parents=True, exist_ok=True)
 
     count = 0
+    skipped = 0
     for sa_file in subagent_files:
         dest_gz = subagent_dest / f"{sa_file.stem}.jsonl.gz"
+        if dest_gz.exists() and not force:
+            skipped += 1
+            continue
 
+        tmp = dest_gz.with_suffix(".gz.tmp")
         try:
             with open(sa_file, "rb") as f_in:
-                with gzip.open(dest_gz, "wb") as f_out:
+                with gzip.open(tmp, "wb") as f_out:
                     # Stream in chunks to keep memory bounded
                     while True:
                         chunk = f_in.read(8192)
                         if not chunk:
                             break
                         f_out.write(chunk)
+            tmp.replace(dest_gz)
             count += 1
         except Exception as exc:
+            tmp.unlink(missing_ok=True)
             logger.warning(
                 "Failed to archive subagent %s: %s", sa_file.name, exc
             )
 
+    if skipped:
+        logger.info(
+            "%d subagent archive(s) already present in %s — left alone "
+            "(pass --force to overwrite)", skipped, subagent_dest,
+        )
     return count
 
 
@@ -1366,6 +1400,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                     source_session_dir,
                     Path(archive_dir_str),
                     logger,
+                    force=getattr(args, "force", False),
                 )
                 if sa_count > 0:
                     logger.info(
@@ -2433,14 +2468,26 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
 
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            # MERGE, do not replace. The Terra path writes a three_ps block
+            # into auto_generated; replacing the dict wholesale deleted it,
+            # so applying a Haiku batch over a Terra-enriched entry silently
+            # destroyed the three-Ps summaries (audit finding AR13).
+            # _write_enriched_meta a few hundred lines above already merges;
+            # this is the same discipline on the batch path.
+            existing = meta.get("auto_generated") or {}
             meta["auto_generated"] = {
+                **existing,
                 "title": parsed.get("title", "Untitled Session"),
                 "purpose": parsed.get("purpose", ""),
                 "tags": parsed.get("tags", []),
             }
-            meta_path.write_text(
-                json.dumps(meta, indent=2), encoding="utf-8"
-            )
+            # Temp file plus atomic rename: a crash here used to truncate the
+            # metadata, and a session with no parseable meta has no id, which
+            # drops it out of every archived-ids set and re-arms the drift
+            # gates on a session that IS archived.
+            tmp = meta_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            tmp.replace(meta_path)
             applied += 1
         except Exception as exc:
             logger.warning(
@@ -2460,6 +2507,35 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
 # ============================================================================
 # Verify
 # ============================================================================
+
+
+def write_catalogue(
+    catalogue: dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Write CATALOG.json under an exclusive lock, temp file plus rename.
+
+    The old write was a bare ``write_text`` with no lock, so two concurrent
+    ``verify --fix-catalogue`` runs interleaved, and a crash left truncated
+    JSON. Truncated JSON matters more than it looks: ``discover`` reads the
+    catalogue on every run, and an unguarded parse there took the whole
+    command down (audit 2026-09-08, finding AR16).
+
+    The lock is a sibling file rather than the catalogue itself, so the
+    rename that replaces the catalogue cannot pull the lock out from under a
+    waiting writer.
+    """
+    CATALOGUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = CATALOGUE_FILE.with_name(CATALOGUE_FILE.name + ".lock")
+    payload = json.dumps(catalogue, indent=2)
+    with open(lock_path, "w", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            tmp = CATALOGUE_FILE.with_name(CATALOGUE_FILE.name + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(CATALOGUE_FILE)
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def _recorded_transcript_bytes(meta: dict[str, Any]) -> int | None:
@@ -2569,9 +2645,7 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.fix_catalogue:
         logger.info("Rebuilding catalogue...")
         catalogue = rebuild_catalogue(DEFAULT_ARCHIVE_ROOT)
-        CATALOGUE_FILE.write_text(
-            json.dumps(catalogue, indent=2), encoding="utf-8"
-        )
+        write_catalogue(catalogue, logger)
         n_sessions = len(catalogue.get("sessions", []))
         logger.info(
             "Catalogue rebuilt: %d sessions → %s",
@@ -2653,6 +2727,14 @@ def main() -> None:
         "archive", help="Compress and archive sessions"
     )
     p_archive.add_argument("--dry-run", action="store_true")
+    p_archive.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Overwrite subagent transcripts that are already archived. Off "
+            "by default: a re-run must not replace a good archived subagent "
+            "with whatever the source holds now."
+        ),
+    )
     p_archive.add_argument(
         "--limit", type=int, default=0,
         help="Archive at most N sessions (0 = all)",
