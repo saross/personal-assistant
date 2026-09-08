@@ -1561,12 +1561,12 @@ class TestTranscriptShapeFidelity:
         assert "the slash-command response" not in texts
         assert texts == ["an unrelated real question", "an ordinary answer"]
 
-    def test_a_window_of_only_meta_entries_still_advances_the_cursor(self, tmp_path):
+    def test_a_meta_only_window_still_reports_a_cursor_position(self, tmp_path):
         """Kills placing the isMeta guard ABOVE the ``last_seen_uuid`` assignment.
 
-        A window of nothing but harness injections yields no messages; if it
-        also yielded no cursor position the hook would reparse it on every
-        firing forever.
+        A window of nothing but harness injections yields no messages, but it
+        must still report where the transcript was read to, or ``main()`` has
+        nothing to save.
         """
         transcript = tmp_path / "t.jsonl"
         _write_transcript(
@@ -1579,3 +1579,69 @@ class TestTranscriptShapeFidelity:
         messages, last_uuid = eh.parse_transcript(str(transcript), None)
         assert messages == []
         assert last_uuid == "u2"
+
+    def test_main_advances_the_cursor_past_a_meta_only_window(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``if not messages: sys.exit(0)`` without the cursor advance.
+
+        Audit round two M1: ``parse_transcript`` reported the position but
+        ``main()`` exited before ``save_cursor`` ever ran, so a window whose
+        entries were all dropped by design was re-parsed on every firing
+        forever. The entries are dropped either way, so nothing is lost by
+        stepping past them.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", "harness injection " + "x" * 800, "uuid-M1",
+                    is_meta=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "subagent reply " + "y" * 800, "uuid-M2",
+                    is_sidechain=True,
+                ),
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-M"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            with pytest.raises(SystemExit) as exc:
+                eh.main()
+            # No window means no model call at all.
+            mock_cls.assert_not_called()
+
+        assert exc.value.code == 0
+        assert cursor_file.exists(), "the cursor file was never written"
+        assert json.loads(cursor_file.read_text())["sess-M"] == "uuid-M2"
+        # Nothing was persisted — the entries really were dropped.
+        assert not store.exists()
+
+    def test_main_does_not_write_a_cursor_when_nothing_is_new(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills dropping the ``new_last_uuid != last_uuid`` half of the guard.
+
+        A firing with nothing after the cursor must not rewrite the cursor
+        file; the hook fires three times at every session close, and a
+        pointless rewrite is three more chances to tear it.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        cursor_file.write_text(json.dumps({"sess-N": "uuid-A"}), encoding="utf-8")
+        before = cursor_file.stat().st_mtime_ns
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-N"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic"):
+            with pytest.raises(SystemExit):
+                eh.main()
+
+        assert cursor_file.stat().st_mtime_ns == before
+        assert json.loads(cursor_file.read_text()) == {"sess-N": "uuid-A"}

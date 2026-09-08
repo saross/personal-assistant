@@ -566,8 +566,10 @@ def parse_transcript(
             # /update response back into extraction.
             #
             # ``last_seen_uuid`` is assigned above this point, so a skipped
-            # entry still advances the cursor — a window of nothing but
-            # harness injections must not be reprocessed forever.
+            # entry still yields a cursor position. ``main()`` is what
+            # actually saves it for an all-dropped window (see the ``if not
+            # messages`` branch there) — until audit round two M1 it exited
+            # first, so such a window really was reprocessed every firing.
             if entry.get("isMeta") or entry.get("isSidechain"):
                 continue
 
@@ -1147,7 +1149,39 @@ def main() -> None:
         messages, new_last_uuid = parse_transcript(transcript_path, last_uuid)
 
         if not messages:
-            logger.debug("No new messages in session %s", session_id)
+            # A window can hold entries and still yield no messages: every
+            # one of them was harness-injected (``isMeta``), a subagent turn
+            # (``isSidechain``), a slash-command exchange, or a
+            # non-conversation entry type. All four are dropped BY DESIGN, so
+            # stepping past them loses nothing — and not stepping past them
+            # means re-parsing the same window on every subsequent firing,
+            # forever (audit round two M1: the comment in ``parse_transcript``
+            # claimed this already happened, but this branch exited before
+            # ``save_cursor`` ever ran).
+            #
+            # Distinct from the too-short-window case (audit H16), which
+            # returns None from ``extract_memories`` and deliberately holds
+            # the cursor: a short window accumulates into an extractable one,
+            # whereas dropped entries would simply be dropped again.
+            #
+            # Residual case, unchanged from the non-empty path: if the window
+            # ends between a slash-command entry and its response, the
+            # response is no longer skipped on the next firing. Stop,
+            # PreCompact, and SessionEnd all fire after a turn completes, so
+            # the response is already in the transcript by then; and a window
+            # carrying real messages alongside a command has always advanced
+            # past a pending flag this way.
+            if new_last_uuid and new_last_uuid != last_uuid:
+                cursor[session_id] = new_last_uuid
+                save_cursor(cursor)
+                logger.debug(
+                    "No extractable messages in session %s; cursor advanced "
+                    "to %s past dropped entries",
+                    session_id,
+                    new_last_uuid,
+                )
+            else:
+                logger.debug("No new entries at all in session %s", session_id)
             sys.exit(0)
 
         logger.info(
