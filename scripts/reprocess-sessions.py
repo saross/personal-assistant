@@ -410,9 +410,16 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                         continue
                 elif role == "assistant" and responses_owed:
                     # Only a text-bearing assistant entry is the command's
-                    # response, so only it spends an owed skip.
-                    if content and content.strip():
-                        responses_owed -= 1
+                    # response, so only it may spend an owed skip. Here that
+                    # is already guaranteed: the empty-content check above
+                    # dropped every entry with nothing to say — a tool-use-
+                    # only assistant turn among them — before this branch is
+                    # reached. The hook needs its own inner test because its
+                    # empty check comes later; this copy carried the same
+                    # test as dead code, which read as a live discriminator
+                    # and made the test covering it pass for the wrong
+                    # reason (audit round 4c-3, finding L-1).
+                    responses_owed -= 1
                     continue
 
                 if role in ("user", "human"):
