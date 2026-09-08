@@ -17,6 +17,7 @@ import gzip
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -132,6 +133,18 @@ def _install_fake_psycopg2(
     monkeypatch.setitem(sys.modules, "psycopg2", fake)
     monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_extras)
     return conn
+
+
+@pytest.fixture(autouse=True)
+def pinned_gate_file(indexer, tmp_path, monkeypatch):
+    """Keep this script's session-start gate inside tmp_path.
+
+    A test writing the real gate would put a fabricated "transcripts are
+    missing from the index" problem in front of Shawn at session start.
+    """
+    gate = tmp_path / "gates" / "index-session-content-gate"
+    monkeypatch.setattr(indexer, "GATE_FILE", gate)
+    return gate
 
 
 @pytest.fixture(autouse=True)
@@ -365,13 +378,13 @@ class TestRefusedFileIsSkipped:
 
         # ``force`` so the incremental mtime skip does not short-circuit
         # both files before either reaches the INSERT.
-        indexed, skipped, chunks, refused = indexer.index_archive(
+        result = indexer.index_archive(
             archive, None, False, True, pinned_refusal_file,
         )
 
-        assert indexed == 1, "the healthy file was not indexed"
-        assert chunks == 1
-        assert refused == 1
+        assert result.files_indexed == 1, "the healthy file was not indexed"
+        assert result.chunks == 1
+        assert result.refused_now == 1
 
     def test_outage_still_aborts_the_run(self, indexer, monkeypatch, tmp_path):
         """
@@ -492,13 +505,16 @@ class TestRefusalMemory:
 
         sys.modules["psycopg2.extras"].execute_values.side_effect = _count
 
-        indexed, skipped, chunks, refused = indexer.index_archive(
+        result = indexer.index_archive(
             archive, None, False, False, pinned_refusal_file,
         )
 
         assert calls["n"] == 0, "the refused file was sent to PostgreSQL again"
-        assert refused == 1
-        assert skipped == 1
+        assert result.refused_remembered == 1
+        assert result.refused_now == 0, (
+            "a remembered refusal must not count as one that happened now"
+        )
+        assert result.files_skipped == 1
 
     def test_a_changed_file_is_retried(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
@@ -528,12 +544,13 @@ class TestRefusalMemory:
         sys.modules["psycopg2.extras"].execute_values.side_effect = None
         sys.modules["psycopg2.extras"].execute_values.return_value = None
 
-        indexed, skipped, chunks, refused = indexer.index_archive(
+        result = indexer.index_archive(
             archive, None, False, False, pinned_refusal_file,
         )
 
-        assert indexed == 1, "the repaired file was not retried"
-        assert refused == 0
+        assert result.files_indexed == 1, "the repaired file was not retried"
+        assert result.refused_now == 0
+        assert result.refused_remembered == 0
         assert indexer.load_refusals(pinned_refusal_file) == {}
 
     def test_force_ignores_the_memory(
@@ -690,3 +707,167 @@ def test_refusal_file_resolves_at_call_time(indexer, tmp_path, monkeypatch):
     assert indexer.save_refusals({"some/path.jsonl": 1.0}) is True
     assert pinned.exists(), "the module constant was not consulted"
     assert indexer.load_refusals() == {"some/path.jsonl": 1.0}
+
+
+class TestRefusalDoesNotFailEveryLaterRun:
+    """
+    Third re-audit, finding C2 — the remembered refusal made every later
+    run exit 5 for ever, ``--force`` never cleared the sidecar, and the
+    documented remedy was therefore false.
+    """
+
+    def _archive(self, tmp_path: Path, *names: str) -> Path:
+        """Build an archive of indexable sessions."""
+        for name in names or ("aaa-poison",):
+            project = "alpha" if name.startswith("a") else "beta"
+            session_dir = tmp_path / project / name
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.meta.json").write_text(
+                json.dumps({
+                    "session": {"id": name},
+                    "project": {"name": project},
+                }),
+                encoding="utf-8",
+            )
+            (session_dir / "session.jsonl").write_text(
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": f"hello {name}"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+        return tmp_path
+
+    def _refuse(self, cur, sql, values, page_size=None, fetch=False):
+        """PostgreSQL refuses this file's rows."""
+        raise _DataError("value too long for type character varying", "22001")
+
+    def _wire(self, indexer, monkeypatch):
+        """Install the fake database and neutralise os.nice."""
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+    def test_a_later_run_does_not_exit_five(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        The first run refused a file and exits 5. The second run refused
+        nothing — the file is remembered and skipped — so it must exit 0.
+        The mutation this kills: counting remembered refusals towards the
+        exit code.
+        """
+        archive = self._archive(tmp_path)
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = self._refuse
+
+        first = indexer.main(["--archive-root", str(archive), "--force"])
+        assert first == 5
+
+        second = indexer.main(["--archive-root", str(archive)])
+        assert second == 0, (
+            "a refusal from an earlier run must not fail every later run"
+        )
+
+    def test_the_gate_still_reports_the_standing_refusal(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        Not failing the run does not mean going quiet: the transcript is
+        still missing from the search index, and the gate says so.
+        """
+        archive = self._archive(tmp_path)
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = self._refuse
+        indexer.main(["--archive-root", str(archive), "--force"])
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        indexer.main(["--archive-root", str(archive)])
+
+        lines = pinned_gate_file.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "1"
+        assert "NOT in the search index" in lines[1]
+
+    def test_a_clean_run_lowers_the_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """Once everything indexes, the gate stops nagging."""
+        archive = self._archive(tmp_path)
+        self._wire(indexer, monkeypatch)
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text("1\nstale\n", encoding="utf-8")
+
+        indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"
+
+    def test_force_clears_the_memory_for_files_it_retries(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        The documented remedy — "or with --force" — was false: the
+        sidecar was never consulted under force and never rewritten, so
+        the entry survived a successful forced reindex. The mutation this
+        kills: not deleting the entry when a file is revisited.
+        """
+        archive = self._archive(tmp_path)
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = self._refuse
+        indexer.main(["--archive-root", str(archive), "--force"])
+        assert indexer.load_refusals(pinned_refusal_file)
+
+        # The underlying problem is fixed; --force retries it.
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == 0
+        assert indexer.load_refusals(pinned_refusal_file) == {}, (
+            "--force did not clear the entry it had just re-indexed"
+        )
+
+    def test_force_with_a_project_leaves_other_projects_alone(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        ``--force --project alpha`` must not silently forget beta's
+        standing refusal — that would make beta's transcripts look
+        indexed when they are not.
+        """
+        archive = self._archive(tmp_path, "aaa-poison", "bbb-poison")
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = self._refuse
+        indexer.main(["--archive-root", str(archive), "--force"])
+        assert len(indexer.load_refusals(pinned_refusal_file)) == 2
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        indexer.main([
+            "--archive-root", str(archive), "--force", "--project", "alpha",
+        ])
+
+        remaining = indexer.load_refusals(pinned_refusal_file)
+        assert list(remaining) == ["beta/bbb-poison/session.jsonl"], (
+            f"--force --project alpha touched another project: {remaining}"
+        )
+
+    def test_entries_for_vanished_archives_are_pruned(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        A deleted or moved archive would otherwise be reported as
+        unindexed for ever, and the count would only ever grow.
+        """
+        archive = self._archive(tmp_path)
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = self._refuse
+        indexer.main(["--archive-root", str(archive), "--force"])
+        assert indexer.load_refusals(pinned_refusal_file)
+
+        # The archive is moved away; discovery no longer yields it.
+        shutil.rmtree(archive / "alpha")
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        code = indexer.main(["--archive-root", str(archive)])
+
+        assert code == 0
+        assert indexer.load_refusals(pinned_refusal_file) == {}

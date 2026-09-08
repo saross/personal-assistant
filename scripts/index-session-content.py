@@ -41,9 +41,16 @@ Exit codes:
     4 - environment fault: PostgreSQL is reachable but not in the expected
         state (permissions, a missing column, a full disk). Retrying will
         not help until someone changes something.
-    5 - the run completed but one or more files were REFUSED and are not
-        searchable. They are remembered in ~/.cache and retried when the
-        file changes, or with --force.
+    5 - one or more files were REFUSED **this run** and are not
+        searchable. Files refused on an earlier run do not fail the run;
+        they are reported once at WARNING and through the gate.
+
+Refusal memory:
+    ~/.cache/index-session-content-refusals.json maps an archive path to
+    the mtime it had when PostgreSQL refused it. A refused file is skipped
+    until its mtime changes (i.e. until the transcript is repaired) or
+    until --force retries it. Entries whose archive no longer exists are
+    pruned automatically. Delete the file to retry everything.
 """
 
 from __future__ import annotations
@@ -55,6 +62,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 # Schema-version guard (audit IC5 / B-X1). scripts/schema.sql states the
 # contract: "Every PG-touching script asserts meta.schema_version ...
@@ -63,6 +71,11 @@ from pathlib import Path
 # Imported by filesystem path because the script may be invoked from any
 # working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _sync_gate import (  # noqa: E402
+    INDEXER_GATE as _DEFAULT_GATE_FILE,
+    clear_gate,
+    write_gate,
+)
 from _schema_version import (  # noqa: E402
     SchemaVersionError,
     assert_schema_version,
@@ -83,6 +96,30 @@ DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
 #: state, so ~/.cache rather than the data submodule: it is a "do not retry
 #: this yet" note, rebuildable by deleting the file.
 REFUSAL_FILE = Path.home() / ".cache" / "index-session-content-refusals.json"
+
+# Session-start gate for this script (third re-audit, finding C1). Its own
+# file: sharing one with the syncs meant either could erase the other's
+# alarm. A module constant so tests can pin it to a tmp directory.
+GATE_FILE = _DEFAULT_GATE_FILE
+
+
+class IndexResult(NamedTuple):
+    """
+    What one index run did.
+
+    ``refused_now`` and ``refused_remembered`` are deliberately separate
+    (third re-audit, finding C2). Conflating them made every later run
+    exit 5 for ever over a file that had been refused once, weeks ago:
+    the exit code stopped meaning "something happened this run" and
+    started meaning "something once happened", which is not actionable
+    and trains the reader to ignore it.
+    """
+
+    files_indexed: int
+    files_skipped: int
+    chunks: int
+    refused_now: int
+    refused_remembered: int
 
 
 class IndexerAbort(RuntimeError):
@@ -357,12 +394,11 @@ def save_refusals(
 def index_archive(archive_root: Path, project: str | None,
                   include_subagents: bool, force: bool,
                   refusal_file: Path | None = None
-                  ) -> tuple[int, int, int, int]:
+                  ) -> IndexResult:
     """Index matching transcripts.
 
-    Returns ``(files_indexed, files_skipped, chunks, files_refused)``.
-    Aborts raise :class:`IndexerAbort`, whose ``exit_code`` the caller
-    returns.
+    Returns an :class:`IndexResult`. Aborts raise :class:`IndexerAbort`,
+    whose ``exit_code`` the caller returns.
 
     A stopped database used to produce a raw traceback here — ``connect``
     was unguarded and ``main`` caught only ``ImportError`` — while every
@@ -398,12 +434,18 @@ def index_archive(archive_root: Path, project: str | None,
         raise IndexerAbort(2, f"schema-version mismatch: {exc}") from exc
 
     conn.autocommit = False
-    files_indexed = files_skipped = total_chunks = files_refused = 0
+    files_indexed = files_skipped = total_chunks = 0
+    refused_now = refused_remembered = 0
     nuls_stripped = 0
     # Files PostgreSQL refused on a previous run, with the mtime they had
-    # then. ``force`` ignores the memory, which is the operator's way of
-    # saying "try them again anyway".
-    known_refusals = {} if force else load_refusals(refusal_file)
+    # then. The memory is always LOADED — it has to be, or --force could
+    # not clear the entries it retries, and stale entries could never be
+    # pruned — but it is only CONSULTED when we are not forcing. --force
+    # is the operator saying "try them again anyway", and a run that
+    # retries a file must forget the old verdict whatever the outcome
+    # (finding C2).
+    known_refusals = load_refusals(refusal_file)
+    consult_memory = not force
     refusals_changed = False
     try:
         with conn.cursor() as cur:
@@ -413,14 +455,20 @@ def index_archive(archive_root: Path, project: str | None,
                 mtime = transcript_path.stat().st_mtime
 
                 # Refused on an earlier run and unchanged since: skip it
-                # rather than re-parsing and re-refusing every run (M3).
-                if known_refusals.get(rel_path) == mtime:
+                # rather than re-parsing and re-refusing every run. Counted
+                # separately from a refusal that happened THIS run, because
+                # only the latter should fail the run (finding C2).
+                if consult_memory and known_refusals.get(rel_path) == mtime:
                     files_skipped += 1
-                    files_refused += 1
+                    refused_remembered += 1
                     continue
                 if rel_path in known_refusals:
-                    # The file changed — worth another try. Forget the
-                    # old verdict either way.
+                    # Either the file changed or --force is retrying it.
+                    # Forget the old verdict before we find out; if it is
+                    # refused again this run, it is recorded again below.
+                    # Only files this run actually VISITS are forgotten,
+                    # so --force --project X leaves other projects' entries
+                    # untouched (finding C2).
                     del known_refusals[rel_path]
                     refusals_changed = True
 
@@ -499,7 +547,7 @@ def index_archive(archive_root: Path, project: str | None,
                             3 if verdict == OUTAGE else 4,
                             f"{type(exc).__name__}: {str(exc).strip()}",
                         ) from exc
-                    files_refused += 1
+                    refused_now += 1
                     known_refusals[rel_path] = mtime
                     refusals_changed = True
                     logger.error(
@@ -517,20 +565,44 @@ def index_archive(archive_root: Path, project: str | None,
         raise
     finally:
         conn.close()
+        # Prune entries whose archive has since been moved or deleted, so
+        # the memory cannot accumulate for ever and report unindexed files
+        # that no longer exist (finding C2). Scoped by existence, not by
+        # this run's discovery, so --project is irrelevant here.
+        for stale in [
+            key for key in known_refusals
+            if not (archive_root / key).exists()
+        ]:
+            del known_refusals[stale]
+            refusals_changed = True
+            logger.info(
+                "  forgetting the refusal for %s — the archive is gone",
+                stale)
         if refusals_changed:
             save_refusals(known_refusals, refusal_file)
     if nuls_stripped:
         logger.warning(
             "Stripped %d NUL character(s) in total across this run.",
             nuls_stripped)
-    if files_refused:
+    if refused_now:
         logger.error(
-            "%d file(s) are refused by PostgreSQL and left unindexed — "
-            "their transcripts are NOT searchable. Recorded in %s; they "
-            "are retried when the file changes, or with --force. The "
-            "archive tree is canonical either way.",
-            files_refused, refusal_file)
-    return files_indexed, files_skipped, total_chunks, files_refused
+            "%d file(s) were REFUSED by PostgreSQL this run and are NOT "
+            "searchable. Recorded in %s; they are retried when the file "
+            "changes, or with --force. The archive tree is canonical "
+            "either way.",
+            refused_now, refusal_file)
+    if refused_remembered:
+        # Once per run, at WARNING, and it does not fail the run: this is
+        # a standing condition, not something that happened just now.
+        logger.warning(
+            "%d file(s) remain unindexed from an earlier run and were "
+            "skipped. They are retried when the file changes, or with "
+            "--force. Listed in %s.",
+            refused_remembered, refusal_file)
+    return IndexResult(
+        files_indexed, files_skipped, total_chunks,
+        refused_now, refused_remembered,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -569,18 +641,50 @@ def main(argv: list[str] | None = None) -> int:
         # Reported in full by index_archive; the code carries the reason.
         logger.error("Index run aborted (exit %d): %s", exc.exit_code, exc)
         return exc.exit_code
-    indexed, skipped, chunks, refused = result
     logger.info(
         "Done: %d file(s) indexed, %d skipped (unchanged), %d chunks, "
-        "%d refused.", indexed, skipped, chunks, refused)
-    if refused:
-        # Non-zero so the refusal shows in the hook log rather than being
-        # a line in a "Done:" message that reads like success (M3).
+        "%d refused this run, %d still refused from before.",
+        result.files_indexed, result.files_skipped, result.chunks,
+        result.refused_now, result.refused_remembered)
+
+    _apply_indexer_gate(result, logger)
+
+    if result.refused_now:
+        # Non-zero ONLY for a refusal that happened this run (finding C2).
+        # A standing refusal from weeks ago is reported through the gate
+        # and the WARNING above; failing every run over it would turn the
+        # exit code into noise.
         logger.error(
-            "%d transcript(s) are not searchable. See the REFUSED lines "
-            "above and %s.", refused, REFUSAL_FILE)
+            "%d transcript(s) were refused this run and are not "
+            "searchable. See the REFUSED lines above and %s.",
+            result.refused_now, REFUSAL_FILE)
         return 5
     return 0
+
+
+def _apply_indexer_gate(result: IndexResult, logger: logging.Logger) -> None:
+    """
+    Raise or lower this script's session-start gate.
+
+    Cleared only by a run that completed with nothing outstanding — an
+    aborted run raises :class:`IndexerAbort` and never reaches here, so it
+    cannot erase a standing alarm (finding C1). Files refused on an
+    earlier run keep the gate up: they are still missing from the search
+    index, which is the thing worth knowing.
+    """
+    outstanding = result.refused_now + result.refused_remembered
+    if not outstanding:
+        clear_gate(gate_path=GATE_FILE, logger=logger)
+        return
+    write_gate(
+        f"[index-session-content.py] {outstanding} transcript(s) are NOT "
+        f"in the search index ({result.refused_now} refused this run). "
+        f"/search-sessions cannot find them. Listed in {REFUSAL_FILE}; "
+        f"they are retried when the file changes, or with --force.",
+        gate_path=GATE_FILE,
+        count=outstanding,
+        logger=logger,
+    )
 
 
 if __name__ == "__main__":
