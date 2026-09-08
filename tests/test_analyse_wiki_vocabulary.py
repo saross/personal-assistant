@@ -85,30 +85,81 @@ TYPICAL_RECORDS = [
 # ---------------------------------------------------------------------------
 
 
-def _tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
-    """Map every non-git file under ``root`` to ``(mtime_ns, size)``."""
-    snapshot: dict[str, tuple[int, int]] = {}
+def _tree_snapshot(root: Path) -> dict[str, tuple[bool, int, int]]:
+    """Map every path under ``root`` to ``(is_file, mtime_ns, size)``.
+
+    ``.git`` and ``__pycache__`` are skipped: the first is enormous and the
+    second is written by the interpreter, not by the code under test.
+    Directories are recorded as well as files, so a test that creates an
+    empty directory is caught too, and a path that cannot be stat'ed (a
+    dangling symlink into an uninitialised submodule, say) is recorded by
+    its presence rather than silently dropped.
+    """
+    snapshot: dict[str, tuple[bool, int, int]] = {}
     for path in root.rglob("*"):
-        if ".git" in path.parts or not path.is_file():
+        parts = path.parts
+        if ".git" in parts or "__pycache__" in parts:
             continue
-        stat = path.stat()
-        snapshot[str(path)] = (stat.st_mtime_ns, stat.st_size)
+        try:
+            stat = path.stat()
+        except OSError:
+            snapshot[str(path)] = (False, -1, -1)
+            continue
+        snapshot[str(path)] = (path.is_file(), stat.st_mtime_ns, stat.st_size)
     return snapshot
 
 
 class TestWritesNothing:
     """The analyser is read-only; a report that lands on disk is a defect."""
 
-    def test_repository_tree_is_untouched(self, corpus, capsys):
-        """Snapshot the whole checkout across a full run."""
+    def test_repository_tree_and_home_are_untouched(self, corpus, capsys):
+        """Snapshot the WHOLE checkout, plus HOME, across a full run.
+
+        The previous version walked a list of directory names and compared
+        each in turn. Three of them (``reports``, ``notes``, ``logs``) are
+        symlinks into the private data submodule and ``data`` is the
+        submodule itself, so wherever the submodule is uninitialised those
+        comparisons were {} == {} — a guard that passed because it was
+        looking at nothing. Snapshotting the root wholesale, and asserting
+        the snapshot is not trivially small, removes both failure modes.
+        """
         corpus(TYPICAL_RECORDS)
-        for directory in ("wiki", "reports", "notes", "logs", "data", "scripts"):
-            watched = PROJECT_ROOT / directory
-            before = _tree_snapshot(watched) if watched.is_dir() else {}
-            assert vocab.main([]) == 0
-            after = _tree_snapshot(watched) if watched.is_dir() else {}
-            assert after == before, f"the analyser wrote into {directory}/"
+        home = Path.home()
+        repo_before = _tree_snapshot(PROJECT_ROOT)
+        home_before = _tree_snapshot(home)
+        assert len(repo_before) > 100, (
+            "the repository snapshot is implausibly small — this guard "
+            "would be vacuous"
+        )
+
+        assert vocab.main([]) == 0
+
+        repo_after = _tree_snapshot(PROJECT_ROOT)
+        home_after = _tree_snapshot(home)
+        assert repo_after == repo_before, (
+            "the analyser wrote into the repository: "
+            f"{sorted(set(repo_after) ^ set(repo_before))}"
+        )
+        assert home_after == home_before, (
+            "the analyser wrote into HOME: "
+            f"{sorted(set(home_after) ^ set(home_before))}"
+        )
         capsys.readouterr()
+
+    def test_the_snapshot_notices_a_new_file(self, tmp_path):
+        """Guard the guard: the snapshot must be able to fail."""
+        (tmp_path / "before.txt").write_text("a", encoding="utf-8")
+        before = _tree_snapshot(tmp_path)
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "after.txt").write_text("b", encoding="utf-8")
+        assert _tree_snapshot(tmp_path) != before
+
+    def test_the_snapshot_notices_a_rewrite(self, tmp_path):
+        target = tmp_path / "file.txt"
+        target.write_text("original", encoding="utf-8")
+        before = _tree_snapshot(tmp_path)
+        target.write_text("rewritten and longer", encoding="utf-8")
+        assert _tree_snapshot(tmp_path) != before
 
     def test_the_corpus_itself_is_not_rewritten(self, corpus):
         path = corpus(TYPICAL_RECORDS)
