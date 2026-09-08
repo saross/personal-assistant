@@ -1291,6 +1291,78 @@ class TestBatchSubmitIsNotRepeatable:
         assert state["batch_id"] == "batch_002"
         assert state["superseded_batches"] == ["batch_001"]
 
+    def test_the_superseded_batch_is_still_retrievable(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A top-up must not strand the sessions of the batch it supersedes.
+
+        The state file holds one custom_id map. A top-up carries only the
+        missing sessions, so replacing that map left --haiku-apply on the
+        earlier batch id printing "unknown custom_id ... skipping" for
+        every session it had paid for.
+        """
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        provider_dir = out_dir / "haiku"
+
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id("topup-0-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
+        ]) == 0
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--resubmit")) == 0
+        capsys.readouterr()
+
+        # batch_001 is now superseded — and still holds two paid results.
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in (0, 1)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert "unknown custom_id" not in printed
+        assert (provider_dir / "topup-1-aaaa-bbbb.json").exists()
+
+        state = json.loads((provider_dir / "batch-state.json").read_text())
+        assert set(state["custom_id_to_session"].values()) == {
+            f"topup-{index}-aaaa-bbbb" for index in range(3)
+        }
+
+    def test_the_superseded_chain_survives_two_top_ups(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """Each superseded id must stay in the trail, not just the last one."""
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        for index in (0, 1):
+            submit_stub.results = [
+                self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                                fx.RESPONSE_BARE)
+            ]
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", f"batch_{index + 1:03d}",
+                "--out-dir", str(out_dir),
+            ]) == 0
+            assert bom.main(
+                self._argv(manifest, prompt, out_dir, "--resubmit")
+            ) == 0
+        capsys.readouterr()
+        state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
+        assert state["batch_id"] == "batch_003"
+        assert state["superseded_batches"] == ["batch_001", "batch_002"]
+
     def test_force_sends_the_whole_manifest_again(
         self, tmp_path, capsys, submit_stub
     ):

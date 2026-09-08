@@ -803,6 +803,16 @@ def haiku_submit(
     superseded = list(previous.get("superseded_batches", [])) if previous else []
     if previous is not None:
         superseded.append(previous["batch_id"])
+    # The custom_id map ACCUMULATES across submissions. A top-up carries
+    # only the sessions still missing, so replacing the map would strand
+    # every session from the superseded batch: `--haiku-apply <old id>`
+    # would look each one up, find nothing, print "unknown custom_id" and
+    # skip it -- discarding results that were already paid for. Both ids
+    # are retrievable, so both maps must remain resolvable. The new
+    # submission wins any key it shares, though it cannot disagree:
+    # build_custom_id is a function of the session id.
+    custom_id_map = dict(previous.get("custom_id_to_session", {})) if previous else {}
+    custom_id_map.update(custom_to_session)
     state = {
         "batch_id": batch_job.id,
         "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -810,7 +820,7 @@ def haiku_submit(
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         "superseded_batches": superseded,
-        "custom_id_to_session": custom_to_session,
+        "custom_id_to_session": custom_id_map,
     }
     state_path = out_dir / "batch-state.json"
     write_json_atomic(state_path, state)
