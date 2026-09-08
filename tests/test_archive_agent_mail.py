@@ -105,6 +105,13 @@ def test_commit_uses_an_explicit_pathspec(tmp_path, monkeypatch):
     repo.mkdir()
     env = {**os.environ}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
+    # The identity has to live in the REPO: archive.commit() runs git
+    # in-process and inherits os.environ, not `env` above. Under a pinned
+    # HOME there is no ~/.gitconfig to fall back on, so without this the
+    # commit fails with "Author identity unknown" — these tests passed only
+    # because the developer's real git config was in reach (audit S21).
+    for _key, _value in (("user.email", "t@x.test"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(repo), "config", _key, _value], check=True)
     (repo / "unrelated.txt").write_text("pending edit, must not be swept\n")
     store = repo / "agent-mail"
     root = tmp_path / "mail"
@@ -142,6 +149,13 @@ def test_commit_pathspec_leaves_another_sessions_staged_file_alone(tmp_path, mon
     repo.mkdir()
     env = {**os.environ}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
+    # The identity has to live in the REPO: archive.commit() runs git
+    # in-process and inherits os.environ, not `env` above. Under a pinned
+    # HOME there is no ~/.gitconfig to fall back on, so without this the
+    # commit fails with "Author identity unknown" — these tests passed only
+    # because the developer's real git config was in reach (audit S21).
+    for _key, _value in (("user.email", "t@x.test"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(repo), "config", _key, _value], check=True)
     (repo / "other-session.txt").write_text("staged by someone else\n")
     subprocess.run(["git", "-C", str(repo), "add", "other-session.txt"], check=True, env=env)
     store = repo / "agent-mail"
@@ -213,6 +227,13 @@ def test_cli_commit_and_quiet_flags(tmp_path):
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
+    # The identity has to live in the REPO: archive.commit() runs git
+    # in-process and inherits os.environ, not `env` above. Under a pinned
+    # HOME there is no ~/.gitconfig to fall back on, so without this the
+    # commit fails with "Author identity unknown" — these tests passed only
+    # because the developer's real git config was in reach (audit S21).
+    for _key, _value in (("user.email", "t@x.test"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(repo), "config", _key, _value], check=True)
     root = tmp_path / "mail"
     outbox, _ = mailbox(root)
     (outbox / "m1.md").write_text(MESSAGE)

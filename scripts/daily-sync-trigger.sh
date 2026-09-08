@@ -25,7 +25,46 @@
 # below.
 set -uo pipefail
 
-LOCK_FILE="${HOME}/.cache/daily-sync-last-run"
+# audit L4: `set -u` makes a bare ${HOME} abort with status 1 when HOME is
+# unset — a systemd unit, a bare cron environment, `env -i` — which breaks
+# the always-exit-0 contract this script exists to keep (see "Exit codes"
+# above): the SessionStart hook chain would be broken by the one guard
+# meant to protect it. Degrade instead: every read below tolerates a
+# missing file, and a lock that cannot be written just means the sync is
+# retried next session.
+# audit M2 (fourth re-audit): check HOME BEFORE creating anything. The
+# `mkdir -p` below used to run first and silently conjured the whole path,
+# so on the production path — where the trigger is what actually starts
+# the sync — daily-sync.sh's own "refuse a HOME that does not exist" guard
+# never saw a missing HOME: the trigger had just created it. Gate files
+# would then accumulate in a phantom tree nothing reads, on a machine
+# whose home is (say) not yet mounted.
+#
+# Still exit 0, always: this script exists to keep the SessionStart hook
+# chain alive (see "Exit codes" above). Say so on STDOUT, which is the
+# only channel that reaches the session context, and touch nothing.
+# audit (low, fifth re-audit): the relay header is printed at most once
+# per session. Gates render before the sync and the sync's own failure
+# renders after it, so a session with both used to carry two headers and
+# read like two separate reports.
+gate_header_printed=0
+relay() {
+    # relay <line>... — surface to STDOUT, under one header.
+    if [[ $gate_header_printed -eq 0 ]]; then
+        echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
+        gate_header_printed=1
+    fi
+    printf '%s\n' "$@"
+}
+
+if [[ -z "${HOME:-}" ]] || [[ ! -d "${HOME}" ]]; then
+    relay "[daily-sync gate] HOME (${HOME:-<unset>}) is unset or not a directory, so the daily sync cannot run and no gate files can be read. Nothing has been created."
+    exit 0
+fi
+
+CACHE_DIR="${HOME}/.cache"
+
+LOCK_FILE="${CACHE_DIR}/daily-sync-last-run"
 TODAY="$(date +%Y-%m-%d)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC_SCRIPT="${SCRIPT_DIR}/daily-sync.sh"
@@ -52,7 +91,7 @@ mkdir -p "$(dirname "$LOCK_FILE")"
 # ---------------------------------------------------------------------------
 GATE_LINES=()
 
-GATE_FILE="${HOME}/.cache/cc-archives-gate"
+GATE_FILE="${CACHE_DIR}/cc-archives-gate"
 if [[ -f "$GATE_FILE" ]]; then
     GATE_COUNT="$(head -1 "$GATE_FILE" 2>/dev/null)"
     if [[ "$GATE_COUNT" =~ ^[0-9]+$ ]] && [[ "$GATE_COUNT" -gt 0 ]]; then
@@ -62,7 +101,7 @@ fi
 
 # Syncthing: re-checked at most every 15 minutes so session start stays
 # snappy (the check SSHes to rpi-server); otherwise the cached verdict.
-SYNCTHING_GATE="${HOME}/.cache/syncthing-gate"
+SYNCTHING_GATE="${CACHE_DIR}/syncthing-gate"
 SYNCTHING_CHECK="${SCRIPT_DIR}/syncthing-health.sh"
 if [[ -x "$SYNCTHING_CHECK" ]]; then
     if [[ ! -f "$SYNCTHING_GATE" ]] || [[ -n "$(find "$SYNCTHING_GATE" -mmin +15 2>/dev/null)" ]]; then
@@ -72,14 +111,30 @@ if [[ -x "$SYNCTHING_CHECK" ]]; then
         ST_COUNT="$(head -1 "$SYNCTHING_GATE" 2>/dev/null)"
         if [[ "$ST_COUNT" =~ ^[0-9]+$ ]] && [[ "$ST_COUNT" -gt 0 ]]; then
             GATE_LINES+=("[syncthing gate] ${ST_COUNT} problem(s) with the Syncthing mesh (personal-docs sync, NOT cc-archives):")
+            # audit S10: syncthing-health.sh writes two layouts — the
+            # normal path emits `count`, a `checked …` line, then the
+            # problems; the early-exit path (expectations file missing)
+            # emits `count` then the problems with no `checked` line. A
+            # fixed `tail -n +3` swallowed the only detail line of the
+            # second layout, so the header was printed with nothing under
+            # it. Skip the optional `checked …` line instead of a fixed
+            # offset, so both layouts render.
             while IFS= read -r _gl; do
+                [[ -z "$_gl" ]] && continue
+                # Only the gate's own timestamp header, whose exact shape
+                # is `checked <date> <time> on <host>` (syncthing-health.sh
+                # writes it with `date '+%Y-%m-%d %H:%M:%S'`). Audit L4: a
+                # `checked *` glob would also swallow a genuine problem
+                # line that happened to start with the word.
+                [[ "$_gl" =~ ^checked\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ on\  ]] \
+                    && continue
                 GATE_LINES+=("  ${_gl}")
-            done < <(tail -n +3 "$SYNCTHING_GATE")
+            done < <(tail -n +2 "$SYNCTHING_GATE")
         fi
     fi
 fi
 
-DRIFT_GATE="${HOME}/.cache/memory-drift-gate"
+DRIFT_GATE="${CACHE_DIR}/memory-drift-gate"
 if [[ -f "$DRIFT_GATE" ]]; then
     DRIFT_COUNT="$(head -1 "$DRIFT_GATE" 2>/dev/null)"
     if [[ "$DRIFT_COUNT" =~ ^[0-9]+$ ]] && [[ "$DRIFT_COUNT" -gt 0 ]]; then
@@ -87,7 +142,24 @@ if [[ -f "$DRIFT_GATE" ]]; then
     fi
 fi
 
-ARCHIVE_DRIFT_GATE="${HOME}/.cache/cc-archive-drift-gate"
+# audit S3/S17: a sync that wedges on a conflicted tree stops running at
+# all — every later session re-enters the same failure and bails — and
+# until now that state was visible only in logs/daily-sync.log.
+SYNC_GATE="${CACHE_DIR}/daily-sync-gate"
+if [[ -f "$SYNC_GATE" ]]; then
+    SYNC_COUNT="$(head -1 "$SYNC_GATE" 2>/dev/null)"
+    if [[ "$SYNC_COUNT" =~ ^[0-9]+$ ]] && [[ "$SYNC_COUNT" -gt 0 ]]; then
+        # EVERY detail line, not just the first: a wedged sync can record
+        # both the diagnosis (what stopped it) and a stranded stash (where
+        # the unrecovered work is), and the operator needs both.
+        GATE_LINES+=("[daily-sync gate] the sync is stuck and will not run until this is resolved:")
+        while IFS= read -r _sl; do
+            [[ -n "$_sl" ]] && GATE_LINES+=("  ${_sl}")
+        done < <(tail -n +2 "$SYNC_GATE")
+    fi
+fi
+
+ARCHIVE_DRIFT_GATE="${CACHE_DIR}/cc-archive-drift-gate"
 if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
     AD_COUNT="$(head -1 "$ARCHIVE_DRIFT_GATE" 2>/dev/null)"
     if [[ "$AD_COUNT" =~ ^[0-9]+$ ]] && [[ "$AD_COUNT" -gt 0 ]]; then
@@ -144,8 +216,7 @@ fi
 
 if [[ ${#GATE_LINES[@]} -gt 0 ]]; then
     # STDOUT, deliberately: this block lands in the session context.
-    echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
-    printf '%s\n' "${GATE_LINES[@]}"
+    relay "${GATE_LINES[@]}"
 fi
 
 # Already ran today? Exit silently — dominant path on every session after the
@@ -160,8 +231,16 @@ fi
 echo "[daily-sync-trigger] first session of $TODAY — running daily-sync.sh" >&2
 
 if "$SYNC_SCRIPT" >&2; then
-    echo "$TODAY" > "$LOCK_FILE"
-    echo "[daily-sync-trigger] sync complete" >&2
+    if echo "$TODAY" > "$LOCK_FILE" 2>/dev/null; then
+        echo "[daily-sync-trigger] sync complete" >&2
+    else
+        # Without the lock there is no once-a-day gate: the sync runs
+        # again at EVERY session start, which is minutes of git per
+        # session. A raw redirection error on stderr said none of that to
+        # anyone who could act on it.
+        echo "[daily-sync-trigger] could not write $LOCK_FILE" >&2
+        relay "[daily-sync gate] the once-a-day lock ($LOCK_FILE) could not be written, so the sync will run again at EVERY session start until that path is writable."
+    fi
 else
     rc=$?
     # Differentiate benign lock contention (exit 1 — another sync /
@@ -176,6 +255,13 @@ else
             ;;
         *)
             echo "[daily-sync-trigger] sync failed (exit $rc) — lock not updated; will retry next session" >&2
+            # audit (low, fourth re-audit): stderr never reaches the
+            # session context — this script's own channel note says so —
+            # and the sync's gate file explains WHY it failed but not that
+            # it just failed again this minute. Put the exit code where
+            # the session can see it. daily-sync.sh writes its reason into
+            # the gate above; this is the "and it happened just now" half.
+            relay "[daily-sync gate] the sync just failed (exit $rc); it will retry next session. See the daily-sync gate lines above for why, or logs/daily-sync.log."
             ;;
     esac
 fi
