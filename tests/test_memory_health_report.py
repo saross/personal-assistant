@@ -620,7 +620,10 @@ class TestPgSnapshotSql:
         assert snap["total_rows"] == 3
         assert snap["is_active_true"] == 1
         assert snap["is_active_false"] == 1
-        assert snap["active_memories_view"] == 2
+        # The view is ``WHERE is_active = TRUE`` (schema.sql:273), and SQL
+        # three-valued logic excludes the NULL row — so the view count
+        # tracks is_active_true, not "everything not false" (finding M5).
+        assert snap["active_memories_view"] == 1
         assert "SELECT COUNT(*) FROM active_memories" in conn.executed_sql
         assert (
             "SELECT COUNT(*) FROM memories WHERE is_active IS TRUE"

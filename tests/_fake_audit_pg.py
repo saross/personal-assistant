@@ -166,8 +166,9 @@ class FakeDatabase:
     """Rows plus a tiny SQL evaluator over them.
 
     ``memories`` and ``sessions`` are lists of dicts. ``active_memories`` is
-    derived (the view's ``is_active = TRUE`` half), so a query against the
-    view and one against the table give different answers — which is what
+    derived (the view's ``is_active = TRUE`` half, three-valued logic
+    included: a NULL ``is_active`` is NOT in the view), so a query against
+    the view and one against the table give different answers — which is what
     makes the recall-invariant mutation detectable.
     """
 
@@ -190,7 +191,13 @@ class FakeDatabase:
         if name == "sessions":
             return self.sessions
         if name == "active_memories":
-            return [r for r in self.memories if r.get("is_active") is not False]
+            # schema.sql:273 — ``WHERE m.is_active = TRUE``. SQL three-valued
+            # logic drops a NULL row from the view, so the fake must too: the
+            # Python idiom ``is not False`` KEEPS it, which made the fake
+            # disagree with both PostgreSQL and its own IS TRUE clause below
+            # (round 4f-3, finding M5). The decay half of the view is not
+            # modelled; these tests do not exercise it.
+            return [r for r in self.memories if r.get("is_active") is True]
         raise UnsupportedQuery(f"unknown table: {name}")
 
     @staticmethod
