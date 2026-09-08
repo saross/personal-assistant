@@ -1287,3 +1287,82 @@ class TestCarryForwardPartialStashes:
             + calls.read_text(encoding="utf-8")
         )
         assert result.stdout.strip() == "1", result.stdout
+
+
+class TestSidecarIsWrittenWhole:
+    """A sidecar is read by the NEXT run to decide whether an entry may be
+    deleted. Half of one is worse than none: rows for some entries and not
+    others reads as "that stash produced nothing"."""
+
+    def test_a_failed_write_leaves_the_previous_sidecar_intact(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L2: unlinking the live file and appending to it with
+        `|| true`. The old rows were destroyed before the first byte of
+        the new ones was written, and a failure to write them was
+        swallowed."""
+        holder = tmp_path / "cache"
+        holder.mkdir()
+        sidecar = holder / "daily-sync-stash-state"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n", encoding="utf-8"
+        )
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        holder.chmod(0o555)
+        try:
+            result = _run_shell(
+                _sidecar_preamble(repo, sidecar)
+                + "\n"
+                + f'record_conflicted_stash "{repo}" "{sha}" "notes/b.md"\n'
+                + "write_stash_state\n"
+                + 'printf "%s\\n" "${sync_gate_details[@]}"\n',
+                _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+            )
+        finally:
+            holder.chmod(0o755)
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "the previous sidecar was destroyed by a write that then failed"
+        assert "could not write" in result.stdout, (
+            "a sidecar that could not be written said nothing: " + result.stdout
+        )
+        assert not list(holder.glob("daily-sync-stash-state.*")), (
+            "a temporary file was left behind"
+        )
+
+
+    def test_a_row_that_fails_to_write_does_not_replace_the_sidecar(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L2's second half: renaming the temporary file into
+        place regardless of whether every row reached it. A sidecar
+        holding some entries and not others reads as "that stash produced
+        nothing", which is the verdict that ends in a deleted entry."""
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n", encoding="utf-8"
+        )
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            # A row writer that cannot write: a full disk, a revoked
+            # permission, anything that fails part-way.
+            + "append_stash_state_row() { return 1; }\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "notes/b.md"\n'
+            + "write_stash_state\n"
+            + 'printf "%s\\n" "${sync_gate_details[@]}"\n',
+            _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "a half-written sidecar replaced a good one"
+        assert "could not write" in result.stdout, result.stdout
+        assert not list(tmp_path.glob("sidecar.*")), "a temporary file was left behind"

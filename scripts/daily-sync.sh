@@ -200,6 +200,9 @@ add_sync_gate_detail() {
 #: SHAs write_stash_state has already emitted a row for this run, so the
 #: precedence below is applied once per ENTRY rather than once per record.
 stash_state_written_shas=()
+#: The half-built sidecar append_stash_state_row writes into, renamed into
+#: place only once every row is on disk (audit L2).
+stash_state_tmp=""
 
 append_stash_state_row() {
     # append_stash_state_row <repo> <sha> <state> <newline-separated paths>
@@ -208,6 +211,12 @@ append_stash_state_row() {
     # carries none — and nothing at all for a SHA a higher-precedence
     # state has already claimed, or for an entry no longer on the stack (a
     # stash that is gone cannot be the source of anything).
+    # audit L2 (second re-audit): the writes go to a TEMPORARY file which
+    # write_stash_state renames into place, and a failure is reported
+    # rather than swallowed. Appending straight to the live path after
+    # unlinking it meant a write that failed part-way left a TRUNCATED
+    # sidecar — rows for some entries and not others — and `|| true` made
+    # that indistinguishable from a run with nothing to say.
     local repo="$1" sha="$2" state="$3" paths="$4" written path
     for written in ${stash_state_written_shas[@]+"${stash_state_written_shas[@]}"}; do
         [[ "$written" == "$sha" ]] && return 0
@@ -216,13 +225,13 @@ append_stash_state_row() {
     stash_state_written_shas+=("$sha")
     if [[ -z "$paths" ]]; then
         printf '%s\t%s\t%s\t\n' "$repo" "$sha" "$state" \
-            >> "$STASH_STATE_FILE" 2>/dev/null || true
+            >> "$stash_state_tmp" || return 1
         return 0
     fi
     while IFS= read -r path; do
         [[ -n "$path" ]] || continue
         printf '%s\t%s\t%s\t%s\n' "$repo" "$sha" "$state" "$path" \
-            >> "$STASH_STATE_FILE" 2>/dev/null || true
+            >> "$stash_state_tmp" || return 1
     done <<<"$paths"
     return 0
 }
@@ -254,13 +263,20 @@ write_stash_state() {
     # row, and the stale conflicted row was then matched against an
     # unrelated conflict in the same path on a later run.
     local record sha repo paths
+    local stash_state_failed=0
     if [[ $DRY_RUN -eq 1 ]]; then
         return 0
     fi
     mkdir -p "$(dirname "$STASH_STATE_FILE")" 2>/dev/null || true
-    rm -f "$STASH_STATE_FILE" 2>/dev/null || true
-    if ! : > "$STASH_STATE_FILE" 2>/dev/null; then
-        log "WARNING: could not write $STASH_STATE_FILE; the next run will not be able to attribute any conflict markers to a stash"
+    # audit L2 (second re-audit): build it whole, then rename. A rename
+    # within one directory is atomic, so the next run reads either the
+    # previous sidecar or this one and never a half-written file — and an
+    # unwritable path is now said out loud instead of leaving the caller
+    # to believe the rows were recorded.
+    if ! stash_state_tmp="$(mktemp "${STASH_STATE_FILE}.XXXXXX" 2>/dev/null)"; then
+        log "WARNING: could not create a temporary file beside $STASH_STATE_FILE; this run's stash bookkeeping is NOT recorded"
+        add_sync_gate_detail \
+            "daily-sync could not write its stash bookkeeping to $STASH_STATE_FILE, so the next run will not be able to say which stash any conflict markers came from. Check that $(dirname "$STASH_STATE_FILE") is writable."
         return 0
     fi
     stash_state_written_shas=()
@@ -275,7 +291,8 @@ write_stash_state() {
             [[ -n "$record" ]] || continue
             paths+="${record#*$'\t'}"$'\n'
         done < <(partial_records_for "$sha")
-        append_stash_state_row "$repo" "$sha" partial "${paths%$'\n'}"
+        append_stash_state_row "$repo" "$sha" partial "${paths%$'\n'}" \
+            || stash_state_failed=1
     done
     for sha in ${applied_stash_shas[@]+"${applied_stash_shas[@]}"}; do
         # An applied entry is never a marker source; the row exists so the
@@ -283,7 +300,7 @@ write_stash_state() {
         # and it carries no paths for exactly that reason.
         for repo in "$DATA_DIR" "$PA_DIR"; do
             stash_ref_for "$repo" "$sha" >/dev/null || continue
-            append_stash_state_row "$repo" "$sha" applied ""
+            append_stash_state_row "$repo" "$sha" applied "" || stash_state_failed=1
             break
         done
     done
@@ -292,8 +309,17 @@ write_stash_state() {
         paths="${record##*$'\t'}"
         repo="${record#*$'\t'}"
         repo="${repo%%$'\t'*}"
-        append_stash_state_row "$repo" "$sha" conflicted "$paths"
+        append_stash_state_row "$repo" "$sha" conflicted "$paths" \
+            || stash_state_failed=1
     done
+    if [[ $stash_state_failed -eq 1 ]] \
+            || ! mv -f "$stash_state_tmp" "$STASH_STATE_FILE" 2>/dev/null; then
+        rm -f "$stash_state_tmp" 2>/dev/null || true
+        log "WARNING: could not write $STASH_STATE_FILE; the next run will not be able to attribute any conflict markers to a stash"
+        add_sync_gate_detail \
+            "daily-sync could not write its stash bookkeeping to $STASH_STATE_FILE, so the next run will not be able to say which stash any conflict markers came from. Check that $(dirname "$STASH_STATE_FILE") is writable."
+        return 0
+    fi
     return 0
 }
 
@@ -1196,6 +1222,14 @@ record_partial_stash() {
     # eleventh re-audit). Idempotent: the classifier and the drop guard
     # can both reach the same entry, and it must be named once.
     local repo="$1" sha="$2" lines="$3" line candidate entry known
+    # audit L1 (second re-audit): the SHA goes in FIRST. The records were
+    # appended before it, so a signal landing in that window left rows
+    # whose entry nothing knew about — and write_stash_state walks the
+    # SHAs, so those rows were silently dropped from the sidecar.
+    for entry in ${partial_stash_shas[@]+"${partial_stash_shas[@]}"}; do
+        [[ "$entry" == "$sha" ]] && known=1
+    done
+    [[ "${known:-0}" -eq 1 ]] || partial_stash_shas+=("$sha")
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         candidate="$(printf '%s\t%s\t%s' "$sha" "$repo" "$line")"
@@ -1208,10 +1242,6 @@ record_partial_stash() {
         done
         [[ $known -eq 1 ]] || partial_stash_records+=("$candidate")
     done <<<"$lines"
-    for entry in ${partial_stash_shas[@]+"${partial_stash_shas[@]}"}; do
-        [[ "$entry" == "$sha" ]] && return 0
-    done
-    partial_stash_shas+=("$sha")
     return 0
 }
 
