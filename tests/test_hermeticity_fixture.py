@@ -298,3 +298,108 @@ def test_the_watched_directory_is_the_suite_home():
         assert str(probe) in conftest._pipeline_cache_snapshot()
     finally:
         probe.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Tenth re-audit, finding M5 — a suite that reaches a live resource is not
+# a suite, it is a probe of whether a service happens to be up
+# ---------------------------------------------------------------------------
+
+
+def _live_resource_calls(source: str) -> list[str]:
+    """Test functions that open a real connection without the marker.
+
+    Looks for a CALL to ``connect`` on something named psycopg2 — the
+    mocked uses pass the name as a string to ``patch`` and so are not
+    calls at all — and requires the enclosing test, or its class, to
+    carry ``@pytest.mark.integration``.
+    """
+    import ast
+
+    def marked(node) -> bool:
+        for decorator in getattr(node, "decorator_list", []):
+            if "integration" in ast.unparse(decorator):
+                return True
+        return False
+
+    offenders: list[str] = []
+    tree = ast.parse(source)
+    for parent in ast.walk(tree):
+        if not isinstance(parent, (ast.Module, ast.ClassDef)):
+            continue
+        for node in getattr(parent, "body", []):
+            if not (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name.startswith("test_")
+            ):
+                continue
+            if marked(node) or (
+                isinstance(parent, ast.ClassDef) and marked(parent)
+            ):
+                continue
+            for call in ast.walk(node):
+                if not isinstance(call, ast.Call):
+                    continue
+                func = call.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "connect"
+                    and "psycopg2" in ast.unparse(func.value)
+                ):
+                    offenders.append(f"{node.name}:{call.lineno}")
+    return offenders
+
+
+def test_no_test_opens_a_real_database_without_the_marker():
+    """
+    ``pytest.ini`` deselects ``integration``, so a live-resource test
+    must carry that marker or it runs on every plain ``pytest``. One did:
+    it connected to the operator's ``claude_memories`` on every run, and
+    a test with credentials in reach can do more than read.
+
+    The mutation this kills: removing the marker from
+    ``test_live_pg_assertion_passes``.
+    """
+    tests_dir = Path(__file__).resolve().parent
+    offenders: dict[str, list[str]] = {}
+    for module in sorted(tests_dir.glob("test_*.py")):
+        found = _live_resource_calls(module.read_text(encoding="utf-8"))
+        if found:
+            offenders[module.name] = found
+    assert not offenders, (
+        f"these tests open a real database on a plain run: {offenders}"
+    )
+
+
+def test_the_guard_would_see_an_unmarked_connection():
+    """The guard itself, against a fixture of the shape it is looking for."""
+    unmarked = (
+        "import psycopg2\n"
+        "def test_thing():\n"
+        "    conn = psycopg2.connect(dbname='claude_memories')\n"
+    )
+    assert _live_resource_calls(unmarked)
+
+    on_the_function = (
+        "import psycopg2\n"
+        "@pytest.mark.integration\n"
+        "def test_thing():\n"
+        "    conn = psycopg2.connect(dbname='claude_memories')\n"
+    )
+    assert _live_resource_calls(on_the_function) == []
+
+    on_the_class = (
+        "import psycopg2\n"
+        "@pytest.mark.integration\n"
+        "class TestThing:\n"
+        "    def test_thing(self):\n"
+        "        conn = psycopg2.connect(dbname='claude_memories')\n"
+    )
+    assert _live_resource_calls(on_the_class) == []
+
+    patched = (
+        "def test_thing():\n"
+        "    with patch('psycopg2.connect', side_effect=Boom):\n"
+        "        pass\n"
+    )
+    assert _live_resource_calls(patched) == []
