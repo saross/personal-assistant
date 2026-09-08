@@ -1015,3 +1015,50 @@ class TestTheAnchoredGapIsDescribedAccurately:
         assert "zotero/url" not in line
         assert "cannot resolve" in line
         assert "no well-formed file/commit anchor" in line
+
+
+class TestTheVerdictMatchesTheDocumentedExitCodes:
+    """The docstring promised a failure the expression never checked (L6)."""
+
+    def test_a_postgres_only_row_fails_the_report(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """Kills the mutation dropping only_in_postgres from ``clean``.
+
+        A PostgreSQL row with no canonical line is a row /recall can return
+        and the corpus does not contain — the divergence audit-postgres-sync
+        already fails on.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-1", "is_active": True},
+            {"id": "ghost-1", "is_active": True},
+        ]))
+        report, clean = _build()
+        assert report["integrity"]["only_in_postgres"] == 1
+        assert clean is False
+
+    def test_the_unsynced_tail_does_not_fail_the_report(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """The control, and the reason the other direction is exempt.
+
+        Kills a mutation that also fails on only_in_canonical: the sync cron
+        drains that tail every five minutes, so /memory-health would be red
+        most of the time.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1"), _anchored(id="m-2")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, clean = _build()
+        assert report["integrity"]["only_in_canonical"] == 1
+        assert clean is True
+
+    def test_an_unreachable_database_does_not_fail_the_report(
+        self, report_paths, monkeypatch,
+    ) -> None:
+        """"n/a" is not a divergence — it is an absent measurement."""
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        monkeypatch.setattr(mhr, "pg_snapshot", lambda logger: None)
+        report, clean = _build()
+        assert report["integrity"]["only_in_postgres"] == "n/a"
+        assert clean is True

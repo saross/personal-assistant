@@ -48,11 +48,14 @@ venv/bin/python3 ~/personal-assistant/scripts/memory-health-report.py [flags]
 
 3. **Surface the verdict.** The script exits `0` when all integrity checks are
    clean and `1` when an integrity check failed (a recall leak — an archived id
-   still `is_active=TRUE`; a duplicate-id tripwire; quarantined PG-drops; or a
+   still `is_active=TRUE`; a PostgreSQL row with no canonical line; a
+   duplicate-id tripwire; quarantined PG-drops; or a
    quarantine count of **UNKNOWN**, meaning the quarantine file exists and
    could not be read — an unreadable standing alarm is not a quiet one. A
    quarantine file that does not exist at all is normal: the sync writes it
-   only on its first dropped row, so it counts 0 and passes). If it exits `1`,
+   only on its first dropped row, so it counts 0 and passes. The unsynced
+   tail — canonical records not yet in PostgreSQL — does NOT fail: the cron
+   drains it every 5 minutes). If it exits `1`,
    call that out prominently: it is a real corpus-integrity finding, not a
    cosmetic one. Exit `2` means the report could not run (the canonical JSONL
    is missing) — report that plainly. A PostgreSQL schema mismatch is not

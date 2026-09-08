@@ -22,8 +22,12 @@ can reproduce any figure rather than trust the prose.
 
 Exit codes:
   0 — report produced; all integrity checks clean
-  1 — an integrity check failed (a recall leak, a #55 missing-id, or a
-      duplicate-id tripwire) — the report still prints in full
+  1 — an integrity check failed — the report still prints in full. The
+      failures are: an archived id still active in PostgreSQL (a recall
+      leak), a PostgreSQL row with no canonical line, a duplicate-id
+      tripwire, and a quarantine file that exists and cannot be read.
+      The UNSYNCED TAIL — canonical records not yet in PostgreSQL — is
+      expected and does NOT fail: the sync cron drains it every 5 minutes.
   2 — could not produce the report (canonical JSONL missing)
 
 Usage:
@@ -962,16 +966,23 @@ def build_report(
         )
 
     # Integrity is clean iff: no dup-ids, a quarantine count that is both
-    # KNOWN and zero, no archive leak, and (when PG is reachable) no #55
-    # missing-id beyond a small unsynced tail. A missing-id only fails when PG
-    # is reachable AND a leak/dup is present; the unsynced tail (live\PG) is
-    # expected and does NOT fail the report. An UNKNOWN quarantine count fails
+    # KNOWN and zero, no archive leak, and (when PG is reachable) no
+    # PostgreSQL-only orphan. The unsynced tail (live\PG) is expected and
+    # does NOT fail the report — the cron drains it every five minutes — but
+    # the reverse direction is a real divergence. An UNKNOWN quarantine count fails
     # — an unreadable standing alarm is not a quiet one — while an ABSENT
     # quarantine file counts 0 and passes, because the sync creates it only on
     # its first dropped row (finding AN8).
     clean = (
         integrity["duplicate_id_groups"] == 0
         and integrity["quarantine_count"] == 0
+        # A PostgreSQL row with no canonical line is a row /recall can return
+        # and the corpus does not contain — the same divergence
+        # audit-postgres-sync fails on. The docstring claimed a missing id
+        # failed the report while this expression ignored both directions
+        # (round 4f-3, finding L6); the unsynced tail stays exempt, the
+        # orphan does not. "n/a" means PostgreSQL was unreachable.
+        and integrity["only_in_postgres"] in (0, "n/a")
         and (archive_parity_dict is None or archive_parity_dict["leaked_active"] == 0)
     )
     integrity["clean"] = clean
