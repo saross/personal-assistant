@@ -594,11 +594,27 @@ records where the input manifest lived, and each
 - **Step 1 additionally needs `pdf_path`**, which only the Zotero export
   carries; re-export it if the PDFs must be re-extracted.
 
-Write the rebuilt manifest to
-`~/personal-assistant/data/style-corpus/extract-input-manifest.json` and
-commit it, so the next run has no tmpfs dependency. The commands below use
-that path; substitute the freshly exported file when re-running Step 1 from
-Zotero.
+**`extract-input-manifest.json` does not exist yet — writing and committing
+it is a to-do, not a fact.** The commands below name it because that is
+where it should live; until it is committed, rebuild it first. A Step 2
+manifest can be rebuilt from the durable output with no Zotero access
+(`included_keys` needs only `key`, and treats an entry with no
+`extraction_notes` as included):
+
+```bash
+~/personal-assistant/venv/bin/python3 - <<'REBUILD'
+import json, pathlib
+root = pathlib.Path.home() / "personal-assistant/data/style-corpus"
+results = json.loads((root / "corpus-manifest.json").read_text())["results"]
+entries = [{"key": r["key"]} for r in results
+           if r.get("status") == "ok" and r.get("key")]
+(root / "extract-input-manifest.json").write_text(json.dumps(entries, indent=2))
+print(f"wrote {len(entries)} keys")
+REBUILD
+```
+
+For Step 1 substitute the freshly exported Zotero manifest, which is the
+only source of `pdf_path`.
 
 **Canonical invocation (clean corpus — use this from 2026-05-24):**
 
@@ -721,14 +737,21 @@ same rigour as factual claims.
    6/18 — a confabulation surfaced by `phase3_guide_verifier.py`.
    Verbatim copy is the structural fix.
 
-## Reconciliation with prior style guides — NOT YOUR JOB
+## Prior style guides — SUPERSEDED, AND NOT YOUR JOB
 
 The user has prior style guides (multiple versions, Claude.ai era,
-ChatGPT era, and others). Reconciliation between your output and
-those prior guides is **deliberately handled in a follow-up
-human-in-the-loop session**, not by you. Your output should be
-self-contained and ready for that reconciliation. Do not search for,
-read, or reference the prior guides.
+ChatGPT era, and others). Per the Phase 4 rule above they are
+**superseded: do not cite them, and do not reconcile against them.**
+Reconciliation happens inside Phase 4, against the *live empirical
+assessment* (§§1–10) — not in a later session, and not against the
+prior guides. So: do not search for, read, or reference them, and do
+not write that any item "awaits reconciliation" with them. Your output
+is self-contained.
+
+(Until 2026-09-09 this section described the reconciliation as
+"deliberately handled in a follow-up human-in-the-loop session",
+which contradicted Phase 4 and the claim template. Phase 4 is the
+rule.)
 
 ## Reporting back
 

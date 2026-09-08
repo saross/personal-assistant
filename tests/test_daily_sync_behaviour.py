@@ -3787,3 +3787,93 @@ class TestSweptSidecarTemps:
         assert not orphan.exists(), (
             "a half-built sidecar from a killed run survived the next one"
         )
+
+
+# ============================================================================
+# A merge this guard cannot judge is refused, not waved through (audit M1)
+# ============================================================================
+
+
+class TestUnjudgeableMerge:
+    """The smallest-parent rule took `min` over every parent, and a parent
+    that does not hold the corpus counts as zero records -- so a merge
+    with an orphan or unrelated-history parent could keep one record out
+    of a hundred and never register as a shrink at all."""
+
+    def _published_corpus(self, world: SyncWorld) -> object:
+        """A machine whose origin holds a corpus worth truncating."""
+        machine = world.add_machine("a")
+        for index in range(4):
+            machine.append_memory(f"2026-09-09-record-{index}")
+        machine.commit_data("real captures", "memories/memories.jsonl")
+        git("push", "-q", "origin", "main", cwd=machine.data)
+        return machine
+
+    def test_a_merge_with_an_orphan_parent_cannot_be_judged(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M1: counting a corpus-less parent as zero records.
+
+        The orphan branch shares no history and holds no corpus, so the
+        minimum over the parents was 0 and `after < before` was false for
+        any surviving record -- "every commit that shortened it carries a
+        trailer, allowed" over a merge that kept one line in five.
+        """
+        machine = self._published_corpus(world)
+        published_before = world.published_data_head()
+        # An orphan built with plumbing, so the working tree is never
+        # disturbed: a parentless commit holding the empty tree, and so
+        # no corpus at all.
+        empty_tree = git(
+            "hash-object", "-wt", "tree", "/dev/null", cwd=machine.data
+        ).stdout.strip()
+        orphan = git(
+            "commit-tree", empty_tree, "-m", "an unrelated history",
+            cwd=machine.data
+        ).stdout.strip()
+        git("merge", "-q", "--no-commit", "--allow-unrelated-histories",
+            orphan, cwd=machine.data, check=False)
+        machine.memories.write_text('{"id": "one record in five"}\n',
+                                    encoding="utf-8")
+        git("add", "-A", cwd=machine.data)
+        git("commit", "-q", "-m", "Merge unrelated", cwd=machine.data)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert world.published_data_head() == published_before, (
+            "a merge this guard could not judge published a truncated corpus"
+        )
+        joined = "\n".join(gate_details(world))
+        assert "SHORTER than origin" in joined, joined
+        # The corpus-less parent is EXCLUDED, so the merge is measured
+        # against the one parent that has a corpus and the shrink is
+        # attributed to it. Counting that parent as zero records leaves
+        # the shrink unattributed -- also refused, by the fail-closed
+        # rule, but for the wrong reason and one commit too late.
+        report = next(iter((machine.pa / "logs").glob("daily-sync-shrink-*.log")))
+        written = report.read_text(encoding="utf-8")
+        assert "could not be attributed" not in written, written
+        merge_sha = machine.head("data")
+        assert merge_sha in written, written
+
+    def test_a_normal_no_ff_bulk_merge_still_publishes(
+        self, world: SyncWorld
+    ) -> None:
+        """The rule the orphan case must not break: an archive run made on
+        a branch and merged with --no-ff still goes out."""
+        machine = self._published_corpus(world)
+        git("checkout", "-q", "-b", "archive-run", cwd=machine.data)
+        machine.memories.write_text('{"id": "kept"}\n', encoding="utf-8")
+        machine.commit_data("archive", "memories/memories.jsonl")
+        git("commit", "-q", "--amend", "-m",
+            "chore(memories): monthly archive\n\nRewrite-Class: bulk\n",
+            cwd=machine.data)
+        git("checkout", "-q", "main", cwd=machine.data)
+        git("merge", "-q", "--no-ff", "-m", "Merge the monthly archive",
+            "archive-run", cwd=machine.data)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert world.published_data_file("memories/memories.jsonl") == (
+            '{"id": "kept"}\n'
+        )

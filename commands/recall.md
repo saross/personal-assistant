@@ -189,9 +189,26 @@ Run the search script via Bash, passing the user's text as an **argument**:
 
 ```bash
 ~/personal-assistant/venv/bin/python3 \
-  ~/personal-assistant/scripts/search-sessions.py "<user query>" \
-  --limit 5 --json
+  ~/personal-assistant/scripts/search-sessions.py --query-stdin \
+  --limit 5 --json <<'RECALL_QUERY'
+<the user's query text, verbatim, on its own line>
+RECALL_QUERY
 ```
+
+**Never interpolate the query into the command line.** Audit R8 stopped it
+being pasted into SQL; audit M-2 is the same problem one layer out, in the
+**shell**. `search-sessions.py "<user query>"` requires this command to be
+assembled as a string, and the query is text somebody else wrote: an
+apostrophe ends the quoting, and a backtick or `$( )` is executed by the
+shell *before* the script runs. `--query-stdin` with a quoted heredoc
+(`<<'RECALL_QUERY'` — the quotes on the delimiter suppress every expansion)
+removes the shell from the path entirely: there is no string left for it to
+parse. The trailing newline is stripped; the text is otherwise used
+verbatim.
+
+If a heredoc is impossible in the calling context, the fallback is to
+single-quote the argument **and refuse** any query containing a single
+quote, a backtick, or `$(`. Do not attempt to escape them.
 
 The **venv** interpreter, not a bare `python3`: this script imports
 `psycopg2`, which is installed only in the virtual environment. A system

@@ -35,12 +35,13 @@ from _sync_cursor import (  # noqa: E402
     quarantine_record,
     read_cursor_file,
     read_cursor_file_locked,
-    split_jsonl_lines,
+    read_jsonl_lines,
     update_cursor_file,
 )
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+from _soft_delete import normalise_flag  # noqa: E402  (audit M-1)
 # Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
 from _sync_gate import (  # noqa: E402
     CYCLE_COMPLETED,
@@ -468,7 +469,10 @@ def record_to_tuple(record: dict[str, Any]) -> tuple:
         record.get("extractor_model_id"),
         # Soft-delete flag (P8 fix, 2026-06-06) — defaults TRUE when absent,
         # mirroring the column default; a /forget'd record carries False.
-        record.get("is_active", True),
+        # Normalised to a real bool (audit M-1): the column is BOOLEAN, and
+        # an int from a hand-edited record has no implicit cast to it, so
+        # the whole batch INSERT failed rather than the memory retiring.
+        normalise_flag(record.get("is_active"), default=True),
     )
 
 
@@ -1351,11 +1355,15 @@ def _sync_locked_body(
         cursor_line = 0
     cursor_key_was_present = "postgres_sync_line" in cursor_snapshot
 
-    # Read all lines and process from cursor position. ``split_jsonl_lines``
+    # Read all lines and process from cursor position. ``read_jsonl_lines``
     # breaks on "\n" alone — the one definition of "a line" this system
     # shares with _sync_cursor.count_jsonl_lines, which the bulk rewriters'
     # backlog gate compares this cursor against (audit round 4a-2, M2).
-    lines = split_jsonl_lines(MEMORIES_FILE.read_text(encoding="utf-8"))
+    # It reads BYTES: passing it ``read_text`` output put universal-newline
+    # translation in between, so a lone \r counted as a line break here and
+    # not in the gate, and the cursor was saved one line ahead of the file
+    # the gate measures (audit round 4a-3, M2).
+    lines = read_jsonl_lines(MEMORIES_FILE)
     total_lines = len(lines)
 
     # Shrink guard (item 22): if the canonical shrank below the saved cursor

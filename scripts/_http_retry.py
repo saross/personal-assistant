@@ -171,6 +171,11 @@ def is_transient_status(
 # urllib convenience wrapper (used by embed.py)
 # ---------------------------------------------------------------------------
 
+#: Hypertext Transfer Protocol (HTTP) methods with no side effect, and so
+#: always safe to repeat. Anything else needs ``idempotent=True`` before
+#: this module will retry it.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
 
 def urlopen_with_retry(
     request: urllib.request.Request,
@@ -179,6 +184,7 @@ def urlopen_with_retry(
     base_backoff: float = 1.0,
     timeout: float = 30.0,
     honour_retry_after: bool = True,
+    idempotent: bool = False,
     transient_status: tuple[int, ...] = DEFAULT_TRANSIENT_STATUS,
 ):
     """
@@ -221,6 +227,17 @@ def urlopen_with_retry(
     honour_retry_after:
         If ``True`` (default), 429 responses with a ``Retry-After``
         header use the header value instead of computed backoff.
+    idempotent:
+        Required to retry a request whose method is not safe. A 500, 502,
+        or 504 does not mean the server did nothing — a POST may have
+        been applied and the acknowledgement lost — so retrying an unsafe
+        method blindly can duplicate the side effect. With the default
+        ``False``, a ``POST``, ``PUT``, ``PATCH``, or ``DELETE`` is
+        attempted exactly ONCE and the failure propagates. Pass ``True``
+        only when the call genuinely is idempotent: a pure computation
+        (``embed.py``'s Ollama embedding call), or a write carrying an
+        idempotency key the server de-duplicates on. Safe methods
+        (``GET``, ``HEAD``, ``OPTIONS``, ``TRACE``) are unaffected.
     transient_status:
         HTTP status codes considered retryable. Override if you need
         stricter or looser semantics.
@@ -241,6 +258,18 @@ def urlopen_with_retry(
         On the final attempt for lower-level failures.
     """
     if max_attempts < 1:
+        max_attempts = 1
+
+    # Audit round 4d (E14): an unsafe method is retried only on the
+    # caller's explicit word. See the ``idempotent`` parameter above.
+    method = (request.get_method() or "GET").upper()
+    if method not in SAFE_METHODS and not idempotent:
+        if max_attempts > 1:
+            logger.debug(
+                "%s is not a safe method and idempotent=False; "
+                "attempting once without retry",
+                method,
+            )
         max_attempts = 1
 
     last_exc: BaseException | None = None

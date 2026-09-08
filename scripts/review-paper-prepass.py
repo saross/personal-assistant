@@ -63,6 +63,7 @@ from __future__ import annotations
 import argparse
 import glob as globmod
 import json
+import pathlib
 import re
 import shutil
 import subprocess
@@ -436,13 +437,45 @@ def check_aux_labels(text: str, rel: str, aux_labels: dict[str, str] | None,
     return found
 
 
+def _contained_candidates(
+    anchor_path: str, repo: Path, target: Path
+) -> list[Path]:
+    """Resolve an anchor path, discarding anything outside ``repo``.
+
+    Audit round 4d (E17): the anchor text comes from a comment inside the
+    manuscript, and nothing constrained it. ``../../.ssh/config`` or an
+    absolute path resolved happily, and the "stale anchor" finding then
+    reported whether that file exists and how many lines it has — a small
+    read-only probe of the filesystem, driven by text in a .tex file. An
+    anchor is by definition a pointer into the repository, so anything
+    that escapes it is simply not a candidate.
+
+    Args:
+        anchor_path: The path as written in the comment.
+        repo: Repository root the run is scoped to.
+        target: The file the anchor was written in.
+
+    Returns:
+        Existing-or-not candidate paths that stay inside ``repo``.
+    """
+    if pathlib.PurePosixPath(anchor_path).is_absolute():
+        return []
+    repo_root = repo.resolve()
+    contained = []
+    for base in (repo, target.parent):
+        candidate = (base / anchor_path).resolve()
+        if candidate == repo_root or repo_root in candidate.parents:
+            contained.append(candidate)
+    return contained
+
+
 def check_guard_anchors(raw_text: str, rel: str, repo: Path, target: Path) -> list[dict]:
     """Verify path:line anchors inside comment blocks still point at real lines."""
     found = []
     for line_no, line in comment_lines(raw_text):
         for m in GUARD_ANCHOR.finditer(line):
             anchor_path, anchor_line = m.group(1), int(m.group(2))
-            candidates = [repo / anchor_path, target.parent / anchor_path]
+            candidates = _contained_candidates(anchor_path, repo, target)
             existing = next((c for c in candidates if c.is_file()), None)
             if existing is None:
                 found.append(finding(

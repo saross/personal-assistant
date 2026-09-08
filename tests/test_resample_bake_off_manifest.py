@@ -174,9 +174,25 @@ def run_main(pool_root: Path, *args: str) -> int:
 class TestPathDefaults:
     """Nothing resolves to the operator's checkout by hardcoded string."""
 
-    def test_pa_dir_is_file_derived(self):
-        """The finding: PA_DIR was a hardcoded absolute path."""
-        assert resample.PA_DIR == PROJECT_ROOT
+    def test_no_module_constant_holds_a_repository_root(self):
+        """PA_DIR was a hardcoded absolute path, then dead weight.
+
+        Once the extractor moved to a sibling lookup and both pools moved
+        behind --archive-root / --live-root, nothing needed a repository
+        root at all. A constant nobody reads is the one most likely to be
+        re-used wrongly later.
+        """
+        assert not hasattr(resample, "PA_DIR")
+
+    def test_every_glob_template_is_relative_to_a_root(self):
+        """No template may smuggle back an absolute /home/... path."""
+        templates = (
+            *resample.ARCHIVE_GLOB_TEMPLATES,
+            *resample.LIVE_GLOB_TEMPLATES,
+        )
+        assert templates
+        for template in templates:
+            assert not template.startswith("/"), template
 
     def test_globs_are_rooted_at_the_given_root(self, tmp_path):
         """Both pools follow --archive-root / --live-root, not $HOME."""
@@ -507,3 +523,79 @@ class TestEnumerationOrder:
             for c in resample.enumerate_live_candidates(resample.live_globs(root))
         )
         assert sources == ["live", "subagent"]
+
+
+class TestAtomicWriteStaysOnOneFilesystem:
+    """The manifest's temp file must be a sibling of the manifest."""
+
+    def test_temp_file_is_created_in_the_target_directory(self, tmp_path, monkeypatch):
+        """The finding: dropping dir= survived every test on one filesystem."""
+        import tempfile as tempfile_module
+
+        recorded: list = []
+        real_mkstemp = tempfile_module.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            recorded.append(kwargs.get("dir"))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile_module, "mkstemp", recording_mkstemp)
+        target = tmp_path / "manifests" / "sample-manifest.json"
+        resample.write_json_atomic(target, {"sessions": []})
+        assert recorded == [str(target.parent)]
+
+    def test_write_survives_a_cross_device_rename_barrier(self, tmp_path, monkeypatch):
+        """Simulate EXDEV: the manifest lives on the data submodule's mount."""
+        import errno
+        import os as os_module
+
+        real_replace = os_module.replace
+
+        def replace_refusing_cross_directory(src, dst):
+            if Path(src).parent != Path(dst).parent:
+                raise OSError(
+                    errno.EXDEV, "Invalid cross-device link", str(src), None, str(dst)
+                )
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os_module, "replace", replace_refusing_cross_directory)
+        target = tmp_path / "manifests" / "sample-manifest.json"
+        resample.write_json_atomic(target, {"sessions": []})
+        assert json.loads(target.read_text()) == {"sessions": []}
+
+
+class TestRefusalComesFirst:
+    """A doomed run must not spend minutes walking the transcript pool."""
+
+    def test_existing_out_is_refused_before_enumeration(
+        self, pool, tmp_path, monkeypatch, capsys
+    ):
+        """The finding: the refusal fired only after the whole pass."""
+
+        def refuse_enumeration(_patterns):
+            raise AssertionError(
+                "enumeration ran even though --out was already occupied"
+            )
+
+        monkeypatch.setattr(resample, "enumerate_archive_candidates", refuse_enumeration)
+        monkeypatch.setattr(resample, "enumerate_live_candidates", refuse_enumeration)
+        out = tmp_path / "manifest.json"
+        out.write_text('{"sessions": ["do not lose me"]}\n', encoding="utf-8")
+        assert run_main(pool, "--out", str(out)) == 2
+        assert "already exists" in capsys.readouterr().err
+        assert json.loads(out.read_text()) == {"sessions": ["do not lose me"]}
+
+    def test_force_still_enumerates(self, pool, tmp_path):
+        out = tmp_path / "manifest.json"
+        out.write_text('{"sessions": ["stale"]}\n', encoding="utf-8")
+        assert run_main(pool, "--out", str(out), "--force") == 0
+        assert json.loads(out.read_text())["sessions"] != ["stale"]
+
+    def test_the_writer_still_refuses_on_its_own(self, tmp_path):
+        """The late check closes the window between the early one and the write."""
+        out = tmp_path / "manifest.json"
+        out.write_text("{}\n", encoding="utf-8")
+        with pytest.raises(resample.ManifestExistsError):
+            resample.write_manifest(
+                [], {}, out, seed=42, generated_at=FROZEN_CLOCK,
+            )

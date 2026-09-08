@@ -135,6 +135,48 @@ For each file, check every line against these categories:
   names, filenames) — see CLAUDE.md for the conversion table
 - Code style compliance (PEP 8 for Python, etc.)
 
+### 2a-note. Running the suite during an audit
+
+Two runs, because they cover different halves of the hermeticity guard.
+
+**1. A clean copy — proves the suite does not write to the source trees.**
+
+```bash
+D=$(mktemp -d) && git archive --format=tar HEAD | tar -x -C "$D"
+H=$(mktemp -d)
+cd "$D" && env -i PATH=/usr/bin:/bin HOME="$H" LANG=C.UTF-8 \
+  PA_HERMETICITY_STRICT=1 \
+  ~/personal-assistant/venv/bin/python3 -m pytest -q --basetemp="$H/bt"
+```
+
+The interpreter comes from the **live venv**: `venv/` is gitignored, so an
+archive export has no `venv/bin/python3` in it. Note also that the export has
+no `data/` submodule, so `memories/` and `logs/` are dangling symlinks and the
+**store half of the guard is inert there** — the run says so at the end, under
+a `hermeticity` banner. What this run does prove is the source-tree half:
+nothing the suite does touches `wiki/`, `scripts/`, `commands/`, `hooks/`,
+`tests/`, `global-claude-md/`, `global-agent-guidance/`, or `tasks/`.
+
+`--basetemp` inside the pinned HOME matters when other agents are running
+suites: pytest's `/tmp/pytest-of-<user>` numbered directories are shared, and
+concurrent runs collide there.
+
+**2. The live checkout (or a worktree with the submodule populated) — proves
+the suite does not write to the memory store.**
+
+```bash
+cd ~/personal-assistant && PA_HERMETICITY_STRICT=1 venv/bin/python3 -m pytest -q
+```
+
+Run this only when **no other session is editing the repository**: strict mode
+makes a concurrent session's wiki edit fatal, which is a false failure. Without
+`PA_HERMETICITY_STRICT` the source-tree half is advisory — a warning naming the
+paths, printed through the terminal reporter so it survives output capture —
+while the store half stays strict either way, with one allowance: an append by
+the live system is verified as an append (unchanged prefix, and for
+`memories.jsonl` and the vocabulary a plausible appended line) and tolerated,
+and its byte count is reported.
+
 ### 2b. Lens B — test adequacy
 
 Not "are there tests?" but "would these tests fail if the feature were broken?"

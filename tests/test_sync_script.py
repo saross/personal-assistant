@@ -3613,3 +3613,120 @@ class TestCursorMatchesTheBacklogGate:
             memories)
         # And the gate therefore reads the corpus as caught up.
         assert _sync_cursor.unsynced_line_backlog(memories, cursor_file) == 0
+
+
+    def test_saved_cursor_survives_a_lone_carriage_return(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """A raw \\r inside a record must not add a line to the cursor.
+
+        Kills the mutation ``read_jsonl_lines(MEMORIES_FILE)`` ->
+        ``split_jsonl_lines(MEMORIES_FILE.read_text(encoding="utf-8"))``:
+        universal-newline translation turns the \\r into a \\n before the
+        split, so the cycle counts one line more than count_jsonl_lines and
+        the cursor is saved past the end of the file the backlog gate
+        measures. Audit round 4a-3, finding M2.
+        """
+        import _sync_cursor
+
+        memories = tmp_path / "memories.jsonl"
+        # A lone CR inside the content, written as BYTES so nothing
+        # translates it on the way to disk.
+        record_a = json.dumps({
+            "id": "mem-a",
+            "category": "progress",
+            "content": "plain",
+            "created_at": "2026-04-23T00:00:00Z",
+        })
+        record_b = json.dumps({
+            "id": "mem-b",
+            "category": "progress",
+            "content": "plain",
+            "created_at": "2026-04-23T00:00:00Z",
+        })
+        # The separator between two fields becomes a RAW carriage return on
+        # disk. Placed BETWEEN tokens, where JSON treats it as whitespace, so
+        # the record still parses -- a \r inside a string literal would be an
+        # illegal control character and change what is being tested.
+        memories.write_bytes(
+            record_a.replace('", "category"', '",\r"category"').encode("utf-8")
+            + b"\n" + record_b.encode("utf-8") + b"\n"
+        )
+        # The divergence only exists while a raw CR is on disk.
+        assert b"\r" in memories.read_bytes()
+        assert _sync_cursor.count_jsonl_lines(memories) == 2
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE",
+                            tmp_path / "quarantine.jsonl")
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["mem-a", "mem-b"],
+        )
+
+        sync_mod.sync(test_logger)
+
+        saved = json.loads(cursor_file.read_text(encoding="utf-8"))
+        assert saved["postgres_sync_line"] == 2, (
+            "the cursor counted the carriage return as a line break")
+        assert _sync_cursor.unsynced_line_backlog(memories, cursor_file) == 0
+
+
+
+# ============================================================================
+# Audit M-1 — is_active reaches the BOOLEAN column as a real bool
+# ============================================================================
+
+
+class TestIsActiveNormalisedForInsert:
+    """``record_to_tuple`` feeds a BOOLEAN column, so it must send a bool."""
+
+    @staticmethod
+    def _flag(record_extra: dict) -> object:
+        """The is_active element of the INSERT tuple (JSONL_FIELDS' last)."""
+        record = {
+            "id": "2026-06-05-abc",
+            "category": "decision",
+            "content": "Something happened.",
+            "created_at": "2026-06-05T00:00:00+00:00",
+            **record_extra,
+        }
+        return sync_mod.record_to_tuple(record)[-1]
+
+    @pytest.mark.parametrize("stored,expected", [
+        (False, False), ("false", False), ("f", False), ("no", False),
+        ("n", False), ("off", False), ("0", False), (0, False), (0.0, False),
+        (True, True), ("true", True), ("yes", True), (1, True),
+        ("unrecognised", True),
+    ])
+    def test_every_stored_shape_becomes_a_bool(
+        self, stored: object, expected: bool,
+    ) -> None:
+        """Kills: ``record.get("is_active", True)`` passing the raw value on.
+
+        psycopg2 renders an int as an SQL integer literal, and PostgreSQL
+        has no implicit int4 -> bool cast, so a hand-edited 0 raised
+        "column is of type boolean but expression is of type integer" and
+        failed the whole batch. A string like "no" adapted fine but
+        disagreed with every JSONL reader.
+        """
+        assert self._flag({"is_active": stored}) is expected
+
+    def test_absent_defaults_to_true(self) -> None:
+        """Mirrors the column default for the pre-/forget corpus."""
+        assert self._flag({}) is True
+
+    def test_agrees_with_the_jsonl_readers(self) -> None:
+        """One record, one answer, whichever side asks (audit M-1)."""
+        from _soft_delete import is_active
+
+        for stored in (False, "false", "f", "no", "n", "off", "0", 0,
+                       True, "true", "yes", 1, "unrecognised"):
+            assert self._flag({"is_active": stored}) is is_active(
+                {"is_active": stored}
+            ), stored

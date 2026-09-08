@@ -1285,3 +1285,342 @@ class TestDedupeMergesAcrossPageBoundaries:
         assert len(merged) == 1
         assert merged[0]["s2_id"] == "S2-XYZ"
         assert merged[0]["abstract"] == "Abstract from CrossRef"
+
+
+# ============================================================================
+# ET4 / ET17 / E3 / E18 / E19 — the transport layer and the missing shapes
+#
+# Every test above patches `_safe_get` or `client.get`, so the transport
+# itself was unpinned: deleting per-host pacing (:262), ignoring
+# `Retry-After` entirely (:395), and flattening or uncapping the backoff
+# (:322, :324) all survived the suite (lens B, tranche 5, findings 4 and
+# 17). And the Semantic Scholar credential was set on the shared client, so
+# it went to CrossRef, DataCite, and OpenAlex on every call (lens A, 3).
+#
+# All keys, hostnames, and payloads below are invented.
+# ============================================================================
+
+import types as _types
+
+
+class FakeResponse:
+    """A minimal stand-in for ``httpx.Response``."""
+
+    def __init__(self, status_code=200, payload=None, headers=None, text=""):
+        """Store the status, JSON payload, headers, and body text."""
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.headers = headers or {}
+        self.text = text
+
+    def json(self):
+        """Return the stored payload."""
+        return self._payload
+
+
+class RecordingClient:
+    """An ``httpx.Client`` stand-in recording every ``get`` call."""
+
+    def __init__(self, responses=None):
+        """Queue ``responses`` (or always answer 200 with an empty body)."""
+        self.calls = []
+        self._responses = list(responses or [])
+
+    def get(self, url, params=None, headers=None):
+        """Record the call and return the next queued response."""
+        self.calls.append({"url": url, "params": params, "headers": headers})
+        if self._responses:
+            return self._responses.pop(0)
+        return FakeResponse()
+
+
+@pytest.fixture
+def no_real_sleep(monkeypatch):
+    """Record every sleep instead of performing it."""
+    slept: list[float] = []
+    monkeypatch.setattr(lit_search.time, "sleep", slept.append)
+    return slept
+
+
+@pytest.fixture
+def reset_pacing(monkeypatch):
+    """Give each test a clean per-host pacing state."""
+    monkeypatch.setattr(lit_search, "_last_request", {})
+
+
+class TestPerHostPacing:
+    """ET4 — the pacing floor, which deleting made the suite 17x faster."""
+
+    def test_two_calls_to_one_host_are_spaced(
+        self, monkeypatch, no_real_sleep, reset_pacing
+    ):
+        """The second call sleeps at least the host's floor."""
+        # A frozen clock well past zero: the first call to a host sees no
+        # prior timestamp and must not sleep; the second sees the first.
+        monkeypatch.setattr(lit_search.time, "monotonic", lambda: 1000.0)
+        client = RecordingClient()
+        url = f"https://{lit_search.CROSSREF_HOST}/works/10.1/a"
+
+        lit_search._safe_get(client, url, "crossref")
+        lit_search._safe_get(client, url, "crossref")
+
+        floor = lit_search.HOST_MIN_INTERVAL[lit_search.CROSSREF_HOST]
+        assert no_real_sleep, "no pacing sleep between two calls to one host"
+        assert max(no_real_sleep) >= floor
+
+    def test_different_hosts_are_not_paced_against_each_other(
+        self, monkeypatch, no_real_sleep, reset_pacing
+    ):
+        """A CrossRef call must not wait on an OpenAlex one."""
+        monkeypatch.setattr(lit_search.time, "monotonic", lambda: 1000.0)
+        client = RecordingClient()
+
+        lit_search._safe_get(
+            client, f"https://{lit_search.CROSSREF_HOST}/works/1", "crossref"
+        )
+        lit_search._safe_get(
+            client, f"https://{lit_search.OPENALEX_HOST}/works/1", "openalex"
+        )
+
+        assert no_real_sleep == [], no_real_sleep
+
+
+class TestRetryAfterAndBackoff:
+    """ET4 / ET17 — the 429 contract and the shape of the backoff."""
+
+    def test_retry_after_is_honoured_on_429(
+        self, monkeypatch, no_real_sleep, reset_pacing
+    ):
+        """A generous Retry-After wins over the exponential floor."""
+        monkeypatch.setattr(lit_search.time, "monotonic", lambda: 1000.0)
+        monkeypatch.setattr(lit_search, "MAX_BACKOFF", 120.0)
+        monkeypatch.setattr(lit_search, "_backoff_delay", lambda attempt: 1.0)
+        client = RecordingClient(
+            [
+                FakeResponse(429, headers={"Retry-After": "42"}),
+                FakeResponse(200, {"ok": True}),
+            ]
+        )
+
+        result = lit_search._safe_get(
+            client, f"https://{lit_search.S2_HOST}/graph/v1/paper/x", "s2"
+        )
+
+        assert result == {"ok": True}
+        assert 42.0 in no_real_sleep, no_real_sleep
+
+    def test_backoff_grows_and_is_capped(self, monkeypatch):
+        """ET17 — the delay is exponential, and never exceeds the cap."""
+        monkeypatch.setattr(lit_search.random, "uniform", lambda a, b: 0.0)
+        monkeypatch.setattr(lit_search, "BASE_BACKOFF", 2.0)
+        monkeypatch.setattr(lit_search, "MAX_BACKOFF", 10.0)
+
+        delays = [lit_search._backoff_delay(n) for n in range(5)]
+
+        assert delays[0] == 2.0
+        assert delays[1] == 4.0
+        assert delays[2] == 8.0
+        assert delays[1] > delays[0], "the backoff is flat, not exponential"
+        assert all(d <= 10.0 for d in delays), delays
+        assert delays[-1] == 10.0, "the cap is not applied"
+
+
+class TestCredentialScope:
+    """E3 — the Semantic Scholar key goes to Semantic Scholar only."""
+
+    def test_the_key_is_sent_to_semantic_scholar(
+        self, monkeypatch, reset_pacing
+    ):
+        """The S2 request carries x-api-key."""
+        monkeypatch.setattr(
+            lit_search, "S2_API_KEY", "synthetic-s2-key-not-a-secret"
+        )
+        client = RecordingClient()
+
+        lit_search._safe_get(
+            client, f"https://{lit_search.S2_HOST}/graph/v1/paper/x", "s2"
+        )
+
+        headers = client.calls[0]["headers"] or {}
+        assert headers.get("x-api-key") == "synthetic-s2-key-not-a-secret"
+
+    @pytest.mark.parametrize(
+        "host",
+        ["api.crossref.org", "api.openalex.org", "api.datacite.org"],
+    )
+    def test_the_key_is_never_sent_elsewhere(
+        self, monkeypatch, reset_pacing, host
+    ):
+        """CrossRef, OpenAlex, and DataCite see no Semantic Scholar key."""
+        monkeypatch.setattr(
+            lit_search, "S2_API_KEY", "synthetic-s2-key-not-a-secret"
+        )
+        client = RecordingClient()
+
+        lit_search._safe_get(client, f"https://{host}/works/10.1/a", host)
+
+        headers = client.calls[0]["headers"] or {}
+        assert "x-api-key" not in headers, headers
+
+    def test_the_shared_client_carries_no_credential(self, monkeypatch):
+        """The client's own headers must hold neither key."""
+        monkeypatch.setattr(
+            lit_search, "S2_API_KEY", "synthetic-s2-key-not-a-secret"
+        )
+        client = lit_search._get_client()
+        try:
+            assert "x-api-key" not in client.headers
+            assert "api_key" not in client.headers
+        finally:
+            client.close()
+
+    def test_a_cross_host_redirect_cannot_carry_the_key(self):
+        """The request hook strips the key from a non-S2 request."""
+        request = httpx.Request(
+            "GET",
+            "https://api.crossref.org/works/10.1/a",
+            headers={"x-api-key": "synthetic-s2-key-not-a-secret"},
+        )
+
+        lit_search._enforce_credential_scope(request)
+
+        assert "x-api-key" not in request.headers
+
+    def test_the_hook_leaves_a_genuine_s2_request_alone(self):
+        """The same hook must not break the authenticated call."""
+        request = httpx.Request(
+            "GET",
+            f"https://{lit_search.S2_HOST}/graph/v1/paper/x",
+            headers={"x-api-key": "synthetic-s2-key-not-a-secret"},
+        )
+
+        lit_search._enforce_credential_scope(request)
+
+        assert request.headers["x-api-key"] == (
+            "synthetic-s2-key-not-a-secret"
+        )
+
+    def test_the_client_installs_the_hook(self):
+        """The scope guard must be wired into the shared client."""
+        client = lit_search._get_client()
+        try:
+            hooks = client.event_hooks.get("request", [])
+            assert lit_search._enforce_credential_scope in hooks
+        finally:
+            client.close()
+
+
+class TestMissingAuthorShapes:
+    """E19 and the fixture gaps lens B named."""
+
+    def test_an_organisation_author_survives(self):
+        """CrossRef's ``{"name": …}`` author must not vanish."""
+        record = {
+            "DOI": "10.9999/corporate",
+            "title": ["A Corporate Report"],
+            "author": [{"name": "The Synthetic Survey Consortium"}],
+            "issued": {"date-parts": [[2031]]},
+        }
+
+        normalised = lit_search._normalise_crossref(record)
+
+        assert normalised["authors"] == [
+            "The Synthetic Survey Consortium"
+        ]
+
+    def test_a_family_only_author_survives(self):
+        """A mononym or family-only record keeps its author."""
+        record = {
+            "DOI": "10.9999/mononym",
+            "title": ["A Mononymous Work"],
+            "author": [{"family": "Marinova"}],
+        }
+
+        assert lit_search._normalise_crossref(record)["authors"] == [
+            "Marinova"
+        ]
+
+    def test_null_date_parts_yield_no_year(self):
+        """``[[None]]`` must produce None, not a crash or a "None" year."""
+        record = {
+            "DOI": "10.9999/nodate",
+            "title": ["Undated"],
+            "issued": {"date-parts": [[None]]},
+        }
+
+        assert lit_search._normalise_crossref(record)["year"] is None
+
+    def test_html_in_a_crossref_title_is_preserved_verbatim(self):
+        """The normaliser is not a sanitiser; downstream strips markup."""
+        record = {
+            "DOI": "10.9999/markup",
+            "title": ["Terraces <i>in situ</i>"],
+        }
+
+        assert lit_search._normalise_crossref(record)["title"] == (
+            "Terraces <i>in situ</i>"
+        )
+
+    def test_a_null_openalex_authorship_is_tolerated(self):
+        """``authorships[].author: null`` must not raise."""
+        record = {
+            "id": "https://openalex.org/W1",
+            "display_name": "A Work",
+            "authorships": [{"author": None}, {"author": {
+                "display_name": "Iva Marinova"
+            }}],
+        }
+
+        normalised = lit_search._normalise_openalex(record)
+
+        assert "Iva Marinova" in normalised["authors"]
+
+    def test_an_empty_openalex_record_normalises(self):
+        """``_normalise_openalex({})`` must return the common schema."""
+        normalised = lit_search._normalise_openalex({})
+        assert normalised["source"] == "openalex"
+        assert normalised["authors"] == []
+
+
+class TestBibtexKeyCollisions:
+    """E18 — two works by one author in one year must not collide."""
+
+    def test_a_repeated_key_is_suffixed(self):
+        """The second entry gains a letter suffix."""
+        seen: set[str] = set()
+        first = lit_search._dedupe_bibtex_key(
+            "@article{Marinova2031,\n  title = {First},\n}", seen
+        )
+        second = lit_search._dedupe_bibtex_key(
+            "@article{Marinova2031,\n  title = {Second},\n}", seen
+        )
+
+        assert "@article{Marinova2031," in first
+        assert "@article{Marinova2031a," in second
+        assert "{Second}" in second
+
+    def test_distinct_keys_are_untouched(self):
+        """A non-colliding entry is returned byte for byte."""
+        seen: set[str] = set()
+        entry = "@book{Dvorak2030,\n  title = {Only One},\n}"
+        assert lit_search._dedupe_bibtex_key(entry, seen) == entry
+
+    def test_cmd_bibtex_deduplicates_across_dois(self, reset_pacing):
+        """Two DOIs whose entries share a key both survive the run."""
+        client = RecordingClient(
+            [
+                FakeResponse(
+                    200, text="@article{Marinova2031,\n  title = {A},\n}"
+                ),
+                FakeResponse(
+                    200, text="@article{Marinova2031,\n  title = {B},\n}"
+                ),
+            ]
+        )
+
+        out = lit_search.cmd_bibtex(
+            ["10.1/a", "10.1/b"], client  # type: ignore[arg-type]
+        )
+
+        assert "@article{Marinova2031," in out
+        assert "@article{Marinova2031a," in out

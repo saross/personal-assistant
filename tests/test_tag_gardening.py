@@ -1985,3 +1985,152 @@ class TestRewriteVocabularyEdgeCases:
         tag_gardening.rewrite_vocabulary(vocab, {"kiln", "api"})
 
         assert vocab.read_text(encoding="utf-8") == "api\nkiln\n"
+
+
+    def test_two_winners_differing_only_by_case_collapse_to_one(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """A second winner spelt differently must not land beside the first.
+
+        Kills the mutation that drops ``kept_lower.add(winner.lower())``:
+        the running set never learns about the winner just added, so a plan
+        naming both "api" and "API" as winners writes both into the
+        vocabulary, and every later orphan report calls one of them unused.
+        Audit round 4a-3, surviving mutation.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-601", "content": "First loser.",
+             "research_tags": ["pipelines"]},
+            {"id": "mem-602", "content": "Second loser.",
+             "research_tags": ["kilns"]},
+        ])
+        vocab.write_text("pipelines\nkilns\n", encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([
+                {"winner": "api", "losers": ["pipelines"]},
+                {"winner": "API", "losers": ["kilns"]},
+            ]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
+        assert len(tags) == 1, f"two spellings of one winner landed: {tags}"
+        assert tags[0].lower() == "api"
+
+
+class TestCanonicalPathsAreNamedInMessages:
+    """When nothing exists, messages must name the canonical path.
+
+    Round 4a-4, L5: the old pair here was worthless in the live checkout —
+    one test SKIPPED whenever a vocabulary existed (i.e. always, in the main
+    checkout), and its sibling re-implemented the rebinding rule in the test
+    instead of calling the module. This imports the real script into a
+    throwaway tree that has no vocabulary, so the module's own binding is
+    what is measured, in every checkout.
+    """
+
+    @staticmethod
+    def _import_into(root: Path):
+        """Import ``tag-gardening.py`` with ``PA_ROOT`` at ``root``.
+
+        PA_ROOT is derived from ``__file__`` at import, so the script is
+        copied into ``root/scripts/`` and loaded from there under a unique
+        module name.
+        """
+        import importlib.util
+        import uuid
+
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        target = scripts / "tag-gardening.py"
+        target.write_text(
+            Path(tag_gardening.__file__).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        name = f"tag_gardening_probe_{uuid.uuid4().hex}"
+        spec = importlib.util.spec_from_file_location(name, target)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(name, None)
+        return module
+
+    def test_the_canonical_stays_bound_when_neither_path_exists(
+        self, tmp_path: Path,
+    ) -> None:
+        """The module's own binding, in a tree with no vocabulary at all.
+
+        Kills the mutation that rebinds unconditionally: the refusal would
+        then name ``memories/tag-vocabulary.txt`` (the legacy symlink path)
+        rather than ``data/memories/tag-vocabulary.txt``, sending the
+        operator to the wrong place.
+        """
+        module = self._import_into(tmp_path)
+
+        assert module.VOCABULARY_FILE == (
+            tmp_path / "data" / "memories" / "tag-vocabulary.txt")
+        assert module.MEMORIES_JSONL == (
+            tmp_path / "data" / "memories" / "memories.jsonl")
+
+    def test_the_fallback_is_taken_when_only_it_exists(
+        self, tmp_path: Path,
+    ) -> None:
+        """A legacy layout still works: the fallback is bound when present."""
+        legacy = tmp_path / "memories"
+        legacy.mkdir(parents=True)
+        (legacy / "tag-vocabulary.txt").write_text("api\n", encoding="utf-8")
+        (legacy / "memories.jsonl").write_text("", encoding="utf-8")
+
+        module = self._import_into(tmp_path)
+
+        assert module.VOCABULARY_FILE == legacy / "tag-vocabulary.txt"
+        assert module.MEMORIES_JSONL == legacy / "memories.jsonl"
+
+    def test_the_canonical_wins_when_both_exist(self, tmp_path: Path) -> None:
+        """With a populated submodule the canonical path is the one bound."""
+        canonical = tmp_path / "data" / "memories"
+        canonical.mkdir(parents=True)
+        (canonical / "tag-vocabulary.txt").write_text("api\n", encoding="utf-8")
+        legacy = tmp_path / "memories"
+        legacy.symlink_to(canonical)
+
+        module = self._import_into(tmp_path)
+
+        assert module.VOCABULARY_FILE == canonical / "tag-vocabulary.txt"
+
+    def test_the_refusal_names_the_bound_path(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """End to end: the M6 refusal quotes the canonical path.
+
+        The consequence the binding exists for, asserted on the message the
+        operator actually reads.
+        """
+        module = self._import_into(tmp_path)
+        jsonl = tmp_path / "corpus.jsonl"
+        write_sample_jsonl(jsonl)
+
+        with (
+            patch.object(module, "MEMORIES_JSONL", jsonl),
+            patch.object(module, "ensure_safe_to_rewrite",
+                         lambda reason: None),
+            pytest.raises(SystemExit),
+        ):
+            module.cmd_orphans(argparse.Namespace(action="clean"))
+
+        err = capsys.readouterr().err
+        assert str(tmp_path / "data" / "memories" / "tag-vocabulary.txt") in err

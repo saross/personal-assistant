@@ -481,6 +481,38 @@ class TestApplyPlans:
         assert "commit" not in harness.order
 
 
+    def test_a_keyboard_interrupt_mid_write_leaves_no_temp_file(
+        self, tmp_path: Path, harness: _Harness,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ctrl-C during the rewrite must still clean up.
+
+        Kills ``except BaseException`` -> ``except Exception``: a
+        KeyboardInterrupt is not an Exception, so it would sail past the
+        cleanup and orphan memories.jsonl.tmp -- which is the precise case
+        the broad clause exists for, since a human interrupting a long
+        rewrite is the likeliest way it ever aborts. Audit round 4a-3,
+        surviving mutation.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        rec = _record("2031-05-01-aaaabbbbcccc")
+        _write_corpus(corpus, [json.dumps(rec)])
+        before = corpus.read_bytes()
+
+        def interrupt(*_args: object, **_kwargs: object) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(ra, "add_revision", interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            ra.apply_plans([_plan_for(rec)], corpus, do_postgres=False)
+
+        assert not corpus.with_suffix(".jsonl.tmp").exists(), (
+            "an interrupted rewrite left its temp file behind")
+        assert corpus.read_bytes() == before
+        assert "commit" not in harness.order
+
+
 class TestApplyGate:
     """``--apply`` is the only path that may mutate anything."""
 

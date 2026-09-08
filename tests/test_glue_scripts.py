@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1045,3 +1046,532 @@ class TestCommitDataSafetyContracts:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "already on origin" in result.stdout
         assert "already-pushed data commit" in result.stdout            # the final line
+
+
+# ----------------------------------------------------------------------------
+# AR17 — push-archives-to-r2.sh: read .env, never execute it; never overwrite
+# ----------------------------------------------------------------------------
+
+
+class TestR2PushSafety:
+    """The offsite push handled credentials and overwrites unsafely.
+
+    ``set -a; . "$ENV_FILE"; set +a`` EXECUTED the .env file — command
+    substitutions in it would run — and exported every secret it contained
+    into the environment of rclone, df, and grep. And ``rclone copy`` with
+    ``--s3-disable-checksum`` decides "changed" on size and modtime, so a
+    truncated canonical file with a fresh mtime overwrote the last good
+    offsite copy of a session that can no longer be recovered from anywhere.
+
+    Nothing here contacts R2: ``rclone`` and ``df`` are stubs on PATH that
+    record their arguments and environment.
+    """
+
+    @pytest.fixture()
+    def sandbox(self, tmp_path: Path):
+        """A fake PA tree, a mounted-looking canonical, and stub binaries."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "push-archives-to-r2.sh").symlink_to(R2_PUSH_SCRIPT)
+
+        home = tmp_path / "home"
+        canonical = home / "mnt" / "rpi-shares" / "cc-archives-consolidated"
+        canonical.mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        argv_log = tmp_path / "rclone-argv.txt"
+        env_log = tmp_path / "rclone-env.txt"
+
+        rclone = bin_dir / "rclone"
+        rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'printf "%s\\n" "$@" > {argv_log}\n'
+            f"env > {env_log}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        rclone.chmod(0o755)
+
+        # A df that claims the mount is live, so the run reaches the transfer.
+        df_stub = bin_dir / "df"
+        df_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "Filesystem Size Used Avail Use% Mounted on"\n'
+            'echo "//rpi-server/shares 100G 1G 99G 1% /mnt"\n',
+            encoding="utf-8",
+        )
+        df_stub.chmod(0o755)
+
+        return SimpleNamespace(
+            script=pa_dir / "scripts" / "push-archives-to-r2.sh",
+            pa_dir=pa_dir, home=home, bin_dir=bin_dir,
+            argv_log=argv_log, env_log=env_log, rclone=rclone,
+            canonical=canonical, tmp_path=tmp_path,
+        )
+
+    #: Invented credentials, supplied unless a test is about their absence.
+    AMBIENT_CREDENTIALS = {
+        "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID": "ambient-id-invented",
+        "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY": "ambient-secret-invented",
+    }
+
+    def _run(self, sandbox, *args: str, credentials: bool = True, **extra):
+        env = {
+            "RCLONE_BIN": str(sandbox.rclone),
+            "PATH": f"{sandbox.bin_dir}:{os.environ['PATH']}",
+        }
+        if credentials:
+            env.update(self.AMBIENT_CREDENTIALS)
+        env.update(extra)
+        return _run_script(
+            sandbox.script, *args, home=sandbox.home, extra_env=env
+        )
+
+    def _argv(self, sandbox) -> list[str]:
+        assert sandbox.argv_log.exists(), "rclone was never invoked"
+        return sandbox.argv_log.read_text(encoding="utf-8").split("\n")
+
+    def test_dry_run_reaches_rclone_with_dry_run(self, sandbox) -> None:
+        """--dry-run must survive all the way to the transfer's argv."""
+        result = self._run(sandbox, "--dry-run")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        argv = self._argv(sandbox)
+        assert argv[0] == "copy"
+        assert "--dry-run" in argv
+
+    def test_the_transfer_refuses_to_modify_an_existing_object(
+        self, sandbox
+    ) -> None:
+        """An append-only archive: a changed object is corruption, not news."""
+        assert self._run(sandbox).returncode == 0
+        assert "--immutable" in self._argv(sandbox)
+
+    @pytest.mark.parametrize("args", [(), ("--dry-run",)])
+    def test_the_subcommand_is_always_copy_never_sync(
+        self, sandbox, args
+    ) -> None:
+        """``sync`` deletes from the destination; ``copy`` never does.
+
+        The header promises "Never deletes from R2. These are open-science
+        records we never want to lose". One word in the invocation inverts
+        that: `rclone sync` removes every object in the bucket that is absent
+        locally, so a canonical store that failed to mount, or one session
+        deliberately pruned, would take the offsite copies with it. Only the
+        dry-run branch asserted the subcommand, so the real branch could be
+        switched with the whole R2 suite green (round 4c-2, finding 17).
+        """
+        assert self._run(sandbox, *args).returncode == 0
+
+        argv = self._argv(sandbox)
+        assert argv[0] == "copy", (
+            f"the transfer ran `rclone {argv[0]}`; sync deletes from R2"
+        )
+        assert "sync" not in argv
+
+    @pytest.mark.parametrize("args", [(), ("--dry-run",)])
+    def test_no_deletion_flag_ever_reaches_rclone(self, sandbox, args) -> None:
+        """--delete-during and friends turn copy into sync by the back door."""
+        assert self._run(sandbox, *args).returncode == 0
+
+        offenders = [
+            argument for argument in self._argv(sandbox)
+            if argument.startswith("--delete")
+        ]
+        assert offenders == [], f"deletion flags reached rclone: {offenders}"
+
+    def test_an_unmounted_canonical_refuses(self, sandbox) -> None:
+        """The silent-empty-dir state must stop the push, not push nothing."""
+        quiet_df = sandbox.bin_dir / "df"
+        quiet_df.write_text(
+            "#!/usr/bin/env bash\necho 'tmpfs 1G 0 1G 0% /tmp'\n",
+            encoding="utf-8",
+        )
+        quiet_df.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 1
+        assert "not mounted" in (result.stdout + result.stderr)
+        assert not sandbox.argv_log.exists(), "a transfer ran anyway"
+
+    def test_a_command_substitution_in_env_is_never_executed(
+        self, sandbox
+    ) -> None:
+        """.env is read as text. It used to be executed as a shell script."""
+        marker = sandbox.tmp_path / "SHOULD-NOT-EXIST"
+        (sandbox.pa_dir / ".env").write_text(
+            "# invented credentials for this test\n"
+            f'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=$(touch {marker})\n'
+            'RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY="s3cret-not-real"\n',
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        assert not marker.exists(), (
+            "sourcing .env executed a command substitution inside it"
+        )
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert (
+            f"RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=$(touch {marker})"
+            in env_text
+        ), "the value was not passed through literally"
+
+    def test_only_the_two_r2_variables_are_exported(self, sandbox) -> None:
+        """Every other secret in .env used to reach every child process.
+
+        The assertions are on the .env FILE's values, not on variable names:
+        a name like ANTHROPIC_API_KEY may legitimately already be in the
+        ambient environment, and this fix is about what sourcing the file
+        added on top of it.
+        """
+        (sandbox.pa_dir / ".env").write_text(
+            "OPENAI_API_KEY=sk-invented-value-from-dot-env\n"
+            "ANTHROPIC_API_KEY=ant-invented-value-from-dot-env\n"
+            'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="r2-id-invented"\n'
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY='r2-secret-invented'\n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "sk-invented-value-from-dot-env" not in env_text, (
+            "a non-R2 secret from .env reached the transfer's environment"
+        )
+        assert "ant-invented-value-from-dot-env" not in env_text
+        # The two that are needed arrive, with their quotes stripped.
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented" in env_text
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2-secret-invented"
+            in env_text
+        )
+
+    def test_an_ambient_credential_is_not_overwritten_by_env(
+        self, sandbox
+    ) -> None:
+        """The loader is idempotent: what is already exported wins."""
+        (sandbox.pa_dir / ".env").write_text(
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-dot-env\n",
+            encoding="utf-8",
+        )
+        result = self._run(
+            sandbox, credentials=False,
+            RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="from-ambient",
+            RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY="secret-invented",
+        )
+
+        assert result.returncode == 0
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-ambient" in env_text
+
+    def test_a_missing_credential_refuses_before_any_transfer(
+        self, sandbox
+    ) -> None:
+        """No keys is not "an rclone error"; it is "do not start".
+
+        Without this an unreadable .env, or one that has lost the R2 lines,
+        sailed past every precondition and ran a real copy with no
+        credentials: thousands of 403s against the retry budget, and an exit
+        code that blamed rclone (round 4c-2, finding 10).
+        """
+        result = self._run(sandbox, credentials=False)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        combined = result.stdout + result.stderr
+        assert "missing R2 credential" in combined
+        assert not sandbox.argv_log.exists(), (
+            "a transfer was attempted with no credentials"
+        )
+
+    def test_one_credential_alone_is_not_enough(self, sandbox) -> None:
+        result = self._run(
+            sandbox, credentials=False,
+            RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="only-the-id",
+        )
+
+        assert result.returncode == 2
+        assert "SECRET_ACCESS_KEY" in result.stdout + result.stderr
+        assert not sandbox.argv_log.exists()
+
+    def test_a_trailing_comment_is_not_part_of_the_secret(
+        self, sandbox
+    ) -> None:
+        """`KEY=value   # note` is a comment, not eight more characters."""
+        (sandbox.pa_dir / ".env").write_text(
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented   "
+            "# rotated 2026-03-02\n"
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=  r2-secret-invented  \n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented\n" in env_text
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2-secret-invented\n"
+            in env_text
+        )
+
+    def test_a_hash_inside_a_quoted_secret_survives(self, sandbox) -> None:
+        """The comment strip must not eat a '#' that is part of the key."""
+        (sandbox.pa_dir / ".env").write_text(
+            'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="r2#id#invented"\n'
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY='r2#secret'\n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2#id#invented\n" in env_text
+
+    def test_an_immutable_refusal_exits_three_and_says_so(
+        self, sandbox
+    ) -> None:
+        """A changed canonical object is corruption, not a retryable blip."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: session.jsonl.gz: Source and destination exist but '
+            'do not match: immutable file modified" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "ABORTED" in result.stdout + result.stderr
+
+    def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
+        """The positive control: an ordinary failure stays retryable."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: dial tcp: lookup failed" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2
+        assert "safe to retry" in result.stdout + result.stderr
+
+
+# ----------------------------------------------------------------------------
+# ART5 — search-archives-safe.sh: the limits and the single-run lock
+# ----------------------------------------------------------------------------
+
+
+SEARCH_ARCHIVES_SCRIPT = REPO_ROOT / "scripts" / "search-archives-safe.sh"
+SCAN_ENGINE_SCRIPT = REPO_ROOT / "scripts" / "_scan_archives.py"
+
+
+class TestSearchArchivesSafety:
+    """The wrapper written after the 2026-06-21 machine lock-up.
+
+    Its whole job is the OS-level safety around the scan: nice, ionice, a
+    hard timeout, and a non-blocking lock so a second search refuses instead
+    of stacking (the amplifier that turned one bad pipeline into a frozen
+    desktop). Both were removable with the full suite green.
+
+    TMPDIR is pinned into the test tree so the lock file cannot collide with
+    a concurrent suite run or with the operator's own search.
+    """
+
+    @pytest.fixture()
+    def sandbox(self, tmp_path: Path):
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        script = pa_dir / "scripts" / "search-archives-safe.sh"
+        script.symlink_to(SEARCH_ARCHIVES_SCRIPT)
+        (pa_dir / "scripts" / "_scan_archives.py").symlink_to(
+            SCAN_ENGINE_SCRIPT
+        )
+
+        archive = tmp_path / "cc-archives" / "lantern-survey" / "2026-03-02_a"
+        archive.mkdir(parents=True)
+        import gzip as _gzip
+        with _gzip.open(archive / "session.jsonl.gz", "wb") as handle:
+            handle.write(
+                b'{"type":"user","message":{"role":"user",'
+                b'"content":"the LANTERN pattern"}}\n'
+            )
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        return SimpleNamespace(
+            script=script, archive_root=tmp_path / "cc-archives",
+            home=tmp_path / "home", tmpdir=run_dir, tmp_path=tmp_path,
+        )
+
+    def _env(self, sandbox, **extra) -> dict[str, str]:
+        env = {
+            "TMPDIR": str(sandbox.tmpdir),
+            "SAS_NO_CGROUP": "1",
+            "SAS_TIMEOUT": "30",
+        }
+        env.update(extra)
+        return env
+
+    def test_a_normal_search_reports_path_and_line_number(
+        self, sandbox
+    ) -> None:
+        sandbox.home.mkdir()
+        result = _run_script(
+            sandbox.script, "LANTERN", str(sandbox.archive_root),
+            home=sandbox.home, extra_env=self._env(sandbox),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert ":1:" in result.stdout, result.stdout
+
+    def test_a_second_search_refuses_while_the_lock_is_held(
+        self, sandbox
+    ) -> None:
+        """Exit 3 and REFUSED, not a queued second scan."""
+        sandbox.home.mkdir()
+        lock_path = sandbox.tmpdir / "cc-archive-search.lock"
+        with open(lock_path, "w", encoding="utf-8") as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                result = _run_script(
+                    sandbox.script, "LANTERN", str(sandbox.archive_root),
+                    home=sandbox.home, extra_env=self._env(sandbox),
+                )
+            finally:
+                fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "REFUSED" in result.stderr
+
+    def test_the_resource_limits_reach_the_executed_command(
+        self, sandbox
+    ) -> None:
+        """nice, ionice, and timeout must be in the argv that actually runs."""
+        sandbox.home.mkdir()
+        bin_dir = sandbox.tmp_path / "bin"
+        bin_dir.mkdir()
+        argv_log = sandbox.tmp_path / "limit-argv.txt"
+        stub = bin_dir / "nice"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$0" "$@" > {argv_log}\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        result = _run_script(
+            sandbox.script, "LANTERN", str(sandbox.archive_root),
+            home=sandbox.home,
+            extra_env=self._env(
+                sandbox, PATH=f"{bin_dir}:{os.environ['PATH']}"
+            ),
+        )
+
+        assert argv_log.exists(), (
+            "the scan ran without the nice/ionice/timeout wrapper: "
+            + result.stdout + result.stderr
+        )
+        argv = argv_log.read_text(encoding="utf-8").split("\n")
+        assert argv[1:3] == ["-n", "19"]
+        assert "ionice" in argv
+        assert "timeout" in argv
+        assert "30" in argv, "the wall-clock kill was not passed through"
+        assert any(a.endswith("_scan_archives.py") for a in argv)
+
+    def test_a_missing_search_path_exits_two(self, sandbox) -> None:
+        """A bad invocation must never look like 'no matches'."""
+        sandbox.home.mkdir()
+        result = _run_script(
+            sandbox.script, "LANTERN", str(sandbox.tmp_path / "absent"),
+            home=sandbox.home, extra_env=self._env(sandbox),
+        )
+
+        assert result.returncode == 2
+        assert "path not found" in result.stderr
+
+    def test_the_wrapper_defaults_are_the_documented_ones(self) -> None:
+        """SAS_TIMEOUT, SAS_MAXLINE and the cgroup caps, as literals.
+
+        Every test passes these explicitly, so SAS_TIMEOUT could become 0 (no
+        wall-clock kill at all) and SAS_MAXLINE could be widened, with the
+        suite green. These are the values a real invocation uses, because a
+        real invocation sets none of them (round 4c-2, finding 22).
+        """
+        source = SEARCH_ARCHIVES_SCRIPT.read_text(encoding="utf-8")
+
+        for assignment in (
+            'SAS_TIMEOUT="${SAS_TIMEOUT:-120}"',
+            'SAS_MEMMAX="${SAS_MEMMAX:-2G}"',
+            'SAS_CPUQUOTA="${SAS_CPUQUOTA:-400%}"',
+            'SAS_MAXLINE="${SAS_MAXLINE:-1000000}"',
+        ):
+            assert assignment in source, (
+                f"the wrapper's default changed: expected {assignment!r}"
+            )
+
+    def test_the_default_timeout_reaches_the_executed_command(
+        self, sandbox
+    ) -> None:
+        """Not just declared — actually passed, when nothing overrides it."""
+        sandbox.home.mkdir()
+        bin_dir = sandbox.tmp_path / "bin-default"
+        bin_dir.mkdir()
+        argv_log = sandbox.tmp_path / "default-argv.txt"
+        stub = bin_dir / "nice"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$@" > {argv_log}\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        _run_script(
+            sandbox.script, "LANTERN", str(sandbox.archive_root),
+            home=sandbox.home,
+            extra_env={
+                "TMPDIR": str(sandbox.tmpdir),
+                "SAS_NO_CGROUP": "1",
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
+        )
+
+        argv = argv_log.read_text(encoding="utf-8").split("\n")
+        assert "120" in argv, (
+            f"the default wall-clock kill was not passed through: {argv}"
+        )
+        assert "1000000" in argv, (
+            f"the default per-line cap was not passed through: {argv}"
+        )
+
+    def test_a_degraded_user_manager_still_gets_the_cgroup_scope(self) -> None:
+        """`systemctl is-system-running` says "degraded" for one failed unit.
+
+        The manager is fully usable in that state and systemd-run works, so
+        dropping "degraded" from the accepted states silently loses the hard
+        memory ceiling on any machine with a single failed unit — which is
+        most of them.
+        """
+        source = SEARCH_ARCHIVES_SCRIPT.read_text(encoding="utf-8")
+
+        assert '"$_user_systemd_state" == "degraded"' in source, (
+            "the degraded state was dropped; a degraded-but-usable systemd "
+            "loses the OOM ceiling this wrapper exists to provide"
+        )
+        assert '"$_user_systemd_state" == "running"' in source
