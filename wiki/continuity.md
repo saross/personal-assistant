@@ -2522,6 +2522,18 @@ marker PID 1921541, 18:30:04 on 7 Sep, same second as the stubs) left by a
 sandbox that did not exit cleanly. Not Claude-owned content; do not delete;
 proposed `.gitignore` entries in gpt-hub to Astra.
 
+**Diagnostic harness approved at `0bf19cf`** (107 tests; fixed failure
+reasons, method, numeric codes, natural exit code, allowlisted labels,
+partial checks preserved; nothing upstream copied). Astra corrected my
+inference that the first block was a startup failure — the old code recorded
+nothing until a phase completed, so the cause is unknown until the retry.
+**Shawn's next action: acceptance-only retry** (no activation),
+`python3 -B scripts/check_live_acceptance.py --host --report /tmp/sol-live-acceptance-host-retry.json`
+in `~/gpt-hub`. Separately, Shawn raised **mail routing for multiple
+partnerships** (project / lane / workstream); I proposed header-based
+routing (`Project:`, `Lane:`, `Workstream:`; one mailbox per agent; only the
+acting session receipts) — awaiting his go before building.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
