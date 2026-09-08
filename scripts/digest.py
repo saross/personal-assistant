@@ -576,12 +576,21 @@ def _assemble(
     else:
         lines.append("- (none yet — corpus still building verified coverage)")
     if unverified_entries:
+        # Why the fallback fired is not one story. ``build_digest`` tops up
+        # whenever the verified entries fill less than ``fallback_min_fill``
+        # of the byte budget (50% by default), which happens both when there
+        # is no verified content at all and when there are a couple of short
+        # verified entries. Claiming "nothing verified is available" in the
+        # second case is simply false, and it is the sentence the reader
+        # would use to judge how much weight the block below deserves
+        # (re-audit M1, 2026-09-08).
+        if verified_entries:
+            reason = "shown because verified coverage is thin"
+        else:
+            reason = "shown because nothing verified is available"
         lines += [
             "",
-            (
-                "**Unverified, shown because nothing verified is available "
-                f"({len(unverified_entries)} shown):**"
-            ),
+            f"**Unverified, {reason} ({len(unverified_entries)} shown):**",
         ]
         lines += [f"- {render_entry(m)}" for m in unverified_entries]
     # The anti-confabulation line has to describe the digest it is actually

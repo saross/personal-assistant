@@ -853,7 +853,11 @@ class TestModuleDefaults:
 
 
 _VERIFIED_HEADING = "**Verified-true entries from the last"
-_UNVERIFIED_HEADING = "**Unverified, shown because nothing verified is available"
+# The common prefix of both fallback headings; the clause after it names why
+# the fallback fired and is asserted on explicitly where it matters.
+_UNVERIFIED_HEADING = "**Unverified, shown because"
+_NOTHING_VERIFIED = "**Unverified, shown because nothing verified is available"
+_COVERAGE_THIN = "**Unverified, shown because verified coverage is thin"
 
 
 def _section(text: str, heading_prefix: str) -> list[str]:
@@ -975,3 +979,39 @@ class TestHeadingsMatchTheirEntries:
             verified_only.replace("\n", " ")
         )
         assert _UNVERIFIED_HEADING not in verified_only
+
+    def test_the_fallback_heading_names_why_the_fallback_fired(self):
+        """Kills hard-coding either clause (re-audit M1, 2026-09-08).
+
+        The fallback fires whenever verified content under-fills
+        ``fallback_min_fill`` of the budget, not only when there is none, so
+        a fixed "nothing verified is available" is false the moment one
+        verified entry is present. Both branches are asserted, so neither
+        clause can be hard-coded.
+        """
+        pending = [
+            _mem(id=f"p{i}", verified="pending", anchors=["x.py:1"],
+                 summary=f"an unchecked note {i}", created_at=_iso(1))
+            for i in range(3)
+        ]
+
+        # Nothing verified at all.
+        none_verified = digest.build_digest(
+            pending, now=NOW, project_tags=set(), byte_budget=1500
+        ).text
+        assert _NOTHING_VERIFIED in none_verified
+        assert _COVERAGE_THIN not in none_verified
+
+        # Two short verified entries — present, but nowhere near filling the
+        # budget, so the fallback still fires.
+        verified = [
+            _mem(id="v1", summary="a checked fact", created_at=_iso(1)),
+            _mem(id="v2", summary="another checked fact", created_at=_iso(2)),
+        ]
+        thin = digest.build_digest(
+            verified + pending, now=NOW, project_tags=set(), byte_budget=1500
+        )
+        assert thin.used_fallback is True, "the fixture did not exercise the top-up"
+        assert len(_section(thin.text, _VERIFIED_HEADING)) == 2
+        assert _COVERAGE_THIN in thin.text
+        assert _NOTHING_VERIFIED not in thin.text
