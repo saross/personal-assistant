@@ -17,10 +17,19 @@ Three passes, cheapest first:
 
    Whitespace is checked on **both** sides of the ``=``, because the two
    sides fail differently. ``NAME =value`` makes bash echo the variable
-   *name*; ``NAME= value`` makes bash assign ``NAME`` the empty string for
-   one command and then run the *value* as that command, so the secret
-   itself reaches stderr. The second form is the worse leak, and it was
-   invisible to this script until 2026-09-08.
+   *name*; ``NAME= value`` and ``NAME=a b`` make bash run part of the
+   *value* as a command, so the secret itself reaches stderr. The latter
+   forms are the worse leak, and they were invisible to this script until
+   2026-09-08.
+
+   Pass 1 also reports four ways a line can parse differently in bash than
+   in the Codex launcher's literal parser, each verified against bash 5.2:
+   an opening quote that does not close the value; a ``$`` outside single
+   quotes (bash expands it, to nothing for an unset name, so the process
+   gets no credential while the file looks populated); a trailing backslash
+   (bash treats it as a line continuation and swallows the next line,
+   leaving that variable unset); and a CRLF line ending (bash keeps the
+   carriage return as the last character of the value).
 
 2. **Shell-source test.** Sources the file in a subshell; any output at all
    is a finding.
@@ -88,7 +97,17 @@ def note(msg: str) -> None:
 def parse_env(path: pathlib.Path) -> dict[str, str]:
     """Parse KEY=VALUE lines, anchoring on '=' so malformed names are visible."""
     out: dict[str, str] = {}
-    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+    # ``newline=""`` and ``split("\n")`` rather than ``read_text().splitlines()``
+    # so a CRLF line ending survives into ``raw``. Text-mode reads translate
+    # ``\r\n`` to ``\n`` and ``splitlines()`` strips what is left, so the
+    # carriage return was doubly invisible — which is exactly why the CRLF
+    # divergence went unreported (audit round two M4). A legacy CR-only file
+    # collapses to one long "line" here, yields no usable parse, and is caught
+    # by the shell-source pass instead.
+    with path.open(encoding="utf-8", newline="") as handle:
+        text = handle.read()
+    for lineno, raw in enumerate(text.split("\n"), start=1):
+        has_cr = raw.endswith("\r")
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -127,13 +146,67 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             # "NAME =value" makes bash echo the variable NAME; "NAME= value"
             # makes bash assign NAME the empty string for one command and then
             # RUN THE VALUE as that command, so the secret itself lands in
-            # stderr ("<secret>: command not found"). Verified against bash 5.
-            # A value that is only whitespace is not a leak, hence the
-            # ``value and`` guard.
+            # stderr ("<secret>: command not found"). Verified against bash 5.2.
+            # ``line`` has already been stripped, so a value field that is only
+            # whitespace cannot reach here; the ``value and`` guard is
+            # defence-in-depth against a future refactor that drops the strip.
             note(
                 f"line {lineno}: whitespace after the '=' on {name!r} — bash sets "
                 f"{name} empty and runs the value as a command, echoing the secret "
                 "itself to stderr. Remove the space."
+            )
+        if not quoted:
+            # Whitespace INSIDE an unquoted value is the same leak class:
+            # verified against bash 5.2, ``A=a b`` assigns nothing to A, runs
+            # ``b`` as a command, and echoes "b: command not found". A trailing
+            # comment is a different problem, reported separately below, so a
+            # second word beginning with '#' is excluded here.
+            words = raw_value.split()
+            if len(words) > 1 and not words[1].startswith("#"):
+                note(
+                    f"line {lineno}: {name}'s value contains whitespace and is not "
+                    "quoted — bash assigns only the first word and runs the rest as "
+                    "a command, echoing it to stderr. Quote the whole value."
+                )
+        if quote_char and not quoted:
+            # An opening quote that does not close the value means bash and
+            # this parser disagree about where the value ends: verified against
+            # bash 5.2, ``TOKEN='abc' # c`` assigns ``abc`` in bash while the
+            # parser keeps everything after the closing quote, and ``TOKEN='abc``
+            # is an unterminated string the shell rejects outright.
+            note(
+                f"line {lineno}: the opening {quote_char} does not close {name}'s "
+                "value — bash ends the value at the closing quote while the Codex "
+                "launcher keeps everything after it. Quote the whole value or none."
+            )
+        if quote_char != "'" and "$" in value:
+            # bash expands ``$`` unless the value is single-quoted; this parser
+            # and the Codex launcher keep it literal. Verified against bash 5.2:
+            # ``A=$B`` and ``A="$B"`` both assign the EMPTY string for an unset
+            # B, so the process gets no credential at all while the file looks
+            # populated. ``A='$B'`` agrees on both sides and is not flagged.
+            note(
+                f"line {lineno}: {name}'s value contains '$' outside single quotes "
+                "— bash expands it (to nothing, for an unset name) while the Codex "
+                "launcher keeps it literally. Single-quote the value."
+            )
+        if raw_value.endswith("\\"):
+            # Verified against bash 5.2: ``A=x\`` followed by ``NEXT=y`` assigns
+            # A the value "xNEXT=y" and leaves NEXT unset — a wrong secret AND a
+            # silently missing variable, from one trailing character.
+            note(
+                f"line {lineno}: {name}'s value ends with a backslash — bash treats "
+                "it as a line continuation and swallows the NEXT line into this "
+                "value, leaving that variable unset. Remove or escape it."
+            )
+        if has_cr:
+            # Verified against bash 5.2: sourcing a CRLF file assigns "x\r" for
+            # ``A=x``. Python's text-mode read hides this twice over, which is
+            # why it went unreported until audit round two M4.
+            note(
+                f"line {lineno}: CRLF line ending — bash keeps the carriage return "
+                f"as the last character of {name}'s value while this parser drops "
+                "it. Convert the file to LF line endings."
             )
         if not quoted and (" #" in value or value.startswith("#")):
             # bash sourcing drops an unquoted trailing comment; the Codex launcher
@@ -199,7 +272,10 @@ def check_shell_source(path: pathlib.Path) -> None:
         # Never echo the captured text: on a malformed line it contains the secret.
         note(
             f"sourcing {path.name} produced {len(combined.splitlines())} line(s) of "
-            "output (suppressed — it would contain the secret). Fix the names above."
+            "output (suppressed — it would contain the secret). A well-formed file "
+            "sources silently. If pass 1 reported nothing, the cause is something "
+            "pass 1 cannot see line by line — an unterminated quote, a here-document, "
+            "or a command substitution."
         )
     else:
         print("  silent — all names parse as assignments")

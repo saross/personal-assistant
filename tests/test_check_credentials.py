@@ -115,14 +115,19 @@ class TestParseEnvNames:
         assert cc.findings[0].startswith("line 1:")
         assert FAKE_SECRET not in cc.findings[0]
 
-    def test_a_whitespace_only_value_is_not_flagged(self, tmp_path):
-        """Kills dropping the ``value and`` guard on the same check.
+    def test_a_trailing_space_after_the_value_is_not_flagged(self, tmp_path):
+        """``NAME=value   `` is fine: bash assigns ``value`` and runs nothing.
 
-        ``NAME=   `` assigns the empty string in bash and runs nothing, so
-        there is no leak and no finding to raise.
+        Replaces a vacuous test (audit round two, Lows). It claimed to pin
+        the ``value and`` conjunct on the whitespace-after-'=' guard, but
+        ``line.strip()`` removes trailing whitespace before the guard ever
+        runs, so no input can reach that conjunct through ``parse_env``. It
+        is documented in the source as defence-in-depth rather than pinned
+        here; this test pins the behaviour that IS reachable.
         """
-        cc.parse_env(_env_file(tmp_path, "EMPTY_VALUE=   \n"))
+        env = cc.parse_env(_env_file(tmp_path, "PADDED=abcfake   \n"))
         assert cc.findings == []
+        assert env["PADDED"] == "abcfake"
 
 
 class TestParseEnvValues:
@@ -156,22 +161,39 @@ class TestParseEnvValues:
         assert cc.findings == []
         assert env["TOKEN"] == "abcfake # inside"
 
-    def test_a_quote_that_does_not_close_the_value_is_flagged(self, tmp_path):
+    def test_a_quote_that_closes_early_is_flagged_twice(self, tmp_path):
         """Kills reverting ``quoted`` to ``raw_value[:1] in ('"', "'")``.
 
         This is the second defect fixed on 2026-09-08. For
         ``TOKEN='abc' # trailing comment`` bash assigns ``abc`` while this
         parser assigns ``abc' # trailing comment`` — a real divergence that
         the "starts with a quote" guard suppressed, so no finding was
-        raised at all. Verified against bash 5.
+        raised at all. Verified against bash 5.2.
+
+        Two findings now, not one (audit round two, Lows): the trailing
+        comment AND the quote that closes before the end of the value.
         """
         env = cc.parse_env(
             _env_file(tmp_path, "TOKEN='abcfake' # trailing comment\n")
         )
-        assert len(cc.findings) == 1
-        assert "has a '#' in its value" in cc.findings[0]
+        assert len(cc.findings) == 2
+        assert any("has a '#' in its value" in f for f in cc.findings)
+        assert any("does not close" in f for f in cc.findings)
         # And the divergence itself: bash would have assigned "abcfake".
         assert env["TOKEN"] != "abcfake"
+
+    def test_an_unterminated_quote_is_flagged_on_its_own(self, tmp_path):
+        """Kills dropping the ``if quote_char and not quoted:`` finding.
+
+        Audit round two, Lows: the test above passed only because of the
+        '#' finding, so an unterminated quote with no '#' produced NOTHING
+        at line level. bash rejects the whole file as an unterminated
+        string, which pass 2 reports without saying which line.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN='abcfake\n"))
+        assert len(cc.findings) == 1
+        assert "does not close" in cc.findings[0]
+        assert cc.findings[0].startswith("line 1:")
 
     def test_a_closed_quote_is_stripped_exactly_once(self, tmp_path):
         """Kills ``raw_value[1:-1]`` → ``.strip('"').strip("'")``.
@@ -237,6 +259,129 @@ class TestParseEnvValues:
 # ============================================================================
 # check_shell_source — pass 2
 # ============================================================================
+
+
+class TestParseEnvShellDivergence:
+    """Audit round two M4: four ways bash and the launcher disagree.
+
+    Each is verified against bash 5.2 with a throwaway env file, and each
+    was silent before 2026-09-08.
+    """
+
+    def test_an_unquoted_dollar_is_flagged(self, tmp_path):
+        """Kills dropping the ``"$" in value`` finding.
+
+        Verified: ``A=$B`` with B unset assigns bash the EMPTY string while
+        the parser keeps ``$B``. The process gets no credential at all and
+        the file looks populated — the quietest failure in the set.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=$OTHER_VAR\n"))
+        assert len(cc.findings) == 1
+        assert "'$' outside single quotes" in cc.findings[0]
+        assert cc.findings[0].startswith("line 1:")
+
+    def test_a_dollar_inside_double_quotes_is_still_flagged(self, tmp_path):
+        """Kills narrowing the guard to unquoted values only.
+
+        Double quotes do not stop expansion: ``A="$B"`` assigns the empty
+        string in bash, exactly as the unquoted form does.
+        """
+        cc.parse_env(_env_file(tmp_path, 'TOKEN="$OTHER_VAR"\n'))
+        assert len(cc.findings) == 1
+        assert "'$' outside single quotes" in cc.findings[0]
+
+    def test_a_dollar_inside_single_quotes_is_not_flagged(self, tmp_path):
+        """Kills widening the guard to every ``$``.
+
+        ``A='$B'`` assigns the literal ``$B`` in bash, which is what the
+        parser and the launcher do — both sides agree, so there is nothing
+        to report, and the message tells the operator to do precisely this.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN='$OTHER_VAR'\n"))
+        assert cc.findings == []
+        assert env["TOKEN"] == "$OTHER_VAR"
+
+    def test_a_trailing_backslash_is_flagged(self, tmp_path):
+        r"""Kills dropping the ``raw_value.endswith("\\")`` finding.
+
+        Verified: a value ending in a backslash, followed by ``NEXT=y``,
+        assigns A the value ``xNEXT=y`` and leaves NEXT unset — one wrong
+        secret and one variable that silently does not exist.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=abcfake\\\nNEXT_VAR=other\n"))
+        assert any("ends with a backslash" in f for f in cc.findings)
+        assert any(f.startswith("line 1:") for f in cc.findings)
+
+    def test_a_crlf_line_ending_is_flagged(self, tmp_path):
+        """Kills reverting to ``read_text().splitlines()``.
+
+        Verified: sourcing a CRLF file assigns ``x\r`` for ``A=x``. Python
+        hides the carriage return twice over — text-mode reads translate
+        ``\r\n`` to ``\n``, and ``splitlines()`` strips what is left — so the
+        parser cannot even see the character bash keeps.
+        """
+        path = tmp_path / "crlf.env"
+        path.write_bytes(b"TOKEN=abcfake\r\nOTHER=second\r\n")
+        cc.parse_env(path)
+        assert len(cc.findings) == 2
+        assert all("CRLF line ending" in f for f in cc.findings)
+        assert cc.findings[0].startswith("line 1:")
+        assert cc.findings[1].startswith("line 2:")
+
+    def test_lf_line_endings_are_not_flagged(self, tmp_path):
+        """Kills flagging every line regardless of its ending."""
+        path = tmp_path / "lf.env"
+        path.write_bytes(b"TOKEN=abcfake\nOTHER=second\n")
+        cc.parse_env(path)
+        assert cc.findings == []
+
+    def test_whitespace_inside_an_unquoted_value_is_flagged(self, tmp_path):
+        """Kills dropping the ``len(words) > 1`` finding.
+
+        Verified: ``A=a b`` assigns NOTHING to A, runs ``b`` as a command,
+        and echoes "b: command not found" — the same leak class as
+        ``NAME= value``, and the parser meanwhile keeps ``a b``.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake {FAKE_SECRET}\n"))
+        assert len(cc.findings) == 1
+        assert "contains whitespace and is not quoted" in cc.findings[0]
+        assert FAKE_SECRET not in cc.findings[0]
+
+    def test_whitespace_inside_a_quoted_value_is_not_flagged(self, tmp_path):
+        """Kills applying the whitespace check to quoted values.
+
+        ``A="a b"`` assigns ``a b`` on both sides; a passphrase with spaces
+        is legitimate as long as it is quoted.
+        """
+        env = cc.parse_env(_env_file(tmp_path, 'TOKEN="two words"\n'))
+        assert cc.findings == []
+        assert env["TOKEN"] == "two words"
+
+    def test_a_trailing_comment_is_not_reported_as_a_command(self, tmp_path):
+        """Kills dropping ``not words[1].startswith("#")`` from the guard.
+
+        ``A=abc # c`` has whitespace in an unquoted value but bash runs no
+        command — the rest is a comment. Reporting it as an executed
+        command would be a false statement about what bash does, and the
+        line already has its own (correct) finding.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=abcfake # a comment\n"))
+        assert len(cc.findings) == 1
+        assert "has a '#' in its value" in cc.findings[0]
+
+    def test_the_shell_source_message_does_not_promise_findings_above(
+        self, tmp_path, capsys
+    ):
+        """Kills restoring "Fix the names above" to the pass-2 message.
+
+        Audit round two M4: pass 2 fires on causes pass 1 cannot see line
+        by line, so pointing the operator at findings that may not exist
+        sends them looking for something that is not there.
+        """
+        cc.check_shell_source(_env_file(tmp_path, "TOKEN='unterminated\n"))
+        assert len(cc.findings) == 1
+        assert "Fix the names above" not in cc.findings[0]
+        assert "sources silently" in cc.findings[0]
 
 
 class TestCheckShellSource:
@@ -439,7 +584,11 @@ class TestCheckGithub:
         _stub_http_get(monkeypatch, user=_OK_USER, repo=_OK_REPO)
         cc.check_github({"GH_TOKEN": "github_pat_abcfake"})
         assert cc.findings == []
-        assert f"{cc.GITHUB_PROBE_REPO}: push" in capsys.readouterr().out
+        # The literal, not the constant against itself (audit round two,
+        # Lows): gpt-hub is the repository the Codex launcher must reach, so
+        # repointing GITHUB_PROBE_REPO elsewhere is the defect, not a rename.
+        assert cc.GITHUB_PROBE_REPO == "saross/gpt-hub"
+        assert "saross/gpt-hub: push" in capsys.readouterr().out
 
     def test_pull_only_access_is_a_finding(self, monkeypatch, capsys):
         """Kills ``if not perms.get("push"):`` → ``if False:``.
