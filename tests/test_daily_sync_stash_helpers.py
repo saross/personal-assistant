@@ -2822,3 +2822,139 @@ class TestStatusRecordsAreRaw:
         assert [r.split("\t", 1)[1] for r in rows] == ["after.md", "before.md"], rows
         assert all(r.startswith("R") for r in rows), rows
         assert " -> " not in result.stdout, result.stdout
+
+
+class TestSweepCollectsWhatTheWriterLeaves:
+    """The writer's mktemp template and the sweep's glob are two halves of
+    one contract, and nothing tied them together: renaming the template
+    left every orphan uncollectable and the suite silent."""
+
+    _FUNCTIONS = ("sweep_orphaned_stash_state_temps",)
+
+    def test_the_writers_own_orphan_is_collected(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L3: the writer's template and the sweep's glob
+        drifting apart.
+
+        The writer is driven for real -- a sidecar built, `mv` stubbed so
+        it is never renamed into place, which is what a kill in that
+        window leaves -- and the sweep then has to collect exactly what
+        that writer left.
+        """
+        cache = tmp_path / "cache-writer"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        killed = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + "mv() { :; }\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "notes/a.md"\n'
+            + "write_stash_state\n",
+            _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+        )
+        assert killed.returncode == 0, killed.stderr
+        orphans = [p for p in cache.iterdir() if p.name != sidecar.name]
+        assert orphans, "the writer left nothing, so nothing is being swept"
+        for path in orphans:
+            subprocess.run(["touch", "-d", "-1 hour", str(path)], check=True)
+
+        swept = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert swept.returncode == 0, swept.stderr
+        left = [p.name for p in cache.iterdir()]
+        assert left == [], (
+            "the sweep cannot collect what the writer leaves behind: " + str(left)
+        )
+
+    def test_a_legacy_sweepmark_is_collected_too(self, tmp_path: Path) -> None:
+        """Audit L7: before the marker was renamed it was created as
+        `<sidecar>.sweepmark.XXXXXX`, which no glob of the current shape
+        matches -- so any one an older build stranded would sit in
+        ~/.cache for ever."""
+        cache = tmp_path / "cache-legacy"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+        legacy = cache / "daily-sync-stash-state.sweepmark.Ab12Cd"
+        legacy.write_text("", encoding="utf-8")
+        subprocess.run(["touch", "-d", "-1 hour", str(legacy)], check=True)
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not legacy.exists(), (
+            "a marker an older build stranded is uncollectable for ever"
+        )
+        assert sidecar.exists(), "the sweep took the sidecar"
+
+
+class TestBinaryGateLineIsClassified:
+    """The gate line that says an entry holds binary content is a claim
+    about that entry's state, so a later run's word about the same stash
+    has to be able to retire it -- and its own word has to retire what
+    came before."""
+
+    _FUNCTIONS = (
+        "gate_line_class",
+        "gate_sha_keys",
+        "gate_claim_keys",
+        "gate_subject_keys",
+    )
+
+    _BINARY_LINE = (
+        "daily-sync STOPPED: parent-repo stash 0badc0de stash@{0} On main: "
+        "daily-sync parent holds BINARY content, so this run could NOT tell "
+        "whether its tracked changes reached the tree — it has kept the entry "
+        "rather than guess."
+    )
+    _REFUSED_LINE = (
+        "daily-sync STOPPED: applying parent-repo stash 0badc0de stash@{0} "
+        "On main: daily-sync parent was REFUSED — git declined the merge and "
+        "preserved the entry."
+    )
+
+    def test_a_binary_line_has_its_own_class(self) -> None:
+        """Kills DS-L2: deleting the `*"BINARY content"*` arm, which left
+        the line as `other` -- claiming nothing and protected from
+        nothing, so it accumulated beside every later word about the same
+        stash."""
+        result = _run_shell(
+            'gate_line_class "$PA_TEST_LINE"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINE": self._BINARY_LINE},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "binary", result.stdout
+
+    def test_it_retires_a_stale_refused_line_about_the_same_stash(self) -> None:
+        """Two mutually exclusive descriptions of one entry must not stand
+        side by side: this run's says the guard could not tell, the
+        earlier one says git declined."""
+        claims = _run_shell(
+            'gate_claim_keys "$PA_TEST_LINE"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINE": self._BINARY_LINE},
+        )
+        subjects = _run_shell(
+            'gate_subject_keys "$PA_TEST_LINE"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINE": self._REFUSED_LINE},
+        )
+        assert claims.returncode == 0, claims.stderr
+        assert subjects.returncode == 0, subjects.stderr
+        assert claims.stdout.strip() == "stash:0badc0de", claims.stdout
+        assert subjects.stdout.strip() == "stash:0badc0de", subjects.stdout
+        assert claims.stdout.strip() == subjects.stdout.strip(), (
+            "a binary line cannot retire an earlier REFUSED line about the "
+            "same entry"
+        )

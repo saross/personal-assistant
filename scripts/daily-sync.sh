@@ -522,7 +522,15 @@ sweep_orphaned_stash_state_temps() {
     base="$(basename "$STASH_STATE_FILE")"
     [[ -d "$dir" ]] || return 0
     marker="$(mktemp "${STASH_STATE_FILE}.XXXXXX" 2>/dev/null)" || return 0
-    find "$dir" -maxdepth 1 -type f -name "${base}.??????" \
+    # audit L7 (fifth re-audit): the legacy marker pattern is collected
+    # too. Before the rename above, the marker was created as
+    # `<sidecar>.sweepmark.XXXXXX`, which no glob of this shape can
+    # match — so any one an older build stranded would sit in ~/.cache
+    # for ever. None exists on this machine, but the migration costs one
+    # predicate and cannot be added later by anyone who has forgotten
+    # the old name.
+    find "$dir" -maxdepth 1 -type f \
+        \( -name "${base}.??????" -o -name "${base}.sweepmark.??????" \) \
         ! -newer "$marker" -delete 2>/dev/null || true
     rm -f "$marker" 2>/dev/null || true
     return 0
