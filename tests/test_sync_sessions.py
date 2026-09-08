@@ -2389,6 +2389,81 @@ class TestAnUnusableCursorReachesTheGate:
         assert "'abc'" in gate
         assert "Repair the cursor file" in gate
 
+    def test_repairing_the_cursor_is_not_reported_as_a_rebuild(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        The sequence an operator actually follows: the gate names a bad
+        cursor, they repair it, and the next run must not accuse them of
+        a rebuild. That works only if the UNUSABLE value was recorded as
+        absent rather than stored verbatim — ``'abc'`` sorts after every
+        real timestamp, so a recorded ``'abc'`` makes the repaired value
+        look like a rewind.
+
+        The mutation this kills: type-filtering the ending position
+        instead of normalising it.
+        """
+        import _sync_gate
+
+        empty_root = tmp_path / "archive"
+        (empty_root / "proj" / "sess").mkdir(parents=True)
+        (empty_root / "proj" / "sess" / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "s-old"},
+                "project": {"name": "proj"},
+                "archive": {"archived_at": "2019-01-01T00:00:00Z"},
+            }),
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        quarantine.write_text(
+            '{"reason": "postgres_refused_row", "record": {"id": "old"}}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        def _tick():
+            _install_fake_psycopg2(monkeypatch, returned_ids=[])
+            cycle = sync_mod.sync(
+                empty_root, full_resync=False, logger=test_logger,
+            )
+            sync_mod.apply_gate(
+                sync_mod.GateEvent(
+                    outcome=cycle.outcome,
+                    connected=cycle.connected,
+                    processed=cycle.processed,
+                    degraded_detail=cycle.degraded_detail,
+                    quarantine_entries=1,
+                    quarantine_file=quarantine,
+                    cursor_position=cycle.cursor_position,
+                    cursor_position_after=cycle.cursor_position_after,
+                    cursor_seen=cycle.cursor_seen,
+                    script=sync_mod.SCRIPT_NAME,
+                ),
+                gate_path=pinned_gate_file, logger=test_logger,
+            )
+            return _sync_gate.read_state(pinned_gate_file)
+
+        # A cursor nobody can read. Nothing advances it: the run finds
+        # the one session already behind it.
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "abc"}), encoding="utf-8",
+        )
+        _tick()
+
+        # The operator repairs it, as the gate told them to.
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "2026-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        state = _tick()
+
+        assert "cursor was reset" not in state.problems[
+            _sync_gate.PROBLEM_QUARANTINE
+        ].detail, "repairing the cursor was reported as a rebuild"
+
     def test_a_good_cursor_raises_nothing(
         self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
     ):
@@ -2413,3 +2488,146 @@ class TestAnUnusableCursorReachesTheGate:
 
         assert cycle.processed == 1
         assert cycle.degraded_detail is None
+
+
+class TestTheSessionsExitSixDoesNotRepeatItself:
+    """
+    Eleventh re-audit, L5 — the same property the memories sync has, on
+    the side that had no test for it: exit 6 IS a rebuild, and leaving
+    the pre-rebuild position recorded made the next ordinary run see the
+    same rewind and announce it a second time.
+    """
+
+    def test_the_next_run_does_not_announce_the_rebuild_again(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: ``cursor_seen=False`` on the sessions
+        exit-6 gate event.
+        """
+        import _sync_gate
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "2020-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        quarantine = tmp_path / "quarantine.jsonl"
+        quarantine.write_text(
+            '{"reason": "postgres_refused_row", "record": {"id": "old"}}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        ids = [
+            "abc12345-6789-0000-aaaa-bbbbccccdddd",
+            "def67890-1234-0000-aaaa-bbbbccccdddd",
+        ]
+        _install_fake_psycopg2(monkeypatch, returned_ids=ids)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree)],
+        )
+
+        # One ordinary tick, so there IS a recorded position to go stale.
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+        assert sync_mod.CURSOR_KEY in json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )
+
+        # Rewind the cursor so there is work to do again — a rebuild
+        # that had already run once, say — and let the NEXT one land
+        # mid-cycle.
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "2020-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        original_upsert = sync_mod.upsert_sessions
+
+        def _rebuild_runs_now(
+            rows, logger, quarantine_cap=None, quarantine_anyway=False,
+        ):
+            cursor_file.write_text(json.dumps({}), encoding="utf-8")
+            return original_upsert(
+                rows, logger, quarantine_cap, quarantine_anyway,
+            )
+
+        monkeypatch.setattr(sync_mod, "upsert_sessions", _rebuild_runs_now)
+        _install_fake_psycopg2(monkeypatch, returned_ids=ids)
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+        assert excinfo.value.code == 6
+        first = _sync_gate.read_state(pinned_gate_file)
+        assert "cursor was reset" in first.problems[
+            _sync_gate.PROBLEM_QUARANTINE
+        ].detail
+
+        # The next tick resyncs and completes; the reset is old news.
+        monkeypatch.setattr(sync_mod, "upsert_sessions", original_upsert)
+        _install_fake_psycopg2(monkeypatch, returned_ids=ids)
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        second = _sync_gate.read_state(pinned_gate_file)
+        problem = second.problems[_sync_gate.PROBLEM_QUARANTINE]
+        assert problem.count == 1
+        assert "cursor was reset" not in problem.detail, (
+            "one rebuild was announced twice"
+        )
+
+    def test_the_exit_six_gate_reads_the_cursor_as_it_now_stands(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        Eleventh re-audit, L4 — the exit-6 path reads the cursor file
+        again rather than reusing the cycle's observation, and that read
+        is NOT redundant: the exception unwinds before the cycle records
+        anything, so this is the only reading of where the cursor ended
+        up. A rebuild that writes a new value, rather than removing the
+        key, is what makes the difference visible.
+
+        The mutation this kills: passing the pre-run position instead of
+        re-reading.
+        """
+        import _sync_gate
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "2026-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        # The rebuild has finished and left a NEW position behind.
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "2020-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+
+        sync_mod._gate_fault(
+            logging.getLogger("test-l4"),
+            "exit 6 — a rebuild cleared the cursor mid-run",
+            connected=True,
+            reset_quarantine_ack=True,
+        )
+
+        assert _sync_gate.read_state(
+            pinned_gate_file,
+        ).cursor_position == "2020-01-01T00:00:00Z", (
+            "the gate recorded a position the cursor file does not hold"
+        )
