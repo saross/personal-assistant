@@ -57,6 +57,10 @@ class TestSyncReachesTheEnd:
         (machine.data / "tasks" / "inbox.md").write_text(
             "# Inbox\n\n- half-written thought\n", encoding="utf-8"
         )
+        # Staged, not merely dirty: a concurrent session part-way through
+        # its own `git add`. Without the commit's pathspec this is what
+        # gets swept into the automatic commit (audit M2 / DS-M4).
+        git("add", "--", "tasks/inbox.md", cwd=machine.data)
         result = world.run_sync(machine)
         assert result.returncode == 0, result.stdout + result.stderr
 
@@ -77,6 +81,42 @@ class TestSyncReachesTheEnd:
         assert "half-written thought" in (
             machine.data / "tasks" / "inbox.md"
         ).read_text(encoding="utf-8")
+
+    def test_append_only_block_stages_nothing_else(self, world: SyncWorld) -> None:
+        """The `git add` before the append-only commit must carry the
+        pathspec too, not just the `git commit`.
+
+        Audit M2: the commit-contents assertion above passes with either
+        half of the pair intact, because `git commit -- <paths>` is a
+        partial commit and ignores whatever else is staged. Observe the
+        index at the moment of that commit instead: a post-commit hook
+        records what is still staged, which must be nothing.
+        """
+        machine = world.add_machine("a")
+        record = world.root / "staged-at-append-commit.txt"
+        hook = machine.data_git_dir / "hooks" / "post-commit"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Record the real index at the append-only commit.\n"
+            'git log -1 --format=%s | grep -q "append-only capture" || exit 0\n'
+            f'env -u GIT_INDEX_FILE git diff --cached --name-only > "{record}"\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        machine.append_memory("2026-09-08-m2")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- a concurrent session is mid-edit\n", encoding="utf-8"
+        )
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        assert record.exists(), "the append-only commit never ran"
+        assert record.read_text(encoding="utf-8").strip() == "", (
+            "the append-only block staged files outside MEMORY_APPEND_FILES: "
+            + record.read_text(encoding="utf-8")
+        )
 
     def test_dry_run_commits_nothing_and_pushes_nothing(self, world: SyncWorld) -> None:
         """``--dry-run`` must leave every repository byte-identical."""
