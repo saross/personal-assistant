@@ -349,6 +349,18 @@ reconcile_orphaned_stashes() {
 }
 
 # ---------------------------------------------------------------------------
+# Agent-mail archive (2026-09-08). Copies every message and receipt from
+# ~/agent-mail into data/agent-mail/ (append-only) and rebuilds its JSONL
+# index, committing with an explicit pathspec so nothing else pending in
+# the submodule is swept. Runs BEFORE the submodule sync so the commit is
+# pushed by it. Failure is logged, never fatal: mail is still on disk.
+# ---------------------------------------------------------------------------
+if ! "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/archive-agent-mail.py" --commit --quiet \
+        >>"$LOG_FILE" 2>&1; then
+    log "WARNING: agent-mail archive failed (see log); continuing"
+fi
+
+# ---------------------------------------------------------------------------
 # Data submodule sync
 # ---------------------------------------------------------------------------
 
