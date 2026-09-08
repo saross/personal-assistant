@@ -206,37 +206,39 @@ dies at line 618 before the sync body and the test passes anyway).
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| S1 | `scripts/daily-sync.sh:510-577` — a data-submodule commit made while the tree is clean afterwards is never pushed, but the parent pointer bump that references it IS pushed: origin points at a commit the other machine cannot fetch. Happened today at 09:29. `monthly-archive.py:522-539` already works around this locally. | CONFIRMED from `logs/daily-sync.log` and `git ls-tree` | **round 2** (branch `claude/audit-sync-writers`) (push whenever `HEAD` is ahead of `@{u}`) |
+| S1 | `scripts/daily-sync.sh:510-577` — a data-submodule commit made while the tree is clean afterwards is never pushed, but the parent pointer bump that references it IS pushed: origin points at a commit the other machine cannot fetch. Happened today at 09:29. `monthly-archive.py:522-539` already works around this locally. | CONFIRMED from `logs/daily-sync.log` and `git ls-tree` | fixed in PR #116 (merged 0d1d391) (push whenever `HEAD` is ahead of `@{u}`) |
 | S2 | `daily-sync.sh:512` — `git add -A` after the stash pop sweeps concurrent sessions' half-written prose into an automated commit and pushes it (`e433eee`, `549d9aa`), contradicting the script's own comment and the hub rule. | CONFIRMED from history | **decision** — the daily sync is also how scratchpad and notes *appends* get committed; Shawn rules which paths the auto-commit may take |
-| S3 | `daily-sync.sh:475-501` — stash-pop conflicts feed every conflicted path, prose included, to the line-union resolver; a conflicted `wiki/continuity.md` is rewritten as an interleaved union. The rebase path partitions correctly. | CONFIRMED by reading both paths | **round 2** (branch `claude/audit-sync-writers`) (partition like the rebase path; abort on prose) |
-| S4 | `daily-sync.sh:196,287` — `git checkout --ours` during a rebase takes origin's side, the opposite of the comment's intent (git-checkout(1)). | CONFIRMED against git documentation | **round 2** (branch `claude/audit-sync-writers`) (`--theirs`, both sites) |
-| S5 | `daily-sync.sh:358,405-423` run before the detached-HEAD guard at 438-445; on a detached HEAD the memory commit and the archive commit are orphaned and the working tree reverted. Likely trigger: `sync-symlinks.sh:126 git submodule update` detaching HEAD. | CONFIRMED by ordering; trigger SUSPECTED | **round 2** (branch `claude/audit-sync-writers`) (move the guard above every commit site) |
-| S6 (B) | `scripts/resolve-merge-conflicts.py` has zero tests; keeping only "ours" passes the whole suite. | CONFIRMED | **round 2** (branch `claude/audit-sync-writers`) (tests with real conflict markers) |
-| S7 (B) | `scripts/daily-sync-trigger.sh` has zero tests; "never runs again" and "breaks the hook chain" both pass. | CONFIRMED | **round 2** (branch `claude/audit-sync-writers`) |
+| S3 | `daily-sync.sh:475-501` — stash-pop conflicts feed every conflicted path, prose included, to the line-union resolver; a conflicted `wiki/continuity.md` is rewritten as an interleaved union. The rebase path partitions correctly. | CONFIRMED by reading both paths | fixed in PR #116 (merged 0d1d391) (partition like the rebase path; abort on prose) |
+| S4 | `daily-sync.sh:196,287` — `git checkout --ours` during a rebase takes origin's side, the opposite of the comment's intent (git-checkout(1)). | CONFIRMED against git documentation | fixed in PR #116 (merged 0d1d391) (`--theirs`, both sites) |
+| S5 | `daily-sync.sh:358,405-423` run before the detached-HEAD guard at 438-445; on a detached HEAD the memory commit and the archive commit are orphaned and the working tree reverted. Likely trigger: `sync-symlinks.sh:126 git submodule update` detaching HEAD. | CONFIRMED by ordering; trigger SUSPECTED | fixed in PR #116 (merged 0d1d391) (move the guard above every commit site) |
+| S6 (B) | `scripts/resolve-merge-conflicts.py` has zero tests; keeping only "ours" passes the whole suite. | CONFIRMED | fixed in PR #116 (merged 0d1d391) (tests with real conflict markers) |
+| S7 (B) | `scripts/daily-sync-trigger.sh` has zero tests; "never runs again" and "breaks the hook chain" both pass. | CONFIRMED | fixed in PR #116 (merged 0d1d391) |
 | S8 (B) | `archive-memories.py::apply_archive` untested: evicting without archiving, or archiving without evicting, passes. `monthly-archive.py::_apply` halts removable with tests green. | CONFIRMED | fixed in PR #114 (merged 8c61bb8) |
 
 ### Medium (sync)
 
 | # | Finding | Disposition |
 |---|---|---|
-| S9 | Archiver call lacks a `DRY_RUN` guard; `--dry-run` commits | **round 2** (branch `claude/audit-sync-writers`) |
-| S10 | Two Syncthing gate-file layouts; the trigger reads one; the early-exit path renders a headerless problem | **round 2** (branch `claude/audit-sync-writers`) |
+| S9 | Archiver call lacks a `DRY_RUN` guard; `--dry-run` commits | fixed in PR #116 (merged 0d1d391) |
+| S10 | Two Syncthing gate-file layouts; the trigger reads one; the early-exit path renders a headerless problem | fixed in PR #116 (merged 0d1d391) |
 | S11 | `sync-symlinks.sh:97` `ln -sf` on a symlink-to-directory writes inside it; needs `-sfn` | fixed in PR #114 (merged 8c61bb8) |
-| S12 | Resolver: a valid-JSON non-object line raises `AttributeError`, aborting the sync with a conflicted tree | **round 2** (branch `claude/audit-sync-writers`) |
+| S12 | Resolver: a valid-JSON non-object line raises `AttributeError`, aborting the sync with a conflicted tree | fixed in PR #116 (merged 0d1d391) |
 | S13 | `compose-global-claude-md.sh:102` truncates `~/.claude/CLAUDE.md` before writing | fixed in PR #114 (merged 8c61bb8) (temp + `mv`) |
 | S14 | `push-archives-to-r2.sh:91` version probe kills the script under `pipefail` | fixed in PR #114 (merged 8c61bb8) |
 | S15 | `archive-memories.py:369-373` releases the flock before its commit | fixed in PR #114 (merged 8c61bb8) |
 | S16 | `archive-memories.py:413`, `commit-data.sh:49,58` commit without a pathspec | fixed in PR #114 (merged 8c61bb8) |
-| S17 | A conflicted orphan-stash pop wedges every later session with no gate line | **round 2** (branch `claude/audit-sync-writers`) (gate line) |
+| S17 | A conflicted orphan-stash pop wedges every later session with no gate line | fixed in PR #116 (merged 0d1d391) (gate line) |
 | S18 | Syncthing SSH probe runs inside the 90 s SessionStart budget | deferred |
-| S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
+| S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | fixed in PR #116 (merged 0d1d391) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
-| S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
+| S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | fixed in PR #116 (merged 0d1d391) (before any fixture repair) |
 | S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
-| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
+| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **round 3c** (`claude/audit-round3c`) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
-| S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | **next** (round 3) |
+| S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | fixed in PR #116: every non-zero exit writes a gate line |
+| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **round 3c**: a `partial` outcome — compare the stash's untracked tree (`<sha>^3`) with the worktree before any drop |
+| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **round 3c** |
 | S4 note | Measured on the branch: neither `--ours` nor `--theirs` changes a conflicted gitlink's index entry; the following `git add` records the checked-out HEAD, which is why the live sync resolved these correctly despite the inverted flag. The fix is legibility, not data loss. | recorded |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
@@ -567,6 +569,10 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     what remains. Both machines at 17:05: corpora pass `--check`, no
     stash, no in-progress operation or bisect in either repository,
     `timeout` present, no `merge.conflictStyle`.
+    Tenth pass: **merge** — a strict improvement on every shape tested,
+    advice never destructive; one pre-existing critical (S27) and three
+    sidecar mediums (S28) open round 3c. **Merged as 0d1d391**; main
+    suite 1,786.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
