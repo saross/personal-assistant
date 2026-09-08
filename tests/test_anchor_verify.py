@@ -11,6 +11,8 @@ deferred until Phase 0b.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -529,3 +531,115 @@ class TestUniqueSuffixMatch:
 
     def test_empty_ref_returns_none(self):
         assert av.unique_suffix_match("", self.TRACKED) is None
+
+
+# ============================================================================
+# Pathspec magic — a glob must never verify as a file (finding AN1/AN11/AN12)
+# ============================================================================
+
+
+def _throwaway_repo(root: Path) -> Path:
+    """Create a throwaway git repository with one committed file.
+
+    The repository lives entirely under pytest's ``tmp_path``; nothing here
+    touches a real checkout. It carries ``scripts/real.py`` at HEAD, which is
+    what the glob refs below would match if git were allowed to read them as
+    patterns.
+    """
+    repo = root / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "real.py").write_text("x = 1\n", encoding="utf-8")
+    env = {
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "PATH": os.environ.get("PATH", ""), "HOME": str(root),
+    }
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "seed"], check=True, env=env,
+    )
+    return repo
+
+
+class TestPathspecMagicNeverVerifies:
+    """A ref git would read as a pattern must not resolve to "true".
+
+    Against the real git binary in a throwaway repository. The mutation each
+    test kills: dropping ``--literal-pathspecs`` from the ``git log`` probe in
+    :func:`anchor_verify._git_knows_path` (every glob below then matches
+    ``scripts/real.py`` in history and returns "true").
+    """
+
+    @pytest.mark.parametrize("ref", [
+        "scripts/*.py",
+        "*.py",
+        "scripts/?eal.py",
+        "scripts/[r]eal.py",
+        ":(glob)**/real.py",
+        ":(exclude)zzz",
+    ])
+    def test_glob_refs_resolve_false(self, tmp_path, ref):
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_file(ref, [repo]) == "false"
+
+    def test_the_real_file_still_resolves_true(self, tmp_path):
+        """The control: literal pathspecs must not break honest anchors."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_file("scripts/real.py", [repo]) == "true"
+
+    def test_a_deleted_file_still_resolves_through_history(self, tmp_path):
+        """The history probe survives literalisation (its whole purpose)."""
+        repo = _throwaway_repo(tmp_path)
+        (repo / "scripts" / "real.py").unlink()
+        env = {
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path),
+        }
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "drop"], check=True, env=env,
+        )
+        assert av.verify_file("scripts/real.py", [repo]) == "true"
+
+    def test_a_ref_that_escapes_the_repo_is_false(self, tmp_path):
+        """``../outside`` must not stat a file that lives in no repository.
+
+        Kills the AN11 mutation: ``(repo / expanded).exists()`` without
+        normalisation, which returned "true" for the file below.
+        """
+        repo = _throwaway_repo(tmp_path)
+        (tmp_path / "outside.txt").write_text("secret\n", encoding="utf-8")
+        assert av.verify_file("../outside.txt", [repo]) == "false"
+
+    def test_the_shape_gate_rejects_pathspec_magic(self):
+        """The write-side half: such a ref never reaches the resolver."""
+        for ref in ("scripts/*.py", "scripts/?eal.py", "scripts/[r]eal.py",
+                    ":(glob)**/real.py", ":(exclude)zzz"):
+            assert av._looks_like_file_ref(ref) is False
+            assert av.wellformed_anchor({"type": "file", "ref": ref}) == (
+                False, "malformed-file-ref")
+
+
+class TestCommitRefHexFloor:
+    """Four hex characters is a word, not a commit (finding AN12)."""
+
+    @pytest.mark.parametrize("ref", ["cafe", "beef", "face", "d0d0", "abcdef"])
+    def test_short_hex_is_not_a_commit_ref(self, ref):
+        """Kills the mutation restoring ``len(s) < 4`` in _looks_like_hash."""
+        assert av._looks_like_hash(ref) is False
+        assert av.wellformed_anchor({"type": "commit", "ref": ref}) == (
+            False, "malformed-commit-ref")
+        assert av.verify_commit(ref, [Path("/nonexistent-repo")]) == "false"
+
+    def test_seven_hex_is_still_a_commit_ref(self):
+        """The floor is seven, not eight: git's own abbreviation length."""
+        assert av._looks_like_hash("abc1234") is True
+
+    def test_a_short_word_is_still_a_plausible_filename(self):
+        """The file gate keeps its looser six-character id floor."""
+        assert av._looks_like_file_ref("cafe") is True

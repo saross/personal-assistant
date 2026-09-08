@@ -56,10 +56,49 @@ from typing import Any, Iterable
 # filesystems; cold cache or NFS-backed repos may need a higher value.
 _GIT_TIMEOUT_S = 3
 
+# Characters that make git read a pathspec as a PATTERN rather than a literal
+# path. ``git log -- '*.md'`` matches every markdown file in history, so a junk
+# anchor whose ref carries one of these would mint ``verified=true`` for a file
+# that never existed (audit 2026-09-08, finding AN1). Every git invocation here
+# passes ``--literal-pathspecs`` as well; this gate is the write-side half, so
+# such a ref never reaches the resolver in the first place.
+_PATHSPEC_MAGIC = ("*", "?", "[")
+
+# Minimum hex characters we will treat as a commit reference. Git itself
+# resolves a 4-character prefix in a small repository, which made
+# ``verify_commit`` accept four hex characters of prose as a hash and find a
+# collision in one of ~36 repositories (finding AN12). Seven is git's own
+# ``core.abbrev`` floor and the length every tool in this repo records.
+_MIN_COMMIT_HEX = 7
+
+# Minimum hex characters before a separator-free, extension-free ref is read as
+# a mis-typed object id rather than a short filename (``cafe`` stays a file).
+_MIN_ID_HEX = 6
+
 
 # ============================================================================
 # verify_file — does this file exist anywhere we can see?
 # ============================================================================
+
+
+def _under_repo(repo: Path, relpath: str) -> Path | None:
+    """Lexically join *relpath* onto *repo*, refusing anything that escapes it.
+
+    Purely lexical (``normpath``; no ``resolve``) for the same reason as
+    :func:`_relpath_in_repo` — the file may have been deleted since the memory
+    was written, and stat-ing it would follow symlinks out of the repository.
+
+    ``(repo / "../outside.txt").exists()`` was true for a file that lived in no
+    repository at all, so a ref that walked out of every checkout verified
+    ``true`` (audit 2026-09-08, finding AN11). Returns ``None`` when the
+    joined path is not inside *repo*, and the caller then skips that
+    repository entirely rather than probing outside it.
+    """
+    repo_str = os.path.normpath(str(repo))
+    joined = os.path.normpath(os.path.join(repo_str, relpath))
+    if joined == repo_str:
+        return None
+    return Path(joined) if joined.startswith(repo_str + os.sep) else None
 
 
 def _git_knows_path(repo: Path, relpath: str) -> str:
@@ -73,11 +112,23 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
          memory whose file was deleted after the memory was written still
          resolves ``"true"`` here, because the path exists in history.
 
+    Both probes run under ``--literal-pathspecs``. Without it git reads the
+    second probe's argument as a *pattern*: ``*.md`` matched the whole
+    markdown history of the repository and ``:(exclude)zzz`` matched
+    everything else, so junk anchors minted ``verified=true`` and then
+    ``confidence=high`` (audit 2026-09-08, finding AN1). A ref that walks out
+    of the repository (``../outside``) is refused outright (finding AN11).
+
     Returns ``"true"`` / ``"false"`` / ``"pending"`` (the last only on a
     subprocess timeout). A missing git binary or a vanished repo path
     yields ``"false"`` for *this* repo — the caller tries the next one.
     """
     if not relpath:
+        return "false"
+    if _under_repo(repo, relpath) is None:
+        # Escapes the repository (or names the root itself): nothing for git
+        # to resolve here, and probing it would ask about a path outside the
+        # checkout entirely.
         return "false"
     # 1. Present at the current tip?
     try:
@@ -96,7 +147,7 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
     # 2. Ever in history (any ref)? Covers deleted-since + renames.
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--all",
+            ["git", "-C", str(repo), "--literal-pathspecs", "log", "--all",
              "--max-count=1", "--", relpath],
             capture_output=True,
             timeout=_GIT_TIMEOUT_S,
@@ -176,9 +227,12 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
                 pending_seen = True
         return "pending" if pending_seen else "false"
 
-    # Repo-relative: working-tree stat against each repo as a prefix.
+    # Repo-relative: working-tree stat against each repo as a prefix. The
+    # candidate is normalised first, so ``../outside.txt`` cannot stat a file
+    # that lives in no repository at all (finding AN11).
     for repo in repos:
-        if (repo / expanded).exists():
+        candidate = _under_repo(repo, expanded)
+        if candidate is not None and candidate.exists():
             return "true"
 
     # Filesystem miss — try HEAD + history in each repo.
@@ -261,10 +315,20 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
     return "pending" if pending_seen else "false"
 
 
-def _looks_like_hash(s: str) -> bool:
+def _looks_like_hash(s: str, *, min_len: int = _MIN_COMMIT_HEX) -> bool:
     """Cheap sanity check before launching git. Avoids spawning a
-    subprocess for obviously non-hash strings."""
-    if not s or len(s) < 4 or len(s) > 40:
+    subprocess for obviously non-hash strings.
+
+    *min_len* defaults to :data:`_MIN_COMMIT_HEX`, the floor for a ref we are
+    willing to call a commit. Four hex characters is a legitimate git prefix
+    but also an ordinary word (``face``, ``beef``, ``cafe``), and
+    :func:`verify_commit` searches ~36 repositories — enough of them for a
+    four-character prefix to collide with something (finding AN12).
+    :func:`_looks_like_file_ref` passes the looser
+    :data:`_MIN_ID_HEX` because it is answering a different question: is this
+    token a mis-typed object id rather than a short filename?
+    """
+    if not s or len(s) < min_len or len(s) > 40:
         return False
     return all(c in "0123456789abcdefABCDEF" for c in s)
 
@@ -298,6 +362,12 @@ def _looks_like_file_ref(ref: str) -> bool:
       * **bare object ids** — ``3825319a``, ``msgbatch_016RZj…`` — no separator,
         no extension, and either all-hex (≥6) or a known id prefix. A hash-shaped
         ref belongs in a ``commit`` anchor, not a ``file`` one.
+      * **pathspec magic** — ``scripts/*.py``, ``docs/?eal.md``,
+        ``scripts/[r]eal.py``, ``:(glob)**/x.py`` — a glob or a leading ``:``
+        magic prefix, which git reads as a *pattern*. Such a ref names a set of
+        files, not a file, so it can never be a legitimate anchor; before
+        ``--literal-pathspecs`` it also verified ``true`` against whatever the
+        pattern happened to match (finding AN1).
 
     Deliberately *not* rejected (shape-valid; the resolver decides whether they
     resolve): extensionless real files (``LICENSE``, ``Makefile``), bare
@@ -305,6 +375,9 @@ def _looks_like_file_ref(ref: str) -> bool:
     concern, item 21b), and directory refs (trailing ``/``).
     """
     if len(ref) > 256 or "\n" in ref or "\t" in ref:
+        return False
+    # Pathspec magic: a pattern, not a path (see the docstring, finding AN1).
+    if ref.startswith(":") or any(c in ref for c in _PATHSPEC_MAGIC):
         return False
     # Single-segment absolute → slash-command shape (/weekly-review, /reflect).
     if ref.startswith("/"):
@@ -317,7 +390,7 @@ def _looks_like_file_ref(ref: str) -> bool:
         return False
     # Bare object id mis-typed as a file: no separator, no extension.
     if not has_sep and "." not in ref:
-        if (_looks_like_hash(ref) and len(ref) >= 6) or any(
+        if _looks_like_hash(ref, min_len=_MIN_ID_HEX) or any(
             ref.startswith(p) for p in _ID_PREFIXES
         ):
             return False
