@@ -360,7 +360,17 @@ its scope — UDP, child processes, and C-level connectors are covered only by
 the PGHOST environment; a fixture that repoints PGHOST plus an import-bound
 connector reaches the live database; PGSERVICE pops untested; four surviving
 mutations; the midnight flake in `test_daily_sync_trigger.py`, a module-level
-`date.today()`) are round 4a-3 (`claude/audit-round4a-3`, running).
+`date.today()`) are round 4a-3 (`claude/audit-round4a-3`, running). A
+separate flake investigation confirmed the midnight mechanism by reproduction
+(`tests/test_daily_sync_trigger.py:29-30` are the suite's only live-clock
+module constants; any full run starting in the ~80 s before local midnight
+fails exactly those two tests) and found that the widened store guard
+snapshots the REAL checkout's source trees and logs, so a concurrent
+session editing `wiki/` or the extraction hook appending a log during a run
+fails that run at teardown — a recurring false failure in a repository
+worked by several sessions. Round 4a-3 is asked to accept appends to the
+store and logs, and to make the source-tree watch advisory unless
+`PA_HERMETICITY_STRICT=1` (set by clean-copy and re-audit runs).
 
 ## Tranche 3c — retrieval and serving (both lenses, 2026-09-08 evening)
 
