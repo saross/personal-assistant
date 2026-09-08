@@ -2192,3 +2192,422 @@ class TestRetryPushRechecksTheShrink:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert not trace.exists(), "the parent repo was measured for a corpus"
+
+
+class TestUnattributableShrinkFailsClosed:
+    """The outer comparison sees the corpus shorter than origin's; the
+    per-commit loop names no commit that shortened it. That is a history
+    this guard does not understand, which is the last state in which to
+    assume the best."""
+
+    def _repo_with(self, tmp_path: Path, records: int) -> Path:
+        """A repo whose HEAD holds ``records`` corpus lines."""
+        repo = tmp_path / f"unattributable-{records}"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        return repo
+
+    def _run_guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+
+    def test_a_shrink_no_commit_explains_is_refused(self, tmp_path: Path) -> None:
+        """Kills DS-M1's fail-open: `return 0` when the loop named nobody.
+
+        origin/main is set to a commit that is NOT an ancestor of HEAD and
+        holds more records -- a diverged branch about to be published --
+        so the range holds no commit that shortened anything, and the
+        guard used to allow it.
+        """
+        repo = self._repo_with(tmp_path, 1)
+        logs = tmp_path / "logs-unattributable"
+        logs.mkdir()
+        # A richer corpus on a side history, published as origin/main.
+        _git("checkout", "--quiet", "-b", "side", cwd=repo)
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(5)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the other machine's captures", cwd=repo)
+        side = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("checkout", "--quiet", "main", cwd=repo)
+        # A local commit that touches nothing of the corpus.
+        (repo / "notes.md").write_text("a prose file\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "prose", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main", side, cwd=repo)
+
+        result = self._run_guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        reports = list(logs.glob("daily-sync-shrink-*.log"))
+        assert reports, "no report was written"
+        written = reports[0].read_text(encoding="utf-8")
+        assert "could not be attributed" in written, written
+
+    def test_a_shrink_every_commit_owns_is_still_allowed(
+        self, tmp_path: Path
+    ) -> None:
+        """The fail-closed rule must not swallow the escape hatch: a
+        commit that shortened it and says so still publishes."""
+        repo = self._repo_with(tmp_path, 5)
+        logs = tmp_path / "logs-allowed"
+        logs.mkdir()
+        origin = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/main", origin, cwd=repo)
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "kept"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+        result = self._run_guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+
+class TestSweepNarrowing:
+    """The sweep deletes files in ~/.cache. Both of the clauses that keep
+    it from deleting the wrong ones have to stay."""
+
+    _FUNCTIONS = ("sweep_orphaned_stash_state_temps",)
+
+    def _cache(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A cache directory holding a real sidecar."""
+        cache = tmp_path / "cache-narrowing"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+        return cache, sidecar
+
+    def test_a_temp_newer_than_the_sweep_survives(self, tmp_path: Path) -> None:
+        """Kills: dropping `! -newer "$marker"`. The clause is what keeps a
+        writer this reasoning has not anticipated from losing its
+        half-built sidecar; without it the sweep takes whatever it finds."""
+        cache, sidecar = self._cache(tmp_path)
+        fresh = cache / "daily-sync-stash-state.Fr3sh1"
+        fresh.write_text("a writer that is still going\n", encoding="utf-8")
+        # Dated after the marker the sweep is about to create.
+        subprocess.run(["touch", "-d", "+1 hour", str(fresh)], check=True)
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert fresh.exists(), "the sweep took a file newer than itself"
+
+    def test_a_differently_named_neighbour_survives(self, tmp_path: Path) -> None:
+        """Kills: widening the glob to `${base}.*`. The six characters are
+        exactly what mktemp appends; anything else in that directory
+        belongs to something else."""
+        cache, sidecar = self._cache(tmp_path)
+        neighbour = cache / "daily-sync-stash-state.backup-before-the-upgrade"
+        neighbour.write_text("somebody kept this on purpose\n", encoding="utf-8")
+        orphan = cache / "daily-sync-stash-state.Ab12Cd"
+        orphan.write_text("half a row\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not orphan.exists(), "the orphan survived"
+        assert neighbour.exists(), (
+            "the sweep took a file that is not one of its temporaries"
+        )
+
+    def test_a_marker_a_killed_run_left_is_itself_sweepable(
+        self, tmp_path: Path
+    ) -> None:
+        """Audit L-a: the marker used to be named so that the glob could
+        never match it, so a run killed between creating it and removing
+        it left litter no sweep could collect -- the very thing this
+        function exists to prevent."""
+        cache, sidecar = self._cache(tmp_path)
+        stranded = cache / "daily-sync-stash-state.MRK123"
+        stranded.write_text("", encoding="utf-8")
+        subprocess.run(["touch", "-d", "-1 hour", str(stranded)], check=True)
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not stranded.exists(), (
+            "a marker a killed run left behind is unreachable by any sweep"
+        )
+        assert sidecar.exists(), "the sweep took the sidecar"
+
+
+class TestRenameOnlyStash:
+    """Git reports a rename by its DESTINATION alone, so a rename-only
+    entry contributed one path and the pathspec-limited diff then dropped
+    the source's deletion."""
+
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+
+    def _renaming_entry(self, tmp_path: Path) -> tuple[Path, str]:
+        """A repo whose stash is a pure rename."""
+        repo = tmp_path / "renaming"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "old.md").write_text("content that stays identical\n",
+                                     encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", "old.md", "new.md", cwd=repo)
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
+        """Run the predicate over two recorded porcelain snapshots."""
+        result = _run_shell(
+            'apply_before_status="$PA_TEST_BEFORE"\n'
+            'apply_after_status="$PA_TEST_AFTER"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+            {"PA_TEST_BEFORE": before, "PA_TEST_AFTER": after},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_a_half_done_rename_is_not_landed(self, tmp_path: Path) -> None:
+        """Kills DS-L-d: `--name-only` without `--no-renames`.
+
+        The destination arrived and the source was never removed. With
+        only the destination in the path set, what was left of the diff --
+        "create new.md" -- reverse-applied cleanly while old.md was still
+        sitting there, and the entry was called landed and dropped though
+        the rename had never completed.
+        """
+        repo, sha = self._renaming_entry(tmp_path)
+        (repo / "new.md").write_text("content that stays identical\n",
+                                     encoding="utf-8")
+        assert (repo / "old.md").exists(), "the fixture did not model a half-rename"
+        assert self._ask(repo, sha, "", " M old.md\n?? new.md") == "NOT-LANDED"
+
+    def test_a_completed_rename_is_landed(self, tmp_path: Path) -> None:
+        """The other direction: a rename the apply really did complete."""
+        repo, sha = self._renaming_entry(tmp_path)
+        _git("stash", "apply", sha, cwd=repo)
+        assert not (repo / "old.md").exists()
+        assert self._ask(repo, sha, "", "R  old.md -> new.md") == "LANDED"
+
+
+class TestBinaryStashIsNotCalledRefused:
+    """`git apply` will not take a binary diff, so the tracked-half check
+    says "not landed" about an entry that may have landed perfectly well.
+    Keeping it is right; telling the operator git declined the merge is
+    not."""
+
+    def test_a_binary_tracked_half_is_recognised(self, tmp_path: Path) -> None:
+        """Kills DS-L-c: no binary case at all, so the `refused` wording
+        was given to an entry nothing had refused."""
+        repo = tmp_path / "binary-detect"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01seed\n")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01stashed\n")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            f'if stash_tracked_half_is_binary "{repo}" "{sha}"; then\n'
+            "  echo BINARY\nelse\n  echo TEXT\nfi\n",
+            ("stash_tracked_half_is_binary",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "BINARY", result.stdout
+
+    def test_a_text_tracked_half_is_not_called_binary(
+        self, tmp_path: Path
+    ) -> None:
+        """Or every ordinary entry would get the binary wording."""
+        repo = tmp_path / "text-detect"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes.md").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "notes.md").write_text("stashed\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            f'if stash_tracked_half_is_binary "{repo}" "{sha}"; then\n'
+            "  echo BINARY\nelse\n  echo TEXT\nfi\n",
+            ("stash_tracked_half_is_binary",),
+        )
+        assert result.stdout.strip() == "TEXT", result.stdout
+
+
+class TestMergeWithNoCorpusInAnyParent:
+    """A merge none of whose parents holds the corpus cannot be measured
+    against anything, and the corpus it publishes came from its own
+    resolution."""
+
+    def test_it_is_refused_as_unjudgeable(self, tmp_path: Path) -> None:
+        """Kills DS-M1's refusal branch. Counting a corpus-less parent as
+        zero records leaves this refused too -- by the fail-closed rule --
+        but saying "the shrink could not be attributed" of a merge whose
+        parents simply have no corpus sends the operator looking for the
+        wrong thing."""
+        repo = tmp_path / "no-corpus-parents"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(5)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        origin = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/main", origin, cwd=repo)
+
+        # Two parentless commits, neither holding a corpus…
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        one = _git("commit-tree", empty, "-m", "side one", cwd=repo).stdout.strip()
+        two = _git("commit-tree", empty, "-m", "side two", cwd=repo).stdout.strip()
+        # …merged into a commit that introduces a corpus of its own.
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "one record"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git(
+            "commit-tree", tree, "-p", one, "-p", two, "-m", "Merge two strangers",
+            cwd=repo
+        ).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        logs = tmp_path / "logs-no-corpus"
+        logs.mkdir()
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+
+
+class TestGuardsDoNotPipeIntoGrepQ:
+    """`grep -q` exits on its first match; the upstream then dies of
+    SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. In a
+    guard that decides whether data is published, that turns a match into
+    its opposite -- a real trailer into "no trailer", a binary path into
+    "no binary paths" -- on a race decided by how much the upstream had
+    written."""
+
+    def test_the_publishing_guards_read_rather_than_pipe(self) -> None:
+        """Kills: rewriting either guard as `<producer> | grep -q ...`.
+
+        Scoped to the two functions whose answer gates a push. Elsewhere
+        in the script the same shape is bounded and its worst outcome is
+        a skipped optional pass, so it is left alone rather than churned.
+        """
+        for name in ("stash_tracked_half_is_binary", "has_bulk_rewrite_trailer"):
+            body = _extract_function(name)
+            assert "| grep -q" not in body.replace("\n", " "), (
+                f"{name} pipes into `grep -q`, whose match reads as a failure "
+                "under `set -o pipefail`: " + body
+            )
+            assert "grep" in body, (
+                f"{name} no longer greps at all; this test is checking the "
+                "wrong thing"
+            )
+
+
+class TestSweepCollectsItsOwnMarker:
+    """A run killed between creating the sweep's marker and removing it
+    must leave something a later sweep can collect -- otherwise the
+    function that exists to clear litter is a source of it."""
+
+    def test_a_marker_left_by_a_killed_sweep_is_collected_next_time(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L-a: naming the marker so the sweep's own glob can
+        never match it.
+
+        `find` and `rm` are stubbed in the first pass, which is what a
+        kill between the mktemp and the rest of the function looks like
+        from the next run's point of view. (A pass that gets as far as its
+        own `find` already collects its own marker, since a file is not
+        NEWER than itself -- so only a kill in that narrow window can
+        strand one.)
+        """
+        cache = tmp_path / "cache-marker"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+
+        first = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\n'
+            "find() { :; }\n"
+            "rm() { :; }\n"
+            "sweep_orphaned_stash_state_temps\n",
+            ("sweep_orphaned_stash_state_temps",),
+        )
+        assert first.returncode == 0, first.stderr
+        stranded = [p for p in cache.iterdir() if p.name != sidecar.name]
+        assert stranded, "the first pass left no marker, so nothing is being tested"
+
+        # Dated back, so the second pass's marker is newer than it.
+        for path in stranded:
+            subprocess.run(["touch", "-d", "-1 hour", str(path)], check=True)
+        second = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            ("sweep_orphaned_stash_state_temps",),
+        )
+        assert second.returncode == 0, second.stderr
+        assert [p for p in cache.iterdir()] == [sidecar], (
+            "the marker a killed sweep left behind is unreachable by any "
+            "later sweep: " + str(list(cache.iterdir()))
+        )
