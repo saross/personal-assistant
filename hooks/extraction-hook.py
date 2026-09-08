@@ -24,7 +24,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 # Shared helpers live under ``scripts/`` — both hooks and CLI scripts
 # import them by extending sys.path. Centralised so any drift across
@@ -468,15 +468,32 @@ def cursor_file_lock() -> Iterator[None]:
 # ============================================================================
 
 
+class ParsedWindow(NamedTuple):
+    """What one pass over a transcript window yielded.
+
+    ``skip_pending`` is the load-bearing third field (audit round two M1):
+    it is True when the window ended with a slash-command exchange whose
+    response has NOT yet been seen, so the skip flag would have to survive
+    into the next window to do its job. The cursor must not move past that
+    point, or the response is extracted next firing — duplicating what the
+    command itself already wrote.
+    """
+
+    messages: list[dict]
+    last_uuid: str | None
+    skip_pending: bool
+
+
 def parse_transcript(
     transcript_path: str,
     last_uuid: str | None,
-) -> tuple[list[dict], str | None]:
+) -> ParsedWindow:
     """
     Parse a Claude Code transcript JSONL file.
 
-    Returns new messages since last_uuid, plus the UUID of the last
-    entry seen (for cursor advancement).
+    Returns new messages since last_uuid, the UUID of the last entry seen
+    (for cursor advancement), and whether a slash-command skip is still
+    pending at the end of the window.
 
     If last_uuid is set but not found in the transcript (stale cursor
     from a rotated/truncated file), falls back to processing the entire
@@ -602,7 +619,12 @@ def parse_transcript(
         )
         return parse_transcript(transcript_path, None)
 
-    return messages, last_seen_uuid
+    # ``skip_next_assistant`` still set at end of window means the command's
+    # response has not arrived yet (PreCompact fires before the model call,
+    # and an interrupt mid-tool-use leaves [command, tool-use-only
+    # assistant]). The caller must hold the cursor so the flag is rebuilt
+    # from the same starting point next firing.
+    return ParsedWindow(messages, last_seen_uuid, skip_next_assistant)
 
 
 # ============================================================================
@@ -1156,7 +1178,9 @@ def main() -> None:
         last_uuid = cursor.get(session_id)
 
         # Parse new content from transcript
-        messages, new_last_uuid = parse_transcript(transcript_path, last_uuid)
+        messages, new_last_uuid, skip_pending = parse_transcript(
+            transcript_path, last_uuid
+        )
 
         if not messages:
             # A window can hold entries and still yield no messages: every
@@ -1174,14 +1198,17 @@ def main() -> None:
             # the cursor: a short window accumulates into an extractable one,
             # whereas dropped entries would simply be dropped again.
             #
-            # Residual case, unchanged from the non-empty path: if the window
-            # ends between a slash-command entry and its response, the
-            # response is no longer skipped on the next firing. Stop,
-            # PreCompact, and SessionEnd all fire after a turn completes, so
-            # the response is already in the transcript by then; and a window
-            # carrying real messages alongside a command has always advanced
-            # past a pending flag this way.
-            if new_last_uuid and new_last_uuid != last_uuid:
+            # ``skip_pending`` is why the advance is conditional. A window
+            # that ends BETWEEN a slash-command entry and its response has
+            # nothing extractable in it, so it looks all-dropped — but the
+            # skip flag has to survive into the next window or the response
+            # is sent to Haiku and re-extracted into the store /remember
+            # (or /forget, or /update) has already written to. Reproduced
+            # end to end: W1 = the command entry alone, W2 = its response.
+            # The split is reachable because PreCompact fires before the
+            # model call, and an interrupt mid-tool-use leaves
+            # [command, tool-use-only assistant].
+            if new_last_uuid and new_last_uuid != last_uuid and not skip_pending:
                 cursor[session_id] = new_last_uuid
                 save_cursor(cursor)
                 logger.debug(

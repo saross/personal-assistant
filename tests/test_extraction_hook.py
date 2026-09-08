@@ -122,7 +122,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 3
         assert last_uuid == "uuid-3"
 
@@ -137,7 +137,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), "uuid-2")
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), "uuid-2")
         assert len(messages) == 1
         assert messages[0]["content"] == "New message"
         assert last_uuid == "uuid-3"
@@ -153,7 +153,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(
+        messages, last_uuid, _ = eh.parse_transcript(
             str(transcript), "nonexistent-uuid"
         )
         assert len(messages) == 2
@@ -169,7 +169,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
@@ -194,7 +194,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 3  # uuid-1, uuid-2, uuid-5
         contents = [m["content"] for m in messages]
         assert "Normal question" in contents
@@ -220,7 +220,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["content"] == "Normal"
 
@@ -249,7 +249,7 @@ class TestParseTranscript:
         with open(transcript, "w") as f:
             f.write(json.dumps(entry) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert "[THINKING]:" in messages[0]["content"]
         assert "Here is my answer." in messages[0]["content"]
@@ -258,7 +258,7 @@ class TestParseTranscript:
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text("")
 
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert messages == []
         assert last_uuid is None
 
@@ -269,7 +269,7 @@ class TestParseTranscript:
         with open(transcript, "w") as f:
             f.write(json.dumps(entry) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages[0]["content"]) == eh.MAX_MESSAGE_CHARS
 
     def test_command_skip_flag_persists_across_user_entries(
@@ -319,7 +319,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         contents = [m["content"] for m in messages]
         # The /remember response must not appear.
         assert not any(
@@ -1145,7 +1145,7 @@ class TestAuditRoundTwo:
             make_transcript_entry("assistant", "an ordinary answer that must survive", "a2"),
         ]
         transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "Here is the command response text" not in texts
         assert "an ordinary answer that must survive" in texts
@@ -1636,7 +1636,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
             ],
         )
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "harness injection, not something Shawn said" not in texts
         assert texts == ["a real question from Shawn", "an ordinary answer"]
@@ -1664,7 +1664,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("user", "the real turn", "u-real"),
             ],
         )
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert [m["content"] for m in messages] == ["the real turn"]
         assert last_uuid == "u-real"
 
@@ -1694,7 +1694,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
             ],
         )
-        messages, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "the slash-command response" not in texts
         assert texts == ["an unrelated real question", "an ordinary answer"]
@@ -1714,7 +1714,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("user", "injection two", "u2", is_meta=True),
             ],
         )
-        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert messages == []
         assert last_uuid == "u2"
 
@@ -1844,3 +1844,205 @@ class TestImportSideEffects:
         assert report["file_handlers"] == [], (
             f"a file handler was installed at import: {report['file_handlers']}"
         )
+
+
+class TestSplitCommandWindow:
+    """Audit round two M1: a window that ends mid-slash-command.
+
+    The skip flag exists so a ``/remember`` (or ``/forget``, or
+    ``/update``) response is never extracted — the command has already
+    written the record itself, and re-extracting it duplicates the memory
+    with a fresh id that dedup-by-id cannot catch.
+
+    The flag lives inside one ``parse_transcript`` call, so it survives
+    only as long as the cursor does not move past the command. A window
+    ending between the command and its response looks all-dropped, which
+    is why advancing there destroyed the skip. The split is reachable:
+    PreCompact fires before the model call, and an interrupt mid-tool-use
+    leaves ``[command, tool-use-only assistant]``.
+    """
+
+    @staticmethod
+    def _command_marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_window_ending_mid_command_holds_the_cursor(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``and not skip_pending`` in the empty-window cursor advance.
+
+        With the guard gone the cursor steps past the command entry, and
+        the next window starts after it — so the response arrives with no
+        flag set and goes straight to Haiku.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._command_marker() + "\nsave that", "uuid-cmd",
+                    is_meta=True,
+                ),
+                # The interrupt shape: a tool-use-only assistant entry, which
+                # deliberately does NOT consume the flag (audit H11).
+                {
+                    "type": "assistant",
+                    "uuid": "uuid-tool",
+                    "isMeta": False,
+                    "isSidechain": False,
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "name": "Write", "input": {}}
+                        ],
+                    },
+                },
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-SC"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            with pytest.raises(SystemExit) as exc:
+                eh.main()
+            mock_cls.assert_not_called()
+
+        assert exc.value.code == 0
+        saved = json.loads(cursor_file.read_text()) if cursor_file.exists() else {}
+        assert "sess-SC" not in saved, (
+            "the cursor advanced past a pending command skip; the response "
+            f"will be extracted next firing. Cursor: {saved!r}"
+        )
+        assert not store.exists()
+
+    def test_the_response_is_still_skipped_on_the_next_firing(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills the same guard, at the consequence rather than the cursor.
+
+        Second firing, with the response now present alongside a real
+        exchange: the response must not reach Haiku. If the first firing
+        had advanced the cursor, this window would begin after the command
+        and the response would be an ordinary assistant turn.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._command_marker()
+        response = "THE COMMAND RESPONSE THAT MUST NEVER BE EXTRACTED"
+
+        # Firing one: the window ends mid-command.
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", marker + "\nsave that", "uuid-cmd", is_meta=True
+                ),
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-SC2"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic"):
+            with pytest.raises(SystemExit):
+                eh.main()
+
+        # Firing two: the response has landed, and a real exchange follows.
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", marker + "\nsave that", "uuid-cmd", is_meta=True
+                ),
+                make_live_shape_entry("assistant", response, "uuid-resp"),
+                make_live_shape_entry(
+                    "user", "a genuine question " + "q" * 800, "uuid-user"
+                ),
+                make_live_shape_entry(
+                    "assistant", "a genuine answer " + "a" * 800, "uuid-ans"
+                ),
+            ],
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+            assert mock_client.messages.create.call_count == 1
+            sent = mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+        assert response not in sent, (
+            "the slash-command response was sent to the model — the skip "
+            "flag did not survive the window split"
+        )
+        assert "a genuine question" in sent
+        # The real exchange was extracted and the cursor now moves.
+        assert json.loads(cursor_file.read_text())["sess-SC2"] == "uuid-ans"
+        assert store.exists()
+
+    def test_a_completed_command_window_still_advances(self, tmp_path, monkeypatch):
+        """Kills widening the hold to every window carrying a command.
+
+        When the response HAS been seen the flag is spent, so holding the
+        cursor would re-parse the same window forever — the failure M1's
+        fix was meant to remove, reintroduced from the other side.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._command_marker() + "\nsave that", "uuid-cmd",
+                    is_meta=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "the command response", "uuid-resp"
+                ),
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-SC3"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            with pytest.raises(SystemExit):
+                eh.main()
+            mock_cls.assert_not_called()
+
+        assert json.loads(cursor_file.read_text())["sess-SC3"] == "uuid-resp"
+
+    def test_parse_transcript_reports_the_pending_flag(self, tmp_path):
+        """Kills ``return ParsedWindow(..., skip_next_assistant)`` -> ``False``.
+
+        The unit-level statement of the same contract: the third field is
+        the live flag at end of window, not a constant.
+        """
+        marker = self._command_marker()
+        pending = tmp_path / "pending.jsonl"
+        _write_transcript(
+            pending,
+            [make_live_shape_entry("user", marker + "\nx", "u1", is_meta=True)],
+        )
+        assert eh.parse_transcript(str(pending), None).skip_pending is True
+
+        spent = tmp_path / "spent.jsonl"
+        _write_transcript(
+            spent,
+            [
+                make_live_shape_entry("user", marker + "\nx", "u1", is_meta=True),
+                make_live_shape_entry("assistant", "the response", "u2"),
+            ],
+        )
+        assert eh.parse_transcript(str(spent), None).skip_pending is False
+
+        plain = tmp_path / "plain.jsonl"
+        _write_transcript(
+            plain, [make_live_shape_entry("user", "an ordinary turn", "u1")]
+        )
+        assert eh.parse_transcript(str(plain), None).skip_pending is False

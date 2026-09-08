@@ -140,7 +140,7 @@ def sample_windows(n_windows: int, max_transcripts: int) -> list[dict]:
     win = hook.MAX_EXCHANGES
     for tpath in transcripts:
         try:
-            messages, _ = hook.parse_transcript(str(tpath), None)
+            messages, _, _ = hook.parse_transcript(str(tpath), None)
         except Exception:
             continue
         # Non-overlapping consecutive tiles of `win` messages.
