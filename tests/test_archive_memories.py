@@ -247,6 +247,7 @@ class TestPartitionIds:
 # parameter.
 # ===========================================================================
 
+import contextlib  # noqa: E402
 import os  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
@@ -660,3 +661,168 @@ def test_dry_run_is_not_gated_by_the_backlog(main_env):
 
     assert am.main([]) == 0
     assert applied == []
+
+
+# ===========================================================================
+# Write-path wiring (audit 2026-09-08, round 4a, findings B9, B10, B11)
+#
+# The JSONL flock, the temp-and-rename, the --apply gate, the
+# ``Rewrite-Class: bulk`` trailer, and the literal `git add -- <paths>` were
+# all deletable with the suite still green.
+# ===========================================================================
+
+
+GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Test Bot",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "Test Bot",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+}
+
+
+def _seed_data_repo(tmp_path, monkeypatch):
+    """A throwaway data submodule with a corpus, a partition, and a manifest."""
+    for key, value in GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
+    data_dir = tmp_path / "data"
+    archive_dir = data_dir / "memories" / "archive"
+    corpus = data_dir / "memories" / "memories.jsonl"
+    archive_dir.mkdir(parents=True)
+    corpus.write_text("{}\n", encoding="utf-8")
+    partition = archive_dir / "memories-archive-2026-06.jsonl"
+    partition.write_text("{}\n", encoding="utf-8")
+    (archive_dir / "archive-runs.jsonl").write_text("{}\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(data_dir), "init", "-q", "-b", "main"],
+                   check=True)
+    subprocess.run(["git", "-C", str(data_dir), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(data_dir), "commit", "-q", "-m", "seed"],
+                   check=True)
+    return data_dir, corpus, partition, archive_dir
+
+
+class TestCommitContent:
+    """What the archival commit carries, and what it must leave behind."""
+
+    def test_subject_carries_the_bulk_rewrite_trailer(self, tmp_path,
+                                                      monkeypatch):
+        """The trailer is what stops daily-sync resetting the commit.
+
+        Kills the mutation that passes a plain marker (``lambda s, **k: s``):
+        without ``Rewrite-Class: bulk`` the next daily-sync sees a shrunk
+        memories.jsonl, trips its own shrink detector, resets the commit and
+        exits non-zero.
+        """
+        data_dir, corpus, partition, archive_dir = _seed_data_repo(
+            tmp_path, monkeypatch)
+        corpus.write_text('{"id": "kept"}\n', encoding="utf-8")
+
+        am._git_commit(corpus, partition, 4, None,
+                       guard.mark_bulk_rewrite_commit_msg, archive_dir)
+
+        message = subprocess.run(
+            ["git", "-C", str(data_dir), "log", "-1", "--format=%B"],
+            capture_output=True, text=True, check=True).stdout
+        assert "Rewrite-Class: bulk" in message
+        assert "archive 4 past-decay records" in message
+
+    def test_an_unstaged_modification_does_not_land(self, tmp_path,
+                                                    monkeypatch):
+        """``git add -- <paths>`` must not become ``git add -A``.
+
+        Kills that mutation: a concurrent session's UNSTAGED edit to a
+        tracked file would be swept into this script's bulk-rewrite commit.
+        """
+        data_dir, corpus, partition, archive_dir = _seed_data_repo(
+            tmp_path, monkeypatch)
+        # A tracked file another session is part-way through editing, left
+        # UNSTAGED, so only `git add -A` would pick it up.
+        notes = data_dir / "memories" / "notes.md"
+        notes.write_text("another session's prose\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(data_dir), "add", "memories/notes.md"],
+                       check=True)
+        subprocess.run(["git", "-C", str(data_dir), "commit", "-q", "-m",
+                        "their commit"], check=True)
+        notes.write_text("another session's REVISED prose\n", encoding="utf-8")
+        corpus.write_text('{"id": "kept"}\n', encoding="utf-8")
+
+        am._git_commit(corpus, partition, 1, None,
+                       guard.mark_bulk_rewrite_commit_msg, archive_dir)
+
+        committed = subprocess.run(
+            ["git", "-C", str(data_dir), "show", "--name-only",
+             "--pretty=format:", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert "memories/memories.jsonl" in committed
+        assert "memories/notes.md" not in committed, (
+            "the archival commit swept an unstaged modification")
+        # And it was not left STAGED either: `git add -A` would have queued
+        # it for whoever commits next, which is the same leak one step later.
+        staged = subprocess.run(
+            ["git", "-C", str(data_dir), "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert staged == [], (
+            f"the archival `git add` staged another session's work: {staged}")
+
+
+class TestApplyWiring:
+    """The flock and the atomic rename around the corpus rewrite."""
+
+    def test_rewrite_is_flocked_and_renamed_atomically(self, apply_env,
+                                                       monkeypatch):
+        """The corpus is written to a temp file under LOCK_EX, then renamed.
+
+        Kills the mutations that swap ``lock_jsonl_for_rewrite`` for a
+        nullcontext (an extraction-hook append between read and rename would
+        be silently overwritten) and that write the corpus in place.
+        """
+        corpus, archive_dir, _lock_file = apply_env
+        _write_corpus(corpus, [_production_record("progress", 45),
+                               _production_record("decision", 2)])
+        locked: list[Path] = []
+        renames: list[tuple[str, str]] = []
+        real_lock = guard.lock_jsonl_for_rewrite
+        real_replace = os.replace
+
+        @contextlib.contextmanager
+        def recording_lock(path):
+            locked.append(Path(path))
+            with real_lock(path):
+                yield
+
+        def recording_replace(src, dst, **kwargs):
+            renames.append((str(src), str(dst)))
+            return real_replace(src, dst, **kwargs)
+
+        monkeypatch.setattr(guard, "lock_jsonl_for_rewrite", recording_lock)
+        monkeypatch.setattr(os, "replace", recording_replace)
+        monkeypatch.setattr(am, "_git_commit", lambda *a, **k: None)
+
+        am.apply_archive(corpus, WINDOWS, NOW, None, "wiring sweep",
+                         do_postgres=False, archive_dir=archive_dir)
+
+        assert locked == [corpus], "the corpus flock was not taken"
+        assert renames == [
+            (str(corpus.with_suffix(".jsonl.tmp")), str(corpus))
+        ], "the corpus was not replaced by an atomic rename"
+
+    def test_dry_run_archives_nothing_and_does_not_commit(self, tmp_path,
+                                                          monkeypatch):
+        """Without --apply, main() reports and returns.
+
+        Kills the mutation that deletes ``if not args.apply: return 0``: a
+        dry run would archive, rewrite, and commit.
+        """
+        corpus = tmp_path / "memories" / "memories.jsonl"
+        _write_corpus(corpus, [_production_record("progress", 400)])
+        before = corpus.read_bytes()
+        monkeypatch.setattr(am, "CORPUS", corpus)
+        monkeypatch.setattr(am, "CURSOR_FILE", tmp_path / "sync-cursors.json")
+        monkeypatch.setattr(am, "resolve_windows",
+                            lambda: ({"progress": 30}, "test policy"))
+        monkeypatch.setattr(am, "apply_archive", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("apply_archive ran on a dry run")))
+
+        assert am.main([]) == 0
+        assert corpus.read_bytes() == before
