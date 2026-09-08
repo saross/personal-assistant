@@ -71,6 +71,32 @@ _LIBRARY = [
         },
         "creators": [("Marek", "Dvorak")],
     },
+    # Stored with surrounding whitespace — the shape a paste from a PDF
+    # leaves. Only TRIM on the stored side matches it (round 4d-2).
+    {
+        "key": "PADDEDD1",
+        "library_id": 1,
+        "fields": {
+            "title": "Kiln Waste at the Lower Terrace",
+            "date": "2029",
+            "DOI": "  10.6666/padded-doi\n",
+        },
+        "creators": [("Iva", "Marinova")],
+    },
+    # In the trash. Zotero keeps the row and lists the item in
+    # deletedItems; a duplicate guard that returns it would withhold an
+    # import the operator deliberately made room for (round 4d-2).
+    {
+        "key": "TRASHED1",
+        "library_id": 1,
+        "deleted": True,
+        "fields": {
+            "title": "Withdrawn Preprint on Kiln Waste",
+            "date": "2028",
+            "DOI": "10.7777/deleted-doi",
+        },
+        "creators": [("Marek", "Dvorak")],
+    },
 ]
 
 
@@ -167,18 +193,81 @@ class TestWriterFindExistingByDoi:
         finally:
             conn.close()
 
-    def test_reader_and_writer_share_one_normaliser(self) -> None:
-        """The importer must reuse zotero.py's rule, not keep a copy."""
+    def test_reader_and_writer_share_one_normaliser(
+        self, library: Path
+    ) -> None:
+        """The importer must reuse zotero.py's rule, not keep a copy.
+
+        Round 4d-2 replaced a vacuous ``__module__ is not None`` here with
+        the claim that actually matters: for every accepted spelling of
+        every DOI in the library, the reader and the writer return the
+        same set of item keys.
+        """
         importer = _load_importer()
-        zot_path = Path(importer._ZOTERO_CLIENT.__file__).resolve()
-        assert zot_path.name == "zotero.py"
-        assert importer.find_existing_by_doi.__module__ is not None
-        # Same function object semantics: identical candidate expansion.
-        with_wrapper = importer._ZOTERO_CLIENT.doi_match_candidates(
-            "DOI:10.1/x"
+        zot = load_zotero_module(library)
+        assert Path(importer._ZOTERO_CLIENT.__file__).resolve().name == (
+            "zotero.py"
         )
-        assert with_wrapper[0] == "10.1/x"
-        assert "https://doi.org/10.1/x" in with_wrapper
+
+        conn = TestWriterFindExistingByDoi._connect(library)
+        try:
+            for doi in (
+                "10.1234/abc-def",
+                "https://doi.org/10.1234/ABC-def",
+                "doi:10.5555/plain-doi",
+                "10.6666/padded-doi",
+                "10.7777/deleted-doi",
+                "10.9999/absent",
+            ):
+                reader = sorted(h["key"] for h in zot.find_by_doi(doi))
+                writer = sorted(
+                    h["key"] for h in importer.find_existing_by_doi(doi, conn)
+                )
+                assert reader == writer, (doi, reader, writer)
+        finally:
+            conn.close()
+
+
+class TestStoredValueEdgeCases:
+    """Round 4d-2 — the two stored shapes that were unrepresented.
+
+    ``TRIM`` on the stored side and the ``deletedItems`` exclusion each
+    survived deletion in BOTH functions, because no fixture item had
+    surrounding whitespace and none was in the trash.
+    """
+
+    def test_a_padded_stored_doi_is_matched(self, library: Path) -> None:
+        """A DOI pasted with whitespace still counts as a duplicate."""
+        zot = load_zotero_module(library)
+        importer = _load_importer()
+        conn = TestWriterFindExistingByDoi._connect(library)
+        try:
+            writer = [
+                h["key"]
+                for h in importer.find_existing_by_doi(
+                    "10.6666/padded-doi", conn
+                )
+            ]
+        finally:
+            conn.close()
+
+        assert [h["key"] for h in zot.find_by_doi("10.6666/padded-doi")] == [
+            "PADDEDD1"
+        ]
+        assert writer == ["PADDEDD1"]
+
+    def test_a_trashed_item_is_not_a_duplicate(self, library: Path) -> None:
+        """An item in the trash must not withhold a deliberate re-import."""
+        zot = load_zotero_module(library)
+        importer = _load_importer()
+        conn = TestWriterFindExistingByDoi._connect(library)
+        try:
+            writer = importer.find_existing_by_doi("10.7777/deleted-doi", conn)
+        finally:
+            conn.close()
+
+        assert zot.find_by_doi("10.7777/deleted-doi") == []
+        assert writer == []
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entry point

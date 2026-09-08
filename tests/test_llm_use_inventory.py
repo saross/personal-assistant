@@ -231,6 +231,43 @@ class TestProjectIsContainedToTheArchive:
             )
         assert excinfo.value.code == 2
 
+    def test_a_deep_traversal_is_refused(
+        self, inventory: Any, archive: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Round 4d-2: without .resolve() a `..` chain walks straight out.
+
+        `root / "../../etc"` is a Path whose textual parents still include
+        the root, so a containment check on the UNRESOLVED path passes
+        while the directory it names is nowhere near the archive.
+        """
+        with pytest.raises(SystemExit) as excinfo:
+            _run(
+                inventory, monkeypatch,
+                "--project", "../../etc",
+                "--archive-root", str(archive),
+                "--generated", "2031-02-06",
+            )
+        assert excinfo.value.code == 2
+
+    def test_a_symlink_out_of_the_archive_is_refused(
+        self, inventory: Any, archive: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A symlinked project directory is resolved before the check."""
+        outside = tmp_path / "outside-project"
+        outside.mkdir()
+        (archive / "looks-inside").symlink_to(outside)
+
+        with pytest.raises(SystemExit) as excinfo:
+            _run(
+                inventory, monkeypatch,
+                "--project", "looks-inside",
+                "--archive-root", str(archive),
+                "--generated", "2031-02-06",
+            )
+        assert excinfo.value.code == 2
+
     def test_a_normal_project_still_works(
         self, inventory: Any, archive: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,

@@ -206,6 +206,70 @@ class TestGuardAnchorsAreContainedToTheRepo:
 
         assert inner.resolve() in candidates
 
+    def test_a_manuscript_in_a_subdirectory_resolves_its_neighbours(
+        self, prepass: Any, tmp_path: Path
+    ) -> None:
+        """Round 4d-2: the target need not sit at the repository root.
+
+        ``_contained_candidates`` resolves an anchor against BOTH the repo
+        root and the manuscript's own directory. With every fixture
+        manuscript at the root those two bases were the same path, so the
+        second one was never really exercised — and a relative anchor
+        beside a manuscript in ``sections/`` is the ordinary case.
+        """
+        repo = tmp_path / "paper"
+        sections = repo / "sections"
+        sections.mkdir(parents=True)
+        target = sections / "methods.tex"
+        target.write_text("% guard\n", encoding="utf-8")
+        neighbour = sections / "results.tex"
+        neighbour.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+        candidates = prepass._contained_candidates(
+            "results.tex", repo, target
+        )
+
+        assert neighbour.resolve() in candidates
+
+    def test_a_subdirectory_manuscript_cannot_escape_upwards(
+        self, prepass: Any, tmp_path: Path
+    ) -> None:
+        """``../../outside.tex`` from ``sections/`` still leaves the repo."""
+        repo = tmp_path / "paper"
+        sections = repo / "sections"
+        sections.mkdir(parents=True)
+        target = sections / "methods.tex"
+        target.write_text("% guard\n", encoding="utf-8")
+        outside = tmp_path / "outside.tex"
+        outside.write_text("secret\n", encoding="utf-8")
+
+        assert prepass._contained_candidates(
+            "../../outside.tex", repo, target
+        ) == []
+
+    def test_the_repo_root_base_is_contained_too(
+        self, prepass: Any, tmp_path: Path
+    ) -> None:
+        """BOTH bases are checked, not only the manuscript's own directory.
+
+        ``../notes.tex`` resolves to a sibling of the repository when taken
+        from the repo root, and to a file inside the repository when taken
+        from ``sections/``. Only the second is a candidate.
+        """
+        repo = tmp_path / "paper"
+        (repo / "sections").mkdir(parents=True)
+        target = repo / "sections" / "methods.tex"
+        target.write_text("% guard\n", encoding="utf-8")
+        outside = tmp_path / "notes.tex"
+        outside.write_text("x\n", encoding="utf-8")
+
+        candidates = prepass._contained_candidates(
+            "../notes.tex", repo, target
+        )
+
+        assert outside.resolve() not in candidates, candidates
+        assert candidates == [(repo / "notes.tex").resolve()], candidates
+
     def test_an_escaping_anchor_reports_as_stale_not_as_a_probe(
         self, prepass: Any, tmp_path: Path
     ) -> None:

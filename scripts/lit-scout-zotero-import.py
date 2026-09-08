@@ -955,7 +955,7 @@ def find_existing_by_doi(doi: str, conn: sqlite3.Connection) -> list[dict]:
         LEFT JOIN collectionItems ci ON i.itemID = ci.itemID
         LEFT JOIN collections c ON ci.collectionID = c.collectionID
         WHERE f.fieldName = 'DOI'
-          AND LOWER(TRIM(idv.value)) IN ({placeholders})
+          AND {_ZOTERO_CLIENT._SQL_TRIMMED_DOI} IN ({placeholders})
           AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
         GROUP BY i.itemID
         """,

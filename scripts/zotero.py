@@ -409,6 +409,16 @@ def _normalise_doi(doi: str) -> str:
     return s
 
 
+#: SQL expression trimming the stored DOI the way Python's ``str.strip``
+#: trims the lookup one. SQLite's bare ``TRIM`` removes SPACES only, so a
+#: value pasted with a trailing newline — what a copy out of a PDF or a
+#: web form leaves — stayed unmatched while the Python side had already
+#: stripped it (round 4d-2). Tab, newline, carriage return, and space.
+_SQL_TRIMMED_DOI = (
+    "TRIM(LOWER(idv.value), char(9) || char(10) || char(13) || char(32))"
+)
+
+
 def doi_match_candidates(doi: str) -> list[str]:
     """
     Return every stored spelling of ``doi`` that must count as the same DOI.
@@ -492,7 +502,7 @@ def find_by_doi(doi: str) -> list[dict[str, Any]]:
             JOIN libraries l ON i.libraryID = l.libraryID
             LEFT JOIN groups g ON l.libraryID = g.libraryID
             WHERE f.fieldName = 'DOI'
-              AND LOWER(TRIM(idv.value)) IN ({placeholders})
+              AND {_SQL_TRIMMED_DOI} IN ({placeholders})
               AND it.typeName NOT IN ('attachment', 'note')
               AND i.itemID NOT IN (
                   SELECT itemID FROM deletedItems

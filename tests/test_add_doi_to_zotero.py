@@ -17,6 +17,7 @@ identifiers, names, and titles are invented.
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -317,6 +318,46 @@ class TestItemFieldsMatchTheImporter:
             },
         )
         assert item["title"] == "Terraces in situ & abandoned"
+
+
+class TestTheLocalLibraryIsOpenedReadOnly:
+    """Round 4d-2 — this script opens the library itself, not through the
+    importer, so its own connection URI needs pinning."""
+
+    def test_the_duplicate_check_cannot_write(
+        self, script_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """immutable=1 on the URI, and an INSERT through it really fails."""
+        opened: list[str] = []
+        real_connect = sqlite3.connect
+
+        def _record(target, *args, **kwargs):
+            """Record every SQLite URI this script opens."""
+            opened.append(str(target))
+            return real_connect(target, *args, **kwargs)
+
+        monkeypatch.setattr(
+            script_env["module"].sqlite3, "connect", _record
+        )
+
+        _run(
+            script_env["module"],
+            monkeypatch,
+            "--doi",
+            "10.4321/already-here",
+            "--collection",
+            "2031-05-06-terraces",
+        )
+
+        assert opened, "the script never opened the library"
+        assert all("immutable=1" in uri for uri in opened), opened
+        assert all(uri.startswith("file://") for uri in opened), opened
+        conn = sqlite3.connect(opened[0], uri=True)
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                conn.execute("INSERT INTO itemDataValues VALUES (99, 'x')")
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entry point

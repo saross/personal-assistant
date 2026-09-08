@@ -1847,7 +1847,16 @@ class TestOllamaEndpoint:
         result = _run_ollama(tmp_path, curl_exit=0)
 
         assert result.returncode == 0
-        assert result.stdout.strip() == "http://192.168.1.150:11434"
+        # The FIRST candidate in the script's own list, read from the
+        # script rather than restated here: pinning the private LAN
+        # address of a specific machine in a public repository is not this
+        # test's business (round 4d-2).
+        first_candidate = next(
+            line.split('"')[1]
+            for line in OLLAMA.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith('"http')
+        )
+        assert result.stdout.strip() == first_candidate
 
     def test_no_candidate_prints_nothing_and_exits_one(
         self, tmp_path: Path
