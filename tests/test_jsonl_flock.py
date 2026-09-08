@@ -33,6 +33,7 @@ import multiprocessing
 import os
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -155,24 +156,48 @@ class TestLockJsonlForRewrite:
 
 
 class TestSharedAppender:
-    """LOCK_SH appenders may run concurrently."""
+    """The hook's own appenders may run concurrently."""
 
-    def test_two_shared_holders_coexist(self, tmp_path: Path) -> None:
-        """Two LOCK_SH holders on the same file do not block each other."""
+    def test_a_second_appender_does_not_block_on_the_first(
+        self, tmp_path: Path,
+    ) -> None:
+        """The hook's appender takes a SHARED lock, not an exclusive one.
+
+        Kills ``fcntl.flock(fd, fcntl.LOCK_SH)`` -> ``LOCK_EX`` in
+        ``_shared_locked_append_fd``: every appender would then serialise
+        behind every other, and the Stop / PreCompact / SessionEnd triple
+        would queue on each other inside a hook budget.
+
+        Audit round two (Lows): this test used to open two file descriptors
+        and take the locks itself, so it held whatever the hook did — the
+        same replicate-instead-of-import defect as H5. Both appenders now
+        go through the production context manager, and the second runs in a
+        thread with a timeout so "it blocked" is an assertion rather than a
+        hang.
+        """
         target = tmp_path / "memories.jsonl"
         target.write_text("seed\n", encoding="utf-8")
 
-        fd_a = os.open(str(target), os.O_WRONLY | os.O_APPEND)
-        fd_b = os.open(str(target), os.O_WRONLY | os.O_APPEND)
-        try:
-            fcntl.flock(fd_a, fcntl.LOCK_SH)
-            # Non-blocking second acquire must succeed immediately.
-            fcntl.flock(fd_b, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            fcntl.flock(fd_a, fcntl.LOCK_UN)
-            fcntl.flock(fd_b, fcntl.LOCK_UN)
-        finally:
-            os.close(fd_a)
-            os.close(fd_b)
+        second_done = threading.Event()
+
+        with _shared_locked_append_fd(target) as fd_first:
+            def _second() -> None:
+                _shared_locked_append(target, ["second\n"])
+                second_done.set()
+
+            worker = threading.Thread(target=_second)
+            worker.start()
+            worker.join(timeout=5.0)
+            assert second_done.is_set(), (
+                "a second appender blocked while the first held its lock — "
+                "the append path is taking LOCK_EX, not LOCK_SH"
+            )
+            os.write(fd_first, b"first\n")
+
+        final = target.read_text(encoding="utf-8")
+        assert "seed" in final
+        assert "first" in final
+        assert "second" in final
 
 
 class TestRewriterBlocksAppender:

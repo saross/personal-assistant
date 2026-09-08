@@ -116,14 +116,18 @@ class TestParseEnvNames:
         assert FAKE_SECRET not in cc.findings[0]
 
     def test_a_trailing_space_after_the_value_is_not_flagged(self, tmp_path):
-        """``NAME=value   `` is fine: bash assigns ``value`` and runs nothing.
+        """Kills dropping ``.strip()`` from ``raw_value = raw_value_field.strip()``.
 
-        Replaces a vacuous test (audit round two, Lows). It claimed to pin
-        the ``value and`` conjunct on the whitespace-after-'=' guard, but
-        ``line.strip()`` removes trailing whitespace before the guard ever
-        runs, so no input can reach that conjunct through ``parse_env``. It
-        is documented in the source as defence-in-depth rather than pinned
-        here; this test pins the behaviour that IS reachable.
+        ``NAME=value   `` is fine: bash assigns ``value`` and runs nothing,
+        so the parser must land on the same value rather than carrying the
+        padding into a credential.
+
+        Replaces a vacuous test (audit round two, Lows). That one claimed
+        to pin the ``value and`` conjunct on the whitespace-after-'='
+        guard, but ``line.strip()`` removes trailing whitespace before the
+        guard ever runs, so no input can reach that conjunct through
+        ``parse_env``. The conjunct is documented in the source as
+        defence-in-depth rather than pinned here.
         """
         env = cc.parse_env(_env_file(tmp_path, "PADDED=abcfake   \n"))
         assert cc.findings == []
