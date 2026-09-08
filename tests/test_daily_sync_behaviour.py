@@ -3174,3 +3174,58 @@ class TestPublishedShrinkGuard:
         assert world.published_data_file("memories/memories.jsonl") == (
             '{"id": "kept"}\n'
         )
+
+
+# ============================================================================
+# A partial found before the full EXIT handler exists (audit M1)
+# ============================================================================
+
+
+class TestPartialFoundDuringRecovery:
+    """reconcile_orphaned_stashes runs while only the EARLY trap is
+    installed, and its `partial` branch calls `fail`. Nothing wrote the
+    sidecar, so the warning lived exactly one run and the next clean run
+    cleared the gate over a file that was in no commit and no tree."""
+
+    def test_an_orphan_partial_is_still_reported_on_the_next_run(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M1 (eleventh): dropping the `write_stash_state` before
+        that `fail`, or the `partial_stash_records` guard in
+        render_on_early_exit."""
+        machine = world.add_machine("a")
+        report = "reports/orphan-notes.md"
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("the stashed copy\n", encoding="utf-8")
+        machine.append_memory("2026-09-08-orphaned")
+        git("stash", "push", "-u", "-q", "-m", "an orphan", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        # The corpus moved on, so the tracked half conflicts, and somebody
+        # else's copy of the report is in the way of the untracked half.
+        machine.memories.write_text('{"id": "moved on"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("a different copy\n", encoding="utf-8")
+
+        first = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
+        assert first.returncode == 2, first.stdout + first.stderr
+        joined = "\n".join(gate_details(world))
+        assert report in joined, joined
+        sidecar = world.home / ".cache" / "daily-sync-stash-state"
+        rows = [r for r in sidecar.read_text(encoding="utf-8").splitlines()
+                if "partial" in r]
+        assert rows, "the orphan's partial state was never recorded"
+        assert rows[0].split("\t")[1] == sha, rows
+
+        # A second run, with the markers resolved by hand: it completes,
+        # and must still say the report has not come back.
+        machine.memories.write_text('{"id": "resolved by hand"}\n', encoding="utf-8")
+        git("add", "--", "memories/memories.jsonl", cwd=machine.data)
+        second = world.run_sync(machine)
+        assert second.returncode == 0, second.stdout + second.stderr
+        again = "\n".join(gate_details(world))
+        assert report in again, (
+            "the warning was cleared while the file was still only in the "
+            "stash: " + again
+        )

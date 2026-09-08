@@ -493,6 +493,17 @@ render_on_early_exit() {
     # run's own stash bookkeeping has run. A row left standing costs
     # nothing: previously_recorded_stashes drops any row whose entry has
     # left the stack or whose path is not unmerged now.
+    #
+    # audit M1 (eleventh re-audit): with ONE exception. Two blocks record
+    # a partly-applied entry BEFORE the full handler exists —
+    # carry_forward_partial_stashes and reconcile_orphaned_stashes, the
+    # second of which then `fail`s — and their finding is the only record
+    # that a file is in no commit and no tree. Without this the next clean
+    # run erases it.
+    local -a _pending=(${partial_stash_records[@]+"${partial_stash_records[@]}"})
+    if [[ ${#_pending[@]} -gt 0 ]]; then
+        write_stash_state
+    fi
     render_sync_gate
 }
 trap render_on_early_exit EXIT
