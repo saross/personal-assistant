@@ -466,3 +466,47 @@ def test_a_missing_gate_beside_a_live_sidecar_is_reported(tmp_path):
     assert "its gate file is missing" in result.stdout
     assert "has NEVER been written" not in result.stdout
     assert result.stdout.count("its gate file is missing") == 3
+
+
+def test_the_shipped_default_applies_with_the_variable_unset(tmp_path):
+    """
+    The six-hour window is the shipped behaviour on every machine that
+    has never heard of PA_GATE_STALE_HOURS, and every other test here
+    sets the variable — so nothing pinned the default itself. The
+    mutation this kills: changing the shipped ``PG_GATE_STALE_HOURS=6``.
+    """
+    _write_gates(tmp_path, age_hours=7)
+    uptime_file = tmp_path / "fake-uptime"
+    uptime_file.write_text("172800.00 172800.00\n", encoding="utf-8")
+
+    script = tmp_path / "gate-block.sh"
+    script.write_text(
+        "GATE_LINES=()\n" + _gate_block(TRIGGER.read_text(encoding="utf-8"))
+        + '\nprintf "%s\\n" "${GATE_LINES[@]}"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True, text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": os.environ["PATH"],
+            "PA_UPTIME_FILE": str(uptime_file),
+        },
+    )
+
+    assert "PA_GATE_STALE_HOURS" not in result.stderr, result.stderr
+    assert "has not been updated for over 6h" in result.stdout
+
+    # And a gate inside the window stays quiet under the same default.
+    _write_gates(tmp_path, age_hours=5)
+    quiet = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True, text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": os.environ["PATH"],
+            "PA_UPTIME_FILE": str(uptime_file),
+        },
+    )
+    assert quiet.stdout.strip() == ""
