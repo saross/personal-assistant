@@ -515,6 +515,45 @@ class TestDetachedHeadGuard:
         assert "2026-09-08-ours" in published
         assert "2026-09-08-theirs" in published
 
+    def test_a_resolved_conflict_does_not_strand_the_parent_stash(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M1 (third re-audit): the "do not restore" flag must be
+        reset once the conflicted pop is resolved.
+
+        As a one-way latch it survived the resolution, so when the parent
+        half aborted later the EXIT handler refused to restore the parent
+        stash — leaving settings.json reverted to HEAD, with the operator's
+        machine-local edits sitting in a stash.
+        """
+        machine = world.add_machine("a")
+        # A data-half conflict that IS resolved (memories.jsonl, unioned).
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-m1-ours")
+        world.publish_memory_append("2026-09-08-m1-theirs")
+        # A parent half that will abort after its stash is pushed: the
+        # parent has diverged, so `git pull --ff-only` fails.
+        (machine.pa / "settings.json").write_text(
+            '{"machine": "local edits"}\n', encoding="utf-8"
+        )
+        (machine.pa / "local-note.md").write_text("local\n", encoding="utf-8")
+        git("add", "--", "local-note.md", cwd=machine.pa)
+        git("commit", "-q", "-m", "local parent commit", "--", "local-note.md",
+            cwd=machine.pa)
+        world.publish_parent_change("settings.json", '{"machine": "remote"}\n')
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "parent pull failed" in combined
+        # The data conflict was resolved on the way past.
+        assert "conflicts resolved" in combined
+        # And the parent stash came back.
+        assert "local edits" in (machine.pa / "settings.json").read_text(
+            encoding="utf-8"
+        ), "the parent stash was stranded and settings.json left reverted"
+        assert not git("stash", "list", cwd=machine.pa).stdout.strip()
+
     def test_a_concurrent_sessions_stash_is_never_touched(
         self, world: SyncWorld
     ) -> None:

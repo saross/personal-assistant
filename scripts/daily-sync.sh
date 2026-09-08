@@ -891,6 +891,13 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # pop of a lower entry is a DIFFERENT stash — this run's
             # other one, or a concurrent session's.
             git stash drop "$_sref" >>"$LOG_FILE" 2>&1 || true
+            # audit M1 (third re-audit): the conflict is resolved, staged,
+            # and its stash dropped, so the tree is no longer half-merged
+            # and later stashes are safe to restore again. Without this
+            # reset the flag was a one-way latch: a conflicted pop here
+            # left the EXIT handler unable to restore the PARENT stash on
+            # any later abort, silently reverting settings.json.
+            stash_restore_allowed=1
             log "conflicts resolved: ${conflicted_files[*]}"
         fi
     done
