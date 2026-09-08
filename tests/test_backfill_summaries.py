@@ -374,3 +374,100 @@ class TestOutOfBatchIdsAreIgnored:
             _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
 
         assert exit_info.value.code != 0
+
+
+class TestCanonicalWritePath:
+    """ART10 — the invariants that stand between a batch and a broken store."""
+
+    def _records(self, count: int = 3) -> list[dict]:
+        return [
+            _memory(f"2026-03-02-{n:06d}", f"Decision number {n}.")
+            for n in range(count)
+        ]
+
+    def test_the_write_is_staged_and_renamed(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash mid-write must not truncate the canonical."""
+        before = harness.memories.read_text(encoding="utf-8")
+
+        def boom(src, dst):
+            raise OSError("interrupted")
+
+        monkeypatch.setattr(backfill.os, "rename", boom)
+        with pytest.raises(OSError):
+            backfill.write_memories(self._records())
+
+        assert harness.memories.read_text(encoding="utf-8") == before, (
+            "the canonical was written in place; an interrupted rewrite "
+            "leaves a truncated memory store"
+        )
+
+    def test_a_line_count_mismatch_raises_loudly(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The invariant that caught the historical append-instead-of-overwrite."""
+        real_open = backfill.open if hasattr(backfill, "open") else open
+
+        def short_write(records):
+            """Write one line fewer than the caller handed us."""
+            tmp = backfill.MEMORIES_FILE.with_suffix(".jsonl.tmp")
+            with real_open(tmp, "w", encoding="utf-8") as handle:
+                for record in records[:-1]:
+                    handle.write(json.dumps(record) + "\n")
+            backfill.os.rename(str(tmp), str(backfill.MEMORIES_FILE))
+
+        records = self._records()
+        short_write(records)
+
+        with open(harness.memories, encoding="utf-8") as handle:
+            actual = sum(1 for _ in handle)
+        assert actual == len(records) - 1
+
+        # The production writer must refuse this state rather than return.
+        source = Path(backfill.__file__).read_text(encoding="utf-8")
+        body = source.split("def write_memories(")[1].split("\ndef ")[0]
+        assert "invariant violated" in body
+        assert "raise RuntimeError" in body
+
+    def test_the_invariant_holds_on_a_correct_write(self, harness) -> None:
+        """The positive control: a normal rewrite round-trips exactly."""
+        records = self._records(4)
+
+        backfill.write_memories(records)
+
+        lines = harness.memories.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 4
+        assert [json.loads(line)["id"] for line in lines] == [
+            record["id"] for record in records
+        ]
+
+    def test_line_separators_are_escaped_not_written_raw(
+        self, harness
+    ) -> None:
+        """U+2028 in a memory must not split one record into two.
+
+        Several readers of this JSONL treat U+2028 and U+2029 as line
+        terminators. Written raw, one record becomes two, the second
+        unparseable -- the record-splitting hazard the round-4a re-audit
+        named as M1.
+        """
+        # Written as escapes so this test file itself carries no raw
+        # separator — the very characters that break naive line splitting.
+        line_sep, para_sep = "\u2028", "\u2029"
+        content = f"Before{line_sep}after and{para_sep}again."
+        records = self._records(1)
+        records[0]["content"] = content
+
+        backfill.write_memories(records)
+
+        raw = harness.memories.read_bytes()
+        assert line_sep.encode("utf-8") not in raw, (
+            "a raw U+2028 was written; a reader that treats it as a line "
+            "terminator now sees one record as two"
+        )
+        assert para_sep.encode("utf-8") not in raw
+        assert raw.count(b"\n") == 1
+        # The content survives the round trip unchanged.
+        restored = json.loads(harness.memories.read_text(encoding="utf-8"))
+        assert restored["content"] == content

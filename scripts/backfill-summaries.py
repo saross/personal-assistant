@@ -246,7 +246,15 @@ def write_memories(records: list[dict | None]) -> None:
             if record is None:
                 f.write("\n")
             else:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                # ``ensure_ascii`` stays at its default (True). With it off,
+                # a U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR in a
+                # memory's content is written raw — and several readers of
+                # this JSONL treat those as line terminators, so one record
+                # silently becomes two, the second of them unparseable. That
+                # is the record-splitting hazard the round-4a re-audit named
+                # (M1), and escaping is the cheap end of it: the file stays
+                # pure ASCII and every reader agrees where a record ends.
+                f.write(json.dumps(record) + "\n")
         f.flush()
         os.fsync(f.fileno())
     os.rename(str(tmp_path), str(MEMORIES_FILE))
