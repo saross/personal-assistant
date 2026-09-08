@@ -1352,6 +1352,62 @@ class TestR2PushSafety:
         assert result.returncode == 3, result.stdout + result.stderr
         assert "ABORTED" in result.stdout + result.stderr
 
+    def _rclone_writing(self, sandbox, message: str) -> None:
+        """Replace the stub with one that logs *message* and fails."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'echo {message!r} >> {sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+    def test_a_stale_immutable_line_does_not_latch_exit_three(
+        self, sandbox
+    ) -> None:
+        """The log is append-only and shared with every previous run.
+
+        Grepping the whole file latched: this script's own ABORTED message
+        contains the word "--immutable", so one genuine abort made every
+        later transport failure exit 3 for ever, and no amount of fixing the
+        archive could get back to "safe to retry" (round 4c-3, finding M-1).
+        """
+        # A real abort happens first, and writes its own ABORTED line.
+        self._rclone_writing(
+            sandbox,
+            "ERROR: session.jsonl.gz: Source and destination exist but do "
+            "not match: immutable file modified",
+        )
+        assert self._run(sandbox).returncode == 3
+
+        # A later, unrelated network failure must be classified on its own.
+        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        result = self._run(sandbox)
+
+        assert result.returncode == 2, (
+            "a stale immutable line from an earlier run latched exit 3; the "
+            "log carries every run, so the classification must not"
+        )
+        assert "safe to retry" in result.stdout + result.stderr
+
+    def test_a_fresh_immutable_abort_is_still_classified(
+        self, sandbox
+    ) -> None:
+        """Reading only this run's bytes must not blind the check."""
+        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        assert self._run(sandbox).returncode == 2
+
+        self._rclone_writing(
+            sandbox,
+            "ERROR: session.jsonl.gz: immutable file modified",
+        )
+        result = self._run(sandbox)
+
+        assert result.returncode == 3
+        assert "ABORTED" in result.stdout + result.stderr
+
     def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
         """The positive control: an ordinary failure stays retryable."""
         sandbox.rclone.write_text(

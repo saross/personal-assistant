@@ -228,6 +228,19 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 
 log "r2-push: copy $CANON/ → $DEST/ (additive, no delete, no overwrite)"
+
+# Where this run's output starts. $LOG_FILE is append-only and shared with
+# every previous run, so classifying the failure below by grepping the WHOLE
+# file latches: the ABORTED message this script writes itself contains the
+# word "--immutable", so one genuine abort made every later transport
+# failure exit 3 for ever, and the operator could never get back to a clean
+# "safe to retry" (audit round 4c-3, finding M-1). Only the bytes this run
+# appends are examined.
+log_bytes_before=0
+if [[ -f "$LOG_FILE" ]]; then
+    log_bytes_before="$(wc -c < "$LOG_FILE")"
+fi
+
 if "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" "$CANON/" "$DEST/"; then
     log "r2-push: complete"
     exit 0
@@ -241,7 +254,9 @@ rc=$?
 # an append-only archive is a corruption signal that a retry cannot fix and
 # that a human has to look at. Exit 3 for the second, so a cron wrapper can
 # tell them apart without parsing the log.
-if grep -qi "immutable" "$LOG_FILE" 2>/dev/null; then
+this_run_output="$(tail -c "+$((log_bytes_before + 1))" "$LOG_FILE" \
+    2>/dev/null || true)"
+if printf '%s' "$this_run_output" | grep -qi "immutable"; then
     log "r2-push: ABORTED — rclone refused to modify an object already in" \
         "R2 (--immutable). The archive is append-only, so a canonical file" \
         "whose size or modtime changed is a corruption signal, not an" \
