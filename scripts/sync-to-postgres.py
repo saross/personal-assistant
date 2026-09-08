@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
     QUARANTINE_FAILED,
     QUARANTINE_WRITTEN,
+    append_quarantine_entry,
     count_quarantine_entries,
     normalise_line_cursor,
     CursorKeyVanished,
@@ -660,25 +661,26 @@ def _write_quarantine(
         )
         return
     skipped = len(dropped_records) - len(new_records)
-    try:
-        QUARANTINE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with QUARANTINE_FILE.open("a", encoding="utf-8") as f:
-            for rec in new_records:
-                f.write(json.dumps(rec) + "\n")
-        if skipped:
-            logger.info(
-                "Quarantined %d new record(s) (skipped %d already present) "
-                "to %s",
-                len(new_records), skipped, QUARANTINE_FILE,
+    # Through the SHARED appender, which repairs a missing separator
+    # before it writes. Appending here directly ran this record onto the
+    # end of a complete row whose newline had been lost, and both then
+    # vanished from every reader at once (eleventh re-audit, C1).
+    for rec in new_records:
+        if not append_quarantine_entry(QUARANTINE_FILE, rec):
+            logger.error(
+                "Could not write quarantine file %s — %d record(s) are "
+                "unaccounted for", QUARANTINE_FILE, len(new_records),
             )
-        else:
-            logger.info(
-                "Quarantined %d unexpectedly-dropped record(s) to %s",
-                len(new_records), QUARANTINE_FILE,
-            )
-    except OSError as exc:
-        logger.error(
-            "Could not write quarantine file %s: %s", QUARANTINE_FILE, exc
+            return
+    if skipped:
+        logger.info(
+            "Quarantined %d new record(s) (skipped %d already present) "
+            "to %s", len(new_records), skipped, QUARANTINE_FILE,
+        )
+    else:
+        logger.info(
+            "Quarantined %d unexpectedly-dropped record(s) to %s",
+            len(new_records), QUARANTINE_FILE,
         )
 
 

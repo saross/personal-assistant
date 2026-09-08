@@ -198,6 +198,37 @@ def normalise_timestamp_cursor(
     return None
 
 
+def append_quarantine_entry(quarantine_path: Path, entry: Any) -> bool:
+    """
+    THE one code path that appends to a quarantine file. True on success.
+
+    Every writer goes through here, because the append has a
+    precondition that is easy to forget and expensive to get wrong: a
+    file that ends mid-line must be given its separator first. A second
+    writer that appended directly ran its record onto the end of a
+    complete row whose newline had been lost, and BOTH then vanished
+    from the gate, the health report, the duplicate check and the
+    acknowledgement alike (eleventh re-audit, finding C1).
+
+    The entry is written exactly as given: the two producers use
+    different shapes — a bare row, and a ``{reason, quarantined_at,
+    record}`` wrapper — and both are understood by
+    :func:`read_quarantine_entries`.
+    """
+    try:
+        quarantine_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(entry, ensure_ascii=False)
+        with quarantine_path.open("a", encoding="utf-8") as handle:
+            # Repair a partial trailing line rather than concatenating
+            # onto it, which would corrupt two entries instead of one.
+            if _ends_mid_line(quarantine_path):
+                handle.write("\n")
+            handle.write(payload + "\n")
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
 def read_quarantine_entries(quarantine_path: Path) -> list[dict] | None:
     """
     Every complete record in a quarantine file, or ``None`` if unreadable.
@@ -388,19 +419,11 @@ def quarantine_record(
         "quarantined_at": _iso_now(),
         "record": record,
     }
-    try:
-        quarantine_path.parent.mkdir(parents=True, exist_ok=True)
-        with quarantine_path.open("a", encoding="utf-8") as fh:
-            # Repair a partial trailing line rather than concatenating
-            # onto it, which would corrupt two entries instead of one.
-            if _ends_mid_line(quarantine_path):
-                fh.write("\n")
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except (OSError, TypeError, ValueError) as exc:
+    if not append_quarantine_entry(quarantine_path, entry):
         if logger is not None:
             logger.error(
-                "Could not write quarantine entry to %s (reason=%r): %s",
-                quarantine_path, reason, exc,
+                "Could not write quarantine entry to %s (reason=%r)",
+                quarantine_path, reason,
             )
         return QUARANTINE_FAILED
 

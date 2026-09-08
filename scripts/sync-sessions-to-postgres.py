@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
     QUARANTINE_FAILED,
     QUARANTINE_WRITTEN,
+    append_quarantine_entry,
     count_quarantine_entries,
     normalise_timestamp_cursor,
     CursorKeyVanished,
@@ -561,25 +562,26 @@ def _write_quarantine(
         )
         return
     skipped = len(dropped_rows) - len(new_rows)
-    try:
-        QUARANTINE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with QUARANTINE_FILE.open("a", encoding="utf-8") as f:
-            for row in new_rows:
-                f.write(json.dumps(row) + "\n")
-        if skipped:
-            logger.info(
-                "Quarantined %d new session(s) (skipped %d already "
-                "present) to %s",
-                len(new_rows), skipped, QUARANTINE_FILE,
+    # Through the SHARED appender, which repairs a missing separator
+    # before it writes. Appending here directly ran this row onto the end
+    # of a complete row whose newline had been lost, and both then
+    # vanished from every reader at once (eleventh re-audit, C1).
+    for row in new_rows:
+        if not append_quarantine_entry(QUARANTINE_FILE, row):
+            logger.error(
+                "Could not write quarantine file %s — %d session(s) are "
+                "unaccounted for", QUARANTINE_FILE, len(new_rows),
             )
-        else:
-            logger.info(
-                "Quarantined %d unexpectedly-dropped session(s) to %s",
-                len(new_rows), QUARANTINE_FILE,
-            )
-    except OSError as exc:
-        logger.error(
-            "Could not write quarantine file %s: %s", QUARANTINE_FILE, exc
+            return
+    if skipped:
+        logger.info(
+            "Quarantined %d new session(s) (skipped %d already present) "
+            "to %s", len(new_rows), skipped, QUARANTINE_FILE,
+        )
+    else:
+        logger.info(
+            "Quarantined %d unexpectedly-dropped session(s) to %s",
+            len(new_rows), QUARANTINE_FILE,
         )
 
 

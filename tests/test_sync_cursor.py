@@ -733,3 +733,114 @@ class TestNormalisingACursor:
                 None, logger=logger,
             ) is None
         assert caplog.text == ""
+
+
+# ---------------------------------------------------------------------------
+# Eleventh re-audit, finding C1 — one appender, and it repairs the separator
+# ---------------------------------------------------------------------------
+
+
+class TestThereIsOnlyOneAppender:
+    """
+    The append has a precondition — a file that ends mid-line needs its
+    separator first — and a second writer that did not know about it ran
+    its record onto the end of a complete row whose newline had been
+    lost. Both then vanished from the gate, the health report, the
+    duplicate check and the acknowledgement at once.
+    """
+
+    def test_the_bare_row_writer_repairs_the_separator(self, tmp_path):
+        """
+        The end-to-end shape of the defect: ``_write_quarantine`` appends
+        an unexpected drop onto a file whose last row lost its newline.
+        Both records must survive and both must be countable.
+
+        The mutation this kills: appending directly instead of through
+        ``append_quarantine_entry``.
+        """
+        import importlib.util
+
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        spec = importlib.util.spec_from_file_location(
+            "sync_to_postgres_c1", scripts / "sync-to-postgres.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["sync_to_postgres_c1"] = module
+        spec.loader.exec_module(module)
+
+        path = tmp_path / "quarantine.jsonl"
+        # A complete row whose newline was lost — which the counter now
+        # counts, which is exactly why running onto it loses two rows.
+        path.write_text('{"id": "m-first"}', encoding="utf-8")
+        module.QUARANTINE_FILE = path
+        _sync_cursor._FINGERPRINT_CACHE.clear()
+
+        assert _sync_cursor.count_quarantine_entries(path) == 1
+
+        module._write_quarantine(
+            [{"id": "m-second"}], logging.getLogger("test-c1"),
+        )
+
+        assert _sync_cursor.count_quarantine_entries(path) == 2, (
+            "the new record was run onto the end of the old one"
+        )
+        for line in path.read_text(encoding="utf-8").splitlines():
+            json.loads(line)
+        ids = {
+            entry.get("id")
+            for entry in _sync_cursor.read_quarantine_entries(path)
+        }
+        assert ids == {"m-first", "m-second"}
+
+    def test_the_appender_repairs_the_separator(self, tmp_path):
+        """The unit of the same property, without a script around it."""
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text('{"id": "a"}', encoding="utf-8")
+
+        assert _sync_cursor.append_quarantine_entry(path, {"id": "b"}) is True
+
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+        assert path.read_text(encoding="utf-8").endswith("\n")
+
+    def test_the_appender_reports_a_failure(self, tmp_path):
+        """A directory where the file should be is not a silent success."""
+        blocked = tmp_path / "quarantine.jsonl"
+        blocked.mkdir()
+        assert _sync_cursor.append_quarantine_entry(blocked, {"id": "a"}) is (
+            False
+        )
+
+    def test_no_script_appends_to_a_quarantine_file_itself(self):
+        """
+        Structural guard: only ``_sync_cursor`` may open a quarantine
+        path in append mode. Written because the second writer sat six
+        hundred lines from the first and nothing connected them.
+
+        The mutation this kills: opening QUARANTINE_FILE with "a"
+        anywhere else.
+        """
+        import ast
+
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        offenders: list[str] = []
+        for script in sorted(scripts.glob("*.py")):
+            if script.name == "_sync_cursor.py":
+                continue
+            tree = ast.parse(script.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "open"
+                ):
+                    continue
+                target = ast.unparse(node.func.value).lower()
+                if "quarantine" not in target:
+                    continue
+                mode = ast.unparse(node.args[0]) if node.args else ""
+                if "a" in mode:
+                    offenders.append(f"{script.name}:{node.lineno}")
+        assert not offenders, (
+            f"a quarantine file is appended to outside the one appender: "
+            f"{offenders}"
+        )
