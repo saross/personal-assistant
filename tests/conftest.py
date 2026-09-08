@@ -8,6 +8,7 @@ without touching the real memory system.
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,43 @@ import pytest
 # Add project root to path so we can import hook modules
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "hooks"))
+
+
+# ---------------------------------------------------------------------------
+# HOME belongs to the suite, not to the operator
+#
+# Every script here resolves ``~`` — gate files, sidecars, refusal
+# memories, lock files, the daily-sync marker — and the hermeticity guard
+# below watches that directory for writes the suite should not have made.
+# Watching the OPERATOR'S home made the guard wrong in both directions:
+# it blamed the suite for other processes' writes (after merge, cron
+# rewrites the memories gate every five minutes, so a full run would fail
+# at random), and it could only ever catch a leak after the damage was
+# done (ninth re-audit, finding M5).
+#
+# So the suite gets a home of its own, and the guard watches THAT. The
+# repoint happens at import time rather than in a fixture because several
+# modules bake ``Path.home()`` into constants when they are imported, and
+# a fixture runs far too late to change what those constants mean.
+#
+# A test that genuinely needs the real checkout must find it from
+# ``__file__`` or an explicit environment variable — never from ``~``.
+# ---------------------------------------------------------------------------
+
+#: Held for the life of the process; its finaliser removes the directory.
+_SUITE_HOME = tempfile.TemporaryDirectory(prefix="pa-test-home-")
+#: The operator's real home, kept only so a test can assert we left it.
+REAL_HOME = os.environ.get("HOME")
+os.environ["HOME"] = _SUITE_HOME.name
+os.environ.pop("XDG_CACHE_HOME", None)
+Path(_SUITE_HOME.name, ".cache").mkdir(parents=True, exist_ok=True)
+# A minimal identity, so a throwaway repository can commit without
+# borrowing the operator's name or failing outright.
+Path(_SUITE_HOME.name, ".gitconfig").write_text(
+    "[user]\n\tname = Personal Assistant Tests\n"
+    "\temail = tests@personal-assistant.invalid\n",
+    encoding="utf-8",
+)
 
 
 @pytest.fixture
@@ -149,13 +187,17 @@ Last updated: 2026-02-08
 
 
 # ---------------------------------------------------------------------------
-# Hermeticity: the suite must not write the operator's real ~/.cache
+# Hermeticity: the suite must not write ~/.cache at all
 #
 # Three separate times during the September 2026 audit a test wrote a real
 # gate, sidecar, or refusal-memory file, putting a fabricated
 # infrastructure problem in front of Shawn at his next session start. Each
 # time the fix was another fixture, and each time the next new test forgot
 # it. This asserts the property itself, once, for the whole run.
+#
+# HOME is the suite's own now (see above), so nothing here can reach the
+# operator's files even if a test tries — and the guard is measuring a
+# directory no other process writes, so it accuses only the suite.
 # ---------------------------------------------------------------------------
 
 #: Files under ~/.cache the assistant's infrastructure owns. A test that
@@ -206,6 +248,10 @@ def no_real_cache_writes():
     check vacuous.
     """
     home_before = os.environ.get("HOME")
+    assert home_before == _SUITE_HOME.name, (
+        "HOME was moved off the suite's own directory before the first "
+        "test ran"
+    )
     before = _pipeline_cache_snapshot()
     yield
     after = _pipeline_cache_snapshot()

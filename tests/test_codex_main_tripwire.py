@@ -102,10 +102,19 @@ class TestAcknowledge:
 
 
 def test_live_pa_history_is_clean_today():
-    """Guard the calibration: nothing on the real main should be flagged."""
-    pa = Path.home() / "personal-assistant"
+    """Guard the calibration: nothing on the real main should be flagged.
+
+    The checkout is located from this file, or from PA_TRIPWIRE_REPO —
+    never from ``~``, which the suite repoints to a directory of its own
+    so the hermeticity guard measures something no other process writes
+    (ninth re-audit, finding M5).
+    """
+    pa = Path(
+        os.environ.get("PA_TRIPWIRE_REPO")
+        or Path(__file__).resolve().parent.parent
+    )
     if not (pa / ".git").exists():
-        pytest.skip("no PA checkout")
+        pytest.skip("no checkout to calibrate against")
     ref = tripwire.resolve_ref(pa)
     assert ref is not None
     assert tripwire.flagged_commits(pa, ref) == []

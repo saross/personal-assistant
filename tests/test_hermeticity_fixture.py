@@ -24,9 +24,17 @@ REPO_CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 
 #: A conftest that re-exports only the fixture under test, so the child
 #: run gets the real code without the rest of the suite's fixtures.
+#:
+#: Importing it also repoints the child's HOME at a temporary directory
+#: of its own, exactly as the real suite does, so the watched file has to
+#: be seeded AFTERWARDS — and before the guard takes its first snapshot,
+#: which is why it happens here at conftest import time rather than in
+#: the probe.
 _CHILD_CONFTEST = '''
 import importlib.util
+import os
 import sys
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
     "pa_conftest", r"{conftest}",
@@ -36,19 +44,23 @@ sys.modules["pa_conftest"] = module
 spec.loader.exec_module(module)
 
 no_real_cache_writes = module.no_real_cache_writes
+
+cache = Path(os.environ["HOME"]) / ".cache"
+cache.mkdir(parents=True, exist_ok=True)
+(cache / "postgres-sync-memories-gate").write_text("0\\n", encoding="utf-8")
 '''
 
 
 def _run_probe(tmp_path: Path, body: str) -> subprocess.CompletedProcess:
-    """Run one probe test under the real fixture, HOME pinned to tmp_path.
+    """Run one probe test under the real fixture, in a child pytest run.
 
-    ``body`` is the probe's function body; it runs against a fake home
-    whose ``.cache`` already holds one watched file.
+    ``body`` is the probe's function body. The child's conftest repoints
+    HOME the way the real suite does and seeds one watched file there, so
+    the probe writes to ``os.environ["HOME"]`` and never goes near the
+    operator's home — nor this process's.
     """
     home = tmp_path / "home"
-    cache = home / ".cache"
-    cache.mkdir(parents=True)
-    (cache / "postgres-sync-memories-gate").write_text("0\n", encoding="utf-8")
+    home.mkdir(parents=True)
 
     work = tmp_path / "child"
     work.mkdir()
@@ -168,12 +180,18 @@ def test_every_watched_glob_actually_catches_something(tmp_path):
     file per pattern, all written in a single child run, so removing any
     entry from ``_PIPELINE_CACHE_GLOBS`` leaves its file unreported.
 
-    The mutation this kills: deleting any one glob — for instance
+    The mutations this kills: deleting any one glob — for instance
     ``index-session-content-*``, which covers the refusal memory that
-    leaked into the real cache once already.
+    leaked into the real cache once already — and narrowing
+    ``postgres-sync-*`` to ``postgres-sync-*-gate``, which quietly stops
+    watching the sidecars where the gates' state actually lives.
     """
     representatives = (
         "postgres-sync-memories-gate",
+        # The sidecar is a separate file with a separate name, and the
+        # gate's own state lives in it: a glob narrowed to "*-gate" stops
+        # watching it while still looking watchful (ninth re-audit, low).
+        "postgres-sync-sessions-gate.state.json",
         "index-session-content-refusals.json",
         "daily-sync-gate",
         "daily-sync-last-run",
@@ -197,3 +215,86 @@ def test_every_watched_glob_actually_catches_something(tmp_path):
         assert name in result.stdout, (
             f"{name} is not covered by any watched glob"
         )
+
+
+# ---------------------------------------------------------------------------
+# Ninth re-audit, finding M5 — the guard measured a directory other
+# processes write, and could only ever catch a leak after the damage
+# ---------------------------------------------------------------------------
+
+
+def test_the_suite_runs_in_a_home_of_its_own():
+    """
+    Watching the operator's home made the guard wrong both ways: after
+    merge, cron rewrites the memories gate every five minutes, so a full
+    run would fail at random and blame the suite for it; and a leak could
+    only be noticed once the real file had already been damaged.
+
+    The mutation this kills: removing the import-time repoint in
+    conftest.py — every gate constant then resolves to the operator's
+    ~/.cache again.
+    """
+    import conftest
+
+    home = Path(os.environ["HOME"])
+
+    assert conftest.REAL_HOME is None or home != Path(conftest.REAL_HOME), (
+        "the suite is running in the operator's home"
+    )
+    assert home == Path.home(), "Path.home() disagrees with $HOME"
+    assert home.is_dir()
+    assert (home / ".cache").is_dir()
+
+
+def test_the_suite_home_carries_a_git_identity():
+    """
+    Several tests build throwaway repositories and commit in them, which
+    needs a user.email from somewhere. Borrowing the operator's would put
+    their name on test commits; having none makes git refuse outright.
+    """
+    config = (Path(os.environ["HOME"]) / ".gitconfig").read_text(
+        encoding="utf-8",
+    )
+    assert "email = " in config
+    assert "name = " in config
+
+
+def test_the_gate_constants_resolve_inside_the_suite_home():
+    """
+    The property the repoint exists for: a script's module-level gate
+    paths are baked from ``Path.home()`` when it is imported, so the
+    repoint has to happen before any of that — which is why it is at
+    conftest import time and not in a fixture. The mutation this kills:
+    moving it into a fixture, however early.
+    """
+    import sys
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parent.parent / "scripts"),
+    )
+    import _sync_gate
+
+    home = Path(os.environ["HOME"])
+    for gate in _sync_gate.ALL_GATES:
+        assert home in gate.parents, (
+            f"{gate} was resolved against a different home — the repoint "
+            f"came too late to matter"
+        )
+
+
+def test_the_watched_directory_is_the_suite_home():
+    """
+    The guard has to measure the directory the suite can actually write,
+    or it is watching one thing and protecting another.
+    """
+    import conftest
+
+    snapshot_root = Path.home() / ".cache"
+    assert snapshot_root == Path(os.environ["HOME"]) / ".cache"
+    # And the guard reads it at call time, so it follows the repoint.
+    probe = snapshot_root / "postgres-sync-hermeticity-probe"
+    probe.write_text("0\n", encoding="utf-8")
+    try:
+        assert str(probe) in conftest._pipeline_cache_snapshot()
+    finally:
+        probe.unlink()
