@@ -715,3 +715,74 @@ class TestTheSurfacedLogOverrideIsHonoured:
         report, _clean = _build()
         assert report["surfacing"]["distinct_memories_surfaced"] == 1
         assert report["surfacing"]["top"][0]["id"] == "m-1"
+
+
+# ============================================================================
+# Timestamp handling and the loader's narrow except (findings ANT-L3 / L4)
+# ============================================================================
+
+
+class TestGrowthWindowBoundaries:
+    """What counts as "in the last N days", exactly."""
+
+    def test_a_record_exactly_on_the_cutoff_is_outside(self) -> None:
+        """Kills the ``>`` -> ``>=`` boundary flip.
+
+        The window is trailing and half-open: a record created exactly N days
+        ago is N days old, not within the last N.
+        """
+        on_cutoff = (NOW - timedelta(days=7)).isoformat()
+        just_inside = (NOW - timedelta(days=7) + timedelta(seconds=1)).isoformat()
+        out = mhr.growth_windows(
+            [_rec(id="a", created_at=on_cutoff),
+             _rec(id="b", created_at=just_inside)],
+            NOW, windows_days=(7,),
+        )
+        assert out["created_last_7d"] == 1
+
+    def test_a_naive_timestamp_is_read_as_utc(self) -> None:
+        """Kills the mutation rejecting tz-naive timestamps.
+
+        The corpus carries them (one live record at the audit); dropping them
+        would silently understate growth rather than say anything.
+        """
+        naive = NOW.replace(tzinfo=None).isoformat()
+        assert mhr._parse_iso(naive) == NOW
+        out = mhr.growth_windows([_rec(id="a", created_at=naive)], NOW)
+        assert out["created_last_1d"] == 1
+
+    def test_an_unparseable_date_is_not_counted_as_recent(self) -> None:
+        """Kills the mutation counting unparseable dates into every window."""
+        out = mhr.growth_windows(
+            [_rec(id="a", created_at="last Tuesday"),
+             _rec(id="b", created_at=None)],
+            NOW,
+        )
+        assert out == {"created_last_1d": 0, "created_last_7d": 0,
+                       "created_last_30d": 0}
+
+
+class TestLoadRecordsSkipsOnlyBadJson:
+    """The loader's except must stay narrow (finding ANT-L4)."""
+
+    def test_a_malformed_line_is_skipped(self, tmp_path) -> None:
+        path = tmp_path / "memories.jsonl"
+        path.write_text('{"id": "a"}\n{broken\n{"id": "b"}\n', encoding="utf-8")
+        assert [r["id"] for r in mhr.load_records(path)] == ["a", "b"]
+
+    def test_any_other_error_propagates(self, tmp_path, monkeypatch) -> None:
+        """Kills the mutation widening the except to bare ``Exception``.
+
+        A JSONDecodeError is operational data we route around; anything else
+        is a bug or an interpreter-level problem, and swallowing it would
+        report a truncated corpus as a complete one.
+        """
+        path = tmp_path / "memories.jsonl"
+        path.write_text('{"id": "a"}\n', encoding="utf-8")
+
+        def boom(_text):
+            raise RuntimeError("not a decode error")
+
+        monkeypatch.setattr(mhr.json, "loads", boom)
+        with pytest.raises(RuntimeError):
+            mhr.load_records(path)
