@@ -496,3 +496,94 @@ def test_a_lower_case_choice_still_counts(tmp_path):
     summary = _summary(out_dir)
     assert summary["n_usable"] == 1
     assert summary["pairs"] == {"guide": 1, "plain": 0, "tie": 0}
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-3 item 1 — the builder's key location and the scorer's must agree
+# ---------------------------------------------------------------------------
+
+builder = load_style_module("efficacy_build_judge_tasks")
+
+
+def test_the_scorer_looks_where_the_builder_writes():
+    """One constant moved and the other did not, and nothing noticed.
+
+    The builder put the key under ``private/``; the scorer kept defaulting to
+    the old sibling directory, so a run at the defaults after --migrate-key
+    reported "No judge-mapping.json found" and exited 2 with the key sitting
+    exactly where it belonged. The mutation this kills: reverting
+    ``KEY_DIR_DEFAULT`` to ``EXP / "judge-key"``.
+    """
+    assert scorer.KEY_DIR_DEFAULT == builder.KEY_DIR
+    assert scorer.JUDGE_DIR_DEFAULT == builder.JUDGE_DIR
+    assert scorer.KEY_DIR_DEFAULT.parent.name == "private"
+
+
+def _experiment_at(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """Point both modules' defaults at a throwaway experiment directory."""
+    judge_dir = tmp_path / "judge-tasks"
+    key_dir = tmp_path / "private" / "judge-key"
+    monkeypatch.setattr(builder, "JUDGE_DIR", judge_dir)
+    monkeypatch.setattr(builder, "KEY_DIR", key_dir)
+    monkeypatch.setattr(scorer, "JUDGE_DIR_DEFAULT", judge_dir)
+    monkeypatch.setattr(scorer, "KEY_DIR_DEFAULT", key_dir)
+    return judge_dir, key_dir
+
+
+def _passages_for(tmp_path: Path, topics: list[str]) -> Path:
+    """One distinguishable passage per (topic, condition) cell."""
+    passages = tmp_path / "passages"
+    passages.mkdir()
+    for topic in topics:
+        for condition in ("C0", "CX"):
+            (passages / f"{topic}__{condition}__rep1.md").write_text(
+                f"Invented passage for {topic} under {condition}.\n",
+                encoding="utf-8")
+    return passages
+
+
+def test_a_built_experiment_scores_at_the_defaults(tmp_path, monkeypatch):
+    """Build, judge, score — with no path arguments anywhere.
+
+    This is the round trip the mismatch broke. The mutation this kills: any
+    future divergence between the two modules' key locations, which this
+    exercises rather than merely asserting.
+    """
+    judge_dir, key_dir = _experiment_at(tmp_path, monkeypatch)
+    judge_dir.mkdir()
+    key_dir.mkdir(parents=True)
+    topics = ["T1", "T2"]
+    plan = builder.plan_pairs(4, contrasts=[("CXvC0", "CX")], topics=topics)
+    builder.emit_tasks(plan, _passages_for(tmp_path, topics), judge_dir,
+                       key_dir, "# Reference\n", seed=4)
+
+    # The judges answer every pair, each choosing the guide's side.
+    answers = [json.dumps({"pair_id": entry["pair_id"],
+                           "choice": entry["guide_side"]}) for entry in plan]
+    (judge_dir / "judgments.jsonl").write_text("\n".join(answers) + "\n",
+                                               encoding="utf-8")
+
+    assert scorer.main([]) == 0
+    assert (tmp_path / "judge-analysis.json").exists()
+
+
+def test_a_migrated_legacy_key_scores_at_the_defaults(tmp_path, monkeypatch):
+    """--migrate-key moves the key; the scorer must then find it unaided.
+
+    The mutation this kills: migrating into a directory the scorer does not
+    read, which is the state this round found — migration "succeeded" and the
+    next scoring run exited 2.
+    """
+    judge_dir, key_dir = _experiment_at(tmp_path, monkeypatch)
+    judge_dir.mkdir()
+    pairs = [_pair("pair00", "Z1", 0)]
+    # The legacy layout: the key inside the directory the judges read.
+    (judge_dir / "judge-mapping.json").write_text(
+        json.dumps({"n_pairs": 1, "pairs": pairs}), encoding="utf-8")
+    (judge_dir / "judgments.jsonl").write_text(
+        json.dumps({"pair_id": "pair00", "choice": "A"}) + "\n",
+        encoding="utf-8")
+
+    assert builder.migrate_key(judge_dir, key_dir) == 0
+    assert scorer.main([]) == 0
+    assert (tmp_path / "judge-analysis.json").exists()

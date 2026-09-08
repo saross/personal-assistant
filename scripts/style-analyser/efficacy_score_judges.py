@@ -3,8 +3,8 @@
 efficacy_score_judges.py — tally the blind pairwise judge test
 (Workstream G, roadmap item #1).
 
-Reads the unblinding key (`judge-key/judge-mapping.json`, written OUTSIDE the
-directory the judge is pointed at) and the judges' answers
+Reads the unblinding key (`private/judge-key/judge-mapping.json`, written
+under a directory no judge is ever pointed at) and the judges' answers
 (`judge-tasks/judgments.jsonl`), and reports whether judges preferred
 guide-written passages over plain ones as "more like the author".
 
@@ -58,7 +58,12 @@ import style_support  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
 JUDGE_DIR_DEFAULT = EXP / "judge-tasks"
-KEY_DIR_DEFAULT = EXP / "judge-key"
+#: Must track `efficacy_build_judge_tasks.KEY_DIR`. The builder moved the key
+#: under `private/` and this default did not follow, so after --migrate-key a
+#: scorer run at the defaults reported "No judge-mapping.json found" and
+#: exited 2 — the key was exactly where it belonged and the reader was
+#: looking one directory up.
+KEY_DIR_DEFAULT = EXP / "private" / "judge-key"
 
 #: Stratum per topic prefix: A-topics are on the corpus's own domain,
 #: B-topics are deliberately outside it. Derived from the topic id rather
@@ -274,7 +279,8 @@ def resolve_mapping_path(args: argparse.Namespace) -> Path | None:
 
     The key used to live INSIDE `judge-tasks/` (finding ST3), so a run against
     an archived experiment falls back to that location with a warning rather
-    than failing; new runs write it to `judge-key/`.
+    than failing; new runs write it to `private/judge-key/`, which is where
+    `--key-dir` defaults to.
     """
     if args.mapping is not None:
         return args.mapping if args.mapping.exists() else None
