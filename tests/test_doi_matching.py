@@ -74,16 +74,20 @@ _LIBRARY = [
     # Stored with surrounding whitespace — the shape a paste from a PDF
     # or a rendered web page leaves. Only TRIM on the stored side matches
     # it (round 4d-2). Round 4d-3 pads it with EVERY character the trim
-    # expression names — tab, carriage return, newline, space, and
-    # non-breaking space — so dropping any one of them from that
-    # expression fails a test rather than none.
+    # expression names — tab, carriage return, newline, space, and the
+    # three Unicode spaces (U+00A0, U+202F, U+2007) — so dropping any one
+    # of them from that expression fails a test rather than none.
     {
         "key": "PADDEDD1",
         "library_id": 1,
         "fields": {
             "title": "Kiln Waste at the Lower Terrace",
             "date": "2029",
-            "DOI": "\t\r\n \u00a010.6666/padded-doi\u00a0 \r\n\t",
+            "DOI": (
+                "\t\r\n \u00a0\u202f\u2007"
+                "10.6666/padded-doi"
+                "\u2007\u202f\u00a0 \r\n\t"
+            ),
         },
         "creators": [("Iva", "Marinova")],
     },

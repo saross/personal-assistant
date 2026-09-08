@@ -415,19 +415,29 @@ def _normalise_doi(doi: str) -> str:
 #: web form leaves — stayed unmatched while the Python side had already
 #: stripped it (round 4d-2).
 #:
-#: The character set is tab, newline, carriage return, space, and
-#: non-breaking space. That is NOT the whole of what ``str.strip`` removes
-#: (round 4d-3): ``\x0b`` (vertical tab), ``\x0c`` (form feed), and
-#: ``\x85`` (next line) are still stripped on the Python side and kept on
-#: the SQL side, so a DOI stored with one of those around it would go
-#: unmatched. They are vanishingly rare in a pasted identifier, whereas
-#: U+00A0 is what a copy out of a rendered web page routinely leaves, so
-#: it is worth the character and the others are not worth an unreadable
-#: expression. If this ever needs to be exact, normalise on the way in
-#: rather than lengthening this list.
+#: The set below covers the characters a real paste actually carries: tab,
+#: newline, carriage return, space, and the three Unicode spaces a copy
+#: out of rendered HTML leaves — U+00A0 (no-break), U+202F (narrow
+#: no-break, common in typeset numerals and increasingly in publisher
+#: markup), and U+2007 (figure space).
+#:
+#: It is deliberately NOT the whole of what ``str.strip`` removes, and the
+#: gap is not a short list: 24 characters diverge, among them ``\x0b``,
+#: ``\x0c``, ``\x1c``-``\x1f``, ``\x85``, ``U+1680``, the whole
+#: ``U+2000``-``U+200A`` run, ``U+2028``, ``U+2029``, ``U+205F``, and
+#: ``U+3000``. (Round 4d-3 named three of them and read as exhaustive;
+#: round 4d-4 counted.) A DOI stored with one of those around it is
+#: stripped on the Python side, kept on the SQL side, and goes unmatched.
+#:
+#: Chasing the remainder into this expression is the wrong shape — it is
+#: already at the edge of readable, and the list would still be a
+#: point-in-time copy of a Unicode property. If exactness is ever needed,
+#: normalise the value on the way IN, where one ``str.strip`` covers all
+#: of them by definition.
 _SQL_TRIMMED_DOI = (
     "TRIM(LOWER(idv.value), "
-    "char(9) || char(10) || char(13) || char(32) || char(160))"
+    "char(9) || char(10) || char(13) || char(32) || "
+    "char(160) || char(8199) || char(8239))"
 )
 
 
