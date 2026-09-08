@@ -719,9 +719,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     unknown; the ack tells missing, clean, and corrupt apart; per-kind
     staleness (cron gate by age since boot with a grace; hook gates by a
     newer session archive); the suite owns its `HOME` from conftest
-    import; connectivity checked at every constructor. Tenth pass
-    running. First session after merge will report all three gates as
-    never written until each script has run once.
+    import; connectivity checked at every constructor. Tenth pass: **do
+    not merge** — a complete quarantine row with no trailing newline is
+    seen by the deduper but not by the counter, so it is invisible to the
+    gate for ever (a regression from the coordinator's "complete lines
+    only" instruction; the invariant is that the two readers agree); a
+    string-typed cursor fires one false rebuild and then disables
+    detection; the post-boot grace is documented but inert; a symlinked
+    or absent archive root silently switches off the hook-gate liveness
+    check; one pre-existing unmarked test connects to the live database
+    on a plain run. Eleventh round running. First session after merge
+    will report all three gates as never written until each script has
+    run once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
