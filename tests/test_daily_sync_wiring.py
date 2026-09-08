@@ -176,23 +176,62 @@ def _gate_block(source: str) -> str:
     return source[start:end]
 
 
-def _run_gate_block(tmp_path, stale_hours="6"):
-    """Run the extracted block with HOME pinned; return its stdout."""
+def _run_gate_block(tmp_path, stale_hours="6", uptime_seconds=None):
+    """Run the extracted block with HOME pinned; return its stdout.
+
+    ``uptime_seconds`` writes a stand-in ``/proc/uptime`` and points the
+    block at it, so the boot-time guard can be exercised without waiting
+    for a reboot.
+    """
     script = tmp_path / "gate-block.sh"
     script.write_text(
         "GATE_LINES=()\n" + _gate_block(TRIGGER.read_text(encoding="utf-8"))
         + '\nprintf "%s\\n" "${GATE_LINES[@]}"\n',
         encoding="utf-8",
     )
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": os.environ["PATH"],
+        "PA_GATE_STALE_HOURS": stale_hours,
+    }
+    if uptime_seconds is not None:
+        uptime_file = tmp_path / "fake-uptime"
+        uptime_file.write_text(
+            f"{uptime_seconds}.00 {uptime_seconds}.00\n", encoding="utf-8",
+        )
+        env["PA_UPTIME_FILE"] = str(uptime_file)
     return subprocess.run(
         ["bash", str(script)],
         capture_output=True, text=True,
-        env={
-            "HOME": str(tmp_path),
-            "PATH": os.environ["PATH"],
-            "PA_GATE_STALE_HOURS": stale_hours,
-        },
+        env=env,
     )
+
+
+def _write_gates(tmp_path, age_hours=0.0, names=None, sidecar_age=None):
+    """Write the three pipeline gate files, optionally aged.
+
+    ``sidecar_age`` writes the ``.state.json`` sidecar beside each gate
+    with its own age, so the "the run saved state but could not render"
+    case can be described separately from the gate's own mtime.
+    """
+    cache = tmp_path / ".cache"
+    cache.mkdir(exist_ok=True)
+    names = names or (
+        "postgres-sync-memories-gate",
+        "postgres-sync-sessions-gate",
+        "index-session-content-gate",
+    )
+    for name in names:
+        gate = cache / name
+        gate.write_text("0\n", encoding="utf-8")
+        stamp = time.time() - age_hours * 3600
+        os.utime(gate, (stamp, stamp))
+        if sidecar_age is not None:
+            sidecar = cache / f"{name}.state.json"
+            sidecar.write_text("{}", encoding="utf-8")
+            side_stamp = time.time() - sidecar_age * 3600
+            os.utime(sidecar, (side_stamp, side_stamp))
+    return cache
 
 
 def test_a_gate_that_was_never_written_is_reported(tmp_path):
@@ -251,3 +290,56 @@ def test_a_fresh_clean_gate_says_nothing(tmp_path):
     result = _run_gate_block(tmp_path)
 
     assert result.stdout.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# Eighth re-audit, finding M6 — PA_GATE_STALE_HOURS reached $(( )) unchecked
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_numeric_stale_hours_falls_back_to_the_default(tmp_path):
+    """
+    Bash evaluates the contents of $(( )) as an arithmetic EXPRESSION, so
+    an array subscript there runs a command substitution out of the
+    environment. The mutation this kills: restoring
+    ``PG_GATE_STALE_HOURS="${PA_GATE_STALE_HOURS:-6}"`` with no pattern
+    check — the marker file then appears.
+    """
+    _write_gates(tmp_path, age_hours=7)
+    marker = tmp_path / "injected"
+
+    result = _run_gate_block(
+        tmp_path,
+        stale_hours=f"1[$(touch {marker})]",
+        uptime_seconds=48 * 3600,
+    )
+
+    assert not marker.exists(), (
+        "a value from the environment was executed as a command"
+    )
+    # Fell back to six hours, so the seven-hour-old gates are still stale.
+    assert "has not been updated for over 6h" in result.stdout
+
+
+def test_an_empty_or_zero_stale_hours_falls_back_too(tmp_path):
+    """Zero would make every gate stale the instant it is written."""
+    _write_gates(tmp_path, age_hours=1)
+
+    for value in ("", "0", "-3", "six", "6.5"):
+        result = _run_gate_block(
+            tmp_path, stale_hours=value, uptime_seconds=48 * 3600,
+        )
+        assert "has not been updated" not in result.stdout, (
+            f"PA_GATE_STALE_HOURS={value!r} was not rejected"
+        )
+
+
+def test_a_valid_override_is_still_honoured(tmp_path):
+    """The validation must not amount to ignoring the variable."""
+    _write_gates(tmp_path, age_hours=3)
+
+    result = _run_gate_block(
+        tmp_path, stale_hours="2", uptime_seconds=48 * 3600,
+    )
+
+    assert "has not been updated for over 2h" in result.stdout

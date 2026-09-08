@@ -119,7 +119,17 @@ fi
 # session close, so six hours means the pipeline has been dead for a
 # while and nobody noticed — the failure mode a gate cannot report,
 # because a dead script writes no gate at all (seventh re-audit, M6).
-PG_GATE_STALE_HOURS="${PA_GATE_STALE_HOURS:-6}"
+PG_GATE_STALE_HOURS=6
+# The override is validated before it is used. It is expanded inside
+# $(( )) and compared with -gt, and bash evaluates a non-numeric value
+# there as an arithmetic EXPRESSION: PA_GATE_STALE_HOURS='x[$(id>&2)]'
+# would run a command out of the environment (eighth re-audit, M6).
+# Anything that is not a positive integer falls back to the shipped
+# default rather than being trusted.
+if [[ "${PA_GATE_STALE_HOURS:-}" =~ ^[0-9]+$ ]] \
+   && (( 10#${PA_GATE_STALE_HOURS} > 0 )); then
+    PG_GATE_STALE_HOURS="$(( 10#${PA_GATE_STALE_HOURS} ))"
+fi
 
 for _pg_gate_name in postgres-sync-memories-gate \
                      postgres-sync-sessions-gate \

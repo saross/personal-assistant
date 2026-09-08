@@ -378,6 +378,11 @@ To clear a quarantine problem once the rows have been dealt with:
   Equivalent to `--quarantine-anyway`.
 - `OLLAMA_BASE_URL` — the embedding endpoint; an empty value falls back
   to localhost.
+- `PA_GATE_STALE_HOURS` (default 6) — how old a pipeline gate may be
+  before the trigger calls it stale. Must be a positive integer;
+  anything else falls back to the default, because the value is expanded
+  inside `$(( ))` where bash would otherwise evaluate it as an
+  arithmetic expression.
 
 ### Test Suite
 
