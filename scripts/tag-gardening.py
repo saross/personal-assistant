@@ -134,6 +134,15 @@ def rewrite_vocabulary(path: Path, keep: set[str]) -> int:
     extraction hook appends to this file under ``LOCK_SH``, so an unlocked
     rewrite silently drops a concurrent append.
 
+    Line endings are NORMALISED to ``"\n"`` (round 4a-2, a decision rather
+    than an accident): the file is machine-owned, every writer in the system
+    emits ``"\n"``, and the read below goes through universal newlines, so a
+    CRLF file cannot round-trip unchanged in any case. Tag text is untouched;
+    only the terminators change.
+
+    A duplicate tag line collapses to its FIRST occurrence, so a vocabulary
+    that already lists a tag twice comes back listing it once.
+
     Returns the number of tags in the rewritten file.
     """
     existing = path.read_text(encoding="utf-8").split("\n") if path.exists() else []
@@ -152,9 +161,14 @@ def rewrite_vocabulary(path: Path, keep: set[str]) -> int:
             seen.add(tag)
     out.extend(sorted(keep - seen))
 
+    # An empty result is an EMPTY file, not a file holding one blank line:
+    # "\n".join([]) + "\n" would write a bare newline that the next read
+    # takes as a blank line and preserves forever (round 4a-2, low finding).
+    body = "\n".join(out) + "\n" if out else ""
+
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as fh:
-        fh.write("\n".join(out) + "\n")
+    with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
         fh.flush()
         os.fsync(fh.fileno())
     os.rename(str(tmp_path), str(path))

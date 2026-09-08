@@ -1917,3 +1917,71 @@ class TestVocabularyRetirementIsCaseInsensitive:
 
         tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
         assert tags == ["API"], f"the winner was duplicated: {tags}"
+
+
+class TestRewriteVocabularyEdgeCases:
+    """Round 4a-2 lows: de-duplication, line endings, and the empty file."""
+
+    def test_a_duplicated_tag_collapses_to_its_first_line(
+        self, tmp_path: Path,
+    ) -> None:
+        """A tag listed twice comes back once, in its first position.
+
+        Kills the mutation that drops ``tag not in seen``: the duplicate
+        would be written back, and every subsequent rewrite would keep it.
+        """
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text(
+            "# Infrastructure\napi\nkiln\napi\n\n# Fieldwork\nkiln\n",
+            encoding="utf-8",
+        )
+
+        n_tags = tag_gardening.rewrite_vocabulary(vocab, {"api", "kiln"})
+
+        assert vocab.read_text(encoding="utf-8") == (
+            "# Infrastructure\napi\nkiln\n\n# Fieldwork\n"
+        )
+        assert n_tags == 2
+
+    def test_line_endings_are_normalised_to_lf(self, tmp_path: Path) -> None:
+        """A CRLF vocabulary comes back LF, with its tags intact.
+
+        A decision, not an accident: the file is machine-owned, every writer
+        emits "\\n", and the read goes through universal newlines, so a CRLF
+        file cannot round-trip unchanged whatever this function does. Pinned
+        so the choice is visible rather than incidental.
+        """
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_bytes(b"# Infrastructure\r\napi\r\nkiln\r\n")
+
+        tag_gardening.rewrite_vocabulary(vocab, {"api", "kiln"})
+
+        assert vocab.read_bytes() == b"# Infrastructure\napi\nkiln\n"
+
+    def test_an_empty_result_writes_an_empty_file(self, tmp_path: Path) -> None:
+        """No tags and no structure means no bytes, not a blank line.
+
+        Kills the mutation that always appends "\\n": a bare newline reads
+        back as a blank line, which the next rewrite preserves in place, so
+        the file would accumulate one blank line and never lose it.
+        """
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text("api\nkiln\n", encoding="utf-8")
+
+        n_tags = tag_gardening.rewrite_vocabulary(vocab, set())
+
+        assert vocab.read_bytes() == b""
+        assert n_tags == 0
+        # And a second pass over the now-empty file stays empty.
+        assert tag_gardening.rewrite_vocabulary(vocab, set()) == 0
+        assert vocab.read_bytes() == b""
+
+    def test_a_missing_file_is_created_from_the_keep_set(
+        self, tmp_path: Path,
+    ) -> None:
+        """With no file to preserve, the tags are written sorted."""
+        vocab = tmp_path / "tag-vocabulary.txt"
+
+        tag_gardening.rewrite_vocabulary(vocab, {"kiln", "api"})
+
+        assert vocab.read_text(encoding="utf-8") == "api\nkiln\n"
