@@ -109,8 +109,11 @@ def test_trigger_surfaces_every_postgres_gate():
     assert "GATE_LINES+=" in block
     # A single problem must print: the threshold is -gt 0, not -gt 1.
     assert '"$_pg_count" -gt 0' in block
-    # And they must be added before the block is printed, not after.
-    assert block_start < source.index("Infra gates — RELAY THESE TO SHAWN")
+    # And they must be added before the collected lines are printed, not
+    # after. Since PR #116 the header is printed by a helper defined near
+    # the top of the script, so the print loop over GATE_LINES — not the
+    # header literal — marks where rendering happens.
+    assert block_start < source.index('"${GATE_LINES[@]}"')
 
 
 def _fake_pa_root(tmp_path, archive_rc=0, sync_rc=0, index_rc=0):
