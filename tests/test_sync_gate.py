@@ -1478,3 +1478,244 @@ def test_no_script_names_itself_with_a_literal(script_name):
         f"the script names itself with a literal instead of SCRIPT_NAME: "
         f"{offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Eighth re-audit — mutations that survived the suite as it stood
+# ---------------------------------------------------------------------------
+
+
+class TestTheLockIsReleasedExplicitly:
+    """
+    Closing the handle releases a flock as a side effect, so dropping the
+    explicit ``LOCK_UN`` changes nothing a test could see from outside —
+    which is exactly why it survived. The invariant is that the release
+    is deliberate and happens while the fd is still ours, not left to
+    whatever the interpreter does with the handle afterwards.
+    """
+
+    def test_the_unlock_is_issued_before_the_handle_is_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        """The mutation this kills: deleting the LOCK_UN call."""
+        import fcntl
+
+        calls: list[int] = []
+        real_flock = fcntl.flock
+
+        def _record(fileno, operation):
+            calls.append(operation)
+            return real_flock(fileno, operation)
+
+        monkeypatch.setattr(_sync_gate.fcntl, "flock", _record)
+
+        gate = tmp_path / "gates" / "g"
+        with _sync_gate.gate_lock(gate):
+            pass
+
+        assert fcntl.LOCK_UN in calls, (
+            "the lock was never released explicitly — it was left to the "
+            "handle being closed"
+        )
+        assert calls.index(fcntl.LOCK_UN) > 0, "released before it was taken"
+
+    def test_the_wait_is_bounded_by_a_sane_default(self):
+        """
+        A bare LOCK_EX would hang a cron tick or a session hook for ever
+        behind a wedged holder; an unbounded default brings that back
+        without changing a line of logic. Read from the module, with no
+        monkeypatching, so the shipped value is what is pinned.
+        """
+        assert _sync_gate.LOCK_WAIT_SECONDS == 10.0, (
+            "the shipped lock timeout changed — a hook must not wait "
+            "longer than a person will"
+        )
+
+
+class TestTheTempFileIsFlushedBeforeItIsSynced:
+    """
+    ``os.fsync`` syncs what the kernel has, and Python's buffer is not
+    the kernel's. Without the flush the sync is a no-op on an empty file
+    and the data reaches disk only when the handle is closed — unsynced,
+    which is the whole point of the call.
+    """
+
+    def test_the_file_has_its_bytes_when_fsync_is_called(
+        self, tmp_path, monkeypatch,
+    ):
+        """
+        The mutation this kills: removing ``handle.flush()`` — the file
+        is then zero bytes at the moment it is synced.
+        """
+        import stat as stat_module
+
+        sizes: list[int] = []
+        real_fsync = _sync_gate.os.fsync
+
+        def _record(fileno):
+            info = os.fstat(fileno)
+            if not stat_module.S_ISDIR(info.st_mode):
+                sizes.append(info.st_size)
+            return real_fsync(fileno)
+
+        monkeypatch.setattr(_sync_gate.os, "fsync", _record)
+
+        _sync_gate._atomic_write(tmp_path / "target", "some content\n")
+
+        assert sizes, "the file itself was never fsynced"
+        assert sizes[0] > 0, (
+            "fsync ran against an empty file: the buffer had not been "
+            "flushed, so nothing was actually made durable"
+        )
+
+
+class TestTheStateIsWrittenBeforeTheGateIsRendered:
+    """
+    The sidecar is the source of truth and the gate file is a mirror of
+    it. Written in that order, a crash between the two leaves a correct
+    state and a stale mirror, which the next run repairs. Reversed, a
+    crash leaves a gate file the state does not justify, and the next run
+    reverts it — a problem that was cleared comes back, or one that was
+    raised disappears.
+    """
+
+    def test_apply_gate_persists_before_it_renders(self):
+        """The mutation this kills: swapping the two calls."""
+        source = (SCRIPTS_DIR / "_sync_gate.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        applier = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "apply_gate"
+        )
+        order = [
+            node.func.id for node in ast.walk(applier)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("write_state", "render_gate")
+        ]
+        assert order, "apply_gate no longer writes the state or the gate"
+        assert order.index("write_state") < order.index("render_gate"), (
+            "the gate is rendered before the state it mirrors is saved"
+        )
+
+
+class TestAnAcknowledgementKeepsTheRecordedRoot:
+    """
+    ``archive_root`` says which archive tree the indexer's refusal memory
+    was built against, and the memory's keys are relative paths. Losing
+    it makes a memory built elsewhere look like one with no root
+    recorded — which every reader treats as its own.
+    """
+
+    def test_the_ack_does_not_clear_the_archive_root(self):
+        """
+        The mutation this kills: taking the root from the event on the
+        CYCLE_ACK branch, where it is always None.
+        """
+        state = _sync_gate.GateState(
+            problems={
+                _sync_gate.PROBLEM_QUARANTINE: _sync_gate.Problem("x", 2),
+            },
+            outage_streak=0,
+            acked={},
+            archive_root="/archives/cc",
+        )
+
+        after = _sync_gate.next_state(
+            state,
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_ACK,
+                quarantine_entries=2,
+                script="test",
+            ),
+        )
+
+        assert after.archive_root == "/archives/cc", (
+            "acknowledging a quarantine forgot which archive tree the "
+            "refusal memory belongs to"
+        )
+        assert _sync_gate.PROBLEM_QUARANTINE not in after.problems
+
+
+class TestALockTimeoutDoesNotEscapeApplyGate:
+    """
+    ``gate_lock`` raises ``TimeoutError`` when another process has held
+    the lock too long. Every caller of ``apply_gate`` is reporting on
+    something else — a schema mismatch, an absent archive root, a clean
+    cycle — and a contended gate must not rewrite that verdict.
+    """
+
+    def test_a_timeout_is_caught_and_the_disk_state_returned(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        """
+        The mutation this kills: narrowing the handler so TimeoutError
+        raises through — every caller then turns a busy lock into an
+        exit 1 traceback.
+        """
+        from contextlib import contextmanager
+
+        gate = tmp_path / "gates" / "g"
+        logger = logging.getLogger("test-timeout")
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED,
+                fault_detail="something is wrong",
+                script="test",
+            ),
+            gate_path=gate, logger=logger,
+        )
+
+        @contextmanager
+        def _always_contended(gate_path):
+            raise TimeoutError(f"another process has held {gate_path}")
+            yield  # pragma: no cover — unreachable, keeps this a generator
+
+        monkeypatch.setattr(_sync_gate, "gate_lock", _always_contended)
+
+        with caplog.at_level(logging.ERROR):
+            state = _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_COMPLETED,
+                    connected=True, processed=5, script="test",
+                ),
+                gate_path=gate, logger=logger,
+            )
+
+        assert "COULD NOT BE PERSISTED" in caplog.text
+        assert _sync_gate.PROBLEM_FAULT in state.problems, (
+            "the caller was told the fault had been cleared by a run that "
+            "never reached the file"
+        )
+
+
+class TestTheAliasResolverFollowsAChain:
+    """
+    The structural check that no script writes a gate path directly
+    resolves aliases to a fixed point. One pass finds only the first
+    hop, and two hops is all it takes to hide a write.
+    """
+
+    def test_a_chain_is_resolved_whatever_order_it_is_visited_in(self):
+        """
+        ``ast.walk`` is breadth-first, not document order, so which
+        assignment is seen first is an accident of where it sits in the
+        tree. The alias written before the name it copies is the case a
+        single pass cannot see: the copy is visited while the source is
+        still unknown, and nothing goes back for it.
+
+        The mutation this kills: one resolver pass instead of a fixed
+        point.
+        """
+        source = (
+            "third = second\n"
+            "second = first\n"
+            "first = GATE_FILE\n"
+            "unrelated = compute()\n"
+        )
+        names = _gate_flavoured_names(ast.parse(source))
+
+        assert {"first", "second", "third"} <= names, (
+            f"the resolver stopped short of the chain: {sorted(names)}"
+        )
+        assert "unrelated" not in names

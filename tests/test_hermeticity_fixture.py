@@ -159,3 +159,41 @@ def test_a_well_behaved_test_run_still_passes(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout
+
+
+def test_every_watched_glob_actually_catches_something(tmp_path):
+    """
+    A glob list is only as good as its coverage, and a name dropped from
+    it fails nothing — the guard just stops watching. One representative
+    file per pattern, all written in a single child run, so removing any
+    entry from ``_PIPELINE_CACHE_GLOBS`` leaves its file unreported.
+
+    The mutation this kills: deleting any one glob — for instance
+    ``index-session-content-*``, which covers the refusal memory that
+    leaked into the real cache once already.
+    """
+    representatives = (
+        "postgres-sync-memories-gate",
+        "index-session-content-refusals.json",
+        "daily-sync-gate",
+        "daily-sync-last-run",
+        "memory-drift-gate",
+        "cc-archives-gate",
+        "cc-archive-drift-gate",
+        "syncthing-gate",
+    )
+    body = '    cache = Path(os.environ["HOME"]) / ".cache"\n'
+    for name in representatives:
+        if name == "postgres-sync-memories-gate":
+            # Already present, so exercise the modified arm for this one.
+            body += f'    (cache / "{name}").write_text("7\\n")\n'
+        else:
+            body += f'    (cache / "{name}").write_text("1\\n")\n'
+
+    result = _run_probe(tmp_path, body)
+
+    assert result.returncode != 0, result.stdout
+    for name in representatives:
+        assert name in result.stdout, (
+            f"{name} is not covered by any watched glob"
+        )
