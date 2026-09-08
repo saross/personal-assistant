@@ -59,7 +59,7 @@ class TestCountWaitingItems:
             "# Waiting For\n\n"
             "| Item | Waiting On | Since | Last Poked | Next Action |\n"
             "|------|------------|-------|------------|-------------|\n"
-            "| Canvas access | ANU IT | 2026-02-07 | 2026-02-07 | Follow up |\n"
+            "| Roster access | Facilities | 2024-02-07 | 2024-02-07 | Follow up |\n"
             "| \u2014 | \u2014 | \u2014 | \u2014 | \u2014 |\n"
         )
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
@@ -80,8 +80,8 @@ class TestCountWaitingItems:
         waiting.write_text(
             "| Item | Waiting On | Since | Last Poked | Next Action |\n"
             "|------|------------|-------|------------|-------------|\n"
-            "| Canvas access | ANU IT | 2026-02-07 | - | Follow up |\n"
-            "| Review feedback | Reviewer | 2026-02-10 | - | Chase |\n"
+            "| Roster access | Facilities | 2024-02-07 | - | Follow up |\n"
+            "| Coating quote | Supplier | 2024-02-10 | - | Chase |\n"
         )
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
         assert accountability.count_waiting_items() == 2
@@ -181,20 +181,20 @@ class TestParseFocusSlots:
 
         slots = accountability.parse_focus_slots()
         assert len(slots) == 3
-        assert slots[0]["name"] == "LLM-History-Paper"
+        assert slots[0]["name"] == "Mirror recoating"
         assert slots[0]["slot_number"] == 1
-        assert slots[0]["started"] == "2026-02-06"
-        assert slots[0]["deadline"] == "2026-02-28"
-        assert slots[1]["name"] == "fieldmark-docs-staging"
+        assert slots[0]["started"] == "2024-02-06"
+        assert slots[0]["deadline"] == "2024-02-28"
+        assert slots[1]["name"] == "Dome automation"
         assert slots[1]["deadline"] is None
-        assert slots[2]["name"] == "ANU Teaching Prep"
-        assert slots[2]["deadline"] == "2026-02-25"
+        assert slots[2]["name"] == "Observing run prep"
+        assert slots[2]["deadline"] == "2024-02-25"
 
     def test_skips_empty_slots(self, tmp_path, monkeypatch):
         focus = tmp_path / "FOCUS.md"
         focus.write_text(
             "# Current Focus\n\n"
-            "## Slot 1: LLM-History-Paper\n\n"
+            "## Slot 1: Mirror recoating\n\n"
             "- **Started:** 2026-02-08\n"
             "- **Deadline:** 2026-02-28\n\n"
             "---\n\n"
@@ -207,7 +207,7 @@ class TestParseFocusSlots:
 
         slots = accountability.parse_focus_slots()
         assert len(slots) == 1
-        assert slots[0]["name"] == "LLM-History-Paper"
+        assert slots[0]["name"] == "Mirror recoating"
 
     def test_missing_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(accountability, "FOCUS_FILE", tmp_path / "nope.md")
@@ -231,8 +231,8 @@ class TestParseFocusSlots:
         focus.write_text(
             "# Current Focus\n\n"
             "## Slot 1: Plain-Started Slot\n\n"
-            "- **Started:** 2026-02-06\n"
-            "- **Deadline:** 2026-02-28\n\n"
+            "- **Started:** 2024-02-06\n"
+            "- **Deadline:** 2024-02-28\n\n"
             "---\n\n"
             "## Slot 2: Rotating Task Slot\n\n"
             "- **Task starts:** 2026-04-27\n"
@@ -248,7 +248,7 @@ class TestParseFocusSlots:
         slots = accountability.parse_focus_slots()
         assert len(slots) == 3
         # Slot 1: plain "Started:" — historical happy path.
-        assert slots[0]["started"] == "2026-02-06"
+        assert slots[0]["started"] == "2024-02-06"
         # Slot 2: "Task starts:" — was previously parsed as None,
         # silently breaking days_in_focus for any rotating slot.
         assert slots[1]["started"] == "2026-04-27"

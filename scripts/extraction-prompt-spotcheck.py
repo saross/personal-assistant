@@ -38,6 +38,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+# NOTE (audit round three L5): every path here is pinned to the HOME
+# checkout, not to the checkout this file happens to live in. Run from a
+# worktree, the script still imports ~/personal-assistant/hooks/
+# extraction-hook.py and still writes its report under
+# ~/personal-assistant/reports/ — so a spot-check run from a branch measures
+# main's prompt, not the branch's. That is deliberate (the point is to
+# sample what the LIVE hook does against the LIVE transcripts), but it is
+# surprising enough to state: to spot-check a change, merge it first.
 PA = Path.home() / "personal-assistant"
 HOOK_PATH = PA / "hooks" / "extraction-hook.py"
 TRANSCRIPT_GLOB = "*/*.jsonl"
