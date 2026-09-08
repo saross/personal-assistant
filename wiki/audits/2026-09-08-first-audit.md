@@ -415,10 +415,14 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     text itself advises) is committed and published. Plus: `push_stash` can
     return a foreign stash's SHA; `daily-sync.sh` itself still dies on an
     unset `HOME`; seven mutations of the round's own stash logic survive
-    the suite (the SHA resolution is untested). Third round running, briefed
-    as invariants: a run never exits with its own stash on the stack
-    ungated; no file containing a marker line is ever staged; only a
-    run's own stashes are popped or dropped.
+    the suite (the SHA resolution is untested). Third round done
+    (409e848–fd02e2f), briefed as invariants: a run never exits with its
+    own stash unrecovered without naming it in the gate; no memory file
+    whose content holds a marker line is staged at any of the five sites;
+    only a run's own stashes are popped or dropped; an unusable `HOME`
+    fails at the start; orphans recovered by SHA; all seven surviving
+    mutations killed. Third pass running. Both machines: no stash in the
+    parent or data repositories at 14:05.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
@@ -444,10 +448,23 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     `postgres-sync-gate` relayed at session start, indexer refusals
     remembered and reported. Done (4183962–dc7f782; the agent also caught
     two of its own tests writing fabricated gate and refusal files under
-    the real `~/.cache` and fixed them). Third pass running. After merge
-    the PreCompact and SessionEnd hook commands in `~/.claude/settings.json`
-    on both machines must follow the new template (indexer runs whatever
-    the sync exits).
+    the real `~/.cache` and fixed them). Third pass: **block** — one gate
+    file, two writers, unconditional clear (either sync's clean, contended,
+    or outage run erased the other's alarm within a tick); the indexer's
+    remembered refusal made every later run exit 5 forever and `--force`
+    never cleared it; a whole batch refused under a data-class SQLSTATE
+    (a migration adding a NOT NULL column) still quarantined up to 200 rows
+    per tick and advanced with exit 0 and no gate; the new hook chain
+    swallowed an archive failure; a cap overflow read as an environment
+    fault; five mutations survived (the trigger's gate threshold, the
+    archive `&&`, the locked read in both syncs, the cap clamp). Fourth
+    round running, briefed as invariants: a gate is cleared only by a full
+    successful cycle of the script that raised it; exit 5 only for a
+    refusal this run; any quarantine raises a warning gate; five or more
+    rows refused alike with no success hold and gate, with a named escape
+    hatch. After merge the PreCompact and SessionEnd hook commands in
+    `~/.claude/settings.json` on both machines must follow the new
+    template.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
