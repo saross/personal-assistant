@@ -76,6 +76,17 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
+        *)
+            # Round 4d-3 (L4): an unrecognised flag used to fall through
+            # in silence, so a typo — `--local-onlt` — ran the FULL check
+            # including every SSH probe, and nothing said why. Warn and
+            # carry on rather than exiting: "always exits 0" is this
+            # monitor's one hard invariant, and a hook chain must not
+            # break over a mistyped flag.
+            echo "WARNING: unknown argument '$1'; ignoring." >&2
+            echo "  Usage: syncthing-health.sh [--quiet] [--local-only]" \
+                 "[--simulate-need <bytes>]" >&2
+            ;;
     esac
     shift
 done

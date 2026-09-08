@@ -58,8 +58,10 @@
 # A metadata header (host, path, stat, line count), then one
 # "KEY<TAB>hash<TAB>bucket" line per assignment sorted by key, then a summary
 # and a duplicate-key warning. The bucket is empty / short / medium / long,
-# not an exact length. Duplicates matter because the last assignment wins at
-# load time, so a duplicated key is a silent override.
+# not an exact length. Duplicates matter because the FIRST assignment wins
+# at load time — the loader this file feeds keeps the earliest value it
+# sees, as does a shell that has already exported the name — so a
+# duplicated key means every later assignment is silently ignored.
 #
 # See wiki/docs/env-cross-machine-reference.md for what is expected to differ
 # between machines and what is not.

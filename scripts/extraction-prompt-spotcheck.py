@@ -138,8 +138,15 @@ def sample_windows(n_windows: int, max_transcripts: int) -> list[dict]:
     Only windows whose conversation_text ≥ MIN_CONTENT_LENGTH are kept — those
     are the windows the hook would actually send to Haiku.
     """
+    # Flat ``agent-*.jsonl`` files are subagent transcripts, not sessions:
+    # every other script in the pipeline excludes them, and sampling them
+    # here measured the prompt against a sub-agent's conversation rather than
+    # the operator's (audit 2026-09-08, finding AR24).
     transcripts = sorted(
-        TRANSCRIPT_ROOT.glob(TRANSCRIPT_GLOB),
+        (
+            path for path in TRANSCRIPT_ROOT.glob(TRANSCRIPT_GLOB)
+            if not path.name.startswith("agent-")
+        ),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )[:max_transcripts]
@@ -178,6 +185,12 @@ def sample_windows(n_windows: int, max_transcripts: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _build_prompt(prompt_tpl: str, categories: str, conv: str) -> str:
+    """Render one extraction prompt exactly as ``extract_memories`` does.
+
+    Used only for the token/cost estimate, so it must stay in step with the
+    real call site: a cost gate that measures a different prompt is worse
+    than none.
+    """
     seed_tags = ", ".join(hook.load_seed_tags()[:30])
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     year = datetime.now(timezone.utc).strftime("%Y")
@@ -207,6 +220,11 @@ def _extract_with(messages, sid, prompt_tpl, categories):
 
 
 def _summarise(mems) -> dict:
+    """Reduce one extraction result to its count and confidence mix.
+
+    ``None`` means the API call failed transiently — reported as a failure,
+    never conflated with a legitimate empty extraction.
+    """
     if mems is None:
         return {"count": None, "conf": {}}   # transient API failure
     return {
@@ -249,7 +267,8 @@ def main() -> int:
     cost = (in_tokens / 1e6) * PRICE_IN_PER_MTOK + (out_tokens / 1e6) * PRICE_OUT_PER_MTOK
 
     print(f"=== extraction-prompt spot-check ({'RUN' if args.run else 'DRY-RUN'}) ===")
-    print(f"  windows sampled        : {len(windows)} (from {args.max_transcripts} newest transcripts)")
+    print(f"  windows sampled        : {len(windows)} "
+          f"(from {args.max_transcripts} newest transcripts)")
     print(f"  calls (old+new × win)  : {n_calls}")
     print(f"  est input tokens       : {in_tokens:,}")
     print(f"  est output tokens      : {out_tokens:,} (@ {EST_OUTPUT_TOKENS_PER_CALL}/call)")

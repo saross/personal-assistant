@@ -3615,6 +3615,69 @@ class TestCursorMatchesTheBacklogGate:
         assert _sync_cursor.unsynced_line_backlog(memories, cursor_file) == 0
 
 
+    def test_saved_cursor_survives_a_lone_carriage_return(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """A raw \\r inside a record must not add a line to the cursor.
+
+        Kills the mutation ``read_jsonl_lines(MEMORIES_FILE)`` ->
+        ``split_jsonl_lines(MEMORIES_FILE.read_text(encoding="utf-8"))``:
+        universal-newline translation turns the \\r into a \\n before the
+        split, so the cycle counts one line more than count_jsonl_lines and
+        the cursor is saved past the end of the file the backlog gate
+        measures. Audit round 4a-3, finding M2.
+        """
+        import _sync_cursor
+
+        memories = tmp_path / "memories.jsonl"
+        # A lone CR inside the content, written as BYTES so nothing
+        # translates it on the way to disk.
+        record_a = json.dumps({
+            "id": "mem-a",
+            "category": "progress",
+            "content": "plain",
+            "created_at": "2026-04-23T00:00:00Z",
+        })
+        record_b = json.dumps({
+            "id": "mem-b",
+            "category": "progress",
+            "content": "plain",
+            "created_at": "2026-04-23T00:00:00Z",
+        })
+        # The separator between two fields becomes a RAW carriage return on
+        # disk. Placed BETWEEN tokens, where JSON treats it as whitespace, so
+        # the record still parses -- a \r inside a string literal would be an
+        # illegal control character and change what is being tested.
+        memories.write_bytes(
+            record_a.replace('", "category"', '",\r"category"').encode("utf-8")
+            + b"\n" + record_b.encode("utf-8") + b"\n"
+        )
+        # The divergence only exists while a raw CR is on disk.
+        assert b"\r" in memories.read_bytes()
+        assert _sync_cursor.count_jsonl_lines(memories) == 2
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE",
+                            tmp_path / "quarantine.jsonl")
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["mem-a", "mem-b"],
+        )
+
+        sync_mod.sync(test_logger)
+
+        saved = json.loads(cursor_file.read_text(encoding="utf-8"))
+        assert saved["postgres_sync_line"] == 2, (
+            "the cursor counted the carriage return as a line break")
+        assert _sync_cursor.unsynced_line_backlog(memories, cursor_file) == 0
+
+
+
 # ============================================================================
 # Audit M-1 — is_active reaches the BOOLEAN column as a real bool
 # ============================================================================

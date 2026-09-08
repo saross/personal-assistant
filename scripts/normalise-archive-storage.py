@@ -41,7 +41,6 @@ import argparse
 import gzip
 import hashlib
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -124,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"root not found: {root}")
 
     n_raw_only = n_dual_same = n_dual_prefix = n_divergent = n_ok = n_err = 0
+    n_stale_meta = 0
     for meta_path in sorted(root.rglob("session.meta.json")):
         d = meta_path.parent
         raw, gz = d / "session.jsonl", d / "session.jsonl.gz"
@@ -135,8 +135,9 @@ def main(argv: list[str] | None = None) -> int:
                     n_dual_same += 1
                     print(f"[dual-identical] {d.relative_to(root)}")
                     if args.apply:
-                        raw.unlink()
+                        # Repoint BEFORE unlinking: see _repoint's docstring.
                         _repoint(meta_path, gz)
+                        raw.unlink()
                 elif raw_n > gz_n and is_prefix(gz, raw, shorter_gz=True, longer_gz=False):
                     n_dual_prefix += 1
                     print(f"[dual-raw-longer] {d.relative_to(root)} "
@@ -144,16 +145,16 @@ def main(argv: list[str] | None = None) -> int:
                     if args.apply:
                         tmp = d / "session.jsonl.gz.tmp"
                         write_gz_verified(raw, tmp)
-                        shutil.move(tmp, gz)
-                        raw.unlink()
+                        tmp.replace(gz)
                         _repoint(meta_path, gz)
+                        raw.unlink()
                 elif gz_n > raw_n and is_prefix(raw, gz, shorter_gz=False, longer_gz=True):
                     n_dual_prefix += 1
                     print(f"[dual-gz-longer] {d.relative_to(root)} "
                           f"(raw is a {raw_n}-byte prefix of {gz_n}-byte gz — deleting raw)")
                     if args.apply:
-                        raw.unlink()
                         _repoint(meta_path, gz)
+                        raw.unlink()
                 else:
                     n_divergent += 1
                     print(f"[DIVERGENT — untouched] {d.relative_to(root)} "
@@ -162,8 +163,28 @@ def main(argv: list[str] | None = None) -> int:
                 n_raw_only += 1
                 print(f"[raw-only] {d.relative_to(root)}")
                 if args.apply:
-                    write_gz_verified(raw, gz)
+                    # Stage the compression, exactly as the dual-raw-longer
+                    # branch above does. Writing straight to session.jsonl.gz
+                    # meant a kill mid-write left a partial .gz beside the
+                    # raw: every later run then read that entry as dual-form,
+                    # found the truncated gz neither identical to nor a
+                    # prefix relationship with the raw, called it DIVERGENT,
+                    # and exited 1 forever without ever converging (audit
+                    # round 4c-2, finding 9).
+                    tmp = d / "session.jsonl.gz.tmp"
+                    write_gz_verified(raw, tmp)
+                    tmp.replace(gz)
+                    _repoint(meta_path, gz)
                     raw.unlink()
+            elif gz.exists() and not _meta_points_at_gz(meta_path):
+                # gz on disk, raw gone, metadata still naming session.jsonl:
+                # the state a run interrupted between the unlink and the
+                # repoint used to leave behind, which the old "already
+                # canonical" branch then reported as fine forever. A re-run
+                # now finishes the job (AR9).
+                n_stale_meta += 1
+                print(f"[stale-meta — repointing] {d.relative_to(root)}")
+                if args.apply:
                     _repoint(meta_path, gz)
             else:
                 n_ok += 1
@@ -174,15 +195,50 @@ def main(argv: list[str] | None = None) -> int:
     mode = "APPLIED" if args.apply else "DRY-RUN"
     print(f"\n{mode}: raw-only={n_raw_only} dual-identical={n_dual_same} "
           f"dual-prefix={n_dual_prefix} divergent={n_divergent} "
+          f"stale-meta={n_stale_meta} "
           f"already-canonical={n_ok} errors={n_err}")
     return 1 if (n_err or n_divergent) else 0
 
 
+def _meta_points_at_gz(meta_path: Path) -> bool:
+    """True when the metadata already names ``session.jsonl.gz``.
+
+    An unreadable meta answers ``True``: this predicate only gates an extra
+    repair pass, and a meta we cannot parse is not one to rewrite blind.
+    """
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError):
+        return True
+    archive = meta.get("archive") or {}
+    return archive.get("jsonl_path") == "session.jsonl.gz"
+
+
 def _repoint(meta_path: Path, gz_path: Path) -> None:
-    """Rewrite the meta's archive block to the canonical gz form."""
+    """Rewrite the meta's archive block to the canonical gz form.
+
+    **Called BEFORE the raw file is unlinked, and written atomically.** Two
+    ordering defects lived here until 2026-09-08 (audit finding AR9):
+
+    * ``raw.unlink()`` ran first, so a failure in this function left the raw
+      transcript deleted, the gz written, and the metadata still naming
+      ``session.jsonl``. The next run saw gz-only, called it already
+      canonical, exited 0 — and the entry stayed broken forever.
+    * the write was a bare ``write_text``, so a crash mid-write truncated the
+      metadata. A session with no parseable meta is a session with no id,
+      which drops it out of every archived-ids set and re-arms both drift
+      gates on a session that is in fact archived.
+
+    Repointing first inverts the failure: an interrupted run leaves the raw
+    file in place beside the gz, which is the dual-form state this pass
+    already knows how to finish. Nothing is ever deleted before the record
+    that replaces it is safely on disk.
+    """
     meta = json.loads(meta_path.read_text())
     meta["archive"] = gz_meta_block(meta, gz_path)
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    tmp = meta_path.with_name(meta_path.name + ".tmp")
+    tmp.write_text(json.dumps(meta, indent=2) + "\n")
+    tmp.replace(meta_path)
 
 
 if __name__ == "__main__":

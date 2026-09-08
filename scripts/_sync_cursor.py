@@ -860,13 +860,36 @@ def split_jsonl_lines(text: str) -> list[str]:
     as "caught up" while records sit unsynced beneath it (audit round
     4a-2, finding M2).
 
-    ``len(split_jsonl_lines(path.read_text()))`` always equals
-    ``count_jsonl_lines(path)``; ``test_sync_cursor.py`` pins that.
+    ``text`` must NOT have been through universal-newline translation.
+    ``Path.read_text`` turns a lone ``\r`` into ``\n`` before this function
+    ever sees it, so ``b'{"a":1}\r{"b":2}\n'`` splits into two lines while
+    :func:`count_jsonl_lines` counts one — reopening the very divergence
+    this pair exists to close (audit round 4a-3, finding M2). Use
+    :func:`read_jsonl_lines`, which reads bytes and decodes them, rather
+    than passing this the result of ``read_text``.
     """
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # a trailing newline terminates the last line
     return lines
+
+
+def read_jsonl_lines(jsonl_path: Path) -> list[str]:
+    """Read ``jsonl_path`` and split it into lines on ``"\n"`` alone.
+
+    The reading half of the pair, and the one every caller should use.
+    Bytes are read and decoded here rather than going through
+    ``Path.read_text`` so that universal-newline translation — which
+    rewrites a lone ``\r`` (and ``\r\n``) to ``\n`` — cannot change the
+    line count between this and :func:`count_jsonl_lines`.
+
+    ``len(read_jsonl_lines(path)) == count_jsonl_lines(path)`` holds for
+    every input, including a corpus carrying raw ``\r`` or U+2028;
+    ``test_sync_cursor.py`` pins that.
+    """
+    if not jsonl_path.exists():
+        return []
+    return split_jsonl_lines(jsonl_path.read_bytes().decode("utf-8"))
 
 
 def count_jsonl_lines(jsonl_path: Path) -> int:
