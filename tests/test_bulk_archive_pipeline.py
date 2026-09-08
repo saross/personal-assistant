@@ -1223,3 +1223,98 @@ class TestFailedIdsAreRetried:
         pipeline.archive()
 
         assert len(pipeline.entries()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-2 finding 2 — the progress file must never take the command down
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointDurability:
+    """A progress file is an optimisation; it must not be a failure mode.
+
+    logs/bulk-archive-progress.json is tracked in the private data submodule,
+    so it can arrive with git conflict markers in it, and a crash mid-write
+    left it truncated. Either way json.loads raised and `archive` died before
+    doing any work.
+    """
+
+    @pytest.mark.parametrize("corruption", [
+        '{"archived_ids": [',
+        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> origin/main\n",
+        "",
+        "[1, 2, 3]",
+        '{"archived_ids": "not-a-list", "failed_ids": 7}',
+    ])
+    def test_a_corrupt_checkpoint_is_treated_as_empty(
+        self, pipeline: Pipeline, corruption: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        pipeline.checkpoint.write_text(corruption, encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert len(pipeline.entries()) == 1, (
+            "an unreadable progress file stopped the archive run"
+        )
+
+    def test_an_unreadable_checkpoint_is_reported(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Treated as empty, but never silently."""
+        pipeline.checkpoint.write_text('{"archived_ids": [', encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            bulk_archive._load_checkpoint(LOGGER)
+
+        assert any(
+            "unreadable" in record.message for record in caplog.records
+        )
+
+    def test_a_crash_mid_write_leaves_the_previous_checkpoint_intact(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Written after every session — the likeliest file to be caught."""
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [SID_B], "failed_ids": {},
+            "skipped_trivial_ids": [],
+            "stats": {"total_archived": 1, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+        before = pipeline.checkpoint.read_text(encoding="utf-8")
+
+        real_replace = Path.replace
+
+        def boom(self, target):
+            raise OSError("interrupted")
+
+        monkeypatch.setattr(Path, "replace", boom)
+        with pytest.raises(OSError):
+            bulk_archive._save_checkpoint(bulk_archive._empty_checkpoint())
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert pipeline.checkpoint.read_text(encoding="utf-8") == before, (
+            "the progress file was truncated in place; the next run dies "
+            "parsing it"
+        )
+
+    def test_the_staged_write_happens_beside_the_target(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A temp file elsewhere would make the rename non-atomic."""
+        staged: list[Path] = []
+        real_replace = Path.replace
+
+        def record(self, target):
+            staged.append(Path(self))
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", record)
+        bulk_archive._save_checkpoint(bulk_archive._empty_checkpoint())
+
+        assert staged, "no atomic rename was performed"
+        assert staged[0].parent == pipeline.checkpoint.parent
+        assert list(pipeline.checkpoint.parent.glob("*.tmp")) == []

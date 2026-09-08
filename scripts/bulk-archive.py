@@ -833,10 +833,8 @@ def cmd_discover(args: argparse.Namespace, logger: logging.Logger) -> None:
 # ============================================================================
 
 
-def _load_checkpoint() -> dict[str, Any]:
-    """Load the archive checkpoint file, or return empty state."""
-    if CHECKPOINT_FILE.exists():
-        return json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+def _empty_checkpoint() -> dict[str, Any]:
+    """Return a fresh, empty checkpoint structure."""
     return {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -849,6 +847,55 @@ def _load_checkpoint() -> dict[str, Any]:
             "total_compressed_bytes": 0,
         },
     }
+
+
+def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
+    """Load the archive checkpoint, treating an unusable file as empty.
+
+    ``logs/bulk-archive-progress.json`` is tracked in the private data
+    submodule, so it can arrive here with git conflict markers in it, and a
+    crash mid-write used to leave it truncated. Either way ``json.loads``
+    raised and ``archive`` died before doing any work — a progress file, a
+    pure optimisation, taking the command down (audit round 4c-2, finding 2).
+
+    A checkpoint that cannot be read is worth exactly nothing and costs
+    exactly one re-scan: every entry it holds is re-verified against disk
+    anyway. So it is logged loudly and treated as absent. A file of the wrong
+    SHAPE is handled the same way — a list, or a dict missing the keys the
+    caller indexes, would otherwise fail later and further from the cause.
+    """
+    if not CHECKPOINT_FILE.exists():
+        return _empty_checkpoint()
+    try:
+        loaded = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        if logger is not None:
+            logger.warning(
+                "Checkpoint at %s is unreadable (%s) — starting from an "
+                "empty one. Nothing is lost: every entry is re-verified "
+                "against disk before it is honoured.",
+                CHECKPOINT_FILE, exc,
+            )
+        return _empty_checkpoint()
+    if not isinstance(loaded, dict):
+        if logger is not None:
+            logger.warning(
+                "Checkpoint at %s is a %s, not an object — starting from an "
+                "empty one.", CHECKPOINT_FILE, type(loaded).__name__,
+            )
+        return _empty_checkpoint()
+    # Fill in anything a hand-edited or older file is missing, so the callers
+    # below can index without guarding every key.
+    checkpoint = _empty_checkpoint()
+    checkpoint.update(loaded)
+    for key, empty in (
+        ("archived_ids", []), ("skipped_trivial_ids", []), ("failed_ids", {}),
+    ):
+        if not isinstance(checkpoint.get(key), type(empty)):
+            checkpoint[key] = empty
+    if not isinstance(checkpoint.get("stats"), dict):
+        checkpoint["stats"] = _empty_checkpoint()["stats"]
+    return checkpoint
 
 
 #: A failed_ids entry older than this is retried automatically. Failures are
@@ -948,12 +995,18 @@ def _partition_failed_ids(
 
 
 def _save_checkpoint(checkpoint: dict[str, Any]) -> None:
-    """Persist the checkpoint to disk."""
+    """Persist the checkpoint via a temporary file and an atomic rename.
+
+    This is written after every single session, so it is the file most
+    likely to be caught mid-write by a Ctrl-C or a power cut. A bare
+    ``write_text`` truncates first and fills after, leaving a window in which
+    the file on disk is half a JSON document (audit round 4c-2, finding 2).
+    """
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CHECKPOINT_FILE.write_text(
-        json.dumps(checkpoint, indent=2), encoding="utf-8"
-    )
+    tmp = CHECKPOINT_FILE.with_name(CHECKPOINT_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(checkpoint, indent=2), encoding="utf-8")
+    tmp.replace(CHECKPOINT_FILE)
 
 
 def archive_subagents(
@@ -1389,7 +1442,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     # A checkpoint entry is now only honoured when the session really is on
     # this machine's disk. Stale entries are dropped, named in the log, and
     # removed from the file so the state self-heals.
-    checkpoint = _load_checkpoint()
+    checkpoint = _load_checkpoint(logger)
     on_disk = archived_session_ids_on_disk(DEFAULT_ARCHIVE_ROOT, logger)
     claimed = list(checkpoint["archived_ids"])
     already_done = {sid for sid in claimed if sid in on_disk}
