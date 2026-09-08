@@ -46,11 +46,35 @@ def indexer():
 
 
 class _Error(Exception):
-    """Stand-in for ``psycopg2.Error``."""
+    """Stand-in for ``psycopg2.Error``.
+
+    Carries ``pgcode`` like the real class: PostgreSQL's SQLSTATE for a
+    server-side error, ``None`` for one psycopg2 raised client-side.
+    """
+
+    def __init__(self, message: str = "", pgcode: str | None = None) -> None:
+        super().__init__(message)
+        self.pgcode = pgcode
 
 
 class _OperationalError(_Error):
     """Stand-in for ``psycopg2.OperationalError``."""
+
+
+class _InterfaceError(_Error):
+    """Stand-in for ``psycopg2.InterfaceError``."""
+
+
+class _DataError(_Error):
+    """Stand-in for ``psycopg2.DataError`` — this row's content is wrong."""
+
+
+class _ProgrammingError(_Error):
+    """Stand-in for ``psycopg2.ProgrammingError`` — e.g. a REVOKE."""
+
+
+class _InternalError(_Error):
+    """Stand-in for ``psycopg2.InternalError``."""
 
 
 def _install_fake_psycopg2(
@@ -64,6 +88,10 @@ def _install_fake_psycopg2(
     fake_extras = types.ModuleType("psycopg2.extras")
     fake.Error = _Error
     fake.OperationalError = _OperationalError
+    fake.InterfaceError = _InterfaceError
+    fake.DataError = _DataError
+    fake.ProgrammingError = _ProgrammingError
+    fake.InternalError = _InternalError
 
     cur = MagicMock()
     cur.__enter__ = MagicMock(return_value=cur)
@@ -209,3 +237,139 @@ class TestPostgresOutage:
         monkeypatch.setattr(os, "nice", lambda increment: 0)
         code = indexer.main(["--archive-root", str(archive_root)])
         assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# Re-audit finding M4 — NUL sanitising and per-file refusal handling
+# ---------------------------------------------------------------------------
+
+
+class TestTranscriptTextIsSanitised:
+    """A NUL in transcript prose must never reach ``session_chunks.text``."""
+
+    def test_nul_is_stripped_from_a_turn(self, indexer):
+        """
+        The same LLM-generated prose that put NULs into two
+        session.meta.json files is what this indexes. PostgreSQL cannot
+        store U+0000 in a text column, and psycopg2 raises ValueError
+        before the statement is even sent — which is not a psycopg2.Error
+        and escaped every handler. The mutation this kills: dropping the
+        ``sanitise_nuls`` call from ``extract_turn_text``.
+        """
+        record = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ran\x00 the sweep"}],
+            },
+        }
+        assert indexer.extract_turn_text(record) == "ran the sweep"
+
+    def test_a_turn_that_is_only_nuls_is_skipped(self, indexer):
+        """Nothing left after stripping means nothing worth indexing."""
+        record = {
+            "type": "user",
+            "message": {"role": "user", "content": "\x00\x00"},
+        }
+        assert indexer.extract_turn_text(record) is None
+
+    def test_ordinary_text_is_untouched(self, indexer):
+        """The sanitiser must not alter clean prose."""
+        record = {
+            "type": "user",
+            "message": {"role": "user", "content": "a normal question"},
+        }
+        assert indexer.extract_turn_text(record) == "a normal question"
+
+
+class TestRefusedFileIsSkipped:
+    """
+    Aborting on the first poison file blocked every later file forever:
+    the incremental skip is keyed on ``source_mtime``, so an unindexed
+    file is retried next run, discovery is sorted, and the run died at the
+    same file every time before reaching the rest.
+    """
+
+    def _two_file_archive(self, tmp_path: Path) -> Path:
+        """Build an archive with two indexable sessions, in sorted order."""
+        for name in ("aaa-poison", "bbb-healthy"):
+            session_dir = tmp_path / "personal-assistant" / name
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.meta.json").write_text(
+                json.dumps({
+                    "session": {"id": name},
+                    "project": {"name": "personal-assistant"},
+                }),
+                encoding="utf-8",
+            )
+            (session_dir / "session.jsonl").write_text(
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": f"hello {name}"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+        return tmp_path
+
+    def test_refused_file_does_not_stop_the_run(
+        self, indexer, monkeypatch, tmp_path,
+    ):
+        """
+        The first file is refused; the second must still be indexed. The
+        mutation this kills: removing the per-file try/except so the
+        exception propagates out of the loop.
+        """
+        archive = self._two_file_archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+
+        def _refuse_first(cur, sql, values, page_size=None, fetch=False):
+            if any("aaa-poison" in str(value) for value in values[0]):
+                raise _DataError("value too long for type character varying")
+            return None
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _refuse_first
+
+        # ``force`` so the incremental mtime skip does not short-circuit
+        # both files before either reaches the INSERT.
+        indexed, skipped, chunks = indexer.index_archive(
+            archive, None, False, True,
+        )
+
+        assert indexed == 1, "the healthy file was not indexed"
+        assert chunks == 1
+
+    def test_outage_still_aborts_the_run(self, indexer, monkeypatch, tmp_path):
+        """
+        A database that went away is not a poison file. Continuing would
+        report every remaining file as refused.
+        """
+        archive = self._two_file_archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+
+        def _gone(cur, sql, values, page_size=None, fetch=False):
+            raise _OperationalError("server closed the connection unexpectedly")
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _gone
+
+        with pytest.raises(_OperationalError):
+            indexer.index_archive(archive, None, False, True)
+
+    def test_environment_fault_aborts_the_run(
+        self, indexer, monkeypatch, tmp_path,
+    ):
+        """A REVOKE or a missing column is not a poison file either."""
+        archive = self._two_file_archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+
+        def _revoke(cur, sql, values, page_size=None, fetch=False):
+            raise _ProgrammingError(
+                "permission denied for table session_chunks", "42501",
+            )
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _revoke
+
+        with pytest.raises(_ProgrammingError):
+            indexer.index_archive(archive, None, False, True)

@@ -61,6 +61,13 @@ from _schema_version import (  # noqa: E402
     SchemaVersionError,
     assert_schema_version,
 )
+# Row-level Postgres guards (audit round two, finding P1; re-audit M4).
+from _pg_row_guard import (  # noqa: E402
+    ENVIRONMENT,
+    OUTAGE,
+    classify_pg_error,
+    sanitise_nuls,
+)
 
 DB_NAME = "claude_memories"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
@@ -68,7 +75,14 @@ DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
 # pathological block. Far below anything that would stress the row.
 MAX_CHUNK_CHARS = 100_000
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+# Configure the root logger only if nothing has already done so. An
+# unconditional ``basicConfig`` at import time reaches into whatever
+# process imports this module — a test runner, or another script that
+# imports it for its parsing helpers — and silently reconfigures its
+# logging. Every other script in this tranche guards its logging setup;
+# this one did not (re-audit, low finding).
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("index-session-content")
 
 
@@ -106,7 +120,9 @@ def extract_turn_text(record: dict) -> str | None:
 
     content = message.get("content")
     if isinstance(content, str):
-        text = content.strip()
+        # Same NUL strip as the block path below — a plain-string turn is
+        # just as capable of carrying one (re-audit finding M4).
+        text, _nuls = sanitise_nuls(content.strip())
         return text or None
     if not isinstance(content, list):
         return None
@@ -125,6 +141,15 @@ def extract_turn_text(record: dict) -> str | None:
     # category). Content-shaped check because they carry no flag.
     head = text[:200]
     if head.startswith("[SYSTEM NOTIFICATION") or "<task-notification>" in head:
+        return None
+    # Strip NUL before the text can reach ``session_chunks.text`` (TEXT).
+    # PostgreSQL cannot store U+0000 in a text column — psycopg2 raises
+    # ValueError before the statement is even sent — and the same
+    # LLM-generated prose that put NULs into two session.meta.json files
+    # is what this indexes (re-audit finding M4). This is the ingest
+    # boundary, so it is where the stripping belongs.
+    text, _nuls = sanitise_nuls(text)
+    if not text:
         return None
     return text[:MAX_CHUNK_CHARS] if len(text) > MAX_CHUNK_CHARS else text
 
@@ -271,7 +296,7 @@ def index_archive(archive_root: Path, project: str | None,
         sys.exit(2)
 
     conn.autocommit = False
-    files_indexed = files_skipped = total_chunks = 0
+    files_indexed = files_skipped = total_chunks = files_refused = 0
     try:
         with conn.cursor() as cur:
             for transcript_path, proj_name, session_dir in discover(
@@ -303,19 +328,46 @@ def index_archive(archive_root: Path, project: str | None,
                 # (--include-subagents) or corrupt archives, at a cost of one
                 # cheap re-parse per run. Accepted rather than adding a separate
                 # indexed-files table for a negligible, self-limiting cost.
-                cur.execute("DELETE FROM session_chunks WHERE archive_path = %s",
-                            (rel_path,))
-                if rows:
-                    execute_values(
-                        cur,
-                        "INSERT INTO session_chunks (session_id, project, archive_dir, "
-                        "archive_path, turn_idx, role, text, char_len, source_mtime) "
-                        "VALUES %s ON CONFLICT (archive_path, turn_idx) DO UPDATE SET "
-                        "text = EXCLUDED.text, role = EXCLUDED.role, "
-                        "char_len = EXCLUDED.char_len, source_mtime = EXCLUDED.source_mtime, "
-                        "indexed_at = NOW()",
-                        rows)
-                conn.commit()
+                #
+                # A file PostgreSQL refuses is skipped, not fatal (re-audit
+                # finding M4). Aborting on the first poison file blocked
+                # every later file *forever*: the skip is keyed on
+                # source_mtime, so an unindexed file is retried on the next
+                # run, discovery is sorted, and the run dies at the same
+                # file every time before reaching the rest.
+                try:
+                    cur.execute(
+                        "DELETE FROM session_chunks WHERE archive_path = %s",
+                        (rel_path,))
+                    if rows:
+                        execute_values(
+                            cur,
+                            "INSERT INTO session_chunks (session_id, project, archive_dir, "
+                            "archive_path, turn_idx, role, text, char_len, source_mtime) "
+                            "VALUES %s ON CONFLICT (archive_path, turn_idx) DO UPDATE SET "
+                            "text = EXCLUDED.text, role = EXCLUDED.role, "
+                            "char_len = EXCLUDED.char_len, source_mtime = EXCLUDED.source_mtime, "
+                            "indexed_at = NOW()",
+                            rows)
+                    conn.commit()
+                except (psycopg2.Error, ValueError, TypeError) as exc:
+                    conn.rollback()
+                    verdict = classify_pg_error(exc, psycopg2)
+                    if verdict in (OUTAGE, ENVIRONMENT):
+                        # Not about this file: the database went away, or
+                        # is not in the state this script expects. Stop —
+                        # ploughing on would report every remaining file
+                        # as poison.
+                        logger.error(
+                            "Aborting the index run — %s: %s",
+                            type(exc).__name__, str(exc).strip())
+                        raise
+                    files_refused += 1
+                    logger.error(
+                        "  REFUSED %-22s %-45s — %s. Skipping this file and "
+                        "continuing; it is retried on the next run.",
+                        proj_name, session_dir.name[:45], str(exc).strip())
+                    continue
                 files_indexed += 1
                 total_chunks += len(rows)
                 logger.info("  indexed %-22s %-45s %4d turns",
@@ -325,6 +377,11 @@ def index_archive(archive_root: Path, project: str | None,
         raise
     finally:
         conn.close()
+    if files_refused:
+        logger.error(
+            "%d file(s) were refused by PostgreSQL and left unindexed. "
+            "They are retried on the next run; the archive tree is "
+            "canonical either way.", files_refused)
     return files_indexed, files_skipped, total_chunks
 
 
