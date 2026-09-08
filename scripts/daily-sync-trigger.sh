@@ -43,9 +43,22 @@ set -uo pipefail
 # Still exit 0, always: this script exists to keep the SessionStart hook
 # chain alive (see "Exit codes" above). Say so on STDOUT, which is the
 # only channel that reaches the session context, and touch nothing.
+# audit (low, fifth re-audit): the relay header is printed at most once
+# per session. Gates render before the sync and the sync's own failure
+# renders after it, so a session with both used to carry two headers and
+# read like two separate reports.
+gate_header_printed=0
+relay() {
+    # relay <line>... — surface to STDOUT, under one header.
+    if [[ $gate_header_printed -eq 0 ]]; then
+        echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
+        gate_header_printed=1
+    fi
+    printf '%s\n' "$@"
+}
+
 if [[ -z "${HOME:-}" ]] || [[ ! -d "${HOME}" ]]; then
-    echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
-    echo "[daily-sync gate] HOME (${HOME:-<unset>}) is unset or not a directory, so the daily sync cannot run and no gate files can be read. Nothing has been created."
+    relay "[daily-sync gate] HOME (${HOME:-<unset>}) is unset or not a directory, so the daily sync cannot run and no gate files can be read. Nothing has been created."
     exit 0
 fi
 
@@ -203,8 +216,7 @@ fi
 
 if [[ ${#GATE_LINES[@]} -gt 0 ]]; then
     # STDOUT, deliberately: this block lands in the session context.
-    echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
-    printf '%s\n' "${GATE_LINES[@]}"
+    relay "${GATE_LINES[@]}"
 fi
 
 # Already ran today? Exit silently — dominant path on every session after the
@@ -219,8 +231,16 @@ fi
 echo "[daily-sync-trigger] first session of $TODAY — running daily-sync.sh" >&2
 
 if "$SYNC_SCRIPT" >&2; then
-    echo "$TODAY" > "$LOCK_FILE"
-    echo "[daily-sync-trigger] sync complete" >&2
+    if echo "$TODAY" > "$LOCK_FILE" 2>/dev/null; then
+        echo "[daily-sync-trigger] sync complete" >&2
+    else
+        # Without the lock there is no once-a-day gate: the sync runs
+        # again at EVERY session start, which is minutes of git per
+        # session. A raw redirection error on stderr said none of that to
+        # anyone who could act on it.
+        echo "[daily-sync-trigger] could not write $LOCK_FILE" >&2
+        relay "[daily-sync gate] the once-a-day lock ($LOCK_FILE) could not be written, so the sync will run again at EVERY session start until that path is writable."
+    fi
 else
     rc=$?
     # Differentiate benign lock contention (exit 1 — another sync /
@@ -241,8 +261,7 @@ else
             # it just failed again this minute. Put the exit code where
             # the session can see it. daily-sync.sh writes its reason into
             # the gate above; this is the "and it happened just now" half.
-            echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
-            echo "[daily-sync gate] the sync just failed (exit $rc); it will retry next session. See the daily-sync gate lines above for why, or logs/daily-sync.log."
+            relay "[daily-sync gate] the sync just failed (exit $rc); it will retry next session. See the daily-sync gate lines above for why, or logs/daily-sync.log."
             ;;
     esac
 fi

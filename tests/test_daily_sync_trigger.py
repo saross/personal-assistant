@@ -210,6 +210,43 @@ class TestGateRendering:
         check.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         check.chmod(0o755)
 
+    def test_the_relay_header_appears_exactly_once(self, rig: TriggerRig) -> None:
+        """Audit (low, fifth re-audit): gates render before the sync and
+        the sync's own failure renders after it. A session with both used
+        to carry two headers and read like two separate reports."""
+        rig.gate("memory-drift-gate").write_text(
+            "1\nrecords survive in only ONE store\n", encoding="utf-8"
+        )
+        result = rig.run(sync_rc=2)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count("Infra gates") == 1, result.stdout
+        # …and both reports are still there, under the one header.
+        assert "records survive in only ONE store" in result.stdout
+        assert "the sync just failed (exit 2)" in result.stdout
+
+    def test_the_failure_relay_survives(self, rig: TriggerRig) -> None:
+        """The failure line must reach stdout even with no other gate —
+        stderr never reaches the session (this script's own channel note)."""
+        result = rig.run(sync_rc=4)
+        assert "Infra gates" in result.stdout
+        assert "the sync just failed (exit 4)" in result.stdout
+
+    def test_an_unwritable_lock_is_surfaced(
+        self, rig: TriggerRig, tmp_path: Path
+    ) -> None:
+        """Audit (low, fifth re-audit): without the lock the sync runs at
+        EVERY session start — minutes of git per session — and all the
+        operator got was a raw redirection error on stderr."""
+        rig.lock_file.parent.chmod(0o500)
+        try:
+            result = rig.run()
+        finally:
+            rig.lock_file.parent.chmod(0o700)
+        assert result.returncode == 0, result.stderr
+        assert rig.sync_ran()
+        assert "run again at EVERY session start" in result.stdout
+        assert "Permission denied" not in result.stdout
+
     def test_zero_count_gate_prints_nothing(self, rig: TriggerRig) -> None:
         """A clean gate must stay silent."""
         rig.gate("memory-drift-gate").write_text("0\n", encoding="utf-8")

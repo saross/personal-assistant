@@ -1361,6 +1361,35 @@ class TestOrphanStashesAreResolvedByIdentity:
         assert len(leftovers) == 1, leftovers
         assert "a concurrent session" in leftovers[0]
 
+    def test_an_applied_orphan_that_cannot_be_dropped_is_not_called_recovered(
+        self, world: SyncWorld
+    ) -> None:
+        """Applied is not recovered (audit low, fourth re-audit).
+
+        An entry still on the stack is applied again next run and
+        duplicates every record in it, so the word has to be earned. The
+        drop is made to fail — and only the drop — by taking away write
+        access to the stash reflog, which `git stash apply` does not need.
+        """
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-undroppable")
+        git("stash", "push", "-q", "-m", "orphaned by a killed run", cwd=machine.data)
+        reflogs = machine.data_git_dir / "logs" / "refs"
+        reflogs.chmod(0o500)
+        try:
+            result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
+        finally:
+            reflogs.chmod(0o700)
+
+        combined = result.stdout + result.stderr
+        assert "could not drop" in combined, combined
+        assert "recovered" not in combined, (
+            "reported as recovered while still on the stack: " + combined
+        )
+        joined = "\n".join(gate_details(world))
+        assert "ALREADY in the working tree" in joined, joined
+        assert "Do NOT pop" in joined, joined
+
     def test_a_real_orphan_is_recovered_and_published(
         self, world: SyncWorld
     ) -> None:

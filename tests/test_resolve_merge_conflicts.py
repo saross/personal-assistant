@@ -320,6 +320,28 @@ class TestStrayMarkersOutsideBlocks:
         assert "outside any conflict block" in result.stderr
         assert "needs a human" in result.stderr
 
+    def test_a_stray_after_a_completed_block_is_still_reported(
+        self, tmp_path: Path
+    ) -> None:
+        """The parser must close the block at its closer.
+
+        Leaving `in_block` set means everything after the first block
+        looks like it is inside one, so a stray marker below it is never
+        reported and the file is rewritten as if it were sound.
+        """
+        target = tmp_path / "memories.jsonl"
+        body = (
+            "<<<<<<< HEAD\n" + _record("a") + "\n=======\n"
+            + _record("b") + "\n>>>>>>> x\n"
+            + "=======\n" + _record("c") + "\n"
+        )
+        target.write_text(body, encoding="utf-8")
+
+        result = _run_resolver(str(target))
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "line 6" in result.stderr, result.stderr
+        assert target.read_text(encoding="utf-8") == body, "the file was rewritten"
+
     def test_a_stray_marker_below_a_real_block_survives_the_resolution(
         self, tmp_path: Path
     ) -> None:
