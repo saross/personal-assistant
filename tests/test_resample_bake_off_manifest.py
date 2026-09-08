@@ -322,3 +322,47 @@ class TestDeduplication:
         unique, removed = resample.deduplicate_candidates([subagent, live])
         assert removed == 1
         assert [c.source for c in unique] == ["live"]
+
+
+class TestReproducibility:
+    """Same seed, same pool, same --as-of: the same bytes."""
+
+    def test_two_runs_are_byte_identical(self, pool, tmp_path):
+        """The finding: generated_at read the clock, so nothing reproduced."""
+        first = tmp_path / "first.json"
+        second = tmp_path / "second.json"
+        as_of = FROZEN_CLOCK.isoformat()
+        assert run_main(pool, "--out", str(first), "--as-of", as_of) == 0
+        assert run_main(pool, "--out", str(second), "--as-of", as_of) == 0
+        assert first.read_bytes() == second.read_bytes()
+
+    def test_as_of_reaches_generated_at_and_the_notes(self, pool, tmp_path):
+        out = tmp_path / "manifest.json"
+        assert run_main(pool, "--out", str(out), "--as-of", "2026-01-06") == 0
+        manifest = json.loads(out.read_text(encoding="utf-8"))
+        assert manifest["generated_at"].startswith("2026-01-06T00:00:00")
+        assert "Re-sampled 2026-01-06" in manifest["notes"]
+
+    def test_a_different_seed_can_change_the_selection(self, tmp_path):
+        """If the seed did nothing, byte-identity above would be vacuous."""
+        root = tmp_path / "home"
+        for index in range(6):
+            write_archive_session(
+                root, "thornhollow-survey", f"2026-01-1{index}T08-00-00",
+                session_id=f"aaaaaaaa-0000-0000-0000-00000000000{index}",
+            )
+        selections = set()
+        for seed in ("1", "2", "3", "4", "5"):
+            out = tmp_path / f"manifest-{seed}.json"
+            assert run_main(
+                root, "--out", str(out), "--seed", seed,
+                "--as-of", FROZEN_CLOCK.isoformat(),
+            ) == 0
+            rows = json.loads(out.read_text(encoding="utf-8"))["sessions"]
+            selections.add(tuple(row["session_id"] for row in rows))
+        assert len(selections) > 1
+
+    def test_a_bad_as_of_is_rejected(self, pool, tmp_path):
+        with pytest.raises(SystemExit) as excinfo:
+            run_main(pool, "--out", str(tmp_path / "m.json"), "--as-of", "not-a-date")
+        assert excinfo.value.code == 2

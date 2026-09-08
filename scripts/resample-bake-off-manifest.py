@@ -695,6 +695,23 @@ def write_manifest(
 # ---------------------------------------------------------------------------
 
 
+def parse_as_of(value: str) -> datetime.datetime:
+    """Parse ``--as-of`` as an ISO date or datetime; naive values are UTC.
+
+    Raises:
+        argparse.ArgumentTypeError: the value is not ISO 8601.
+    """
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--as-of must be an ISO 8601 date or datetime, not {value!r}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Return the command-line parser.
 
@@ -734,6 +751,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             f"RNG seed for the stratified sample (default {DEFAULT_RNG_SEED}); "
             "recorded in the manifest as rng_seed."
+        ),
+    )
+    parser.add_argument(
+        "--as-of",
+        type=parse_as_of,
+        default=None,
+        help=(
+            "Pin the generation timestamp (ISO date or datetime, UTC when "
+            "naive) instead of reading the clock. With the same --seed and "
+            "the same candidate pool, two runs then produce byte-identical "
+            "manifests, which is what makes a re-sample auditable."
         ),
     )
     parser.add_argument(
@@ -827,8 +855,9 @@ def main(argv: list[str] | None = None) -> int:
     picks = stratified_sample(scored, seed=args.seed)
     print(f"  selected {len(picks)} sessions")
 
-    # One clock reading for the whole manifest — see ``build_manifest``.
-    generated_at = datetime.datetime.now(tz=datetime.timezone.utc)
+    # One clock reading for the whole manifest — see ``build_manifest`` —
+    # or the pinned value, which makes the whole run reproducible.
+    generated_at = args.as_of or datetime.datetime.now(tz=datetime.timezone.utc)
     if args.dry_run:
         manifest = build_manifest(
             picks, pool_stats, seed=args.seed, generated_at=generated_at
