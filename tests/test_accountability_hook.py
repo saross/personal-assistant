@@ -456,9 +456,14 @@ class TestMainFilesMissing:
 
         captured = capsys.readouterr()
         assert "task files missing" not in captured.err
-        # Normal banner emitted.
-        assert "# Task Status" in captured.out
-        assert "Test Slot" in captured.out
+        # Normal banner emitted. Audit round two M3: `"# Task Status" in out`
+        # is satisfied by "## Task Status", "### Task Status", or the string
+        # embedded in a sentence, so the heading is pinned as a whole line.
+        lines = captured.out.splitlines()
+        assert lines[0] == "# Task Status"
+        assert any(
+            line.startswith("  Slot 1: Test Slot (day ") for line in lines
+        ), lines
 
 
 
@@ -709,3 +714,140 @@ class TestBannerRendering:
         assert "Inbox: 2 items | Waiting for: 3 items" in out
         assert "  Slot 2: [Empty]" in out
         assert "  Slot 3: [Empty]" in out
+
+
+class TestBannerScaffolding:
+    """Audit round two M3: the banner's fixed lines and both deadline edges.
+
+    The banner is a fixed shape the reader learns to scan. Its heading, its
+    ``Focus:`` label, and its closing instruction were all deletable with
+    the suite green, and only the lower edge of the "deadline in N days"
+    window was pinned.
+    """
+
+    def test_the_heading_is_an_exact_first_line(self, tmp_path, monkeypatch):
+        """Kills ``"# Task Status"`` -> ``"## Task Status"`` or a reworded
+        heading.
+
+        A substring assertion accepts any heading level and any surrounding
+        prose; the banner is injected as additionalContext, where the
+        heading level decides how the model reads the block.
+        """
+        _stage_task_files(tmp_path, monkeypatch, inbox=_INBOX_LIVE)
+        lines = accountability.build_banner()
+        assert lines[0] == "# Task Status"
+        assert lines[1] == ""
+
+    def test_the_focus_label_precedes_the_slots(self, tmp_path, monkeypatch):
+        """Kills deleting ``lines.append("Focus:")``.
+
+        Without the label the indented slot lines have no heading, so a
+        reader (human or model) cannot tell the slot block from the counts.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: Alpha\n\n"
+            "- **Project:** research/alpha\n\n"
+            "---\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus)
+        lines = accountability.build_banner()
+        assert "Focus:" in lines
+        assert lines.index("Focus:") < lines.index("  Slot 1: Alpha ")
+
+    def test_the_empty_desk_message_replaces_the_slot_block(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills the ``if not slots:`` arm, which is the only prompt to act.
+
+        With no slots the banner must say so and name the commands, not
+        emit a bare ``Focus:`` label with nothing under it.
+        """
+        _stage_task_files(tmp_path, monkeypatch, inbox=_INBOX_LIVE)
+        lines = accountability.build_banner()
+        assert "Focus: No items in focus. Run /standup or /focus add." in lines
+        assert not any(line.startswith("  Slot ") for line in lines)
+
+    def test_the_closing_instruction_is_the_last_line(self, tmp_path, monkeypatch):
+        """Kills deleting the ``Run /standup …`` footer.
+
+        It is the only pointer from the banner to the command that acts on
+        it; the banner is otherwise a read-only status dump.
+        """
+        _stage_task_files(tmp_path, monkeypatch, inbox=_INBOX_LIVE)
+        lines = accountability.build_banner()
+        assert lines[-1] == "Run /standup for full accountability check."
+        assert lines[-2] == ""
+
+    def test_the_counts_line_sits_between_the_slots_and_the_footer(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills reordering the banner's three blocks.
+
+        Order is the whole reason a fixed-shape banner is scannable.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: Alpha\n\n"
+            "- **Project:** research/alpha\n\n"
+            "---\n"
+        )
+        _stage_task_files(
+            tmp_path,
+            monkeypatch,
+            focus=focus,
+            inbox=_INBOX_LIVE,
+            waiting=_WAITING_LIVE,
+        )
+        lines = accountability.build_banner()
+        counts = "Inbox: 2 items | Waiting for: 3 items"
+        assert counts in lines
+        assert lines.index("Focus:") < lines.index(counts)
+        assert lines.index(counts) < lines.index(lines[-1])
+
+    def test_a_deadline_eight_days_out_is_a_bare_date(self, tmp_path, monkeypatch):
+        """Kills ``elif delta <= 7:`` -> ``elif delta <= 8:``.
+
+        The lower edge (exactly seven days) is pinned elsewhere; this is the
+        other side. Widening the countdown window makes a deadline outside
+        the week read as urgent, which is the failure the banner's
+        escalation language exists to avoid.
+        """
+        due = _iso(8)
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: Eight days out\n\n"
+            f"- **Deadline:** {due}\n\n"
+            "---\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus)
+        slot_1 = next(
+            line for line in accountability.build_banner()
+            if line.startswith("  Slot 1:")
+        )
+        assert f"[deadline {due}]" in slot_1, slot_1
+        assert "deadline in" not in slot_1
+
+    def test_the_overdue_and_today_wordings_are_distinct(self, tmp_path, monkeypatch):
+        """Kills ``if delta < 0:`` -> ``<= 0`` and ``elif delta == 0:`` -> a
+        shared branch.
+
+        "OVERDUE by 0 days" and "deadline TODAY" are not the same statement,
+        and the day a deadline falls due is exactly when the difference
+        matters.
+        """
+        focus = (
+            "# Current Focus\n\n"
+            "## Slot 1: Due today\n\n"
+            f"- **Deadline:** {_iso(0)}\n\n"
+            "---\n\n"
+            "## Slot 2: A day late\n\n"
+            f"- **Deadline:** {_iso(-1)}\n\n"
+            "---\n"
+        )
+        _stage_task_files(tmp_path, monkeypatch, focus=focus)
+        lines = accountability.build_banner()
+        slot_1 = next(line for line in lines if line.startswith("  Slot 1:"))
+        slot_2 = next(line for line in lines if line.startswith("  Slot 2:"))
+        assert "[deadline TODAY]" in slot_1, slot_1
+        assert "[OVERDUE by 1 day]" in slot_2, slot_2
