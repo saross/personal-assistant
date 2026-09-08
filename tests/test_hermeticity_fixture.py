@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1267,3 +1268,186 @@ def test_the_autouse_fixture_uses_the_assertion():
     }
     assert "assert_pg_env_unchanged" in called
     assert "pg_env_snapshot" in called
+
+
+def test_a_new_empty_directory_is_caught(tmp_path, monkeypatch):
+    """Creating an empty directory in a watched tree is a change.
+
+    Kills the mutation that records files only: a test could leave a new
+    empty directory anywhere in the checkout and the guard saw nothing.
+    Audit round 4a-3, low finding — decided in favour of catching it,
+    since a directory costs one dict entry and no stat.
+    """
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "invented-section").mkdir()
+
+    with pytest.raises(AssertionError, match="REAL checkout"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_removed_directory_is_caught(tmp_path, monkeypatch):
+    """And so is deleting one."""
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    (root / "wiki" / "section").mkdir()
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "section").rmdir()
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_generated_cache_directory_is_still_ignored(tmp_path, monkeypatch):
+    """Recording directories must not resurrect the __pycache__ false alarm."""
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "scripts" / "__pycache__").mkdir()
+    (root / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+
+    conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+
+
+@pytest.mark.parametrize("watched", [
+    "logs", "tasks", "global-claude-md", "global-agent-guidance",
+    "wiki", "commands", "hooks", "scripts",
+])
+def test_each_watched_directory_is_really_watched(tmp_path, monkeypatch,
+                                                  watched):
+    """One behavioural check per watched tree, not just a name list.
+
+    ``test_the_watched_paths_name_the_canonical_files`` compares
+    ``_CANONICAL_DIRS`` against a hard-coded list, which proves the names
+    match a list and nothing more. This creates a file in each directory of
+    a throwaway tree and requires the guard to notice — so dropping any one
+    entry from ``_CANONICAL_DIRS`` fails here (round 4a-3, low finding).
+    """
+    # Build the tree from _CANONICAL_DIRS' own basenames, so a directory
+    # added to the guard later is exercised the moment it is listed here.
+    root = tmp_path / "checkout"
+    (root / "data").mkdir(parents=True)
+    watched_dirs = []
+    for name in [path.name for path in conftest._CANONICAL_DIRS]:
+        if name in ("logs", "tasks"):
+            real = root / "data" / name
+            real.mkdir(parents=True)
+            (root / name).symlink_to(real)
+        else:
+            (root / name).mkdir()
+        watched_dirs.append(root / name)
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", tuple(watched_dirs))
+
+    before = conftest._canonical_store_snapshot()
+    (root / watched / "stray.md").write_text("left behind\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="REAL checkout"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# The suite's temporary home does not accumulate (round 4a-3, low finding)
+# ===========================================================================
+
+
+def test_a_stale_suite_home_is_swept(tmp_path):
+    """An abandoned home older than the window is removed.
+
+    TemporaryDirectory's finaliser does not run when the process is killed
+    outright, so a suite that dies that way leaves its whole home behind --
+    stub psql and all. Seven were sitting in /tmp when this was written.
+    """
+    stale = tmp_path / f"{conftest.SUITE_HOME_PREFIX}old"
+    stale.mkdir()
+    (stale / "bin").mkdir()
+    (stale / "bin" / "psql").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    old_time = time.time() - 48 * 3600
+    os.utime(stale, (old_time, old_time))
+
+    removed = conftest.sweep_stale_suite_homes(tmp_path)
+
+    assert removed == [stale.name]
+    assert not stale.exists()
+
+
+def test_a_fresh_or_current_suite_home_is_left_alone(tmp_path):
+    """A concurrent sibling run must not have its home pulled out.
+
+    Kills a mutation that drops the age check or the ``keep`` check: another
+    agent's worktree runs this same suite, and its home is minutes old.
+    """
+    fresh = tmp_path / f"{conftest.SUITE_HOME_PREFIX}fresh"
+    fresh.mkdir()
+    current = tmp_path / f"{conftest.SUITE_HOME_PREFIX}current"
+    current.mkdir()
+    old_time = time.time() - 48 * 3600
+    os.utime(current, (old_time, old_time))
+
+    removed = conftest.sweep_stale_suite_homes(tmp_path, current)
+
+    assert removed == []
+    assert fresh.exists(), "a fresh home belongs to a live run"
+    assert current.exists(), "the running suite's own home must survive"
+
+
+def test_the_sweep_touches_nothing_else(tmp_path):
+    """Only direct children matching the prefix are ever removed.
+
+    Kills a mutation that widens the name test: /tmp holds other agents'
+    scratch directories, and this runs unattended on every collection.
+    """
+    old_time = time.time() - 48 * 3600
+    bystanders = []
+    for name in ("pytest-of-shawn", "mut-ABCDEF", "pa-round4a2-XXXX",
+                 "not-pa-test-home-x"):
+        path = tmp_path / name
+        path.mkdir()
+        os.utime(path, (old_time, old_time))
+        bystanders.append(path)
+    # A matching name that is a FILE, and one that is a symlink to a real
+    # directory: neither is a suite home.
+    plain = tmp_path / f"{conftest.SUITE_HOME_PREFIX}file"
+    plain.write_text("", encoding="utf-8")
+    os.utime(plain, (old_time, old_time))
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / f"{conftest.SUITE_HOME_PREFIX}link"
+    link.symlink_to(target)
+
+    assert conftest.sweep_stale_suite_homes(tmp_path) == []
+    assert all(path.exists() for path in bystanders)
+    assert plain.exists()
+    assert target.exists()
+
+
+def test_the_current_home_is_registered_for_cleanup_at_exit():
+    """atexit is the deterministic half of the cleanup.
+
+    Structural: the weakref finaliser is not guaranteed to run at
+    interpreter shutdown, so the hook must be registered. Kills the mutation
+    that drops ``atexit.register(_SUITE_HOME.cleanup)``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    registered = [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "atexit.register"
+    ]
+    assert any("_SUITE_HOME.cleanup" in call for call in registered), (
+        f"the suite home is not registered for cleanup: {registered}")
+    # And the sweep runs at import, not merely exists.
+    called = {
+        ast.unparse(node.func) for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "sweep_stale_suite_homes" in called

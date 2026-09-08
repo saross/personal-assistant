@@ -5,11 +5,14 @@ Provides temporary directories and sample data for hook testing
 without touching the real memory system.
 """
 
+import atexit
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -40,8 +43,73 @@ sys.path.insert(0, str(PROJECT_ROOT / "hooks"))
 # ``__file__`` or an explicit environment variable — never from ``~``.
 # ---------------------------------------------------------------------------
 
+#: Prefix of the suite's own temporary home, and of the strays it sweeps.
+SUITE_HOME_PREFIX = "pa-test-home-"
+
+#: A stray older than this is nobody's live run. A concurrent sibling suite
+#: (another agent's worktree, a parallel run) may well have one minutes old,
+#: so the window is generous on purpose.
+STALE_SUITE_HOME_HOURS = 24
+
+
+def sweep_stale_suite_homes(
+    root: Path,
+    keep: Path | None = None,
+    *,
+    max_age_hours: int = STALE_SUITE_HOME_HOURS,
+    now: float | None = None,
+) -> list[str]:
+    """Remove abandoned ``pa-test-home-*`` directories under ``root``.
+
+    ``TemporaryDirectory``'s finaliser does not run when the process is
+    killed outright — SIGKILL, an OOM kill, a hard Ctrl-\\ — so a suite that
+    dies that way leaves its whole home behind, stub ``psql`` and all. They
+    accumulate (seven were sitting in /tmp when this was written). Harmless
+    individually; untidy in aggregate, and each one holds an executable that
+    shadows a real binary if anything ever put it on PATH.
+
+    Returns the names removed, so the behaviour can be asserted. Only
+    directories that are DIRECT children of ``root``, whose name starts with
+    :data:`SUITE_HOME_PREFIX`, that are not ``keep``, and whose mtime is
+    older than ``max_age_hours`` are touched; anything else is left alone.
+    """
+    cutoff = (now if now is not None else time.time()) - max_age_hours * 3600
+    removed: list[str] = []
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:  # pragma: no cover — an unreadable tmpdir is not our problem
+        return removed
+    for entry in entries:
+        if not entry.name.startswith(SUITE_HOME_PREFIX):
+            continue
+        if keep is not None and entry == keep:
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed.append(entry.name)
+    return removed
+
+
 #: Held for the life of the process; its finaliser removes the directory.
-_SUITE_HOME = tempfile.TemporaryDirectory(prefix="pa-test-home-")
+#: ``ignore_cleanup_errors`` so the atexit hook below can run the same
+#: cleanup a second time without raising during interpreter shutdown.
+_SUITE_HOME = tempfile.TemporaryDirectory(
+    prefix=SUITE_HOME_PREFIX, ignore_cleanup_errors=True,
+)
+# Belt and braces: the weakref finaliser is not guaranteed to run at
+# shutdown, and an atexit hook is (for every exit short of a signal kill).
+atexit.register(_SUITE_HOME.cleanup)
+# And for the kills that skip atexit too, clear out what earlier runs left.
+sweep_stale_suite_homes(
+    Path(tempfile.gettempdir()), Path(_SUITE_HOME.name),
+)
 #: The operator's real home, kept only so a test can assert we left it.
 REAL_HOME = os.environ.get("HOME")
 os.environ["HOME"] = _SUITE_HOME.name
@@ -671,13 +739,25 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
         snapshot[str(resolved)] = (stat.st_mtime_ns, stat.st_size)
 
     def walk(directory: Path) -> None:
-        """Record every file under ``directory``, skipping generated trees."""
+        """Record every file AND directory under ``directory``.
+
+        Directories are recorded with a ``(0, 0)`` sentinel rather than a
+        stat: their mtime changes whenever a child is written, which the
+        child's own entry already reports, so stat-ing them would double
+        every diff. The sentinel is there purely so that CREATING an empty
+        directory is caught — before this, a test could leave a new empty
+        directory anywhere in the checkout and the guard saw nothing, since
+        it recorded files alone (audit round 4a-3, low finding). Generated
+        trees are skipped entirely, so ``__pycache__`` appearing during a
+        run is not a diff.
+        """
         for entry in sorted(directory.iterdir()):
             if entry.is_symlink() and entry.is_dir():
                 continue  # do not follow a symlinked subtree twice
             if entry.is_dir():
                 if entry.name in _SNAPSHOT_SKIP_DIRS:
                     continue
+                snapshot[str(entry.resolve())] = (0, 0)
                 walk(entry)
             elif entry.is_file():
                 record(entry)
