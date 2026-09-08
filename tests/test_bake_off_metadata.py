@@ -686,3 +686,40 @@ class TestResponsePersistence:
         bom.merge_usage_log(out_dir, [{"session_id": "one", "input_tokens": 99}])
         rows = json.loads((out_dir / "_usage.json").read_text())
         assert rows == [{"session_id": "one", "input_tokens": 99}]
+
+
+class TestEmptyManifest:
+    """An empty manifest is an upstream mistake, not a zero-cost run."""
+
+    def test_dry_run_on_empty_manifest_exits_cleanly(self, tmp_path, capsys):
+        """The finding: requests[0] raised IndexError after writing a file."""
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [])
+        out_dir = tmp_path / "out"
+        code = bom.main([
+            "--provider", "gemini",
+            "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(out_dir),
+            "--dry-run",
+        ])
+        assert code == 0
+        assert "no sessions" in capsys.readouterr().out
+        assert not out_dir.exists()
+
+    def test_live_run_on_empty_manifest_calls_nothing(
+        self, tmp_path, monkeypatch, gemini_boundary
+    ):
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [])
+
+        def refuse_input(_prompt=""):
+            raise AssertionError("an empty manifest must not reach the gate")
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        code = bom.main([
+            "--provider", "gemini",
+            "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+        ])
+        assert code == 0
+        assert gemini_boundary == []

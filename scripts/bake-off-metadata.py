@@ -1176,10 +1176,11 @@ def dry_run_report(
     )
     print(f"total ({provider}): ${cost['total_cost_usd']}")
 
-    print()
-    print("--- Example request body (first 400 chars of request 1) ---")
-    print(requests[0].user_message[:400])
-    print("…")
+    if requests:
+        print()
+        print("--- Example request body (first 400 chars of request 1) ---")
+        print(requests[0].user_message[:400])
+        print("…")
 
     # Write a dry-run-cost.json so the launch plan can include the figure
     # without re-running.
@@ -1669,6 +1670,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     requests = assemble_requests(args.manifest, args.prompt)
+    if not requests:
+        # An empty manifest is a mistake upstream, not a run with nothing to
+        # do: say so and stop before creating a provider directory or a
+        # cost file that would later look like the record of a real run.
+        print(
+            f"{args.manifest} lists no sessions — nothing to do. "
+            "(Re-sample the manifest, or check --manifest points at the "
+            "right file.)"
+        )
+        return 0
     system_prompt = args.prompt.read_text()
     provider_dir = args.out_dir / args.provider
     provider_dir.mkdir(parents=True, exist_ok=True)
