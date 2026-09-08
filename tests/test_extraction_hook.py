@@ -1907,9 +1907,9 @@ class TestSidechainAndTheSkipFlag:
     def test_a_sidechain_user_entry_does_not_set_the_flag(self, tmp_path):
         """Kills setting the flag before the isSidechain drop.
 
-        A subagent quoting a command header is not Shawn invoking it. If it
-        set the flag, the next real assistant turn would be dropped and a
-        genuine exchange lost for good.
+        A subagent quoting a command header is not the operator invoking
+        it. If it set the flag, the next real assistant turn would be
+        dropped and a genuine exchange lost for good.
         """
         transcript = tmp_path / "t.jsonl"
         _write_transcript(

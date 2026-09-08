@@ -108,11 +108,17 @@ try:
         # Under pytest the file handler is deliberately NOT opened (audit
         # round two M7). The guard above covered only the mkdir, so importing
         # this module from a test still handed ``basicConfig`` the live
-        # ``data/logs/extraction.log`` path. That was inert only by accident:
-        # pytest's logging plugin has already put a handler on the root
-        # logger, which makes ``basicConfig`` a no-op. Run the suite with
-        # ``-p no:logging`` and the test process would open — and append to —
-        # the operator's real extraction log.
+        # ``data/logs/extraction.log`` path. Nothing but luck stopped that
+        # from opening the operator's real log: pytest's logging plugin had
+        # already put a handler on the root logger, which makes
+        # ``basicConfig`` a no-op. Any run without that handler in place —
+        # importing the hook from a plain script, or a future pytest that
+        # configures logging differently — would have appended to it.
+        #
+        # (An earlier version of this comment cited ``-p no:logging`` as the
+        # way to see it. That is wrong and is corrected here per audit round
+        # four L-3: this branch is chosen on ``"pytest" in sys.modules``,
+        # which holds however the logging plugin is configured.)
         logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 except OSError:
     # ``logs`` is a symlink into the data submodule; on a fresh clone it
