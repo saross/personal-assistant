@@ -967,7 +967,9 @@ class TestHeadingsMatchTheirEntries:
             [pending], now=NOW, project_tags=set(), byte_budget=1500
         ).text
         assert "is not surfaced here" not in with_fallback
-        assert "never checked against a source" in with_fallback
+        assert "not verified true — unchecked or inconclusive" in (
+            with_fallback.replace("\n", " ")
+        )
 
         # And the untouched wording on a digest that really does hold only
         # verified entries — the pre-H25 output, byte for byte.
@@ -979,6 +981,35 @@ class TestHeadingsMatchTheirEntries:
             verified_only.replace("\n", " ")
         )
         assert _UNVERIFIED_HEADING not in verified_only
+
+    def test_a_pending_record_is_not_called_unchecked(self):
+        """Kills "never checked against a source" (re-audit M2, 2026-09-08).
+
+        ``verified: "pending"`` means anchor verification RAN and could not
+        settle the record — 53 such records were live at the re-audit. Both
+        states the fallback admits are in this fixture, and the sentence has
+        to be true of both, so it can only claim the negative they share.
+        """
+        pending = _mem(
+            id="p", verified="pending", anchors=["x.py:1"],
+            summary="an inconclusive note", created_at=_iso(1),
+        )
+        never_run = _mem(id="n", anchors=["x.py:1"],
+                         summary="an unchecked note", created_at=_iso(1))
+        del never_run["verified"]
+        text = digest.build_digest(
+            [pending, never_run], now=NOW, project_tags=set(), byte_budget=1500
+        ).text
+        assert {"an inconclusive note", "an unchecked note"} <= set(
+            line.split("] ", 1)[-1].split(" | ")[0]
+            for line in _section(text, _UNVERIFIED_HEADING)
+        )
+        flat = text.replace("\n", " ")
+        assert "not verified true — unchecked or inconclusive" in flat
+        assert "never checked" not in flat, (
+            "a record that was checked and came back inconclusive was "
+            "described as never checked"
+        )
 
     def test_the_fallback_heading_names_why_the_fallback_fired(self):
         """Kills hard-coding either clause (re-audit M1, 2026-09-08).

@@ -262,9 +262,18 @@ def is_active(mem: dict) -> bool:
 def has_anchors(mem: dict) -> bool:
     """True iff the memory carries a non-empty ``anchors`` list.
 
-    Used by the promoted-recent fallback: an anchored memory has been
-    through verification (even if the result is not yet ``true``), so it
-    is a safer top-up than an un-verified one.
+    Anchors are what anchor verification runs AGAINST, so an anchored
+    record is one that can be checked — not one that has been. The outcome
+    is carried by ``verified`` and is one of three states: true, false
+    (:func:`is_disproved`), or neither, which covers both "the check has
+    not run" and "the check ran and was inconclusive" (``pending``).
+
+    The promoted-recent fallback pairs this with the two verification
+    predicates: checkable, and not yet come back either way. That is a
+    safer top-up than an unanchored record, which cannot be checked at all
+    (re-audit M2, 2026-09-08: this docstring used to claim an anchored
+    record "has been through verification", which is true of the disproved
+    ones the pool now excludes and false of the never-run ones it admits).
     """
     return bool(mem.get("anchors"))
 
@@ -431,22 +440,26 @@ def rank_fallback(
 ) -> list[dict]:
     """Promoted-recent fallback pool (design §6a item 3).
 
-    Active, in-window memories that carry non-empty ``anchors`` (i.e.
-    went through verification) but whose verification has not yet returned
-    ``true``, excluding anything already chosen, ranked by recency.
-    ``project_id`` (Vector 2c) applies the same hard project scope as
-    :func:`rank_verified`, so a scoped digest never tops up with
+    Active, in-window memories that carry non-empty ``anchors`` (i.e. are
+    checkable, per :func:`has_anchors`) and whose ``verified`` state is
+    neither true nor false, excluding anything already chosen, ranked by
+    recency. ``project_id`` (Vector 2c) applies the same hard project scope
+    as :func:`rank_verified`, so a scoped digest never tops up with
     off-project records. The 2026-05-30 feasibility reframe (design §6b)
     establishes this fallback as the permanent handler for anchor-less
     records, not a migration stopgap.
 
+    "Neither" is two live states and the pool takes both: the check has not
+    run yet, and the check ran and was inconclusive (``pending`` — 53 such
+    records live at the 2026-09-08 re-audit). Neither is a claim about the
+    record's truth, which is why the rendered heading calls the block
+    "unverified" rather than "unchecked".
+
     Records whose verification returned ``false`` are excluded (audit H25,
-    2026-09-08). "Not yet true" and "checked and found wrong" are different
-    states: an unchecked record is a pointer of unknown quality, whereas a
-    disproved one is a known-wrong pointer, and injecting it into the
-    session start is the precise failure the anti-confabulation policy
-    exists to prevent. The pool therefore holds anchored records that are
-    still pending, never ones already refuted.
+    2026-09-08). "Not come back true" and "checked and found wrong" are
+    different states: the first is a pointer of unknown quality, the second
+    a known-wrong pointer, and injecting that into the session start is the
+    precise failure the anti-confabulation policy exists to prevent.
     """
     pool = [
         m
@@ -599,9 +612,15 @@ def _assemble(
     # no-fallback wording untouched keeps that digest byte-identical to the
     # pre-H25 output, so the §8 measurement window is unaffected.
     if unverified_entries:
+        # "Never checked" would be false for the bulk of this block. A
+        # ``verified: "pending"`` record HAS been through anchor
+        # verification; the run was inconclusive, not skipped (re-audit M2,
+        # 2026-09-08: 53 such records live). What the block shares is only
+        # the negative — none of it came back true — so that is what the
+        # sentence says.
         anti_confabulation = (
-            "**Anti-confabulation:** the unverified entries above were "
-            "never checked against a source; every entry here is a "
+            "**Anti-confabulation:** the entries above are not verified "
+            "true — unchecked or inconclusive; every entry here is a "
             "pointer, not an authority. Re-read the source before citing."
         )
     else:
