@@ -8,20 +8,28 @@ with Haiku-generated metadata via the Anthropic Batch API, and verifies
 archive integrity.
 
 Usage:
-    python3 scripts/bulk-archive.py discover [--min-turns N]
-    python3 scripts/bulk-archive.py archive [--dry-run] [--limit N] [--resume]
+    python3 scripts/bulk-archive.py discover [--min-content-chars N]
+    python3 scripts/bulk-archive.py archive [--dry-run] [--limit N] [--force]
     python3 scripts/bulk-archive.py enrich --batch-submit [--limit N]
     python3 scripts/bulk-archive.py enrich --batch-apply BATCH_ID
+    python3 scripts/bulk-archive.py subagents [--dry-run]
     python3 scripts/bulk-archive.py verify [--fix-catalogue]
 
 Modes:
     discover        Scan for unarchived sessions, build manifest, report stats
     archive         Compress and archive sessions (no API calls)
-    enrich          Generate Haiku metadata via Batch API (submit or apply)
+    enrich          Generate metadata via Terra or the Haiku Batch API
+    subagents       Backfill orphan subagent transcripts into their parents
     verify          Integrity checks and catalogue rebuild
+
+``archive`` resumes from its checkpoint by default — there is no --resume
+flag, and the docstring claimed one until 2026-09-08 (audit finding AR19).
+Entries the checkpoint claims are re-verified against disk before they are
+skipped; see cmd_archive.
 """
 
 import argparse
+import fcntl
 import gzip
 import importlib.util
 import json
@@ -40,6 +48,18 @@ from typing import Any
 # machine, so the variable name carries a host suffix.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _openai_key import resolve_openai_key  # noqa: E402
+from _log_dir import ensure_log_dir  # noqa: E402
+from _batch_state import load_state, save_state  # noqa: E402
+# The ONE substantive-session predicate, shared with check-archive-drift.py so
+# that the drift gate's remediation command archives exactly what it reported
+# (audit 2026-09-08, finding AR1). See scripts/_archive_substance.py.
+from _archive_substance import (  # noqa: E402
+    GRACE_HOURS,
+    MIN_CONTENT_CHARS,
+    is_substantive,
+    session_content_chars,
+    within_grace,
+)
 
 # ============================================================================
 # Configuration
@@ -52,6 +72,10 @@ LOG_FILE = LOG_DIR / "bulk-archive.log"
 MANIFEST_FILE = LOG_DIR / "bulk-archive-manifest.json"
 CHECKPOINT_FILE = LOG_DIR / "bulk-archive-progress.json"
 BATCH_STATE_FILE = LOG_DIR / "bulk-enrich-batch-state.json"
+# One state file per batch id (audit AR18): the Batch API takes up to 24
+# hours, so a second submit before the first is applied used to overwrite the
+# only map that says which archive entry each reply belongs to.
+BATCH_STATE_DIR = LOG_DIR / "bulk-enrich-batch-state"
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
@@ -70,12 +94,14 @@ TERRA_INPUT_PRICE_PER_MTOK = 2.50
 TERRA_OUTPUT_PRICE_PER_MTOK = 15.00
 TERRA_FLEX_DISCOUNT = 0.50
 
-# Distilled-token floor below which a session carries no metadata worth
-# generating. Sessions under this are `/clear`- or `/exit`-only invocations,
-# aborted starts, or two-turn trivia: verified by inspection 2026-07-28, where
-# a recurring *exact* 64-token extract turned out to be the local-command
-# caveat boilerplate and nothing else. Mirrors `resample-bake-off-manifest.py`.
-MIN_CONTENT_TOKENS = 1_000
+# Substance floor below which a session carries no metadata worth generating.
+# Sessions under it are `/clear`- or `/exit`-only invocations, aborted starts,
+# or two-turn trivia: verified by inspection 2026-07-28, where a recurring
+# *exact* 64-token extract turned out to be the local-command caveat
+# boilerplate and nothing else. This is now the SAME floor discovery and the
+# drift gate use — `MIN_CONTENT_CHARS` from `_archive_substance`, quoted in
+# tokens here because the enrich help text and cost projections speak tokens.
+MIN_CONTENT_TOKENS = MIN_CONTENT_CHARS // 4
 
 # Estimated tokens per lightweight enrichment request.
 # Based on progressive-disclosure-plan.md: ~12M tokens total / 603 sessions.
@@ -110,7 +136,7 @@ def load_env() -> None:
 
 def setup_logging() -> logging.Logger:
     """Configure file and console logging."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_log_dir(LOG_DIR)
     logger = logging.getLogger("bulk-archive")
     logger.setLevel(logging.INFO)
 
@@ -132,6 +158,21 @@ def setup_logging() -> logging.Logger:
 # ============================================================================
 # Project mapping — resolve encoded project dirs to real paths
 # ============================================================================
+
+
+def ensure_toolkit_on_path() -> Path:
+    """Put ``cc_session_toolkit``'s source on ``sys.path`` and return it.
+
+    Four call sites used to carry their own copy of these three lines, and
+    ``_enrich_terra`` carried none — it worked only because
+    ``_make_token_counter`` happened to run first and had already done it, a
+    dependency nothing stated and nothing tested (audit round 4c-2, finding
+    15; AR15 was the same defect, one call site over).
+    """
+    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
+    if str(toolkit_src) not in sys.path:
+        sys.path.insert(0, str(toolkit_src))
+    return toolkit_src
 
 
 def _extract_cwd_from_jsonl(session_path: Path) -> str | None:
@@ -257,9 +298,90 @@ def _source_machine_of(jsonl_file: Path) -> str:
     return "local"
 
 
+#: A directory named like a session UUID is a session's own subdirectory
+#: (holding ``subagents/``), never a project key or a machine name.
+_UUID_DIR_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def detect_source_layout(
+    source_root: Path,
+    logger: logging.Logger,
+    layout: str = "auto",
+) -> str:
+    """Return ``"live"`` or ``"snapshot"`` for *source_root*, or exit.
+
+    The old probe was a single negation: "no child holds ``*.jsonl`` at scan
+    time, therefore this is a merged snapshot". That is false in the one case
+    it matters — a live store whose sessions happen to sit in per-session
+    subdirectories, or a store scanned at a moment when no project directory
+    holds a top-level transcript. Every session-UUID directory was then read
+    as a *project key*, and the run proceeded silently under a completely
+    wrong idea of the tree (audit 2026-09-08, finding AR10).
+
+    So the probe now has to see positive evidence for whichever layout it
+    reports, and says which:
+
+    * **live** — some child directory holds ``*.jsonl`` directly.
+    * **snapshot** — no child does, and every non-empty child holds
+      project-key directories (the leading-dash encoding).
+
+    Anything else is ambiguous, and an ambiguous store is a refusal with the
+    remedy named, not a guess. ``--layout live|snapshot`` overrides the probe
+    outright for the case the operator knows better.
+    """
+    if layout in ("live", "snapshot"):
+        logger.info("Source %s: layout forced to %s", source_root, layout)
+        return layout
+
+    children = [child for child in sorted(source_root.iterdir())
+                if child.is_dir()]
+    if any(any(child.glob("*.jsonl")) for child in children):
+        return "live"
+
+    uuid_named = [child.name for child in children if _UUID_DIR_RE.match(child.name)]
+    project_keyed = [
+        child for child in children
+        if any(g.is_dir() and g.name.startswith("-") for g in child.iterdir())
+    ]
+
+    # A live store whose project directories hold no top-level *.jsonl right
+    # now — every session archived and its transcript rotated away — is still
+    # a live store, and check-archive-drift.py reads it happily and reports
+    # Clean. Refusing here while the gate says Clean is an inconsistency the
+    # operator has to resolve by hand, over a tree that is in fact fine
+    # (round 4c-2, finding 13). The leading-dash encoding is what makes a
+    # project key recognisable, so children that all look like project keys
+    # are a live store even when empty.
+    if children and all(child.name.startswith("-") for child in children):
+        logger.info(
+            "Source %s: live layout (%d project directories, none holding a "
+            "transcript right now)", source_root, len(children),
+        )
+        return "live"
+
+    if uuid_named or (children and not project_keyed):
+        logger.error(
+            "Cannot tell what %s is: no project directory holds a "
+            "transcript, and its children do not look like machine "
+            "directories%s. Refusing to guess — pass --layout live or "
+            "--layout snapshot.",
+            source_root,
+            (
+                f" ({len(uuid_named)} are session-UUID directories, which are "
+                "never projects)" if uuid_named else ""
+            ),
+        )
+        sys.exit(2)
+    return "snapshot"
+
+
 def iter_source_project_dirs(
     source_root: Path,
     logger: logging.Logger,
+    layout: str = "auto",
 ) -> list[tuple[str, Path]]:
     """Yield ``(encoded_cwd_key, project_dir)`` pairs from a transcript store.
 
@@ -284,11 +406,9 @@ def iter_source_project_dirs(
         return []
 
     # A live store's children hold *.jsonl directly; a snapshot's children are
-    # machine directories whose grandchildren do. Probe rather than assume.
-    is_snapshot = not any(
-        child.is_dir() and any(child.glob("*.jsonl"))
-        for child in source_root.iterdir()
-    )
+    # machine directories whose grandchildren do. The probe demands positive
+    # evidence either way and refuses when it has none (AR10).
+    is_snapshot = detect_source_layout(source_root, logger, layout) == "snapshot"
 
     if not is_snapshot:
         pairs = [
@@ -422,12 +542,72 @@ def resolve_project_mapping(
 # ============================================================================
 
 
+def read_catalogue_ids(
+    catalogue_file: Path,
+    logger: logging.Logger,
+) -> set[str]:
+    """Return the session ids CATALOG.json lists, reporting a corrupt file.
+
+    The toolkit's ``get_archived_session_ids`` swallows ``JSONDecodeError``
+    and ``KeyError`` and returns an empty set, so delegating to it made a
+    corrupt catalogue indistinguishable from an empty one: the "unreadable"
+    warning AR16 promised could never fire, and an operator watching for it
+    would never learn the index needed rebuilding (audit round 4c-2,
+    finding 5).
+
+    So the parse happens here, where the failure is visible, and the toolkit
+    is called only once the file is known to be readable. A corrupt
+    catalogue is still not fatal — it is a derived index, and discovery
+    deduplicates against disk — but it is now said out loud, with the repair
+    named.
+    """
+    try:
+        raw = catalogue_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "CATALOG.json cannot be read (%s) — treating it as empty; "
+            "rebuild it with `verify --fix-catalogue`", exc,
+        )
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "CATALOG.json is corrupt (%s) — treating it as empty; rebuild "
+            "it with `verify --fix-catalogue`", exc,
+        )
+        return set()
+    sessions = parsed.get("sessions") if isinstance(parsed, dict) else None
+    if not isinstance(sessions, list):
+        logger.warning(
+            "CATALOG.json has no 'sessions' list (found %s) — treating it "
+            "as empty; rebuild it with `verify --fix-catalogue`",
+            type(sessions).__name__,
+        )
+        return set()
+    ids = {
+        entry["id"] for entry in sessions
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    }
+    malformed = len(sessions) - len(
+        [e for e in sessions if isinstance(e, dict) and isinstance(e.get("id"), str)]
+    )
+    if malformed:
+        logger.warning(
+            "CATALOG.json holds %d entr%s with no usable session id — "
+            "rebuild it with `verify --fix-catalogue`",
+            malformed, "y" if malformed == 1 else "ies",
+        )
+    return ids
+
+
 def discover_sessions(
     project_mapping: dict[str, tuple[Path | None, str]],
     min_turns: int,
     logger: logging.Logger,
     source_pairs: list[tuple[str, Path]] | None = None,
     min_content_tokens: int = 0,
+    min_content_chars: int = MIN_CONTENT_CHARS,
 ) -> list[dict[str, Any]]:
     """
     Scan for unarchived sessions, filter trivials, build a manifest.
@@ -436,52 +616,69 @@ def discover_sessions(
     :func:`archived_session_ids_on_disk`) rather than from CATALOG.json, and
     against itself when the same session exists on more than one machine.
 
-    **Triviality test.** When ``min_content_tokens`` is positive, a session is
-    trivial if its *distilled transcript* falls below that many tokens;
-    otherwise the legacy turn-count test (``min_turns``) applies. Prefer the
-    token test. Measured on the 2026-07-28 backfill set, ``min_turns=5``
-    discarded 56 of 77 substantive sessions — including a 205,848-token
-    session that happened to have **two** turns, and 16 others above 50,000
-    tokens. Turn count is a poor proxy for substance because one long
-    analytical exchange is a single turn, so the turn test silently drops
-    exactly the sessions whose metadata is most worth having.
+    **Triviality test.** The default is the shared substance predicate
+    (``_archive_substance.is_substantive``: at least ``min_content_chars``
+    characters of user/assistant prose), which is the *same* rule
+    ``check-archive-drift.py`` reports on. That agreement is the whole point:
+    before 2026-09-08 discovery filtered on turn count while the gate filtered
+    on prose, so the gate reported sessions that the command it recommended
+    then refused to archive, and no run could ever clear it (audit AR1).
+
+    Two legacy filters remain available, both off unless asked for.
+    ``min_content_tokens`` measures the *distilled* transcript through the
+    toolkit's extractor; ``min_turns`` counts turns. Turn count is a poor
+    proxy for substance — measured on the 2026-07-28 backfill set,
+    ``min_turns=5`` discarded 56 of 77 substantive sessions, including a
+    205,848-token session that happened to have **two** turns — which is why
+    it is no longer the default.
 
     Returns:
         List of session manifest entries, sorted by project then session ID.
     """
+    # Add cc-session-toolkit to path BEFORE building the token counter: the
+    # counter importlib-loads extract-transcript-text.py, which imports
+    # cc_session_toolkit at module scope, so building it first made
+    # ``--min-content-tokens`` — the preferred floor — die with "No module
+    # named cc_session_toolkit" (audit 2026-09-08, finding AR15).
+    ensure_toolkit_on_path()
+
     distilled_tokens = _make_token_counter(logger) if min_content_tokens else None
-    # Add cc-session-toolkit to path for imports
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
 
     from cc_session_toolkit.archive import (
         extract_session_stats,
-        get_archived_session_ids,
         get_session_id,
         is_trivial_session,
     )
 
-    # Load already-archived session IDs for deduplication. Disk is
-    # authoritative; the catalogue is merged in only as a belt-and-braces
-    # superset in case an entry exists in the index but not (yet) on disk.
+    # Load already-archived session IDs for deduplication. **Disk is the
+    # only dedup key.** ``session.meta.json`` on disk is what an archived
+    # session IS; CATALOG.json is a derived index, rebuilt by
+    # ``verify --fix-catalogue``, and it under-reports and over-reports in
+    # both directions (2026-07-28: 539 entries against 728 ids on disk).
+    #
+    # Until 2026-09-08 the catalogue's ids were unioned in three lines after
+    # logging that some of them had no metadata on disk. That made a GHOST
+    # entry — catalogued, never archived — suppress archiving of the very
+    # session it named, while check-archive-drift.py (which reads metas only)
+    # kept reporting it: a second permanent gate, on top of AR1's. Ghosts are
+    # now counted and reported, and nothing more (audit finding AR2).
     archived_ids: set[str] = archived_session_ids_on_disk(
         DEFAULT_ARCHIVE_ROOT, logger
     )
     if CATALOGUE_FILE.exists():
-        catalogued = get_archived_session_ids(CATALOGUE_FILE)
-        only_in_catalogue = catalogued - archived_ids
-        if only_in_catalogue:
+        catalogued = read_catalogue_ids(CATALOGUE_FILE, logger)
+        ghosts = catalogued - archived_ids
+        if ghosts:
             logger.warning(
-                "%d session ids in CATALOG.json have no metadata on disk",
-                len(only_in_catalogue),
+                "%d session id(s) in CATALOG.json have no metadata on disk "
+                "(ghost entries — NOT treated as archived; rebuild the "
+                "catalogue with `verify --fix-catalogue`)",
+                len(ghosts),
             )
-        archived_ids |= catalogued
         logger.info(
-            "Deduplicating against %d archived session ids "
-            "(%d on disk, %d catalogued)",
-            len(archived_ids), len(archived_ids - only_in_catalogue),
-            len(catalogued),
+            "Deduplicating against %d archived session ids on disk "
+            "(catalogue holds %d, %d of them ghosts)",
+            len(archived_ids), len(catalogued), len(ghosts),
         )
 
     manifest: list[dict[str, Any]] = []
@@ -489,6 +686,7 @@ def discover_sessions(
     total_skipped_archived = 0
     total_skipped_agent = 0
     total_skipped_duplicate = 0
+    total_skipped_in_grace = 0
     # session_id -> index into `manifest`, so a duplicate found on a second
     # machine can replace the first when its transcript is larger.
     seen: dict[str, int] = {}
@@ -517,6 +715,17 @@ def discover_sessions(
                 total_skipped_archived += 1
                 continue
 
+            # Completeness guard (audit 2026-09-08, AR3). A transcript
+            # written within the grace window may still be growing: the
+            # session is live, or a compaction is mid-flight. Archiving a
+            # growing file captures a prefix, and that prefix then becomes
+            # canonical — the archive says "complete", every checker agrees,
+            # and the tail of the session is gone. Wait instead; the next run
+            # picks it up.
+            if within_grace(jsonl_file):
+                total_skipped_in_grace += 1
+                continue
+
             # Extract stats for trivial filtering
             try:
                 stats = extract_session_stats(jsonl_file)
@@ -526,13 +735,25 @@ def discover_sessions(
                 )
                 continue
 
+            # The shared substance predicate — the default filter, and the
+            # one the drift gate agrees with.
+            content_chars = 0
+            if min_content_chars > 0:
+                content_chars = session_content_chars(
+                    jsonl_file, threshold=min_content_chars
+                )
+                if content_chars < min_content_chars:
+                    total_skipped_trivial += 1
+                    continue
+
+            # Legacy filters, applied only when explicitly requested.
             content_tokens = 0
             if distilled_tokens is not None:
                 content_tokens = distilled_tokens(jsonl_file)
                 if content_tokens < min_content_tokens:
                     total_skipped_trivial += 1
                     continue
-            elif is_trivial_session(stats, min_turns=min_turns):
+            elif min_turns > 0 and is_trivial_session(stats, min_turns=min_turns):
                 total_skipped_trivial += 1
                 continue
 
@@ -568,6 +789,7 @@ def discover_sessions(
                 "subagent_dir": str(subagent_dir) if subagent_count > 0 else None,
                 "source_machine": _source_machine_of(jsonl_file),
                 "content_tokens": content_tokens,
+                "content_chars": content_chars,
             }
 
             # Same session on a second machine: keep the larger transcript.
@@ -591,10 +813,12 @@ def discover_sessions(
     logger.info(
         "Discovery complete: %d sessions to archive, "
         "%d skipped (trivial), %d skipped (already archived), "
-        "%d skipped (flat agents), %d skipped (cross-machine duplicate)",
+        "%d skipped (flat agents), %d skipped (cross-machine duplicate), "
+        "%d skipped (written within the %dh grace window — may still be "
+        "growing)",
         len(manifest), total_skipped_trivial,
         total_skipped_archived, total_skipped_agent,
-        total_skipped_duplicate,
+        total_skipped_duplicate, total_skipped_in_grace, GRACE_HOURS,
     )
 
     return manifest
@@ -603,11 +827,14 @@ def discover_sessions(
 def cmd_discover(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the discover mode: scan, filter, report, save manifest."""
     source_root = getattr(args, "source_root", CLAUDE_PROJECTS_DIR)
-    source_pairs = iter_source_project_dirs(source_root, logger)
+    source_pairs = iter_source_project_dirs(
+        source_root, logger, getattr(args, "layout", "auto")
+    )
     project_mapping = resolve_project_mapping(logger, source_pairs)
     manifest = discover_sessions(
         project_mapping, args.min_turns, logger, source_pairs,
         min_content_tokens=getattr(args, "min_content_tokens", 0),
+        min_content_chars=getattr(args, "min_content_chars", MIN_CONTENT_CHARS),
     )
 
     # Save manifest
@@ -683,10 +910,8 @@ def cmd_discover(args: argparse.Namespace, logger: logging.Logger) -> None:
 # ============================================================================
 
 
-def _load_checkpoint() -> dict[str, Any]:
-    """Load the archive checkpoint file, or return empty state."""
-    if CHECKPOINT_FILE.exists():
-        return json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+def _empty_checkpoint() -> dict[str, Any]:
+    """Return a fresh, empty checkpoint structure."""
     return {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -701,26 +926,188 @@ def _load_checkpoint() -> dict[str, Any]:
     }
 
 
+def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
+    """Load the archive checkpoint, treating an unusable file as empty.
+
+    ``logs/bulk-archive-progress.json`` is tracked in the private data
+    submodule, so it can arrive here with git conflict markers in it, and a
+    crash mid-write used to leave it truncated. Either way ``json.loads``
+    raised and ``archive`` died before doing any work — a progress file, a
+    pure optimisation, taking the command down (audit round 4c-2, finding 2).
+
+    A checkpoint that cannot be read is worth exactly nothing and costs
+    exactly one re-scan: every entry it holds is re-verified against disk
+    anyway. So it is logged loudly and treated as absent. A file of the wrong
+    SHAPE is handled the same way — a list, or a dict missing the keys the
+    caller indexes, would otherwise fail later and further from the cause.
+    """
+    if not CHECKPOINT_FILE.exists():
+        return _empty_checkpoint()
+    try:
+        loaded = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        if logger is not None:
+            logger.warning(
+                "Checkpoint at %s is unreadable (%s) — starting from an "
+                "empty one. Nothing is lost: every entry is re-verified "
+                "against disk before it is honoured.",
+                CHECKPOINT_FILE, exc,
+            )
+        return _empty_checkpoint()
+    if not isinstance(loaded, dict):
+        if logger is not None:
+            logger.warning(
+                "Checkpoint at %s is a %s, not an object — starting from an "
+                "empty one.", CHECKPOINT_FILE, type(loaded).__name__,
+            )
+        return _empty_checkpoint()
+    # Fill in anything a hand-edited or older file is missing, so the callers
+    # below can index without guarding every key.
+    checkpoint = _empty_checkpoint()
+    checkpoint.update(loaded)
+    for key, empty in (
+        ("archived_ids", []), ("skipped_trivial_ids", []), ("failed_ids", {}),
+    ):
+        if not isinstance(checkpoint.get(key), type(empty)):
+            checkpoint[key] = empty
+    if not isinstance(checkpoint.get("stats"), dict):
+        checkpoint["stats"] = _empty_checkpoint()["stats"]
+    return checkpoint
+
+
+#: A failed_ids entry older than this is retried automatically. Failures are
+#: overwhelmingly environmental (a full disk, an unmounted store, a session
+#: that was live at the time); keeping one forever turns a transient problem
+#: into a permanently unarchivable session (audit round 4c-2, finding 1).
+FAILED_RETRY_AFTER_DAYS = 7
+
+#: Substrings of a recorded failure reason that mean "try again next run".
+#: These describe the state of the SOURCE at one moment, not a defect in the
+#: session, so the next run is entitled to a different answer.
+_TRANSIENT_FAILURE_MARKERS = (
+    "size changed since discovery",
+    "source changed DURING the copy",
+    "grace window",
+    "source transcript unreadable",
+)
+
+
+def _record_failure(
+    checkpoint: dict[str, Any], session_id: str, reason: str
+) -> None:
+    """Record a per-session failure with the time it happened.
+
+    Stored as ``{"reason": ..., "recorded_at": ...}``. The legacy bare-string
+    form is still read (see :func:`_partition_failed_ids`); without a
+    timestamp there is no way to expire an entry, which is half of why a
+    failure used to be permanent.
+    """
+    checkpoint["failed_ids"][session_id] = {
+        "reason": reason,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _failure_reason(entry: Any) -> str:
+    """Return the reason text from either checkpoint failure shape."""
+    if isinstance(entry, dict):
+        return str(entry.get("reason", ""))
+    return str(entry)
+
+
+def _partition_failed_ids(
+    failed: dict[str, Any],
+    on_disk: set[str],
+    *,
+    retry_all: bool = False,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Split ``failed_ids`` into (still binding, retried) with reasons.
+
+    A failure is retried when any of these holds:
+
+    * the session is on this machine's disk after all — some other path
+      archived it, so the record is simply wrong;
+    * the recorded reason describes a moment rather than a defect (the source
+      was growing, was in grace, was briefly unreadable);
+    * the entry has aged past :data:`FAILED_RETRY_AFTER_DAYS`, or carries no
+      timestamp at all (the legacy shape, which cannot be aged);
+    * ``--retry-failed`` was passed.
+
+    Everything else still blocks, so a genuinely broken session does not cost
+    a full re-run every night.
+    """
+    moment = now or datetime.now(timezone.utc)
+    binding: dict[str, Any] = {}
+    retried: dict[str, str] = {}
+    for session_id, entry in failed.items():
+        reason = _failure_reason(entry)
+        if retry_all:
+            retried[session_id] = "--retry-failed"
+            continue
+        if session_id in on_disk:
+            retried[session_id] = "already archived on this machine"
+            continue
+        if any(marker in reason for marker in _TRANSIENT_FAILURE_MARKERS):
+            retried[session_id] = f"transient failure ({reason[:60]})"
+            continue
+        recorded_at = entry.get("recorded_at") if isinstance(entry, dict) else None
+        if not recorded_at:
+            retried[session_id] = "no timestamp (legacy entry) — retrying once"
+            continue
+        try:
+            when = datetime.fromisoformat(recorded_at)
+        except ValueError:
+            retried[session_id] = "unparseable timestamp — retrying once"
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if (moment - when).days >= FAILED_RETRY_AFTER_DAYS:
+            retried[session_id] = (
+                f"failure is older than {FAILED_RETRY_AFTER_DAYS} days"
+            )
+            continue
+        binding[session_id] = entry
+    return binding, retried
+
+
 def _save_checkpoint(checkpoint: dict[str, Any]) -> None:
-    """Persist the checkpoint to disk."""
+    """Persist the checkpoint via a temporary file and an atomic rename.
+
+    This is written after every single session, so it is the file most
+    likely to be caught mid-write by a Ctrl-C or a power cut. A bare
+    ``write_text`` truncates first and fills after, leaving a window in which
+    the file on disk is half a JSON document (audit round 4c-2, finding 2).
+    """
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CHECKPOINT_FILE.write_text(
-        json.dumps(checkpoint, indent=2), encoding="utf-8"
-    )
+    tmp = CHECKPOINT_FILE.with_name(CHECKPOINT_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(checkpoint, indent=2), encoding="utf-8")
+    tmp.replace(CHECKPOINT_FILE)
 
 
 def archive_subagents(
     source_session_dir: Path,
     archive_dir: Path,
     logger: logging.Logger,
+    force: bool = False,
 ) -> int:
     """
     Compress subagent JSONL files from a session's subagents directory
     into the archive directory.
 
+    Written via a temporary file and an atomic rename, and an existing
+    archived subagent is left alone unless *force* is set. The old version
+    wrote straight to the destination, so an interrupted run left a truncated
+    ``.gz`` that every later check accepted as the subagent's transcript, and
+    a re-run overwrote a good archived subagent with whatever the source held
+    now (audit 2026-09-08, finding AR14). ``cmd_subagents`` a few hundred
+    lines below already did it this way; this is the same discipline applied
+    to the path that runs far more often.
+
     Returns:
-        Number of subagents archived.
+        Number of subagents archived (files skipped as already present are
+        not counted).
     """
     subagent_source = source_session_dir / "subagents"
     if not subagent_source.is_dir():
@@ -734,24 +1121,36 @@ def archive_subagents(
     subagent_dest.mkdir(parents=True, exist_ok=True)
 
     count = 0
+    skipped = 0
     for sa_file in subagent_files:
         dest_gz = subagent_dest / f"{sa_file.stem}.jsonl.gz"
+        if dest_gz.exists() and not force:
+            skipped += 1
+            continue
 
+        tmp = dest_gz.with_suffix(".gz.tmp")
         try:
             with open(sa_file, "rb") as f_in:
-                with gzip.open(dest_gz, "wb") as f_out:
+                with gzip.open(tmp, "wb") as f_out:
                     # Stream in chunks to keep memory bounded
                     while True:
                         chunk = f_in.read(8192)
                         if not chunk:
                             break
                         f_out.write(chunk)
+            tmp.replace(dest_gz)
             count += 1
         except Exception as exc:
+            tmp.unlink(missing_ok=True)
             logger.warning(
                 "Failed to archive subagent %s: %s", sa_file.name, exc
             )
 
+    if skipped:
+        logger.info(
+            "%d subagent archive(s) already present in %s — left alone "
+            "(pass --force to overwrite)", skipped, subagent_dest,
+        )
     return count
 
 
@@ -997,15 +1396,90 @@ def cmd_subagents(args: argparse.Namespace, logger: logging.Logger) -> None:
             logger.error("Failed to archive %s: %s", agent_file.name, exc)
 
     logger.info("Archived %d orphan subagent transcripts", written)
-    print(f"\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
+    print("\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
+
+
+def uncompressed_size(transcript: Path) -> int | None:
+    """Return the byte length an archived transcript decompresses to.
+
+    For ``session.jsonl.gz`` this reads the gzip ISIZE trailer — the last
+    four bytes of the member, little-endian — so the answer costs one seek
+    rather than a full decompression pass over the whole archive. ISIZE is
+    stored modulo 2**32; no session transcript comes close to 4 GiB, and a
+    file that did would report a wrapped value, which is why the caller
+    treats a mismatch as "report", never as "delete".
+
+    Returns ``None`` when the size cannot be determined.
+    """
+    try:
+        if transcript.suffix == ".gz":
+            with open(transcript, "rb") as handle:
+                if handle.seek(0, os.SEEK_END) < 8:
+                    return None
+                handle.seek(-4, os.SEEK_END)
+                return int.from_bytes(handle.read(4), "little")
+        return transcript.stat().st_size
+    except OSError:
+        return None
+
+
+def refuse_incomplete_source(
+    session_path: Path,
+    expected_size: int | None,
+    logger: logging.Logger,
+) -> str | None:
+    """Return a reason to refuse archiving *session_path*, or ``None``.
+
+    The completeness guard (audit 2026-09-08, finding AR3). Discovery and
+    archiving are separate commands, often minutes or days apart, and nothing
+    between them stopped the archiver copying a transcript that was still
+    being written. A copy taken mid-write is a prefix — and once it is in the
+    archive it IS the session, with every integrity check reporting clean,
+    because until now every check compared the archive against itself.
+
+    Two refusals:
+
+    * the transcript has gone (moved, or the machine's store was cleaned);
+    * it was last written inside the grace window, so a live session or an
+      in-flight compaction may still be appending.
+
+    A size that differs from the one discovery recorded is deliberately NOT a
+    refusal. Discovery already skipped anything inside the grace window, so a
+    manifested session was quiescent when it was listed; if it is quiescent
+    again now, the difference says the manifest is stale, not that the file
+    is moving. Refusing on it made the mismatch permanent — the manifest kept
+    the old size, so every later run refused for the same reason and the
+    session could never be archived without re-running discover (audit round
+    4c-2, finding 1). The caller refreshes the recorded size and says so.
+    What still protects the copy is the pair of checks about NOW: the grace
+    window above, and the before/after comparison around the copy itself.
+    """
+    try:
+        stat = session_path.stat()
+    except OSError as exc:
+        return f"source transcript unreadable ({exc})"
+    if within_grace(session_path):
+        return (
+            f"written within the {GRACE_HOURS}h grace window "
+            "(may still be growing)"
+        )
+    if expected_size is not None and stat.st_size != expected_size:
+        logger.warning(
+            "%s: manifest records %d bytes, source now holds %d and is out "
+            "of the grace window — archiving the current content",
+            session_path.name, expected_size, stat.st_size,
+        )
+    logger.debug(
+        "Completeness guard passed for %s (%d bytes)",
+        session_path.name, stat.st_size,
+    )
+    return None
 
 
 def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the archive mode: compress and archive sessions."""
     # Add cc-session-toolkit to path
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     from cc_session_toolkit.archive import archive_session
 
@@ -1013,10 +1487,16 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     if not MANIFEST_FILE.exists():
         logger.info("No manifest found — running discovery first...")
         source_root = getattr(args, "source_root", CLAUDE_PROJECTS_DIR)
-        source_pairs = iter_source_project_dirs(source_root, logger)
+        source_pairs = iter_source_project_dirs(
+            source_root, logger, getattr(args, "layout", "auto")
+        )
         project_mapping = resolve_project_mapping(logger, source_pairs)
         manifest = discover_sessions(
-            project_mapping, args.min_turns, logger, source_pairs
+            project_mapping, args.min_turns, logger, source_pairs,
+            min_content_tokens=getattr(args, "min_content_tokens", 0),
+            min_content_chars=getattr(
+                args, "min_content_chars", MIN_CONTENT_CHARS
+            ),
         )
         MANIFEST_FILE.write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
@@ -1025,10 +1505,58 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
         logger.info("Loaded manifest with %d sessions", len(manifest))
 
-    # Load checkpoint for resume
-    checkpoint = _load_checkpoint()
-    already_done = set(checkpoint["archived_ids"])
-    already_failed = set(checkpoint["failed_ids"].keys())
+    # Load checkpoint for resume, then CHECK IT AGAINST DISK.
+    #
+    # The checkpoint is a progress file under logs/, and logs/ is git-tracked
+    # and synced between machines, while the archive itself is per-machine.
+    # So a checkpoint written on the other machine arrives here saying "these
+    # 600 sessions are archived" about an archive that has never held them —
+    # and this machine then skips every one of them, permanently, with the
+    # drift gate reporting them forever (audit 2026-09-08, finding AR12).
+    #
+    # A checkpoint entry is now only honoured when the session really is on
+    # this machine's disk. Stale entries are dropped, named in the log, and
+    # removed from the file so the state self-heals.
+    checkpoint = _load_checkpoint(logger)
+    on_disk = archived_session_ids_on_disk(DEFAULT_ARCHIVE_ROOT, logger)
+    claimed = list(checkpoint["archived_ids"])
+    already_done = {sid for sid in claimed if sid in on_disk}
+    stale = [sid for sid in claimed if sid not in on_disk]
+    if stale:
+        logger.warning(
+            "Dropping %d checkpoint entr%s claiming a session this machine "
+            "has never archived (checkpoint synced from another machine, or "
+            "an archive entry removed): %s",
+            len(stale), "y" if len(stale) == 1 else "ies",
+            ", ".join(sid[:8] for sid in stale[:10])
+            + (" …" if len(stale) > 10 else ""),
+        )
+        checkpoint["archived_ids"] = sorted(already_done)
+        _save_checkpoint(checkpoint)
+
+    # The same self-heal for failed_ids. Without it AR3 traded one defect for
+    # a worse one: a session that was growing during a copy is recorded as
+    # failed, the to_archive filter below skips it on every subsequent run,
+    # and the drift gate reports it forever — silently truncated became
+    # permanently unarchivable (audit round 4c-2, finding 1). A failure
+    # entry synced from the other machine blocked archiving here in exactly
+    # the same way.
+    binding_failures, retried_failures = _partition_failed_ids(
+        dict(checkpoint["failed_ids"]),
+        on_disk,
+        retry_all=getattr(args, "retry_failed", False),
+    )
+    if retried_failures:
+        logger.info(
+            "Retrying %d previously failed session(s):", len(retried_failures)
+        )
+        for session_id, why in sorted(retried_failures.items())[:10]:
+            logger.info("  %s — %s", session_id[:8], why)
+        if len(retried_failures) > 10:
+            logger.info("  … and %d more", len(retried_failures) - 10)
+        checkpoint["failed_ids"] = binding_failures
+        _save_checkpoint(checkpoint)
+    already_failed = set(binding_failures)
 
     # Apply limit
     to_archive = [
@@ -1066,6 +1594,8 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     archived_count = 0
     subagent_count = 0
     archived_dirs: list[Path] = []
+    # (session_id, reason) for sources the completeness guard refused.
+    skipped_incomplete: list[tuple[str, str]] = []
 
     for i, entry in enumerate(to_archive, 1):
         session_path = Path(entry["session_path"])
@@ -1087,6 +1617,20 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                 i, len(to_archive), i / len(to_archive) * 100,
             )
 
+        # Re-stat immediately before the copy, not at discovery time: the
+        # window between the two commands is exactly where a growing
+        # transcript slips through (AR3).
+        refusal = refuse_incomplete_source(
+            session_path, entry.get("size_bytes"), logger
+        )
+        if refusal:
+            logger.warning(
+                "Skipping %s (%s): %s", session_id[:8], project_name, refusal
+            )
+            skipped_incomplete.append((session_id, refusal))
+            continue
+        size_before_copy = session_path.stat().st_size
+
         try:
             metadata = archive_session(
                 session_path=session_path,
@@ -1106,7 +1650,9 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
 
             if metadata is None:
                 # archive_session returns None on skip (dry_run or error)
-                checkpoint["failed_ids"][session_id] = "archive_session returned None"
+                _record_failure(
+                    checkpoint, session_id, "archive_session returned None"
+                )
                 _save_checkpoint(checkpoint)
                 continue
 
@@ -1121,12 +1667,35 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                     source_session_dir,
                     Path(archive_dir_str),
                     logger,
+                    force=getattr(args, "force", False),
                 )
                 if sa_count > 0:
                     logger.info(
                         "  Archived %d subagents for %s",
                         sa_count, session_id[:8],
                     )
+
+            # Compare the source again AFTER the copy. If it moved under us
+            # the archived entry may hold a prefix, so it is recorded as a
+            # failure rather than a success: it is not added to archived_ids,
+            # the drift gate keeps reporting the session, and `verify` will
+            # flag the size mismatch. The entry is left in place — deleting
+            # from the archive on a size heuristic is a worse failure mode
+            # than keeping a suspect entry that every checker now names.
+            try:
+                size_after_copy = session_path.stat().st_size
+            except OSError:
+                size_after_copy = -1
+            if size_after_copy != size_before_copy:
+                reason = (
+                    f"source changed DURING the copy ({size_before_copy} -> "
+                    f"{size_after_copy} bytes); archived entry at "
+                    f"{archive_dir_str} may be truncated — re-archive"
+                )
+                logger.error("%s (%s): %s", session_id[:8], project_name, reason)
+                _record_failure(checkpoint, session_id, reason)
+                _save_checkpoint(checkpoint)
+                continue
 
             # Update checkpoint
             checkpoint["archived_ids"].append(session_id)
@@ -1144,7 +1713,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                 "Failed to archive %s (%s): %s",
                 session_id[:8], project_name, exc,
             )
-            checkpoint["failed_ids"][session_id] = str(exc)
+            _record_failure(checkpoint, session_id, str(exc))
             _save_checkpoint(checkpoint)
 
     relocate_to_legacy_precedent(
@@ -1155,13 +1724,20 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         "\nArchive complete: %d sessions, %d subagents archived",
         archived_count, subagent_count,
     )
+    if skipped_incomplete:
+        logger.warning(
+            "%d session(s) skipped by the completeness guard (not archived):",
+            len(skipped_incomplete),
+        )
+        for session_id, reason in skipped_incomplete:
+            logger.warning("  %s — %s", session_id[:8], reason)
     if checkpoint["failed_ids"]:
         logger.warning(
             "%d sessions failed — see checkpoint: %s",
             len(checkpoint["failed_ids"]), CHECKPOINT_FILE,
         )
 
-    print(f"\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
+    print("\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
 
 
 # ============================================================================
@@ -1510,6 +2086,9 @@ def _enrich_terra(
         sys.exit(1)
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
+    # Explicitly, rather than relying on _make_token_counter below having
+    # done it first (round 4c-2, finding 15).
+    ensure_toolkit_on_path()
     distilled = _make_token_counter(logger)
     unenriched = _find_unenriched_sessions(logger)
     if not unenriched:
@@ -1534,18 +2113,23 @@ def _enrich_terra(
                 tmp_path.write_bytes(f_in.read())
             text = _distil_to_text(tmp_path, logger)
             tokens = distilled(tmp_path)
+            # The shared substance predicate, measured on the decompressed
+            # transcript — the SAME rule discovery and the drift gate use, so
+            # nothing can be archived that enrichment then declines to
+            # summarise for a different reason (audit AR1).
+            substantive = is_substantive(tmp_path, MIN_CONTENT_CHARS)
         finally:
             tmp_path.unlink(missing_ok=True)
 
-        if tokens < MIN_CONTENT_TOKENS:
+        if not substantive:
             skipped_thin += 1
             continue
         jobs.append((archive_dir, meta, text, tokens))
 
     if skipped_thin:
         logger.info(
-            "Skipped %d entries below the %d-token substance floor",
-            skipped_thin, MIN_CONTENT_TOKENS,
+            "Skipped %d entries below the %d-character substance floor",
+            skipped_thin, MIN_CONTENT_CHARS,
         )
     if args.limit and args.limit > 0:
         jobs = jobs[:args.limit]
@@ -1935,9 +2519,7 @@ def _enrich_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         sys.exit(1)
 
     # Add cc-session-toolkit to path for stats extraction
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     from cc_session_toolkit.archive import extract_session_stats
 
@@ -2023,7 +2605,7 @@ def _enrich_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
     print("API COST GATE — Batch Enrichment")
     print(f"{'=' * 60}")
     print(f"Model:       {HAIKU_MODEL}")
-    print(f"Mode:        Anthropic Batch API (50% discount)")
+    print("Mode:        Anthropic Batch API (50% discount)")
     print(f"Requests:    {len(requests)}")
     print(f"Est. cost:   ${total_est:.2f}")
     print(f"{'=' * 60}")
@@ -2046,16 +2628,14 @@ def _enrich_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         "n_requests": len(requests),
         "session_id_map": session_id_map,
     }
-    BATCH_STATE_FILE.write_text(
-        json.dumps(state, indent=2), encoding="utf-8"
-    )
+    state_file = save_state(state, BATCH_STATE_DIR, BATCH_STATE_FILE)
 
     logger.info(
         "Batch submitted: %s | %d requests | Status: %s",
         batch_id, len(requests), batch_job.processing_status,
     )
     print(f"\nBatch ID: {batch_id}")
-    print(f"State saved: {BATCH_STATE_FILE}")
+    print(f"State saved: {state_file}")
     print(
         f"\nNext: python3 scripts/bulk-archive.py "
         f"enrich --batch-apply {batch_id}"
@@ -2070,12 +2650,19 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
         logger.error("anthropic package not installed — pip install anthropic")
         sys.exit(1)
 
-    # Load state to get session_id_map
-    if not BATCH_STATE_FILE.exists():
-        logger.error("No batch state file found: %s", BATCH_STATE_FILE)
+    # Load the state that describes THIS batch. session_id_map is what turns
+    # a custom_id back into an archive directory; applying one batch's
+    # results through another's map writes each session's metadata into some
+    # other session's entry (audit AR18). A slot naming a different batch is
+    # therefore a refusal, not a fallback.
+    state = load_state(batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    if state is None:
+        logger.error(
+            "No batch state describing %s (looked in %s and %s) — without "
+            "its session map, results cannot be applied to the right entries",
+            batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE,
+        )
         sys.exit(1)
-
-    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
     session_id_map = state.get("session_id_map", {})
 
     client = anthropic.Anthropic()
@@ -2149,14 +2736,26 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
 
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            # MERGE, do not replace. The Terra path writes a three_ps block
+            # into auto_generated; replacing the dict wholesale deleted it,
+            # so applying a Haiku batch over a Terra-enriched entry silently
+            # destroyed the three-Ps summaries (audit finding AR13).
+            # _write_enriched_meta a few hundred lines above already merges;
+            # this is the same discipline on the batch path.
+            existing = meta.get("auto_generated") or {}
             meta["auto_generated"] = {
+                **existing,
                 "title": parsed.get("title", "Untitled Session"),
                 "purpose": parsed.get("purpose", ""),
                 "tags": parsed.get("tags", []),
             }
-            meta_path.write_text(
-                json.dumps(meta, indent=2), encoding="utf-8"
-            )
+            # Temp file plus atomic rename: a crash here used to truncate the
+            # metadata, and a session with no parseable meta has no id, which
+            # drops it out of every archived-ids set and re-arms the drift
+            # gates on a session that IS archived.
+            tmp = meta_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            tmp.replace(meta_path)
             applied += 1
         except Exception as exc:
             logger.warning(
@@ -2178,12 +2777,66 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
 # ============================================================================
 
 
-def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
-    """Run integrity checks and optionally rebuild the catalogue."""
+def write_catalogue(
+    catalogue: dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Write CATALOG.json under an exclusive lock, temp file plus rename.
+
+    The old write was a bare ``write_text`` with no lock, so two concurrent
+    ``verify --fix-catalogue`` runs interleaved, and a crash left truncated
+    JSON. Truncated JSON matters more than it looks: ``discover`` reads the
+    catalogue on every run, and an unguarded parse there took the whole
+    command down (audit 2026-09-08, finding AR16).
+
+    The lock is a sibling file rather than the catalogue itself, so the
+    rename that replaces the catalogue cannot pull the lock out from under a
+    waiting writer.
+    """
+    CATALOGUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = CATALOGUE_FILE.with_name(CATALOGUE_FILE.name + ".lock")
+    payload = json.dumps(catalogue, indent=2)
+    with open(lock_path, "w", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            tmp = CATALOGUE_FILE.with_name(CATALOGUE_FILE.name + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(CATALOGUE_FILE)
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _recorded_transcript_bytes(meta: dict[str, Any]) -> int | None:
+    """The uncompressed transcript length the metadata claims, or ``None``.
+
+    The v1.1 archive block records ``jsonl_bytes_uncompressed`` when the
+    transcript was gzipped and ``jsonl_bytes`` when it was not; older entries
+    carry only the latter. Both name the same quantity — the size of the raw
+    JSONL — so either answers the completeness question.
+    """
+    archive_block = meta.get("archive")
+    if not isinstance(archive_block, dict):
+        return None
+    for key in ("jsonl_bytes_uncompressed", "jsonl_bytes"):
+        value = archive_block.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
+
+
+def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> int:
+    """Run integrity checks and optionally rebuild the catalogue.
+
+    Returns 1 when any integrity issue was found, 0 otherwise. This is a
+    check, and a check that always exits 0 is not a check: verify printed
+    size mismatches and non-canonical entries to stdout and then reported
+    success, so AR3's detection half and AR21 were invisible to daily-sync
+    and to cron, which read the exit status and not the report (audit round
+    4c-2, finding 4). ``check-archive-drift.py`` and
+    ``normalise-archive-storage.py`` already work this way.
+    """
     # Add cc-session-toolkit to path
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     from cc_session_toolkit.catalogue import rebuild_catalogue
 
@@ -2202,18 +2855,46 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
 
     for archive_dir in archive_dirs:
         meta_path = archive_dir / "session.meta.json"
-        has_jsonl = (
-            (archive_dir / "session.jsonl.gz").exists()
-            or (archive_dir / "session.jsonl").exists()
-        )
+        transcript: Path | None = None
+        for candidate in ("session.jsonl.gz", "session.jsonl"):
+            if (archive_dir / candidate).exists():
+                transcript = archive_dir / candidate
+                break
 
-        if not has_jsonl:
+        if transcript is None:
             issues.append(f"Missing JSONL: {archive_dir}")
+        elif transcript.name == "session.jsonl":
+            # `session.jsonl.gz` is the canonical storage form (decided
+            # 2026-08-22). An entry still holding raw JSONL is not searchable:
+            # `_scan_archives.py` — the engine behind search-archives-safe.sh
+            # — globs only `session.jsonl.gz`, so a raw-only entry is
+            # invisible to every ad-hoc search while verify called it fine
+            # (audit 2026-09-08, finding AR21). Report it; the repair is
+            # `scripts/normalise-archive-storage.py --apply`.
+            issues.append(
+                f"Non-canonical storage (raw session.jsonl, not searchable): "
+                f"{archive_dir}"
+            )
 
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             project = meta.get("project", {}).get("name", "unknown")
             by_project[project] = by_project.get(project, 0) + 1
+
+            # Completeness check (AR3): the archived transcript must be as
+            # long as the metadata says it is. Until 2026-09-08 verify
+            # compared the archive only against itself — existence and a
+            # parseable meta — so a transcript copied mid-write passed every
+            # check that existed, forever.
+            if transcript is not None:
+                recorded = _recorded_transcript_bytes(meta)
+                actual = uncompressed_size(transcript)
+                if recorded is not None and actual is not None \
+                        and recorded != actual:
+                    issues.append(
+                        f"Size mismatch: {archive_dir} — metadata records "
+                        f"{recorded} bytes, {transcript.name} holds {actual}"
+                    )
 
             purpose = meta.get("auto_generated", {}).get("purpose", "")
             if (
@@ -2244,6 +2925,10 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
         print(f"\nIssues ({len(issues)}):")
         for issue in issues:
             print(f"  - {issue}")
+        logger.warning(
+            "Archive verification found %d issue(s) — exiting non-zero",
+            len(issues),
+        )
     else:
         print("\nNo integrity issues found.")
 
@@ -2251,18 +2936,20 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.fix_catalogue:
         logger.info("Rebuilding catalogue...")
         catalogue = rebuild_catalogue(DEFAULT_ARCHIVE_ROOT)
-        CATALOGUE_FILE.write_text(
-            json.dumps(catalogue, indent=2), encoding="utf-8"
-        )
+        write_catalogue(catalogue, logger)
         n_sessions = len(catalogue.get("sessions", []))
         logger.info(
             "Catalogue rebuilt: %d sessions → %s",
             n_sessions, CATALOGUE_FILE,
         )
         print(
-            f"\nNext: python3 scripts/sync-sessions-to-postgres.py "
-            f"--full-resync"
+            "\nNext: python3 scripts/sync-sessions-to-postgres.py "
+            "--full-resync"
         )
+
+    # The catalogue rebuild is a repair, not a finding: an archive whose only
+    # complaint was an out-of-date index is clean once it has been rebuilt.
+    return 1 if issues else 0
 
 
 # ============================================================================
@@ -2270,8 +2957,12 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
 # ============================================================================
 
 
-def main() -> None:
-    """Parse arguments and dispatch to the appropriate mode."""
+def main() -> int:
+    """Parse arguments and dispatch to the appropriate mode.
+
+    Returns the process exit status: non-zero when a checking mode found
+    something wrong.
+    """
     parser = argparse.ArgumentParser(
         description="Bulk archive historical Claude Code sessions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2283,17 +2974,30 @@ def main() -> None:
         "discover", help="Scan for unarchived sessions"
     )
     p_discover.add_argument(
-        "--min-turns", type=int, default=5,
-        help="Minimum turns to keep (default: 5)",
+        "--min-content-chars", type=int, default=MIN_CONTENT_CHARS,
+        help=(
+            "Substance floor, in characters of user/assistant prose "
+            f"(default: {MIN_CONTENT_CHARS}; 0 disables). This is the DEFAULT "
+            "filter and the same rule check-archive-drift.py reports on, so "
+            "running this command with its defaults archives exactly what the "
+            "drift gate listed."
+        ),
+    )
+    p_discover.add_argument(
+        "--min-turns", type=int, default=0,
+        help=(
+            "Legacy turn-count filter (default: 0 = off). Turn count is a bad "
+            "substance proxy: at --min-turns 5 it discarded 56 of 77 "
+            "substantive sessions on 2026-07-28, including a 205,848-token "
+            "session with two turns."
+        ),
     )
     p_discover.add_argument(
         "--min-content-tokens", type=int, default=0,
         help=(
-            "Keep sessions whose DISTILLED transcript is at least N tokens, "
-            "instead of filtering on turn count. Strongly preferred: "
-            f"--min-content-tokens {MIN_CONTENT_TOKENS} is the vetted floor. "
-            "The turn-count default discards long single-exchange sessions "
-            "(measured: 56 of 77 substantive sessions lost at --min-turns 5)."
+            "Legacy filter on the DISTILLED transcript, in tokens "
+            "(default: 0 = off). Applied in addition to --min-content-chars. "
+            f"The vetted equivalent floor is {MIN_CONTENT_TOKENS} tokens."
         ),
     )
     p_discover.add_argument(
@@ -2307,18 +3011,49 @@ def main() -> None:
         ),
     )
 
+    p_discover.add_argument(
+        "--layout", choices=("auto", "live", "snapshot"), default="auto",
+        help=(
+            "Force the source store's layout instead of probing for it. "
+            "'live' is <root>/<cwd-key>/*.jsonl; 'snapshot' is "
+            "<root>/<machine>/<cwd-key>/*.jsonl. The probe refuses rather "
+            "than guesses when the tree matches neither."
+        ),
+    )
+
     # archive
     p_archive = subparsers.add_parser(
         "archive", help="Compress and archive sessions"
     )
     p_archive.add_argument("--dry-run", action="store_true")
     p_archive.add_argument(
+        "--retry-failed", action="store_true",
+        help=(
+            "Clear every recorded failure and try all of them again. Rarely "
+            "needed: failures whose reason was transient, whose session is "
+            f"now on disk, or which are older than {FAILED_RETRY_AFTER_DAYS} "
+            "days are retried automatically."
+        ),
+    )
+    p_archive.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Overwrite subagent transcripts that are already archived. Off "
+            "by default: a re-run must not replace a good archived subagent "
+            "with whatever the source holds now."
+        ),
+    )
+    p_archive.add_argument(
         "--limit", type=int, default=0,
         help="Archive at most N sessions (0 = all)",
     )
     p_archive.add_argument(
-        "--min-turns", type=int, default=5,
-        help="Minimum turns for discovery fallback (default: 5)",
+        "--min-turns", type=int, default=0,
+        help="Legacy turn filter for the discovery fallback (0 = off).",
+    )
+    p_archive.add_argument(
+        "--min-content-chars", type=int, default=MIN_CONTENT_CHARS,
+        help="As for `discover` (used only by the discovery fallback).",
     )
     p_archive.add_argument(
         "--source-root", type=Path, default=CLAUDE_PROJECTS_DIR,
@@ -2327,6 +3062,16 @@ def main() -> None:
     p_archive.add_argument(
         "--min-content-tokens", type=int, default=0,
         help="As for `discover` (used only by the discovery fallback).",
+    )
+
+    p_archive.add_argument(
+        "--layout", choices=("auto", "live", "snapshot"), default="auto",
+        help=(
+            "Force the source store's layout instead of probing for it. "
+            "'live' is <root>/<cwd-key>/*.jsonl; 'snapshot' is "
+            "<root>/<machine>/<cwd-key>/*.jsonl. The probe refuses rather "
+            "than guesses when the tree matches neither."
+        ),
     )
 
     # enrich
@@ -2410,6 +3155,9 @@ def main() -> None:
     args = parser.parse_args()
     logger = setup_logging()
 
+    # Modes that CHECK return a status; modes that DO return None and are
+    # reported through their own logging. A caller (daily-sync, cron) reads
+    # the exit status, so a check that cannot fail the process is decoration.
     if args.mode == "discover":
         cmd_discover(args, logger)
     elif args.mode == "archive":
@@ -2419,8 +3167,9 @@ def main() -> None:
     elif args.mode == "subagents":
         cmd_subagents(args, logger)
     elif args.mode == "verify":
-        cmd_verify(args, logger)
+        return cmd_verify(args, logger)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -16,6 +16,7 @@ invocation and exits with a chosen code. Nothing here touches the real
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -26,17 +27,40 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRIGGER_SCRIPT = REPO_ROOT / "scripts" / "daily-sync-trigger.sh"
 
-TODAY = date.today().isoformat()
-YESTERDAY = (date.today() - timedelta(days=1)).isoformat()
+#: The day the rig pins the shell's ``date +%Y-%m-%d`` to by default.
+#:
+#: Deliberately NOT the real today, and deliberately not read at import.
+#: The trigger asks the shell for the date at RUN time while these tests
+#: used a module-level ``date.today()`` frozen at COLLECTION time, so a run
+#: straddling local midnight compared two different days and failed --
+#: confirmed by the re-auditor with a faked clock (round 4a-3). Pinning the
+#: shell's date removes the clock from the test entirely.
+DEFAULT_PINNED_DAY = "2031-03-14"
 
 
 @dataclass
 class TriggerRig:
-    """A sandboxed trigger: pinned HOME, stub sync, recorded invocations."""
+    """A sandboxed trigger: pinned HOME, pinned date, stub sync, recorded runs."""
 
     home: Path
     scripts: Path
     ran_marker: Path
+    bin_dir: Path
+    day_file: Path
+
+    @property
+    def today(self) -> str:
+        """The day the stub ``date`` reports to the script."""
+        return self.day_file.read_text(encoding="utf-8").strip()
+
+    def set_today(self, day: str) -> None:
+        """Move the pinned day (e.g. across midnight) for the next run."""
+        self.day_file.write_text(day + "\n", encoding="utf-8")
+
+    def days_from_today(self, delta: int) -> str:
+        """A day offset from the pinned one, as the script would format it."""
+        return (date.fromisoformat(self.today)
+                + timedelta(days=delta)).isoformat()
 
     @property
     def lock_file(self) -> Path:
@@ -61,6 +85,10 @@ class TriggerRig:
         env = os.environ.copy()
         env.update({"HOME": str(self.home), "PA_TEST_SYNC_RC": str(sync_rc),
                     "PA_CC_ARCHIVES": str(self.home / "cc-archives")})
+        # The stub ``date`` goes FIRST, so the script's `date +%Y-%m-%d`
+        # returns the day this rig owns rather than whatever the wall clock
+        # says when the test happens to run.
+        env["PATH"] = f"{self.bin_dir}{os.pathsep}{env.get('PATH', '')}"
         if home is not None:
             env["HOME"] = str(home)
         if unset_home:
@@ -94,6 +122,26 @@ def rig(tmp_path: Path) -> TriggerRig:
     scripts.mkdir(parents=True)
     (scripts / "daily-sync-trigger.sh").symlink_to(TRIGGER_SCRIPT)
 
+    # A stub `date` that answers exactly `date +%Y-%m-%d` from a file the
+    # rig controls and delegates everything else (the script also calls
+    # `date +%s`) to the real binary, resolved before the stub is on PATH.
+    real_date = shutil.which("date") or "/usr/bin/date"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    day_file = tmp_path / "pinned-day"
+    day_file.write_text(DEFAULT_PINNED_DAY + "\n", encoding="utf-8")
+    date_stub = bin_dir / "date"
+    date_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$#" -eq 1 ] && [ "$1" = "+%Y-%m-%d" ]; then\n'
+        f'    cat "{day_file}"\n'
+        "    exit 0\n"
+        "fi\n"
+        f'exec "{real_date}" "$@"\n',
+        encoding="utf-8",
+    )
+    date_stub.chmod(0o755)
+
     ran_marker = tmp_path / "sync-ran"
     stub = scripts / "daily-sync.sh"
     stub.write_text(
@@ -104,7 +152,8 @@ def rig(tmp_path: Path) -> TriggerRig:
         encoding="utf-8",
     )
     stub.chmod(0o755)
-    return TriggerRig(home=home, scripts=scripts, ran_marker=ran_marker)
+    return TriggerRig(home=home, scripts=scripts, ran_marker=ran_marker,
+                      bin_dir=bin_dir, day_file=day_file)
 
 
 # ============================================================================
@@ -123,7 +172,7 @@ class TestOncePerDay:
         result = rig.run()
         assert result.returncode == 0, result.stderr
         assert rig.sync_ran()
-        assert rig.lock_file.read_text().strip() == TODAY
+        assert rig.lock_file.read_text().strip() == rig.today
 
     def test_second_session_the_same_day_does_not_sync(self, rig: TriggerRig) -> None:
         """The dominant every-other-session path stays silent and cheap."""
@@ -136,11 +185,61 @@ class TestOncePerDay:
     def test_a_stale_lock_syncs_again(self, rig: TriggerRig) -> None:
         """Kills DST-M1: pinning the day check to "already ran" would stop
         the sync running ever again, with the suite green."""
-        rig.lock_file.write_text(YESTERDAY + "\n", encoding="utf-8")
+        rig.lock_file.write_text(rig.days_from_today(-1) + "\n",
+                                 encoding="utf-8")
         result = rig.run()
         assert result.returncode == 0
         assert rig.sync_ran()
-        assert rig.lock_file.read_text().strip() == TODAY
+        assert rig.lock_file.read_text().strip() == rig.today
+
+
+    def test_a_session_after_local_midnight_syncs_again(
+        self, rig: TriggerRig
+    ) -> None:
+        """The day rolls over mid-suite and the next session syncs again.
+
+        Two things at once. It is the contract test for "a new calendar day
+        means a new sync", driven by moving the clock rather than by waiting
+        for one; and it is the regression test for the flake these tests
+        carried (round 4a-3): the trigger reads the date from the shell at
+        RUN time, while this module used to compare against a
+        ``date.today()`` frozen at COLLECTION time, so a run straddling
+        local midnight compared two different days and failed. The pinned
+        day here is not the real today, so neither the pass nor the failure
+        can depend on when the suite is run.
+        """
+        first_day = "2031-12-31"
+        next_day = "2032-01-01"          # a year boundary, for good measure
+        rig.set_today(first_day)
+
+        assert rig.run().returncode == 0
+        assert rig.sync_ran()
+        assert rig.lock_file.read_text().strip() == first_day
+
+        # Same day again: still silent.
+        rig.ran_marker.unlink()
+        assert rig.run().returncode == 0
+        assert not rig.sync_ran()
+
+        # Midnight passes.
+        rig.set_today(next_day)
+        assert rig.run().returncode == 0
+        assert rig.sync_ran(), "the first session of a new day must sync"
+        assert rig.lock_file.read_text().strip() == next_day
+
+    def test_the_rig_pins_the_shell_date(self, rig: TriggerRig) -> None:
+        """The stub really is what the script reads, not the wall clock.
+
+        Kills a revert of the rig to the real ``date``: the pinned day is a
+        fixed date in 2031, so a lock stamped with the real today means the
+        stub was not consulted.
+        """
+        assert rig.today == DEFAULT_PINNED_DAY
+        assert rig.today != date.today().isoformat(), (
+            "the pinned day must not coincide with the real one")
+
+        assert rig.run().returncode == 0
+        assert rig.lock_file.read_text().strip() == DEFAULT_PINNED_DAY
 
 
 # ============================================================================

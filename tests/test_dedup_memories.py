@@ -620,6 +620,50 @@ class TestPostgresBacklogGate:
         assert not dedup.removal_journal_path().exists()
 
 
+
+    def test_an_unusable_cursor_refusal_is_logged_at_error(
+        self, store: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A refusal the operator cannot see is a silent exit 1.
+
+        Kills ``logger.error`` -> ``logger.debug``: the run still exits
+        non-zero, but nothing reaches stderr or the log at default level, so
+        /tags or a cron wrapper reports a bare failure with no cause.
+        """
+        self._corpus_with_a_duplicate(store)
+        dedup.CURSOR_FILE.write_text(
+            json.dumps({"postgres_sync_line": "later"}), encoding="utf-8")
+
+        with caplog.at_level(logging.ERROR, logger="dedup-memories"):
+            with pytest.raises(SystemExit) as excinfo:
+                run_main(monkeypatch)
+
+        assert excinfo.value.code == 1
+        messages = [r.getMessage() for r in caplog.records
+                    if r.levelno >= logging.ERROR]
+        assert any("cannot be read" in m for m in messages), (
+            f"the refusal was not logged at ERROR: {messages}")
+
+    def test_a_backlog_refusal_is_logged_at_error(
+        self, store: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The same for the backlog refusal beside it."""
+        self._corpus_with_a_duplicate(store)
+        dedup.CURSOR_FILE.write_text(
+            json.dumps({"postgres_sync_line": 1}), encoding="utf-8")
+
+        with caplog.at_level(logging.ERROR, logger="dedup-memories"):
+            with pytest.raises(SystemExit):
+                run_main(monkeypatch)
+
+        messages = [r.getMessage() for r in caplog.records
+                    if r.levelno >= logging.ERROR]
+        assert any("sync-to-postgres.py first" in m for m in messages), (
+            f"the refusal was not logged at ERROR: {messages}")
+
+
 # ---------------------------------------------------------------------------
 # A6's ordering guarantee, pinned (audit 2026-09-08, round 4a-2, finding M3)
 #
@@ -722,3 +766,44 @@ class TestJournalIsDurableBeforeTheRename:
         stamped = dedup.removal_journal_path(
             datetime(2031, 4, 2, 23, 30, tzinfo=timezone.utc))
         assert stamped.name == "dedup-removed-2031-04-02.jsonl"
+
+
+    def test_the_corpus_itself_is_fsynced_before_the_rename(
+        self, store: Path, guard: Recorder, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The temp CORPUS is durable before it replaces the canonical.
+
+        The journal tests above pin the journal's fsync; nothing pinned the
+        corpus's own, so deleting it left a durable rename over bytes that
+        were not (audit round 4a-3, surviving mutation). Attributed by
+        inode, so the two fsyncs cannot be confused for one another.
+        """
+        write_corpus(store, [
+            record(id="2031-04-02-aaaabbbbcccc", summary="Short."),
+            record(id="2031-04-02-aaaabbbbcccc", summary="A longer summary."),
+        ])
+        events = self._instrument(monkeypatch)
+        tmp_inodes: list[tuple[int, int]] = []
+        real_rename = os.rename
+
+        def capture_tmp_inode(src, dst, **kwargs):
+            # Take the temp file's identity BEFORE the rename consumes it.
+            stat = os.stat(src)
+            tmp_inodes.append((stat.st_dev, stat.st_ino))
+            return real_rename(src, dst, **kwargs)
+
+        monkeypatch.setattr(os, "rename", capture_tmp_inode)
+
+        run_main(monkeypatch)
+
+        assert tmp_inodes, "the corpus was never renamed into place"
+        corpus_key = ("fsync", tmp_inodes[-1])
+        assert corpus_key in events, (
+            "the deduped corpus was renamed over the canonical without being "
+            "fsynced first"
+        )
+        rename_index = next(
+            i for i, event in enumerate(events)
+            if event[0] == "rename" and event[2] == str(store)
+        )
+        assert events.index(corpus_key) < rename_index

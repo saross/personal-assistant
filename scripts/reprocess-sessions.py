@@ -40,6 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
 # Shared writer helpers — keep COMMAND_MARKERS and timestamp shape in
 # lockstep with hooks/extraction-hook.py (audit IC1, IC4).
+from _batch_state import load_state, save_state  # noqa: E402
+from _log_dir import ensure_log_dir  # noqa: E402
 from _command_markers import COMMAND_MARKERS  # noqa: E402
 from _timestamps import coerce_to_iso, now_iso  # noqa: E402
 from typing import Any
@@ -53,6 +55,10 @@ ENV_FILE = PA_DIR / ".env"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "reprocess-sessions.log"
 BATCH_STATE_FILE = LOG_DIR / "reprocess-batch-state.json"
+# One state file per batch id (audit AR18): the Batch API takes up to 24
+# hours, so a second submit before the first is applied used to overwrite the
+# only map that says which session each reply belongs to.
+BATCH_STATE_DIR = LOG_DIR / "reprocess-batch-state"
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 TAG_VOCAB_FILE = PA_DIR / "memories" / "tag-vocabulary.txt"
 ARCHIVE_ROOT = Path.home() / "cc-archives"
@@ -180,7 +186,7 @@ def load_env() -> None:
 
 def setup_logging() -> logging.Logger:
     """Configure file and console logging."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_log_dir(LOG_DIR)
     log = logging.getLogger("reprocess-sessions")
     log.setLevel(logging.INFO)
 
@@ -200,15 +206,30 @@ def setup_logging() -> logging.Logger:
 # ============================================================================
 
 
+#: Memory ``source`` values that mean "this session has already been mined".
+#: ``extraction`` is the live hook's stamp; ``reprocessing`` is THIS script's
+#: own (see :func:`format_memories`). Counting only the former made the run
+#: non-idempotent: a reprocessed session still showed zero, so the next run
+#: re-submitted it, paid for it again, and — because the memory ids are a
+#: deterministic hash of session, custom_id, and index — appended a set of
+#: byte-identical duplicate rows (audit 2026-09-08, finding AR6).
+ALREADY_MINED_SOURCES = frozenset({"extraction", "reprocessing"})
+
+
 def load_session_memory_counts() -> dict[str, int]:
-    """Count extraction-sourced memories per session ID."""
+    """Count memories already mined from each session ID.
+
+    Counts both the live hook's ``extraction`` rows and this script's own
+    ``reprocessing`` rows, so a session that has been reprocessed is not
+    selected again.
+    """
     counts: dict[str, int] = defaultdict(int)
     with open(MEMORIES_FILE, encoding="utf-8") as f:
         for line in f:
             try:
                 m = json.loads(line)
                 sid = m.get("session_id", "")
-                if sid and m.get("source") == "extraction":
+                if sid and m.get("source") in ALREADY_MINED_SOURCES:
                     counts[sid] += 1
             except json.JSONDecodeError:
                 continue
@@ -263,10 +284,27 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
     Decompress and parse an archived session transcript.
 
     Returns list of {role, content} dicts, with slash commands filtered
-    and messages truncated (mirrors extraction-hook.py logic).
+    and messages truncated. The filtering mirrors hooks/extraction-hook.py
+    exactly — the same isMeta-plus-marker test and the same owed-response
+    counter — because a divergence here sends different text to the same
+    model and calls the result the same kind of memory.
+
+    **Machine-injected records are dropped exactly as the hook drops them**
+    (audit 2026-09-08, finding AR11). ``isSidechain`` entries are a subagent's
+    own conversation, not this session's; ``isMeta`` entries are text the
+    harness wrote into the transcript — system-reminder injections and
+    slash-command expansions — recorded with ``"role": "user"``. Feeding
+    either to the extractor invents memories out of the harness's prose or
+    out of a subagent's turns, and those memories then look exactly like the
+    operator's own. The ordering below is the hook's: ``isMeta`` user entries
+    survive to the slash-command branch (commands ARE delivered as isMeta
+    user entries), and are dropped immediately after it.
     """
     messages: list[dict[str, str]] = []
-    skip_next_assistant = False
+    # Slash-command responses still owed a skip. A count, not a flag: see the
+    # note at the marker branch below, and hooks/extraction-hook.py, which
+    # this mirrors.
+    responses_owed = 0
 
     with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -289,6 +327,15 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                 role = msg.get("role", entry.get("type", ""))
                 content = msg.get("content", "")
 
+                # A subagent's turn belongs to that agent's transcript.
+                if entry.get("isSidechain"):
+                    continue
+
+                # ``isMeta`` on anything but a user entry cannot be a command
+                # invocation and is not conversation either.
+                if entry.get("isMeta") and role not in ("user", "human"):
+                    continue
+
                 # Handle structured content blocks
                 if isinstance(content, list):
                     text_parts = []
@@ -309,15 +356,44 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                 if not content or not content.strip():
                     continue
 
-                # Skip slash command exchanges
+                # Skip slash-command exchanges, exactly as the hook does.
+                #
+                # Two differences from the naive version used to matter
+                # (audit round 4c-2, findings 7 and 8):
+                #
+                # ``isMeta`` AND the marker, not the marker alone. The marker
+                # test is a substring match, so on its own it fires on any
+                # user entry that merely QUOTES a command header — a tool
+                # result echoing ``commands/*.md``, say. Measured on the live
+                # store 2026-09-08: of 365 marker-bearing user entries, 364
+                # were isMeta and the one that was not was exactly such a
+                # quotation. Arming the skip on it dropped the next genuine
+                # assistant turn and lost a real exchange for good.
+                #
+                # A COUNTER, not a boolean, and one spent only by a
+                # text-bearing assistant turn. Assistant turns are often
+                # split — a tool-use-only entry with no text precedes the
+                # real reply — and a boolean cleared by the next user entry
+                # loses the skip entirely when two commands are issued in a
+                # row, or when an MCP server injects a tool_result-as-user
+                # entry between the command and its answer.
                 if role in ("user", "human"):
-                    if any(marker in content for marker in COMMAND_MARKERS):
-                        skip_next_assistant = True
+                    if entry.get("isMeta") and any(
+                        marker in content for marker in COMMAND_MARKERS
+                    ):
+                        responses_owed += 1
                         continue
-                    else:
-                        skip_next_assistant = False
-                elif role == "assistant" and skip_next_assistant:
-                    skip_next_assistant = False
+                    # Harness-injected user prose that was not a command:
+                    # dropped here, AFTER the marker branch, because slash
+                    # commands arrive as isMeta user entries and must reach
+                    # that branch to arm the skip.
+                    if entry.get("isMeta"):
+                        continue
+                elif role == "assistant" and responses_owed:
+                    # Only a text-bearing assistant entry is the command's
+                    # response, so only it spends an owed skip.
+                    if content and content.strip():
+                        responses_owed -= 1
                     continue
 
                 if role in ("user", "human"):
@@ -637,7 +713,14 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
                 conversation=chunk_text,
             )
 
-            custom_id = f"reprocess-{sess['session_id'][:8]}-c{chunk_idx}"
+            # The FULL session id, not its first eight hex characters: two
+            # sessions sharing an 8-character prefix produced the same
+            # custom_id, and the batch API then either rejected the whole
+            # submission for duplicate ids or returned results that were
+            # attributed to the wrong session (audit finding AR7). A UUID
+            # plus the prefix and chunk suffix stays inside the API's
+            # 64-character custom_id limit.
+            custom_id = f"rp-{sess['session_id']}-c{chunk_idx}"
 
             requests.append({
                 "custom_id": custom_id,
@@ -701,9 +784,7 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         "n_sessions": len(sessions),
         "request_map": request_map,
     }
-    BATCH_STATE_FILE.write_text(
-        json.dumps(state, indent=2), encoding="utf-8"
-    )
+    state_file = save_state(state, BATCH_STATE_DIR, BATCH_STATE_FILE)
 
     logger.info(
         "Batch submitted: %s | %d requests (%d sessions) | Status: %s",
@@ -711,7 +792,7 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         batch_job.processing_status,
     )
     print(f"\nBatch ID: {batch_job.id}")
-    print(f"State: {BATCH_STATE_FILE}")
+    print(f"State: {state_file}")
     print(f"\nNext: venv/bin/python3 scripts/reprocess-sessions.py status {batch_job.id}")
 
 
@@ -748,8 +829,22 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
         logger.error("anthropic package not installed")
         sys.exit(1)
 
-    if not BATCH_STATE_FILE.exists():
-        logger.error("No batch state file: %s", BATCH_STATE_FILE)
+    # The request_map is what turns a custom_id back into a session id.
+    # Applying batch A's results through batch B's map attributes every
+    # extracted memory to whichever session happens to sit at the same
+    # position — memories filed under the wrong session, with no signal that
+    # anything went wrong (audit finding AR8). ``load_state`` returns a state
+    # only when it names THIS batch, so a stale slot is a refusal, not a
+    # fallback. Checked BEFORE the rewrite guard, so a refusal costs no lock
+    # and no git fetch.
+    state = load_state(args.batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    if state is None:
+        logger.error(
+            "No batch state describing %s (looked in %s and %s). Refusing: "
+            "without its request map, results cannot be attributed to the "
+            "sessions they came from.",
+            args.batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE,
+        )
         sys.exit(1)
 
     # Guard against racing with extraction-hook appends or scheduled
@@ -766,7 +861,6 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
         args.batch_id,
     )
 
-    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
     request_map = state.get("request_map", {})
 
     client = anthropic.Anthropic()

@@ -21,6 +21,7 @@ Modes:
 
 Options:
     --dry-run       Show what would be done without making API calls
+    --yes           Skip the interactive API cost gate (for scripted runs)
     --batch-size N  Memories per API call (default: 20)
     --limit N       Process at most N memories (for testing)
     --delay S       Seconds between API calls, sync mode only (default: 0.5)
@@ -44,6 +45,8 @@ from _bulk_rewrite_guard import (  # noqa: E402
     lock_jsonl_for_rewrite,
     release_lock,
 )
+from _batch_state import load_state, save_state  # noqa: E402
+from _log_dir import ensure_log_dir  # noqa: E402
 
 # ============================================================================
 # Configuration
@@ -55,11 +58,29 @@ MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "backfill-summaries.log"
 BATCH_STATE_FILE = LOG_DIR / "backfill-batch-state.json"
+# One state file per batch id, as bulk-archive.py and reprocess-sessions.py
+# already do (AR18). The Batch API takes up to 24 hours, so a second submit
+# before the first is applied used to overwrite the only map that says which
+# memories were sent in which request (audit round 4c-2, finding 14).
+BATCH_STATE_DIR = LOG_DIR / "backfill-batch-state"
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_BATCH_SIZE = 20
 DEFAULT_DELAY = 0.5
 MAX_SUMMARY_CHARS = 150
+
+# Cost per million tokens for the model above. Standard (real-time) rates;
+# the Batch API is half of each. Used only for the pre-flight estimate the
+# API Call Review Gate requires — the gate exists to make the spend visible
+# before it happens, so an estimate in the right order of magnitude is worth
+# far more than no number at all.
+SYNC_INPUT_COST_PER_M = 0.80
+SYNC_OUTPUT_COST_PER_M = 4.00
+BATCH_DISCOUNT = 0.50
+
+# Output budget per memory: a summary is capped at MAX_SUMMARY_CHARS, and the
+# JSON wrapper around each one costs roughly as much again.
+EST_OUTPUT_TOKENS_PER_MEMORY = (MAX_SUMMARY_CHARS // 4) * 2
 
 # Static instruction portion of the prompt (sent as system message in
 # batch mode, inlined in user message in sync mode).
@@ -108,7 +129,7 @@ def load_env() -> None:
 
 def setup_logging() -> logging.Logger:
     """Configure file and console logging."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_log_dir(LOG_DIR)
     logger = logging.getLogger("backfill-summaries")
     logger.setLevel(logging.INFO)
 
@@ -231,7 +252,15 @@ def write_memories(records: list[dict | None]) -> None:
             if record is None:
                 f.write("\n")
             else:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                # ``ensure_ascii`` stays at its default (True). With it off,
+                # a U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR in a
+                # memory's content is written raw — and several readers of
+                # this JSONL treat those as line terminators, so one record
+                # silently becomes two, the second of them unparseable. That
+                # is the record-splitting hazard the round-4a re-audit named
+                # (M1), and escaping is the cheap end of it: the file stays
+                # pure ASCII and every reader agrees where a record ends.
+                f.write(json.dumps(record) + "\n")
         f.flush()
         os.fsync(f.fileno())
     os.rename(str(tmp_path), str(MEMORIES_FILE))
@@ -249,18 +278,45 @@ def write_memories(records: list[dict | None]) -> None:
 def _apply_summaries_under_lock(
     summaries: dict[str, str],
     logger: logging.Logger,
-) -> tuple[int, int]:
+    allowed_ids: set[str] | None = None,
+) -> tuple[int, int, int]:
     """
     Apply a ``{id: summary}`` mapping to the canonical under LOCK_EX.
 
     Re-reads the file inside the lock, attaches each summary to the
     matching record, and rewrites. Re-reading inside the lock means
     any extraction-hook appends that landed since the previous
-    invocation are preserved. Returns ``(applied, missing)`` —
-    summaries that matched a record vs ones whose id was not found.
+    invocation are preserved.
+
+    *allowed_ids* is the set of memory ids that were actually SENT in the
+    request this reply answers. Anything else in the reply is discarded and
+    counted. Without it the writer trusted the model's ids: a hallucinated or
+    copied-across id that happened to exist in the canonical had an unrelated
+    memory's summary replaced with a summary of a different memory, silently
+    and permanently (audit 2026-09-08, finding AR5). The model chooses the
+    ids in its output; it must not thereby choose which records we rewrite.
+
+    Returns ``(applied, missing, ignored)`` — summaries that matched a
+    record, ones whose id was not found, and ones rejected as out-of-batch.
     """
+    ignored = 0
+    if allowed_ids is not None:
+        rejected = sorted(set(summaries) - allowed_ids)
+        if rejected:
+            ignored = len(rejected)
+            logger.warning(
+                "Discarding %d summary id(s) the model returned that were "
+                "not in the request: %s",
+                ignored, ", ".join(rejected[:5]) + (
+                    ", …" if len(rejected) > 5 else ""
+                ),
+            )
+            summaries = {
+                mid: text for mid, text in summaries.items()
+                if mid in allowed_ids
+            }
     if not summaries:
-        return 0, 0
+        return 0, 0, ignored
     with lock_jsonl_for_rewrite(MEMORIES_FILE):
         records = load_memories()
         applied = 0
@@ -287,7 +343,99 @@ def _apply_summaries_under_lock(
             write_memories(records)
         else:
             logger.info("No summaries matched on re-read — skipping rewrite")
-    return applied, missing
+    return applied, missing, ignored
+
+
+
+# ============================================================================
+# API Call Review Gate
+# ============================================================================
+
+
+def estimate_prompt_tokens(
+    to_backfill: list[tuple[int, dict]], batch_size: int
+) -> tuple[int, int, int]:
+    """Estimate ``(requests, input_tokens, output_tokens)`` for a run.
+
+    Builds the real prompts — the same ``SUMMARY_PROMPT.format`` the request
+    path builds — and estimates tokens as characters/4, the estimator used
+    throughout this hub. Costing the prompts we are actually about to send is
+    the point: a per-record constant would drift the moment the prompt did.
+    """
+    input_chars = 0
+    requests = 0
+    for start in range(0, len(to_backfill), batch_size):
+        batch = [record for _, record in to_backfill[start:start + batch_size]]
+        input_chars += len(SUMMARY_PROMPT.format(
+            max_chars=MAX_SUMMARY_CHARS,
+            memories_json=format_batch_input(batch),
+        ))
+        requests += 1
+    output_tokens = len(to_backfill) * EST_OUTPUT_TOKENS_PER_MEMORY
+    return requests, input_chars // 4, output_tokens
+
+
+def confirm_api_spend(
+    to_backfill: list[tuple[int, dict]],
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> None:
+    """Print the API Call Review Gate and require confirmation, or exit.
+
+    Every sibling script gates its spend (``bulk-archive.py`` at its batch
+    submit, ``reprocess-sessions.py`` at its, ``extraction-prompt-spotcheck``
+    behind ``--run``); this one did not. Running it with no flags went
+    straight from argument parsing to ``client.messages.create``, so the
+    operator's first sight of the cost was the invoice. That is exactly what
+    the API Call Review Gate in the project guidance forbids: model, mode,
+    call count, and estimated cost must be shown, and a human must say yes.
+
+    ``--yes`` skips the prompt for scripted use. Anything else — a refusal, a
+    closed stdin, an unreadable terminal — exits non-zero WITHOUT calling the
+    API: an unanswered gate is a refusal, never a default yes.
+    """
+    batch_mode = bool(args.batch_api)
+    requests, input_tokens, output_tokens = estimate_prompt_tokens(
+        to_backfill, args.batch_size
+    )
+    discount = BATCH_DISCOUNT if batch_mode else 1.0
+    est_cost = (
+        input_tokens / 1_000_000 * SYNC_INPUT_COST_PER_M * discount
+        + output_tokens / 1_000_000 * SYNC_OUTPUT_COST_PER_M * discount
+    )
+
+    print("\n" + "=" * 60)
+    print("API COST GATE — Memory Summary Backfill")
+    print("=" * 60)
+    print(f"Model:       {HAIKU_MODEL}")
+    print(
+        "Mode:        "
+        + (
+            "Anthropic Batch API (50% discount, up to 24h)"
+            if batch_mode
+            else "real-time Messages API, sequential"
+        )
+    )
+    print(f"Calls:       {requests} ({len(to_backfill)} memories)")
+    print(f"Est. tokens: {input_tokens:,} in / {output_tokens:,} out")
+    print(f"Est. cost:   ${est_cost:.2f}")
+    print("=" * 60)
+
+    if args.yes:
+        logger.info("--yes given: proceeding with %d API call(s)", requests)
+        return
+
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except (EOFError, OSError):
+        logger.error(
+            "API cost gate could not be answered (no interactive stdin) — "
+            "no API call made. Re-run with --yes to confirm non-interactively."
+        )
+        sys.exit(1)
+    if answer != "y":
+        logger.error("Cancelled at the API cost gate — no API call made.")
+        sys.exit(1)
 
 
 # ============================================================================
@@ -391,7 +539,13 @@ def run_sync(
         # Write after each batch for incremental progress, holding
         # LOCK_EX so concurrent extraction-hook appends are queued
         # behind us rather than silently overwritten.
-        applied, missing = _apply_summaries_under_lock(summaries, logger)
+        applied, missing, _ignored = _apply_summaries_under_lock(
+            summaries, logger,
+            allowed_ids={
+                record.get("id") for _, record in batch_items
+                if record.get("id")
+            },
+        )
         if missing:
             logger.warning(
                 "Batch %d: %d summary id(s) not found in canonical "
@@ -485,11 +639,8 @@ def run_batch_submit(
         "batch_size": args.batch_size,
         "batch_index_map": batch_index_map,
     }
-    BATCH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BATCH_STATE_FILE.write_text(
-        json.dumps(state, indent=2) + "\n", encoding="utf-8"
-    )
-    logger.info("Batch state saved to %s", BATCH_STATE_FILE)
+    state_file = save_state(state, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    logger.info("Batch state saved to %s", state_file)
     logger.info(
         "Run 'python3 scripts/backfill-summaries.py --batch-apply %s' "
         "to apply results once the batch completes.",
@@ -503,6 +654,28 @@ def run_batch_apply(
 ) -> None:
     """Retrieve results from a completed batch job and apply summaries."""
     from anthropic import Anthropic
+
+    # The batch's own index map is what makes application safe: it says which
+    # memory ids were sent in which request, and therefore which ids a reply
+    # is allowed to change. Without it we would be back to trusting the
+    # model's ids (AR5), so a missing state — or one describing a different
+    # batch — is a refusal.
+    #
+    # Checked FIRST, before the rewrite guard and before any API call. The
+    # guard takes the shared daily-sync lock and fetches from origin, so
+    # doing it the other way round meant a run that was always going to be
+    # refused still blocked the sync and touched the network
+    # (reprocess-sessions.py already had this order; round 4c-2, finding 14).
+    state = load_state(batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    if state is None:
+        logger.error(
+            "No batch state describing %s (looked in %s and %s) — cannot "
+            "tell which memories were sent in which request, so results "
+            "cannot be applied safely.",
+            batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE,
+        )
+        sys.exit(1)
+    batch_index_map: dict[str, list[str]] = state.get("batch_index_map", {})
 
     # Guard against racing with extraction-hook appends or scheduled
     # sync (this path rewrites memories.jsonl in place).
@@ -561,7 +734,10 @@ def run_batch_apply(
     total_applied = 0
     total_failed = 0
     total_parse_errors = 0
+    total_out_of_batch = 0
     pending_summaries: dict[str, str] = {}
+    # Ids the replies were entitled to change, accumulated per request.
+    allowed_ids: set[str] = set()
 
     for result in client.messages.batches.results(batch_id):
         custom_id = result.custom_id
@@ -589,7 +765,27 @@ def run_batch_apply(
             total_parse_errors += 1
             continue
 
+        # Only the ids this request actually carried may be written by its
+        # reply. An id from another batch, or one the model invented, is
+        # logged and dropped rather than applied to whatever record happens
+        # to share it (AR5).
+        request_ids = set(batch_index_map.get(custom_id, []))
+        if not request_ids:
+            logger.warning(
+                "Request %s is not in this batch's index map — skipping",
+                custom_id,
+            )
+            total_failed += 1
+            continue
         for mem_id, summary in summaries.items():
+            if mem_id not in request_ids:
+                total_out_of_batch += 1
+                logger.warning(
+                    "Request %s returned id %s, which it was not sent — "
+                    "ignoring", custom_id, mem_id,
+                )
+                continue
+            allowed_ids.add(mem_id)
             idx = id_to_index.get(mem_id)
             if idx is not None and all_records[idx] is not None:
                 all_records[idx]["summary"] = summary
@@ -598,8 +794,8 @@ def run_batch_apply(
 
     # Write updated records under LOCK_EX (re-reads inside the lock).
     if pending_summaries:
-        applied, missing = _apply_summaries_under_lock(
-            pending_summaries, logger,
+        applied, missing, ignored = _apply_summaries_under_lock(
+            pending_summaries, logger, allowed_ids=allowed_ids,
         )
         if missing:
             logger.warning(
@@ -607,17 +803,23 @@ def run_batch_apply(
                 "(likely dedup happened between load and write)",
                 missing,
             )
+        if ignored:
+            logger.warning(
+                "%d summary id(s) rejected at the write as out-of-batch",
+                ignored,
+            )
 
     total_with_summaries = sum(
         1 for r in all_records
         if r is not None and r.get("summary")
     )
     logger.info(
-        "Applied %d summaries (%d failed, %d parse errors). "
-        "Total with summaries: %d/%d",
+        "Applied %d summaries (%d failed, %d parse errors, "
+        "%d out-of-batch ids ignored). Total with summaries: %d/%d",
         total_applied,
         total_failed,
         total_parse_errors,
+        total_out_of_batch,
         total_with_summaries,
         sum(1 for r in all_records if r is not None),
     )
@@ -666,6 +868,11 @@ def main() -> None:
         type=float,
         default=DEFAULT_DELAY,
         help=f"Seconds between API calls, sync mode (default: {DEFAULT_DELAY})",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation before live API calls.",
     )
     args = parser.parse_args()
 
@@ -725,6 +932,10 @@ def main() -> None:
             est_time,
         )
         return
+
+    # API Call Review Gate — the last thing before any spend. Both branches
+    # below make live calls; neither may be reached without it.
+    confirm_api_spend(to_backfill, args, logger)
 
     if args.batch_api:
         run_batch_submit(to_backfill, args, logger)

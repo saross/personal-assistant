@@ -122,6 +122,17 @@ did() {
     fi
 }
 
+did_verbose() {
+    # As `did`, but the completed form is suppressed by --quiet. A dry
+    # run always narrates: telling the operator what would happen is the
+    # whole point of the flag, quiet or not.
+    if [[ $DRY_RUN -eq 1 ]]; then
+        say "  would $1"
+    else
+        say_verbose "  $2"
+    fi
+}
+
 run_action() {
     # Execute "$@" — or, under --dry-run, print it and change nothing.
     # Every filesystem mutation in this script goes through here so that
@@ -231,21 +242,52 @@ cd "$PA_DIR"
 # solely to populate an empty data/, so an uninitialised data/ is the only
 # case in which it should run.
 #
-# Round 4d-2: ask git, not the directory listing. "Is data/ non-empty?"
-# answered yes for a fresh clone whose data/ happened to hold one stray
-# file, and the submodule was then never initialised — the opposite
-# failure. `git submodule status` prefixes an UNINITIALISED submodule with
-# "-"; anything else (" ", "+", "U") means it has a checkout. A worktree
-# whose data/ holds empty stub directories is still uninitialised by that
-# test, so it still skips.
+# Round 4d-2: ask git, not the directory listing. `git submodule status`
+# prefixes an UNINITIALISED submodule with "-"; anything else (" ", "+",
+# "U") means it has a checkout.
+#
+# Round 4d-3 (M1/M2): git saying "uninitialised" is necessary but not
+# sufficient, because `git submodule update --init` CLONES into data/ and
+# git refuses to clone into a directory that is not empty:
+#
+#     fatal: destination path '.../data' already exists and is not an
+#     empty directory.
+#
+# Two states reach that error. A linked WORKTREE is one: its data/ holds
+# empty stub directories and git reports the submodule uninitialised, so
+# round 4d-2's rule sent --allow-worktree straight into an init that
+# cannot succeed, and `set -e` aborted at step 1 — leaving the escape
+# hatch inoperative for the only case it was added for, and ~/.claude
+# never touched. (The comment that stood here claimed the opposite of
+# what the code did.) A worktree's data/ belongs to the main checkout and
+# is never this script's to populate, so it is skipped outright.
+#
+# The other is a clone whose data/ holds a stray file. Round 4d-2 made
+# that case attempt the init; verified against a throwaway superproject,
+# git fails there too. Attempting it and aborting the whole run is worse
+# than saying plainly what a human has to clear.
+#
+# In a linked worktree $PA_DIR/.git is a FILE holding a "gitdir:" pointer;
+# in an ordinary clone it is a directory.
+IS_WORKTREE=0
+if [ -f "$PA_DIR/.git" ]; then
+    IS_WORKTREE=1
+fi
+
 submodule_state="$(git submodule status -- data 2>/dev/null || true)"
 if [ -z "$submodule_state" ]; then
     say_verbose "  No data submodule declared — nothing to initialise."
-elif [ "${submodule_state#-}" != "$submodule_state" ]; then
-    run_action git submodule update --init --recursive --quiet
-    say_verbose "  Submodule ready."
-else
+elif [ "${submodule_state#-}" = "$submodule_state" ]; then
     say_verbose "  Submodule already initialised — leaving it alone."
+elif [ $IS_WORKTREE -eq 1 ] || [ $ALLOW_WORKTREE -eq 1 ]; then
+    say "  Worktree checkout — data/ belongs to the main checkout, skipping."
+elif [ -n "$(ls -A "$PA_DIR/data" 2>/dev/null || true)" ]; then
+    say "  WARNING: data/ is uninitialised but not empty, so git cannot"
+    say "    clone into it. Clear $PA_DIR/data, or run"
+    say "    'git submodule update --init' by hand."
+else
+    run_action git submodule update --init --recursive --quiet
+    did_verbose "have the submodule ready" "Submodule ready."
 fi
 
 # ---------------------------------------------------------------------------

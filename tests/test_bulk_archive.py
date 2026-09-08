@@ -201,18 +201,40 @@ class TestExtractCwd:
 class TestReconstructPath:
     """Tests for _reconstruct_path_from_encoded."""
 
-    def test_simple_path(self, tmp_path: Path) -> None:
-        """Should reconstruct a simple path with no ambiguous hyphens."""
-        # Create the target directory
-        target = tmp_path / "home" / "user" / "Code"
+    def test_reconstructs_a_path_whose_segments_contain_hyphens(
+        self, tmp_path: Path
+    ) -> None:
+        """The hyphen ambiguity is the whole point of this function.
+
+        The encoding replaces ``/`` with ``-``, so a directory name that
+        already contains hyphens is indistinguishable from a path
+        separator: ``-home-shawn-Code-map-reader-llm`` could be
+        ``/home/shawn/Code/map/reader/llm`` or
+        ``/home/shawn/Code/map-reader-llm``. The resolver disambiguates by
+        probing the filesystem, longest candidate segment first.
+
+        (The previous version of this test asserted ``result is None or
+        isinstance(result, Path)`` — true of every possible return value,
+        including a wrong one — and probed the operator's real filesystem
+        with absolute ``is_dir()`` calls while doing it.)
+        """
+        target = tmp_path / "workshop" / "lantern-survey-field-notes"
         target.mkdir(parents=True)
 
-        encoded = f"-{str(target).replace('/', '-')}"
-        # This won't work for arbitrary paths — test the concept
+        encoded = "-" + str(target).lstrip("/").replace("/", "-")
         result = bulk_archive._reconstruct_path_from_encoded(encoded)
-        # May or may not resolve depending on actual filesystem
-        # The function is best-effort
-        assert result is None or isinstance(result, Path)
+
+        assert result == target
+
+    def test_an_unresolvable_encoding_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        """No matching directory means no answer, never a plausible guess."""
+        encoded = "-" + str(
+            tmp_path / "no" / "such" / "tree"
+        ).lstrip("/").replace("/", "-")
+
+        assert bulk_archive._reconstruct_path_from_encoded(encoded) is None
 
     def test_non_encoded_returns_none(self) -> None:
         """Should return None for strings not starting with -."""
@@ -377,60 +399,18 @@ class TestBuildEnrichPrompt:
 # ============================================================================
 
 
-class TestDiscoverSkipsFlat:
-    """Tests that discover_sessions skips orphaned flat agent files."""
-
-    def test_flat_agents_excluded(self, tmp_projects_dir: Path) -> None:
-        """Flat agent-*.jsonl files at root should not appear in manifest."""
-        proj_dir = (
-            tmp_projects_dir / "projects"
-            / "-home-shawn-Code-test-project"
-        )
-
-        # Verify the flat agent file exists
-        flat = proj_dir / "agent-orphan123.jsonl"
-        assert flat.exists()
-
-        # Count JSONL files that start with agent-
-        agent_files = list(proj_dir.glob("agent-*.jsonl"))
-        assert len(agent_files) == 1
-
-        # The discover function should skip these — verified by the
-        # filtering logic: `if jsonl_file.name.startswith("agent-"): continue`
-        # We test the filter directly rather than mocking the full toolkit
-        for f in proj_dir.glob("*.jsonl"):
-            if f.name.startswith("agent-"):
-                # This file should be skipped
-                assert f.name == "agent-orphan123.jsonl"
-
-
-# ============================================================================
-# Tests — Verify (basic structure)
-# ============================================================================
-
-
-class TestVerifyDetectsIssues:
-    """Tests for the verify mode's integrity checking."""
-
-    def test_detects_missing_jsonl(self, tmp_path: Path) -> None:
-        """Should flag archives missing their JSONL file."""
-        # Create an archive dir with meta but no JSONL
-        archive_dir = tmp_path / "test-project" / "2026-04-10_test"
-        archive_dir.mkdir(parents=True)
-
-        meta = {
-            "session": {"id": "test-123"},
-            "project": {"name": "test-project"},
-            "auto_generated": {"purpose": "Test session", "tags": []},
-        }
-        (archive_dir / "session.meta.json").write_text(json.dumps(meta))
-
-        # The file has no session.jsonl.gz or session.jsonl
-        has_jsonl = (
-            (archive_dir / "session.jsonl.gz").exists()
-            or (archive_dir / "session.jsonl").exists()
-        )
-        assert not has_jsonl
+# Discovery's own behaviour — that flat ``agent-*.jsonl`` files are skipped,
+# that an archived session is not re-archived, that a trivial one is not
+# archived at all — is exercised through ``cmd_discover`` itself in
+# ``tests/test_bulk_archive_pipeline.py``. The tests that used to sit here
+# re-implemented the filter inside the test body and asserted the
+# re-implementation, so they could not fail however the production filter
+# changed (audit 2026-09-08, lens B finding 12).
+#
+# The same applies to verify's missing-transcript check: the version here
+# declined to create a JSONL and then asserted that no JSONL existed.
+# ``TestCompletenessGuard.test_verify_reports_a_missing_transcript`` in the
+# pipeline file runs ``cmd_verify`` and asserts on what it reports.
 
 
 # ============================================================================
