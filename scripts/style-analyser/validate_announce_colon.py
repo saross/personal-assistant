@@ -60,6 +60,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import style_support  # noqa: E402
 from phase1_pipeline import _ANNOUNCE_COLON_RE, strip_references  # noqa: E402
 
 #: Repository root, derived from this file's location (``<root>/scripts/
@@ -90,13 +91,22 @@ def body_path(corpus_dir: Path, key: str) -> Path:
 
 
 def default_results_json(corpus_dir: Path) -> Path:
-    """Return the phase 1 results file that accompanies ``corpus_dir``.
+    """Return the phase 1 results file to read reported rates from.
 
-    Kept relative to the corpus directory, as it was under the old layout, so
-    pointing ``--corpus-dir`` at a different extraction picks up that
-    extraction's own results without a second flag.
+    This used to be ``<corpus-dir>/analysis/phase1-results.json``, a path that
+    has never existed in this repository: the real file is
+    ``data/style-corpus/phase1-results-clean.json``, which is what
+    ``phase3_guide_verifier.py`` and ``phase3_promotion.py`` read. The
+    consequence was silent — every reported rate came back "not available"
+    and every corrected rate with it, so the audit printed a worksheet with
+    no numbers to correct.
+
+    A results file sitting beside the corpus directory still wins when one is
+    actually there, so pointing ``--corpus-dir`` at a self-contained
+    extraction keeps working; otherwise the canonical location is used.
     """
-    return corpus_dir / "analysis" / "phase1-results.json"
+    beside = corpus_dir / "analysis" / "phase1-results.json"
+    return beside if beside.exists() else style_support.PHASE1_RESULTS_DEFAULT
 
 
 def read_body(path: Path) -> str | None:
@@ -276,6 +286,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     corpus_dir: Path = args.corpus_dir
     results_json: Path = args.results_json or default_results_json(corpus_dir)
+    if not results_json.exists():
+        # Without the reported rates there is nothing to correct, and the
+        # worksheet's whole output is the correction. Refusing beats printing
+        # a table of "not available" that reads like a finished audit.
+        print(f"No phase 1 results at {results_json}. The corrected-rate "
+              "columns cannot be computed without them; pass --results-json, "
+              "or run phase1_pipeline.py first.", file=sys.stderr)
+        return 2
     reported = load_reported_rates(results_json)
     rng = random.Random(SEED)
 

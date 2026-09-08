@@ -206,6 +206,7 @@ def test_a_missing_body_file_is_reported_and_the_run_continues(tmp_path, capsys)
     the papers that were present (ST14).
     """
     _write_body(tmp_path, "AAAA1111", COLON_PAPER)
+    _write_phase1_results(tmp_path, {"AAAA1111": 4.0})
 
     code = announce.main(
         ["--corpus-dir", str(tmp_path), "--keys", "AAAA1111", "BBBB2222"]
@@ -225,6 +226,8 @@ def test_an_unreadable_corpus_exits_non_zero(tmp_path, capsys):
     against a mistyped ``--corpus-dir`` printed an empty report and reported
     success.
     """
+    _write_phase1_results(tmp_path, {"AAAA1111": 4.0})
+
     code = announce.main(["--corpus-dir", str(tmp_path), "--keys", "AAAA1111"])
 
     captured = capsys.readouterr()
@@ -239,6 +242,7 @@ def test_a_paper_with_no_regex_match_exits_non_zero(tmp_path, capsys):
     printed*, which would report success on a report containing no example.
     """
     _write_body(tmp_path, "AAAA1111", NO_COLON_PAPER)
+    _write_phase1_results(tmp_path, {"AAAA1111": 4.0})
 
     code = announce.main(["--corpus-dir", str(tmp_path), "--keys", "AAAA1111"])
 
@@ -291,14 +295,54 @@ def test_the_summary_mean_counts_the_papers_that_contributed(tmp_path, capsys):
     assert "corrected: 3.000/1k" in captured.out
 
 
-def test_a_missing_results_file_prints_not_available_not_zero(tmp_path, capsys):
-    """No ``phase1-results.json`` must read as "not available" (finding L2).
+def test_a_missing_results_file_is_refused(tmp_path, capsys):
+    """The default pointed at a path that has never existed (re-audit item 3).
+
+    ``<corpus-dir>/analysis/phase1-results.json`` is not where phase 1 writes;
+    the real file is ``data/style-corpus/phase1-results-clean.json``. With no
+    results anywhere there is nothing to correct, and the correction is the
+    worksheet's entire output — so the run refuses instead of printing a
+    finished-looking table of "not available".
+
+    The mutation this kills: dropping the existence check in ``main``, which
+    restores the silent all-unavailable worksheet.
+    """
+    _write_body(tmp_path, "AAAA1111", COLON_PAPER)
+
+    code = announce.main([
+        "--corpus-dir", str(tmp_path), "--keys", "AAAA1111",
+        "--results-json", str(tmp_path / "nowhere.json"),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "No phase 1 results at" in captured.err
+
+
+def test_the_canonical_results_path_is_the_clean_phase_one_file():
+    """The default must name the file phase 1 actually writes.
+
+    The mutation this kills: restoring
+    ``corpus_dir / "analysis" / "phase1-results.json"`` as the default, which
+    resolves to a path that does not exist in this repository.
+    """
+    default = announce.default_results_json(Path("/nonexistent/corpus"))
+
+    assert default.name == "phase1-results-clean.json"
+    assert default.parent.name == "style-corpus"
+
+
+def test_a_paper_absent_from_the_results_prints_not_available_not_zero(
+        tmp_path, capsys):
+    """An unmeasured paper must read as "not available" (finding L2).
 
     The mutation this kills: ``reported.get(key, 0.0)``, which rendered an
     absent measurement as "corrected 0.000/1k" — a number an operator could
     not tell apart from a paper measured at zero.
     """
     _write_body(tmp_path, "AAAA1111", COLON_PAPER)
+    # A results file that exists, but says nothing about this paper.
+    _write_phase1_results(tmp_path, {"ZZZZ9999": 2.0})
 
     code = announce.main(["--corpus-dir", str(tmp_path), "--keys", "AAAA1111"])
 
@@ -317,6 +361,7 @@ def test_the_corpus_dir_override_is_actually_read(tmp_path, capsys):
     none) and still exit 0 on this fixture.
     """
     _write_body(tmp_path, "AAAA1111", COLON_PAPER)
+    _write_phase1_results(tmp_path, {"AAAA1111": 4.0})
 
     code = announce.main(["--corpus-dir", str(tmp_path), "--keys", "AAAA1111"])
 

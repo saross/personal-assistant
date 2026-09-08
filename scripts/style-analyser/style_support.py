@@ -53,6 +53,20 @@ from typing import Any, Iterable, Mapping, Sequence
 #: keeps the memory cost flat regardless.
 _HASH_CHUNK_BYTES = 1 << 20
 
+#: The repository root, derived from this file (``<root>/scripts/
+#: style-analyser/``) rather than from ``~`` or the working directory, so a
+#: worktree or a differently named checkout resolves correctly.
+PA_ROOT = Path(__file__).resolve().parents[2]
+
+#: THE phase 1 results file. Several scripts each had their own idea of where
+#: it lives, and one of them (``validate_announce_colon.py``) defaulted to a
+#: path that has never existed — ``<corpus-dir>/analysis/phase1-results.json``
+#: — so it silently reported every rate as unavailable. One constant, so a
+#: relocation is one edit.
+PHASE1_RESULTS_DEFAULT = (
+    PA_ROOT / "data" / "style-corpus" / "phase1-results-clean.json"
+)
+
 
 def atomic_write_text(path: Path | str, text: str, *, dry_run: bool = False,
                       encoding: str = "utf-8") -> bool:
