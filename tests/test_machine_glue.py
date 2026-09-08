@@ -24,6 +24,7 @@ All fixture content is invented.
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import json
 import os
 import shlex
@@ -1253,6 +1254,83 @@ class TestEnvFingerprintParsing:
 
         assert result.returncode == 0
         assert "MISSING" in result.stdout
+
+
+class TestEnvFingerprintAgreesWithItsConsumer:
+    """Round 4d-2 — the tool must not certify a file the loader cannot read."""
+
+    def test_an_invalid_byte_is_reported_not_papered_over(
+        self, tmp_path: Path
+    ) -> None:
+        """`errors="replace"` produced a clean report for an unreadable file."""
+        home = tmp_path / "home"
+        home.mkdir()
+        env_file = tmp_path / "invalid.env"
+        env_file.write_bytes(
+            b"SYNTHETIC_ONE=ab\xffcd\nSYNTHETIC_TWO=fine\n"
+        )
+
+        result = _run_fingerprint(env_file, home)
+
+        assert result.returncode == 3, result.stdout
+        assert "INVALID UTF-8" in result.stdout
+        # And no per-key line was emitted, which would have read as healthy.
+        assert "SYNTHETIC_ONE\t" not in result.stdout
+
+    def test_the_loader_really_does_raise_on_that_file(
+        self, tmp_path: Path
+    ) -> None:
+        """The consumer's behaviour, so the two cannot drift apart again."""
+        importer_path = REPO_ROOT / "scripts" / "lit-scout-zotero-import.py"
+        spec = importlib.util.spec_from_file_location(
+            "lit_scout_zotero_import_env", importer_path
+        )
+        assert spec is not None and spec.loader is not None
+        importer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(importer)
+
+        env_file = tmp_path / "invalid.env"
+        env_file.write_bytes(b"SYNTHETIC_ONE=ab\xffcd\n")
+
+        with pytest.raises(UnicodeDecodeError):
+            importer.load_env(env_file)
+
+    def test_the_duplicate_warning_names_the_winning_assignment(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """The loader keeps the FIRST assignment; the warning used to say last."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(synthetic_env, home)
+
+        assert "FIRST assignment wins" in result.stdout
+        assert "last wins" not in result.stdout
+
+    def test_the_loader_really_keeps_the_first_assignment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pinned against the loader itself, not against a reading of it."""
+        importer_path = REPO_ROOT / "scripts" / "lit-scout-zotero-import.py"
+        spec = importlib.util.spec_from_file_location(
+            "lit_scout_zotero_import_dup", importer_path
+        )
+        assert spec is not None and spec.loader is not None
+        importer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(importer)
+
+        env_file = tmp_path / "duplicates.env"
+        env_file.write_text(
+            "SYNTHETIC_DUP=first-assignment\n"
+            "SYNTHETIC_DUP=second-assignment\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("SYNTHETIC_DUP", raising=False)
+
+        importer.load_env(env_file)
+
+        assert os.environ["SYNTHETIC_DUP"] == "first-assignment"
+        monkeypatch.delenv("SYNTHETIC_DUP", raising=False)
 
 
 # ---------------------------------------------------------------------------

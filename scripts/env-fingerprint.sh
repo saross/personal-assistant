@@ -145,7 +145,22 @@ def length_bucket(length: int) -> str:
         return "medium"
     return "long"
 
-for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+# Round 4d-2: read STRICTLY. `errors="replace"` let this tool certify a
+# file byte-for-byte healthy that the consumer cannot read at all — the
+# loader's own read_text(encoding="utf-8") raises UnicodeDecodeError on the
+# first bad byte and the import dies with no Zotero credentials. A
+# fingerprint that disagrees with its consumer about whether the file is
+# readable is worse than no fingerprint.
+try:
+    text = env_path.read_text(encoding="utf-8")
+except UnicodeDecodeError as exc:
+    print("### INVALID UTF-8: byte %d is not valid UTF-8 (%s)."
+          % (exc.start, exc.reason))
+    print("### The loader in lit-scout-zotero-import.py raises on this "
+          "file; no fingerprint is possible.")
+    raise SystemExit(3)
+
+for raw in text.splitlines():
     if not raw.strip() or raw.lstrip().startswith("#"):
         continue
     match = ASSIGNMENT.match(raw)
@@ -173,5 +188,11 @@ print(f"### assignments: {len(entries)}  unique keys: {len(seen)}")
 
 duplicates = [k for k, n in seen.items() if n > 1]
 if duplicates:
-    print(f"### DUPLICATE KEYS (last wins at load time): {', '.join(sorted(duplicates))}")
+    # Round 4d-2: the loader this file feeds
+    # (lit-scout-zotero-import.py:497, `if key and key not in os.environ`)
+    # keeps the FIRST assignment and ignores later ones, and so does a
+    # shell that has already exported the name. The old wording said the
+    # opposite, which would send an operator to edit the wrong line.
+    print("### DUPLICATE KEYS (the FIRST assignment wins at load time; "
+          f"later ones are ignored): {', '.join(sorted(duplicates))}")
 PY
