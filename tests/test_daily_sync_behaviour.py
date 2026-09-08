@@ -140,6 +140,107 @@ class TestSubmoduleCommitsArePublished:
 
 
 # ============================================================================
+# Rebase-conflict resolution on the submodule pointer (audit S4)
+# ============================================================================
+
+
+def _prepare_competing_parent_bump(world: SyncWorld) -> tuple[str, Path]:
+    """
+    Prepare — but do not publish — another machine's ``data`` bump.
+
+    The foreign pointer is a real commit in the data remote (pushed to a
+    side branch, so the data half of the sync is untouched); only the
+    parent-repo pointer will conflict. Returns the foreign gitlink SHA
+    and the clone whose ``main`` holds the unpublished bump.
+    """
+    side = world.root / "side-data"
+    git("clone", "-q", str(world.data_remote), str(side), cwd=world.root)
+    (side / "memories" / "memories.jsonl").write_text(
+        '{"id": "2026-09-08-foreign", "content": "other machine"}\n', encoding="utf-8"
+    )
+    git("commit", "-q", "-am", "foreign data commit", cwd=side)
+    git("push", "-q", "origin", "HEAD:refs/heads/side", cwd=side)
+    foreign_sha = git("rev-parse", "HEAD", cwd=side).stdout.strip()
+
+    other = world.root / "side-parent"
+    git("clone", "-q", "--no-checkout", str(world.parent_remote), str(other), cwd=world.root)
+    git("read-tree", "-m", "-u", "HEAD", cwd=other)
+    git("update-index", "--cacheinfo", f"160000,{foreign_sha},data", cwd=other)
+    git("commit", "-q", "-m", "other machine bump", cwd=other)
+    return foreign_sha, other
+
+
+class TestRebasePointerConflict:
+    """When the parent push is rejected and the rebase conflicts on the
+    ``data`` gitlink, the local bump must win — we have just pushed the
+    submodule, so origin's pointer is the stale one.
+
+    git-checkout(1): during a rebase ``--ours`` is the branch being
+    rebased ONTO (origin) and ``--theirs`` is the work being replayed
+    (ours). The script used ``--ours``, the opposite of its comment.
+
+    Measured while writing these tests: for a *gitlink* the flag decides
+    nothing — neither form alters the index entry, and the following
+    ``git add data`` records the submodule's checked-out HEAD. The
+    outcome is therefore pinned behaviourally here and the flag itself
+    by source inspection.
+    """
+
+    def test_local_pointer_wins_the_rebase(self, world: SyncWorld) -> None:
+        """Stage a genuine push race with a pre-push hook, then check
+        which pointer origin ends up holding."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-s4")
+
+        # A pre-push hook lets the other machine win the race exactly
+        # once, so our first parent push is rejected and the retry path
+        # has to rebase — the only way to reach the conflict resolver.
+        race_marker = world.root / "race-done"
+        foreign_sha, other = _prepare_competing_parent_bump(world)
+        hook = machine.pa / ".git" / "hooks" / "pre-push"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Test hook: publish the other machine's bump, once.\n"
+            "cat >/dev/null\n"
+            f'[[ -f "{race_marker}" ]] && exit 0\n'
+            f'touch "{race_marker}"\n'
+            "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX \\\n"
+            f'    git -C "{other}" push -q origin main\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        published_log = git("log", "--format=%s", "main", cwd=world.parent_remote).stdout
+        assert "other machine bump" in published_log, (
+            "the other machine's commit was clobbered rather than rebased onto"
+        )
+        assert world.published_pointer() == machine.head("data"), (
+            "origin kept the stale foreign pointer "
+            f"({foreign_sha[:8]}) instead of our freshly pushed submodule SHA"
+        )
+
+    def test_source_never_takes_origin_side_in_a_rebase(self) -> None:
+        """Both rebase resolvers must use ``--theirs``.
+
+        ``resolve_rebase_conflicts``'s submodule branch is only reachable
+        from a context where a ``data`` gitlink can conflict, which the
+        data submodule itself never has — so it is pinned by source
+        inspection rather than behaviourally.
+        """
+        source = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "daily-sync.sh").read_text(encoding="utf-8")
+        assert "checkout --ours" not in source, (
+            "audit S4: --ours takes origin's stale pointer during a rebase"
+        )
+        assert source.count("git checkout --theirs -- ") == 2
+
+
+# ============================================================================
 # Parent-repo branch guard (Batch 11 Medium, 2026-05-02)
 # ============================================================================
 

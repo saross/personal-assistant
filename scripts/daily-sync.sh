@@ -192,9 +192,18 @@ push_with_retry() {
             if [[ ${#submodule_conflicts[@]} -gt 0 ]]; then
                 # Our bump-to-new-SHA is authoritative because we just
                 # pushed the submodule; origin's pointer is stale.
+                #
+                # audit S4: during a rebase git-checkout(1) defines
+                # --ours as the branch being rebased ONTO (origin) and
+                # --theirs as the work being replayed (ours), so --ours
+                # named the stale side — the opposite of the comment
+                # above. (For a gitlink the flag decides nothing either
+                # way: neither form touches the index, and the `git add`
+                # below records the submodule's checked-out HEAD. Use
+                # the flag that means what it says regardless.)
                 for _f in "${submodule_conflicts[@]}"; do
-                    git checkout --ours -- "$_f" >>"$LOG_FILE" 2>&1 \
-                        || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: checkout --ours failed on $_f"; }
+                    git checkout --theirs -- "$_f" >>"$LOG_FILE" 2>&1 \
+                        || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: checkout --theirs failed on $_f"; }
                     git add "$_f" >>"$LOG_FILE" 2>&1 \
                         || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: git add after trust-ours failed"; }
                 done
@@ -283,8 +292,10 @@ resolve_rebase_conflicts() {
         git add "${jsonl[@]}" >>"$LOG_FILE" 2>&1 || {
             git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }
     fi
+    # audit S4: --theirs is our side during a rebase (see the twin site in
+    # push_with_retry); the `git add` is what actually fixes a gitlink.
     for _f in "${submodule[@]}"; do
-        git checkout --ours -- "$_f" >>"$LOG_FILE" 2>&1 && \
+        git checkout --theirs -- "$_f" >>"$LOG_FILE" 2>&1 && \
             git add "$_f" >>"$LOG_FILE" 2>&1 || {
                 git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }
     done
