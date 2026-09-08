@@ -479,9 +479,20 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     pop` is gone from the script — every restore applies by commit and
     re-resolves the selector at the drop; every failure reason appends to
     the gate; the trigger checks `HOME` first and prints the diagnosis on
-    stdout; a dry run never gates. Fifth pass running. Both machines at
-    14:30: no stash in either repository, no marker line in either
-    corpus, no `merge.conflictStyle` set.
+    stdout; a dry run never gates. Fifth pass: **do not merge** — three
+    criticals in the round-five fixes: the gate now duplicates its
+    paragraph on every failing run (nothing resets it); the guard and the
+    resolver still disagree on "has markers", so a corpus with a lone
+    `=======` wedges behind advice to run a resolver that then skips it;
+    a nested conflict is rewritten with live markers left in and reported
+    as resolved. Plus: the diff3 base section is dropped only to its first
+    `=======`; a failed drop after a successful apply is gated as
+    "unrecovered" work (popping it again would duplicate records); eight
+    call sites still truncate the gate. Sixth round running: the gate is
+    rendered once at exit from an in-run list; guard and resolver share
+    one marker predicate; an unbalanced block structure is refused.
+    Both machines at 14:30: no stash in either repository, no marker line
+    in either corpus, no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
