@@ -86,17 +86,52 @@ PROTECTED_FILES = (
 # Logging
 # ---------------------------------------------------------------------------
 
-LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(sys.stderr),
-    ],
-)
 logger = logging.getLogger("_bulk_rewrite_guard")
+
+# Set once ``_configure_logging`` has run, so repeated guard calls in one
+# process do not stack handlers on the root logger.
+_logging_configured = False
+
+
+def _configure_logging() -> None:
+    """Attach the guard's log handlers, on first use rather than at import.
+
+    Audit S22 (2026-09-08): this module used to ``mkdir`` the log directory
+    and open a ``logging.FileHandler`` on ``LOG_FILE`` at IMPORT time. That
+    path runs through the ``logs`` symlink into the private ``data``
+    submodule, so merely importing the module from a test wrote into the
+    operator's live state — and the suite imports it, directly and through
+    every bulk-rewrite script. Deferring the work to the first guard call
+    means an import has no side effects at all.
+
+    Under pytest the file handler is deliberately not opened, matching
+    ``hooks/extraction-hook.py``. Nothing but luck stopped the old code
+    reaching the real log: pytest's logging plugin had already installed a
+    root handler, which makes ``basicConfig`` a no-op.
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+    _logging_configured = True
+    if "pytest" in sys.modules:
+        logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+        return
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            handlers=[
+                logging.FileHandler(LOG_FILE),
+                logging.StreamHandler(sys.stderr),
+            ],
+        )
+    except OSError:
+        # ``logs`` is a symlink into the data submodule; on a fresh clone it
+        # dangles and mkdir raises. The guard must still run and still be
+        # able to abort a rewrite, so fall back to stderr (audit H12's rule,
+        # applied here).
+        logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +310,10 @@ def ensure_safe_to_rewrite(reason: str) -> None:
     at script start, whereas the file-level lock must be held only
     around the actual rewrite, which may be much later in the script.
     """
+    # Every logging call site in this module is reachable only from here
+    # (the git helpers, the lock, and ``_load_config`` are all called
+    # below), so this is the one place the handlers need attaching.
+    _configure_logging()
     cfg = _load_config()
     enforce = cfg.get("require_clean_origin_for_bulk", True)
     mode = "enforcing" if enforce else "warning-only (flag off)"
