@@ -581,8 +581,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     stands until `--ack-quarantine`; an outage lowers only itself; every
     degraded return carries its reason; indexing either transcript form
     forgets a refusal; thirty matrix rows are executable; the AST test
-    covers every reader and writer of a gate or its sidecar. Sixth pass
-    running.
+    covers every reader and writer of a gate or its sidecar. Sixth pass:
+    **block** — the core transitions hold; three edge defects: the
+    acknowledgement ran a full sync and was silently dropped under lock
+    contention while logging success; the sidecar is an unlocked,
+    non-atomic read-modify-write (a cron tick can resurrect an acked
+    quarantine); the indexer gates nothing on a schema mismatch, an import
+    failure, or an absent root. Plus: fault coupled to quarantine; indexer
+    outages raise a fault an idle run cannot lower; idle runs never report
+    connected; the quarantine count tallies attempts, not rows written;
+    the matrix-coverage test cannot fail; the AST test is name-based.
+    Seventh round running: the ack is a state-only operation under a
+    per-gate flock; atomic writes; every non-zero exit raises a problem.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575; re-audit running). H27's
   fixture on `main` is done (8e2425f). S23 and S26 sit with PR #116; P17
