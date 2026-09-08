@@ -60,6 +60,22 @@ EXTRACTION_MAX_TOKENS = 8000
 
 # Transcript parsing limits
 MIN_CONTENT_LENGTH = 500   # Skip short conversations
+
+# The most slash-command responses that may be owed a skip at one time
+# (re-audit M4, 2026-09-08). The count is otherwise unbounded and never
+# decays: ``[/cmd, /cmd, /cmd]`` with the responses never arriving — an
+# interrupt, a crash, a PreCompact between the commands and the answers —
+# leaves three owed for the rest of the session, and they are then spent on
+# the next three genuine assistant turns, which are lost for good.
+#
+# Two is the largest shape live traffic produces: back-to-back commands
+# (``/recall`` then ``/remember``, two ``/remember`` calls in a row). Beyond
+# that the cap deliberately prefers UNDER-skipping. The two failure modes are
+# not symmetric — a leaked command response is a duplicate record that dedup
+# can collapse and ``/forget`` can retire, whereas a swallowed genuine turn
+# is irrecoverable: the cursor has already moved past it and nothing re-reads
+# it. When the counter is wrong, be wrong in the recoverable direction.
+MAX_RESPONSES_OWED = 2
 MAX_EXCHANGES = 30         # Cap exchanges sent to Haiku
 MAX_MESSAGE_CHARS = 3000   # Truncate individual messages
 MAX_THINKING_CHARS = 1500  # Truncation for thinking blocks
@@ -393,38 +409,67 @@ def update_vocabulary(new_tags: list[str]) -> None:
 # ============================================================================
 
 
-def cursor_entry(cursor: dict, session_id: str) -> tuple[str | None, bool]:
+def pending_count(raw: object) -> int:
+    """Coerce a stored (or passed) ``skip_pending`` value to a count.
+
+    ``skip_pending`` counts the slash-command responses still owed a skip
+    (audit H30). Rows written before that change stored a BOOL, so ``true``
+    reads as one response owed and ``false`` as none — a row can hold either
+    shape and both have to mean the same thing on the next firing.
+
+    ``bool`` is checked before ``int`` because ``isinstance(True, int)`` is
+    true in Python. Anything unrecognised reads as zero, the safe default:
+    at worst one command response is extracted once, exactly as it would
+    have been before the skip existed. Negative counts are clamped for the
+    same reason, and the upper clamp is ``MAX_RESPONSES_OWED`` — the single
+    choke point for the cap, so neither a stored row nor a caller can carry
+    a larger debt back in.
+    """
+    if isinstance(raw, bool):
+        return 1 if raw else 0
+    if isinstance(raw, int):
+        return max(0, min(raw, MAX_RESPONSES_OWED))
+    return 0
+
+
+def cursor_entry(cursor: dict, session_id: str) -> tuple[str | None, int]:
     """Read a session's cursor record as ``(uuid, skip_pending)``.
 
-    A record is ``{"uuid": …, "skip_pending": …}``. A bare string is a
-    legacy row written before audit round four and reads as "no skip
-    pending", which is the safe default: at worst one command response is
-    extracted once, exactly as it would have been before.
+    A record is ``{"uuid": …, "skip_pending": …}``, where ``skip_pending``
+    is the NUMBER of command responses still owed a skip. A bare string is a
+    legacy row written before audit round four and reads as zero owed; a
+    boolean ``skip_pending`` is a row written before audit round three's H30
+    fix and reads through :func:`pending_count`.
     """
     record = cursor.get(session_id)
     if isinstance(record, str):
-        return record, False
+        return record, 0
     if isinstance(record, dict):
         uuid = record.get("uuid")
         if not isinstance(uuid, str):
-            # No position means no window to resume, so the flag has nothing
-            # to apply to. Returning it anyway seeded a skip from the top of
-            # the transcript and swallowed the first assistant turn, which
-            # belongs to no command (audit round six L-3).
-            return None, False
-        return uuid, bool(record.get("skip_pending"))
-    return None, False
+            # No position means no window to resume, so the count has
+            # nothing to apply to. Returning it anyway seeded a skip from the
+            # top of the transcript and swallowed the first assistant turn,
+            # which belongs to no command (audit round six L-3).
+            return None, 0
+        return uuid, pending_count(record.get("skip_pending"))
+    return None, 0
 
 
 def set_cursor_entry(
-    cursor: dict, session_id: str, uuid: str, skip_pending: bool
+    cursor: dict, session_id: str, uuid: str, skip_pending: int
 ) -> None:
-    """Write a session's cursor record, position and pending skip together.
+    """Write a session's cursor record, position and pending count together.
 
     They are written as one unit deliberately: a position saved without its
-    flag is the bug audit round four C1 fixed.
+    pending count is the bug audit round four C1 fixed. The count is
+    normalised on the way out so a caller passing the old boolean shape
+    still writes a well-formed row.
     """
-    cursor[session_id] = {"uuid": uuid, "skip_pending": skip_pending}
+    cursor[session_id] = {
+        "uuid": uuid,
+        "skip_pending": pending_count(skip_pending),
+    }
 
 
 def load_cursor() -> dict:
@@ -526,9 +571,16 @@ def cursor_file_lock() -> Iterator[None]:
 class ParsedWindow(NamedTuple):
     """What one pass over a transcript window yielded.
 
-    ``skip_pending`` is True when the window ended with a slash-command
-    exchange whose response has NOT yet been seen, so the skip must survive
-    into the next window to do its job.
+    ``skip_pending`` is the NUMBER of slash-command responses the window
+    ended still owing — commands whose response has not been seen yet — so
+    the skips survive into the next window to do their job.
+
+    It is a count rather than a flag (audit H30, 2026-09-03 pre-existing):
+    a window of ``[/cmd, /cmd]`` followed by a window of ``[resp, resp]``
+    collapsed two owed skips into one boolean, the first response spent it,
+    and the second was sent to the model and re-extracted into the store the
+    command had already written. Consecutive commands are ordinary — two
+    ``/remember`` calls in a row, or ``/recall`` then ``/remember``.
 
     It is PERSISTED in the cursor record rather than being worked around by
     moving the cursor (audit round four C1). Two earlier attempts tried to
@@ -536,13 +588,14 @@ class ParsedWindow(NamedTuple):
     the real messages before the command) and stop at a "safe" position
     (which stalled on ``[real, /cmd, real]``, re-extracting the trailing
     message on every firing). The cursor answers "how far have we read"; a
-    separate flag answers "is a response still owed". Splitting them lets
-    the cursor always move forward to the last entry actually read.
+    separate counter answers "how many responses are still owed". Splitting
+    them lets the cursor always move forward to the last entry actually
+    read.
     """
 
     messages: list[dict]
     last_uuid: str | None
-    skip_pending: bool
+    skip_pending: int
 
 
 def _entry_text(entry: dict) -> str:
@@ -597,16 +650,17 @@ def _entry_text(entry: dict) -> str:
 def parse_transcript(
     transcript_path: str,
     last_uuid: str | None,
-    skip_pending: bool = False,
+    skip_pending: int | bool = 0,
 ) -> ParsedWindow:
     """
     Parse a Claude Code transcript JSONL file.
 
-    ``skip_pending`` seeds the slash-command skip from the cursor record, so
-    a command in one window still suppresses its response in the next.
+    ``skip_pending`` seeds the count of owed slash-command responses from
+    the cursor record, so commands in one window still suppress their
+    responses in the next. A bool is accepted for the legacy row shape.
 
     Returns new messages since last_uuid, the UUID of the last entry seen,
-    and whether a skip is still pending at the end of the window.
+    and how many command responses are still owed at the end of the window.
 
     If last_uuid is set but not found in the transcript (stale cursor
     from a rotated/truncated file), falls back to processing the entire
@@ -615,9 +669,10 @@ def parse_transcript(
     messages = []
     last_seen_uuid = None
     found_cursor = last_uuid is None  # If no cursor, start from beginning
-    # Seeded from the cursor record, so a command in a previous window still
-    # suppresses its response here (audit round four C1).
-    skip_next_assistant = skip_pending
+    # Seeded from the cursor record, so commands in a previous window still
+    # suppress their responses here (audit round four C1). A COUNT, not a
+    # flag, so consecutive commands each get their own skip (audit H30).
+    responses_owed = pending_count(skip_pending)
 
     with open(transcript_path, encoding="utf-8") as f:
         for line in f:
@@ -637,15 +692,26 @@ def parse_transcript(
                     # consumed here, before the marker test below ever runs,
                     # so without this its response would leak into the next
                     # window (audit round four L-2). Sidechain entries are
-                    # excluded for the same reason they are below.
-                    if entry.get("type") == "user" and not entry.get(
-                        "isSidechain"
+                    # excluded for the same reason they are below, and
+                    # ``isMeta`` is required for the reason given at the main
+                    # marker branch (audit H29).
+                    if (
+                        entry.get("type") == "user"
+                        and entry.get("isMeta")
+                        and not entry.get("isSidechain")
                     ):
                         if any(
                             marker in _entry_text(entry)
                             for marker in COMMAND_MARKERS
                         ):
-                            skip_next_assistant = True
+                            # ``max`` rather than ``+= 1``: a record written
+                            # since audit round four already COUNTS this
+                            # entry (it was the last one read in the window
+                            # that saw it), so incrementing here would owe
+                            # two skips for one command and swallow a real
+                            # assistant turn. The clamp is for the legacy
+                            # bare-string row, which carries no count at all.
+                            responses_owed = max(responses_owed, 1)
                 continue
 
             if entry_uuid:
@@ -678,34 +744,78 @@ def parse_transcript(
             # commands themselves (e.g., /remember writes to JSONL
             # directly, so extraction would produce duplicates).
             #
-            # The skip flag must persist across consecutive user entries
+            # The owed count must persist across consecutive user entries
             # — Model Context Protocol (MCP) servers occasionally inject
             # tool_result-as-user entries between a real user turn and
-            # the assistant's response. Auto-clearing the flag on a
-            # non-command user entry (the previous behaviour) would
+            # the assistant's response. Auto-clearing on a non-command
+            # user entry (the behaviour before audit round two M6) would
             # un-skip the assistant turn that was actually the slash-
             # command response, producing sporadic double-extractions.
-            # The flag is cleared only by the first assistant turn that
-            # follows.
+            # An owed skip is spent only by a text-bearing assistant turn.
             #
-            # Known limit, recorded not fixed (audit round four L-4): the
-            # test is a substring match on the entry's text, so a NON-meta
-            # user entry that merely quotes a command header — a tool result
-            # echoing ``commands/*.md``, say — sets the flag too, and the
-            # next genuine assistant turn is dropped. Narrowing it needs a
-            # position-anchored match against the harness's real expansion
-            # shape, which is a separate change.
+            # The marker test is a substring match on the entry's text, so
+            # on its own it fires on any user entry that merely QUOTES a
+            # command header — a tool result echoing ``commands/*.md`` or
+            # ``scripts/_command_markers.py``, say. That armed the skip and
+            # dropped the next genuine assistant turn, losing a real exchange
+            # for good (audit round four L-4, fixed as H29).
+            #
+            # ``isMeta`` is the narrowing signal, and live data supports
+            # it. Measured 2026-09-08 across
+            # ~/.claude/projects/-home-shawn-personal-assistant: of 365
+            # marker-bearing user entries, 364 were isMeta and exactly one
+            # was not. That one is a tool result quoting a command header,
+            # written by the audit session itself — the false positive this
+            # branch exists to stop, so it is evidence FOR the narrowing,
+            # not against it. (An earlier draft of this comment said "all
+            # 364 ... and no non-meta user entry carried a marker", which
+            # was the count before that entry existed; corrected at the
+            # re-audit, L1.) A non-meta user entry quoting a header is
+            # ordinary prose, so it falls through to the append below and is
+            # extracted like any other turn.
             if entry.get("type") == "user":
-                if any(marker in content for marker in COMMAND_MARKERS):
-                    skip_next_assistant = True
+                if entry.get("isMeta") and any(
+                    marker in content for marker in COMMAND_MARKERS
+                ):
+                    # Invariant: a command entry is counted at most ONCE.
+                    #
+                    # An entry with no uuid can never become a cursor
+                    # position — ``last_seen_uuid`` is only assigned from a
+                    # uuid — so every later window re-reads it and would
+                    # count it again. Measured shape of the bug (re-audit
+                    # M3, 2026-09-08): W1 ``[cmd c1, cmd no-uuid]`` ends
+                    # owing 2 at position c1; W2 seeds 2, re-arms 1 at the
+                    # cursor, re-reads the uuid-less entry and owes 3, and
+                    # the count keeps climbing on every firing until it eats
+                    # genuine assistant turns that belong to no command.
+                    #
+                    # A dropped genuine turn is irrecoverable; a leaked
+                    # command response is a duplicate the store can be
+                    # deduplicated of. So an unpositionable command arms
+                    # nothing, and says so.
+                    if entry_uuid:
+                        # Capped: see ``MAX_RESPONSES_OWED``. An owed skip
+                        # that is never spent is a debt against future
+                        # genuine turns, so the counter refuses to grow past
+                        # the largest shape live traffic produces.
+                        responses_owed = min(
+                            responses_owed + 1, MAX_RESPONSES_OWED
+                        )
+                    else:
+                        logger.warning(
+                            "Slash-command entry with no uuid in %s — cannot "
+                            "be positioned, so its response is not skipped; "
+                            "it may be extracted once as an ordinary turn",
+                            transcript_path,
+                        )
                     continue
-            elif entry.get("type") == "assistant" and skip_next_assistant:
+            elif entry.get("type") == "assistant" and responses_owed:
                 # Assistant turns are often split: a tool-use-only entry
                 # (empty text) precedes the text-bearing one. Only the
                 # text-bearing entry is the command response, so only it
-                # consumes the flag (audit H11: 52 of 585 cases leaked).
+                # consumes one owed skip (audit H11: 52 of 585 cases leaked).
                 if content and content.strip():
-                    skip_next_assistant = False
+                    responses_owed -= 1
                 continue
 
             # A harness-injected USER entry that was not a command (audit
@@ -718,10 +828,12 @@ def parse_transcript(
             # This one check sits AFTER the slash-command branch, and that
             # ordering is load-bearing: slash commands ARE delivered as
             # ``isMeta`` user entries (measured 2026-09-08 across
-            # ~/.claude/projects/-home-shawn-personal-assistant: all 364
-            # marker-bearing user entries were isMeta, and no non-meta user
-            # entry carried a marker). Dropping them any earlier would stop
-            # the markers ever setting ``skip_next_assistant``, letting every
+            # ~/.claude/projects/-home-shawn-personal-assistant: 364 of the
+            # 365 marker-bearing user entries were isMeta; the one that was
+            # not is a tool result quoting a header, not an invocation —
+            # see the marker branch above). Dropping them any earlier would
+            # stop
+            # the markers ever incrementing ``responses_owed``, letting every
             # /remember, /forget, and /update response back into extraction.
             #
             # ``last_seen_uuid`` is assigned above this point, so a skipped
@@ -757,12 +869,12 @@ def parse_transcript(
         )
         return parse_transcript(transcript_path, None)
 
-    # ``skip_next_assistant`` still set at end of window means the command's
-    # response has not arrived yet (PreCompact fires before the model call,
+    # ``responses_owed`` above zero at end of window means that many command
+    # responses have not arrived yet (PreCompact fires before the model call,
     # and an interrupt mid-tool-use leaves [command, tool-use-only
-    # assistant]). The caller stores it alongside the position, so the next
-    # window resumes with the skip still owed.
-    return ParsedWindow(messages, last_seen_uuid, skip_next_assistant)
+    # assistant]). The caller stores the count alongside the position, so the
+    # next window resumes with every skip still owed.
+    return ParsedWindow(messages, last_seen_uuid, responses_owed)
 
 
 # ============================================================================

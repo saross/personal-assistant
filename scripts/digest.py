@@ -234,6 +234,22 @@ def is_verified_true(mem: dict) -> bool:
     return str(v).strip().lower() == "true"
 
 
+def is_disproved(mem: dict) -> bool:
+    """True iff ``verified`` explicitly resolves to false.
+
+    The mirror of :func:`is_verified_true`. The live corpus stores
+    ``verified`` as the string ``"false"`` when anchor verification ran and
+    the anchors did NOT hold — the record was checked and found wrong.
+    Older code paths or tests may use a real bool. Anything else
+    (``"pending"``, ``None``, absent) is neither true nor disproved: it has
+    simply never been checked.
+    """
+    v = mem.get("verified")
+    if isinstance(v, bool):
+        return not v
+    return str(v).strip().lower() == "false"
+
+
 def is_active(mem: dict) -> bool:
     """False only when explicitly forgotten (``is_active: false``).
 
@@ -246,9 +262,18 @@ def is_active(mem: dict) -> bool:
 def has_anchors(mem: dict) -> bool:
     """True iff the memory carries a non-empty ``anchors`` list.
 
-    Used by the promoted-recent fallback: an anchored memory has been
-    through verification (even if the result is not yet ``true``), so it
-    is a safer top-up than an un-verified one.
+    Anchors are what anchor verification runs AGAINST, so an anchored
+    record is one that can be checked — not one that has been. The outcome
+    is carried by ``verified`` and is one of three states: true, false
+    (:func:`is_disproved`), or neither, which covers both "the check has
+    not run" and "the check ran and was inconclusive" (``pending``).
+
+    The promoted-recent fallback pairs this with the two verification
+    predicates: checkable, and not yet come back either way. That is a
+    safer top-up than an unanchored record, which cannot be checked at all
+    (re-audit M2, 2026-09-08: this docstring used to claim an anchored
+    record "has been through verification", which is true of the disproved
+    ones the pool now excludes and false of the never-run ones it admits).
     """
     return bool(mem.get("anchors"))
 
@@ -415,13 +440,26 @@ def rank_fallback(
 ) -> list[dict]:
     """Promoted-recent fallback pool (design §6a item 3).
 
-    Active, in-window memories that carry non-empty ``anchors`` (i.e.
-    went through verification even if not yet ``true``), excluding
-    anything already chosen, ranked by recency. ``project_id`` (Vector 2c)
-    applies the same hard project scope as :func:`rank_verified`, so a
-    scoped digest never tops up with off-project records. The 2026-05-30
-    feasibility reframe (design §6b) establishes this fallback as the
-    permanent handler for anchor-less records, not a migration stopgap.
+    Active, in-window memories that carry non-empty ``anchors`` (i.e. are
+    checkable, per :func:`has_anchors`) and whose ``verified`` state is
+    neither true nor false, excluding anything already chosen, ranked by
+    recency. ``project_id`` (Vector 2c) applies the same hard project scope
+    as :func:`rank_verified`, so a scoped digest never tops up with
+    off-project records. The 2026-05-30 feasibility reframe (design §6b)
+    establishes this fallback as the permanent handler for anchor-less
+    records, not a migration stopgap.
+
+    "Neither" is two live states and the pool takes both: the check has not
+    run yet, and the check ran and was inconclusive (``pending`` — 53 such
+    records live at the 2026-09-08 re-audit). Neither is a claim about the
+    record's truth, which is why the rendered heading calls the block
+    "unverified" rather than "unchecked".
+
+    Records whose verification returned ``false`` are excluded (audit H25,
+    2026-09-08). "Not come back true" and "checked and found wrong" are
+    different states: the first is a pointer of unknown quality, the second
+    a known-wrong pointer, and injecting that into the session start is the
+    precise failure the anti-confabulation policy exists to prevent.
     """
     pool = [
         m
@@ -430,6 +468,7 @@ def rank_fallback(
         and is_active(m)
         and has_anchors(m)
         and not is_verified_true(m)
+        and not is_disproved(m)
         and _in_window(m, now=now, window_days=window_days)
         and matches_project(m, project_id)
     ]
@@ -532,21 +571,67 @@ def _assemble(
     ]
     if focus_label:
         lines += [f"_Verified entries ranked for current focus: {focus_label}._", ""]
+    # Two headings, because ``entries`` is two different things: the
+    # verified-true selection and, when that under-fills the budget, the
+    # promoted-recent fallback top-up. Rendering both under one
+    # "Verified-true entries" heading asserted a verification that the
+    # fallback rows had never passed (audit H25, 2026-09-08). The split is
+    # derived from the records themselves rather than plumbed through, so
+    # the two callers of ``_assemble`` cannot disagree about it.
+    verified_entries = [m for m in entries if is_verified_true(m)]
+    unverified_entries = [m for m in entries if not is_verified_true(m)]
     lines.append(
         f"**Verified-true entries from the last {window_days} days "
-        f"({len(entries)} shown of {verified_available} available):**"
+        f"({len(verified_entries)} shown of {verified_available} available):**"
     )
-    if entries:
-        lines += [f"- {render_entry(m)}" for m in entries]
+    if verified_entries:
+        lines += [f"- {render_entry(m)}" for m in verified_entries]
     else:
         lines.append("- (none yet — corpus still building verified coverage)")
-    lines += [
-        "",
-        (
+    if unverified_entries:
+        # Why the fallback fired is not one story. ``build_digest`` tops up
+        # whenever the verified entries fill less than ``fallback_min_fill``
+        # of the byte budget (50% by default), which happens both when there
+        # is no verified content at all and when there are a couple of short
+        # verified entries. Claiming "nothing verified is available" in the
+        # second case is simply false, and it is the sentence the reader
+        # would use to judge how much weight the block below deserves
+        # (re-audit M1, 2026-09-08).
+        if verified_entries:
+            reason = "shown because verified coverage is thin"
+        else:
+            reason = "shown because nothing verified is available"
+        lines += [
+            "",
+            f"**Unverified, {reason} ({len(unverified_entries)} shown):**",
+        ]
+        lines += [f"- {render_entry(m)}" for m in unverified_entries]
+    # The anti-confabulation line has to describe the digest it is actually
+    # attached to. The original wording ("unverified content ... is not
+    # surfaced here") was false whenever the fallback fired. Keeping the
+    # no-fallback wording untouched keeps that digest byte-identical to the
+    # pre-H25 output, so the §8 measurement window is unaffected.
+    if unverified_entries:
+        # "Never checked" would be false for the bulk of this block. A
+        # ``verified: "pending"`` record HAS been through anchor
+        # verification; the run was inconclusive, not skipped (re-audit M2,
+        # 2026-09-08: 53 such records live). What the block shares is only
+        # the negative — none of it came back true — so that is what the
+        # sentence says.
+        anti_confabulation = (
+            "**Anti-confabulation:** the entries above are not verified "
+            "true — unchecked or inconclusive; every entry here is a "
+            "pointer, not an authority. Re-read the source before citing."
+        )
+    else:
+        anti_confabulation = (
             "**Anti-confabulation:** unverified content from prior sessions "
             "is not surfaced here; it is a pointer, not an authority. "
             "Use `/recall <query>` to fetch it explicitly."
-        ),
+        )
+    lines += [
+        "",
+        anti_confabulation,
         "",
         (
             "**Depth on demand:** `/recall <query>` or "

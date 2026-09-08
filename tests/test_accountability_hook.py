@@ -165,6 +165,52 @@ class TestCountWaitingItems:
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
         assert accountability.count_waiting_items() == 1
 
+    def test_a_strikethrough_that_closes_in_the_last_cell_marks_the_row_done(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``^~~.`` -> ``^~~.+?~~`` (audit H26, 2026-09-08).
+
+        The other live shape: the row opens ``~~`` in its Item cell and does
+        not close it until the last cell, so the whole row renders struck but
+        the first cell on its own carries no closing delimiter. The old
+        pattern required the strikethrough to close inside the first cell, so
+        rows of this shape were counted as still-waiting and inflated the
+        banner every session.
+
+        All three shapes in one fixture, so a pattern that satisfies one by
+        breaking another cannot pass: closed-in-the-first-cell (done),
+        closed-in-the-last-cell (done), struck-only-mid-cell (live).
+        """
+        waiting = tmp_path / "waiting.md"
+        waiting.write_text(
+            "| Item | Waiting On | Since | Next Action |\n"
+            "|------|------------|-------|-------------|\n"
+            "| ~~Lens cleaning kit~~ (`workshop`) | Supplier | 2024-05-02 "
+            "| Arrived. |\n"
+            "| ~~Counterweight quote | Machinist | 2024-04-11 "
+            "| Quoted and paid.~~ |\n"
+            "| Replacement ~~drive belt~~ spindle | Workshop | 2024-05-19 "
+            "| Chase Sam. |\n"
+        )
+        monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
+        assert accountability.count_waiting_items() == 1
+
+    def test_a_bare_delimiter_cell_is_not_a_done_row(self, tmp_path, monkeypatch):
+        """Kills ``^~~.`` -> ``^~~``.
+
+        A first cell holding nothing but the delimiter strikes nothing
+        through; reading it as done would silently drop a live row from the
+        count.
+        """
+        waiting = tmp_path / "waiting.md"
+        waiting.write_text(
+            "| Item | Waiting On |\n"
+            "|------|------------|\n"
+            "| ~~ | Machinist |\n"
+        )
+        monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
+        assert accountability.count_waiting_items() == 1
+
 
 # ============================================================================
 # Focus Slot Parsing

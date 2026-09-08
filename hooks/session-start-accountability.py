@@ -56,12 +56,18 @@ def count_inbox_items() -> int:
 def count_waiting_items() -> int:
     """Count data rows in waiting-for.md table.
 
-    Audit C-M1 (2026-05-02): a row whose cells are entirely wrapped in
-    GitHub-flavoured strikethrough (``~~…~~``) marks a completed
-    waiting-for item that the user has chosen to leave visible for
-    audit. Such rows must not be counted as still-waiting — previously
-    they inflated the banner count by the number of completed items
-    that had not yet been pruned from the file.
+    Audit C-M1 (2026-05-02): a row struck through with GitHub-flavoured
+    strikethrough (``~~…~~``) marks a completed waiting-for item that the
+    user has chosen to leave visible for audit. Such rows must not be
+    counted as still-waiting — previously they inflated the banner count by
+    the number of completed items that had not yet been pruned from the
+    file.
+
+    The rule (audit H26, 2026-09-08): a row whose first non-empty cell
+    BEGINS with ``~~`` is done. Where the strikethrough closes is not part
+    of the test, because the live file uses both shapes — closing inside the
+    Item cell before an un-struck project tag, and opening in the Item cell
+    without closing until the last cell.
     """
     if not WAITING_FILE.exists():
         return 0
@@ -97,9 +103,24 @@ def count_waiting_items() -> int:
         # were being counted as open) closes the strikethrough mid-cell and
         # appends an un-struck project tag — ``~~Car service~~ (`personal`)``.
         # A first cell that BEGINS struck is a completed row.
-        is_struck = bool(re.match(r"^~~.+?~~", first_non_empty))
+        #
+        # The test is on the OPENING delimiter alone (audit H26,
+        # 2026-09-08). Requiring the strikethrough to close inside the first
+        # cell — ``^~~.+?~~`` — missed the other live shape, in which a row
+        # opens ``~~`` in its Item cell and does not close it until the last
+        # cell, so the whole row renders struck but the first cell on its own
+        # does not match. Those rows counted as open. A cell that merely
+        # contains ``~~`` somewhere in the middle (``Renamed ~~old~~ item``)
+        # is still live, which is why the match is anchored at ``^``. The
+        # trailing ``.`` requires at least one character after the delimiter,
+        # so a degenerate cell holding nothing but ``~~`` is not a done row.
+        is_struck = bool(re.match(r"^~~.", first_non_empty))
         if is_struck:
             continue
+        # Subsumed by the first-cell rule above (a row whose every non-empty
+        # cell is struck necessarily opens ``~~`` in its first cell), and
+        # kept only as a statement of the second valid encoding. Not a guard
+        # the counter relies on.
         if non_empty and all(
             re.match(r"^~~.+~~$", c) for c in non_empty
         ):
