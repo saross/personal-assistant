@@ -182,3 +182,45 @@ class TestExitCodes:
 
         out = capsys.readouterr().out
         assert ":2:" in out, f"expected path:lineno output, got {out!r}"
+
+
+class TestDefaultsAreThemselvesPinned:
+    """The safety limits' DEFAULT values, not just their plumbing.
+
+    Every other test passes --max-line explicitly, so widening
+    DEFAULT_MAX_LINE to 1e11 left 48 tests green — and the default is what
+    every real invocation uses, because search-archives-safe.sh only ever
+    passes SAS_MAXLINE, whose own default is the same number (round 4c-2,
+    finding 22). A limit nobody exercises at its default is not a limit.
+    """
+
+    def test_the_default_line_cap_is_the_documented_one(self) -> None:
+        assert scan.DEFAULT_MAX_LINE == 1_000_000, (
+            "the per-line guard's default changed; the 2026-06-21 crash was "
+            "a ~25 MB single line reaching the regex engine"
+        )
+
+    def test_a_pathological_line_is_truncated_at_the_default(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Run the scanner with NO explicit limit, as the wrapper does."""
+        needle = "NEEDLEPASTTHEDEFAULTCAP"
+        _entry(tmp_path, "2026-03-02_pathological", [
+            "a" * (scan.DEFAULT_MAX_LINE + 500) + needle
+        ])
+
+        exit_code = scan.main([needle, str(tmp_path)])
+
+        assert exit_code == 1, (
+            "text beyond the default per-line cap reached the regex; the "
+            "cap is not being applied on the default path"
+        )
+        assert "0 file(s) matched" in capsys.readouterr().err
+
+    def test_content_inside_the_default_cap_still_matches(
+        self, tmp_path: Path
+    ) -> None:
+        """The positive control: the default must not break ordinary search."""
+        _entry(tmp_path, "2026-03-02_ordinary", ["a line holding NEEDLE"])
+
+        assert scan.main(["NEEDLE", str(tmp_path)]) == 0

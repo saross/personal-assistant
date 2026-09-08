@@ -1504,3 +1504,74 @@ class TestSearchArchivesSafety:
 
         assert result.returncode == 2
         assert "path not found" in result.stderr
+
+    def test_the_wrapper_defaults_are_the_documented_ones(self) -> None:
+        """SAS_TIMEOUT, SAS_MAXLINE and the cgroup caps, as literals.
+
+        Every test passes these explicitly, so SAS_TIMEOUT could become 0 (no
+        wall-clock kill at all) and SAS_MAXLINE could be widened, with the
+        suite green. These are the values a real invocation uses, because a
+        real invocation sets none of them (round 4c-2, finding 22).
+        """
+        source = SEARCH_ARCHIVES_SCRIPT.read_text(encoding="utf-8")
+
+        for assignment in (
+            'SAS_TIMEOUT="${SAS_TIMEOUT:-120}"',
+            'SAS_MEMMAX="${SAS_MEMMAX:-2G}"',
+            'SAS_CPUQUOTA="${SAS_CPUQUOTA:-400%}"',
+            'SAS_MAXLINE="${SAS_MAXLINE:-1000000}"',
+        ):
+            assert assignment in source, (
+                f"the wrapper's default changed: expected {assignment!r}"
+            )
+
+    def test_the_default_timeout_reaches_the_executed_command(
+        self, sandbox
+    ) -> None:
+        """Not just declared — actually passed, when nothing overrides it."""
+        sandbox.home.mkdir()
+        bin_dir = sandbox.tmp_path / "bin-default"
+        bin_dir.mkdir()
+        argv_log = sandbox.tmp_path / "default-argv.txt"
+        stub = bin_dir / "nice"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$@" > {argv_log}\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        _run_script(
+            sandbox.script, "LANTERN", str(sandbox.archive_root),
+            home=sandbox.home,
+            extra_env={
+                "TMPDIR": str(sandbox.tmpdir),
+                "SAS_NO_CGROUP": "1",
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
+        )
+
+        argv = argv_log.read_text(encoding="utf-8").split("\n")
+        assert "120" in argv, (
+            f"the default wall-clock kill was not passed through: {argv}"
+        )
+        assert "1000000" in argv, (
+            f"the default per-line cap was not passed through: {argv}"
+        )
+
+    def test_a_degraded_user_manager_still_gets_the_cgroup_scope(self) -> None:
+        """`systemctl is-system-running` says "degraded" for one failed unit.
+
+        The manager is fully usable in that state and systemd-run works, so
+        dropping "degraded" from the accepted states silently loses the hard
+        memory ceiling on any machine with a single failed unit — which is
+        most of them.
+        """
+        source = SEARCH_ARCHIVES_SCRIPT.read_text(encoding="utf-8")
+
+        assert '"$_user_systemd_state" == "degraded"' in source, (
+            "the degraded state was dropped; a degraded-but-usable systemd "
+            "loses the OOM ceiling this wrapper exists to provide"
+        )
+        assert '"$_user_systemd_state" == "running"' in source

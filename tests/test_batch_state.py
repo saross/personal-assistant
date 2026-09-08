@@ -100,6 +100,64 @@ class TestPerBatchState:
         leftovers = [p.name for p in state_dir.iterdir() if ".tmp" in p.name]
         assert leftovers == []
 
+    def test_the_staged_file_is_written_beside_its_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``tmp = path`` passes a leftovers check but is not atomic.
+
+        A rename is only atomic within one filesystem, and a temp file that
+        IS the target is not a temp file at all — the write happens in
+        place, which is the failure this staging exists to prevent (round
+        4c-2, finding 21).
+        """
+        state_dir = tmp_path / "state"
+        legacy = tmp_path / "legacy.json"
+        staged: list[tuple[Path, Path]] = []
+        real_replace = Path.replace
+
+        def record(self, target):
+            staged.append((Path(self), Path(target)))
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", record)
+        save_state(_state("msgbatch_first", "first"), state_dir, legacy)
+
+        assert staged, "no atomic rename was performed"
+        for source, target in staged:
+            assert source != target, (
+                "the staged path IS the target; the write happens in place"
+            )
+            assert source.parent == target.parent, (
+                "the staged file is on a different directory from its "
+                "target, so the rename may cross filesystems"
+            )
+            assert source.name.endswith(".tmp")
+
+    def test_a_crash_before_the_rename_leaves_the_previous_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The map from custom_id to target is the only copy there is."""
+        state_dir = tmp_path / "state"
+        legacy = tmp_path / "legacy.json"
+        save_state(_state("msgbatch_first", "first"), state_dir, legacy)
+        target = state_path(state_dir, "msgbatch_first")
+        before = target.read_text(encoding="utf-8")
+
+        real_replace = Path.replace
+
+        def boom(self, target_path):
+            raise OSError("interrupted")
+
+        monkeypatch.setattr(Path, "replace", boom)
+        with pytest.raises(OSError):
+            save_state(_state("msgbatch_first", "second"), state_dir, legacy)
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert target.read_text(encoding="utf-8") == before, (
+            "an interrupted save truncated the batch's index map"
+        )
+        assert load_state("msgbatch_first", state_dir, legacy) is not None
+
 
 class TestBatchIdSafety:
     """A batch id arrives on the command line; it is not a path."""
