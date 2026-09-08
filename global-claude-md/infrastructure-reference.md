@@ -272,14 +272,31 @@ list, and read the gate line, which names the remedy.
 - **7** — more rows were refused in one run than `PA_PG_QUARANTINE_CAP`
   allows (default 200). The database is fine and the rows may genuinely
   be poison; there are simply too many to skip without someone looking.
+- **8** — `--quarantine-anyway` was asked for but another instance held
+  the advisory lock, so the override did not run. Re-run it.
+
+**A PostgreSQL outage is not an exit code.** Both syncs exit **0** when
+the database is unreachable: the canonical stores are the JSONL and the
+archive tree, so an outage is not a failure of the sync, and failing
+loudly every five minutes would train everyone to ignore it. What
+surfaces instead is the gate: three consecutive unreachable runs (about
+fifteen minutes) raise "PostgreSQL has been unreachable for N
+consecutive runs", and the next run that connects lowers it. Check the
+gate, not the exit status, when asking whether the pipeline is alive.
 
 `index-session-content.py`:
 
 - **0** — ran to completion.
-- **2** — psycopg2 missing, or a schema-version mismatch.
+- **2** — psycopg2 missing, a schema-version mismatch, **or an archive
+  root that exists but contains no `session.meta.json` at all**. The
+  last is a missing mount or the wrong path, and the indexer refuses to
+  run on it rather than concluding that every archive was deleted.
+  Neither variant of exit 2 touches the gate: both stop before learning
+  anything about the index's contents.
 - **3** — PostgreSQL unreachable, at connect time or mid-run. Not
   critical: the archive tree is canonical and the index is rebuildable.
-- **4** — environment fault, as above.
+  Raises the gate.
+- **4** — environment fault, as above. Raises the gate.
 - **5** — one or more transcripts were refused **this run**. A transcript
   refused on an earlier run does not fail later runs; it is reported once
   at WARNING and through the gate.
@@ -303,12 +320,23 @@ header:
 
 One file per script, deliberately: a shared file meant a clean run of one
 script erased another's alarm on the next cron tick. A gate is raised on
-any exit of 4, 5, 6, or 7, and also by a run that merely *quarantined*
-rows — data leaving the pipeline is worth knowing about even at exit 0.
-It is lowered only by a later run of the **same** script that completed a
-full cycle with nothing outstanding; a run that deferred to another
-instance, or never reached the database, leaves it standing, because it
-has learnt nothing.
+any non-zero exit, by three consecutive unreachable runs, and by a run
+that merely *quarantined* rows — data leaving the pipeline is worth
+knowing about even at exit 0.
+
+**Lowering a gate requires evidence that the fault it records is gone,
+and absence of work is not evidence.** Concretely: only a run of the
+*same* script that processed at least one row, and quarantined none,
+lowers a quarantine or fault gate; only a run that actually connected
+lowers an outage gate. A run that found nothing to do, deferred to
+another instance, could not reach the database, or found the archive
+root missing or empty leaves the gate exactly as it stands. For the
+transcript indexer the same rule reads: only a full-root run (not
+`--project X`) whose refusal memory ends empty lowers the gate.
+
+Each gate has a sidecar `<gate>.state.json` recording which fault it
+holds and how many consecutive runs have failed to connect. It is
+bookkeeping: delete it and the next run rebuilds it.
 
 #### Refusal memory (`index-session-content.py`)
 
