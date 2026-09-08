@@ -233,12 +233,12 @@ dies at line 618 before the sync body and the test passes anyway).
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | fixed in PR #116 (merged 0d1d391) (before any fixture repair) |
 | S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — fixed in **PR #120** (round 3b, merged 69a7590: the path resolves at call time, nothing opens at import, the production path is tested in a child process) |
-| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **PR #119** (`claude/audit-round3c`; re-audit running) |
+| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; second re-audit running) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
 | S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | fixed in PR #116: every non-zero exit writes a gate line |
-| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **PR #119** (`claude/audit-round3c`; re-audit running) |
-| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **PR #119** (`claude/audit-round3c`; re-audit running) |
+| S27 | `scripts/daily-sync.sh` — a `git stash apply` that conflicts on a tracked path while failing to restore an untracked file (already present at the other side's content) is classified as conflicted, resolved, and dropped; the untracked file's only copy survives nowhere (CONFIRMED by the tenth re-audit of PR #116; pre-existing, byte-identical at the branch point) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; second re-audit running) |
+| S28 | The stash-state sidecar is wiped by the early-exit trap of a run that only read it, so the attribution decays after one idle session start; supersede-by-SHA over-matches through the stack listing; the write side lacks the applied-outranks-conflicted precedence (CONFIRMED, same pass) | **PR #119** (`claude/audit-round3c`; first re-audit found C1 and M1-M5, fixed in e91362e-c1f4dd6; second re-audit running) |
 | S4 note | Measured on the branch: neither `--ours` nor `--theirs` changes a conflicted gitlink's index entry; the following `git add` records the checked-out HEAD, which is why the live sync resolved these correctly despite the inverted flag. The fix is legibility, not data loss. | recorded |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
@@ -921,8 +921,19 @@ punctuation-only queries; no embedding call without an explicit flag
   nothing; the owed count is capped at two, under-skipping by design).
   **Merged as 190bc7c**; main suite 1,587. H27's fixture on `main` is done
   (8e2425f). S23 and S26 sit with PR #116; P17 with PR #117;
-  Round 3c (S23, S27, S28) is PR #119 (suite 2,393 merged with main;
-  re-audit found C1 and M1–M5, fix round running).
+  Round 3c (S23, S27, S28) is PR #119. Its first re-audit found C1 (the
+  partial-stash gate advised a `checkout` that would overwrite the other
+  machine's copy: `missing` and `differs` were not distinguished) and
+  M1-M5 (orphan partial not persisted; an untracked symlink unrestored for
+  ever; a byte-identical collision refused; the shrink check had to run
+  before the push of already-committed data; two untested exit-handler
+  mutations). Fixed in e91362e-c1f4dd6: per-path `missing`/`differs`
+  states with advice that never overwrites a present file (invariant test
+  runs every advised command); a fifth apply outcome `applied`;
+  `abort_on_published_shrink` before both data pushes (exit 4, resets
+  nothing); `reset --mixed`; the shrink report under `logs/`; carry-forward
+  examines each entry once. 13 of 13 mutations killed; suite 2,424 with
+  main merged (bad919b). Second narrow re-audit running.
 - Round 3b (`surfacing_log.py`, S22's third member, plus the eleventh
   re-audit's follow-ups L1 and L6 from PR #117) is **PR #120, merged
   69a7590**; main suite 2,372. Four fixes (bab4990 lazy log path, 01efef0
