@@ -210,7 +210,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S5 | `daily-sync.sh:358,405-423` run before the detached-HEAD guard at 438-445; on a detached HEAD the memory commit and the archive commit are orphaned and the working tree reverted. Likely trigger: `sync-symlinks.sh:126 git submodule update` detaching HEAD. | CONFIRMED by ordering; trigger SUSPECTED | **round 2** (branch `claude/audit-sync-writers`) (move the guard above every commit site) |
 | S6 (B) | `scripts/resolve-merge-conflicts.py` has zero tests; keeping only "ours" passes the whole suite. | CONFIRMED | **round 2** (branch `claude/audit-sync-writers`) (tests with real conflict markers) |
 | S7 (B) | `scripts/daily-sync-trigger.sh` has zero tests; "never runs again" and "breaks the hook chain" both pass. | CONFIRMED | **round 2** (branch `claude/audit-sync-writers`) |
-| S8 (B) | `archive-memories.py::apply_archive` untested: evicting without archiving, or archiving without evicting, passes. `monthly-archive.py::_apply` halts removable with tests green. | CONFIRMED | **round 2** (branch `claude/audit-sync-helpers`) |
+| S8 (B) | `archive-memories.py::apply_archive` untested: evicting without archiving, or archiving without evicting, passes. `monthly-archive.py::_apply` halts removable with tests green. | CONFIRMED | fixed in PR #114 (merged 8c61bb8) |
 
 ### Medium (sync)
 
@@ -218,16 +218,16 @@ dies at line 618 before the sync body and the test passes anyway).
 |---|---|---|
 | S9 | Archiver call lacks a `DRY_RUN` guard; `--dry-run` commits | **round 2** (branch `claude/audit-sync-writers`) |
 | S10 | Two Syncthing gate-file layouts; the trigger reads one; the early-exit path renders a headerless problem | **round 2** (branch `claude/audit-sync-writers`) |
-| S11 | `sync-symlinks.sh:97` `ln -sf` on a symlink-to-directory writes inside it; needs `-sfn` | **round 2** (branch `claude/audit-sync-helpers`) |
+| S11 | `sync-symlinks.sh:97` `ln -sf` on a symlink-to-directory writes inside it; needs `-sfn` | fixed in PR #114 (merged 8c61bb8) |
 | S12 | Resolver: a valid-JSON non-object line raises `AttributeError`, aborting the sync with a conflicted tree | **round 2** (branch `claude/audit-sync-writers`) |
-| S13 | `compose-global-claude-md.sh:102` truncates `~/.claude/CLAUDE.md` before writing | **round 2** (branch `claude/audit-sync-helpers`) (temp + `mv`) |
-| S14 | `push-archives-to-r2.sh:91` version probe kills the script under `pipefail` | **round 2** (branch `claude/audit-sync-helpers`) |
-| S15 | `archive-memories.py:369-373` releases the flock before its commit | **round 2** (branch `claude/audit-sync-helpers`) |
-| S16 | `archive-memories.py:413`, `commit-data.sh:49,58` commit without a pathspec | **round 2** (branch `claude/audit-sync-helpers`) |
+| S13 | `compose-global-claude-md.sh:102` truncates `~/.claude/CLAUDE.md` before writing | fixed in PR #114 (merged 8c61bb8) (temp + `mv`) |
+| S14 | `push-archives-to-r2.sh:91` version probe kills the script under `pipefail` | fixed in PR #114 (merged 8c61bb8) |
+| S15 | `archive-memories.py:369-373` releases the flock before its commit | fixed in PR #114 (merged 8c61bb8) |
+| S16 | `archive-memories.py:413`, `commit-data.sh:49,58` commit without a pathspec | fixed in PR #114 (merged 8c61bb8) |
 | S17 | A conflicted orphan-stash pop wedges every later session with no gate line | **round 2** (branch `claude/audit-sync-writers`) (gate line) |
 | S18 | Syncthing SSH probe runs inside the 90 s SessionStart budget | deferred |
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
-| S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
+| S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
 | S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
@@ -353,8 +353,10 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     submodule update), with exit 0 — a regression in the fix; `data` tracked
     as plain files would have had its contents committed into the public
     parent; the staleness probe was silenced by submodule ignore settings.
-    Fixed (0a0a147: forward-only, gitlink-only, SHAs read directly). Fourth,
-    narrow pass running.
+    Fixed (0a0a147: forward-only, gitlink-only, SHAs read directly). Fourth
+    pass: merge, with the guard moved before the data push and four
+    untested guards pinned (d68af93). **Merged as 8c61bb8**; main suite
+    1,333.
   - PR #115, first pass: **private content in a public branch** (H27, D6);
     a false comment about cursor advance on harness-only windows; unpinned
     digest constants; loose banner assertions; three checker divergences
@@ -371,8 +373,11 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     `memories.jsonl`, so conflict markers left by the S3 abort are committed
     by the next run and published by the S1 push. Plus: the S1 bump goes
     ahead when `origin/main` is absent; a parent stash-pop conflict has no
-    gate; one commit body over-claims its mutation kills. Being fixed on
-    the branch.
+    gate; one commit body over-claims its mutation kills. Fixed
+    (221acd4–ca10efa): every stash is tracked by SHA and popped
+    oldest-first (the boolean flags are gone); an unmerged memory file is
+    refused with a gate; the bump is withheld when `origin/main` is absent;
+    the trigger survives an unset `HOME`. Second pass running.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
@@ -380,8 +385,12 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     held it; the per-row replay lacks a defensive rollback; two of four
     cursor writers still unlocked; the rebuild truncates before resetting
     the cursor with no lock against the cron; `index-session-content.py`
-    still lacks NUL sanitising and refused-row handling. Being fixed on the
-    branch.
+    still lacks NUL sanitising and refused-row handling. Fixed
+    (fbddbcc–dafcb20): three-way classification with `ProgrammingError`
+    split by SQLSTATE, an all-alike rule, a 200-row quarantine cap, exit 4
+    with the cursor held; all four cursor writers locked and atomic; the
+    rebuild holds the cursor lock and a sync whose key vanished exits 6;
+    the indexer sanitises and skips. Second pass running.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
