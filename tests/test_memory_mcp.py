@@ -1201,10 +1201,13 @@ class TestMcpConnectionBounds:
         monkeypatch.setattr(psycopg2, "connect", _fake_connect)
         conn, err = memory_mcp._pg_connect()
         assert err is None
-        assert recorded["connect_timeout"] == memory_mcp.CONNECT_TIMEOUT_SECONDS
-        assert recorded["options"] == (
-            f"-c statement_timeout={memory_mcp.STATEMENT_TIMEOUT_MS}"
-        )
+        # Documented literals, not the constants under test: setting either
+        # to 0 removes the bound (PostgreSQL reads 0 as "no limit") while
+        # satisfying a self-referential assertion (audit L3).
+        assert recorded["connect_timeout"] == 5
+        assert recorded["options"] == "-c statement_timeout=30000"
+        assert memory_mcp.CONNECT_TIMEOUT_SECONDS > 0
+        assert memory_mcp.STATEMENT_TIMEOUT_MS > 0
 
 
 # -------------------------------------------------------------------------

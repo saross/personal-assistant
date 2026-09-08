@@ -90,14 +90,22 @@ class TestConnectionBounds:
     def test_connect_sets_both_timeouts(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Kills: dropping ``connect_timeout`` or the ``options`` string."""
+        """Kills: dropping ``connect_timeout`` or the ``options`` string, AND
+        setting either bound to zero (which PostgreSQL reads as "no limit").
+
+        The literals are spelled out rather than compared to the module's
+        own constants: ``STATEMENT_TIMEOUT_MS = 0`` would satisfy a
+        self-referential assertion while removing the protection entirely
+        (audit L3).
+        """
         _, connect = _install(monkeypatch)
         search_sessions.search("loader")
         kwargs = connect.calls[0]
-        assert kwargs["connect_timeout"] == search_sessions.CONNECT_TIMEOUT_SECONDS
-        assert kwargs["options"] == (
-            f"-c statement_timeout={search_sessions.STATEMENT_TIMEOUT_MS}"
-        )
+        assert kwargs["connect_timeout"] == 5
+        assert kwargs["options"] == "-c statement_timeout=30000"
+        # And the constants themselves must stay bounds, not switches.
+        assert search_sessions.CONNECT_TIMEOUT_SECONDS > 0
+        assert search_sessions.STATEMENT_TIMEOUT_MS > 0
 
     def test_connection_is_closed_even_when_the_query_raises(
         self, monkeypatch: pytest.MonkeyPatch,

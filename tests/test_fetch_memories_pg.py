@@ -194,10 +194,39 @@ class TestTryPostgresQueryBody:
         assert [r["id"] for r in results] == ["mine"]
 
     def test_connection_is_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Every path closes the connection it opened."""
+        """Every path closes the connection it opened.
+
+        The ``connect.connections`` assertion comes first: ``all()`` over an
+        empty list is True, so without it this passed even if no connection
+        was ever opened (audit L3).
+        """
         _, connect = _install(monkeypatch, [_row("a")])
         fetch_memories.try_postgres(category="decision")
+        assert connect.connections, "no connection was opened"
         assert all(c.closed for c in connect.connections)
+
+    def test_both_connects_are_bounded(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Audit L3: nothing inspected this script's connect kwargs.
+
+        Kills: dropping ``connect_timeout`` or the ``options`` string from
+        either connect site, or setting either bound to 0 -- /recall is
+        interactive, so an unbounded connect hangs the session instead of
+        falling back to JSONL. Literals, not the module's own constants.
+        """
+        import embed
+
+        monkeypatch.setattr(embed, "embed_single", lambda text: [1.0, 0.0])
+        _, connect = _install(monkeypatch, [_row("a", embedding=[1.0, 0.0])])
+        fetch_memories.try_postgres(category="decision")
+        fetch_memories.try_semantic("canopy")
+        assert len(connect.calls) == 2, "both connect sites must be exercised"
+        for kwargs in connect.calls:
+            assert kwargs["connect_timeout"] == 5
+            assert kwargs["options"] == "-c statement_timeout=30000"
+        assert fetch_memories.CONNECT_TIMEOUT_SECONDS > 0
+        assert fetch_memories.STATEMENT_TIMEOUT_MS > 0
 
     def test_datetimes_are_serialised(
         self, monkeypatch: pytest.MonkeyPatch,
