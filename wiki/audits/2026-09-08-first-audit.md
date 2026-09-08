@@ -232,7 +232,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | fixed in PR #116 (merged 0d1d391) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | fixed in PR #116 (merged 0d1d391) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed in PR #118 (lazy handler, merged 190bc7c; the guard's lock path also crashed on a dangling `logs` symlink and now refuses instead); `rebuild.log` fixed in PR #117 (merged 773a0bd), whose suite also owns its `HOME`; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — fixed in **PR #120** (round 3b, merged 69a7590: the path resolves at call time, nothing opens at import, the production path is tested in a child process) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **PR #119** (`claude/audit-round3c`; re-audit running) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -779,8 +779,38 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   nothing; the owed count is capped at two, under-skipping by design).
   **Merged as 190bc7c**; main suite 1,587. H27's fixture on `main` is done
   (8e2425f). S23 and S26 sit with PR #116; P17 with PR #117;
-  `surfacing_log.py` (S22's third member) is round 3b (`claude/audit-round3b`,
-  running). Round 3c (S23, S27, S28) is PR #119 (suite 2,393 merged with
-  main; re-audit running).
+  Round 3c (S23, S27, S28) is PR #119 (suite 2,393 merged with main;
+  re-audit found C1 and M1–M5, fix round running).
+- Round 3b (`surfacing_log.py`, S22's third member, plus the eleventh
+  re-audit's follow-ups L1 and L6 from PR #117) is **PR #120, merged
+  69a7590**; main suite 2,372. Four fixes (bab4990 lazy log path, 01efef0
+  named message constants, 5a59bf6 `utf-8-sig`, 99586fe future gate stamp).
+  Its re-audit: no critical; one merge-blocking flake (the future-stamp
+  test asserted `120m` where a fractional fixture mtime truncates to 119
+  about once in a hundred runs) and two follow-ups fixed before merge
+  (18489e5: the clamp after the future-stamp report changes no outcome,
+  so the comment and docstring now call it belt-and-braces; the
+  live-resource guard's `pytest.mark` clause gained the case that kills
+  deleting it). Verified live: the suite run from the worktree with the
+  real `HOME` left `data/logs/surfaced.log` unchanged (md5 before and
+  after), so S22 is closed on all three members. **Carried as
+  follow-ups (round 4 material):** (i) the `__file__`-derived log-default
+  shape survives in over a dozen scripts, mitigated only by per-test
+  monkeypatching (13 by `grep -l __file__ scripts/*.py hooks/*.py` filtered
+  to a `logs/` path; the 3b agent's wider sweep counted about seventeen);
+  the suite triggers none of them (whole-tree snapshot before and after a
+  full run); (ii) the two readers, `scripts/surfacing_stats.py:42` and
+  `scripts/memory-health-report.py:71-73`, derive the path from `PA_DIR`
+  and ignore `PA_SURFACED_LOG`, so an overridden writer and the readers
+  disagree; (iii) `utf-8-sig` strips only a stream-leading byte-order
+  mark — a mark mid-file (only a non-Python tool writes one) still hides
+  the record after it and defeats the dedup, re-appending it; (iv) the
+  shell's own `REFUSED` wording in `scripts/daily-sync.sh` is not tied to
+  `_sync_gate.QUARANTINE_REFUSED_WORD`; (v) a gate stamped persistently
+  in the future (clock stepped back and never corrected) keeps the
+  staleness rule off — the banner says so and the next cron write heals
+  it, but it is disclosed rather than caught; (vi) dormancy under pytest
+  is silent: a production process that happens to import `pytest` would
+  lose the surfacing log without a diagnostic.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
