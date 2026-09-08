@@ -44,7 +44,9 @@
 # ``[r2archives]`` remote (type=s3, provider=Cloudflare, env_auth=true,
 # endpoint, region=auto) lives in ~/.config/rclone/rclone.conf.
 #
-# Exit codes: 0 success, 1 precondition not met (skipped), 2 rclone error.
+# Exit codes: 0 success, 1 precondition not met (skipped), 2 rclone or
+# credential error (retryable), 3 --immutable refusal (a canonical object
+# changed — corruption signal, needs a human).
 # Designed to be safe to run from daily-sync.sh (self-loads .env, does its
 # own mount/remote checks) and standalone for the initial / ad-hoc push.
 # ---------------------------------------------------------------------------
@@ -97,11 +99,19 @@ load_r2_var() {
     [[ -z "$line" ]] && return 0
     value="${line#*=}"
     value="${value%$'\r'}"                 # tolerate CRLF .env files
-    # Strip one matching pair of surrounding quotes, nothing else.
+    value="${value#"${value%%[![:space:]]*}"}"   # strip leading whitespace
+    value="${value%"${value##*[![:space:]]}"}"   # strip trailing whitespace
+    # Strip one matching pair of surrounding quotes, nothing else. Quotes are
+    # handled BEFORE the trailing-comment strip, so a '#' inside a quoted
+    # secret survives; an unquoted value ends at the first " #".
     if [[ "$value" == \"*\" ]]; then
         value="${value:1:${#value}-2}"
     elif [[ "$value" == \'*\' ]]; then
         value="${value:1:${#value}-2}"
+    else
+        # `KEY=value   # note` — the comment is not part of the credential.
+        value="${value%%[[:space:]]#*}"
+        value="${value%"${value##*[![:space:]]}"}"
     fi
     export "${name}=${value}"
 }
@@ -114,6 +124,7 @@ if [[ -f "$ENV_FILE" ]]; then
 else
     log "r2-push: .env not found at $ENV_FILE — relying on ambient env"
 fi
+
 
 # --- Preconditions -------------------------------------------------------
 # Override the rclone binary via RCLONE_BIN if a newer build lives outside
@@ -174,6 +185,23 @@ if ! "$RCLONE_BIN" listremotes 2>/dev/null | grep -q '^r2archives:'; then
     log "r2-push: rclone remote [r2archives] not configured — skipped"
     exit 1
 fi
+# Both credentials must actually be set. Without this an unreadable .env, or
+# one that has lost the R2 lines, sailed past every precondition above and
+# ran a real rclone copy with no credentials — thousands of 403s against the
+# retry budget, a log full of failures, and an exit code that says "rclone
+# error" rather than "you have no keys" (audit round 4c-2, finding 10).
+missing_creds=()
+for _r2_var in "${R2_VARS[@]}"; do
+    if [[ -z "${!_r2_var:-}" ]]; then
+        missing_creds+=("$_r2_var")
+    fi
+done
+unset _r2_var
+if [[ ${#missing_creds[@]} -gt 0 ]]; then
+    log "r2-push: missing R2 credential(s): ${missing_creds[*]} — set them" \
+        "in $ENV_FILE or the environment; refusing to run"
+    exit 2
+fi
 
 # --- Push ----------------------------------------------------------------
 RCLONE_FLAGS=(
@@ -203,8 +231,23 @@ log "r2-push: copy $CANON/ → $DEST/ (additive, no delete, no overwrite)"
 if "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" "$CANON/" "$DEST/"; then
     log "r2-push: complete"
     exit 0
-else
-    rc=$?
-    log "r2-push: rclone exited non-zero (rc=$rc; see $LOG_FILE)"
-    exit 2
 fi
+rc=$?
+
+# Two very different failures share rclone's non-zero exit, and they want
+# opposite responses (audit round 4c-2, finding 12). A network or auth
+# failure is transient: the next run retries and nothing is wrong with the
+# archive. An --immutable refusal means a canonical object CHANGED, which in
+# an append-only archive is a corruption signal that a retry cannot fix and
+# that a human has to look at. Exit 3 for the second, so a cron wrapper can
+# tell them apart without parsing the log.
+if grep -qi "immutable" "$LOG_FILE" 2>/dev/null; then
+    log "r2-push: ABORTED — rclone refused to modify an object already in" \
+        "R2 (--immutable). The archive is append-only, so a canonical file" \
+        "whose size or modtime changed is a corruption signal, not an" \
+        "update. Investigate before re-running; see $LOG_FILE"
+    exit 3
+fi
+log "r2-push: rclone exited non-zero (rc=$rc; see $LOG_FILE) — transport or" \
+    "auth failure, safe to retry"
+exit 2

@@ -1112,11 +1112,20 @@ class TestR2PushSafety:
             canonical=canonical, tmp_path=tmp_path,
         )
 
-    def _run(self, sandbox, *args: str, mount: bool = True):
+    #: Invented credentials, supplied unless a test is about their absence.
+    AMBIENT_CREDENTIALS = {
+        "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID": "ambient-id-invented",
+        "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY": "ambient-secret-invented",
+    }
+
+    def _run(self, sandbox, *args: str, credentials: bool = True, **extra):
         env = {
             "RCLONE_BIN": str(sandbox.rclone),
             "PATH": f"{sandbox.bin_dir}:{os.environ['PATH']}",
         }
+        if credentials:
+            env.update(self.AMBIENT_CREDENTIALS)
+        env.update(extra)
         return _run_script(
             sandbox.script, *args, home=sandbox.home, extra_env=env
         )
@@ -1201,7 +1210,7 @@ class TestR2PushSafety:
             encoding="utf-8",
         )
 
-        assert self._run(sandbox).returncode == 0
+        assert self._run(sandbox, credentials=False).returncode == 0
 
         assert not marker.exists(), (
             "sourcing .env executed a command substitution inside it"
@@ -1228,7 +1237,7 @@ class TestR2PushSafety:
             encoding="utf-8",
         )
 
-        assert self._run(sandbox).returncode == 0
+        assert self._run(sandbox, credentials=False).returncode == 0
 
         env_text = sandbox.env_log.read_text(encoding="utf-8")
         assert "sk-invented-value-from-dot-env" not in env_text, (
@@ -1250,18 +1259,116 @@ class TestR2PushSafety:
             "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-dot-env\n",
             encoding="utf-8",
         )
-        env = {
-            "RCLONE_BIN": str(sandbox.rclone),
-            "PATH": f"{sandbox.bin_dir}:{os.environ['PATH']}",
-            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID": "from-ambient",
-        }
-        result = _run_script(
-            sandbox.script, home=sandbox.home, extra_env=env
+        result = self._run(
+            sandbox, credentials=False,
+            RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="from-ambient",
+            RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY="secret-invented",
         )
 
         assert result.returncode == 0
         env_text = sandbox.env_log.read_text(encoding="utf-8")
         assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-ambient" in env_text
+
+    def test_a_missing_credential_refuses_before_any_transfer(
+        self, sandbox
+    ) -> None:
+        """No keys is not "an rclone error"; it is "do not start".
+
+        Without this an unreadable .env, or one that has lost the R2 lines,
+        sailed past every precondition and ran a real copy with no
+        credentials: thousands of 403s against the retry budget, and an exit
+        code that blamed rclone (round 4c-2, finding 10).
+        """
+        result = self._run(sandbox, credentials=False)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        combined = result.stdout + result.stderr
+        assert "missing R2 credential" in combined
+        assert not sandbox.argv_log.exists(), (
+            "a transfer was attempted with no credentials"
+        )
+
+    def test_one_credential_alone_is_not_enough(self, sandbox) -> None:
+        result = self._run(
+            sandbox, credentials=False,
+            RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="only-the-id",
+        )
+
+        assert result.returncode == 2
+        assert "SECRET_ACCESS_KEY" in result.stdout + result.stderr
+        assert not sandbox.argv_log.exists()
+
+    def test_a_trailing_comment_is_not_part_of_the_secret(
+        self, sandbox
+    ) -> None:
+        """`KEY=value   # note` is a comment, not eight more characters."""
+        (sandbox.pa_dir / ".env").write_text(
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented   "
+            "# rotated 2026-03-02\n"
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=  r2-secret-invented  \n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2-id-invented\n" in env_text
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2-secret-invented\n"
+            in env_text
+        )
+
+    def test_a_hash_inside_a_quoted_secret_survives(self, sandbox) -> None:
+        """The comment strip must not eat a '#' that is part of the key."""
+        (sandbox.pa_dir / ".env").write_text(
+            'RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID="r2#id#invented"\n'
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY='r2#secret'\n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2#id#invented\n" in env_text
+
+    def test_an_immutable_refusal_exits_three_and_says_so(
+        self, sandbox
+    ) -> None:
+        """A changed canonical object is corruption, not a retryable blip."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: session.jsonl.gz: Source and destination exist but '
+            'do not match: immutable file modified" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "ABORTED" in result.stdout + result.stderr
+
+    def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
+        """The positive control: an ordinary failure stays retryable."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: dial tcp: lookup failed" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2
+        assert "safe to retry" in result.stdout + result.stderr
 
 
 # ----------------------------------------------------------------------------
