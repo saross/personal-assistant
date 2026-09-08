@@ -294,6 +294,15 @@ def main(argv: list[str] | None = None) -> int:
               "columns cannot be computed without them; pass --results-json, "
               "or run phase1_pipeline.py first.", file=sys.stderr)
         return 2
+    # This printer multiplies a REPORTED rate by a precision computed with
+    # today's regexes, so it is a phase 1 consumer like any other: an old
+    # results file and a new precision produce a "corrected" number that
+    # corresponds to nothing (round 4g-3, item 2).
+    stale = style_support.metric_schema_error(
+        json.loads(results_json.read_text(encoding="utf-8")), results_json)
+    if stale:
+        print(stale, file=sys.stderr)
+        return 2
     reported = load_reported_rates(results_json)
     rng = random.Random(SEED)
 

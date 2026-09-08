@@ -52,6 +52,7 @@ from style_test_helpers import (  # noqa: E402
 
 announce = load_style_module("validate_announce_colon")
 passive = load_style_module("validate_passive_detection")
+style_support = load_style_module("style_support")
 
 #: The repository root, found from this file rather than from ``~`` (the suite
 #: repoints HOME; see ``tests/conftest.py``).
@@ -81,8 +82,15 @@ def _write_body(corpus_dir: Path, key: str, text: str) -> Path:
     return path
 
 
-def _write_phase1_results(corpus_dir: Path, rates: dict[str, float]) -> Path:
-    """Create the phase 1 results file the colon printer reads rates from."""
+def _write_phase1_results(corpus_dir: Path, rates: dict[str, float], *,
+                          stamped: bool = True) -> Path:
+    """Create the phase 1 results file the colon printer reads rates from.
+
+    Stamped by default: this printer multiplies a reported rate by a precision
+    computed with today's regexes, so it refuses a results file measured under
+    superseded metric definitions like every other phase 1 consumer. Pass
+    ``stamped=False`` to build the file the refusal is about.
+    """
     path = corpus_dir / "analysis" / "phase1-results.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -91,6 +99,8 @@ def _write_phase1_results(corpus_dir: Path, rates: dict[str, float]) -> Path:
             for key, rate in sorted(rates.items())
         ]
     }
+    if stamped:
+        payload["metric_schema"] = style_support.metric_schema_stamp()
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -479,3 +489,38 @@ def test_the_passive_printer_parses_its_corpus_and_key_overrides():
 
     assert args.corpus_dir == Path("/nowhere/extracted")
     assert args.keys == ["AAAA1111", "BBBB2222"]
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-3 item 2 — the sixth phase 1 consumer
+# ---------------------------------------------------------------------------
+
+def test_an_unstamped_results_file_is_refused(tmp_path, capsys):
+    """This printer is a phase 1 consumer, and had no metric_schema check.
+
+    It multiplies a REPORTED announcement-colon rate by a precision computed
+    with today's regexes. Against a results file measured under the old
+    definitions that product corresponds to nothing, and it used to print
+    "corrected 2.000/1k" and exit 0. The mutation this kills: dropping the
+    metric_schema check from ``main``.
+    """
+    _write_body(tmp_path, "AAAA1111", COLON_PAPER)
+    _write_phase1_results(tmp_path, {"AAAA1111": 2.0}, stamped=False)
+
+    code = announce.main(["--corpus-dir", str(tmp_path), "--keys", "AAAA1111"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "metric_schema version is absent" in captured.err
+    assert "corrected" not in captured.out
+
+
+def test_a_stamped_results_file_is_still_scored(tmp_path, capsys):
+    """The check must not refuse the file the pipeline actually produces."""
+    _write_body(tmp_path, "AAAA1111", COLON_PAPER)
+    _write_phase1_results(tmp_path, {"AAAA1111": 4.0})
+
+    code = announce.main(["--corpus-dir", str(tmp_path), "--keys", "AAAA1111"])
+
+    assert code == 0
+    assert "corrected 4.000/1k" in capsys.readouterr().out
