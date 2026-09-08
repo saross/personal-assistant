@@ -408,8 +408,9 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     wider than bash's blanks, so a vertical tab before `#` muted the
     operator scan; plus four surviving mutations, a non-dict cursor file
     crashing the hook, and eight older tests reading the operator's real
-    memory store into a prompt. Sixth (final) round running. Design note
-    worth keeping: the first two cursor fixes each
+    memory store into a prompt. Sixth round done (33d9102–8efa1e6; suite
+    1,487 measured three times); a final narrow pass is running before the
+    squash merge. Design note worth keeping: the first two cursor fixes each
     satisfied one invariant by breaking another because they stored two
     facts (position, pending skip) in one pointer; only separating them
     satisfies all four. Merge strategy: squash, so the six commits
