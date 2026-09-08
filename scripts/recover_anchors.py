@@ -363,8 +363,16 @@ def _git_commit(corpus, n, mark) -> None:
         f"fix(memories): recover {n} anchor refs + strip junk (item 21b)",
         rewrite_class="bulk",
     )
-    subprocess.run(["git", "-C", str(data_dir), "add", str(rel)], check=True)
-    subprocess.run(["git", "-C", str(data_dir), "commit", "-m", subject], check=True)
+    # Re-audit of PR #114 (same class as audit finding S16): a bare
+    # `git commit` publishes everything already staged in the shared index —
+    # a concurrent session's half-written prose included — under this
+    # script's bulk-rewrite subject and trailer. Name the pathspec on the
+    # commit as well as the add, and match it literally: a pathspec is a
+    # GLOB by default, so a metacharacter in the path would sweep a lookalike.
+    subprocess.run(["git", "-C", str(data_dir), "--literal-pathspecs",
+                    "add", "--", str(rel)], check=True)
+    subprocess.run(["git", "-C", str(data_dir), "--literal-pathspecs",
+                    "commit", "-m", subject, "--", str(rel)], check=True)
     print(f"committed {rel} in data submodule", file=sys.stderr)
 
 

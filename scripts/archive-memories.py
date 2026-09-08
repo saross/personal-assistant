@@ -282,9 +282,15 @@ def render_report(counts: Counter, archived: list[dict], windows: dict,
 # ============================================================================
 
 
-def _partition_path(now: datetime) -> Path:
-    """Month partition for this run: archive/memories-archive-YYYY-MM.jsonl."""
-    return ARCHIVE_DIR / f"memories-archive-{now:%Y-%m}.jsonl"
+def _partition_path(now: datetime, archive_dir: Path | None = None) -> Path:
+    """Month partition for this run: archive/memories-archive-YYYY-MM.jsonl.
+
+    Audit 2026-09-08 M3: ``archive_dir`` is a parameter (defaulting to the
+    module-level :data:`ARCHIVE_DIR`, the real cold store) so a test that
+    passes a throwaway corpus cannot append to the live archive by forgetting
+    to patch a module global.
+    """
+    return (archive_dir or ARCHIVE_DIR) / f"memories-archive-{now:%Y-%m}.jsonl"
 
 
 def _partition_ids(partition: Path) -> set[str]:
@@ -308,8 +314,14 @@ def _partition_ids(partition: Path) -> set[str]:
 
 def apply_archive(corpus: Path, windows: dict, now: datetime,
                   only: frozenset[str] | None, reason: str, *,
-                  do_postgres: bool) -> None:
-    """Move past-decay records to the month partition (guarded + locked)."""
+                  do_postgres: bool, archive_dir: Path | None = None) -> None:
+    """Move past-decay records to the month partition (guarded + locked).
+
+    ``archive_dir`` defaults to the module-level :data:`ARCHIVE_DIR`; passing
+    it explicitly (audit 2026-09-08 M3) keeps the cold store a parameter
+    rather than a module global, so the write paths are testable in a
+    throwaway tree.
+    """
     from _bulk_rewrite_guard import (
         ensure_safe_to_rewrite,
         lock_jsonl_for_rewrite,
@@ -318,8 +330,9 @@ def apply_archive(corpus: Path, windows: dict, now: datetime,
     )
 
     ensure_safe_to_rewrite(reason=reason)
+    archive_dir = archive_dir or ARCHIVE_DIR
     archived_ids: list[str] = []
-    partition = _partition_path(now)
+    partition = _partition_path(now, archive_dir)
     try:
         with lock_jsonl_for_rewrite(corpus):
             # Re-read the corpus fresh INSIDE the lock so any append that
@@ -338,7 +351,7 @@ def apply_archive(corpus: Path, windows: dict, now: datetime,
                       "evicted from the corpus but cannot be marked inactive "
                       "in postgres.", file=sys.stderr)
 
-            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            archive_dir.mkdir(parents=True, exist_ok=True)
             # Idempotent append: skip records already present in this month's
             # partition, so a crash-then-retry (records still in the un-renamed
             # corpus, already appended here) cannot duplicate them in the cold
@@ -363,14 +376,23 @@ def apply_archive(corpus: Path, windows: dict, now: datetime,
                 out.flush()
                 os.fsync(out.fileno())
             tmp.replace(corpus)
-            _write_run_manifest(partition, counts, reason, now)
+            _write_run_manifest(partition, counts, reason, now, archive_dir)
             print(f"archived {sum(counts.values())} records → {partition}",
                   file=sys.stderr)
+        # Audit 2026-09-08 S15: commit INSIDE the guard's lock. The corpus has
+        # already been truncated and replaced above, so releasing the
+        # daily-sync flock before this commit left a window in which a
+        # SessionStart daily-sync could acquire the lock, see a shrunk
+        # memories.jsonl, and commit it WITHOUT the ``Rewrite-Class: bulk``
+        # trailer — tripping its own shrink detector, resetting the commit,
+        # and exiting non-zero. The JSONL flock (released with the `with`
+        # above) is a separate, narrower lock and is deliberately not held
+        # here: appenders may resume once the rewrite is on disk.
+        _git_commit(corpus, partition, sum(counts.values()), only,
+                    mark_bulk_rewrite_commit_msg, archive_dir)
     finally:
         release_lock()
 
-    _git_commit(corpus, partition, sum(counts.values()), only,
-                mark_bulk_rewrite_commit_msg)
     if not do_postgres:
         print("skipped postgres update (--no-postgres); reconcile is_active "
               "later if needed.", file=sys.stderr)
@@ -381,9 +403,9 @@ def apply_archive(corpus: Path, windows: dict, now: datetime,
 
 
 def _write_run_manifest(partition: Path, counts: Counter, reason: str,
-                        now: datetime) -> None:
+                        now: datetime, archive_dir: Path | None = None) -> None:
     """Append a one-line run summary to archive/archive-runs.jsonl (audit)."""
-    manifest = ARCHIVE_DIR / "archive-runs.jsonl"
+    manifest = (archive_dir or ARCHIVE_DIR) / "archive-runs.jsonl"
     entry = {
         "run_at": now.isoformat(),
         "reason": reason,
@@ -396,7 +418,9 @@ def _write_run_manifest(partition: Path, counts: Counter, reason: str,
 
 
 def _git_commit(corpus: Path, partition: Path, n: int,
-                only: frozenset[str] | None, mark) -> None:
+                only: frozenset[str] | None, mark,
+                archive_dir: Path | None = None) -> None:
+    """Commit the corpus rewrite, the partition, and the run manifest."""
     import subprocess
     data_dir = corpus.parent.parent  # .../data
     scope = ",".join(sorted(only)) if only else "ephemeral"
@@ -407,10 +431,21 @@ def _git_commit(corpus: Path, partition: Path, n: int,
     paths = [
         str(corpus.relative_to(data_dir)),
         str(partition.relative_to(data_dir)),
-        str((ARCHIVE_DIR / "archive-runs.jsonl").relative_to(data_dir)),
+        str(((archive_dir or ARCHIVE_DIR) / "archive-runs.jsonl").relative_to(data_dir)),
     ]
-    subprocess.run(["git", "-C", str(data_dir), "add", *paths], check=True)
-    subprocess.run(["git", "-C", str(data_dir), "commit", "-m", subject], check=True)
+    # Re-audit of PR #114: `--literal-pathspecs` is load-bearing. A pathspec
+    # is a GLOB by default, so a path containing `[`, `*`, or `?` — reachable
+    # here through the archive_dir parameter — would also match, stage, and
+    # commit a concurrent session's lookalike file. (`--pathspec-file-nul`
+    # does not help: it makes the file FORMAT literal, not the matching.)
+    subprocess.run(["git", "-C", str(data_dir), "--literal-pathspecs",
+                    "add", "--", *paths], check=True)
+    # Audit 2026-09-08 S16: name the pathspec on the COMMIT too, not only the
+    # add. A bare `git commit` publishes everything already staged in the
+    # shared index — including a concurrent session's half-written prose —
+    # under this script's bulk-rewrite message and trailer.
+    subprocess.run(["git", "-C", str(data_dir), "--literal-pathspecs",
+                    "commit", "-m", subject, "--", *paths], check=True)
     print(f"committed archival in data submodule ({n} records)", file=sys.stderr)
 
 
