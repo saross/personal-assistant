@@ -694,7 +694,7 @@ def test_the_guard_raises_on_a_created_or_deleted_canonical(tmp_path,
             before, conftest._canonical_store_snapshot())
 
 
-def test_the_guard_catches_a_same_size_rewrite(tmp_path, monkeypatch):
+def test_the_store_guard_catches_a_same_size_rewrite(tmp_path, monkeypatch):
     """A rewrite that keeps the byte count must still be caught.
 
     The mutation this kills: dropping ``st_mtime_ns`` from the snapshot
