@@ -288,6 +288,53 @@ def no_live_postgres(request, monkeypatch):
     monkeypatch.setattr(psycopg2, "connect", refuse)
 
 
+#: Canonical files in the repo tree that no test may create, modify, or
+#: delete. These are reached through the root symlinks (``memories`` ->
+#: ``data/memories``, ``logs`` -> ``data/logs``), so they are resolved before
+#: being watched: a test that writes the real path and one that writes the
+#: symlink are the same event. HOME is the suite's own, but these paths come
+#: from ``__file__``, not from ``~``, so the HOME repoint does not cover them
+#: — and a test that forgets to patch a module's path constant lands here
+#: (audit 2026-09-08, finding B4: reproduced in a copy, the tag-gardening
+#: suite rewrote data/memories/memories.jsonl and stayed green).
+_CANONICAL_FILES = (
+    PROJECT_ROOT / "memories" / "memories.jsonl",
+    PROJECT_ROOT / "memories" / "tag-vocabulary.txt",
+)
+#: Directories whose entire contents are watched, recursively.
+_CANONICAL_DIRS = (PROJECT_ROOT / "logs",)
+
+
+def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
+    """Map every watched canonical path to ``(mtime_ns, size)``, or ``None``.
+
+    ``None`` records "absent", so a test that CREATES one of these is caught
+    as surely as one that rewrites it. Size as well as mtime: a rewrite
+    within one clock tick can leave the mtime alone.
+    """
+    snapshot: dict[str, tuple[int, int] | None] = {}
+
+    def record(path: Path) -> None:
+        resolved = path.resolve()
+        try:
+            stat = resolved.stat()
+        except OSError:
+            snapshot[str(resolved)] = None
+            return
+        snapshot[str(resolved)] = (stat.st_mtime_ns, stat.st_size)
+
+    for path in _CANONICAL_FILES:
+        record(path)
+    for directory in _CANONICAL_DIRS:
+        resolved_dir = directory.resolve()
+        snapshot[str(resolved_dir)] = None if not resolved_dir.is_dir() else (0, 0)
+        if resolved_dir.is_dir():
+            for child in sorted(resolved_dir.rglob("*")):
+                if child.is_file():
+                    record(child)
+    return snapshot
+
+
 @pytest.fixture(scope="session", autouse=True)
 def no_real_cache_writes():
     """Fail the run if the suite touched a real pipeline file in ~/.cache.
@@ -303,8 +350,10 @@ def no_real_cache_writes():
         "test ran"
     )
     before = _pipeline_cache_snapshot()
+    store_before = _canonical_store_snapshot()
     yield
     after = _pipeline_cache_snapshot()
+    store_after = _canonical_store_snapshot()
     home_after = os.environ.get("HOME")
 
     # HOME first: a repointed HOME means the snapshot above was taken of
@@ -330,4 +379,17 @@ def no_real_cache_writes():
         f"  created:  {created}\n"
         f"  modified: {modified}\n"
         f"  deleted:  {deleted}"
+    )
+
+    # The canonical store is the graver case: a stray write there corrupts
+    # the memory system itself, not a cache the pipeline can rebuild.
+    touched = sorted(
+        path for path in set(store_after) | set(store_before)
+        if store_before.get(path) != store_after.get(path)
+    )
+    assert not touched, (
+        "the test suite wrote to the REAL canonical memory store or its "
+        "logs. A test that forgot to patch a module's path constant rewrote "
+        "the operator's data.\n"
+        f"  touched: {touched}"
     )

@@ -32,22 +32,24 @@ _bulk_rewrite_guard = importlib.import_module("_bulk_rewrite_guard")
 # -------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _bypass_rewrite_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate merge tests from the live data submodule's git state.
+@pytest.fixture
+def bypass_rewrite_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate one mutating test from the live data submodule's git state.
 
-    ``cmd_merge`` calls ``ensure_safe_to_rewrite`` to refuse running
-    while ``data/memories/memories.jsonl`` or ``tag-vocabulary.txt``
-    have uncommitted changes. During development the extraction-hook
-    routinely appends new memories to those files, so the guard
-    correctly aborts and these tests fail through no fault of their
-    own.
+    ``cmd_merge`` and ``orphans --action clean`` call
+    ``ensure_safe_to_rewrite`` to refuse running while
+    ``data/memories/memories.jsonl`` or ``tag-vocabulary.txt`` have
+    uncommitted changes. During development the extraction hook routinely
+    appends to those files, so the guard correctly aborts and a test that
+    only wants to exercise the merge algorithm fails through no fault of
+    its own.
 
-    The merge tests exercise the merge algorithm, not the guard's
-    clean-tree gate (which is — or should be — exercised by its own
-    tests). Replacing it with a no-op for the duration of each test
-    lets the tests use their tmp_path fixtures cleanly. Patching is
-    applied at both the source module and the tag-gardening namespace
+    This was AUTOUSE until audit round 4a (2026-09-08, finding B4). That
+    made the guard a no-op for the WHOLE module, so a test that forgot to
+    patch ``MEMORIES_JSONL`` rewrote the real canonical store and the suite
+    stayed green — reproduced in a copy. It is now requested by name, so a
+    test that has not thought about the guard meets the real one. Patching
+    is applied at both the source module and the tag-gardening namespace
     binding to be robust against import-style changes.
     """
     noop = lambda *args, **kwargs: None  # noqa: E731
@@ -363,7 +365,7 @@ class TestMerge:
     """Tests for the merge operation."""
 
     def test_replaces_tags(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """Loser tags are replaced with winner tags."""
         jsonl = tmp_path / "memories.jsonl"
@@ -405,7 +407,7 @@ class TestMerge:
         )
 
     def test_preserves_line_count(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """JSONL line count is unchanged after merge."""
         jsonl = tmp_path / "memories.jsonl"
@@ -433,7 +435,7 @@ class TestMerge:
         assert new_count == original_count
 
     def test_valid_jsonl_after_merge(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """Every line in the merged file is valid JSON."""
         jsonl = tmp_path / "memories.jsonl"
@@ -490,7 +492,7 @@ class TestMerge:
         assert jsonl.read_text() == original_content
 
     def test_vocabulary_updated(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """Vocabulary file has losers removed and winners present."""
         jsonl = tmp_path / "memories.jsonl"
@@ -622,7 +624,7 @@ class TestMultiMerge:
     """Tests for multi-entry and conflicting merge plans."""
 
     def test_multi_entry_plan(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """Multiple merge groups in one plan are all applied."""
         jsonl = tmp_path / "memories.jsonl"
@@ -694,7 +696,9 @@ class TestMultiMerge:
 class TestMergeWithTagsField:
     """Tests for merge operating on the fallback 'tags' field."""
 
-    def test_merges_tags_field(self, tmp_path: Path) -> None:
+    def test_merges_tags_field(
+        self, tmp_path: Path, bypass_rewrite_guard: None,
+    ) -> None:
         """Merge works on memories using 'tags' instead of 'research_tags'."""
         memories = [
             {"id": "m1", "tags": ["old-tag", "keep-tag"]},
@@ -757,7 +761,7 @@ class TestOrphansClean:
     """Tests for the orphans --action clean path."""
 
     def test_clean_removes_orphaned_and_adds_missing(
-        self, tmp_path: Path,
+        self, tmp_path: Path, bypass_rewrite_guard: None,
     ) -> None:
         """Clean action fixes vocabulary in both directions."""
         jsonl = tmp_path / "memories.jsonl"
@@ -822,7 +826,7 @@ class TestUnicodeLineSeparators:
     """A merge must not plant a raw line separator in the canonical."""
 
     def test_merge_keeps_separator_escaped(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """A rewritten record's U+2028 stays ``\\u2028`` on disk.
 
@@ -975,7 +979,7 @@ class TestVocabularyRewrite:
     """The vocabulary is a protected file; both writers must treat it so."""
 
     def test_merge_preserves_comments_and_blank_lines(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """Section headers and the blank line keep their positions.
 
@@ -1015,7 +1019,7 @@ class TestVocabularyRewrite:
         )
 
     def test_orphans_clean_preserves_comments_and_blank_lines(
-        self, tmp_path: Path,
+        self, tmp_path: Path, bypass_rewrite_guard: None,
     ) -> None:
         """``orphans --action clean`` keeps the file's structure too.
 
@@ -1095,7 +1099,7 @@ class TestVocabularyRewrite:
             tag_gardening.cmd_orphans(argparse.Namespace(action="list"))
 
     def test_orphans_clean_waits_for_a_shared_lock_holder(
-        self, tmp_path: Path,
+        self, tmp_path: Path, bypass_rewrite_guard: None,
     ) -> None:
         """A concurrent ``LOCK_SH`` holder blocks the clean rewrite.
 
@@ -1282,7 +1286,7 @@ class TestReconcilePostgres:
         assert "rebuild-postgres.py" in capsys.readouterr().err
 
     def test_merge_passes_only_research_tags_rows_to_postgres(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """A merge hands PG exactly the ids whose mirror column changed.
 
@@ -1353,7 +1357,7 @@ class TestCaseHandling:
     """Tags are compared case-insensitively; the plan must be too."""
 
     def test_mixed_case_loser_is_actually_retired(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """A plan naming "API-Integration" retires "api-integration".
 
@@ -1389,7 +1393,7 @@ class TestCaseHandling:
         assert pg_recorder == [[("mem-301", ["api", "kiln"])]]
 
     def test_mixed_case_record_tag_matches_a_lower_case_plan(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """A record's "Pipelines" is retired by a plan naming "pipelines".
 
@@ -1422,7 +1426,7 @@ class TestCaseHandling:
         assert written["research_tags"] == ["pipeline"]
 
     def test_research_tags_wins_over_tags_when_both_are_present(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """``research_tags`` is authoritative even when empty.
 
@@ -1493,7 +1497,7 @@ class TestMergeDurabilityAndLog:
 
     def test_both_rewrites_are_fsynced_before_the_rename(
         self, tmp_path: Path, pg_recorder: list,
-        monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch, bypass_rewrite_guard: None,
     ) -> None:
         """The corpus and the vocabulary reach disk before they are renamed.
 
@@ -1521,7 +1525,7 @@ class TestMergeDurabilityAndLog:
         assert events[2:] == ["fsync", "rename:tag-vocabulary.txt"]
 
     def test_merge_log_entry_is_utc_iso(
-        self, tmp_path: Path, pg_recorder: list,
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
     ) -> None:
         """The log stamp parses as an aware UTC instant.
 
