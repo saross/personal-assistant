@@ -94,6 +94,54 @@ inspect the mailbox at any time, and surfacing appears in session
 transcripts, but **neither is an audit guarantee**: the mailbox replaces
 the ferrying Shawn should not have to do, never the deciding he should.
 
+## Routing (v3, 2026-09-08 — Shawn's request, after a colleague's review)
+
+Several Claude/Codex partnerships will run in different repositories, and
+model lanes differ (Fable and Opus lanes on the Claude side; GPT lanes on the
+Codex side). v2 keys everything on agent identity, so every Claude session
+would see every message to `claude` and the first to read one would receipt
+it. v3 adds routing **by header, not by mailbox**, on the continuity model:
+per-project state loads when the session's directory matches, and tags live
+in headers.
+
+Three optional headers after `From`/`To`:
+
+```text
+Project: map-reader-llm      # git repository name; "any" for global
+Lane: fable                  # any | fable | opus | sonnet | <gpt model>; default any
+Workstream: sol-phase2       # free tag for concurrent sessions in one repository
+```
+
+Rules:
+
+- **Project.** A session's project is the basename of its cwd's git root
+  (`personal-assistant` for the hub). The session-start hook and the live
+  watch list messages whose `Project` matches or is absent/`any`; messages
+  for other projects are summarised as one count line and never listed, so
+  the wrong desk cannot act on them. Untagged means `any`, for compatibility
+  with every message sent before v3; senders should tag.
+- **Lane.** Mailbox identity stays `claude`/`codex` whatever the model. A
+  message whose `Lane` is not the reading session's model is **held**: listed
+  with its lane, not acted on, not receipted, and reported to Shawn. The hook
+  cannot learn the session's model, so the session applies this rule at
+  read time. This is the RESERVED FOR FABLE beacon made routable.
+- **Workstream.** Printed, not filtered; concurrent sessions in one
+  repository self-select by tag. Behavioural for now.
+- **Receipts.** Only the session that acts on a message writes its receipt.
+  A session that merely saw a message in another project's count line, or
+  held it for another lane, writes nothing.
+- **Compatibility.** `From`/`To` validation is unchanged on both sides; the
+  new headers are parsed from the same bounded 4 KiB header block.
+
+Not changed: one mailbox per agent, the ownership globs, the read-once
+norm, the trust norm. Per-project mailbox directories were considered and
+rejected for now: they fragment receipts, multiply watchers, and hide "mail
+exists elsewhere" from a session that could tell Shawn.
+
+Claude side implemented 2026-09-08 (`hooks/session-start-agent-mail.py`,
+`scripts/agent-mail-watch.py`, `/mail-watch`). Codex side proposed by mail
+the same day.
+
 ## Deliberately not built
 
 No database, no MCP messaging service, nothing real-time, no automatic

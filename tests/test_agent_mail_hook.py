@@ -116,3 +116,63 @@ class TestUnreadMessages:
         (outbox_a / "9.md").write_text(VALID.replace("codex", "astra"))
         names = [f"{m.parent.parent.parent.name}/{m.name}" for m in mail.unread_messages(tmp_path)]
         assert names == ["astra/9.md", "codex/1.md", "codex/2.md"]
+
+
+ROUTED = "From: codex\nTo: claude\nProject: map-reader-llm\nLane: fable\nWorkstream: w1\n\nbody\n"
+
+
+class TestRouting:
+    def test_read_headers_is_bounded_and_ignores_body(self, tmp_path):
+        outbox, _ = make_mailbox(tmp_path)
+        m = outbox / "m.md"
+        m.write_text(ROUTED + "Project: smuggled\n")
+        headers = mail.read_headers(m)
+        assert headers == {"From": "codex", "To": "claude", "Project": "map-reader-llm",
+                           "Lane": "fable", "Workstream": "w1"}
+
+    def test_message_project_defaults_to_any_and_casefolds(self):
+        assert mail.message_project({}) == "any"
+        assert mail.message_project({"Project": " Map-Reader-LLM "}) == "map-reader-llm"
+        assert mail.routes_here({"Project": "Map-Reader-LLM"}, "map-reader-llm")
+        assert mail.routes_here({}, "personal-assistant")
+        assert not mail.routes_here({"Project": "map-reader-llm"}, "personal-assistant")
+
+    def test_route_splits_here_from_elsewhere(self, tmp_path):
+        outbox, _ = make_mailbox(tmp_path)
+        (outbox / "a-untagged.md").write_text(VALID)
+        (outbox / "b-here.md").write_text(
+            VALID.replace("To: claude\n", "To: claude\nProject: personal-assistant\n"))
+        (outbox / "c-there.md").write_text(ROUTED)
+        (outbox / "d-there.md").write_text(ROUTED)
+        here, elsewhere = mail.route(mail.unread_messages(tmp_path), "personal-assistant")
+        assert [m.name for m, _ in here] == ["a-untagged.md", "b-here.md"]
+        assert elsewhere == {"map-reader-llm": 2}
+
+    def test_annotate_shows_lane_and_workstream_but_not_any(self):
+        assert mail.annotate({}) == "[project: any]"
+        assert mail.annotate({"Project": "x", "Lane": "any"}) == "[project: x]"
+        assert mail.annotate({"Project": "x", "Lane": "fable", "Workstream": "w1"}) == (
+            "[project: x; lane: fable; workstream: w1]")
+
+    def test_session_project_is_git_root_name_or_cwd(self, tmp_path):
+        repo = tmp_path / "my-repo"
+        (repo / "sub").mkdir(parents=True)
+        import subprocess
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        assert mail.session_project(repo / "sub") == "my-repo"
+        plain = tmp_path / "plain-dir"
+        plain.mkdir()
+        assert mail.session_project(plain) == "plain-dir"
+
+    def test_main_lists_here_and_counts_elsewhere(self, tmp_path, monkeypatch, capsys):
+        outbox, _ = make_mailbox(tmp_path)
+        (outbox / "here.md").write_text(VALID)
+        (outbox / "there.md").write_text(ROUTED)
+        monkeypatch.setenv("AGENT_MAIL_ROOT", str(tmp_path))
+        monkeypatch.setenv("AGENT_MAIL_PROJECT", "personal-assistant")
+        assert mail.main() == 0
+        out = capsys.readouterr().out
+        assert "here.md  [project: any]" in out
+        assert "there.md" not in out
+        assert "map-reader-llm (1)" in out
+        assert "body" not in out
