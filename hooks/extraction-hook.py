@@ -546,6 +546,23 @@ def parse_transcript(
             if entry.get("type") not in ("user", "assistant"):
                 continue
 
+            # Subagent turns belong to that agent's own transcript, never to
+            # this session's conversation, and they are dropped HERE —
+            # before the slash-command branch — because the flag must not
+            # cross them in either direction (audit round three M4). A
+            # sidechain assistant entry is not the command's response and
+            # must not consume the flag; a sidechain user entry is not
+            # Shawn's invocation and must not set it.
+            if entry.get("isSidechain"):
+                continue
+
+            # ``isMeta`` on anything but a user entry cannot be a command
+            # invocation and is not conversation either, so it is dropped
+            # here too. isMeta USER entries must survive to the command
+            # branch below — see the note there.
+            if entry.get("isMeta") and entry.get("type") != "user":
+                continue
+
             msg = entry.get("message", {})
             content = msg.get("content", "")
 
@@ -592,12 +609,14 @@ def parse_transcript(
                     skip_next_assistant = False
                 continue
 
-            # Harness-injected and subagent turns are not conversation
-            # (audit H22, 2026-09-08). ``isMeta`` marks text the harness
-            # wrote into the transcript and records it with
-            # ``"role": "user"``; ``isSidechain`` marks a subagent's turns.
+            # A harness-injected USER entry that was not a command (audit
+            # H22, 2026-09-08). ``isMeta`` marks text the harness wrote into
+            # the transcript — system-reminder injections, slash-command
+            # expansions — and records it with ``"role": "user"``, so
+            # feeding it to the extractor invents memories out of the
+            # harness's own prose.
             #
-            # The check sits AFTER the slash-command branch, and that
+            # This one check sits AFTER the slash-command branch, and that
             # ordering is load-bearing: slash commands ARE delivered as
             # ``isMeta`` user entries (measured 2026-09-08 across
             # ~/.claude/projects/-home-shawn-personal-assistant: all 364
@@ -611,7 +630,7 @@ def parse_transcript(
             # actually saves it for an all-dropped window (see the ``if not
             # messages`` branch there) — until audit round two M1 it exited
             # first, so such a window really was reprocessed every firing.
-            if entry.get("isMeta") or entry.get("isSidechain"):
+            if entry.get("isMeta"):
                 continue
 
             if content and content.strip():

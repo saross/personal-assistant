@@ -2252,3 +2252,66 @@ class TestSafeAdvancePosition:
         window = eh.parse_transcript(str(transcript), None)
         assert window.skip_pending is False
         assert window.safe_uuid == "u2"
+
+
+class TestSidechainAndTheSkipFlag:
+    """Audit round three M4: subagent turns must not touch the skip flag."""
+
+    @staticmethod
+    def _command_marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_sidechain_assistant_does_not_consume_the_flag(self, tmp_path):
+        """Kills consuming the flag before the isSidechain drop.
+
+        A subagent's reply can land between a command and its response. It
+        is not the command's response, so it must not spend the flag —
+        otherwise the real response is extracted, which is the duplication
+        the marker filter exists to prevent.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._command_marker() + "\nx", "u1", is_meta=True
+                ),
+                make_live_shape_entry(
+                    "assistant", "a subagent reply with text", "u2",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "THE REAL COMMAND RESPONSE", "u3"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in window.messages]
+        assert "THE REAL COMMAND RESPONSE" not in texts
+        assert texts == []
+        assert window.skip_pending is False  # the real response spent it
+
+    def test_a_sidechain_user_entry_does_not_set_the_flag(self, tmp_path):
+        """Kills setting the flag before the isSidechain drop.
+
+        A subagent quoting a command header is not Shawn invoking it. If it
+        set the flag, the next real assistant turn would be dropped and a
+        genuine exchange lost for good.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._command_marker() + "\nquoted by a subagent",
+                    "u1", is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in window.messages]
+        assert "AN ORDINARY ANSWER THAT MUST SURVIVE" in texts
+        assert window.skip_pending is False
