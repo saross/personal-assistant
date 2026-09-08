@@ -1052,6 +1052,70 @@ class TestStashPopConflictPartitioning:
         assert "resolve-merge-conflicts.py" in joined, joined
         assert "Edit those LINES by hand" not in joined, joined
 
+    def test_a_broken_checker_never_produces_a_corpus_verdict(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C2 (sixth re-audit): only 0/1/3 say anything about the
+        corpus.
+
+        A checker that fails any other way — an uncaught exception used to
+        exit 1 — was read as "resolvable": the sync gated a traceback as
+        marker-shaped lines and parsed its lines as file paths. A failure
+        must name itself, and must not send anyone to edit a clean file.
+        """
+        machine = world.add_machine("a")
+        resolver = machine.pa / "scripts" / "resolve-merge-conflicts.py"
+        resolver.unlink()
+        resolver.write_text(
+            "#!/usr/bin/env python3\n"
+            'import sys\n'
+            'print("Traceback (most recent call last):", file=sys.stderr)\n'
+            'print("  File \\"x\\", line 1, in <module>", file=sys.stderr)\n'
+            "sys.exit(9)\n",
+            encoding="utf-8",
+        )
+        resolver.chmod(0o755)
+        git("commit", "-q", "-am", "broken checker", cwd=machine.pa)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        joined = "\n".join(gate_details(world))
+        assert "checker itself failed" in joined, joined
+        assert "exit 9" in joined, joined
+        assert "Traceback" in joined, "the reason was thrown away: " + joined
+        assert "says NOTHING about the file" in joined, joined
+        assert "Edit those LINES by hand" not in joined, (
+            "a checker failure was reported as a corpus verdict: " + joined
+        )
+
+    def test_a_missing_interpreter_never_accuses_the_corpus(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C3 (sixth re-audit): without the venv there is no verdict.
+
+        Every `--check` failed, and the guard reported that as the corpus
+        holding conflict markers — accusing a clean file and sending the
+        operator to edit lines that are not there.
+        """
+        machine = world.add_machine("a")
+        (machine.pa / "venv" / "bin" / "python3").unlink()
+        machine.append_memory("2026-09-08-c3")
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert world.published_data_head() == published_before
+
+        joined = "\n".join(gate_details(world))
+        assert "virtual environment interpreter" in joined, joined
+        assert "says NOTHING about memories.jsonl" in joined, joined
+        assert "conflict markers" not in joined, (
+            "a broken venv was reported as a corpus verdict: " + joined
+        )
+
     def test_markers_in_the_tag_vocabulary_are_refused(
         self, world: SyncWorld
     ) -> None:

@@ -186,26 +186,24 @@ class TestDiff3ConflictStyle:
         assert "from-amd-tower" in text
         assert "from-zbook" in text
 
-    def test_a_base_holding_a_separator_line_is_dropped_whole(
+    def test_a_base_holding_a_separator_line_is_refused(
         self, tmp_path: Path
     ) -> None:
-        """Audit M1 (fifth re-audit): where the base ENDS.
+        """Audit M3 (sixth re-audit): two separators, no guessing.
 
-        Stopping at the first `=======` inside the block ends the base
-        early when the base itself contains a line reading `=======`, and
-        unions the real base content after it back in — resurrecting
-        records both machines had deleted. Built by a real diff3 merge.
+        A diff3 base whose own content holds a line reading `=======`
+        leaves the block with two separator candidates. Taking the first
+        ends the base early and resurrects the records after it; taking
+        the last eats a THEIRS line that is literally `=======`, which a
+        tag vocabulary can legitimately hold. Both lose data silently, so
+        the file goes to a human. Built by a real diff3 merge.
         """
         repo = tmp_path / "repo"
         repo.mkdir()
         _git("init", "--quiet", "--initial-branch=main", cwd=repo)
         _git("config", "merge.conflictStyle", "diff3", cwd=repo)
         vocab = repo / "tag-vocabulary.txt"
-        # The base holds a line that is itself the separator shape, and a
-        # tag after it that both sides delete.
-        vocab.write_text(
-            "keep-me\n=======\ndeleted-on-both\n", encoding="utf-8"
-        )
+        vocab.write_text("keep-me\n=======\ndeleted-on-both\n", encoding="utf-8")
         _git("add", "-A", cwd=repo)
         _git("commit", "--quiet", "-m", "seed", cwd=repo)
 
@@ -222,15 +220,31 @@ class TestDiff3ConflictStyle:
         assert "|||||||" in conflicted, conflicted
 
         result = _run_resolver(str(vocab))
-        assert result.returncode == 0, result.stderr
-        text = vocab.read_text(encoding="utf-8")
-        assert "deleted-on-both" not in text, (
-            "the base was cut short at its own '=======' line and the rest "
-            "of it unioned back in:\n" + text
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "which one divides the two sides" in result.stderr, result.stderr
+        assert vocab.read_text(encoding="utf-8") == conflicted, "the file was rewritten"
+
+    def test_the_base_section_starts_at_its_first_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """Every base marker in a block belongs to the base.
+
+        Starting at the last would leave an earlier `||||||| ` line and
+        its section in the union — a marker published into the corpus.
+        """
+        target = tmp_path / "memories.jsonl"
+        target.write_text(
+            "<<<<<<< HEAD\n" + _record("ours") + "\n"
+            "||||||| first base\n" + _record("base-one") + "\n"
+            "||||||| second base\n" + _record("base-two") + "\n"
+            "=======\n" + _record("theirs") + "\n>>>>>>> x\n",
+            encoding="utf-8",
         )
-        assert "from-zbook" in text
-        assert "from-amd-tower" in text
-        assert "|||||||" not in text
+        assert _run_resolver(str(target)).returncode == 0
+        text = target.read_text(encoding="utf-8")
+        assert "|||||||" not in text, text
+        assert "base-one" not in text and "base-two" not in text, text
+        assert '"ours"' in text and '"theirs"' in text
 
     def test_the_base_marker_is_always_labelled(self) -> None:
         """git never emits a bare `|||||||`.
@@ -436,7 +450,6 @@ class TestCheckMode:
         )
         result = _run_resolver("--check", str(target))
         assert result.returncode == 1
-        assert "1 conflict block" in result.stdout
         assert target.read_text(encoding="utf-8").startswith("<<<<<<<"), "check wrote"
 
     @pytest.mark.parametrize(
@@ -454,7 +467,48 @@ class TestCheckMode:
         target.write_text(body, encoding="utf-8")
         result = _run_resolver("--check", str(target))
         assert result.returncode == 3, result.stdout + result.stderr
-        assert "line " in result.stdout
+        # One tab-separated record per problem: path, line number, text.
+        for record in result.stdout.splitlines():
+            path_field, number, text = record.split("\t")
+            assert path_field == str(target)
+            assert number.isdigit()
+            assert text
+
+    def test_a_missing_file_has_its_own_code(self, tmp_path: Path) -> None:
+        """Audit M4 (sixth re-audit): a vanished file is not a corpus
+        verdict. Sharing a code with "needs a human" made the guard advise
+        hand-editing a file that is not there."""
+        result = _run_resolver("--check", str(tmp_path / "gone.jsonl"))
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "no such file" in result.stderr
+        assert result.stdout.strip() == "", "a missing file produced a corpus record"
+
+    def test_an_undecodable_byte_is_a_checker_failure_not_a_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        """Audit C2 (sixth re-audit): an uncaught exception exited 1, which
+        the guard reads as "resolvable" — so the sync gated a traceback as
+        marker-shaped lines and parsed its lines as file paths.
+
+        The check now reads tolerantly, so one stray byte still yields a
+        verdict; whatever else goes wrong is reported as CHECKER FAILED
+        with its reason, on a code no corpus verdict uses.
+        """
+        target = tmp_path / "memories.jsonl"
+        target.write_bytes(b'{"id": "a"}\n\xff\xfe not utf-8\n')
+        result = _run_resolver("--check", str(target))
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        # And a genuine failure — an unreadable file — is code 4 with a reason.
+        target.chmod(0o000)
+        try:
+            failed = _run_resolver("--check", str(target))
+        finally:
+            target.chmod(0o600)
+        assert failed.returncode == 4, failed.stdout + failed.stderr
+        assert "checker failed" in failed.stderr
+        assert "PermissionError" in failed.stderr
+        assert failed.stdout.strip() == "", "a failure produced a corpus record"
 
     def test_check_and_resolve_agree_on_every_shape(self, tmp_path: Path) -> None:
         """The invariant: one predicate. What --check calls resolvable,

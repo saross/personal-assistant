@@ -295,10 +295,11 @@ push_with_retry() {
                 # audit C2: the same invariant on the rebase path. The
                 # list is captured BEFORE the abort restores the tree
                 # (audit M2), because after it there is nothing to find.
-                _marked="$(memory_files_with_markers)"
-                if [[ -n "$_marked" ]]; then
+                memory_files_with_markers
+                if [[ ${#MEMORY_MARKER_RECORDS[@]} -gt 0 ]]; then
+                    _marked=("${MEMORY_MARKER_RECORDS[@]}")
                     git rebase --abort >>"$LOG_FILE" 2>&1 || true
-                    refuse_memory_markers "$context rebase" "$_marked"
+                    refuse_memory_markers "$context rebase" "${_marked[@]}"
                 fi
                 git add "${jsonl_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                     || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: git add after resolver failed"; }
@@ -376,66 +377,119 @@ is_memory_append_file() {
     return 1
 }
 
+venv_python_checked=0
+#: Set by memory_files_with_markers; one `path<TAB>line<TAB>text` record per
+#: problem, or `path<TAB>resolvable<TAB>` for a file the resolver can fix.
+MEMORY_MARKER_RECORDS=()
+
+require_venv_python() {
+    # audit C3 (sixth re-audit): a missing or broken venv interpreter made
+    # every `--check` fail, which the guard then reported as a verdict
+    # about the corpus — accusing a clean file of holding conflict markers
+    # and telling the operator to edit lines that are not there. Establish
+    # that the interpreter runs before anything is concluded from it.
+    [[ $venv_python_checked -eq 1 ]] && return 0
+    if ! "$PA_DIR/venv/bin/python3" -c 'pass' >/dev/null 2>&1; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: the virtual environment interpreter $PA_DIR/venv/bin/python3 is missing or will not run, so the corpus cannot be checked. This says NOTHING about memories.jsonl. Run setup.sh (or repair the venv), then run the sync again."
+        fail "venv interpreter $PA_DIR/venv/bin/python3 is missing or broken; refusing to judge the corpus without it"
+    fi
+    venv_python_checked=1
+    return 0
+}
+
 memory_files_with_markers() {
-    # Print one line per MEMORY_APPEND_FILES path that must not be staged:
+    # Print one TAB-separated record per problem the corpus has:
     #
-    #     <path><TAB>resolvable|manual<TAB><detail>
+    #     <path><TAB><line number><TAB><what is wrong>       (needs a human)
+    #     <path><TAB>resolvable<TAB>                         (run the resolver)
     #
     # Must be called from inside the data submodule.
     #
     # Content, not index state (audit C2, second re-audit): reading the
     # porcelain code meant a marker-laden memories.jsonl that somebody had
-    # `git add`ed looked like a plain modification and was committed and
-    # pushed.
+    # `git add`ed looked like a plain modification and was committed.
     #
-    # audit C2 (fifth re-audit): the classification is the RESOLVER's, via
-    # `--check`, not a regex maintained separately here. The two used to
-    # disagree — the guard refused a lone `=======`, the resolver required
-    # an opener and declined to touch it — so the sync wedged permanently
-    # behind gate advice to run a resolver that printed "no conflict
-    # markers — skipping". One predicate, one source of truth, and the
-    # detail below carries the resolver's own line numbers.
-    local f detail rc
+    # The classification is the RESOLVER's, via `--check` (audit C2, fifth
+    # re-audit): the two used to keep separate patterns and disagree, which
+    # wedged the sync behind advice to run a resolver that then declined.
+    #
+    # audit C2 (sixth re-audit): only 0, 1, and 3 say anything about the
+    # corpus. Every other code means the CHECKER failed — an undecodable
+    # byte used to exit 1 through an uncaught traceback, so the sync gated
+    # the traceback as "marker-shaped lines" and parsed its lines as paths.
+    # It sets MEMORY_MARKER_RECORDS rather than printing, because a caller
+    # capturing it with $( ) would run the whole thing in a SUBSHELL —
+    # where an added gate line is discarded and a `fail` exits nothing but
+    # the subshell. Found while wiring the checker-failure path.
+    local f detail errors rc
+    MEMORY_MARKER_RECORDS=()
+    require_venv_python
+    errors="$(mktemp)"
     for f in "${MEMORY_APPEND_FILES[@]}"; do
         [[ -f "$f" ]] || continue
         rc=0
-        detail="$("$PA_DIR/venv/bin/python3" "$RESOLVER" --check "$f" 2>&1)" || rc=$?
+        detail="$("$PA_DIR/venv/bin/python3" "$RESOLVER" --check "$f" 2>"$errors")" || rc=$?
         case "$rc" in
-            0) ;;
-            1) printf '%s\tresolvable\t%s\n' "$f" "$detail" ;;
-            *) printf '%s\tmanual\t%s\n' "$f" "$detail" ;;
+            0)
+                ;;
+            1)
+                MEMORY_MARKER_RECORDS+=("$(printf '%s\tresolvable\t' "$f")")
+                ;;
+            3)
+                # The resolver's own records, passed through untouched.
+                while IFS= read -r _record; do
+                    [[ -n "$_record" ]] && MEMORY_MARKER_RECORDS+=("$_record")
+                done <<<"$detail"
+                ;;
+            2)
+                log "corpus check: $f vanished between the status scan and the check"
+                ;;
+            *)
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: the corpus checker itself failed on $f (exit $rc): $(tr '\n' ' ' <"$errors"). This says NOTHING about the file's contents — do not edit it on the strength of this. Fix the checker, then run the sync again."
+                rm -f "$errors"
+                fail "corpus check failed on $f (exit $rc); refusing to guess at its contents"
+                ;;
         esac
     done
+    rm -f "$errors"
+    return 0
 }
 
 refuse_memory_markers() {
-    # refuse_memory_markers <what-was-about-to-happen> <newline-separated paths>
+    # refuse_memory_markers <what-was-about-to-happen> <records>
     # The invariant: no append-only memory file whose content holds a
     # conflict marker is ever staged or committed, by any block. Every
     # consumer of memories.jsonl parses it as JSONL, so a published marker
     # breaks extraction, recall, and the drift check on both machines at
     # once — and the corpus is append-only, so nothing later repairs it.
     #
-    # The paths are passed in rather than re-scanned (audit M2, third
+    # The records are passed in rather than re-scanned (audit M2, third
     # re-audit): the rebase call sites have to `git rebase --abort` first,
-    # which restores the working tree and takes the markers with it. A
-    # refusal that re-scanned after the abort found nothing, returned 0,
-    # and let control fall through to `git add` and `git rebase
-    # --continue` with no rebase in progress.
-    local context="$1" listing="$2" line path state detail
+    # which restores the working tree and takes the markers with it.
+    #
+    # audit C2 (sixth re-audit): ONLY well-formed `path<TAB>line<TAB>text`
+    # records are read. Anything else — a traceback, a stray warning — is
+    # ignored rather than parsed as a file path.
+    local context="$1"
+    shift
+    local line path field text
     local -a resolvable=() manual=() details=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
+    for line in "$@"; do
+        [[ "$line" == *$'\t'*$'\t'* ]] || continue
         path="${line%%$'\t'*}"
-        state="${line#*$'\t'}"; state="${state%%$'\t'*}"
-        detail="${line##*$'\t'}"
-        if [[ "$state" == "resolvable" ]]; then
+        field="${line#*$'\t'}"
+        text="${field#*$'\t'}"
+        field="${field%%$'\t'*}"
+        [[ -n "$path" ]] || continue
+        if [[ "$field" == "resolvable" ]]; then
             resolvable+=("$path")
-        else
+        elif [[ "$field" =~ ^[0-9]+$ ]]; then
             manual+=("$path")
-            details+=("$detail")
+            details+=("$path line $field: $text")
         fi
-    done <<<"$listing"
+    done
     if [[ ${#resolvable[@]} -eq 0 ]] && [[ ${#manual[@]} -eq 0 ]]; then
         return 0
     fi
@@ -457,10 +511,10 @@ refuse_if_memory_markers() {
     # refuse_if_memory_markers <what-was-about-to-happen>
     # Scan now and refuse if anything is marked. Only for call sites that
     # do not disturb the working tree first.
-    local context="$1" listing
-    listing="$(memory_files_with_markers)"
-    if [[ -n "$listing" ]]; then
-        refuse_memory_markers "$context" "$listing"
+    local context="$1"
+    memory_files_with_markers
+    if [[ ${#MEMORY_MARKER_RECORDS[@]} -gt 0 ]]; then
+        refuse_memory_markers "$context" "${MEMORY_MARKER_RECORDS[@]}"
     fi
     return 0
 }
@@ -515,11 +569,12 @@ resolve_rebase_conflicts() {
         fi
         # audit C2: never stage a marker, on any path. Captured before
         # the abort restores the tree (audit M2).
-        local marked_before_abort
-        marked_before_abort="$(memory_files_with_markers)"
-        if [[ -n "$marked_before_abort" ]]; then
+        local -a marked_before_abort=()
+        memory_files_with_markers
+        if [[ ${#MEMORY_MARKER_RECORDS[@]} -gt 0 ]]; then
+            marked_before_abort=("${MEMORY_MARKER_RECORDS[@]}")
             git rebase --abort >>"$LOG_FILE" 2>&1 || true
-            refuse_memory_markers "$context rebase" "$marked_before_abort"
+            refuse_memory_markers "$context rebase" "${marked_before_abort[@]}"
         fi
         git add "${jsonl[@]}" >>"$LOG_FILE" 2>&1 || {
             git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }

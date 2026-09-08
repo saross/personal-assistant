@@ -100,7 +100,7 @@ class Analysis:
     """What a file's conflict markers add up to."""
 
     blocks: list[tuple[int, int]]  # (opener index, closer index), 0-based
-    problems: list[str]  # human-readable, line-numbered, in file order
+    problems: list[tuple[int, str]]  # (1-based line number, what is wrong)
 
     @property
     def needs_human(self) -> bool:
@@ -108,15 +108,10 @@ class Analysis:
         return bool(self.problems)
 
     @property
-    def resolvable(self) -> bool:
-        """True when there is a well-formed conflict this script can union."""
-        return bool(self.blocks) and not self.problems
-
-    @property
     def summary(self) -> str:
         """One line, for a caller that has to explain this to a human."""
         if self.problems:
-            return "; ".join(self.problems)
+            return "; ".join(f"line {number}: {text}" for number, text in self.problems)
         if self.blocks:
             return f"{len(self.blocks)} conflict block(s)"
         return ""
@@ -133,9 +128,16 @@ def analyse(lines: list[str]) -> Analysis:
     given line belongs to. Two openers before a closer used to be rewritten
     into a file that still held a live `=======` and `>>>>>>> `, reported
     as "resolved 2 blocks", exit 0.
+
+    A block with MORE THAN ONE separator is refused too (audit M3, sixth
+    re-audit). Which one divides ours from theirs cannot be known: taking
+    the first ends a diff3 base early and resurrects the records after it,
+    and taking the last eats a THEIRS line that is literally `=======` —
+    which a tag vocabulary can legitimately hold. Guessing either way
+    loses data silently, so this asks for a human instead.
     """
     blocks: list[tuple[int, int]] = []
-    problems: list[str] = []
+    problems: list[tuple[int, str]] = []
     open_at: int | None = None
 
     for index, line in enumerate(lines):
@@ -145,30 +147,39 @@ def analyse(lines: list[str]) -> Analysis:
                 open_at = index
             else:
                 problems.append(
-                    f"line {number}: conflict opener inside the block opened "
-                    f"at line {open_at + 1}"
+                    (number, f"conflict opener inside the block opened at line {open_at + 1}")
                 )
         elif line.startswith(CONFLICT_END_PREFIX):
             if open_at is None:
-                problems.append(f"line {number}: conflict closer with no opener above it")
+                problems.append((number, "conflict closer with no opener above it"))
             else:
                 blocks.append((open_at, index))
                 open_at = None
         elif open_at is None and (
             line == CONFLICT_SEPARATOR or line.startswith(CONFLICT_BASE_PREFIX)
         ):
-            problems.append(f"line {number}: {line!r} outside any conflict block")
+            problems.append((number, f"{line!r} outside any conflict block"))
 
     if open_at is not None:
-        problems.append(f"line {open_at + 1}: conflict block is never closed")
+        problems.append((open_at + 1, "conflict block is never closed"))
 
     for start, end in blocks:
-        if not any(lines[k] == CONFLICT_SEPARATOR for k in range(start + 1, end)):
+        separators = [k for k in range(start + 1, end) if lines[k] == CONFLICT_SEPARATOR]
+        if not separators:
             problems.append(
-                f"line {start + 1}: conflict block has no '{CONFLICT_SEPARATOR}' separator"
+                (start + 1, f"conflict block has no '{CONFLICT_SEPARATOR}' separator")
+            )
+        elif len(separators) > 1:
+            found = ", ".join(str(k + 1) for k in separators)
+            problems.append(
+                (
+                    start + 1,
+                    f"conflict block has {len(separators)} '{CONFLICT_SEPARATOR}' lines "
+                    f"(lines {found}); which one divides the two sides cannot be known",
+                )
             )
 
-    return Analysis(blocks=blocks, problems=problems)
+    return Analysis(blocks=blocks, problems=sorted(problems))
 
 
 def has_conflict_markers(lines: list[str]) -> bool:
@@ -176,7 +187,7 @@ def has_conflict_markers(lines: list[str]) -> bool:
     return bool(analyse(lines).blocks)
 
 
-def marker_lines_outside_blocks(lines: list[str]) -> list[str]:
+def marker_lines_outside_blocks(lines: list[str]) -> list[tuple[int, str]]:
     """Every reason a human, not this script, has to look at the file."""
     return analyse(lines).problems
 
@@ -197,13 +208,11 @@ def strip_conflict_markers(lines: list[str]) -> list[str]:
     sides, and anything that did not was deleted deliberately — unioning it
     back in resurrects deleted records.
 
-    Where the base ends is the LAST `=======` before the block's closer,
-    not the first (audit M1, fifth re-audit): a base section that itself
-    contains a line reading `=======` otherwise ends early, and the real
-    base content after it is unioned back in. The cost of that rule is a
-    block whose THEIRS side contains a literal `=======` line, where the
-    split lands too late; JSONL cannot produce one, and the alternative
-    loses records on every diff3 conflict.
+    A block reaching this function has exactly one `=======` (audit M3,
+    sixth re-audit): `analyse` refuses anything else rather than guess
+    which of several divides the two sides, because the first ends a diff3
+    base early and resurrects what follows, and the last eats a THEIRS
+    line that is literally `=======`.
     """
     analysis = analyse(lines)
     drop: set[int] = set()
@@ -211,15 +220,19 @@ def strip_conflict_markers(lines: list[str]) -> list[str]:
         drop.add(start)
         drop.add(end)
         separators = [k for k in range(start + 1, end) if lines[k] == CONFLICT_SEPARATOR]
-        if not separators:
+        if len(separators) != 1:
             continue  # `analyse` has already refused this file
-        separator = separators[-1]
+        separator = separators[0]
         bases = [
             k
             for k in range(start + 1, separator)
             if lines[k].startswith(CONFLICT_BASE_PREFIX)
         ]
         if bases:
+            # From the FIRST base marker: everything between it and the
+            # separator is base, including a second `|||||||` line if the
+            # file somehow holds one. Starting at the last would leave the
+            # earlier marker and its section in the union.
             drop.update(range(bases[0], separator))
         drop.add(separator)
     return [line for index, line in enumerate(lines) if index not in drop]
@@ -285,31 +298,63 @@ MISSING_FILE = -2
 NEEDS_HUMAN = -3
 
 
+#: `--check` exit codes. The guard in daily-sync.sh maps ONLY the corpus
+#: verdicts (0, 1, 3) to something it says about the corpus; every other
+#: code means the CHECKER failed and must never produce a corpus verdict
+#: (audit C2, sixth re-audit — an undecodable byte exited 1 through an
+#: uncaught traceback, so the sync gated the traceback as "marker-shaped
+#: lines" and parsed its lines as file paths).
+CHECK_CLEAN = 0
+CHECK_RESOLVABLE = 1
+CHECK_MISSING = 2
+CHECK_MANUAL = 3
+CHECK_FAILED = 4
+
+
 def describe(path: Path, analysis: Analysis) -> str:
     """One line a caller can put in front of a human."""
     return f"{path}: {analysis.summary}"
 
 
+def read_lines_tolerantly(path: Path) -> list[str]:
+    """
+    Read `path` for CLASSIFICATION, never for rewriting.
+
+    Undecodable bytes are replaced rather than raised on: a single stray
+    byte in the corpus must not stop the checker from answering the
+    question it was asked, which is whether there are conflict markers.
+    The rewriting path still reads strictly — this script will not write
+    back a file it could not read exactly.
+    """
+    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
 def check(path: Path) -> int:
     """
-    Classify `path` without touching it. Prints one line describing it.
+    Classify `path` without touching it. Prints one record per problem:
 
-    Returns the process exit code: 0 clean, 1 a conflict this script can
-    resolve, 2 no such file, 3 needs a human. daily-sync.sh's guard calls
-    this rather than pattern-matching the file itself, so the two cannot
-    disagree about what a conflict is (audit C2, fifth re-audit).
+        <path><TAB><line number><TAB><what is wrong>
+
+    Returns the process exit code — see the CHECK_* constants. Every
+    exception is caught and reported as CHECK_FAILED with its reason,
+    because the caller distinguishes "your corpus is broken" from "I could
+    not tell", and only the first is something to say about the corpus.
     """
-    if not path.exists():
-        print(f"ERROR: {path} does not exist", file=sys.stderr)
-        return 2
-    analysis = analyse(path.read_text(encoding="utf-8").splitlines())
-    if analysis.needs_human:
-        print(describe(path, analysis))
-        return 3
-    if analysis.blocks:
-        print(describe(path, analysis))
-        return 1
-    return 0
+    try:
+        if not path.exists():
+            print(f"{path}: no such file", file=sys.stderr)
+            return CHECK_MISSING
+        analysis = analyse(read_lines_tolerantly(path))
+        if analysis.needs_human:
+            for number, text in analysis.problems:
+                print(f"{path}\t{number}\t{text}")
+            return CHECK_MANUAL
+        if analysis.blocks:
+            return CHECK_RESOLVABLE
+        return CHECK_CLEAN
+    except Exception as exc:  # noqa: BLE001 — the caller needs a verdict, not a trace
+        print(f"checker failed on {path}: {exc!r}", file=sys.stderr)
+        return CHECK_FAILED
 
 
 def resolve(path: Path, quiet_if_clean: bool) -> int:
@@ -334,7 +379,7 @@ def resolve(path: Path, quiet_if_clean: bool) -> int:
             + ". Edit those lines by hand, then re-run the sync.",
             file=sys.stderr,
         )
-        return NEEDS_HUMAN
+        return NEEDS_HUMAN  # main() turns this into exit 3
 
     if not analysis.blocks:
         if not quiet_if_clean:
@@ -380,10 +425,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.check:
-        worst = 0
+        worst = CHECK_CLEAN
         for path in args.paths:
             status = check(path)
-            # 3 (needs a human) outranks 2 (missing) outranks 1.
+            # CHECK_FAILED (4) outranks needs-a-human (3) outranks missing
+            # (2) outranks resolvable (1): the caller has to hear about the
+            # most serious thing first, and "I could not tell" is the most
+            # serious of all.
             worst = max(worst, status)
         return worst
 
