@@ -21,6 +21,7 @@ Modes:
 
 Options:
     --dry-run       Show what would be done without making API calls
+    --yes           Skip the interactive API cost gate (for scripted runs)
     --batch-size N  Memories per API call (default: 20)
     --limit N       Process at most N memories (for testing)
     --delay S       Seconds between API calls, sync mode only (default: 0.5)
@@ -60,6 +61,19 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_BATCH_SIZE = 20
 DEFAULT_DELAY = 0.5
 MAX_SUMMARY_CHARS = 150
+
+# Cost per million tokens for the model above. Standard (real-time) rates;
+# the Batch API is half of each. Used only for the pre-flight estimate the
+# API Call Review Gate requires — the gate exists to make the spend visible
+# before it happens, so an estimate in the right order of magnitude is worth
+# far more than no number at all.
+SYNC_INPUT_COST_PER_M = 0.80
+SYNC_OUTPUT_COST_PER_M = 4.00
+BATCH_DISCOUNT = 0.50
+
+# Output budget per memory: a summary is capped at MAX_SUMMARY_CHARS, and the
+# JSON wrapper around each one costs roughly as much again.
+EST_OUTPUT_TOKENS_PER_MEMORY = (MAX_SUMMARY_CHARS // 4) * 2
 
 # Static instruction portion of the prompt (sent as system message in
 # batch mode, inlined in user message in sync mode).
@@ -288,6 +302,98 @@ def _apply_summaries_under_lock(
         else:
             logger.info("No summaries matched on re-read — skipping rewrite")
     return applied, missing
+
+
+
+# ============================================================================
+# API Call Review Gate
+# ============================================================================
+
+
+def estimate_prompt_tokens(
+    to_backfill: list[tuple[int, dict]], batch_size: int
+) -> tuple[int, int, int]:
+    """Estimate ``(requests, input_tokens, output_tokens)`` for a run.
+
+    Builds the real prompts — the same ``SUMMARY_PROMPT.format`` the request
+    path builds — and estimates tokens as characters/4, the estimator used
+    throughout this hub. Costing the prompts we are actually about to send is
+    the point: a per-record constant would drift the moment the prompt did.
+    """
+    input_chars = 0
+    requests = 0
+    for start in range(0, len(to_backfill), batch_size):
+        batch = [record for _, record in to_backfill[start:start + batch_size]]
+        input_chars += len(SUMMARY_PROMPT.format(
+            max_chars=MAX_SUMMARY_CHARS,
+            memories_json=format_batch_input(batch),
+        ))
+        requests += 1
+    output_tokens = len(to_backfill) * EST_OUTPUT_TOKENS_PER_MEMORY
+    return requests, input_chars // 4, output_tokens
+
+
+def confirm_api_spend(
+    to_backfill: list[tuple[int, dict]],
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> None:
+    """Print the API Call Review Gate and require confirmation, or exit.
+
+    Every sibling script gates its spend (``bulk-archive.py`` at its batch
+    submit, ``reprocess-sessions.py`` at its, ``extraction-prompt-spotcheck``
+    behind ``--run``); this one did not. Running it with no flags went
+    straight from argument parsing to ``client.messages.create``, so the
+    operator's first sight of the cost was the invoice. That is exactly what
+    the API Call Review Gate in the project guidance forbids: model, mode,
+    call count, and estimated cost must be shown, and a human must say yes.
+
+    ``--yes`` skips the prompt for scripted use. Anything else — a refusal, a
+    closed stdin, an unreadable terminal — exits non-zero WITHOUT calling the
+    API: an unanswered gate is a refusal, never a default yes.
+    """
+    batch_mode = bool(args.batch_api)
+    requests, input_tokens, output_tokens = estimate_prompt_tokens(
+        to_backfill, args.batch_size
+    )
+    discount = BATCH_DISCOUNT if batch_mode else 1.0
+    est_cost = (
+        input_tokens / 1_000_000 * SYNC_INPUT_COST_PER_M * discount
+        + output_tokens / 1_000_000 * SYNC_OUTPUT_COST_PER_M * discount
+    )
+
+    print("\n" + "=" * 60)
+    print("API COST GATE — Memory Summary Backfill")
+    print("=" * 60)
+    print(f"Model:       {HAIKU_MODEL}")
+    print(
+        "Mode:        "
+        + (
+            "Anthropic Batch API (50% discount, up to 24h)"
+            if batch_mode
+            else "real-time Messages API, sequential"
+        )
+    )
+    print(f"Calls:       {requests} ({len(to_backfill)} memories)")
+    print(f"Est. tokens: {input_tokens:,} in / {output_tokens:,} out")
+    print(f"Est. cost:   ${est_cost:.2f}")
+    print("=" * 60)
+
+    if args.yes:
+        logger.info("--yes given: proceeding with %d API call(s)", requests)
+        return
+
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except (EOFError, OSError):
+        logger.error(
+            "API cost gate could not be answered (no interactive stdin) — "
+            "no API call made. Re-run with --yes to confirm non-interactively."
+        )
+        sys.exit(1)
+    if answer != "y":
+        logger.error("Cancelled at the API cost gate — no API call made.")
+        sys.exit(1)
 
 
 # ============================================================================
@@ -667,6 +773,11 @@ def main() -> None:
         default=DEFAULT_DELAY,
         help=f"Seconds between API calls, sync mode (default: {DEFAULT_DELAY})",
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation before live API calls.",
+    )
     args = parser.parse_args()
 
     load_env()
@@ -725,6 +836,10 @@ def main() -> None:
             est_time,
         )
         return
+
+    # API Call Review Gate — the last thing before any spend. Both branches
+    # below make live calls; neither may be reached without it.
+    confirm_api_spend(to_backfill, args, logger)
 
     if args.batch_api:
         run_batch_submit(to_backfill, args, logger)
