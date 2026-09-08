@@ -95,3 +95,52 @@ def test_once_emits_only_this_project_and_an_other_line(tmp_path):
     assert lines[0].startswith(f"MAIL {outbox / 'here.md'}  [project: any]")
     assert lines[1].startswith("OTHER unread for other projects: map-reader-llm (1)")
     assert "there.md" not in result.stdout and "body" not in result.stdout
+
+
+# ---- added after the 2026-09-08 audit (Lens B findings M6, M7 and the flush line) ----
+
+def test_scan_is_fail_open_on_a_raising_mailbox(tmp_path, monkeypatch):
+    def boom(_root):
+        raise OSError("transient")
+    monkeypatch.setattr(hook, "unread_messages", boom)
+    assert watch.scan(hook, tmp_path, "personal-assistant", set()) == ([], None)  # unknown
+
+
+def test_tick_reports_other_counts_only_when_they_change(tmp_path):
+    outbox, seen_dir = mailbox(tmp_path)
+    seen: set = set()
+    lines, last = watch.tick(hook, tmp_path, "personal-assistant", seen, None)
+    assert lines == [] and last == {}                             # quiet start, nothing anywhere
+    (outbox / "there.md").write_text(ROUTED)
+    lines, last = watch.tick(hook, tmp_path, "personal-assistant", seen, last)
+    assert lines == ["OTHER unread for other projects: map-reader-llm (1) "
+                     "(this session is personal-assistant)"]
+    lines, last = watch.tick(hook, tmp_path, "personal-assistant", seen, last)
+    assert lines == []                                            # unchanged count: silent
+    (seen_dir / "there.md").write_text("read\n")                  # receipted elsewhere
+    lines, last = watch.tick(hook, tmp_path, "personal-assistant", seen, last)
+    assert lines == ["OTHER unread for other projects: none (this session is personal-assistant)"]
+    (outbox / "here.md").write_text(VALID)
+    lines, last = watch.tick(hook, tmp_path, "personal-assistant", seen, last)
+    assert len(lines) == 1 and lines[0].startswith("MAIL ") and "here.md" in lines[0]
+
+
+def test_streaming_loop_emits_a_new_message_within_seconds(tmp_path):
+    """Under Monitor the wake depends on the line reaching stdout promptly (flush)."""
+    outbox, _ = mailbox(tmp_path)
+    process = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "--root", str(tmp_path), "--project", "personal-assistant",
+         "--interval", "0.2"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        import time
+        time.sleep(0.5)                                           # loop is running, quiet
+        (outbox / "late.md").write_text(VALID)
+        import select
+        ready, _, _ = select.select([process.stdout], [], [], 5.0)
+        assert ready, "no MAIL line within 5 s: stdout not flushed or loop dead"
+        line = process.stdout.readline()
+        assert line.startswith("MAIL ") and "late.md" in line
+    finally:
+        process.kill()
+        process.wait(timeout=5)

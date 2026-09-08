@@ -42,15 +42,20 @@ from pathlib import Path
 
 REPO = Path.home() / "personal-assistant"
 REFS = ("origin/main", "main")        # first that resolves wins
-SINCE = "2026-09-07"                  # date of the ruling; nothing earlier matters
+SINCE = "2026-09-07T00:00:00"         # the ruling day from midnight (a bare date means "now")
 ACK_FILE = Path.home() / ".cache" / "pa-codex-main-tripwire.ack"
 WEB_FLOW_EMAIL = "noreply@github.com"
 CODEX_MARKERS = ("codex",)            # matched case-insensitively
 FETCH_TIMEOUT = 5                     # seconds; best-effort, never blocks a session
 MAX_COMMITS = 500
 
-RECORD_SEP = "\x1e"
-FIELD_SEP = "\x1f"
+# NUL is the one byte git guarantees cannot appear in a commit message, so
+# it is the field separator; it reaches git as the %x00 escape (argv cannot
+# carry a NUL) and comes back as the byte. Records are fixed groups of seven
+# fields, so a hostile subject or trailer cannot shift or forge a record.
+FIELD_SEP = "\x00"
+FIELD_SEP_FMT = "%x00"
+FIELDS = 7
 
 
 def git(repo: Path, *args: str, timeout: int = 15) -> str:
@@ -86,28 +91,40 @@ def flagged_commits(
 
     Pure with respect to everything but the repository: no fetch, no files.
     """
-    fmt = FIELD_SEP.join((
+    fmt = FIELD_SEP_FMT.join((
         "%H", "%an", "%ae", "%ce", "%cs", "%s",
         "%(trailers:key=Co-Authored-By,valueonly,separator=%x2c)",
-    )) + RECORD_SEP
+    )) + FIELD_SEP_FMT
+    # No --max-count: git applies it before --reverse, which would drop the
+    # OLDEST commits in the window — the ones this hook most needs to see.
     out = git(
         repo, "log", "--first-parent", "--no-merges", f"--since={since}",
-        f"--max-count={MAX_COMMITS}", "--reverse", f"--format={fmt}", ref,
+        "--reverse", f"--format={fmt}", ref,
     )
+    # Output is: f1 NUL f2 NUL … f7 NUL "\n" per commit — the newline git adds
+    # after each record is glued to the next record's SHA, so groups are
+    # exactly seven wide and the SHA is stripped of it.
+    parts = out.split(FIELD_SEP)
     flagged: list[dict[str, str]] = []
-    for record in out.split(RECORD_SEP):
-        record = record.strip("\n")
-        if not record.strip():
+    for start in range(0, len(parts) - FIELDS + 1, FIELDS):
+        sha, author, author_email, committer_email, date, subject, trailers = (
+            parts[start:start + FIELDS])
+        sha = sha.strip()
+        if not sha:
             continue
-        parts = record.split(FIELD_SEP)
-        if len(parts) != 7:
-            continue
-        sha, author, author_email, committer_email, date, subject, trailers = parts
         if sha in acked or committer_email.strip().lower() == WEB_FLOW_EMAIL:
             continue
         if names_codex(trailers) or names_codex(author) or names_codex(author_email):
-            flagged.append({"sha": sha, "date": date, "subject": subject, "author": author})
-    return flagged
+            flagged.append({
+                "sha": sha, "date": date, "subject": printable(subject),
+                "author": printable(author),
+            })
+    return flagged[:MAX_COMMITS]
+
+
+def printable(text: str, limit: int = 120) -> str:
+    """Strip control characters (a subject cannot forge extra output lines)."""
+    return "".join(ch for ch in text if ch.isprintable())[:limit]
 
 
 def read_acks(path: Path = ACK_FILE) -> frozenset[str]:
@@ -134,10 +151,14 @@ def acknowledge(sha: str, repo: Path = REPO, path: Path = ACK_FILE) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) >= 3 and sys.argv[1] == "--ack":
-        return acknowledge(sys.argv[2])
-
     repo = Path(os.environ.get("PA_TRIPWIRE_REPO", str(REPO)))
+    if len(sys.argv) >= 2 and sys.argv[1] == "--ack":
+        if len(sys.argv) != 3:
+            print("usage: --ack <sha>", file=sys.stderr)
+            return 2
+        # Resolved here, not as a default argument, so tests and PA_TRIPWIRE_REPO apply.
+        return acknowledge(sys.argv[2], repo=repo, path=ACK_FILE)
+
     if not (repo / ".git").exists():
         return 0
     fetched = True
@@ -148,7 +169,7 @@ def main() -> int:
     ref = resolve_ref(repo)
     if ref is None:
         return 0
-    hits = flagged_commits(repo, ref, acked=read_acks())
+    hits = flagged_commits(repo, ref, acked=read_acks(ACK_FILE))   # resolved at call time
     if not hits:
         return 0
 

@@ -50,6 +50,7 @@ PA_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT = Path(os.environ.get("AGENT_MAIL_ROOT", "~/agent-mail")).expanduser()
 DEFAULT_ARCHIVE = PA_DIR / "data" / "agent-mail"
 MAX_HEADER_BYTES = 4_096
+MAX_MESSAGE_BYTES = 65_536   # same cap as the hooks; larger files are not mail
 HEADER_NAMES = ("From", "To", "Project", "Lane", "Workstream", "Date", "Re")
 
 
@@ -60,7 +61,8 @@ def sha256(path: Path) -> str:
 def read_headers(path: Path) -> dict[str, str]:
     """Bounded header block, known names only; ends at the first blank line."""
     try:
-        prefix = path.read_text(encoding="utf-8", errors="replace")[:MAX_HEADER_BYTES]
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            prefix = handle.read(MAX_HEADER_BYTES)          # bounded: never the whole file
     except OSError:
         return {}
     headers: dict[str, str] = {}
@@ -82,12 +84,23 @@ def mail_files(root: Path) -> list[Path]:
         if agent_dir.is_symlink() or not agent_dir.is_dir():
             continue
         for kind in ("outbox", "seen"):
-            for peer_dir in sorted((agent_dir / kind).glob("*")):
+            kind_dir = agent_dir / kind
+            if kind_dir.is_symlink() or not kind_dir.is_dir():
+                continue                    # a symlinked outbox could point anywhere
+            for peer_dir in sorted(kind_dir.glob("*")):
                 if peer_dir.is_symlink() or not peer_dir.is_dir():
                     continue
                 for path in sorted(peer_dir.iterdir()):
-                    if path.suffix == ".md" and path.is_file() and not path.is_symlink():
-                        found.append(path)
+                    if path.suffix != ".md" or path.is_symlink() or not path.is_file():
+                        continue
+                    if not path.name.isprintable():
+                        continue
+                    try:
+                        if path.stat().st_size > MAX_MESSAGE_BYTES:
+                            continue        # not mail by the protocol; never into the repo
+                    except OSError:
+                        continue
+                    found.append(path)
     return found
 
 
@@ -124,9 +137,18 @@ def sent_from_name(name: str) -> str:
 
 
 def when_from_note(note: str) -> str:
-    """The receipt time from its first line (``read <ISO> by …``), else empty."""
+    """The receipt time from its first line, else empty.
+
+    Both agents' conventions are accepted: Claude writes ``read <ISO> by …``,
+    the Codex side writes ``Read: <ISO>`` or ``Read: <date> <zone>``. The
+    time is the first token after the keyword; a bare date is kept as is.
+    """
     parts = note.split()
-    return parts[1] if len(parts) >= 2 and parts[0] == "read" else ""
+    if len(parts) >= 2 and parts[0].rstrip(":").casefold() == "read":
+        stamp = parts[1]
+        if stamp[:4].isdigit():             # a date, not "by" in "read by claude …"
+            return stamp
+    return ""
 
 
 def build_index(archive: Path) -> list[dict]:
@@ -160,7 +182,7 @@ def build_index(archive: Path) -> list[dict]:
             "lane": (headers.get("Lane") or "any").casefold(),
             "workstream": headers.get("Workstream") or "",
             "date": headers.get("Date") or "",
-            "subject": headers.get("Re") or "",
+            "subject": "".join(ch for ch in headers.get("Re", "") if ch.isprintable())[:200],
             "bytes": message.stat().st_size,
             "sha256": sha256(message),
             "sent": sent_from_name(name),
@@ -214,7 +236,9 @@ def main() -> int:
     receipted = sum(1 for r in records if r["receipt"])
     summary = f"{added} added, {changed} changed; {len(records)} messages, {receipted} receipted"
     committed = False
-    if args.commit and (added or changed or index_changed):
+    # Always try when asked: a commit that failed on an earlier run leaves
+    # files staged, and commit() itself is a no-op when nothing is staged.
+    if args.commit:
         try:
             committed = commit(args.archive, summary)
         except subprocess.CalledProcessError as error:

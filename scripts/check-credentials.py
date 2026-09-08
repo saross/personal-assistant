@@ -88,9 +88,19 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
         m = re.match(r"^([^=]+)=(.*)$", line)
         if not m:
             continue
-        name, value = m.group(1).strip(), m.group(2).strip().strip('"').strip("'")
+        raw_name, raw_value = m.group(1), m.group(2).strip()
+        name = raw_name.strip()
+        quoted = raw_value[:1] in ('"', "'")
+        value = raw_value.strip('"').strip("'")
         out[name] = value
-        if " #" in value or value.startswith("#"):
+        if raw_name != name:
+            # bash treats "NAME =value" as a command named NAME — the leak class
+            # pass 1 exists to catch — so whitespace around the name is a finding.
+            note(
+                f"line {lineno}: whitespace around the name {name!r} — bash would run "
+                "it as a command and echo the rest. Remove the spaces."
+            )
+        if not quoted and (" #" in value or value.startswith("#")):
             # bash sourcing drops an unquoted trailing comment; the Codex launcher
             # and this parser keep it as part of the value. One of them would
             # hand a process the wrong secret, so the line must be unambiguous.
@@ -99,10 +109,13 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 "is dropped by shell sourcing but kept by the Codex launcher. Remove it."
             )
         if not VALID_NAME.match(name):
+            # "export NAME=…" sources fine in bash but the Codex launcher's
+            # literal parser rejects it; either way the line is not plain.
             note(
-                f"line {lineno}: variable name {name!r} is not a valid shell "
-                f"identifier — bash will echo this line, secret and all, "
-                f"every time the file is sourced. Rename to [A-Z0-9_] only."
+                f"line {lineno}: variable name {name!r} is not a plain shell "
+                f"identifier — bash may echo this line, secret and all, when the "
+                f"file is sourced, and the Codex launcher rejects it. Use "
+                f"NAME=value with [A-Z_][A-Z0-9_]* only."
             )
     return out
 
@@ -143,7 +156,7 @@ def check_shell_source(path: pathlib.Path) -> None:
     """Source the file in a subshell; any output is a parse failure."""
     print("\n== Shell-source test ==")
     result = subprocess.run(
-        ["bash", "-c", f"set -a; . {path}; set +a"],
+        ["bash", "-c", 'set -a; . "$1"; set +a', "check-credentials", str(path)],
         capture_output=True, text=True,
     )
     combined = (result.stdout + result.stderr).strip()
@@ -303,6 +316,10 @@ def check_github(env: dict[str, str]) -> dict[str, dt.date | str | None]:
                    else f"unparseable header {expiry_raw!r}" if expiry_raw
                    else "none (rotated by hand)")
         print(f"  {name}: OK — account {body.get('login')!r}, {kind}, expires {expires}")
+        if expiry_raw and expiry is None:
+            # Otherwise the grant cross-check below would skip this token silently.
+            note(f"{name}: expiry header {expiry_raw!r} did not parse — the grant "
+                 "cross-check cannot compare it; report this format")
 
         # Fine-grained tokens carry no scope header; probe the repository instead.
         st, repo, _ = http_get(f"{GITHUB_API}/repos/{GITHUB_PROBE_REPO}", headers)
@@ -343,8 +360,9 @@ def check_grants(env: dict[str, str], expiries: dict[str, dt.date | str | None])
         source = grant.get("source_name", "")
         target = grant.get("inject_as", source)
         label = f"{grant.get('id', '?')} ({source} -> {target})"
-        if source not in env:
-            note(f"grant {label}: {source} is not in .env — the launcher would inject nothing")
+        if not env.get(source):
+            note(f"grant {label}: {source} is absent or empty in .env — the launcher would "
+                 "inject nothing")
             continue
         if not VALID_NAME.match(target):
             note(f"grant {label}: inject_as {target!r} is not a valid shell identifier")

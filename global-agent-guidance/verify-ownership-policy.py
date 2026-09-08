@@ -25,6 +25,10 @@ DENIAL_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 CASE_OPERATIONS = {"create": "write", "open-write": "write", "read": "read"}
 ENFORCEMENT_LAYERS = {"os", "tool-layer"}
 ADMISSION_AUTHORITY = "shawn"
+REQUIRED_CLONE_FIELDS = (
+    "id", "agent", "repository", "lane_path", "remote", "branch_namespace",
+    "storage", "clone_mode", "admitted_on", "admitted_by",
+)
 LANE_PARENT = "~/worktrees"
 
 
@@ -122,8 +126,10 @@ def canonical_home_path(value: str) -> PurePosixPath:
     if (
         not value.startswith("~/") or value != path.as_posix()
         or ".." in path.parts or len(path.parts) < 2
-        or any(character.isspace() or ord(character) < 32 for character in value)
+        or not value.isascii() or not value.isprintable() or " " in value
     ):
+        # ASCII-printable only: zero-width and bidirectional-override
+        # characters would otherwise pass as canonical look-alikes.
         raise ValueError("admitted clone paths must be canonical and home-relative")
     return path
 
@@ -133,13 +139,19 @@ def validate_clone_remote(value: str) -> None:
     try:
         remote = urlsplit(value)
         port = remote.port
+        raw_segments = [part for part in remote.path.split("/") if part]
+        decoded_segments = [part for part in unquote(remote.path).split("/") if part]
         valid = (
             remote.scheme == "https" and bool(remote.hostname)
             and bool(remote.path.strip("/"))
             and remote.username is None and remote.password is None
             and not remote.query and not remote.fragment
             and (port is None or port > 0)
-            and not any(character.isspace() or ord(character) < 32 for character in value)
+            and value.isascii() and value.isprintable() and " " not in value
+            # Percent-encoding may not add path separators or traversal:
+            # %2F would name a different repository once decoded.
+            and len(decoded_segments) == len(raw_segments)
+            and ".." not in decoded_segments
         )
     except ValueError:
         valid = False
@@ -165,6 +177,10 @@ def validate_admitted_clones(policy: dict) -> None:
     if not entries:
         return
     required = semantics.get("admitted_clone_required_fields")
+    # The declared list may not shrink below what this validator reads, or a
+    # trimmed policy would either skip checks or crash on a missing key.
+    if required is not None and not set(REQUIRED_CLONE_FIELDS) <= set(required):
+        raise ValueError("admitted_clone_required_fields omits fields the verifier needs")
     storage = semantics.get("admitted_clone_storage")
     clone_modes = set(semantics.get("admitted_clone_clone_modes", []))
     if not required or not storage or not clone_modes:
@@ -229,10 +245,12 @@ def validate_admitted_clones(policy: dict) -> None:
             PurePosixPath(unquote(urlsplit(entry["remote"]).path))
             .name.casefold().removesuffix(".git")
         )
-        if remote_name != repo_name:
+        if remote_name != repo_name.casefold():
+            # Case-folded on both sides: consumers fold too, so a directory
+            # spelt Map-Reader-LLM with a matching remote is admissible.
             raise ValueError(
                 f"admitted clone {ident}: repository basename {repo_name!r} must equal "
-                f"the remote's repository name {remote_name!r}"
+                f"the remote's repository name {remote_name!r} (case-insensitive)"
             )
         try:
             admitted_date = date.fromisoformat(entry["admitted_on"])

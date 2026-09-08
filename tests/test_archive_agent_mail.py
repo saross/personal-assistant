@@ -122,3 +122,101 @@ def test_cli_reports_summary_without_bodies(tmp_path):
     assert result.stdout.strip() == (
         "agent-mail archive: 1 added, 0 changed; 1 messages, 0 receipted")
     assert "body text" not in result.stdout
+
+
+# ---- added after the 2026-09-08 audit (Lens B findings C3, M1, M2 and lows) ----
+
+def test_commit_pathspec_leaves_another_sessions_staged_file_alone(tmp_path):
+    """A file another session has already STAGED must not be swept into the commit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
+    (repo / "other-session.txt").write_text("staged by someone else\n")
+    subprocess.run(["git", "-C", str(repo), "add", "other-session.txt"], check=True, env=env)
+    store = repo / "agent-mail"
+    root = tmp_path / "mail"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    archive.copy_new(root, store)
+    archive.write_index(store, archive.build_index(store))
+    assert archive.commit(store, "test") is True
+    committed = subprocess.run(["git", "-C", str(repo), "show", "--stat", "--format=", "HEAD"],
+                               capture_output=True, text=True, check=True).stdout
+    assert "agent-mail/index.jsonl" in committed
+    assert "other-session.txt" not in committed          # still staged, not committed
+    still_staged = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+                                  capture_output=True, text=True, check=True).stdout
+    assert "other-session.txt" in still_staged
+
+
+def test_when_from_note_accepts_both_agents_receipt_conventions():
+    assert (archive.when_from_note("read 2026-09-08T00:05Z by claude — acted")
+            == "2026-09-08T00:05Z")
+    assert archive.when_from_note("Read: 2026-08-25T09:43:01Z") == "2026-08-25T09:43:01Z"
+    assert archive.when_from_note("Read: 2026-09-08 Australia/Sydney") == "2026-09-08"
+    assert archive.when_from_note("seen 2026-09-08T00:05Z") == ""
+    assert archive.when_from_note("read") == ""
+    assert archive.when_from_note("") == ""
+
+
+def test_body_lines_after_the_blank_line_are_not_headers(tmp_path):
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE + "Re: smuggled subject\n")
+    archive.copy_new(root, store)
+    assert archive.build_index(store)[0]["subject"] == "hello"
+
+
+def test_receipt_note_is_first_line_only_and_bounded(tmp_path):
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, seen = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    (seen / "m1.md").write_text(
+        "read 2026-09-08T00:05Z by claude — " + "x" * 600 + "\nSECOND LINE\n")
+    archive.copy_new(root, store)
+    note = archive.build_index(store)[0]["receipt"]["note"]
+    assert len(note) == 500 and "SECOND LINE" not in note
+
+
+def test_symlinked_agent_and_peer_directories_are_ignored(tmp_path):
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "outbox" / "claude").mkdir(parents=True)
+    (elsewhere / "outbox" / "claude" / "x.md").write_text(MESSAGE)
+    os.symlink(elsewhere, root / "third")                      # symlinked agent subtree
+    os.symlink(elsewhere / "outbox" / "claude", root / "codex" / "outbox" / "linked-peer")
+    assert archive.copy_new(root, store) == (1, 0)
+
+
+def test_cli_commit_and_quiet_flags(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x.test",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x.test"}
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True, env=env)
+    root = tmp_path / "mail"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(root), "--archive", str(repo / "agent-mail"),
+         "--commit", "--quiet"], capture_output=True, text=True, check=True, env=env)
+    assert result.stdout == ""                                   # --quiet honoured
+    log = subprocess.run(["git", "-C", str(repo), "log", "--format=%s"],
+                         capture_output=True, text=True, check=True).stdout
+    assert log.startswith("chore(agent-mail): 1 added")          # --commit honoured
+
+
+def test_unwritable_archive_reports_failure(tmp_path):
+    root = tmp_path / "mail"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file where the archive directory should be\n")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(root), "--archive", str(blocker)],
+        capture_output=True, text=True)
+    assert result.returncode == 1 and "failed" in result.stderr

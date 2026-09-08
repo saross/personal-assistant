@@ -64,6 +64,20 @@ admitted_by = "shawn"
         policy = self.load_with(self.ADMISSION)
         self.assertEqual(len(policy["admitted_clones"]), 1)
 
+    def test_consistent_upper_case_spelling_is_admissible(self) -> None:
+        policy = self.load_with(self.ADMISSION.replace("map-reader-llm", "Map-Reader-LLM"))
+        self.assertEqual(len(policy["admitted_clones"]), 1)
+
+    def test_trimmed_required_fields_list_is_rejected(self) -> None:
+        base = (ROOT / "ownership.toml").read_text().replace(
+            '"admitted_on", "admitted_by"]', '"admitted_on"]')
+        self.assertNotEqual(base, (ROOT / "ownership.toml").read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "ownership.toml"
+            candidate.write_text(base + self.ADMISSION)
+            with self.assertRaisesRegex(ValueError, "omits fields"):
+                verifier.load_policy(candidate)
+
     def test_canonical_basename_accepts_aliased_remote_spellings(self) -> None:
         """Consumers key on the canonical directory name; the remote may be spelt oddly."""
         for remote in ("saross/Map-Reader-LLM.git", "saross/map%2Dreader-llm.git",
@@ -85,7 +99,15 @@ admitted_by = "shawn"
                 "~/worktrees/map-reader-llm/sol-phase2-codex-entry", "~/Code/map-reader-llm"),
             "wrong namespace": self.ADMISSION.replace('"sol/*"', '"main"'),
             "unknown agent": self.ADMISSION.replace('agent = "codex"', 'agent = "astra"'),
-            "home repository": self.ADMISSION.replace("~/Code/map-reader-llm", "~/gpt-hub"),
+            "home repository": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/gpt-hub").replace(
+                    "worktrees/map-reader-llm/", "worktrees/gpt-hub/").replace(
+                        "saross/map-reader-llm.git", "saross/gpt-hub.git"),
+            "traversal in a middle segment": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/other/../map-reader-llm"),
+            "http remote": self.ADMISSION.replace("https://github.com", "http://github.com"),
+            "fragment in remote": self.ADMISSION.replace('.git"', '.git#frag"'),
+            "non-canonical date": self.ADMISSION.replace('"2026-09-07"', '"20260907"'),
             "not admitted by shawn": self.ADMISSION.replace(
                 'admitted_by = "shawn"', 'admitted_by = "codex"'),
             "unsupported clone mode": self.ADMISSION.replace(
@@ -124,8 +146,12 @@ admitted_by = "shawn"
             "basename differs from remote name": self.ADMISSION.replace(
                 "~/Code/map-reader-llm", "~/Code/mrl-mirror").replace(
                     "worktrees/map-reader-llm/", "worktrees/mrl-mirror/"),
-            "upper-case alias in basename and remote": self.ADMISSION.replace(
-                "map-reader-llm", "Map-Reader-LLM"),
+            "basename case differs from lane directory": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/Map-Reader-LLM"),
+            "zero-width character in path": self.ADMISSION.replace(
+                "~/Code/map-reader-llm", "~/Code/map\u200b-reader-llm"),
+            "percent-encoded slash in remote": self.ADMISSION.replace(
+                "saross/map-reader-llm.git", "saross%2Fmap-reader-llm.git"),
             "percent-encoded alias in basename and remote": self.ADMISSION.replace(
                 "~/Code/map-reader-llm", "~/Code/map%2Dreader-llm").replace(
                     "worktrees/map-reader-llm/", "worktrees/map%2Dreader-llm/").replace(
@@ -134,6 +160,59 @@ admitted_by = "shawn"
         for label, text in variants.items():
             with self.subTest(label=label), self.assertRaises(ValueError):
                 self.load_with(text)
+
+    def test_attempt_distinguishes_denial_from_success(self) -> None:
+        """The enforcement probe: only EACCES/EPERM/EROFS count as denials."""
+        import os
+        import stat
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file modes")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "protected.txt"
+            target.write_text("x\n")
+            target.chmod(stat.S_IRUSR)
+            passed, detail, _ = verifier.attempt(
+                {"path": str(target), "operation": "open-write"})
+            self.assertTrue(passed, detail)
+            target.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            passed, detail, _ = verifier.attempt(
+                {"path": str(target), "operation": "open-write"})
+            self.assertFalse(passed)
+            self.assertIn("unexpectedly succeeded", detail)
+            scratch = root / "created.txt"
+            passed, detail, _ = verifier.attempt({"path": str(scratch), "operation": "create"})
+            self.assertFalse(passed)
+            self.assertFalse(scratch.exists())          # success path cleans up
+            passed, detail, _ = verifier.attempt(
+                {"path": str(root / "absent" / "x"), "operation": "create"})
+            self.assertFalse(passed)
+            self.assertIn("preflight failed", detail)   # missing parent is not a denial
+
+    def test_rule_denies_respects_the_operation(self) -> None:
+        rule = {"owner": "claude", "operations": ["write"]}
+        self.assertTrue(verifier.rule_denies(rule, "codex", "write"))
+        self.assertFalse(verifier.rule_denies(rule, "codex", "read"))
+        self.assertFalse(verifier.rule_denies(rule, "claude", "write"))
+
+    def test_schema_and_coverage_guards(self) -> None:
+        text = (ROOT / "ownership.toml").read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "ownership.toml"
+            candidate.write_text(text.replace("schema_version = 2", "schema_version = 3", 1))
+            with self.assertRaisesRegex(ValueError, "schema"):
+                verifier.load_policy(candidate)
+            # Remove one verification case: its rule is then untested and must fail.
+            case_start = text.index('[[verification_cases]]\nid = "codex-pa-scripts"')
+            case_end = text.index("[[verification_cases]]", case_start + 10)
+            candidate.write_text(text[:case_start] + text[case_end:])
+            try:
+                verifier.load_policy(candidate)
+            except ValueError as error:
+                self.assertIn("verification", str(error))
+            else:
+                # Only fails if that rule had a second case; then nothing to assert.
+                pass
 
     def test_glob_case_resolves_an_existing_backup_without_reading_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

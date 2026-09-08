@@ -43,7 +43,7 @@ import os
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 MAX_MESSAGE_BYTES = 65_536  # validation cap; larger files are ignored
 MAX_HEADER_BYTES = 4_096    # only this much of a message is read, for headers
@@ -102,16 +102,50 @@ def headers_match(message: Path, sender: str) -> bool:
     return headers.get("From") == sender and headers.get("To") == RECEIVER
 
 
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=3, check=True,
+    )
+    return result.stdout.strip()
+
+
+def repository_name_from_remote(url: str) -> str:
+    """The repository name a remote URL identifies, decoded and case-folded."""
+    from urllib.parse import unquote, urlsplit
+    path = url
+    if "://" in url:
+        path = urlsplit(url).path
+    elif ":" in url and "@" in url.split(":", 1)[0]:
+        path = url.split(":", 1)[1]                      # scp-like git@host:owner/repo.git
+    name = PurePosixPath(unquote(path)).name.casefold()
+    return name.removesuffix(".git")
+
+
 def session_project(cwd: Path) -> str:
-    """Name the session's project: the basename of the cwd's git root, else the cwd."""
+    """A stable name for the repository the session works in.
+
+    In order: the origin remote's repository name (stable across linked
+    worktrees, independent clones, and renamed directories, and the same
+    identity the ownership policy uses); else the primary checkout's
+    directory (a linked worktree's common git dir is ``<primary>/.git``);
+    else the cwd's git root; else the cwd itself.
+    """
     try:
-        result = subprocess.run(
-            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=3, check=True,
-        )
-        return Path(result.stdout.strip()).name or cwd.name
+        remote = _git(cwd, "config", "--get", "remote.origin.url")
+        if remote:
+            name = repository_name_from_remote(remote)
+            if name:
+                return name
     except (OSError, subprocess.SubprocessError):
-        return cwd.name
+        pass
+    try:
+        common = Path(_git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        if common.name == ".git":
+            return common.parent.name.casefold()
+        top = _git(cwd, "rev-parse", "--show-toplevel")
+        return (Path(top).name or cwd.name).casefold()
+    except (OSError, subprocess.SubprocessError):
+        return cwd.name.casefold()
 
 
 def message_project(headers: dict[str, str]) -> str:
@@ -152,6 +186,8 @@ def unread_messages(root: Path) -> list[Path]:
         for message in sorted(outbox.iterdir()):
             if message.suffix != ".md" or not plain_file(message):
                 continue
+            if not message.name.isprintable():
+                continue          # a name with control characters could forge output lines
             try:
                 if message.stat(follow_symlinks=False).st_size > MAX_MESSAGE_BYTES:
                     continue
@@ -182,11 +218,20 @@ def route(unread: list[Path], project: str) -> Routed:
     return here, elsewhere
 
 
+MAX_HEADER_VALUE = 60
+
+
+def safe_value(value: str) -> str:
+    """A header value fit to print into context: printable, bounded, no brackets."""
+    cleaned = "".join(ch for ch in value if ch.isprintable() and ch not in "[]")
+    return cleaned.strip()[:MAX_HEADER_VALUE]
+
+
 def annotate(headers: dict[str, str]) -> str:
     """Render the routing headers beside a path, e.g. ``[project: x; lane: fable]``."""
-    parts = [f"project: {message_project(headers)}"]
+    parts = [f"project: {safe_value(message_project(headers))}"]
     for name in ("Lane", "Workstream"):
-        value = headers.get(name, "").strip()
+        value = safe_value(headers.get(name, ""))
         if value and value.casefold() != ANY:
             parts.append(f"{name.lower()}: {value}")
     return "[" + "; ".join(parts) + "]"
