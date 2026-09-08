@@ -548,6 +548,30 @@ class TestOrphanedStashWedge:
         assert git("stash", "list", cwd=machine.data).stdout.strip()
 
 
+class TestParentStashWedge:
+    """The parent half wedges the same way the data half does: while a
+    path is unmerged, the next run's `git stash push -u -- ':!data'`
+    refuses, so every later session fails in the same place. Audit M3 —
+    it had no gate line."""
+
+    def test_parent_pop_conflict_writes_a_gate_line(self, world: SyncWorld) -> None:
+        """A conflicted parent pop is surfaced at session start."""
+        machine = world.add_machine("a")
+        world.publish_parent_change("settings.json", '{"from": "the other machine"}\n')
+        (machine.pa / "settings.json").write_text('{"from": "here"}\n', encoding="utf-8")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "stash pop raised conflicts" in combined
+
+        gate = world.gate("daily-sync-gate").splitlines()
+        assert gate and gate[0] == "1", gate
+        assert "parent-repo stash pop conflicted" in gate[1]
+        # The stash git preserved on a conflicted pop is still there.
+        assert git("stash", "list", cwd=machine.pa).stdout.strip()
+
+
 class TestBrokenCheckoutIsNotLockContention:
     """``daily-sync-trigger.sh`` maps exit 1 to "another sync is running".
     A broken checkout must therefore never exit 1 (audit S19)."""

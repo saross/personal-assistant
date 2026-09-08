@@ -339,6 +339,25 @@ class SyncWorld:
         path = self.home / ".cache" / name
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
+    def publish_parent_change(
+        self, path: str, content: str, message: str = "parent change from elsewhere"
+    ) -> str:
+        """Push a parent-repo change as another machine (or GitHub) would."""
+        scratch = self.root / "parent-publisher"
+        if scratch.exists():
+            git("pull", "-q", "--ff-only", "origin", "main", cwd=scratch)
+        else:
+            git("clone", "-q", "--no-checkout", str(self.parent_remote), str(scratch),
+                cwd=self.root)
+            git("read-tree", "-m", "-u", "HEAD", cwd=scratch)
+        target = scratch / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        git("add", "--", path, cwd=scratch)
+        git("commit", "-q", "-m", message, "--", path, cwd=scratch)
+        git("push", "-q", "origin", "main", cwd=scratch)
+        return git("rev-parse", "HEAD", cwd=scratch).stdout.strip()
+
     def _publisher(self) -> Path:
         """A scratch clone of the data remote, standing in for machine B."""
         scratch = self.root / "publisher"
@@ -503,6 +522,9 @@ def build_world(tmp_path: Path) -> SyncWorld:
     parent_src.mkdir()
     git("init", "--quiet", "--initial-branch=main", cwd=parent_src)
     (parent_src / ".gitignore").write_text(_PARENT_GITIGNORE, encoding="utf-8")
+    # A tracked, per-machine parent file — the shape production's
+    # settings.json has, and the one the parent stash is there for.
+    (parent_src / "settings.json").write_text("{}\n", encoding="utf-8")
     _build_scripts_dir(parent_src / "scripts")
     git("add", "-A", cwd=parent_src)
     git("commit", "-q", "-m", "seed parent", cwd=parent_src)
