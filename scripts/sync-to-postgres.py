@@ -35,7 +35,7 @@ from _sync_cursor import (  # noqa: E402
     quarantine_record,
     read_cursor_file,
     read_cursor_file_locked,
-    split_jsonl_lines,
+    read_jsonl_lines,
     update_cursor_file,
 )
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
@@ -1355,11 +1355,15 @@ def _sync_locked_body(
         cursor_line = 0
     cursor_key_was_present = "postgres_sync_line" in cursor_snapshot
 
-    # Read all lines and process from cursor position. ``split_jsonl_lines``
+    # Read all lines and process from cursor position. ``read_jsonl_lines``
     # breaks on "\n" alone — the one definition of "a line" this system
     # shares with _sync_cursor.count_jsonl_lines, which the bulk rewriters'
     # backlog gate compares this cursor against (audit round 4a-2, M2).
-    lines = split_jsonl_lines(MEMORIES_FILE.read_text(encoding="utf-8"))
+    # It reads BYTES: passing it ``read_text`` output put universal-newline
+    # translation in between, so a lone \r counted as a line break here and
+    # not in the gate, and the cursor was saved one line ahead of the file
+    # the gate measures (audit round 4a-3, M2).
+    lines = read_jsonl_lines(MEMORIES_FILE)
     total_lines = len(lines)
 
     # Shrink guard (item 22): if the canonical shrank below the saved cursor

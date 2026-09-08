@@ -61,11 +61,19 @@ PG_REMEDY = (
     "    venv/bin/python3 scripts/rebuild-postgres.py"
 )
 
-# Also check the symlink path as a fallback
-if not MEMORIES_JSONL.exists():
-    MEMORIES_JSONL = PA_ROOT / "memories" / "memories.jsonl"
-if not VOCABULARY_FILE.exists():
-    VOCABULARY_FILE = PA_ROOT / "memories" / "tag-vocabulary.txt"
+# Also check the symlink path as a fallback — but ONLY when something is
+# actually there. Rebinding unconditionally meant that when neither path
+# existed (an uninitialised data submodule, or a store that has genuinely
+# lost a file) every message afterwards named the fallback rather than the
+# canonical, so the M6 refusal told the operator to look in the wrong place
+# (audit round 4a-3, low finding). When nothing exists the canonical stays
+# bound, because that is the path the operator has to repair.
+_MEMORIES_FALLBACK = PA_ROOT / "memories" / "memories.jsonl"
+_VOCABULARY_FALLBACK = PA_ROOT / "memories" / "tag-vocabulary.txt"
+if not MEMORIES_JSONL.exists() and _MEMORIES_FALLBACK.exists():
+    MEMORIES_JSONL = _MEMORIES_FALLBACK
+if not VOCABULARY_FILE.exists() and _VOCABULARY_FALLBACK.exists():
+    VOCABULARY_FILE = _VOCABULARY_FALLBACK
 
 
 # -------------------------------------------------------------------------
