@@ -1601,3 +1601,59 @@ class TestParseEnvLowsRoundThree:
         path.write_bytes(b"ZOTERO_API_KEY=abcfake\n")
         cc.parse_env(path)
         assert cc.findings == []
+
+
+class TestParseEnvCommentBoundary:
+    """Audit round four L-1 and the BOM mutation.
+
+    bash starts a comment at a '#' that begins a word — after whitespace of
+    any kind, or at the start of the value — and treats '#' as ordinary
+    text mid-word. Both halves matter: one decides whether an operator can
+    run, the other whether a '#' finding is warranted at all.
+    """
+
+    def test_a_tab_before_the_comment_is_a_comment(self, tmp_path):
+        """Kills ``_COMMENT_START`` -> a space-only ``find(" #")``.
+
+        Verified against bash 5.2.37: ``A=abc\\t# x & y`` assigns "abc" and
+        runs nothing. With a space-only scan the '&' was reported as
+        backgrounding the assignment — a false positive, and with the wrong
+        message on a line whose real problem is the comment.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=abcfake\t# x & y\n"))
+        assert len(cc.findings) == 1
+        assert "has a '#' in its value" in cc.findings[0]
+
+    def test_a_hash_mid_word_is_not_a_comment(self, tmp_path):
+        """Kills ``find(" #")`` -> ``find("#")``, in either direction.
+
+        Verified against bash 5.2.37: ``A=x#y>z`` assigns ``x#y`` — the '#'
+        is ordinary text — and still redirects to a file named z. Treating
+        the '#' as a comment start would truncate the scan and lose the '>'
+        finding, which is the one that destroys something.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=x#y>target\n"))
+        assert len(cc.findings) == 1
+        assert "contains > and is not quoted" in cc.findings[0]
+        assert "'#' in its value" not in cc.findings[0]
+
+    def test_a_leading_hash_is_still_a_comment(self, tmp_path):
+        """Kills dropping the ``^`` alternative from ``_COMMENT_START``."""
+        cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake\n"))
+        assert len(cc.findings) == 1
+        assert "has a '#' in its value" in cc.findings[0]
+
+    def test_a_byte_order_mark_mid_file_is_not_a_leading_bom(self, tmp_path):
+        """Kills ``data.startswith(_UTF8_BOM)`` -> ``_UTF8_BOM in data``.
+
+        Only a mark at the very start of the file becomes part of the first
+        NAME. One appearing later is a stray character inside a value or
+        name, which the name check reports on its own line; calling it a
+        leading BOM would send the operator to the wrong end of the file.
+        """
+        path = tmp_path / "midfile.env"
+        path.write_bytes(b"FIRST_VAR=one\n\xef\xbb\xbfSECOND_VAR=two\n")
+        cc.parse_env(path)
+        assert not any("byte-order mark" in f for f in cc.findings), cc.findings
+        # The stray character still surfaces, as a malformed name on line 2.
+        assert any(f.startswith("line 2:") for f in cc.findings)

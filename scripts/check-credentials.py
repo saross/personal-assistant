@@ -92,6 +92,10 @@ VALID_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _LINE_SPLIT = re.compile(r"([^\r\n]*)(\r\n|\r|\n|$)")
 # A leading UTF-8 byte-order mark. bash keeps it; ``utf-8-sig`` drops it.
 _UTF8_BOM = b"\xef\xbb\xbf"
+# Where an unquoted trailing comment begins: a '#' at the start of the value
+# or after whitespace of any kind. bash treats '#' as ordinary text mid-word,
+# so ``A=x#y`` assigns ``x#y`` and is not a comment at all.
+_COMMENT_START = re.compile(r"(?:^|\s)#")
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
 GITHUB_API = "https://api.github.com"
@@ -241,11 +245,15 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             # file; the redirection is the one that destroys something.
             #
             # Scan the value with any trailing comment removed: bash stops
-            # reading at an unquoted " #", so an '&' after that cannot run and
-            # reporting it was a false positive (audit round three L1). The
-            # comment itself already has its own finding below.
-            comment_at = raw_value.find(" #")
-            code = raw_value if comment_at == -1 else raw_value[:comment_at]
+            # reading at a '#' that starts a word, so an '&' after that cannot
+            # run and reporting it was a false positive (audit round three
+            # L1). ``_COMMENT_START`` matches the '#' only when it begins a
+            # word — ANY whitespace before it, not just a space (audit round
+            # four L-1: a tab was a false positive with the wrong message) —
+            # so ``A=x#y>z``, where bash assigns ``x#y`` and still redirects,
+            # keeps its '>' finding. The comment itself is reported below.
+            comment = _COMMENT_START.search(raw_value)
+            code = raw_value if comment is None else raw_value[: comment.start()]
             operators = sorted({char for char in "&;|<>" if char in code})
             if operators:
                 note(
@@ -297,7 +305,7 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 f"name is assigned (the rest of the file becomes its value) and "
                 f"{name} may never be set at all. Convert the file to LF endings."
             )
-        if not quoted and (" #" in value or value.startswith("#")):
+        if not quoted and _COMMENT_START.search(value):
             # bash sourcing drops an unquoted trailing comment; the Codex launcher
             # and this parser keep it as part of the value. One of them would
             # hand a process the wrong secret, so the line must be unambiguous.
