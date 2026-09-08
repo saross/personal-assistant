@@ -59,6 +59,54 @@ def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def make_sandbox_home(tmp_path: Path) -> Path:
+    """
+    Build a throwaway ``HOME`` for a script that reads ``$HOME``.
+
+    Audit S21. ``daily-sync.sh`` resolves ``~/.claude``, ``~/.cache``,
+    ``~/cc-archives``, and ``~/mnt/rpi-shares`` from ``$HOME``, and hands
+    the first of those to ``sync-symlinks.sh``, whose ``ensure_symlink``
+    would repoint the *real* ``~/.claude/settings.json`` at a ``tmp_path``
+    pytest deletes on exit. Every test that executes the script must run
+    with ``HOME`` pinned here, whether or not the run is expected to reach
+    those blocks — the fixture is one repair away from reaching them.
+    """
+    home = tmp_path / "home"
+    (home / ".cache").mkdir(parents=True, exist_ok=True)
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def make_offline_bin(tmp_path: Path, hostname: str = "test-machine") -> Path:
+    """
+    Build a stub ``PATH`` directory that makes network egress impossible.
+
+    Audit S21. ``daily-sync.sh`` shells out to ``ssh``, ``sshfs``,
+    ``rsync``, and (via ``push-archives-to-r2.sh``) ``rclone``. Stubs that
+    fail fast keep the suite offline and make the cc-archives block take
+    its documented "rpi-server unreachable" skip. ``hostname`` is stubbed
+    too: the real one returns ``AMD-tower-ubuntu`` on this machine, which
+    is the designated R2 push owner, and a test must never be able to
+    become that owner by accident.
+    """
+    bin_dir = tmp_path / "offline-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("ssh", "sshfs", "rsync", "rclone", "scp", "fusermount"):
+        stub = bin_dir / name
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "refusing to run {name} in a test" >&2\n'
+            "exit 1\n"
+        )
+        stub.chmod(0o755)
+    host_stub = bin_dir / "hostname"
+    host_stub.write_text(
+        "#!/usr/bin/env bash\n" f"printf '%s\\n' '{hostname}'\n"
+    )
+    host_stub.chmod(0o755)
+    return bin_dir
+
+
 # ============================================================================
 # commit-data.sh — branch-detection guard (E-Critical)
 # ============================================================================
@@ -387,7 +435,7 @@ class TestDailySyncParentBranchGuard:
         return pa_dir
 
     def test_parent_on_feature_branch_switches_to_main(
-        self, fake_pa_with_remote: Path
+        self, fake_pa_with_remote: Path, tmp_path: Path
     ) -> None:
         """When the parent repo is on a feature branch, daily-sync must
         log the switch-to-main message and end on main, not silently
@@ -405,6 +453,10 @@ class TestDailySyncParentBranchGuard:
                 "GIT_CONFIG_SYSTEM": "/dev/null",
                 # Allow file:// submodule operations during the run.
                 "GIT_ALLOW_PROTOCOL": "file",
+                # Audit S21: HOME and PATH are pinned so the run cannot
+                # touch the real ~/.claude, ~/cc-archives, or the network.
+                "HOME": str(make_sandbox_home(tmp_path)),
+                "PATH": f"{make_offline_bin(tmp_path)}:{os.environ['PATH']}",
             }
         )
         result = subprocess.run(
