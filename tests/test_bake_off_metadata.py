@@ -21,6 +21,7 @@ import importlib.util
 import json
 import socket
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -1283,6 +1284,30 @@ class TestBatchSubmitIsNotRepeatable:
         state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
         assert state["manifest_sha256"] == bom.file_sha256(manifest)
         assert state["manifest_path"] == str(manifest)
+
+    def test_the_refusal_names_the_real_submission_time(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A placeholder "unknown" would survive a loose assertion.
+
+        The timestamp is how an operator decides whether the stored batch is
+        this morning's job or last month's, so the refusal must repeat the
+        value actually recorded, not a default.
+        """
+        manifest = _one_session_manifest(tmp_path, "stamp-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
+        submitted_at = state["submitted_at"]
+        # A real, parseable stamp -- not "unknown", not the empty string.
+        datetime.strptime(submitted_at, "%Y-%m-%dT%H:%M:%S%z")
+        capsys.readouterr()
+
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
+        message = capsys.readouterr().err
+        assert f"submitted: {submitted_at}" in message
+        assert "unknown" not in message
 
     def test_colliding_custom_ids_are_refused_before_the_billed_call(
         self, tmp_path, submit_stub, monkeypatch
