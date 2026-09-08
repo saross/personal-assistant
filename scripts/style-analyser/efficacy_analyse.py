@@ -43,7 +43,11 @@ import argparse
 import itertools
 import json
 import statistics
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import style_support  # noqa: E402  (after the sys.path insertion above)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
@@ -146,11 +150,14 @@ def paired_block(cells: dict, topics: list[str], baseline: str,
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Run the paired analysis; 0 on success, 2 when there is no scores.json."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--experiment-dir", type=Path,
                     default=DEFAULT_EXPERIMENT_DIR)
-    args = ap.parse_args()
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run the analysis and print it, but write no files")
+    args = ap.parse_args(argv)
 
     scores_path = args.experiment_dir / "scores.json"
     if not scores_path.exists():
@@ -206,8 +213,15 @@ def main() -> int:
                  for c in CONDITIONS} if topics else {}
 
     # Per-feature mean |z| per condition (closeness to corpus per feature).
+    #
+    # Finding ST27: this used to run over EVERY row, including topics dropped
+    # from the pairing for want of a complete set of conditions. The profile
+    # is read alongside the paired comparisons as "which features the guide
+    # moves", so a C2 mean computed over one set of topics and a C0 mean over
+    # another is not a comparison at all. Only complete topics contribute.
+    paired_rows = [r for r in rows if r["topic_id"] in set(topics)]
     feat_abs_z: dict[str, dict[str, list[float]]] = {}
-    for r in rows:
+    for r in paired_rows:
         for fd in r["feature_deltas"]:
             feat_abs_z.setdefault(fd["feature"], {}).setdefault(
                 r["condition"], []).append(abs(fd["z"]))
@@ -244,9 +258,13 @@ def main() -> int:
         "band_migration": band_counts,
         "gate_mean_pass": gate_mean,
         "feature_profile": feature_profile,
+        "n_rows_in_feature_profile": len(paired_rows),
+        # Which code and which scores file produced this analysis.
+        "provenance": style_support.provenance_block(
+            Path(__file__).name, [scores_path]),
     }
-    (args.experiment_dir / "analysis.json").write_text(
-        json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    style_support.atomic_write_json(args.experiment_dir / "analysis.json",
+                                    analysis, dry_run=args.dry_run)
 
     # ---- Human-readable report ----------------------------------------
     L: list[str] = []
@@ -329,11 +347,13 @@ def main() -> int:
                  f"{e.get('mean_abs_z_C1')} | {e.get('mean_abs_z_C2')} | "
                  f"{e.get('c2_improvement_vs_c0')} |")
     L.append("")
-    (args.experiment_dir / "analysis.md").write_text(
-        "\n".join(L) + "\n", encoding="utf-8")
+    wrote = style_support.atomic_write_text(
+        args.experiment_dir / "analysis.md", "\n".join(L) + "\n",
+        dry_run=args.dry_run)
 
-    print(f"Wrote analysis.md + analysis.json to "
-          f"{args.experiment_dir.relative_to(REPO_ROOT)}/")
+    print(f"Wrote analysis.md + analysis.json to {args.experiment_dir}/"
+          if wrote
+          else f"--dry-run: nothing written to {args.experiment_dir}/")
     # Console summary of the headline comparison.
     head = comparisons["C1_vs_C2"]
     print(f"\nHeadline (C1 generic → C2 guide): median Δ={head['median_diff']} "

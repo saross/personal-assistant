@@ -33,6 +33,7 @@ from pathlib import Path
 # Import the Phase 5 evaluator from the sibling script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase5_evaluator as p5  # noqa: E402
+import style_support  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
@@ -72,7 +73,8 @@ def load_corpus_space(phase1_path: Path, phase3_path: Path, spacy_model: str,
     return phase1, phase3, fs, X, loo, nlp, str(matrix_source)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Score every passage in the experiment; 0 ok, 2 nothing to score."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--experiment-dir", type=Path,
                     default=DEFAULT_EXPERIMENT_DIR)
@@ -86,7 +88,9 @@ def main() -> int:
     ap.add_argument("--spacy-model", default="en_core_web_sm")
     ap.add_argument("--out", type=Path, default=None,
                     help="output JSON (default: <experiment-dir>/scores.json)")
-    args = ap.parse_args()
+    ap.add_argument("--dry-run", action="store_true",
+                    help="score the passages and report, but write no file")
+    args = ap.parse_args(argv)
 
     passages_dir = args.experiment_dir / "passages"
     if not passages_dir.is_dir():
@@ -135,6 +139,13 @@ def main() -> int:
             "feature_deltas": d["feature_deltas"],
         })
 
+    if not results:
+        # Every downstream statistic divides by this list; an empty run is a
+        # diagnostic, not a scores.json full of zeroes.
+        print(f"No passage matched {FNAME_RE.pattern} in {passages_dir}. "
+              f"Skipped: {skipped}", file=sys.stderr)
+        return 2
+
     # LOO summary for downstream effect-size-in-SD-units calculations.
     import statistics
     loo_summary = {
@@ -154,12 +165,19 @@ def main() -> int:
         "reference_n_rows": int(X.shape[0]),
         "gate_reference": str(args.phase1),
         "loo_summary": loo_summary,
+        # Which code, inputs and model produced these scores.
+        "provenance": style_support.provenance_block(
+            Path(__file__).name,
+            [p for p in (args.phase1, args.phase3, args.reference_phase1)
+             if p is not None],
+            spacy_model=args.spacy_model,
+        ),
         "results": results,
     }
-    out_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    print(f"Scored {len(results)} passages -> {out_path.relative_to(REPO_ROOT)}")
+    wrote = style_support.atomic_write_json(out_path, payload,
+                                            dry_run=args.dry_run)
+    print(f"Scored {len(results)} passages -> {out_path}" if wrote
+          else f"--dry-run: scored {len(results)} passages, wrote nothing")
     if skipped:
         print(f"  Skipped {len(skipped)} non-conforming filenames: {skipped}",
               file=sys.stderr)
