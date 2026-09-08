@@ -268,6 +268,63 @@ class TestProjectIsContainedToTheArchive:
             )
         assert excinfo.value.code == 2
 
+    def test_a_symlinked_archive_root_still_accepts_its_own_projects(
+        self, inventory: Any, archive: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Round 4d-3 — BOTH sides of the containment test are resolved.
+
+        Reaching the archive through a symlink is ordinary (a moved drive,
+        a per-machine mount point). If only the project side is resolved
+        the two paths can never share a prefix, and every legitimate
+        project is refused — a containment check that refuses everything
+        is not a containment check.
+        """
+        alias = tmp_path / "archive-alias"
+        alias.symlink_to(archive)
+        out = tmp_path / "report.md"
+
+        status, report = _run(
+            inventory, monkeypatch,
+            "--project", "terrace-survey",
+            "--archive-root", str(alias),
+            "--generated", "2031-02-06",
+            "--out", str(out),
+        )
+
+        assert status == 0
+        assert "terrace-survey" in report
+
+    def test_a_symlink_out_of_the_archive_reads_nothing_outside(
+        self, inventory: Any, archive: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The refusal must land before any session is enumerated."""
+        outside = tmp_path / "outside-project"
+        (outside / "20310101-000000_private-session").mkdir(parents=True)
+        (
+            outside
+            / "20310101-000000_private-session"
+            / "session.meta.json"
+        ).write_text(
+            json.dumps({"session": {"id": "must-not-be-read"}}),
+            encoding="utf-8",
+        )
+        (archive / "looks-inside-too").symlink_to(outside)
+        out = tmp_path / "report.md"
+
+        with pytest.raises(SystemExit) as excinfo:
+            _run(
+                inventory, monkeypatch,
+                "--project", "looks-inside-too",
+                "--archive-root", str(archive),
+                "--generated", "2031-02-06",
+                "--out", str(out),
+            )
+
+        assert excinfo.value.code == 2
+        assert not out.exists(), "a report was written for a refused project"
+
     def test_a_normal_project_still_works(
         self, inventory: Any, archive: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
