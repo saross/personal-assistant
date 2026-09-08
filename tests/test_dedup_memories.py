@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -617,3 +618,107 @@ class TestPostgresBacklogGate:
         assert excinfo.value.code == 1
         assert store.read_bytes() == before
         assert not dedup.removal_journal_path().exists()
+
+
+# ---------------------------------------------------------------------------
+# A6's ordering guarantee, pinned (audit 2026-09-08, round 4a-2, finding M3)
+#
+# "Durable before the rename" is the whole point of the journal: a record must
+# never leave the canonical without a recoverable copy already fsynced to
+# disk. Nothing previously failed if the journal write moved below
+# write_output, if its fsync were deleted, or if it were written somewhere
+# other than the store's own directory.
+# ---------------------------------------------------------------------------
+
+
+class TestJournalIsDurableBeforeTheRename:
+    """The journal must be fsynced BEFORE the corpus rename, beside the store."""
+
+    @staticmethod
+    def _instrument(monkeypatch: pytest.MonkeyPatch) -> list:
+        """Record every fsync (by the inode it hit) and every rename, in order.
+
+        Attributing an fsync to a file by ``os.fstat`` rather than by call
+        count is what makes this test survive an extra fsync being added
+        elsewhere: it names the file, not the ordinal.
+        """
+        events: list = []
+        real_fsync = os.fsync
+        real_rename = os.rename
+
+        def recording_fsync(fd: int) -> None:
+            stat = os.fstat(fd)
+            events.append(("fsync", (stat.st_dev, stat.st_ino)))
+            return real_fsync(fd)
+
+        def recording_rename(src, dst, **kwargs):
+            events.append(("rename", str(src), str(dst)))
+            return real_rename(src, dst, **kwargs)
+
+        monkeypatch.setattr(os, "fsync", recording_fsync)
+        monkeypatch.setattr(os, "rename", recording_rename)
+        return events
+
+    def test_journal_is_fsynced_before_the_corpus_rename(
+        self, store: Path, guard: Recorder, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills two mutations at once.
+
+        Moving ``write_removal_journal`` below ``write_output`` puts the
+        journal's fsync after the rename; deleting the journal's ``os.fsync``
+        removes the event entirely. Either way a crash between the two loses
+        the only copy of an evicted record.
+        """
+        write_corpus(store, [
+            record(id="2031-04-02-aaaabbbbcccc", summary="Short."),
+            record(id="2031-04-02-aaaabbbbcccc", summary="A longer summary."),
+        ])
+        events = self._instrument(monkeypatch)
+
+        run_main(monkeypatch)
+
+        journal = dedup.removal_journal_path()
+        assert journal.exists(), "no journal was written"
+        stat = journal.stat()
+        journal_key = ("fsync", (stat.st_dev, stat.st_ino))
+        assert journal_key in events, (
+            "the removed records were never fsynced to the journal")
+
+        rename_index = next(
+            i for i, event in enumerate(events)
+            if event[0] == "rename" and event[2] == str(store)
+        )
+        assert events.index(journal_key) < rename_index, (
+            "the journal was made durable only AFTER the corpus rename, so a "
+            "crash in between loses the evicted records"
+        )
+
+    def test_journal_lives_beside_the_store(
+        self, store: Path, guard: Recorder, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The journal is written into the store's own directory.
+
+        Kills the mutation that points ``removal_journal_path`` at LOG_DIR or
+        anywhere else: the evidence would then sit outside the directory the
+        data submodule commits, so a machine restoring the store from git
+        would not get the recovery trail with it.
+        """
+        write_corpus(store, [
+            record(id="2031-04-02-aaaabbbbcccc", summary="Short."),
+            record(id="2031-04-02-aaaabbbbcccc", summary="A longer summary."),
+        ])
+
+        run_main(monkeypatch)
+
+        journal = dedup.removal_journal_path()
+        assert journal.parent == store.parent, (
+            f"the journal left the store's directory: {journal}")
+        assert journal.name.startswith("dedup-removed-")
+        assert journal.suffix == ".jsonl"
+        assert journal.exists()
+
+    def test_journal_names_the_run_date(self, store: Path) -> None:
+        """The filename carries the UTC date, so two runs cannot collide."""
+        stamped = dedup.removal_journal_path(
+            datetime(2031, 4, 2, 23, 30, tzinfo=timezone.utc))
+        assert stamped.name == "dedup-removed-2031-04-02.jsonl"
