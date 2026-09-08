@@ -2534,6 +2534,16 @@ partnerships** (project / lane / workstream); I proposed header-based
 routing (`Project:`, `Lane:`, `Workstream:`; one mailbox per agent; only the
 acting session receipts) — awaiting his go before building.
 
+**Mail routing v3 built (Shawn's go, 8 Sep; `1ab32cc`):** `Project:`/`Lane:`/
+`Workstream:` headers; hook and watcher filter by the cwd's repository,
+summarise other projects as a count, print lane for the session to apply
+(hold, not act); only the acting session receipts; untagged = any. Shared
+guidance line in **PR #113** (Astra reviews). Watch re-armed on the new
+watcher. **Archiving assessed:** nothing is deleted today (45 messages, 45
+receipts, 1.2 MB, one disk, no git, no backup); recommended an append-only
+copy plus JSONL index into `data/agent-mail/` via the sync hooks, private
+now, curated public export later — awaiting Shawn's word.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
