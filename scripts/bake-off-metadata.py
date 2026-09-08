@@ -61,6 +61,7 @@ import os
 import random
 import re
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -459,6 +460,124 @@ def parse_response_json(raw_text: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Response persistence (shared)
+#
+# Every response file used to be a bare ``write_text``. Three consequences,
+# all observed in the shapes below: a crash part-way through left a truncated
+# JSON file that ``--build-rubric`` would read as an answer; a re-run after a
+# provider outage replaced a COMPLETE response with ``{"error": ...}``; and
+# ``_usage.json`` was rewritten wholesale, so the billed totals from an
+# earlier partial run were lost. Each response costs money to produce, so the
+# default here is to keep what already exists.
+# ---------------------------------------------------------------------------
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` beside ``path`` and ``os.replace`` it into position.
+
+    On POSIX the rename is atomic, so a reader sees either the whole old file
+    or the whole new one — never a half-written response.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def write_json_atomic(path: Path, payload: Any) -> None:
+    """Persist ``payload`` as indented JSON, atomically."""
+    _atomic_write(path, json.dumps(payload, indent=2) + "\n")
+
+
+def response_is_complete(path: Path) -> bool:
+    """True when ``path`` holds a parsed response object carrying no error."""
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and "error" not in payload
+
+
+def record_failure(
+    out_dir: Path, session_id: str, error: dict[str, Any], *, tag: str
+) -> None:
+    """Persist an error record unless a complete response already exists.
+
+    Deliberately unconditional, even under ``--force``: a re-run that fails
+    must not destroy the answer an earlier run paid for. The refusal is
+    printed, so a silently kept response cannot be mistaken for a fresh one.
+    """
+    path = out_dir / f"{session_id}.json"
+    if response_is_complete(path):
+        print(
+            f"[{tag}]   a complete response for {session_id} is already on "
+            "disk; keeping it rather than replacing it with this error"
+        )
+        return
+    write_json_atomic(path, error)
+
+
+def pending_requests(
+    requests: list[SessionRequest], out_dir: Path, *, force: bool, tag: str
+) -> list[SessionRequest]:
+    """Drop requests whose complete response is already persisted.
+
+    Args:
+        requests: everything the manifest asked for.
+        out_dir: the provider subdirectory holding ``<session_id>.json``.
+        force: re-run even the sessions that already have a good response.
+        tag: the log prefix for this arm.
+    """
+    if force:
+        return list(requests)
+    pending = [
+        request
+        for request in requests
+        if not response_is_complete(out_dir / f"{request.session_id}.json")
+    ]
+    skipped = len(requests) - len(pending)
+    if skipped:
+        print(
+            f"[{tag}] skipping {skipped} session(s) that already have a "
+            "complete response (--force re-runs them)"
+        )
+    return pending
+
+
+def merge_usage_log(
+    out_dir: Path, entries: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge usage rows into ``_usage.json``, keyed by session id.
+
+    A resumed run only carries rows for the sessions it actually called, so
+    replacing the file would discard the billed figures for everything the
+    earlier run completed.
+    """
+    path = out_dir / "_usage.json"
+    merged: dict[str, dict[str, Any]] = {}
+    try:
+        existing = json.loads(path.read_text())
+    except (OSError, ValueError):
+        existing = []
+    if isinstance(existing, list):
+        for row in existing:
+            if isinstance(row, dict) and row.get("session_id"):
+                merged[row["session_id"]] = row
+    for row in entries:
+        merged[row["session_id"]] = row
+    ordered = [merged[session_id] for session_id in sorted(merged)]
+    write_json_atomic(path, ordered)
+    return ordered
+
+
+# ---------------------------------------------------------------------------
 # Haiku adapter (Anthropic Message Batches API)
 # ---------------------------------------------------------------------------
 
@@ -515,7 +634,7 @@ def haiku_submit(
         },
     }
     state_path = out_dir / "batch-state.json"
-    state_path.write_text(json.dumps(state, indent=2) + "\n")
+    write_json_atomic(state_path, state)
     print(f"[haiku] submitted batch {batch_job.id}")
     print(f"[haiku] state persisted to {state_path}")
     # ``out_dir`` here is the provider subdir (e.g. ``<root>/haiku``);
@@ -533,8 +652,16 @@ def haiku_submit(
 def haiku_apply(
     batch_id: str,
     out_dir: Path,
+    *,
+    force: bool = False,
 ) -> None:
-    """Retrieve a completed Haiku batch and write per-session response files."""
+    """Retrieve a completed Haiku batch and write per-session response files.
+
+    Args:
+        batch_id: the batch to fetch.
+        out_dir: the provider subdirectory holding ``batch-state.json``.
+        force: overwrite responses that are already complete on disk.
+    """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
     client = Anthropic()
@@ -557,9 +684,12 @@ def haiku_apply(
         if not session_id:
             print(f"[haiku] unknown custom_id {result.custom_id} — skipping")
             continue
+        if not force and response_is_complete(out_dir / f"{session_id}.json"):
+            print(f"[haiku] {session_id} already complete — skipping")
+            continue
         if result.result.type != "succeeded":
-            (out_dir / f"{session_id}.json").write_text(
-                json.dumps({"error": result.result.type}, indent=2) + "\n"
+            record_failure(
+                out_dir, session_id, {"error": result.result.type}, tag="haiku"
             )
             n_fail += 1
             continue
@@ -568,12 +698,11 @@ def haiku_apply(
         # IndexError below. Persist a structured failure record and
         # continue rather than crashing the whole retrieval loop.
         if not result.result.message.content:
-            (out_dir / f"{session_id}.json").write_text(
-                json.dumps(
-                    {"error": "succeeded result had empty content list"},
-                    indent=2,
-                )
-                + "\n"
+            record_failure(
+                out_dir,
+                session_id,
+                {"error": "succeeded result had empty content list"},
+                tag="haiku",
             )
             print(
                 f"[haiku] succeeded result for {session_id} carried no "
@@ -582,17 +711,20 @@ def haiku_apply(
             n_fail += 1
             continue
         raw_text = result.result.message.content[0].text
-        (out_dir / f"{session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag="haiku",
+            )
             n_fail += 1
         else:
+            write_json_atomic(out_dir / f"{session_id}.json", parsed)
             n_ok += 1
-        (out_dir / f"{session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
     print(f"[haiku] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
 
 
@@ -686,10 +818,20 @@ def gemini_run(
     requests: list[SessionRequest],
     out_dir: Path,
     system_prompt: str,
+    *,
+    force: bool = False,
 ) -> None:
-    """Run all requests sequentially against Gemini Flex; persist responses."""
+    """Run all requests sequentially against Gemini Flex; persist responses.
+
+    Sessions whose complete response is already on disk are skipped unless
+    ``force`` is set — each one costs money to regenerate.
+    """
     from google import genai  # type: ignore[import-not-found]
 
+    requests = pending_requests(requests, out_dir, force=force, tag="gemini")
+    if not requests:
+        print("[gemini] nothing to do — every session already has a response")
+        return
     client = genai.Client()
     n_ok = 0
     n_fail = 0
@@ -703,22 +845,24 @@ def gemini_run(
                 client, r.user_message, system_prompt
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            (out_dir / f"{r.session_id}.json").write_text(
-                json.dumps({"error": str(exc)}, indent=2) + "\n"
-            )
+            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag="gemini")
             n_fail += 1
             print(f"[gemini]   failed: {exc}")
             continue
-        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
-            n_ok += 1
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                r.session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag="gemini",
+            )
             n_fail += 1
-        (out_dir / f"{r.session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
+        else:
+            write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
+            n_ok += 1
     print(f"[gemini] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
 
 
@@ -838,6 +982,7 @@ def luna_run(
     *,
     model: str = LUNA_MODEL,
     tag: str = "luna",
+    force: bool = False,
 ) -> None:
     """Run all requests sequentially against Luna; persist responses + usage.
 
@@ -848,6 +993,10 @@ def luna_run(
     plan doc; Tier-1 batch queue limits are 5M tokens, so a large run needs
     splitting into waves.
     """
+    requests = pending_requests(requests, out_dir, force=force, tag=tag)
+    if not requests:
+        print(f"[{tag}] nothing to do — every session already has a response")
+        return
     n_ok = 0
     n_fail = 0
     usage_log: list[dict[str, Any]] = []
@@ -861,25 +1010,28 @@ def luna_run(
                 r.user_message, system_prompt, model=model
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            (out_dir / f"{r.session_id}.json").write_text(
-                json.dumps({"error": str(exc)}, indent=2) + "\n"
-            )
+            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
             n_fail += 1
             print(f"[{tag}]   failed: {exc}")
             continue
-        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         usage_log.append({"session_id": r.session_id, **usage})
         try:
             parsed = parse_response_json(raw_text)
-            n_ok += 1
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                r.session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag=tag,
+            )
             n_fail += 1
-        (out_dir / f"{r.session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
-    # Real billed usage beats any estimate — record it for the cost comparison.
-    (out_dir / "_usage.json").write_text(json.dumps(usage_log, indent=2) + "\n")
+        else:
+            write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
+            n_ok += 1
+    # Real billed usage beats any estimate — record it for the cost
+    # comparison, merged so a resumed run keeps the earlier rows.
+    merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
     billed_in = sum(u.get("input_tokens", 0) for u in usage_log)
     billed_out = sum(u.get("output_tokens", 0) for u in usage_log)
@@ -906,6 +1058,7 @@ def haiku_rt_run(
     model: str = HAIKU_MODEL,
     tag: str = "haiku-rt",
     disable_thinking: bool = False,
+    force: bool = False,
 ) -> None:
     """Run all requests sequentially against Haiku 4.5 via the Messages API.
 
@@ -923,6 +1076,10 @@ def haiku_rt_run(
     """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
+    requests = pending_requests(requests, out_dir, force=force, tag=tag)
+    if not requests:
+        print(f"[{tag}] nothing to do — every session already has a response")
+        return
     client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     n_ok = n_fail = 0
     usage_log: list[dict[str, Any]] = []
@@ -957,23 +1114,25 @@ def haiku_rt_run(
                 "output_tokens": resp.usage.output_tokens,
             })
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            (out_dir / f"{r.session_id}.json").write_text(
-                json.dumps({"error": str(exc)}, indent=2) + "\n"
-            )
+            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
             n_fail += 1
             print(f"[{tag}]   failed: {exc}")
             continue
-        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
-            n_ok += 1
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                r.session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag=tag,
+            )
             n_fail += 1
-        (out_dir / f"{r.session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
-    (out_dir / "_usage.json").write_text(json.dumps(usage_log, indent=2) + "\n")
+        else:
+            write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
+            n_ok += 1
+    merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
     print(
         f"[{tag}] billed: {sum(u['input_tokens'] for u in usage_log):,} input, "
@@ -1025,9 +1184,7 @@ def dry_run_report(
     # Write a dry-run-cost.json so the launch plan can include the figure
     # without re-running.
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "dry-run-cost.json").write_text(
-        json.dumps(cost, indent=2) + "\n"
-    )
+    write_json_atomic(out_dir / "dry-run-cost.json", cost)
     print(f"\nCost detail written to {out_dir / 'dry-run-cost.json'}")
 
 
@@ -1274,7 +1431,7 @@ def build_rubric(
             "the session-marker span vanished between validation and "
             "substitution; nothing was written"
         )
-    rubric_out.write_text(populated)
+    _atomic_write(rubric_out, populated)
     print(f"Wrote populated rubric to {rubric_out}")
 
     # The blinding key goes in a SIDECAR, never in the rubric — a scorer who
@@ -1282,7 +1439,7 @@ def build_rubric(
     # trivially findable after scoring, and deliberately named so it is
     # obvious what not to open first.
     key_path = rubric_out.with_name(rubric_out.stem + ".blind-key.json")
-    key_path.write_text(json.dumps({
+    write_json_atomic(key_path, {
         "note": (
             "Model-letter -> provider mapping for the blinded rubric. Each "
             "session gets its own permutation of the arms, drawn from an RNG "
@@ -1293,7 +1450,7 @@ def build_rubric(
         "salt": BLIND_SALT,
         "redacted_errors": blind_key.pop("_redacted_errors", {}),
         "mapping": blind_key,
-    }, indent=1) + "\n")
+    })
     print(f"Wrote blinding key to {key_path} (do not open before scoring)")
 
 
@@ -1431,6 +1588,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Re-run sessions that already have a complete response on disk. "
+            "Without it a re-run resumes: completed sessions are skipped, "
+            "because each one cost money to produce."
+        ),
+    )
+    parser.add_argument(
         "--haiku-apply",
         metavar="BATCH_ID",
         help=(
@@ -1499,7 +1665,7 @@ def main(argv: list[str] | None = None) -> int:
         load_env()
         # submit persists batch-state.json under the provider subdir
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
-        haiku_apply(args.haiku_apply, target_dir)
+        haiku_apply(args.haiku_apply, target_dir, force=args.force)
         return 0
 
     requests = assemble_requests(args.manifest, args.prompt)
@@ -1526,22 +1692,25 @@ def main(argv: list[str] | None = None) -> int:
     load_env()
 
     if args.provider == "haiku":
+        # Batch submission has no per-session resume: the whole batch is one
+        # job, so --force does not apply until --haiku-apply retrieves it.
         haiku_submit(requests, provider_dir, system_prompt)
     elif args.provider == "gemini":
-        gemini_run(requests, provider_dir, system_prompt)
+        gemini_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "luna":
-        luna_run(requests, provider_dir, system_prompt)
+        luna_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "terra":
         luna_run(
             requests, provider_dir, system_prompt,
-            model=TERRA_MODEL, tag="terra",
+            model=TERRA_MODEL, tag="terra", force=args.force,
         )
     elif args.provider == "haiku-rt":
-        haiku_rt_run(requests, provider_dir, system_prompt)
+        haiku_rt_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "sonnet-5":
         haiku_rt_run(
             requests, provider_dir, system_prompt,
             model=SONNET_MODEL, tag="sonnet-5", disable_thinking=True,
+            force=args.force,
         )
     return 0
 

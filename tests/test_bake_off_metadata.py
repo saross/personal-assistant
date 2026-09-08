@@ -415,7 +415,7 @@ class TestUngatedRetrieval:
         )
         retrieved: list[str] = []
 
-        def fake_apply(batch_id, out_dir):
+        def fake_apply(batch_id, out_dir, *, force=False):
             retrieved.append(batch_id)
 
         monkeypatch.setattr(bom, "haiku_apply", fake_apply)
@@ -581,3 +581,108 @@ class TestPricingConstants:
         cost = bom.estimate_cost_usd(requests, provider="sonnet-5")
         assert cost["input_rate_per_mtok"] == 3.00
         assert cost["output_rate_per_mtok"] == 15.00
+
+
+class TestResponsePersistence:
+    """Each response cost money: never lose one, never half-write one."""
+
+    def test_complete_response_survives_a_later_failure(self, tmp_path):
+        """The finding: a re-run overwrote a good response with an error."""
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        session_id = "cccc3333-4444-5555"
+        target = out_dir / f"{session_id}.json"
+        target.write_text(fx.RESPONSE_BARE + "\n", encoding="utf-8")
+        bom.record_failure(
+            out_dir, session_id, {"error": "503 Service Unavailable"}, tag="gemini"
+        )
+        assert json.loads(target.read_text())["title"] == fx.RESPONSE_OBJECT["title"]
+
+    def test_error_is_recorded_when_no_response_exists(self, tmp_path):
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        bom.record_failure(out_dir, "dddd", {"error": "boom"}, tag="gemini")
+        assert json.loads((out_dir / "dddd.json").read_text()) == {"error": "boom"}
+
+    def test_an_error_record_is_replaceable(self, tmp_path):
+        """An earlier failure is not a result; a retry may overwrite it."""
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        (out_dir / "eeee.json").write_text('{"error": "first"}\n', encoding="utf-8")
+        bom.record_failure(out_dir, "eeee", {"error": "second"}, tag="gemini")
+        assert json.loads((out_dir / "eeee.json").read_text()) == {"error": "second"}
+
+    def test_atomic_write_leaves_the_old_file_on_a_crash(self, tmp_path):
+        """Crash injection: serialisation fails part-way through the write."""
+        target = tmp_path / "response.json"
+        target.write_text('{"keep": true}\n', encoding="utf-8")
+
+        class Unserialisable:
+            """json.dumps refuses this."""
+
+        with pytest.raises(TypeError):
+            bom.write_json_atomic(target, {"boom": Unserialisable()})
+        assert json.loads(target.read_text()) == {"keep": True}
+        assert list(tmp_path.iterdir()) == [target]
+
+    def test_rerun_skips_completed_sessions(self, tmp_path):
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        manifest = _one_session_manifest(tmp_path, "ffff4444-5555-6666")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        (out_dir / "ffff4444-5555-6666.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        assert bom.pending_requests(
+            requests, out_dir, force=False, tag="gemini"
+        ) == []
+        assert len(bom.pending_requests(
+            requests, out_dir, force=True, tag="gemini"
+        )) == 1
+
+    def test_rerun_does_not_skip_an_error_record(self, tmp_path):
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        manifest = _one_session_manifest(tmp_path, "9999aaaa-bbbb-cccc")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        (out_dir / "9999aaaa-bbbb-cccc.json").write_text(
+            json.dumps(fx.RESPONSE_ERROR), encoding="utf-8"
+        )
+        assert len(bom.pending_requests(
+            requests, out_dir, force=False, tag="gemini"
+        )) == 1
+
+    def test_live_rerun_makes_no_call_for_a_completed_session(
+        self, tmp_path, monkeypatch, gemini_boundary
+    ):
+        """End to end: a resumed run must not pay for the same session twice."""
+        manifest = _one_session_manifest(tmp_path, "aaaa1111-2222-3333")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        (out_dir / "gemini").mkdir(parents=True)
+        (out_dir / "gemini" / "aaaa1111-2222-3333.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        assert bom.main(_live_argv(manifest, prompt, out_dir, "--yes")) == 0
+        assert not any(call["event"] == "generate" for call in gemini_boundary)
+
+    def test_usage_log_is_merged_not_replaced(self, tmp_path):
+        """A resumed run must not discard the earlier run's billed figures."""
+        out_dir = tmp_path / "luna"
+        out_dir.mkdir(parents=True)
+        bom.merge_usage_log(
+            out_dir, [{"session_id": "one", "input_tokens": 10}]
+        )
+        bom.merge_usage_log(
+            out_dir, [{"session_id": "two", "input_tokens": 20}]
+        )
+        rows = json.loads((out_dir / "_usage.json").read_text())
+        assert {row["session_id"] for row in rows} == {"one", "two"}
+
+    def test_usage_log_updates_a_repeated_session(self, tmp_path):
+        out_dir = tmp_path / "luna"
+        out_dir.mkdir(parents=True)
+        bom.merge_usage_log(out_dir, [{"session_id": "one", "input_tokens": 10}])
+        bom.merge_usage_log(out_dir, [{"session_id": "one", "input_tokens": 99}])
+        rows = json.loads((out_dir / "_usage.json").read_text())
+        assert rows == [{"session_id": "one", "input_tokens": 99}]
