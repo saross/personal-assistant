@@ -232,7 +232,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | fixed in PR #114 (merged 8c61bb8) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | guard half fixed on PR #118 (lazy handler); `rebuild.log` fixed on PR #117; `scripts/surfacing_log.py:75-76` has the same `__file__`-derived shape and wrote `logs/surfaced.log` when the retrieval hook was exercised (CONFIRMED by the PR #118 re-audit) — **next** (round 3b) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -594,8 +594,13 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     Seventh round running: the ack is a state-only operation under a
     per-gate flock; atomic writes; every non-zero exit raises a problem.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
-  on PR #118 (`claude/audit-round3`, suite 1,575; re-audit running). H27's
-  fixture on `main` is done (8e2425f). S23 and S26 sit with PR #116; P17
-  with PR #117.
+  on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
+  mergeable after two wording fixes in the digest (the new "nothing verified
+  is available" heading was false when the fallback fires on thin coverage;
+  "never checked" was false for pending records) and two counter edges (a
+  uuid-less trailing command double-counts; the count never decays). Closing
+  round running. H27's fixture on `main` is done (8e2425f). S23 and S26 sit
+  with PR #116; P17 with PR #117; `surfacing_log.py` (S22's third member)
+  is round 3b.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
