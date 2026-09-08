@@ -1229,6 +1229,12 @@ def sync(
                 f"{MEMORIES_FILE} is missing. Nothing can be synced until "
                 f"it is back — check the data submodule."
             ),
+            # Stated rather than left to the default: this return is
+            # BEFORE the advisory lock, so the run never tried to reach
+            # PostgreSQL and has learnt nothing about it. Spelling it out
+            # keeps the rule exceptionless — every construction says what
+            # it knows (ninth re-audit, finding M6).
+            connected=None,
         )
 
     check_canonical_for_duplicates(logger)

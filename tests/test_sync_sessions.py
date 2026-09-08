@@ -2133,6 +2133,26 @@ class TestPopulatedRootIsPinnedToMetadata:
 # ============================================================================
 
 
+def _cycle_results_without_connectivity(source: str) -> list[int]:
+    """Line numbers of every ``CycleResult(...)`` built without ``connected``.
+
+    Looks at the CONSTRUCTOR rather than at ``return`` statements: a
+    result built into a variable, produced by a helper, or made inside a
+    comprehension is the same object with the same obligation, and a
+    check that only reads returns walks past all three (ninth re-audit,
+    finding M6).
+    """
+    import ast as _ast
+
+    return [
+        node.lineno
+        for node in _ast.walk(_ast.parse(source))
+        if isinstance(node, _ast.Call)
+        and getattr(node.func, "id", "") == "CycleResult"
+        and "connected" not in {keyword.arg for keyword in node.keywords}
+    ]
+
+
 class TestConnectivitySurvivesAnUnmountedRoot:
     """
     The advisory lock is taken before the archive root is inspected, so a
@@ -2224,37 +2244,74 @@ class TestConnectivitySurvivesAnUnmountedRoot:
         assert "unreachable" not in gate.lower()
         assert "session.meta.json" in gate
 
-    def test_every_cycle_return_carries_what_it_learnt(self):
+    def test_every_cycle_result_says_what_it_learnt(self):
         """
-        Structural guard over both syncs: any ``return CycleResult(...)``
-        reached after the advisory lock has been taken must pass
-        ``connected``. Written after two returns were found to have
-        dropped it (eighth re-audit, M1); a grep-by-hand does not scale
-        to the next return someone adds.
-        """
-        import ast
+        Structural guard over both syncs: EVERY construction of a
+        CycleResult must state what the run learnt about PostgreSQL.
 
+        The first version of this looked for a literal ``return
+        CycleResult(`` and so saw only one shape. Two ordinary
+        refactorings walk straight past it — building the result into a
+        variable and returning that, or returning one a helper built —
+        and both are exactly how the omission it was written for got in.
+        Checking the CONSTRUCTOR covers every shape there is (ninth
+        re-audit, finding M6).
+
+        Even the return before the advisory lock states
+        ``connected=None``: the run never tried, and saying so keeps the
+        rule exceptionless.
+        """
         scripts = Path(__file__).resolve().parent.parent / "scripts"
         for name in ("sync-to-postgres.py", "sync-sessions-to-postgres.py"):
             source = (scripts / name).read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            locked = [
-                node for node in ast.walk(tree)
-                if isinstance(node, ast.FunctionDef)
-                and node.name == "_sync_locked"
-            ]
-            assert locked, f"{name} has no _sync_locked to check"
-            for node in ast.walk(locked[0]):
-                if not isinstance(node, ast.Return):
-                    continue
-                call = node.value
-                if not (
-                    isinstance(call, ast.Call)
-                    and getattr(call.func, "id", "") == "CycleResult"
-                ):
-                    continue
-                names = {kw.arg for kw in call.keywords}
-                assert "connected" in names, (
-                    f"{name}:{node.lineno} returns a cycle result without "
-                    f"saying whether PostgreSQL answered"
-                )
+            offenders = _cycle_results_without_connectivity(source)
+            assert not offenders, (
+                f"{name} builds a cycle result without saying whether "
+                f"PostgreSQL answered, at line(s) {offenders}"
+            )
+
+    @pytest.mark.parametrize("shape,fixture", [
+        (
+            "returned directly",
+            "def cycle():\n"
+            "    return CycleResult(CYCLE_IDLE)\n",
+        ),
+        (
+            "built into a variable, then returned",
+            "def cycle():\n"
+            "    result = CycleResult(CYCLE_IDLE, processed=0)\n"
+            "    return result\n",
+        ),
+        (
+            "built by a helper the cycle returns",
+            "def _degraded(reason):\n"
+            "    return CycleResult(CYCLE_DEGRADED, degraded_detail=reason)\n"
+            "\n"
+            "def cycle():\n"
+            "    return _degraded('the root is gone')\n",
+        ),
+        (
+            "built inside a comprehension",
+            "def cycle():\n"
+            "    return [CycleResult(CYCLE_IDLE) for _ in range(1)][0]\n",
+        ),
+    ])
+    def test_the_guard_sees_every_shape(self, shape, fixture):
+        """
+        The guard itself is the thing under test here: each of these is a
+        way to build a cycle result that the old return-only check would
+        have waved through. The mutation this kills: narrowing the guard
+        back to ``ast.Return``.
+        """
+        assert _cycle_results_without_connectivity(fixture), (
+            f"a cycle result {shape} was not seen"
+        )
+
+    def test_the_guard_accepts_a_stated_connectivity(self):
+        """The guard must not amount to failing on everything."""
+        source = (
+            "def cycle():\n"
+            "    result = CycleResult(CYCLE_IDLE, connected=None)\n"
+            "    return result\n"
+        )
+        assert _cycle_results_without_connectivity(source) == []
