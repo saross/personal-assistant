@@ -46,18 +46,37 @@ if [[ "$DATA_BRANCH" != "main" ]]; then
     exit 1
 fi
 
-git add -A
-echo "=== Data changes ==="
-git status --short
+# Audit 2026-09-08 S16: stage and commit an EXPLICIT pathspec. The previous
+# `git add -A` followed by a bare `git commit` swept whatever a CONCURRENT
+# session had already staged in the shared index into this commit — the hub
+# rule in CLAUDE.md exists for exactly that failure. Collect the paths this
+# run means to publish (working-tree changes plus untracked files) and pass
+# them to both `git add` and `git commit`; a path another session has staged
+# but not modified in the working tree keeps its staged state and is left for
+# that session to commit.
+mapfile -d '' -t DATA_PATHS < <(
+    git diff --name-only -z
+    git ls-files --others --exclude-standard -z
+)
 
-if git diff --cached --quiet; then
+if [[ ${#DATA_PATHS[@]} -eq 0 ]]; then
+    echo "No data changes to commit."
+    exit 0
+fi
+
+git add -- "${DATA_PATHS[@]}"
+echo "=== Data changes ==="
+git status --short -- "${DATA_PATHS[@]}"
+
+if git diff --cached --quiet -- "${DATA_PATHS[@]}"; then
     echo "No data changes to commit."
     exit 0
 fi
 
 git commit -m "$MSG
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>" \
+    -- "${DATA_PATHS[@]}"
 # Use HEAD:main rather than a bare `main` ref so the push fails loudly
 # if the local branch ever diverges from the expected name (defence in
 # depth — the explicit branch check above should already have caught it).
@@ -75,12 +94,14 @@ if [[ "$PARENT_BRANCH" != "main" ]]; then
     exit 0
 fi
 
-git add data
+# S16: the parent-repo bump is a single-path commit — name the path on the
+# commit too, so a concurrent session's staged prose cannot ride along.
+git add -- data
 git commit -m "chore: update data submodule reference
 
 $MSG
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>" -- data
 
 echo ""
 echo "Done. Data committed and submodule reference updated."

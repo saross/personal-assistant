@@ -678,3 +678,136 @@ class TestR2PushVersionProbe:
         assert result.returncode == 1
 
 
+# ----------------------------------------------------------------------------
+# S16 / S20 — commit-data.sh: explicit pathspec, lock, and branch guards
+# ----------------------------------------------------------------------------
+
+
+class TestCommitDataSafetyContracts:
+    """``commit-data.sh`` shares one working tree with concurrent sessions, so
+    three contracts have to hold: it commits only the paths it means to; it
+    refuses to run while the daily-sync lock is held; and it refuses to publish
+    from anywhere but ``main``.
+    """
+
+    @pytest.fixture()
+    def pa_with_data_remote(self, tmp_path: Path) -> Path:
+        """A fake tree whose data submodule has a bare local remote, so the
+        script's push succeeds without a network."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "commit-data.sh").symlink_to(COMMIT_DATA_SCRIPT)
+
+        data_remote = tmp_path / "data.git"
+        data_remote.mkdir()
+        _git("init", "--bare", "--quiet", "--initial-branch=main", cwd=data_remote)
+
+        data_dir = pa_dir / "data"
+        data_dir.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=data_dir)
+        (data_dir / "seed.txt").write_text("seed\n")
+        _git("add", "seed.txt", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "seed", cwd=data_dir)
+        _git("remote", "add", "origin", str(data_remote), cwd=data_dir)
+        _git("push", "--quiet", "origin", "main", cwd=data_dir)
+
+        _git("init", "--quiet", "--initial-branch=main", cwd=pa_dir)
+        (pa_dir / "README.md").write_text("parent\n")
+        _git("add", "README.md", cwd=pa_dir)
+        _git("commit", "--quiet", "-m", "seed parent", cwd=pa_dir)
+        return pa_dir
+
+    @staticmethod
+    def _commit_count(repo: Path) -> int:
+        return int(_git("rev-list", "--count", "HEAD", cwd=repo).stdout.strip())
+
+    def test_leaves_another_sessions_staged_file_alone(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """S16: a bare ``git commit`` after ``git add -A`` published whatever
+        a concurrent session had already staged in the shared index."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        # Another session, part-way through an edit and already staged.
+        (data_dir / "continuity.md").write_text("half-written prose\n")
+        _git("add", "continuity.md", cwd=data_dir)
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stderr
+        committed = _git("show", "--name-only", "--pretty=format:", "HEAD",
+                         cwd=data_dir).stdout.split()
+        assert "memories.jsonl" in committed
+        assert "continuity.md" not in committed, (
+            "commit-data.sh swept a concurrent session's staged prose"
+        )
+        staged = _git("diff", "--cached", "--name-only", cwd=data_dir).stdout.split()
+        assert staged == ["continuity.md"], (
+            "the other session's staged work was lost, not preserved"
+        )
+
+    def test_refuses_while_the_daily_sync_lock_is_held(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """S20: the flock is what stops commit-data interleaving with an
+        in-flight daily-sync rebase (audit 2026-05-02 E-Critical lock-gap)."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        before = self._commit_count(data_dir)
+
+        (pa_dir / "logs").mkdir(exist_ok=True)
+        lock_path = pa_dir / "logs" / "daily-sync.lock"
+        with open(lock_path, "w") as lock_fh:      # stand-in for daily-sync
+            fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = _run_script(pa_dir / "scripts" / "commit-data.sh",
+                                 "test-msg", home=pa_dir)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "lock held" in result.stderr
+        assert self._commit_count(data_dir) == before, (
+            "commit-data.sh committed while the daily-sync lock was held"
+        )
+
+    def test_refuses_on_a_detached_head_in_the_data_submodule(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """S20: ``git submodule update`` leaves the submodule detached; a
+        commit made there is orphaned by the next checkout."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        _git("checkout", "--quiet", "--detach", "HEAD", cwd=data_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        before = self._commit_count(data_dir)
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode != 0
+        assert "not 'main'" in result.stderr
+        assert self._commit_count(data_dir) == before
+
+    def test_parent_pointer_bump_is_not_committed_off_main(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """S20: with the parent guard gone, the pointer bump lands on a branch
+        that is never published — the orphaned-bump shape the guard exists to
+        prevent."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("checkout", "--quiet", "-b", "feature/x", cwd=pa_dir)
+        before = self._commit_count(pa_dir)
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "WARNING: parent repo is on branch 'feature/x'" in result.stderr
+        assert self._commit_count(pa_dir) == before, (
+            "the submodule pointer bump was committed on a feature branch"
+        )
+        # The data half still went through — only the parent bump is withheld.
+        assert self._commit_count(data_dir) == 2
