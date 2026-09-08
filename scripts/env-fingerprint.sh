@@ -11,21 +11,39 @@
 # salted SHA-256 prefix of the value, and the value's length — enough to answer
 # "do these two files agree?" without ever revealing what they contain.
 #
-# The salt is fixed so the same value fingerprints identically on two hosts,
-# which is what makes cross-host comparison work at all. It is a comparison
-# aid, not a security boundary: do not paste the output anywhere public, and
-# note that a low-entropy value (a group ID, a boolean) is not protected by a
-# hash. Override with ENV_FINGERPRINT_SALT when comparing a set of files where
-# even that matters; both sides must then use the same override.
+# The salt must be the same on both hosts — that is what makes cross-host
+# comparison work at all — and it must NOT be public. Audit round 4d (E23):
+# the salt used to be a constant hardcoded in this file, which is a PUBLIC
+# repository, and the output carried each value's exact length. Together
+# those turn the output into a value oracle: a 7-digit library ID is
+# recoverable from its 12-hex fingerprint by sweeping ten million
+# candidates, and low-entropy values (a boolean, a group ID) fall out
+# instantly. So the salt is now REQUIRED from the environment
+# (ENV_FINGERPRINT_SALT), never printed, and shared between machines out of
+# band; and the length is reported as a coarse bucket rather than an exact
+# count.
+#
+# Even so this remains a comparison aid, not a security boundary: do not
+# paste the output anywhere public.
 #
 # Usage
 # -----
+#   read -rs ENV_FINGERPRINT_SALT; export ENV_FINGERPRINT_SALT
 #   scripts/env-fingerprint.sh [path-to-env-file]
 #
-# Defaults to ~/personal-assistant/.env. To compare two machines:
+# Defaults to ~/personal-assistant/.env. To compare two machines, use the
+# SAME salt on both. Never put it on a command line — local or remote:
+# /proc/<pid>/cmdline is world-readable, so anyone with an account on the
+# box can read it while the process lives, and a shell command line also
+# lands in history. Send it down the remote shell's STDIN instead, ahead
+# of the script itself:
 #
+#   read -rs ENV_FINGERPRINT_SALT; export ENV_FINGERPRINT_SALT
 #   scripts/env-fingerprint.sh > /tmp/local.txt
-#   ssh other-host 'bash -s' < scripts/env-fingerprint.sh > /tmp/remote.txt
+#   {
+#       printf 'export ENV_FINGERPRINT_SALT=%q\n' "$ENV_FINGERPRINT_SALT"
+#       cat scripts/env-fingerprint.sh
+#   } | ssh other-host 'bash -s' > /tmp/remote.txt
 #
 # then diff the three categories separately — keys only in A, keys only in B,
 # and keys in both whose hashes differ. **The third is the one that matters**
@@ -38,9 +56,10 @@
 # Output
 # ------
 # A metadata header (host, path, stat, line count), then one
-# "KEY<TAB>hash<TAB>length" line per assignment sorted by key, then a summary
-# and a duplicate-key warning. Duplicates matter because the last assignment
-# wins at load time, so a duplicated key is a silent override.
+# "KEY<TAB>hash<TAB>bucket" line per assignment sorted by key, then a summary
+# and a duplicate-key warning. The bucket is empty / short / medium / long,
+# not an exact length. Duplicates matter because the last assignment wins at
+# load time, so a duplicated key is a silent override.
 #
 # See wiki/docs/env-cross-machine-reference.md for what is expected to differ
 # between machines and what is not.
@@ -48,7 +67,30 @@
 set -uo pipefail
 
 ENV_FILE="${1:-${HOME}/personal-assistant/.env}"
-SALT="${ENV_FINGERPRINT_SALT:-efn-envcmp-2026-08-22}"
+
+# A required, private, shared salt — see the header. Refuse rather than fall
+# back to a default: a public default silently makes every fingerprint below
+# reversible, and a refusal is the only way the operator finds that out.
+# The value itself is never echoed.
+#
+# Leading and trailing whitespace is stripped before use (round 4d-2, C2):
+# a salt pasted with a trailing newline or space would otherwise fingerprint
+# every value differently from the other machine's — reporting a
+# whole-file mismatch that is not there — and a salt that was ONLY
+# whitespace passed the emptiness test while protecting nothing.
+SALT="${ENV_FINGERPRINT_SALT:-}"
+SALT="${SALT#"${SALT%%[![:space:]]*}"}"
+SALT="${SALT%"${SALT##*[![:space:]]}"}"
+if [[ -z "$SALT" ]]; then
+    echo "ERROR: ENV_FINGERPRINT_SALT is required (a private salt shared" >&2
+    echo "  out of band with the machine you are comparing against)." >&2
+    exit 2
+fi
+# Handed to the child through the ENVIRONMENT, never through argv
+# (round 4d-2, C2): /proc/<pid>/cmdline is world-readable, so a salt on a
+# command line is readable by every account on the machine for as long as
+# the process lives, whereas /proc/<pid>/environ is owner-only.
+export ENV_FINGERPRINT_SALT="$SALT"
 
 echo "### host: $(hostname)"
 
@@ -65,24 +107,60 @@ echo "### stat:  $(stat -c 'bytes=%s mode=%a owner=%U mtime=%y' "${ENV_FILE}")"
 echo "### lines: $(wc -l < "${ENV_FILE}")"
 echo "### ---"
 
-python3 - "${ENV_FILE}" "${SALT}" <<'PY'
+python3 - "${ENV_FILE}" <<'PY'
 """Fingerprint each assignment in a .env file without emitting values."""
 import hashlib
+import os
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 
-env_path, salt = Path(sys.argv[1]), sys.argv[2]
+# The salt arrives in the environment, not in argv: /proc/<pid>/cmdline is
+# world-readable and /proc/<pid>/environ is not (round 4d-2, C2).
+env_path = Path(sys.argv[1])
+salt = os.environ["ENV_FINGERPRINT_SALT"]
 
 # Accept an optional leading `export`, then KEY=VALUE. Comments and blanks
 # fall through unmatched.
 ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 
-entries: list[tuple[str, str, int]] = []
+entries: list[tuple[str, str, str]] = []
 seen: Counter[str] = Counter()
 
-for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+
+def length_bucket(length: int) -> str:
+    """Coarsen a value length so the output cannot be used to guess it.
+
+    An exact length narrows a brute-force sweep enormously; a bucket still
+    catches the drift this tool exists to catch (a truncated paste, a
+    placeholder swapped for a real credential) without naming a search
+    space. Boundaries are deliberately wide.
+    """
+    if length == 0:
+        return "empty"
+    if length < 16:
+        return "short"
+    if length < 48:
+        return "medium"
+    return "long"
+
+# Round 4d-2: read STRICTLY. `errors="replace"` let this tool certify a
+# file byte-for-byte healthy that the consumer cannot read at all — the
+# loader's own read_text(encoding="utf-8") raises UnicodeDecodeError on the
+# first bad byte and the import dies with no Zotero credentials. A
+# fingerprint that disagrees with its consumer about whether the file is
+# readable is worse than no fingerprint.
+try:
+    text = env_path.read_text(encoding="utf-8")
+except UnicodeDecodeError as exc:
+    print("### INVALID UTF-8: byte %d is not valid UTF-8 (%s)."
+          % (exc.start, exc.reason))
+    print("### The loader in lit-scout-zotero-import.py raises on this "
+          "file; no fingerprint is possible.")
+    raise SystemExit(3)
+
+for raw in text.splitlines():
     if not raw.strip() or raw.lstrip().startswith("#"):
         continue
     match = ASSIGNMENT.match(raw)
@@ -96,19 +174,25 @@ for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
         value = value[1:-1]
 
     digest = hashlib.sha256((salt + value).encode("utf-8")).hexdigest()[:12]
-    entries.append((key, digest, len(value)))
+    entries.append((key, digest, length_bucket(len(value))))
     seen[key] += 1
 
-for key, digest, length in sorted(entries):
+for key, digest, bucket in sorted(entries):
     # Flag empty values explicitly: they compare equal to each other and are
     # usually a placeholder rather than a real credential.
-    marker = "  <EMPTY>" if length == 0 else ""
-    print(f"{key}\t{digest}\t{length}{marker}")
+    marker = "  <EMPTY>" if bucket == "empty" else ""
+    print(f"{key}\t{digest}\t{bucket}{marker}")
 
 print("### ---")
 print(f"### assignments: {len(entries)}  unique keys: {len(seen)}")
 
 duplicates = [k for k, n in seen.items() if n > 1]
 if duplicates:
-    print(f"### DUPLICATE KEYS (last wins at load time): {', '.join(sorted(duplicates))}")
+    # Round 4d-2: the loader this file feeds
+    # (lit-scout-zotero-import.py:497, `if key and key not in os.environ`)
+    # keeps the FIRST assignment and ignores later ones, and so does a
+    # shell that has already exported the name. The old wording said the
+    # opposite, which would send an operator to edit the wrong line.
+    print("### DUPLICATE KEYS (the FIRST assignment wins at load time; "
+          f"later ones are ignored): {', '.join(sorted(duplicates))}")
 PY

@@ -268,3 +268,180 @@ class TestRenderedTypesAreDeletable:
         monkeypatch.setattr(publish, "_call", fake_call)
         assert publish.read_section_ids("F1", "tok") == ["a"]
         assert captured["criteria"]["section_types"] == publish.BODY_SECTION_TYPES
+
+
+# ===========================================================================
+# ET2 / E7 — main() end to end, and the authenticated request itself
+#
+# ``main()`` was never invoked by a test (lens B, tranche 5, finding 2):
+# making --publish unconditional, deleting the token/--canvas-id check,
+# deleting the ok:false raise, replacing the TaskFilesMissing refusal, and
+# repointing SLACK_API all survived the suite. Every test below runs the
+# real ``main()`` with the network boundary replaced by a recorder.
+#
+# All state, tokens, and canvas ids below are invented.
+# ===========================================================================
+
+import io
+import json
+import urllib.error
+import urllib.request
+
+
+class RecordingOpener:
+    """Stands in for ``publish._OPENER``, recording every request."""
+
+    def __init__(self, body=None):
+        """Store the JSON body every ``open`` call should answer with."""
+        self.requests = []
+        self.body = body if body is not None else {"ok": True, "sections": []}
+
+    def open(self, req, timeout=None):
+        """Record the request and return a file-like JSON response."""
+        self.requests.append(req)
+        payload = json.dumps(self.body).encode("utf-8")
+        response = io.BytesIO(payload)
+        response.__enter__ = lambda: response  # type: ignore[attr-defined]
+        response.__exit__ = lambda *a: False  # type: ignore[attr-defined]
+        return response
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    """Install a RecordingOpener in place of the real one."""
+    opener = RecordingOpener()
+    monkeypatch.setattr(publish, "_OPENER", opener)
+    return opener
+
+
+@pytest.fixture
+def rendered_state(monkeypatch):
+    """Make ``collect()`` return synthetic state, never the real files."""
+    monkeypatch.setattr(publish, "collect", lambda: state())
+    monkeypatch.setattr(publish, "data_revision", lambda: "0000000")
+    return state()
+
+
+def _main(monkeypatch, *argv: str) -> int:
+    """Run the real ``main()`` with ``argv`` and no stray environment."""
+    monkeypatch.setattr(sys, "argv", ["publish-dashboard.py", *argv])
+    return publish.main()
+
+
+class TestMainDoesNotPublishByDefault:
+    def test_no_request_without_publish(
+        self, monkeypatch, recorder, rendered_state, capsys
+    ):
+        """Rendering alone must never touch Slack."""
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-synthetic-not-a-secret")
+        monkeypatch.setenv("SLACK_DASHBOARD_CANVAS_ID", "F0000001")
+
+        assert _main(monkeypatch) == 0
+
+        assert recorder.requests == []
+
+    def test_publish_refuses_without_a_token(
+        self, monkeypatch, recorder, rendered_state, capsys
+    ):
+        """A missing token is a refusal, not an unauthenticated POST."""
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+
+        assert _main(monkeypatch, "--publish", "--canvas-id", "F0000001") == 2
+
+        assert recorder.requests == []
+        assert "SLACK_BOT_TOKEN" in capsys.readouterr().err
+
+    def test_publish_refuses_without_a_canvas_id(
+        self, monkeypatch, recorder, rendered_state, capsys
+    ):
+        """A missing canvas id is a refusal, not a POST to nowhere."""
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-synthetic-not-a-secret")
+        monkeypatch.delenv("SLACK_DASHBOARD_CANVAS_ID", raising=False)
+
+        assert _main(monkeypatch, "--publish") == 2
+
+        assert recorder.requests == []
+        assert "--canvas-id" in capsys.readouterr().err
+
+    def test_unreadable_task_files_refuse_to_render(
+        self, monkeypatch, recorder, capsys
+    ):
+        """An unreadable source must not become a confidently empty board."""
+
+        def _raise():
+            raise accountability.TaskFilesMissing("tasks/FOCUS.md unreadable")
+
+        monkeypatch.setattr(publish, "collect", _raise)
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-synthetic-not-a-secret")
+
+        assert _main(monkeypatch, "--publish", "--canvas-id", "F0000001") == 2
+
+        assert recorder.requests == []
+
+
+class TestMainPublishes:
+    def test_the_request_goes_to_slack_with_a_bearer_header(
+        self, monkeypatch, recorder, rendered_state, capsys
+    ):
+        """The POST must reach SLACK_API and carry the bot token."""
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-synthetic-not-a-secret")
+
+        assert _main(monkeypatch, "--publish", "--canvas-id", "F0000001") == 0
+
+        assert recorder.requests, "nothing was posted"
+        first = recorder.requests[0]
+        # The literal host, not ``publish.SLACK_API`` — comparing the
+        # request against the constant it was built from would pass
+        # however that constant were repointed.
+        assert first.full_url.startswith("https://slack.com/api/")
+        assert first.get_method() == "POST"
+        assert first.get_header("Authorization") == (
+            "Bearer xoxb-synthetic-not-a-secret"
+        )
+
+    def test_a_slack_level_failure_raises(self, monkeypatch, rendered_state):
+        """``ok: false`` must not be reported as a successful publish."""
+        opener = RecordingOpener({"ok": False, "error": "invalid_auth"})
+        monkeypatch.setattr(publish, "_OPENER", opener)
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-synthetic-not-a-secret")
+
+        with pytest.raises(RuntimeError, match="invalid_auth"):
+            _main(monkeypatch, "--publish", "--canvas-id", "F0000001")
+
+
+class TestAuthenticatedRequestsDoNotFollowRedirects:
+    """E7 — a 302 must not replay the bot token at another host."""
+
+    def test_the_opener_installs_the_refusing_handler(self):
+        """The module opener must carry ``_RefuseRedirect``, not the default."""
+        handlers = [
+            h
+            for h in publish._OPENER.handlers
+            if isinstance(h, urllib.request.HTTPRedirectHandler)
+        ]
+        assert handlers, "no redirect handler at all"
+        assert all(
+            isinstance(h, publish._RefuseRedirect) for h in handlers
+        ), handlers
+
+    def test_a_302_raises_instead_of_building_a_replay_request(self):
+        """No replay request is produced, so the token cannot be re-sent."""
+        request = urllib.request.Request(
+            f"{publish.SLACK_API}/canvases.edit",
+            data=b"{}",
+            headers={"Authorization": "Bearer xoxb-synthetic-not-a-secret"},
+            method="POST",
+        )
+        handler = publish._RefuseRedirect()
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            handler.redirect_request(
+                request,
+                io.BytesIO(b""),
+                302,
+                "Found",
+                {},
+                "https://evil.invalid/collect",
+            )
+        assert "refusing to follow" in str(excinfo.value)
+        # The token appears nowhere in the refusal message.
+        assert "xoxb-synthetic-not-a-secret" not in str(excinfo.value)

@@ -14,17 +14,39 @@ either direction destroys them.
 
 `.env` is gitignored on purpose, so the two copies drift silently and
 nothing detects it. To compare without reading secrets into a session,
-fingerprint each assignment as `KEY <salted-sha256-prefix> <length>` and
+fingerprint each assignment as `KEY <salted-sha256-prefix> <bucket>` and
 diff the fingerprints. Use **`scripts/env-fingerprint.sh`**, which takes
 an optional path and defaults to `~/personal-assistant/.env`:
 
 ```bash
+read -rs ENV_FINGERPRINT_SALT; export ENV_FINGERPRINT_SALT
 scripts/env-fingerprint.sh > /tmp/local.txt
-ssh amd-tower 'bash -s' < scripts/env-fingerprint.sh > /tmp/remote.txt
+{
+    printf 'export ENV_FINGERPRINT_SALT=%q\n' "$ENV_FINGERPRINT_SALT"
+    cat scripts/env-fingerprint.sh
+} | ssh amd-tower 'bash -s' > /tmp/remote.txt
 ```
 
-The salt is fixed so both hosts fingerprint a shared value identically;
-it only needs to agree across a single comparison.
+`ENV_FINGERPRINT_SALT` is **required** and must match on both hosts —
+that is what makes a shared value fingerprint identically. It must also
+stay private: with a public salt and an exact length in the output, a
+short or low-entropy value is recoverable from its hash by a sweep, so
+the script refuses to run without one (audit round 4d, finding E23) and
+reports a length *bucket* — `empty`, `short` (under 16), `medium` (16 to
+47), or `long` (48 and up) — rather than an exact count. The salt only
+needs to agree across a single comparison; choose a fresh one each time.
+
+**Never put the salt on a command line, local or remote.** An earlier
+version of this page showed
+`ssh host "ENV_FINGERPRINT_SALT='$SALT' bash -s"`, which writes the
+plaintext salt into the local shell's history and into the remote
+process's `/proc/<pid>/cmdline` — world-readable for the life of the
+process, which defeats the point of having a private salt at all (audit
+round 4d-2, finding C2). The form above sends it down the remote shell's
+standard input instead, ahead of the script; `/proc/<pid>/environ`, where
+it lands, is readable only by its owner. `ssh -o SendEnv` also works
+where the remote `sshd` is configured with a matching `AcceptEnv`, which
+is not the default.
 
 Run it on both hosts, then compare three things separately: keys only on
 A, keys only on B, and keys on both whose hashes differ. **The third

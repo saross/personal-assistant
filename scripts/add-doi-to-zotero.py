@@ -25,7 +25,8 @@ Requirements
 ------------
 Run with the personal-assistant venv (has pyzotero + httpx). Credentials are
 read from ``~/personal-assistant/.env`` by the importer's ``load_env``:
-``ZOTERO_LIBRARY_ID``, ``ZOTERO_API_KEY_PERSONAL``, ``ZOTERO_STAGING_COLLECTION``.
+``ZOTERO_LIBRARY_ID``, ``ZOTERO_API_KEY_ALL`` (falling back to the
+retiring ``ZOTERO_API_KEY_PERSONAL``), ``ZOTERO_STAGING_COLLECTION``.
 The ``.env`` is per-machine (git-ignored) — each machine must have its own.
 
 Usage
@@ -71,7 +72,10 @@ def build_item(doi: str, msg: dict, m, collection_key: str, tags: list[str]) -> 
     item_type = m.CROSSREF_TO_ZOTERO_TYPE.get(cr_type) or m.EXTRA_TYPE_TO_ZOTERO_TYPE.get(
         cr_type, "journalArticle"
     )
-    title = (msg.get("title") or [""])[0]
+    # HTML-stripped like the abstract below: CrossRef returns markup and
+    # entities in titles, and this script writes the value straight into
+    # Zotero (audit round 4d, E5 — the same defect as the importer's).
+    title = m._strip_html((msg.get("title") or [""])[0] or "")
     creators = m._creators_from_record(msg.get("author") or [])
 
     date_str = ""
@@ -79,9 +83,18 @@ def build_item(doi: str, msg: dict, m, collection_key: str, tags: list[str]) -> 
         dobj = msg.get(fld)
         if isinstance(dobj, dict):
             parts = dobj.get("date-parts", [[]])
-            if parts and parts[0]:
+            # `[[null]]` is CrossRef's "no usable date"; `[None]` is truthy,
+            # so the old test wrote the literal string "None" as the item's
+            # date (audit round 4d, E4 — again, as in the importer).
+            if parts and parts[0] and parts[0][0] is not None:
+                components = []
+                for part in parts[0]:
+                    if part is None:
+                        break
+                    components.append(part)
                 date_str = "-".join(
-                    f"{p:02d}" if i > 0 else str(p) for i, p in enumerate(parts[0])
+                    f"{p:02d}" if i > 0 else str(p)
+                    for i, p in enumerate(components)
                 )
                 break
 
@@ -136,13 +149,19 @@ def main() -> int:
     m = load_importer()
     m.load_env()
     lib = os.environ.get("ZOTERO_LIBRARY_ID")
-    key = os.environ.get("ZOTERO_API_KEY_PERSONAL")
+    # ZOTERO_API_KEY_ALL is the Tier-1 broad key (2026-08-24); the retired
+    # ZOTERO_API_KEY_PERSONAL remains a fallback until revoked. Audit round
+    # 4d (E6): this script read only the retirement candidate, so revoking
+    # it would have broken the tool while the importer beside it kept
+    # working. Same precedence as lit-scout-zotero-import.py's run_import.
+    key = (os.environ.get("ZOTERO_API_KEY_ALL")
+           or os.environ.get("ZOTERO_API_KEY_PERSONAL"))
     staging = os.environ.get("ZOTERO_STAGING_COLLECTION")
     missing = [
         n
         for n, v in [
             ("ZOTERO_LIBRARY_ID", lib),
-            ("ZOTERO_API_KEY_PERSONAL", key),
+            ("ZOTERO_API_KEY_ALL", key),
             ("ZOTERO_STAGING_COLLECTION", staging),
         ]
         if not v
@@ -154,7 +173,10 @@ def main() -> int:
     doi = args.doi.strip()
 
     # Idempotency: refuse to duplicate a DOI already in any local library.
-    conn = sqlite3.connect(f"file://{m.ZOTERO_SQLITE}?immutable=1", uri=True)
+    # as_uri() URL-encodes the path (audit round 4d, E24).
+    conn = sqlite3.connect(
+        f"{m.ZOTERO_SQLITE.as_uri()}?immutable=1", uri=True
+    )
     existing = m.find_existing_by_doi(doi, conn)
     conn.close()
     if existing:

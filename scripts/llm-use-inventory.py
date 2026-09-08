@@ -365,8 +365,17 @@ def main(argv: list[str] | None = None) -> int:
                              "today; pass explicitly for reproducible output.")
     args = parser.parse_args(argv)
 
-    root = pathlib.Path(args.archive_root).expanduser()
-    project_dir = root / args.project
+    root = pathlib.Path(args.archive_root).expanduser().resolve()
+    # Audit round 4d (E21): --project names ONE directory inside the archive
+    # root, so it must not be able to escape it. Without this,
+    # `--project ../../.ssh` enumerated and rendered files outside the
+    # archive entirely.
+    project_dir = (root / args.project).resolve()
+    if project_dir != root and root not in project_dir.parents:
+        parser.error(
+            f"--project must name a directory inside {root}: "
+            f"{args.project!r} resolves outside it"
+        )
     if not project_dir.is_dir():
         parser.error(f"project directory not found: {project_dir}")
 

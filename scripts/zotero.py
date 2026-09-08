@@ -66,8 +66,14 @@ def _connect() -> sqlite3.Connection:
             f"is in a non-standard location."
         )
 
+    # Audit round 4d (E24): build the URI with Path.as_uri() rather than
+    # f-string concatenation. The old form produced four slashes after
+    # "file:" (the path already begins with one) and left the path
+    # unencoded, so a ZOTERO_DATA_DIR containing "#" or "?" silently
+    # truncated the database path into a fragment or query string and the
+    # open failed with a misleading "unable to open database file".
     conn = sqlite3.connect(
-        f"file:///{ZOTERO_DB}?immutable=1",
+        f"{ZOTERO_DB.as_uri()}?immutable=1",
         uri=True,
     )
     conn.row_factory = sqlite3.Row
@@ -403,6 +409,46 @@ def _normalise_doi(doi: str) -> str:
     return s
 
 
+#: SQL expression trimming the stored DOI the way Python's ``str.strip``
+#: trims the lookup one. SQLite's bare ``TRIM`` removes SPACES only, so a
+#: value pasted with a trailing newline — what a copy out of a PDF or a
+#: web form leaves — stayed unmatched while the Python side had already
+#: stripped it (round 4d-2). Tab, newline, carriage return, and space.
+_SQL_TRIMMED_DOI = (
+    "TRIM(LOWER(idv.value), char(9) || char(10) || char(13) || char(32))"
+)
+
+
+def doi_match_candidates(doi: str) -> list[str]:
+    """
+    Return every stored spelling of ``doi`` that must count as the same DOI.
+
+    This is the single canonical DOI comparison rule for the repository:
+    ``find_by_doi`` below and the duplicate guard in
+    ``lit-scout-zotero-import.py`` both call it, so the reader and the
+    writer can never disagree about what a duplicate is.
+
+    SQLite has no prefix-strip primitive. Normalising the *stored* side
+    with a chained ``REPLACE`` (the previous approach) stripped ``doi:``
+    wherever it occurred, not only at the front, so the SQL rule and the
+    Python rule disagreed. Expanding the *lookup* side into the bare DOI
+    plus every wrapped spelling and comparing with ``IN`` reproduces the
+    prefix rule exactly, in both languages.
+
+    Args:
+        doi: A DOI in any of the accepted spellings.
+
+    Returns:
+        Lowercase candidates: the bare DOI first, then each wrapped form.
+        Empty list for a falsy or whitespace-only DOI, so a caller cannot
+        turn a missing DOI into a match-everything query.
+    """
+    bare = _normalise_doi(doi)
+    if not bare:
+        return []
+    return [bare] + [prefix + bare for prefix in _DOI_URL_PREFIXES]
+
+
 def find_by_doi(doi: str) -> list[dict[str, Any]]:
     """
     Return all items across every local library whose DOI field matches.
@@ -430,21 +476,21 @@ def find_by_doi(doi: str) -> list[dict[str, Any]]:
     text search vs 5/5 via this DOI-based query. See workstream H in
     wiki/continuity.md.
     """
-    if not doi or not doi.strip():
+    candidates = doi_match_candidates(doi)
+    if not candidates:
         return []
-
-    bare_doi = _normalise_doi(doi)
 
     conn = _connect()
     cur = conn.cursor()
 
     try:
-        # The DOI field can be stored as a bare DOI or wrapped in any
-        # of the URL/scheme prefixes in _DOI_URL_PREFIXES. Strip those
-        # from the stored value via chained REPLACE before comparing
-        # against the already-normalised bare_doi parameter.
+        # The DOI field can be stored bare or wrapped in any of the
+        # URL/scheme prefixes in _DOI_URL_PREFIXES. Compare the stored
+        # value against every accepted spelling of the lookup DOI rather
+        # than trying to strip prefixes in SQL — see doi_match_candidates.
+        placeholders = ", ".join("?" for _ in candidates)
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT
                 i.itemID, i.key, it.typeName,
                 COALESCE(g.name, 'My Library') AS library_name
@@ -456,23 +502,13 @@ def find_by_doi(doi: str) -> list[dict[str, Any]]:
             JOIN libraries l ON i.libraryID = l.libraryID
             LEFT JOIN groups g ON l.libraryID = g.libraryID
             WHERE f.fieldName = 'DOI'
-              AND REPLACE(
-                    REPLACE(
-                      REPLACE(
-                        REPLACE(
-                          REPLACE(LOWER(idv.value),
-                            'https://doi.org/', ''),
-                          'http://doi.org/', ''),
-                        'https://dx.doi.org/', ''),
-                      'http://dx.doi.org/', ''),
-                    'doi:', ''
-                  ) = ?
+              AND {_SQL_TRIMMED_DOI} IN ({placeholders})
               AND it.typeName NOT IN ('attachment', 'note')
               AND i.itemID NOT IN (
                   SELECT itemID FROM deletedItems
               )
             """,
-            (bare_doi,),
+            tuple(candidates),
         )
 
         results = []
@@ -761,7 +797,10 @@ def format_citation(item: dict[str, Any]) -> str:
     else:
         author_str = f"{authors[0]['last_name']} et al."
 
-    year = item.get("date", "n.d.")
+    # `_build_item_dict` always supplies a "date" key, empty when the item
+    # has no date, so the dict default never fires. Audit round 4d (E12):
+    # test the VALUE, or a dateless item renders as "Smith () A study".
+    year = item.get("date") or "n.d."
     # Extract just the year if date is longer
     year_match = re.search(r"\d{4}", year)
     if year_match:

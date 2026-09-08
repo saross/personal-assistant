@@ -159,6 +159,18 @@ def _make_http_error(
     )
 
 
+def _get_request() -> urllib.request.Request:
+    """A real GET request — the safe-method case these tests exercise.
+
+    ``urlopen_with_retry`` inspects the request's method before deciding
+    whether a retry is allowed at all (audit round 4d, E14), so a
+    ``MagicMock`` here would be classed as an unsafe method and no retry
+    would happen. The synthetic host is never contacted: ``urlopen``
+    itself is patched in every test below.
+    """
+    return urllib.request.Request("https://synthetic.invalid/resource")
+
+
 class TestUrlopenWithRetry:
     """Cover the retry control-flow paths."""
 
@@ -166,7 +178,7 @@ class TestUrlopenWithRetry:
         """Returns immediately when urlopen succeeds."""
         sentinel = MagicMock(name="response")
         with patch("_http_retry.urllib.request.urlopen", return_value=sentinel) as m:
-            req = MagicMock(name="request")
+            req = _get_request()
             result = _http_retry.urlopen_with_retry(req, max_attempts=3)
         assert result is sentinel
         assert m.call_count == 1
@@ -178,7 +190,7 @@ class TestUrlopenWithRetry:
             "_http_retry.urllib.request.urlopen", side_effect=terminal,
         ) as m, patch("_http_retry.time.sleep") as sleep_mock:
             with pytest.raises(urllib.error.HTTPError) as exc_info:
-                _http_retry.urlopen_with_retry(MagicMock(), max_attempts=3)
+                _http_retry.urlopen_with_retry(_get_request(), max_attempts=3)
         assert exc_info.value.code == 404
         assert m.call_count == 1
         sleep_mock.assert_not_called()
@@ -193,7 +205,7 @@ class TestUrlopenWithRetry:
             "_http_retry.random.random", return_value=0.0,
         ):
             result = _http_retry.urlopen_with_retry(
-                MagicMock(), max_attempts=3, base_backoff=1.0,
+                _get_request(), max_attempts=3, base_backoff=1.0,
             )
         assert result is sentinel
         assert m.call_count == 2
@@ -208,7 +220,7 @@ class TestUrlopenWithRetry:
             "_http_retry.urllib.request.urlopen", side_effect=side_effects,
         ), patch("_http_retry.time.sleep") as sleep_mock:
             result = _http_retry.urlopen_with_retry(
-                MagicMock(), max_attempts=2, base_backoff=1.0,
+                _get_request(), max_attempts=2, base_backoff=1.0,
             )
         assert result is sentinel
         sleep_mock.assert_called_once_with(7.0)
@@ -223,7 +235,7 @@ class TestUrlopenWithRetry:
             "_http_retry.random.random", return_value=0.0,
         ):
             _http_retry.urlopen_with_retry(
-                MagicMock(), max_attempts=2, base_backoff=1.0,
+                _get_request(), max_attempts=2, base_backoff=1.0,
             )
         sleep_mock.assert_called_once_with(1.0)
 
@@ -237,7 +249,7 @@ class TestUrlopenWithRetry:
             "_http_retry.random.random", return_value=0.0,
         ):
             _http_retry.urlopen_with_retry(
-                MagicMock(),
+                _get_request(),
                 max_attempts=2,
                 base_backoff=1.0,
                 honour_retry_after=False,
@@ -257,7 +269,7 @@ class TestUrlopenWithRetry:
             "_http_retry.random.random", return_value=0.0,
         ):
             result = _http_retry.urlopen_with_retry(
-                MagicMock(), max_attempts=3, base_backoff=1.0,
+                _get_request(), max_attempts=3, base_backoff=1.0,
             )
         assert result is sentinel
         assert m.call_count == 2
@@ -273,7 +285,7 @@ class TestUrlopenWithRetry:
             "_http_retry.random.random", return_value=0.0,
         ):
             result = _http_retry.urlopen_with_retry(
-                MagicMock(), max_attempts=3, base_backoff=1.0,
+                _get_request(), max_attempts=3, base_backoff=1.0,
             )
         assert result is sentinel
 
@@ -287,7 +299,7 @@ class TestUrlopenWithRetry:
         ):
             with pytest.raises(urllib.error.HTTPError) as exc_info:
                 _http_retry.urlopen_with_retry(
-                    MagicMock(), max_attempts=3, base_backoff=1.0,
+                    _get_request(), max_attempts=3, base_backoff=1.0,
                 )
         assert exc_info.value.code == 503
         assert m.call_count == 3
@@ -306,7 +318,7 @@ class TestUrlopenWithRetry:
             "_http_retry.random.random", return_value=0.0,
         ):
             _http_retry.urlopen_with_retry(
-                MagicMock(), max_attempts=3, base_backoff=1.0,
+                _get_request(), max_attempts=3, base_backoff=1.0,
             )
         # Two sleeps before the successful third attempt: 1.0 then 2.0.
         assert sleep_mock.call_count == 2
@@ -321,6 +333,139 @@ class TestUrlopenWithRetry:
         ), patch("_http_retry.time.sleep") as sleep_mock:
             with pytest.raises(urllib.error.HTTPError):
                 _http_retry.urlopen_with_retry(
-                    MagicMock(), max_attempts=1,
+                    _get_request(), max_attempts=1,
                 )
         sleep_mock.assert_not_called()
+
+
+# ===========================================================================
+# ET6 / ET7 / E14 — the timeout, the except tuple, and unsafe methods
+# ===========================================================================
+
+
+class TestTimeoutReachesUrlopen:
+    """ET6 — dropping ``timeout=timeout`` left the suite green."""
+
+    def test_the_timeout_is_passed_on_every_attempt(self) -> None:
+        """Each attempt, retries included, carries the caller's timeout."""
+        transient = _make_http_error(503)
+        with patch(
+            "_http_retry.urllib.request.urlopen",
+            side_effect=[transient, transient, MagicMock()],
+        ) as opener, patch("_http_retry.time.sleep"):
+            _http_retry.urlopen_with_retry(
+                _get_request(), max_attempts=3, timeout=7.5,
+            )
+        assert opener.call_count == 3
+        assert [c.kwargs.get("timeout") for c in opener.call_args_list] == [
+            7.5,
+            7.5,
+            7.5,
+        ], "an attempt went out without the caller's timeout"
+
+    def test_a_request_with_no_timeout_uses_the_default(self) -> None:
+        """The documented 30 s default is actually applied."""
+        with patch(
+            "_http_retry.urllib.request.urlopen", return_value=MagicMock(),
+        ) as opener:
+            _http_retry.urlopen_with_retry(_get_request())
+        assert opener.call_args.kwargs.get("timeout") == 30.0
+
+
+class TestOnlyNetworkErrorsAreRetried:
+    """ET7 — widening the except tuple to BaseException also stayed green."""
+
+    def test_a_programming_error_is_not_retried(self) -> None:
+        """A ValueError propagates on the first attempt, unretried."""
+        with patch(
+            "_http_retry.urllib.request.urlopen",
+            side_effect=ValueError("a bug, not a network failure"),
+        ) as opener, patch("_http_retry.time.sleep") as sleeper:
+            with pytest.raises(ValueError):
+                _http_retry.urlopen_with_retry(
+                    _get_request(), max_attempts=3,
+                )
+        assert opener.call_count == 1
+        sleeper.assert_not_called()
+
+    def test_a_keyboard_interrupt_is_not_swallowed(self) -> None:
+        """An interrupt must abort, not become three more attempts."""
+        with patch(
+            "_http_retry.urllib.request.urlopen",
+            side_effect=KeyboardInterrupt(),
+        ) as opener, patch("_http_retry.time.sleep") as sleeper:
+            with pytest.raises(KeyboardInterrupt):
+                _http_retry.urlopen_with_retry(
+                    _get_request(), max_attempts=3,
+                )
+        assert opener.call_count == 1
+        sleeper.assert_not_called()
+
+
+class TestUnsafeMethodsAreNotRetried:
+    """E14 — a 500 does not mean the server did nothing."""
+
+    @staticmethod
+    def _request(method: str) -> urllib.request.Request:
+        """Build a request with an explicit method and a body."""
+        return urllib.request.Request(
+            "https://synthetic.invalid/resource",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method=method,
+        )
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+    def test_an_unsafe_method_is_attempted_once(self, method: str) -> None:
+        """Without idempotent=True the call is made exactly once."""
+        transient = _make_http_error(502)
+        with patch(
+            "_http_retry.urllib.request.urlopen", side_effect=transient,
+        ) as opener, patch("_http_retry.time.sleep") as sleeper:
+            with pytest.raises(urllib.error.HTTPError):
+                _http_retry.urlopen_with_retry(
+                    self._request(method), max_attempts=3, base_backoff=1.0,
+                )
+        assert opener.call_count == 1, (
+            f"a {method} was retried without the caller's consent"
+        )
+        sleeper.assert_not_called()
+
+    def test_an_explicitly_idempotent_post_is_retried(self) -> None:
+        """The embed.py case: a pure computation may be repeated."""
+        transient = _make_http_error(503)
+        sentinel = MagicMock(name="response")
+        with patch(
+            "_http_retry.urllib.request.urlopen",
+            side_effect=[transient, sentinel],
+        ) as opener, patch("_http_retry.time.sleep"):
+            result = _http_retry.urlopen_with_retry(
+                self._request("POST"),
+                max_attempts=3,
+                base_backoff=1.0,
+                idempotent=True,
+            )
+        assert result is sentinel
+        assert opener.call_count == 2
+
+    def test_a_get_is_still_retried_without_ceremony(self) -> None:
+        """The safe-method path is unchanged."""
+        transient = _make_http_error(503)
+        sentinel = MagicMock(name="response")
+        with patch(
+            "_http_retry.urllib.request.urlopen",
+            side_effect=[transient, sentinel],
+        ) as opener, patch("_http_retry.time.sleep"):
+            assert (
+                _http_retry.urlopen_with_retry(
+                    _get_request(), max_attempts=3, base_backoff=1.0,
+                )
+                is sentinel
+            )
+        assert opener.call_count == 2
+
+    def test_the_docstring_states_the_rule(self) -> None:
+        """The contract is written down where a caller will read it."""
+        doc = _http_retry.urlopen_with_retry.__doc__ or ""
+        assert "idempotent" in doc
+        assert "POST" in doc

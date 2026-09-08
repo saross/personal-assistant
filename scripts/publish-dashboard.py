@@ -465,6 +465,37 @@ def _post(payload: dict, token: str) -> dict:
     return _call("canvases.edit", payload, token)
 
 
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect on an authenticated request.
+
+    Audit round 4d (E7): urllib's default redirect handler replays the
+    request at the ``Location`` URL and strips only ``Content-Length`` and
+    ``Content-Type`` while doing so. The ``Authorization`` header — the
+    Slack bot token — survives that replay and is sent to whatever host
+    the redirect names, and a 301/302/303 additionally turns the POST into
+    a GET. Slack's Web Application Programming Interface (API) never
+    legitimately redirects, so a redirect here is a misconfiguration or an
+    attack; either way the token must not leave with it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Raise rather than build a replay request. Never returns."""
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"refusing to follow a {code} redirect to {newurl} while "
+            f"carrying an Authorization header",
+            headers,
+            fp,
+        )
+
+
+#: Opener used for every authenticated Slack call. Kept at module level so
+#: the no-redirect policy cannot be forgotten at a call site, and so tests
+#: can substitute it wholesale.
+_OPENER = urllib.request.build_opener(_RefuseRedirect)
+
+
 def _call(method: str, payload: dict, token: str) -> dict:
     """POST to a Slack Web API method, raising on a Slack-level failure."""
     req = urllib.request.Request(
@@ -476,7 +507,7 @@ def _call(method: str, payload: dict, token: str) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _OPENER.open(req, timeout=30) as resp:
         body = json.loads(resp.read().decode("utf-8"))
 
     if not body.get("ok"):
@@ -585,7 +616,9 @@ def main() -> int:
             print("ERROR: --create needs SLACK_BOT_TOKEN", file=sys.stderr)
             return 2
         canvas_id = create_canvas(args.title, body, token)
-        # Printed to stdout so it can be captured; the id is not a secret.
+        # Printed to stderr, beside the other operational notes, so the
+        # rendered dashboard on stdout stays pipeable; the id is not a
+        # secret (audit round 4d, E22: this comment said stdout).
         print(f"\nCreated canvas {canvas_id}", file=sys.stderr)
         print(f"Add to .env on both machines:\n"
               f"  SLACK_DASHBOARD_CANVAS_ID={canvas_id}", file=sys.stderr)
