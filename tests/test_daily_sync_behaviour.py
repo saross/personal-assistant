@@ -71,6 +71,13 @@ class TestSyncReachesTheEnd:
         ).stdout.split()
         assert touched == ["memories/memories.jsonl"], touched
 
+        # The prose edit was stashed for the pull and came back. Kills
+        # DS-M2 (delete the stash-pop block: every run buries the day's
+        # work in a stash nobody looks at).
+        assert "half-written thought" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8")
+
     def test_dry_run_commits_nothing_and_pushes_nothing(self, world: SyncWorld) -> None:
         """``--dry-run`` must leave every repository byte-identical."""
         machine = world.add_machine("a")
@@ -137,6 +144,94 @@ class TestSubmoduleCommitsArePublished:
         git("pull", "-q", "--ff-only", "origin", "main", cwd=machine_b.pa)
         git("submodule", "update", "--init", "--quiet", cwd=machine_b.pa)
         assert "2026-09-08-s1c" in machine_b.memories.read_text(encoding="utf-8")
+
+
+# ============================================================================
+# Failure paths (Lens B M2 — none of these were exercised at all)
+# ============================================================================
+
+
+class TestCrossMachineRebase:
+    """The everyday two-machine case: both machines appended today, so
+    the pull is not a fast-forward and the rebase conflicts on
+    memories.jsonl. This is the path the append-safe resolver exists
+    for, and nothing exercised it end to end."""
+
+    def test_both_machines_records_survive_the_rebase(
+        self, world: SyncWorld
+    ) -> None:
+        """Union, not one side — the resolver is genuinely invoked here."""
+        machine = world.add_machine("a")
+        world.publish_memory_append("2026-09-08-from-b")
+        machine.append_memory("2026-09-08-from-a")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "not fast-forwardable" in combined
+        assert "rebase conflicts resolved" in combined
+
+        published = world.published_data_file("memories/memories.jsonl")
+        assert "2026-09-08-from-a" in published
+        assert "2026-09-08-from-b" in published, "the other machine's record was lost"
+        assert "<<<<<<<" not in published
+
+    def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
+        """Kills DS-M6: routing an unknown path to the submodule branch
+        would resolve a conflicted prose file trust-ours instead."""
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- local commitment\n", encoding="utf-8"
+        )
+        machine.commit_data("local inbox edit", "tasks/inbox.md")
+        world.publish_data_change("tasks/inbox.md", "# Inbox\n\n- remote item\n")
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "unsupported paths" in combined
+        # The rebase was aborted, so no half-finished state is left.
+        assert not (machine.data_git_dir / "rebase-merge").exists()
+        assert "<<<<<<<" not in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8")
+        assert world.published_data_head() == published_before
+
+
+class TestShrinkDetector:
+    """A net shrink of memories.jsonl without a ``Rewrite-Class: bulk``
+    trailer must undo the commit and abort before the push."""
+
+    def test_shrink_aborts_the_push_and_reports(self, world: SyncWorld) -> None:
+        """Kills DS-M7: with the guard off, a truncated corpus is pushed."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-doomed")
+        # Simulate something truncating the corpus mid-run: a post-commit
+        # hook fires once, after the append-only commit, so the shrink is
+        # carried by the auto-sync commit the detector inspects.
+        hook = machine.data_git_dir / "hooks" / "post-commit"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Test hook: truncate the corpus exactly once.\n"
+            'marker="$GIT_DIR/truncated"\n'
+            '[[ -f "$marker" ]] && exit 0\n'
+            'touch "$marker"\n'
+            'printf "" > memories/memories.jsonl\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 4, combined
+        assert "SHRINK DETECTED" in combined
+        assert list((machine.pa / "logs").glob("daily-sync-SHRINK-*.txt"))
+        assert world.published_data_head() == published_before, (
+            "a shrunk corpus reached origin"
+        )
 
 
 # ============================================================================

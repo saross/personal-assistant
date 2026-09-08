@@ -190,6 +190,17 @@ class Machine:
         """Path to the machine's ``memories.jsonl``."""
         return self.data / "memories" / "memories.jsonl"
 
+    @property
+    def data_git_dir(self) -> Path:
+        """
+        The submodule's real git directory.
+
+        ``data/.git`` is a pointer *file* into ``<parent>/.git/modules/``,
+        so hooks and internal state do not live where a top-level repo
+        would put them.
+        """
+        return Path(git("rev-parse", "--absolute-git-dir", cwd=self.data).stdout.strip())
+
     def head(self, repo: str = "data") -> str:
         """Return the HEAD SHA of ``data`` or ``parent`` on this machine."""
         where = self.data if repo == "data" else self.pa
@@ -319,6 +330,40 @@ class SyncWorld:
         path = self.home / ".cache" / name
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
+    def _publisher(self) -> Path:
+        """A scratch clone of the data remote, standing in for machine B."""
+        scratch = self.root / "publisher"
+        if scratch.exists():
+            git("pull", "-q", "--ff-only", "origin", "main", cwd=scratch)
+        else:
+            git("clone", "-q", str(self.data_remote), str(scratch), cwd=self.root)
+        return scratch
+
+    def publish_memory_append(
+        self, record_id: str, content: str = "from the other machine"
+    ) -> str:
+        """
+        Append a record to ``memories.jsonl`` on the remote.
+
+        This is what the other machine's extraction hook plus its own
+        daily-sync produce, and it is the conflict the whole append-safe
+        resolution path exists for.
+        """
+        scratch = self._publisher()
+        record = {
+            "id": record_id,
+            "category": "decision",
+            "content": content,
+            "created_at": "2026-09-08T09:00:00+00:00",
+        }
+        with (scratch / "memories" / "memories.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        git("add", "--", "memories/memories.jsonl", cwd=scratch)
+        git("commit", "-q", "-m", f"append {record_id}", "--",
+            "memories/memories.jsonl", cwd=scratch)
+        git("push", "-q", "origin", "main", cwd=scratch)
+        return record_id
+
     def publish_data_change(
         self, path: str, content: str, message: str = "change from another machine"
     ) -> str:
@@ -328,11 +373,7 @@ class SyncWorld:
         Uses a scratch clone kept for the life of the world, so several
         foreign pushes can be staged in sequence.
         """
-        scratch = self.root / "publisher"
-        if scratch.exists():
-            git("pull", "-q", "--ff-only", "origin", "main", cwd=scratch)
-        else:
-            git("clone", "-q", str(self.data_remote), str(scratch), cwd=self.root)
+        scratch = self._publisher()
         target = scratch / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
