@@ -62,8 +62,12 @@ def _run_shell(body: str) -> subprocess.CompletedProcess[str]:
         [
             "set -euo pipefail",
             'LOG_FILE="/dev/null"',
+            # The script's own logger writes to stderr via tee; here it
+            # just goes to stderr, which the assertions read.
+            'log() { printf "%s\\n" "$*" >&2; }',
             _extract_function("push_stash"),
             _extract_function("stash_ref_for"),
+            _extract_function("drop_stash_by_sha"),
             body,
         ]
     )
@@ -158,6 +162,41 @@ class TestStashRefFor:
         result = _run_shell(f'stash_ref_for "{repo}" "{gone}" || echo ABSENT')
         assert "ABSENT" in result.stdout, result.stdout + result.stderr
         assert "stash@" not in result.stdout
+
+
+class TestDropStashBySha:
+    """``drop_stash_by_sha`` is what every restore path relies on to drop
+    the entry it applied and no other. Its contract also decides whether
+    the orphan path may report "recovered": an entry still on the stack
+    would be applied again next run, duplicating every record in it."""
+
+    def test_drops_the_named_entry_not_the_top_one(self, repo: Path) -> None:
+        """A foreign stash sits above ours; only ours may go."""
+        foreign = _stash_shas(repo)[0]
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        ours = _stash_shas(repo)[0]
+        # Another entry lands on top after ours.
+        (repo / "tracked.txt").write_text("later\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "later", cwd=repo)
+        later = _stash_shas(repo)[0]
+
+        result = _run_shell(f'drop_stash_by_sha "{repo}" "{ours}"')
+        assert result.returncode == 0, result.stderr
+        remaining = _stash_shas(repo)
+        assert ours not in remaining
+        assert foreign in remaining
+        assert later in remaining
+
+    def test_reports_failure_when_the_entry_has_gone(self, repo: Path) -> None:
+        """Non-zero and a warning, so the caller does not claim success —
+        the orphan path uses this to say "applied" rather than
+        "recovered", and to gate the leftover."""
+        gone = _stash_shas(repo)[0]
+        _git("stash", "drop", "--quiet", cwd=repo)
+        result = _run_shell(f'drop_stash_by_sha "{repo}" "{gone}" || echo REFUSED')
+        assert "REFUSED" in result.stdout, result.stdout + result.stderr
+        assert "no longer on" in result.stderr
 
 
 # ============================================================================

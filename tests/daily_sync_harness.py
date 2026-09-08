@@ -142,6 +142,39 @@ _DRIFT_STUB_BODY = '''
         refs = os.environ.get("PA_TEST_ORPHAN_STASHES", "")
         for ref in [r for r in refs.split(",") if r]:
             print(ref)
+        sys.stdout.flush()
+        # A concurrent session pushing a stash AFTER the detector has
+        # reported, i.e. between the caller resolving those selectors and
+        # acting on them. The pause lets the caller's resolution land
+        # first: it happens microseconds after the flush above, so the
+        # ordering is deterministic in practice even though the two
+        # processes are not synchronised.
+        # A concurrent session dropping the very entry just reported, so
+        # the caller's apply still works (the commit outlives the entry)
+        # but its drop finds nothing.
+        if os.environ.get("PA_TEST_DRIFT_DROPS_AFTER"):
+            import time
+
+            time.sleep(0.3)
+            data = Path(__file__).resolve().parent.parent / "data"
+            subprocess.run(
+                ["git", "-C", str(data), "stash", "drop", "-q",
+                 os.environ["PA_TEST_DRIFT_DROPS_AFTER"]],
+                check=True,
+            )
+
+        racing = os.environ.get("PA_TEST_DRIFT_STASHES_AFTER")
+        if racing:
+            import time
+
+            time.sleep(0.3)
+            data = Path(__file__).resolve().parent.parent / "data"
+            (data / "tasks" / "racing.md").write_text(racing, encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(data), "stash", "push", "-u", "-q",
+                 "-m", "a concurrent session", "--", "tasks/racing.md"],
+                check=True,
+            )
         return 0
 '''
 

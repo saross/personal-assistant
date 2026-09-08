@@ -1210,6 +1210,46 @@ class TestOrphanStashesAreResolvedByIdentity:
             "a concurrent session's stash was applied into our tree"
         )
 
+    def test_a_stash_pushed_after_the_report_is_not_the_one_recovered(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M3 (fourth re-audit): the selectors come from another
+        process, so they can go stale between the report and the act.
+
+        The detector reports while the orphan is on top; a concurrent
+        session then pushes its own stash, and the reported selector now
+        names THEIRS. Recovery must act on the commit the selector meant
+        when it was read, not on the position it names by the time the
+        apply runs.
+
+        LIMIT: this pins "act on the detector's selector", the shape the
+        code had two rounds ago. The remaining difference between
+        applying by commit and popping by a freshly re-resolved selector
+        is a single-command race that cannot be injected into from a
+        stub, and is not covered here.
+        """
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-m3-orphan")
+        git("stash", "push", "-q", "-m", "orphaned by a killed run", cwd=machine.data)
+
+        result = world.run_sync(
+            machine,
+            PA_TEST_ORPHAN_STASHES="stash@{0}",
+            PA_TEST_DRIFT_STASHES_AFTER="their unfinished note\n",
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        assert "2026-09-08-m3-orphan" in world.published_data_file(
+            "memories/memories.jsonl"
+        ), "the orphaned records were not the ones recovered"
+        assert not (machine.data / "tasks" / "racing.md").exists(), (
+            "a concurrent session's stash was applied into our tree"
+        )
+        leftovers = git("stash", "list", cwd=machine.data).stdout.strip().splitlines()
+        assert len(leftovers) == 1, leftovers
+        assert "a concurrent session" in leftovers[0]
+
     def test_a_real_orphan_is_recovered_and_published(
         self, world: SyncWorld
     ) -> None:
