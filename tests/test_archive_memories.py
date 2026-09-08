@@ -519,3 +519,55 @@ class TestGitCommitPathspec:
             ["git", "-C", str(data_dir), "diff", "--cached", "--name-only"],
             capture_output=True, text=True, check=True).stdout.split()
         assert staged == ["unrelated.md"], "the other session's staging was lost"
+
+    def test_metacharacter_path_does_not_sweep_a_lookalike(self, tmp_path,
+                                                           monkeypatch):
+        """Re-audit of PR #114: a pathspec is a GLOB by default, so an archive
+        directory containing `[`, `*`, or `?` — reachable through the
+        archive_dir parameter — would stage and commit a lookalike another
+        session was part-way through."""
+        for key, value in {
+            "GIT_AUTHOR_NAME": "Test Bot",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test Bot",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+        }.items():
+            monkeypatch.setenv(key, value)
+        data_dir = tmp_path / "data"
+        corpus = data_dir / "memories" / "memories.jsonl"
+        archive_dir = data_dir / "memories" / "archive[1]"
+        decoy_dir = data_dir / "memories" / "archive1"      # glob lookalike
+        archive_dir.mkdir(parents=True)
+        decoy_dir.mkdir(parents=True)
+        corpus.write_text("{}\n", encoding="utf-8")
+        partition = archive_dir / "memories-archive-2026-06.jsonl"
+        partition.write_text("{}\n", encoding="utf-8")
+        (archive_dir / "archive-runs.jsonl").write_text("{}\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(data_dir), "init", "-q", "-b", "main"],
+                       check=True)
+        subprocess.run(["git", "-C", str(data_dir), "commit", "-q",
+                        "--allow-empty", "-m", "seed"], check=True)
+        # Another session's work-in-progress, already staged, whose path the
+        # glob would match.
+        (decoy_dir / "archive-runs.jsonl").write_text("in progress\n",
+                                                      encoding="utf-8")
+        subprocess.run(["git", "-C", str(data_dir), "add",
+                        "memories/archive1/archive-runs.jsonl"], check=True)
+
+        am._git_commit(corpus, partition, 1, None,
+                       guard.mark_bulk_rewrite_commit_msg, archive_dir)
+
+        committed = subprocess.run(
+            ["git", "-C", str(data_dir), "show", "--name-only",
+             "--pretty=format:", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert "memories/archive1/archive-runs.jsonl" not in committed, (
+            "the glob pathspec swept a lookalike directory"
+        )
+        assert "memories/archive[1]/archive-runs.jsonl" in committed
+        staged = subprocess.run(
+            ["git", "-C", str(data_dir), "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert staged == ["memories/archive1/archive-runs.jsonl"]

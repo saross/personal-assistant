@@ -433,13 +433,19 @@ def _git_commit(corpus: Path, partition: Path, n: int,
         str(partition.relative_to(data_dir)),
         str(((archive_dir or ARCHIVE_DIR) / "archive-runs.jsonl").relative_to(data_dir)),
     ]
-    subprocess.run(["git", "-C", str(data_dir), "add", *paths], check=True)
+    # Re-audit of PR #114: `--literal-pathspecs` is load-bearing. A pathspec
+    # is a GLOB by default, so a path containing `[`, `*`, or `?` — reachable
+    # here through the archive_dir parameter — would also match, stage, and
+    # commit a concurrent session's lookalike file. (`--pathspec-file-nul`
+    # does not help: it makes the file FORMAT literal, not the matching.)
+    subprocess.run(["git", "-C", str(data_dir), "--literal-pathspecs",
+                    "add", "--", *paths], check=True)
     # Audit 2026-09-08 S16: name the pathspec on the COMMIT too, not only the
     # add. A bare `git commit` publishes everything already staged in the
     # shared index — including a concurrent session's half-written prose —
     # under this script's bulk-rewrite message and trailer.
-    subprocess.run(["git", "-C", str(data_dir), "commit", "-m", subject,
-                    "--", *paths], check=True)
+    subprocess.run(["git", "-C", str(data_dir), "--literal-pathspecs",
+                    "commit", "-m", subject, "--", *paths], check=True)
     print(f"committed archival in data submodule ({n} records)", file=sys.stderr)
 
 
