@@ -45,6 +45,7 @@ from _bulk_rewrite_guard import (  # noqa: E402
     lock_jsonl_for_rewrite,
     release_lock,
 )
+from _batch_state import load_state, save_state  # noqa: E402
 from _log_dir import ensure_log_dir  # noqa: E402
 
 # ============================================================================
@@ -57,6 +58,11 @@ MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "backfill-summaries.log"
 BATCH_STATE_FILE = LOG_DIR / "backfill-batch-state.json"
+# One state file per batch id, as bulk-archive.py and reprocess-sessions.py
+# already do (AR18). The Batch API takes up to 24 hours, so a second submit
+# before the first is applied used to overwrite the only map that says which
+# memories were sent in which request (audit round 4c-2, finding 14).
+BATCH_STATE_DIR = LOG_DIR / "backfill-batch-state"
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_BATCH_SIZE = 20
@@ -633,11 +639,8 @@ def run_batch_submit(
         "batch_size": args.batch_size,
         "batch_index_map": batch_index_map,
     }
-    BATCH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BATCH_STATE_FILE.write_text(
-        json.dumps(state, indent=2) + "\n", encoding="utf-8"
-    )
-    logger.info("Batch state saved to %s", BATCH_STATE_FILE)
+    state_file = save_state(state, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    logger.info("Batch state saved to %s", state_file)
     logger.info(
         "Run 'python3 scripts/backfill-summaries.py --batch-apply %s' "
         "to apply results once the batch completes.",
@@ -652,6 +655,28 @@ def run_batch_apply(
     """Retrieve results from a completed batch job and apply summaries."""
     from anthropic import Anthropic
 
+    # The batch's own index map is what makes application safe: it says which
+    # memory ids were sent in which request, and therefore which ids a reply
+    # is allowed to change. Without it we would be back to trusting the
+    # model's ids (AR5), so a missing state — or one describing a different
+    # batch — is a refusal.
+    #
+    # Checked FIRST, before the rewrite guard and before any API call. The
+    # guard takes the shared daily-sync lock and fetches from origin, so
+    # doing it the other way round meant a run that was always going to be
+    # refused still blocked the sync and touched the network
+    # (reprocess-sessions.py already had this order; round 4c-2, finding 14).
+    state = load_state(batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    if state is None:
+        logger.error(
+            "No batch state describing %s (looked in %s and %s) — cannot "
+            "tell which memories were sent in which request, so results "
+            "cannot be applied safely.",
+            batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE,
+        )
+        sys.exit(1)
+    batch_index_map: dict[str, list[str]] = state.get("batch_index_map", {})
+
     # Guard against racing with extraction-hook appends or scheduled
     # sync (this path rewrites memories.jsonl in place).
     ensure_safe_to_rewrite(
@@ -664,28 +689,6 @@ def run_batch_apply(
         "    cd data && git commit -m 'backfill: summaries from batch %s' -m 'Rewrite-Class: bulk'",
         batch_id,
     )
-
-    # The batch's own index map is what makes application safe: it says
-    # which memory ids were sent in which request, and therefore which ids a
-    # reply is allowed to change. Without it we would be back to trusting the
-    # model's ids (AR5), so a missing or mismatched state file is a refusal.
-    if not BATCH_STATE_FILE.exists():
-        logger.error(
-            "No batch state at %s — cannot tell which memories were sent in "
-            "which request, so results cannot be applied safely.",
-            BATCH_STATE_FILE,
-        )
-        sys.exit(1)
-    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
-    if state.get("batch_id") != batch_id:
-        logger.error(
-            "Batch state at %s describes batch %s, not %s. Applying one "
-            "batch's results through another's index map would rewrite the "
-            "wrong memories.",
-            BATCH_STATE_FILE, state.get("batch_id"), batch_id,
-        )
-        sys.exit(1)
-    batch_index_map: dict[str, list[str]] = state.get("batch_index_map", {})
 
     client = Anthropic()
 

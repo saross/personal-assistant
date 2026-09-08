@@ -113,17 +113,25 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(backfill, "MEMORIES_FILE", memories)
     monkeypatch.setattr(backfill, "BATCH_STATE_FILE", tmp_path / "batch.json")
+    monkeypatch.setattr(
+        backfill, "BATCH_STATE_DIR", tmp_path / "batch-state"
+    )
     monkeypatch.setattr(backfill, "setup_logging", lambda: LOGGER)
     monkeypatch.setattr(backfill, "load_env", lambda: None)
-    monkeypatch.setattr(
-        backfill, "ensure_safe_to_rewrite", lambda reason: None
-    )
+    guard_calls: list[str] = []
+
+    def record_guard(reason: str) -> None:
+        guard_calls.append(reason)
+
+    monkeypatch.setattr(backfill, "ensure_safe_to_rewrite", record_guard)
     monkeypatch.setattr(backfill, "release_lock", lambda: None)
 
     stub_module = types.ModuleType("anthropic")
     stub_module.Anthropic = StubAnthropic
     monkeypatch.setitem(sys.modules, "anthropic", stub_module)
-    return types.SimpleNamespace(memories=memories, tmp_path=tmp_path)
+    return types.SimpleNamespace(
+        memories=memories, tmp_path=tmp_path, guard_calls=guard_calls,
+    )
 
 
 def _run_main(monkeypatch: pytest.MonkeyPatch, *argv: str) -> None:
@@ -273,13 +281,13 @@ class TestOutOfBatchIdsAreIgnored:
         """A canonical of three memories and a one-request batch over two."""
         in_batch = ["2026-03-02-000000", "2026-03-02-000001"]
         victim = "2026-03-02-000002"
-        backfill.BATCH_STATE_FILE.write_text(
-            json.dumps({
+        backfill.save_state(
+            {
                 "batch_id": "msgbatch_stub",
                 "n_requests": 1,
                 "batch_index_map": {"batch-0": in_batch},
-            }),
-            encoding="utf-8",
+            },
+            backfill.BATCH_STATE_DIR, backfill.BATCH_STATE_FILE,
         )
         stub_module = types.ModuleType("anthropic")
         stub_module.Anthropic = BatchResultsStub
@@ -369,6 +377,8 @@ class TestOutOfBatchIdsAreIgnored:
     ) -> None:
         """With no index map there is no safe way to apply anything."""
         backfill.BATCH_STATE_FILE.unlink()
+        for stale in backfill.BATCH_STATE_DIR.glob("*.json"):
+            stale.unlink()
 
         with pytest.raises(SystemExit) as exit_info:
             _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
@@ -471,3 +481,105 @@ class TestCanonicalWritePath:
         # The content survives the round trip unchanged.
         restored = json.loads(harness.memories.read_text(encoding="utf-8"))
         assert restored["content"] == content
+
+
+class TestBatchStateIsPerBatch:
+    """Round 4c-2 finding 14 — the same treatment its siblings already had.
+
+    A single slot meant a second submit before the first was applied
+    destroyed the first's index map, and the batch-id check ran only after
+    the rewrite guard had taken the shared daily-sync lock and fetched from
+    origin -- so a run that was always going to be refused still blocked the
+    sync and touched the network.
+    """
+
+    def _state(self, batch_id: str, ids: list[str]) -> dict:
+        return {
+            "batch_id": batch_id,
+            "n_requests": 1,
+            "batch_index_map": {"batch-0": ids},
+        }
+
+    def test_two_submits_keep_their_own_index_maps(self, harness) -> None:
+        first = ["2026-03-02-000000"]
+        second = ["2026-03-02-000001"]
+        backfill.save_state(
+            self._state("msgbatch_first", first),
+            backfill.BATCH_STATE_DIR, backfill.BATCH_STATE_FILE,
+        )
+        backfill.save_state(
+            self._state("msgbatch_second", second),
+            backfill.BATCH_STATE_DIR, backfill.BATCH_STATE_FILE,
+        )
+
+        loaded = backfill.load_state(
+            "msgbatch_first", backfill.BATCH_STATE_DIR,
+            backfill.BATCH_STATE_FILE,
+        )
+        assert loaded is not None
+        assert loaded["batch_index_map"]["batch-0"] == first
+
+    def test_the_submit_path_writes_a_per_batch_file(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Through run_batch_submit, not the helper directly.
+
+        Asserting on save_state alone would leave the call site free to keep
+        writing a single slot.
+        """
+        monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+        _run_main(monkeypatch, "--batch-api", "--yes")
+
+        per_batch = backfill.BATCH_STATE_DIR / "msgbatch_stub.json"
+        assert per_batch.is_file(), (
+            f"no per-batch state written; "
+            f"{list(backfill.BATCH_STATE_DIR.glob('*')) if backfill.BATCH_STATE_DIR.is_dir() else 'no directory'}"
+        )
+        state = json.loads(per_batch.read_text(encoding="utf-8"))
+        assert state["batch_id"] == "msgbatch_stub"
+        assert state["batch_index_map"]
+        # The legacy single slot still names the latest batch.
+        legacy = json.loads(
+            backfill.BATCH_STATE_FILE.read_text(encoding="utf-8")
+        )
+        assert legacy["batch_id"] == "msgbatch_stub"
+
+    def test_the_batch_id_is_checked_before_the_rewrite_guard(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refusal must cost no lock and no fetch."""
+        backfill.save_state(
+            self._state("msgbatch_first", ["2026-03-02-000000"]),
+            backfill.BATCH_STATE_DIR, backfill.BATCH_STATE_FILE,
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            _run_main(monkeypatch, "--batch-apply", "msgbatch_other")
+
+        assert exit_info.value.code != 0
+        assert harness.guard_calls == [], (
+            "the bulk-rewrite guard took the shared lock for a run that was "
+            "always going to be refused"
+        )
+        assert StubAnthropic.calls == []
+
+    def test_the_matching_batch_still_takes_the_guard(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive control: the guard must not have been lost."""
+        backfill.save_state(
+            self._state("msgbatch_stub", ["2026-03-02-000000"]),
+            backfill.BATCH_STATE_DIR, backfill.BATCH_STATE_FILE,
+        )
+        stub_module = types.ModuleType("anthropic")
+        stub_module.Anthropic = BatchResultsStub
+        BatchResultsStub.scripted_results = []
+        monkeypatch.setitem(sys.modules, "anthropic", stub_module)
+
+        _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
+
+        assert harness.guard_calls, (
+            "the bulk-rewrite guard was not taken before rewriting the "
+            "canonical"
+        )
