@@ -16,6 +16,7 @@ Every fixture is synthetic — see ``tests/fixtures``.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import socket
@@ -473,6 +474,16 @@ class TestCustomIdUniqueness:
             custom_id = bom.build_custom_id(session_id)
             assert 1 <= len(custom_id) <= bom.CUSTOM_ID_MAX_CHARS
             assert bom.CUSTOM_ID_SAFE_RE.match(custom_id)
+
+    def test_hashed_custom_id_keeps_the_whole_digest_prefix(self):
+        """Pin the digest length: a short prefix reintroduces collisions."""
+        long_id = "subagent-explore-" + "x" * 80
+        custom_id = bom.build_custom_id(long_id)
+        assert custom_id.startswith("sess-")
+        digest = custom_id[len("sess-"):]
+        assert len(digest) == 40
+        assert digest == hashlib.sha256(long_id.encode("utf-8")).hexdigest()[:40]
+        assert len(custom_id) <= bom.CUSTOM_ID_MAX_CHARS
 
     def test_a_manifest_of_similar_ids_round_trips(self, tmp_path):
         """assemble_requests + the batch-state map must not lose a session."""
