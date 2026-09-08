@@ -265,25 +265,57 @@ Last updated: 2024-02-08
 # call from any test would have reached the real internet (audit round 4a-2
 # addendum). Nothing else in the suite was watching sockets at all.
 #
-# Policy: DEFAULT DENY, with an explicit opt-in that is ALSO restricted to
-# loopback. Allowing loopback unconditionally was rejected: this machine runs
-# the operator's real PostgreSQL and Ollama on 127.0.0.1, so "it is only
-# localhost" is not a safety boundary here — a stray connection could reach a
-# live service and, in Ollama's case, spend GPU time. A test that genuinely
-# owns a server it started declares ``@pytest.mark.local_socket`` (registered
-# in pytest.ini) and may then reach 127.0.0.1 / ::1 only; everything else,
-# marked or not, is refused.
+# WHAT THIS GUARD ACTUALLY COVERS (audit round 4a-3, finding M4 — the
+# previous comment claimed "DEFAULT DENY" without qualification, which
+# overstated it):
+#
+#   Covered — calls made IN THIS PROCESS through the Python ``socket``
+#   module's own class and helpers: ``socket.socket.connect``,
+#   ``socket.socket.connect_ex``, ``socket.create_connection`` (TCP), and
+#   ``socket.socket.sendto`` / ``socket.socket.sendmsg`` with an explicit
+#   destination (connectionless UDP). That is the surface httpx, requests,
+#   urllib, pyzotero, and the Slack SDK all sit on.
+#
+#   NOT covered, measured from inside a run:
+#     1. ``_socket.socket()`` — the C accelerator class underneath. Patching
+#        the Python subclass does not touch it, so code that reaches for the
+#        private module bypasses this entirely. Nothing in this repo does.
+#     2. Child processes. A subprocess got to 1.1.1.1:80 while this guard was
+#        armed, because it is process-local monkeypatching and nothing more.
+#        What covers children is the ENVIRONMENT set above — PGHOST at a dead
+#        end and a stub ``psql`` first on PATH — plus the fact that the shell
+#        paths the suite runs (daily-sync and its harness) operate on
+#        throwaway git repositories whose remotes are local directories, so
+#        they have nowhere to dial out to. A new test that shells out to
+#        something network-capable is NOT protected by this guard and must
+#        stub the client itself.
+#     3. psycopg2. It opens its socket in C, below the Python socket module,
+#        so this guard never sees it; the PGHOST/PGPORT repoint and the
+#        ``no_live_postgres`` fixture are what cover PostgreSQL.
+#
+# Policy within the covered surface: DEFAULT DENY, with an explicit opt-in
+# that is ALSO restricted to loopback. Allowing loopback unconditionally was
+# rejected: this machine runs the operator's real PostgreSQL and Ollama on
+# 127.0.0.1, so "it is only localhost" is not a safety boundary here — a
+# stray connection could reach a live service and, in Ollama's case, spend
+# GPU time. A test that genuinely owns a server it started declares
+# ``@pytest.mark.local_socket`` (registered in pytest.ini) and may then reach
+# 127.0.0.1 or ::1 only; everything else, marked or not, is refused.
 # ---------------------------------------------------------------------------
 
 #: The marker that opts a test into loopback connections it owns.
 LOCAL_SOCKET_MARKER = "local_socket"
 
-#: Hosts an opted-in test may reach. Nothing routable, ever.
+#: Hosts an opted-in test may reach. Nothing routable, ever. Exactly the two
+#: loopback addresses plus their names: the whole of 127.0.0.0/8 used to be
+#: allowed while the comment promised 127.0.0.1, and a test binds 127.0.0.1,
+#: so the wider range bought nothing (round 4a-3, low finding).
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "ip6-localhost"})
 
 #: Updated by ``pytest_runtest_setup`` so a refusal can name the test that
 #: caused it — a bare "no network" tells the reader nothing about where to
-#: look.
+#: look — and reset by ``pytest_runtest_teardown`` so the opt-in cannot
+#: outlive the test that asked for it.
 _ACTIVE_TEST: dict[str, object] = {"nodeid": "<collection>", "local_socket": False}
 
 
@@ -304,6 +336,20 @@ def pytest_runtest_setup(item):
     )
 
 
+def pytest_runtest_teardown(item):
+    """Drop the opt-in as soon as the test body is over.
+
+    Without this the last marked test's permission stayed in force for
+    everything that ran afterwards outside a test body — fixture finalisers,
+    session teardown, and (until the next ``pytest_runtest_setup``) the
+    collection of whatever came next (round 4a-3, low finding). A marked
+    test's own finalisers therefore run WITHOUT the opt-in; closing a socket
+    needs no permission, and failing closed is the right side to err on.
+    """
+    _ACTIVE_TEST["nodeid"] = f"{item.nodeid} (teardown)"
+    _ACTIVE_TEST["local_socket"] = False
+
+
 def _is_loopback(address) -> bool:
     """True only for an AF_INET/AF_INET6 address on the loopback interface.
 
@@ -315,14 +361,14 @@ def _is_loopback(address) -> bool:
     host = address[0]
     if not isinstance(host, str):
         return False
-    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+    return host in _LOOPBACK_HOSTS
 
 
-def _network_refusal(address) -> str:
+def _network_refusal(address, verb: str = "connect to") -> str:
     """The refusal text, naming the test and what it reached for."""
     return (
         f"refused by the test suite: no network. "
-        f"{_ACTIVE_TEST['nodeid']} tried to connect to {address!r}. "
+        f"{_ACTIVE_TEST['nodeid']} tried to {verb} {address!r}. "
         f"Mock the client, or — if the test owns a loopback server it "
         f"started itself — mark it @pytest.mark.{LOCAL_SOCKET_MARKER}."
     )
@@ -330,17 +376,23 @@ def _network_refusal(address) -> str:
 
 @pytest.fixture(scope="session", autouse=True)
 def no_network():
-    """Refuse every outbound connection for the whole session.
+    """Refuse outbound Python-level connections for the whole session.
 
     Patched at session scope rather than per test so a connection opened from
-    a fixture, a background thread, or an import is caught too. Both
-    ``socket.socket.connect`` and ``socket.create_connection`` are wrapped:
-    the latter goes through the former today, but belt and braces costs
-    nothing and the stdlib is free to change.
+    a fixture, a background thread, or an import is caught too. See the
+    section comment above for exactly what this does and does not reach.
+
+    ``sendto``/``sendmsg`` are wrapped as well as ``connect``: a UDP datagram
+    needs no connect at all, so a DNS query or a metrics packet would
+    otherwise leave the machine unremarked (round 4a-3, finding M4). A
+    CONNECTED datagram socket goes through ``connect`` first and is covered
+    there.
     """
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
     real_create_connection = socket.create_connection
+    real_sendto = socket.socket.sendto
+    real_sendmsg = socket.socket.sendmsg
 
     def guarded_connect(self, address):
         if _ACTIVE_TEST["local_socket"] and _is_loopback(address):
@@ -357,15 +409,36 @@ def no_network():
             return real_create_connection(address, *args, **kwargs)
         raise AssertionError(_network_refusal(address))
 
+    def guarded_sendto(self, data, *args):
+        # sendto(data, address) or sendto(data, flags, address): the
+        # destination is always the last positional argument.
+        address = args[-1] if args else None
+        if _ACTIVE_TEST["local_socket"] and _is_loopback(address):
+            return real_sendto(self, data, *args)
+        raise AssertionError(_network_refusal(address, verb="send a datagram to"))
+
+    def guarded_sendmsg(self, buffers, ancdata=None, flags=0, address=None):
+        if address is None:
+            # No destination: this is a connected socket, and the connect
+            # that got it there was guarded.
+            return real_sendmsg(self, buffers, ancdata or [], flags)
+        if _ACTIVE_TEST["local_socket"] and _is_loopback(address):
+            return real_sendmsg(self, buffers, ancdata or [], flags, address)
+        raise AssertionError(_network_refusal(address, verb="send a datagram to"))
+
     socket.socket.connect = guarded_connect
     socket.socket.connect_ex = guarded_connect_ex
     socket.create_connection = guarded_create_connection
+    socket.socket.sendto = guarded_sendto
+    socket.socket.sendmsg = guarded_sendmsg
     try:
         yield
     finally:
         socket.socket.connect = real_connect
         socket.socket.connect_ex = real_connect_ex
         socket.create_connection = real_create_connection
+        socket.socket.sendto = real_sendto
+        socket.socket.sendmsg = real_sendmsg
 
 
 # ---------------------------------------------------------------------------

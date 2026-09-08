@@ -1046,3 +1046,131 @@ def test_generated_bytecode_is_not_mistaken_for_a_leak(tmp_path, monkeypatch):
 
     conftest.assert_canonical_store_untouched(
         before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# The network guard's real perimeter (audit round 4a-3, finding M4)
+# ===========================================================================
+
+
+def test_a_udp_datagram_is_refused():
+    """UDP needs no connect, so sendto had to be guarded separately.
+
+    Measured from inside a run before this: sendto to 8.8.8.8:53 succeeded
+    while the guard was armed. Kills the mutation that drops the ``sendto``
+    wrapper.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(AssertionError, match="send a datagram to"):
+            sock.sendto(b"probe", ("8.8.8.8", 53))
+    finally:
+        sock.close()
+
+
+def test_a_udp_sendmsg_with_a_destination_is_refused():
+    """``sendmsg`` takes its destination as a fourth argument.
+
+    Kills the mutation that drops the ``sendmsg`` wrapper.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(AssertionError, match="no network"):
+            sock.sendmsg([b"probe"], [], 0, ("8.8.8.8", 53))
+    finally:
+        sock.close()
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_may_send_a_datagram_to_its_own_server():
+    """The opt-in covers UDP too, and still only for loopback."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        client.sendto(b"hello", ("127.0.0.1", port))
+        assert server.recv(16) == b"hello"
+        with pytest.raises(AssertionError, match="no network"):
+            client.sendto(b"probe", ("8.8.8.8", 53))
+    finally:
+        client.close()
+        server.close()
+
+
+def test_only_the_two_loopback_addresses_are_allowed():
+    """127.0.0.0/8 as a whole is NOT loopback for this guard.
+
+    Kills the mutation ``host in _LOOPBACK_HOSTS`` -> ``... or
+    host.startswith("127.")``: the comment promised 127.0.0.1 and the code
+    allowed the whole /8, and a test that owns a server binds 127.0.0.1, so
+    the wider range bought nothing.
+    """
+    assert conftest._is_loopback(("127.0.0.1", 80))
+    assert conftest._is_loopback(("::1", 80))
+    assert conftest._is_loopback(("localhost", 80))
+    assert not conftest._is_loopback(("127.0.0.2", 80))
+    assert not conftest._is_loopback(("127.53.0.1", 80))
+    assert not conftest._is_loopback(("10.0.0.1", 80))
+    assert not conftest._is_loopback("/var/run/postgresql/.s.PGSQL.5432")
+    assert not conftest._is_loopback(None)
+
+
+def test_the_opt_in_does_not_outlive_the_test():
+    """``local_socket`` is off unless the running test asked for it.
+
+    Kills the mutation that drops ``pytest_runtest_teardown``: the last
+    marked test's permission would otherwise stay in force for fixture
+    finalisers, session teardown, and the next collection. This test is
+    unmarked and runs after marked ones in the same file.
+    """
+    assert conftest._ACTIVE_TEST["local_socket"] is False
+
+
+def test_the_guard_documents_what_it_cannot_reach():
+    """The comment must name the three gaps, not claim blanket denial.
+
+    A guard whose docs overstate its scope is worse than a narrower one
+    honestly described: the next author trusts it for a case it never
+    covered. Kills a revert of the comment to the old unqualified
+    "DEFAULT DENY".
+    """
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    section = source[source.index("must not open a network connection"):
+                     source.index("must not write ~/.cache")]
+    assert "_socket.socket()" in section, "the C accelerator gap"
+    assert "Child processes" in section, "the subprocess gap"
+    assert "psycopg2" in section, "the C-level driver gap"
+    assert "PGHOST" in section, "what actually covers children"
+
+
+#: Filled by ``record_opt_in_at_teardown`` so a later test can read what the
+#: flag looked like once the marked test's body was over.
+_OPT_IN_AT_TEARDOWN: list = []
+
+
+@pytest.fixture
+def record_opt_in_at_teardown():
+    """Record ``_ACTIVE_TEST["local_socket"]`` from a fixture finaliser."""
+    yield
+    _OPT_IN_AT_TEARDOWN.append(conftest._ACTIVE_TEST["local_socket"])
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_runs_with_the_opt_in(record_opt_in_at_teardown):
+    """Precondition: the flag really is on inside a marked test's body."""
+    assert conftest._ACTIVE_TEST["local_socket"] is True
+
+
+def test_the_opt_in_is_dropped_before_finalisers_run():
+    """The marked test above must not leave its permission behind.
+
+    Kills the mutation that empties ``pytest_runtest_teardown``: without it
+    the flag is still True while the previous test's fixture finalisers run,
+    and stays True through session teardown. Fail closed: a finaliser only
+    ever closes a socket, which needs no permission.
+    """
+    assert _OPT_IN_AT_TEARDOWN, (
+        "test_a_marked_test_runs_with_the_opt_in must run first")
+    assert _OPT_IN_AT_TEARDOWN[-1] is False, (
+        "the opt-in was still in force during the marked test's teardown")
