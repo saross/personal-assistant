@@ -50,8 +50,20 @@ Shared cursor file
 :func:`update_cursor_file` is the one supported way to change
 ``memories/sync-cursors.json``. It takes an exclusive ``flock`` for the whole
 read-modify-write cycle and writes via temp-file + :func:`os.replace`, so
-neither an interleaving between the three sync processes nor a kill part-way
-through a write can lose a cursor (audit round two, finding P16).
+neither an interleaving between two callers *that both use it* nor a kill
+part-way through a write can lose a cursor (audit round two, finding P16).
+
+That qualification is load-bearing, and an earlier version of this docstring
+omitted it (re-audit finding M2): ``flock`` is advisory, so the guarantee
+holds only over the writers that take the lock. Every writer in the
+repository now does — ``sync-to-postgres.py``, ``sync-sessions-to-postgres.py``,
+``sync-to-zotero.py``, and ``rebuild-postgres.py`` — and any new one must,
+or it silently reintroduces the lost-update it was written to prevent.
+
+A caller that already holds the lock (``rebuild-postgres.py`` holds it across
+its TRUNCATE so a concurrent sync cannot write a pre-rebuild position back
+afterwards) uses :func:`apply_cursor_update` instead. ``flock`` is per open
+file description, so taking it twice in one process would deadlock.
 
 Quarantine file location
 ------------------------
@@ -403,11 +415,63 @@ def _write_cursor_file(cursor_path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+class CursorKeyVanished(RuntimeError):
+    """
+    A cursor key present when the run started was gone when it saved.
+
+    The only thing that removes a key is ``rebuild-postgres.py``. If a sync
+    read a position, then a rebuild truncated the tables and cleared the
+    cursors, writing that position back would tell the next run that rows
+    it just destroyed are already synced — they would never be replayed
+    (re-audit finding M3). Callers report this and exit non-zero rather
+    than writing.
+    """
+
+
+def apply_cursor_update(
+    cursor_path: Path,
+    updates: dict[str, Any] | None = None,
+    *,
+    delete_keys: tuple[str, ...] = (),
+    expect_present: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """
+    Read-modify-write the cursor file **without** taking the lock.
+
+    For callers already inside :func:`cursor_file_lock`. ``flock`` is held
+    per open file description, so a nested :func:`update_cursor_file` in the
+    same process would block on itself forever.
+
+    See :func:`update_cursor_file` for the parameters; the only difference
+    is who holds the lock.
+
+    Raises
+    ------
+    CursorKeyVanished
+        If any key named in ``expect_present`` is absent from the file.
+    """
+    data = read_cursor_file(cursor_path)
+    missing = [key for key in expect_present if key not in data]
+    if missing:
+        raise CursorKeyVanished(
+            f"cursor key(s) {', '.join(sorted(missing))} were present when "
+            f"this run started and are gone now — a rebuild reset "
+            f"{cursor_path.name} mid-run"
+        )
+    if updates:
+        data.update(updates)
+    for key in delete_keys:
+        data.pop(key, None)
+    _write_cursor_file(cursor_path, data)
+    return data
+
+
 def update_cursor_file(
     cursor_path: Path,
     updates: dict[str, Any] | None = None,
     *,
     delete_keys: tuple[str, ...] = (),
+    expect_present: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """
     Merge ``updates`` into the shared cursor file under an exclusive lock.
@@ -426,20 +490,25 @@ def update_cursor_file(
         ``delete_keys``).
     delete_keys:
         Keys to remove, applied after ``updates``.
+    expect_present:
+        Keys that must still be in the file. A compare-and-set against a
+        concurrent rebuild: see :class:`CursorKeyVanished`.
 
     Returns
     -------
     dict[str, Any]
         The cursor object as written.
+
+    Raises
+    ------
+    CursorKeyVanished
+        If any key named in ``expect_present`` is absent.
     """
     with cursor_file_lock(cursor_path):
-        data = read_cursor_file(cursor_path)
-        if updates:
-            data.update(updates)
-        for key in delete_keys:
-            data.pop(key, None)
-        _write_cursor_file(cursor_path, data)
-    return data
+        return apply_cursor_update(
+            cursor_path, updates,
+            delete_keys=delete_keys, expect_present=expect_present,
+        )
 
 
 # ---------------------------------------------------------------------------

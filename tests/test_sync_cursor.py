@@ -284,3 +284,71 @@ class TestReadCursorFile:
         path = tmp_path / "sync-cursors.json"
         path.write_text("[1, 2, 3]", encoding="utf-8")
         assert _sync_cursor.read_cursor_file(path) == {}
+
+
+# ============================================================================
+# Re-audit finding M3 — compare-and-set against a concurrent rebuild
+# ============================================================================
+
+
+class TestCompareAndSet:
+    """A key a rebuild removed must not be written back."""
+
+    def test_missing_expected_key_raises(self, tmp_path: Path) -> None:
+        """
+        The rebuild cleared the cursors while a sync was mid-cycle.
+        Writing the sync's position back would tell the next run that rows
+        the rebuild destroyed are already synced. The mutation this kills:
+        ignoring ``expect_present``.
+        """
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(json.dumps({"other": 1}), encoding="utf-8")
+
+        with pytest.raises(_sync_cursor.CursorKeyVanished):
+            _sync_cursor.update_cursor_file(
+                cursor, {"postgres_sync_line": 99},
+                expect_present=("postgres_sync_line",),
+            )
+
+        # And nothing was written.
+        assert json.loads(cursor.read_text(encoding="utf-8")) == {"other": 1}
+
+    def test_present_key_is_written(self, tmp_path: Path) -> None:
+        """The ordinary path: the key is still there, so the write lands."""
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(
+            json.dumps({"postgres_sync_line": 10}), encoding="utf-8",
+        )
+        _sync_cursor.update_cursor_file(
+            cursor, {"postgres_sync_line": 11},
+            expect_present=("postgres_sync_line",),
+        )
+        assert json.loads(
+            cursor.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 11
+
+    def test_first_ever_write_is_allowed(self, tmp_path: Path) -> None:
+        """
+        With no ``expect_present`` a missing key is fine — that is a first
+        run, or the first run after a deliberate rebuild.
+        """
+        cursor = tmp_path / "sync-cursors.json"
+        _sync_cursor.update_cursor_file(cursor, {"postgres_sync_line": 1})
+        assert json.loads(
+            cursor.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 1
+
+    def test_apply_cursor_update_does_not_take_the_lock(
+        self, tmp_path: Path,
+    ) -> None:
+        """
+        ``apply_cursor_update`` is for callers already holding the lock.
+        Taking it again would deadlock — flock is per open file
+        description, so a second ``open`` in the same process conflicts
+        with the first.
+        """
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(json.dumps({"a": 1}), encoding="utf-8")
+        with _sync_cursor.cursor_file_lock(cursor):
+            _sync_cursor.apply_cursor_update(cursor, {"b": 2})
+        assert json.loads(cursor.read_text(encoding="utf-8")) == {"a": 1, "b": 2}

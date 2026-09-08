@@ -1598,3 +1598,130 @@ class TestEnvironmentFaults:
             assert json.loads(
                 cursor_file.read_text()
             ).get("postgres_sync_line", 0) == 0
+
+
+class TestCursorResetMidRun:
+    """
+    Re-audit finding M3 — a rebuild that clears the cursors while a sync
+    is mid-cycle must not have the sync's stale position written back.
+    """
+
+    def _canonical(self, path: Path, ids: list[str]) -> None:
+        """Write a small valid canonical file."""
+        path.write_text(
+            "".join(
+                json.dumps({
+                    "id": mid, "category": "progress", "content": "c",
+                    "created_at": "2026-09-01T00:00:00+00:00",
+                }) + "\n"
+                for mid in ids
+            ),
+            encoding="utf-8",
+        )
+
+    def test_vanished_cursor_key_is_not_written_back(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        The rebuild removes ``postgres_sync_line`` between this cycle's
+        read and its write. Writing 3 back would tell the next run that
+        rows the rebuild truncated are already synced — they would never
+        be replayed. The mutation this kills: dropping ``expect_present``
+        from ``save_cursor``.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1", "m2", "m3"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 0}), encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[],
+            returned_ids=["m1", "m2", "m3"],
+        )
+
+        original_insert = sync_mod.insert_memories
+
+        def _rebuild_runs_now(records, logger):
+            """Simulate rebuild-postgres.py clearing the cursors mid-cycle."""
+            cursor_file.write_text(json.dumps({}), encoding="utf-8")
+            return original_insert(records, logger)
+
+        monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
+
+        with pytest.raises(sync_mod.CursorKeyVanished):
+            sync_mod.sync(test_logger)
+
+        assert "postgres_sync_line" not in json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )
+
+    def test_main_exits_six(self, monkeypatch, tmp_path):
+        """A distinct exit code, so the operator can tell this apart."""
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 0}), encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m1"],
+        )
+
+        original_insert = sync_mod.insert_memories
+
+        def _rebuild_runs_now(records, logger):
+            cursor_file.write_text(json.dumps({}), encoding="utf-8")
+            return original_insert(records, logger)
+
+        monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 6
+
+    def test_first_run_with_no_cursor_key_still_writes(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        The over-correction guard: a key that was never there is a first
+        run (or the first run after a rebuild), and must still be written.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m1"],
+        )
+
+        sync_mod.sync(test_logger)
+
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 1

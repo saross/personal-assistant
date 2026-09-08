@@ -45,6 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
     detect_jsonl_shrink,
     quarantine_record,
+    read_cursor_file,
+    update_cursor_file,
 )
 
 # -------------------------------------------------------------------------
@@ -107,29 +109,22 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
 
 def load_cursor() -> int:
     """Load the last synced line number (0 if no previous sync)."""
-    if not CURSOR_FILE.exists():
-        return 0
     try:
-        data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        return int(data.get(CURSOR_KEY, 0))
-    except (json.JSONDecodeError, ValueError, OSError):
+        return int(read_cursor_file(CURSOR_FILE).get(CURSOR_KEY, 0))
+    except (ValueError, TypeError):
         return 0
 
 
 def save_cursor(line_number: int) -> None:
-    """Save the current sync position to the cursor file."""
-    data: dict[str, Any] = {}
-    if CURSOR_FILE.exists():
-        try:
-            data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            data = {}
-    data[CURSOR_KEY] = line_number
-    CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CURSOR_FILE.write_text(
-        json.dumps(data, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    """Save the current sync position to the cursor file.
+
+    Routed through :func:`_sync_cursor.update_cursor_file` (re-audit
+    finding M2): this is the third writer of the one shared cursor file,
+    and ``flock`` only serialises the writers that take it. A plain
+    ``write_text`` here could still lose a Postgres sync's advance, and a
+    kill part-way through it could still truncate every cursor at once.
+    """
+    update_cursor_file(CURSOR_FILE, {CURSOR_KEY: line_number})
 
 
 # -------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from typing import Any, Iterator, NamedTuple
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
+    CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
     update_cursor_file,
@@ -155,17 +156,42 @@ def load_cursor(cursor_key: str = "postgres_sync_line") -> int:
         return 0
 
 
-def save_cursor(line_number: int, cursor_key: str = "postgres_sync_line") -> None:
+def cursor_key_present(cursor_key: str = "postgres_sync_line") -> bool:
+    """Return whether ``cursor_key`` is currently in the cursor file.
+
+    Read at the start of a cycle so :func:`save_cursor` can refuse to
+    write a position back if a rebuild removed the key in the meantime
+    (re-audit finding M3).
+    """
+    return cursor_key in read_cursor_file(CURSOR_FILE)
+
+
+def save_cursor(
+    line_number: int,
+    cursor_key: str = "postgres_sync_line",
+    *,
+    expect_present: bool = False,
+) -> None:
     """Save the current sync position to the cursor file.
 
     Routed through :func:`_sync_cursor.update_cursor_file` (audit round
-    two, finding P16): three processes read-modify-write this one file,
+    two, finding P16): four processes read-modify-write this one file,
     so the whole cycle runs under an exclusive flock and the write itself
     is temp-file + ``os.replace``. Before that, an interleaving lost one
     process's advance, and a kill part-way through the write truncated
     the file and reset every cursor at once.
+
+    ``expect_present`` makes the write a compare-and-set (re-audit
+    finding M3). Pass the value :func:`cursor_key_present` returned at the
+    start of the cycle: if the key was there then and is gone now, a
+    rebuild cleared it, and writing this position back would tell the
+    next run that rows the rebuild destroyed are already synced. Raises
+    :class:`CursorKeyVanished` instead.
     """
-    update_cursor_file(CURSOR_FILE, {cursor_key: line_number})
+    update_cursor_file(
+        CURSOR_FILE, {cursor_key: line_number},
+        expect_present=(cursor_key,) if expect_present else (),
+    )
 
 
 def save_sync_timestamp() -> None:
@@ -1045,6 +1071,11 @@ def sync(logger: logging.Logger) -> None:
 def _sync_locked(logger: logging.Logger) -> None:
     """Core sync cycle, executed under the advisory lock."""
     cursor_line = load_cursor()
+    # Whether the key existed when we read it, for the compare-and-set at
+    # save time (re-audit finding M3). A first-ever run has no key and
+    # must still be able to write one; only a key that *disappears*
+    # mid-run means a rebuild happened.
+    cursor_key_was_present = cursor_key_present()
 
     # Read all lines and process from cursor position
     lines = MEMORIES_FILE.read_text(encoding="utf-8").splitlines()
@@ -1133,7 +1164,7 @@ def _sync_locked(logger: logging.Logger) -> None:
             )
         else:
             logger.info("No valid records to insert (slice was blank-only)")
-        save_cursor(total_lines)
+        save_cursor(total_lines, expect_present=cursor_key_was_present)
         return
 
     # Insert into PostgreSQL (returns InsertResult with full accounting).
@@ -1175,7 +1206,7 @@ def _sync_locked(logger: logging.Logger) -> None:
                 len(result.quarantined), QUARANTINE_FILE,
                 list(result.quarantined[:10]),
             )
-        save_cursor(total_lines)
+        save_cursor(total_lines, expect_present=cursor_key_was_present)
         save_sync_timestamp()
         logger.info("Cursor advanced to line %d", total_lines)
 
@@ -1213,6 +1244,17 @@ def main() -> None:
             "No memory was quarantined and the cursor did not move."
         )
         sys.exit(4)
+    except CursorKeyVanished as exc:
+        # A rebuild cleared the cursors while this cycle was running.
+        # Writing our position back would mark rows the rebuild destroyed
+        # as already synced (re-audit finding M3).
+        logger.error("CURSOR RESET MID-RUN — %s", exc)
+        logger.error(
+            "Not writing the position back. The next run starts from the "
+            "rebuilt cursor and replays from the canonical, which is what "
+            "the rebuild intended."
+        )
+        sys.exit(6)
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)

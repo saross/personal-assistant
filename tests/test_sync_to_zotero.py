@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -931,3 +932,56 @@ class TestNotFoundDetection:
         assert not sync_to_zotero._is_not_found_exception(
             ValueError("Bad input")
         )
+
+
+class TestCursorWritesAreShared:
+    """
+    Re-audit finding M2 — this is the third writer of the one shared
+    ``memories/sync-cursors.json``, and ``flock`` only serialises the
+    writers that take it.
+    """
+
+    def test_save_cursor_is_atomic(self, tmp_path, monkeypatch):
+        """
+        An interrupted save must leave the previous file — including the
+        two Postgres syncs' cursors — intact. The mutation this kills:
+        restoring ``CURSOR_FILE.write_text(...)`` in ``save_cursor``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        original = {
+            "postgres_sync_line": 42345,
+            "sessions_sync_timestamp": "2026-09-08T10:05:53",
+            "zotero_sync_line": 3,
+        }
+        cursor_file.write_text(json.dumps(original), encoding="utf-8")
+        monkeypatch.setattr(sync_to_zotero, "CURSOR_FILE", cursor_file)
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            sync_to_zotero.save_cursor(9)
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
+
+    def test_save_cursor_preserves_the_other_cursors(
+        self, tmp_path, monkeypatch,
+    ):
+        """A Zotero advance must not drop the Postgres syncs' positions."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({
+                "postgres_sync_line": 42345,
+                "sessions_sync_timestamp": "2026-09-08T10:05:53",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_to_zotero, "CURSOR_FILE", cursor_file)
+
+        sync_to_zotero.save_cursor(9)
+
+        data = json.loads(cursor_file.read_text(encoding="utf-8"))
+        assert data["postgres_sync_line"] == 42345
+        assert data["sessions_sync_timestamp"] == "2026-09-08T10:05:53"
+        assert data["zotero_sync_line"] == 9

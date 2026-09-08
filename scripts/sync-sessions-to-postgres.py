@@ -40,6 +40,7 @@ from typing import Any, Iterator, NamedTuple
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
+    CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
     update_cursor_file,
@@ -122,17 +123,34 @@ def load_cursor() -> str:
     ))
 
 
-def save_cursor(timestamp: str) -> None:
+def cursor_key_present() -> bool:
+    """Return whether this sync's cursor key is currently in the file.
+
+    Read at the start of a cycle so :func:`save_cursor` can refuse to
+    write a timestamp back if a rebuild removed the key in the meantime
+    (re-audit finding M3).
+    """
+    return CURSOR_KEY in read_cursor_file(CURSOR_FILE)
+
+
+def save_cursor(timestamp: str, *, expect_present: bool = False) -> None:
     """Save the current sync timestamp to the shared cursor file.
 
     Routed through :func:`_sync_cursor.update_cursor_file` (audit round
-    two, finding P16): this file is shared with ``sync-to-postgres.py``
-    and ``sync-to-zotero.py``, so the read-modify-write cycle runs under
-    an exclusive flock and the write is temp-file + ``os.replace``.
-    Previously a plain ``write_text`` could interleave with the memories
-    sync and lose one of the two cursor advances.
+    two, finding P16): this file is shared with ``sync-to-postgres.py``,
+    ``sync-to-zotero.py``, and ``rebuild-postgres.py``, so the
+    read-modify-write cycle runs under an exclusive flock and the write is
+    temp-file + ``os.replace``. Previously a plain ``write_text`` could
+    interleave with the memories sync and lose one of the two advances.
+
+    ``expect_present`` makes the write a compare-and-set against a
+    concurrent rebuild — see :func:`cursor_key_present` and re-audit
+    finding M3.
     """
-    update_cursor_file(CURSOR_FILE, {CURSOR_KEY: timestamp})
+    update_cursor_file(
+        CURSOR_FILE, {CURSOR_KEY: timestamp},
+        expect_present=(CURSOR_KEY,) if expect_present else (),
+    )
 
 
 # ============================================================================
@@ -761,6 +779,9 @@ def _sync_locked(
 ) -> None:
     """Core sync cycle, executed under the advisory lock."""
     since = None if full_resync else load_cursor()
+    # Whether the key existed when we read it, for the compare-and-set at
+    # save time (re-audit finding M3).
+    cursor_key_was_present = cursor_key_present()
     if since:
         logger.info("Syncing sessions archived after %s", since)
     else:
@@ -818,7 +839,10 @@ def _sync_locked(
                 skipped_no_id, QUARANTINE_FILE, latest_archived_at,
             )
             if latest_archived_at != (since or "2000-01-01T00:00:00Z"):
-                save_cursor(latest_archived_at)
+                save_cursor(
+                    latest_archived_at,
+                    expect_present=cursor_key_was_present,
+                )
         else:
             logger.info("No valid sessions to upsert")
         return
@@ -861,7 +885,7 @@ def _sync_locked(
                 len(result.quarantined), QUARANTINE_FILE,
                 list(result.quarantined[:10]),
             )
-        save_cursor(latest_archived_at)
+        save_cursor(latest_archived_at, expect_present=cursor_key_was_present)
         logger.info("Cursor advanced to %s", latest_archived_at)
 
 
@@ -898,6 +922,17 @@ def main() -> None:
             "No session was quarantined and the cursor did not move."
         )
         sys.exit(4)
+    except CursorKeyVanished as exc:
+        # A rebuild cleared the cursors while this cycle was running.
+        # Writing our timestamp back would mark sessions the rebuild
+        # destroyed as already synced (re-audit finding M3).
+        logger.error("CURSOR RESET MID-RUN — %s", exc)
+        logger.error(
+            "Not writing the timestamp back. The next run starts from the "
+            "rebuilt cursor and replays from the archive tree, which is "
+            "what the rebuild intended."
+        )
+        sys.exit(6)
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)

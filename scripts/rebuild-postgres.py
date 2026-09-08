@@ -79,6 +79,12 @@ from _schema_version import (  # noqa: E402
     SchemaVersionError,
     assert_schema_version,
 )
+# Shared cursor helpers (audit round two, finding P16; re-audit M2/M3).
+from _sync_cursor import (  # noqa: E402
+    apply_cursor_update,
+    cursor_file_lock,
+    read_cursor_file,
+)
 
 # ============================================================================
 # Configuration
@@ -310,6 +316,11 @@ def reset_cursor_key(
     will create it on their first save. If the key is absent, log
     that and continue (idempotent). Otherwise rewrite the file
     without the key so ``load_cursor`` returns its default.
+
+    The caller must already hold :func:`_sync_cursor.cursor_file_lock`
+    (``perform_rebuild`` takes it for the whole run), so this uses the
+    unlocked primitive: ``flock`` is per open file description, and
+    taking it again here would deadlock against the caller's own hold.
     """
     if not cursor_file.exists():
         logger.info(
@@ -318,24 +329,17 @@ def reset_cursor_key(
         )
         return
 
-    try:
-        data = json.loads(cursor_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, ValueError) as exc:
-        # Corrupt cursor file: rewrite it as an empty object so the
-        # syncs start fresh. Logged at WARNING because operators
-        # should know the file was non-trivially repaired.
+    data = read_cursor_file(cursor_file)
+    if not data and cursor_file.stat().st_size:
+        # read_cursor_file returns {} for a corrupt or non-object file.
+        # Logged at WARNING because operators should know the file was
+        # non-trivially repaired.
         logger.warning(
-            "Cursor file %s corrupt (%s); rewriting as empty object",
-            cursor_file, exc,
-        )
-        data = {}
-
-    if not isinstance(data, dict):
-        logger.warning(
-            "Cursor file %s did not contain an object; rewriting empty",
+            "Cursor file %s was corrupt or not an object; rewriting empty",
             cursor_file,
         )
-        data = {}
+        apply_cursor_update(cursor_file, {})
+        return
 
     if key not in data:
         logger.info(
@@ -344,12 +348,7 @@ def reset_cursor_key(
         )
         return
 
-    del data[key]
-    cursor_file.parent.mkdir(parents=True, exist_ok=True)
-    cursor_file.write_text(
-        json.dumps(data, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    apply_cursor_update(cursor_file, delete_keys=(key,))
     logger.info("Removed cursor key %r from %s", key, cursor_file.name)
 
 
@@ -438,37 +437,63 @@ def perform_rebuild(
 
     counts = {"table": 0, "sync_state_row": 0, "cursor_key": 0}
     try:
-        for tgt in targets:
-            try:
-                if tgt.kind == "table":
-                    truncate_table(conn, tgt.name, logger)
-                elif tgt.kind == "sync_state_row":
-                    reset_sync_state_row(
-                        conn,
-                        tgt.name,
-                        SYNC_STATE_RESETS[tgt.name],
-                        logger,
-                    )
-                elif tgt.kind == "cursor_key":
-                    reset_cursor_key(cursor_file, tgt.name, logger)
-                else:
-                    logger.error(
-                        "Unknown reset kind %r for target %r — "
-                        "stopping. Manual cleanup may be needed.",
-                        tgt.kind, tgt.name,
-                    )
-                    return 1
-                counts[tgt.kind] += 1
-            except Exception as exc:  # noqa: BLE001 — log and stop
-                logger.error(
-                    "Reset failed for %s %r: %s. PARTIAL REBUILD — "
-                    "manual cleanup needed (see "
-                    "reports/audit-2026-05-02/cluster-B-postgres.md).",
-                    tgt.kind, tgt.name, exc,
-                )
-                return 1
+        # Hold the cursor lock across the WHOLE rebuild — TRUNCATE and key
+        # removal both (re-audit finding M3). The five-minute cron sync
+        # reads the cursor at the start of its cycle and writes it back at
+        # the end; without this, a sync that read a position before the
+        # TRUNCATE could write it back after the keys were cleared, and
+        # the next run would believe rows the rebuild had just destroyed
+        # were already synced. They would never be replayed. With the lock
+        # held, that sync blocks here, and its compare-and-set
+        # (``expect_present``) then refuses to write a position for a key
+        # the rebuild removed.
+        with cursor_file_lock(cursor_file):
+            return _run_targets(targets, conn, logger, cursor_file, counts)
     finally:
         conn.close()
+
+
+def _run_targets(
+    targets: list[ResetTarget],
+    conn: Any,
+    logger: logging.Logger,
+    cursor_file: Path,
+    counts: dict[str, int],
+) -> int:
+    """Execute each reset target in order under the caller's cursor lock.
+
+    Split out of :func:`perform_rebuild` only so the lock's scope is one
+    obvious ``with`` block. Returns the process exit code.
+    """
+    for tgt in targets:
+        try:
+            if tgt.kind == "table":
+                truncate_table(conn, tgt.name, logger)
+            elif tgt.kind == "sync_state_row":
+                reset_sync_state_row(
+                    conn,
+                    tgt.name,
+                    SYNC_STATE_RESETS[tgt.name],
+                    logger,
+                )
+            elif tgt.kind == "cursor_key":
+                reset_cursor_key(cursor_file, tgt.name, logger)
+            else:
+                logger.error(
+                    "Unknown reset kind %r for target %r — "
+                    "stopping. Manual cleanup may be needed.",
+                    tgt.kind, tgt.name,
+                )
+                return 1
+            counts[tgt.kind] += 1
+        except Exception as exc:  # noqa: BLE001 — log and stop
+            logger.error(
+                "Reset failed for %s %r: %s. PARTIAL REBUILD — "
+                "manual cleanup needed (see "
+                "reports/audit-2026-05-02/cluster-B-postgres.md).",
+                tgt.kind, tgt.name, exc,
+            )
+            return 1
 
     logger.info(
         "Reset %d target(s): %d table(s) truncated, %d PG row(s) "

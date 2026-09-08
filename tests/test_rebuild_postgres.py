@@ -25,9 +25,11 @@ the operator who runs the rebuild.
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -650,3 +652,118 @@ class TestLoggingStaysInsideTmp:
         logger = rebuild_mod.setup_logging(log_dir=elsewhere)
         logger.info("explicit directory")
         assert (elsewhere / "rebuild.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# Re-audit findings M2 and M3 — the rebuild and the cron sync must not race
+# ---------------------------------------------------------------------------
+
+
+class TestRebuildHoldsTheCursorLock:
+    """
+    The five-minute cron sync reads the cursor at the start of its cycle
+    and writes it back at the end. Without a lock, a sync that read a
+    position before the TRUNCATE could write it back after the keys were
+    cleared, and the next run would treat rows the rebuild had just
+    destroyed as already synced. They would never be replayed.
+    """
+
+    def test_lock_is_held_while_truncating(
+        self, rebuild_mod, tmp_path, monkeypatch, pinned_log_dir,
+    ):
+        """
+        Asserted from inside ``truncate_table``: a second, independent
+        open of the lock file must fail to take it. ``flock`` is per open
+        file description, so this conflicts even within one process. The
+        mutation this kills: dropping the ``with cursor_file_lock(...)``
+        from ``perform_rebuild``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 10}), encoding="utf-8",
+        )
+        lock_path = cursor_file.with_name(cursor_file.name + ".lock")
+        observed = {"locked_during_truncate": None}
+
+        def _spy_truncate(conn, table, logger):
+            with open(lock_path, "a", encoding="utf-8") as probe:
+                try:
+                    fcntl.flock(
+                        probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                except BlockingIOError:
+                    observed["locked_during_truncate"] = True
+                else:
+                    observed["locked_during_truncate"] = False
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+
+        monkeypatch.setattr(rebuild_mod, "truncate_table", _spy_truncate)
+        conn, _cur = _build_fake_conn()
+        logger = rebuild_mod.setup_logging()
+
+        exit_code = rebuild_mod.perform_rebuild(
+            rebuild_mod.build_reset_targets(),
+            logger,
+            cursor_file=cursor_file,
+            open_conn=lambda _logger: conn,
+        )
+
+        assert exit_code == 0
+        assert observed["locked_during_truncate"] is True, (
+            "the cursor lock was not held while tables were truncated"
+        )
+
+    def test_cursor_keys_are_removed_and_others_kept(
+        self, rebuild_mod, tmp_path, pinned_log_dir,
+    ):
+        """The reset still does its job through the shared helper (M2)."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({
+                "postgres_sync_line": 10,
+                "sessions_sync_timestamp": "2026-09-01T00:00:00",
+                "zotero_sync_line": 3,
+                "postgres_last_sync_ts": "2026-09-01T00:00:00+00:00",
+                "unrelated": "kept",
+            }),
+            encoding="utf-8",
+        )
+        conn, _cur = _build_fake_conn()
+        logger = rebuild_mod.setup_logging()
+
+        rebuild_mod.perform_rebuild(
+            rebuild_mod.build_reset_targets(),
+            logger,
+            cursor_file=cursor_file,
+            open_conn=lambda _logger: conn,
+        )
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == {
+            "unrelated": "kept",
+        }
+
+    def test_cursor_reset_is_atomic(
+        self, rebuild_mod, tmp_path, monkeypatch, pinned_log_dir,
+    ):
+        """
+        Finding M2: the rebuild used a plain ``write_text``, so a kill
+        part-way through the key removal truncated the file and lost every
+        cursor at once. Routed through the shared helper it is a temp file
+        plus a rename. The mutation this kills: restoring
+        ``cursor_file.write_text(...)`` in ``reset_cursor_key``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        original = {"postgres_sync_line": 10, "unrelated": "kept"}
+        cursor_file.write_text(json.dumps(original), encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            rebuild_mod.reset_cursor_key(
+                cursor_file, "postgres_sync_line", logger,
+            )
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
