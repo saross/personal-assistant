@@ -344,14 +344,374 @@ class TestTheQuarantineCountAgreesWithTheGate:
             f"{label}: /memory-health says {reported}, the gate says {gated}"
         )
 
-    def test_a_missing_file_reports_zero_here(self, monkeypatch, tmp_path):
+    def test_a_missing_file_is_unknown_not_zero(self, monkeypatch, tmp_path):
         """
-        The report is a summary line, not an alarm: an absent file is
-        nothing to show. The gate treats the same absence as UNKNOWN and
-        keeps its standing problem — deliberately different jobs, on the
-        same reading of the file's contents.
+        The report and the gate now agree about absence too. Mapping an
+        unreadable file to 0 printed "0 (expect 0)" and an overall PASS
+        while the data submodule was unmounted — the one state in which a
+        standing alarm most needs to survive (audit 2026-09-08, AN8).
+
+        Kills the mutation ``return 0 if entries is None else len(entries)``.
         """
         monkeypatch.setattr(
             mhr, "QUARANTINE_FILE", tmp_path / "not-there.jsonl",
         )
-        assert mhr.quarantine_count() == 0
+        assert mhr.quarantine_count() is None
+
+
+# ============================================================================
+# build_report / render_report / main, end to end (findings ANT3 / ANT4)
+# ============================================================================
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _fake_pg import FakeDatabase, connect_factory  # noqa: E402
+
+
+def _anchored(**kw) -> dict:
+    """A synthetic record carrying one resolvable file anchor."""
+    return _rec(anchors=[{"type": "file", "ref": "wiki/notes.md"}], **kw)
+
+
+@pytest.fixture
+def report_paths(tmp_path, monkeypatch):
+    """Pin every path constant the report reads into a tmp directory.
+
+    Returns the directory. Nothing in these tests touches the operator's
+    corpus, logs, archive, or quarantine file.
+    """
+    root = tmp_path / "store"
+    (root / "archive").mkdir(parents=True)
+    (root / "logs").mkdir()
+    for name, value in [
+        ("MEMORIES_FILE", root / "memories.jsonl"),
+        ("ARCHIVE_DIR", root / "archive"),
+        ("ARCHIVE_RUNS_LOG", root / "archive" / "archive-runs.jsonl"),
+        ("QUARANTINE_FILE", root / "quarantine-postgres-drops.jsonl"),
+        ("CONFAB_LOG", root / "logs" / "confab-flags.log"),
+        ("SURFACED_LOG", root / "logs" / "surfaced.log"),
+        ("DRIFT_LOG", root / "logs" / "drift-sweep.jsonl"),
+    ]:
+        monkeypatch.setattr(mhr, name, value)
+    (root / "quarantine-postgres-drops.jsonl").write_text("", encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def fake_pg(monkeypatch):
+    """Patch psycopg2.connect with a fake serving one seeded database."""
+    import psycopg2
+
+    def install(db: FakeDatabase):
+        conn, connect = connect_factory(db)
+        monkeypatch.setattr(psycopg2, "connect", connect)
+        return conn
+
+    return install
+
+
+def _write_corpus(root: Path, records: list[dict]) -> None:
+    """Write the synthetic canonical JSONL the report will read."""
+    import json as _json
+    (root / "memories.jsonl").write_text(
+        "".join(_json.dumps(r) + "\n" for r in records), encoding="utf-8",
+    )
+
+
+def _build(**kw):
+    """Call build_report with the test defaults."""
+    import logging
+    return mhr.build_report(
+        as_of=NOW, run_tier_c=False, tier_c_days=30,
+        logger=logging.getLogger("test-mhr"), **kw
+    )
+
+
+class TestBuildReportVerdict:
+    """What makes the report FAIL, and what the exit code then is."""
+
+    def test_a_clean_corpus_passes(self, report_paths, fake_pg) -> None:
+        _write_corpus(report_paths, [_anchored(id="m-1"), _anchored(id="m-2")])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-1", "is_active": True}, {"id": "m-2", "is_active": True},
+        ]))
+        report, clean = _build()
+        assert clean is True
+        assert report["integrity"]["quarantine_count"] == 0
+        assert "MEMORY-HEALTH REPORT" in "\n".join(mhr.render_report(report))
+
+    def test_a_duplicate_id_fails(self, report_paths, fake_pg) -> None:
+        """Kills the mutation dropping the dup-id term from ``clean``."""
+        _write_corpus(report_paths, [_anchored(id="m-1"), _anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, clean = _build()
+        assert report["corpus"]["duplicate_id_groups"] == 1
+        assert clean is False
+
+    def test_a_quarantined_row_fails(self, report_paths, fake_pg) -> None:
+        """Kills the mutation zeroing the quarantine count in the report."""
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        (report_paths / "quarantine-postgres-drops.jsonl").write_text(
+            '{"reason": "a dropped row"}\n', encoding="utf-8",
+        )
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, clean = _build()
+        assert report["integrity"]["quarantine_count"] == 1
+        assert clean is False
+
+    def test_an_unreadable_quarantine_file_is_unknown_and_fails(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """AN8: absence must not read as "0 (expect 0)" and PASS."""
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        monkeypatch.setattr(
+            mhr, "QUARANTINE_FILE", report_paths / "not-there.jsonl",
+        )
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, clean = _build()
+        assert report["integrity"]["quarantine_count"] is None
+        assert clean is False
+        rendered = "\n".join(mhr.render_report(report))
+        assert "UNKNOWN" in rendered
+        assert "overall                 : FAIL" in rendered
+
+    def test_an_archive_leak_fails(self, report_paths, fake_pg) -> None:
+        """An archived id still is_active=TRUE is a recall leak.
+
+        Kills the mutation dropping the archive-leak term from ``clean``.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        (report_paths / "archive" / "memories-archive-2031-02.jsonl").write_text(
+            '{"id": "old-1"}\n', encoding="utf-8",
+        )
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-1", "is_active": True},
+            {"id": "old-1", "content": "x", "is_active": True},
+        ]))
+        report, clean = _build()
+        assert report["integrity"]["archive_parity"]["leaked_active"] == 1
+        assert clean is False
+
+
+class TestMainExitCodes:
+    """The documented exit codes (module docstring lines 23-27)."""
+
+    def _main(self, monkeypatch, argv: list[str] | None = None) -> int:
+        monkeypatch.setattr(
+            sys, "argv", ["memory-health-report.py"] + (argv or []),
+        )
+        return mhr.main()
+
+    def test_clean_exits_zero(
+        self, report_paths, fake_pg, monkeypatch, capsys,
+    ) -> None:
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        assert self._main(monkeypatch) == 0
+        assert "[A] Corpus size" in capsys.readouterr().out
+
+    def test_failed_integrity_exits_one(
+        self, report_paths, fake_pg, monkeypatch, capsys,
+    ) -> None:
+        """Kills the mutation returning 0 regardless of the verdict."""
+        _write_corpus(report_paths, [_anchored(id="m-1"), _anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        assert self._main(monkeypatch) == 1
+        assert "FAIL" in capsys.readouterr().out
+
+    def test_a_missing_corpus_exits_two(
+        self, report_paths, monkeypatch, capsys,
+    ) -> None:
+        """Kills the mutation dropping the missing-corpus guard."""
+        assert self._main(monkeypatch) == 2
+        assert "[A] Corpus size" not in capsys.readouterr().out
+
+    def test_the_report_survives_a_schema_bump(
+        self, report_paths, fake_pg, monkeypatch, capsys,
+    ) -> None:
+        """AN4: a schema mismatch must not cost the whole report.
+
+        Kills the mutation restoring ``sys.exit(2)`` in the PG readers: the
+        eight non-PG sections need no database at all.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[], schema_version="999"))
+        assert self._main(monkeypatch) == 0
+        out = capsys.readouterr().out
+        assert "[A] Corpus size" in out
+        assert "(unavailable — skipped)" in out
+
+
+class TestPgSnapshotSql:
+    """The recall invariant (P2) has to be read off the right relation."""
+
+    def test_the_view_and_the_flag_are_what_is_queried(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """Kills ``FROM active_memories`` -> ``FROM memories`` and
+        ``is_active IS TRUE`` -> ``IS NOT NULL``: the seeded rows give each
+        of the four counts a different value.
+        """
+        import logging
+        conn = fake_pg(FakeDatabase(memories=[
+            {"id": "a", "is_active": True},
+            {"id": "b", "is_active": False},
+            {"id": "c", "is_active": None},
+        ]))
+        snap = mhr.pg_snapshot(logging.getLogger("test-mhr"))
+        assert snap["total_rows"] == 3
+        assert snap["is_active_true"] == 1
+        assert snap["is_active_false"] == 1
+        assert snap["active_memories_view"] == 2
+        assert "SELECT COUNT(*) FROM active_memories" in conn.executed_sql
+        assert (
+            "SELECT COUNT(*) FROM memories WHERE is_active IS TRUE"
+            in conn.executed_sql
+        )
+
+    def test_the_connection_is_read_only_and_time_limited(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """AN14: a lock-contended database must not hang /memory-health."""
+        import logging
+        conn = fake_pg(FakeDatabase(memories=[{"id": "a", "is_active": True}]))
+        mhr.pg_snapshot(logging.getLogger("test-mhr"))
+        assert conn.readonly is True
+        assert any(s.startswith("SET LOCAL statement_timeout")
+                   for s in conn.executed_sql)
+        assert conn.rollbacks >= 1
+
+
+class TestSectionsFilterInactiveRecords:
+    """[A] labels the two populations; the rest describe the active one."""
+
+    def test_growth_and_anchors_exclude_soft_deleted_records(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """Kills the mutation running the sections over every line.
+
+        A ``/forget``-ed record is still in the JSONL and still in PostgreSQL,
+        so the membership tripwires must see it — but recall cannot return
+        it, so the composition sections must not count it (finding AN16).
+        """
+        _write_corpus(report_paths, [
+            _anchored(id="m-1"),
+            _anchored(id="m-2", is_active=False),
+        ])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-1", "is_active": True}, {"id": "m-2", "is_active": False},
+        ]))
+        report, _clean = _build()
+        assert report["corpus"]["total_records"] == 2
+        assert report["corpus"]["active_records"] == 1
+        assert report["anchors"]["total_records"] == 1
+        assert report["growth"]["created_last_1d"] == 1
+        rendered = "\n".join(mhr.render_report(report))
+        assert "2 all / 1 active" in rendered
+        assert "[B] Growth & churn  (active records only)" in rendered
+
+
+class TestAnchoredCountsOnlyVerifiableAnchors:
+    """[C]'s headline number must mean what it says (finding AN5)."""
+
+    def test_zotero_only_records_are_not_counted_as_anchored(self) -> None:
+        """Kills the mutation counting any truthy ``anchors`` as anchored."""
+        out = mhr.anchor_health([
+            _rec(id="a", anchors=[{"type": "file", "ref": "wiki/a.md"}]),
+            _rec(id="b", anchors=[{"type": "zotero", "ref": "ABCD1234"}]),
+            _rec(id="c", anchors=[{"type": "url", "ref": "https://example.org"}]),
+        ])
+        assert out["anchored"] == 1
+        assert out["anchored_any"] == 3
+        assert out["anchored_pct"] == round(100 / 3, 1)
+
+    def test_a_string_anchors_field_is_one_malformed_record(self) -> None:
+        """Kills the mutation iterating a non-list ``anchors`` per character."""
+        out = mhr.anchor_health([_rec(id="a", anchors="wiki/notes.md")])
+        assert out["malformed_anchors"] == 1
+        assert out["records_with_malformed_anchor"] == 1
+        assert out["anchored"] == 0
+
+    def test_verified_is_case_folded_and_stale_kept(self) -> None:
+        """"stale" is a documented value; TRUE and true are one bucket."""
+        out = mhr.anchor_health([
+            _rec(id="a", anchors=[{"type": "file", "ref": "a.md"}], verified=True),
+            _rec(id="b", anchors=[{"type": "file", "ref": "b.md"}],
+                 verified="TRUE"),
+            _rec(id="c", anchors=[{"type": "file", "ref": "c.md"}],
+                 verified="stale"),
+        ])
+        assert out["verified_breakdown"] == {"true": 2, "stale": 1}
+
+
+class TestUndatedRecordsStayInTheBackSet:
+    """A record with no created_at must not age out silently (AN6)."""
+
+    def test_an_undated_anchored_record_is_considered(self) -> None:
+        """Kills ``if created is None or created <= cutoff: continue``."""
+        records = [
+            _rec(id="dated", anchors=[{"type": "file", "ref": "a.md"}]),
+            {"id": "undated", "anchors": [{"type": "file", "ref": "b.md"}]},
+            _rec(id="unparseable", anchors=[{"type": "file", "ref": "c.md"}],
+                 created_at="not a date"),
+        ]
+        out = mhr.tier_c_audit(
+            records, as_of=NOW, days=30,
+            verify=lambda rec: "false",
+            verify_file_ref=lambda ref: "false",
+            recover=lambda ref: ("absent", None),
+        )
+        assert out["anchored_in_window"] == 3
+        assert out["undated_included"] == 2
+        assert out["fail_count"] == 3
+
+
+class TestSurfacingTopIsCheckedAgainstTheCorpus:
+    """A retrieved id that no longer exists is reported, not shown as live."""
+
+    def test_an_id_absent_from_the_corpus_is_flagged(self) -> None:
+        """Kills the mutation dropping the membership check (finding AN17)."""
+        stats = {
+            "gone-1": {"active_retrievals": 9, "digest_exposures": 0,
+                       "last_any_at": "2031-01-02"},
+            "here-1": {"active_retrievals": 4, "digest_exposures": 0,
+                       "last_any_at": "2031-01-03"},
+        }
+        out = mhr.surfacing_section(stats, {"here-1"})
+        assert out["top_not_in_corpus"] == 1
+        assert [t["in_corpus"] for t in out["top"]] == [False, True]
+
+    def test_the_top_list_holds_five(self) -> None:
+        """Kills the ``[:5]`` -> ``[:1]`` mutation."""
+        stats = {
+            f"m-{i}": {"active_retrievals": i, "digest_exposures": 0,
+                       "last_any_at": "2031-01-01"}
+            for i in range(8)
+        }
+        out = mhr.surfacing_section(stats, set(stats))
+        assert len(out["top"]) == 5
+        assert out["top"][0]["id"] == "m-7"
+
+
+class TestTheSurfacedLogOverrideIsHonoured:
+    """M-c: the reader resolves the path the writer would have used."""
+
+    def test_pa_surfaced_log_is_read(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """Kills the mutation binding SURFACED_LOG at import only.
+
+        With the override set, section [G] reported "no surfacings logged
+        yet" while the writer was appending to the pinned file.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        pinned = report_paths / "logs" / "pinned-surfaced.log"
+        pinned.write_text(
+            "2031-01-02T03:04:05+00:00\tid=m-1\tpath=recall\trank=1\t"
+            "session=s-1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PA_SURFACED_LOG", str(pinned))
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, _clean = _build()
+        assert report["surfacing"]["distinct_memories_surfaced"] == 1
+        assert report["surfacing"]["top"][0]["id"] == "m-1"

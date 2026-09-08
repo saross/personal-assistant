@@ -61,6 +61,11 @@ if not ARCHIVE_DIR.exists():
     ARCHIVE_DIR = PA_DIR / "memories" / "archive"
 ARCHIVE_RUNS_LOG = ARCHIVE_DIR / "archive-runs.jsonl"
 QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-postgres-drops.jsonl"
+if not QUARANTINE_FILE.exists():
+    # The same data/ -> root-symlink fallback its siblings carry. Without it
+    # the one path constant that lacked the fallback read as "missing" on a
+    # checkout reached through the symlinks (audit 2026-09-08, finding AN8).
+    QUARANTINE_FILE = PA_DIR / "memories" / "quarantine-postgres-drops.jsonl"
 # One parser for the quarantine file, shared with the sync pipeline
 # and the session-start gate (tenth re-audit, L4).
 from _sync_cursor import read_quarantine_entries  # noqa: E402
@@ -76,11 +81,19 @@ if not DRIFT_LOG.exists():
     DRIFT_LOG = PA_DIR / "logs" / "drift-sweep.jsonl"
 DB_NAME = "claude_memories"
 
+#: Per-statement ceiling for the report's own queries. A lock-contended
+#: database must not hang ``/memory-health`` indefinitely (finding AN14).
+PG_STATEMENT_TIMEOUT = "15s"
+
 # anchor_verify / triage_anchors / surfacing_stats are underscore-named — direct
 # import works.
 import anchor_verify as av  # noqa: E402
 import triage_anchors as ta  # noqa: E402
 import surfacing_stats  # noqa: E402  (item 16 earned-utility aggregator)
+import surfacing_log  # noqa: E402  (call-time resolution of the log path)
+from _schema_version import (  # noqa: E402
+    SchemaVersionError, assert_schema_version,
+)
 
 # audit-postgres-sync.py is hyphenated — load via importlib so we can reuse
 # its archive-vs-PG parity check rather than re-derive it.
@@ -220,17 +233,60 @@ def archival_summary(archive_runs_lines: list[str]) -> dict[str, Any]:
 # §C — Anchor health  (pure; wellformed_anchor is cheap, no git)
 # ============================================================================
 
+#: Anchor types :mod:`anchor_verify` can actually resolve against the
+#: filesystem or git. ``zotero`` and ``url`` anchors always return "pending",
+#: so a record carrying only those has no mechanically verifiable claim
+#: (audit 2026-09-08, finding AN5).
+VERIFIABLE_ANCHOR_TYPES = frozenset({"file", "commit"})
+
+#: ``verified`` values the write path may legitimately record
+#: (``global-claude-md/memory-system-reference.md``). Anything else is
+#: bucketed as-is so the report shows it rather than hiding it.
+KNOWN_VERIFIED_VALUES = ("true", "false", "pending", "stale", "tier3")
+
+
+def _has_verifiable_anchor(anchors: Any) -> bool:
+    """Does this ``anchors`` value carry at least one resolvable anchor?"""
+    if not isinstance(anchors, list):
+        return False
+    return any(
+        isinstance(a, dict)
+        and a.get("type") in VERIFIABLE_ANCHOR_TYPES
+        and av.wellformed_anchor(a)[0]
+        for a in anchors
+    )
+
+
 def anchor_health(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Anchored fraction, verified breakdown, and malformed-anchor count."""
+    """Anchored fraction, verified breakdown, and malformed-anchor count.
+
+    ``anchored`` counts records with at least one anchor this system can
+    mechanically re-check; ``anchored_any`` keeps the looser count (any
+    anchors at all) so the gap between the two is visible rather than
+    flattering. A non-list ``anchors`` value is ONE malformed record, not one
+    per character — iterating a string produced a dozen phantom malformed
+    anchors from a single bad record (finding AN5).
+    """
     anchored = 0
+    anchored_any = 0
     unanchored = 0
     verified_counts: Counter[str] = Counter()
     malformed_anchors = 0
     records_with_malformed = 0
+    malformed_anchor_fields = 0
     for rec in records:
         anchors = rec.get("anchors")
-        if anchors:
+        if not anchors:
+            unanchored += 1
+            continue
+        anchored_any += 1
+        if _has_verifiable_anchor(anchors):
             anchored += 1
+        if not isinstance(anchors, list):
+            malformed_anchors += 1
+            records_with_malformed += 1
+            malformed_anchor_fields += 1
+        else:
             had_malformed = False
             for anchor in anchors:
                 ok, _ = av.wellformed_anchor(anchor)
@@ -239,21 +295,22 @@ def anchor_health(records: list[dict[str, Any]]) -> dict[str, Any]:
                     had_malformed = True
             if had_malformed:
                 records_with_malformed += 1
-        else:
-            unanchored += 1
-        # verified is only meaningful on anchored records; bucket None as "pending".
-        if anchors:
-            v = rec.get("verified")
-            verified_counts[str(v).lower() if v is not None else "pending"] += 1
+        # verified is only meaningful on anchored records; bucket None as
+        # "pending", and case-fold so a JSON boolean and the string "TRUE"
+        # land in the same bucket (finding ANT-L2).
+        v = rec.get("verified")
+        verified_counts[str(v).lower() if v is not None else "pending"] += 1
     total = len(records)
     return {
         "total_records": total,
         "anchored": anchored,
+        "anchored_any": anchored_any,
         "unanchored": unanchored,
         "anchored_pct": round(100 * anchored / total, 1) if total else 0.0,
         "verified_breakdown": dict(verified_counts.most_common()),
         "malformed_anchors": malformed_anchors,
         "records_with_malformed_anchor": records_with_malformed,
+        "malformed_anchor_fields": malformed_anchor_fields,
     }
 
 
@@ -322,12 +379,21 @@ def parse_confab_log(lines: list[str]) -> dict[str, Any]:
 # §G — Memory surfacing (earned utility, item 16) — reads surfaced.log
 # ============================================================================
 
-def surfacing_section(stats: dict[str, dict]) -> dict[str, Any]:
+def surfacing_section(
+    stats: dict[str, dict],
+    known_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Roll the per-memory surfacing stats up for the report (pure).
 
     ``stats`` is :func:`surfacing_stats.aggregate_surfacing` output. Returns the
     corpus summary plus the top-5 most actively-retrieved ids. Empty input
     yields zeros (the normal pre-accrual state).
+
+    *known_ids* is the live corpus's id set. Each top entry is marked
+    ``in_corpus``, and ``top_not_in_corpus`` counts the ones that are not:
+    ``surfaced.log`` is append-only and outlives archival and ``/forget``, so
+    a heavily-retrieved id may name a record that no longer exists — reported
+    as a fact rather than shown as if it were live (finding AN17).
     """
     summary = surfacing_stats.summarise(stats)
     # Tiebreak on recency (last_any_at) so the top-N is reproducible when two
@@ -339,9 +405,17 @@ def surfacing_section(stats: dict[str, dict]) -> dict[str, Any]:
         reverse=True,
     )[:5]
     summary["top"] = [
-        {"id": mid, "active": s["active_retrievals"], "digest": s["digest_exposures"]}
+        {
+            "id": mid,
+            "active": s["active_retrievals"],
+            "digest": s["digest_exposures"],
+            "in_corpus": None if known_ids is None else (mid in known_ids),
+        }
         for mid, s in ranked
     ]
+    summary["top_not_in_corpus"] = sum(
+        1 for t in summary["top"] if t["in_corpus"] is False
+    )
     return summary
 
 
@@ -403,6 +477,10 @@ def tier_c_audit(
     ``anchor_verify.verify_memory``, ``anchor_verify.verify_file``, and
     ``triage_anchors.recovery_status`` respectively.
 
+    A record whose ``created_at`` is missing or unparseable is always
+    considered (see AN6 in the body): excluding it made the "full back-set"
+    sweep quietly skip records it exists to check.
+
     The split classifies ONLY genuinely-failing file anchors: a record's
     verdict is ``false`` if *any* anchor fails, so blindly classifying every
     file anchor on a failing record would over-count "recoverable" by folding
@@ -411,13 +489,21 @@ def tier_c_audit(
     """
     cutoff = as_of - timedelta(days=days)
     considered = 0
+    undated = 0
     results: Counter[str] = Counter()
     recover_split: Counter[str] = Counter()
     for rec in records:
         if not rec.get("anchors"):
             continue
         created = _parse_iso(rec.get("created_at"))
-        if created is None or created <= cutoff:
+        if created is None:
+            # Treated as the oldest possible record: we cannot prove it is
+            # outside the window, and an anchored record that silently ages
+            # out of every sweep is exactly what the full back-set exists to
+            # prevent (finding AN6). Counted separately so the inclusion is
+            # visible rather than folded into the window's population.
+            undated += 1
+        elif created <= cutoff:
             continue
         considered += 1
         verdict = verify(rec)  # "true" / "false" / "pending" / None
@@ -438,6 +524,7 @@ def tier_c_audit(
     return {
         "window_days": days,
         "anchored_in_window": considered,
+        "undated_included": undated,
         "verdicts": dict(results.most_common()),
         "fail_count": fail,
         "fail_rate_pct": fail_rate,
@@ -462,7 +549,22 @@ def pg_snapshot(logger: logging.Logger) -> dict[str, Any] | None:
         logger.warning("Cannot connect to PostgreSQL (%s) — PG sections skipped", exc)
         return None
     try:
-        with conn, conn.cursor() as cur:
+        conn.set_session(readonly=True)
+    except Exception as exc:  # noqa: BLE001 — an old driver, or a fake
+        logger.warning("Could not set a read-only session: %s", exc)
+    # The schema guard runs BEFORE any schema-dependent query, and a mismatch
+    # skips the PG sections rather than raising: the report's other eight
+    # sections need no database (findings AN4/AN14).
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError as exc:
+        logger.warning("PG sections skipped: schema mismatch (%s)", exc)
+        conn.close()
+        return None
+    try:
+        with conn.cursor() as cur:
+            # A health report must never be the thing that hangs on a lock.
+            cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT}'")
             cur.execute("SELECT COUNT(*) FROM memories")
             total = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM memories WHERE is_active IS TRUE")
@@ -484,11 +586,14 @@ def pg_snapshot(logger: logging.Logger) -> dict[str, Any] | None:
         logger.warning("PG query failed (%s) — PG sections skipped", exc)
         return None
     finally:
+        # rollback, not psycopg2's committing ``with conn:`` — this report
+        # reads and nothing else.
+        conn.rollback()
         conn.close()
 
 
-def quarantine_count() -> int:
-    """Number of records sitting in the PG-drop quarantine (0 expected).
+def quarantine_count() -> int | None:
+    """Number of records in the PG-drop quarantine, or ``None`` if unknown.
 
     Read through the sync pipeline's own parser, so ``/memory-health``
     and the session-start gate can never report different numbers for
@@ -496,11 +601,15 @@ def quarantine_count() -> int:
     disagree over damage and over a row whose newline was lost (tenth
     re-audit, finding C1 / L4).
 
-    An unreadable file reports 0 rather than raising: this is one line
-    of a health summary, and the gate is what escalates.
+    ``None`` — the file is missing or unreadable — is reported as UNKNOWN and
+    FAILS the verdict. Mapping it to 0 printed "0 (expect 0)" and an overall
+    PASS while the data submodule was unmounted, which is the one state where
+    a standing alarm most needs to survive; the gate has said as much since
+    the ninth re-audit ("None is emphatically not empty"), and the report now
+    agrees with it (audit 2026-09-08, finding AN8).
     """
     entries = read_quarantine_entries(QUARANTINE_FILE)
-    return 0 if entries is None else len(entries)
+    return None if entries is None else len(entries)
 
 
 # ============================================================================
@@ -521,8 +630,13 @@ def render_report(report: dict[str, Any]) -> list[str]:
     out.append("=" * 72)
 
     c = report["corpus"]
-    out.append("\n[A] Corpus size & composition")
-    out.append(f"  live JSONL records      : {c['total_records']}")
+    out.append("\n[A] Corpus size & composition  (two populations: ALL lines,"
+               " and the ACTIVE subset)")
+    out.append(
+        f"  live JSONL records      : {c['total_records']} all / "
+        f"{c.get('active_records', c['total_records'])} active "
+        f"({c.get('inactive_records', 0)} soft-deleted)"
+    )
     out.append(f"  distinct ids            : {c['distinct_ids']}")
     out.append(
         f"  duplicate-id groups     : {c['duplicate_id_groups']} "
@@ -542,7 +656,7 @@ def render_report(report: dict[str, Any]) -> list[str]:
 
     g = report["growth"]
     a = report["archival"]
-    out.append("\n[B] Growth & churn")
+    out.append("\n[B] Growth & churn  (active records only)")
     out.append(
         "  created (1d/7d/30d)     : "
         f"{g.get('created_last_1d', 0)} / {g.get('created_last_7d', 0)} "
@@ -555,10 +669,14 @@ def render_report(report: dict[str, Any]) -> list[str]:
     out.append(f"  cold partition records  : {report['cold_partition_records']}")
 
     h = report["anchors"]
-    out.append("\n[C] Anchor health")
+    out.append("\n[C] Anchor health  (active records only)")
     out.append(
         f"  anchored / unanchored   : {h['anchored']} / {h['unanchored']} "
-        f"({h['anchored_pct']}% anchored)"
+        f"({h['anchored_pct']}% with a mechanically verifiable anchor)"
+    )
+    out.append(
+        f"  any anchors at all      : {h.get('anchored_any', h['anchored'])} "
+        "(the rest carry only zotero/url anchors, which never resolve locally)"
     )
     out.append(f"  verified breakdown      : {_fmt_top(h['verified_breakdown'])}")
     out.append(
@@ -585,7 +703,13 @@ def render_report(report: dict[str, Any]) -> list[str]:
     else:
         out.append("  archive↔PG parity       : (PG unavailable — skipped)")
     out.append(f"  dup-id tripwire         : {i['duplicate_id_groups']} (expect 0)")
-    out.append(f"  quarantine (PG drops)   : {i['quarantine_count']} (expect 0)")
+    quarantine = i["quarantine_count"]
+    out.append(
+        "  quarantine (PG drops)   : "
+        + ("UNKNOWN — quarantine file missing or unreadable "
+           f"({QUARANTINE_FILE})"
+           if quarantine is None else f"{quarantine} (expect 0)")
+    )
 
     e = report["confab"]
     out.append("\n[E] Confab-flag rate (§8 measurement 3)")
@@ -606,9 +730,12 @@ def render_report(report: dict[str, Any]) -> list[str]:
 
     tc = report.get("tier_c")
     if tc:
-        out.append("\n[F] Tier C — write-time fresh-anchor-fail rate")
+        out.append("\n[F] Tier C — write-time fresh-anchor-fail rate "
+                   "(active records only)")
         out.append(
             f"  anchored in last {tc['window_days']}d    : {tc['anchored_in_window']}"
+            + (f"  (incl. {tc['undated_included']} undated)"
+               if tc.get("undated_included") else "")
         )
         out.append(
             f"  fail (resolves nowhere) : {tc['fail_count']} "
@@ -640,8 +767,17 @@ def render_report(report: dict[str, Any]) -> list[str]:
             f"{sf['total_digest_exposures']}"
         )
         if sf.get("top"):
-            top = ", ".join(f"{t['id']}({t['active']})" for t in sf["top"])
+            top = ", ".join(
+                f"{t['id']}({t['active']})"
+                + ("*" if t.get("in_corpus") is False else "")
+                for t in sf["top"]
+            )
             out.append(f"  top active              : {top}")
+            if sf.get("top_not_in_corpus"):
+                out.append(
+                    f"  * {sf['top_not_in_corpus']} of the above are no longer "
+                    "in the live corpus (archived or forgotten)"
+                )
 
     dt = report.get("drift_trend")
     out.append("\n[H] Anchor drift trend (item 8 — from drift-sweep.jsonl)")
@@ -673,13 +809,24 @@ def build_report(
     tier_c_days: int,
     logger: logging.Logger,
 ) -> tuple[dict[str, Any], bool]:
-    """Assemble the full structured report. Returns (report, all_clean)."""
+    """Assemble the full structured report. Returns (report, all_clean).
+
+    Two populations run through this function, and every section says which
+    it used (finding AN16): the WHOLE JSONL — every line, including records
+    ``/forget`` has soft-deleted — for the membership and duplicate-id
+    tripwires, which must see what PostgreSQL sees; and the ACTIVE subset
+    for the composition, growth, and anchor sections, which describe what
+    recall can actually return.
+    """
     records = load_records(MEMORIES_FILE)
     live_ids = {str(r["id"]) for r in records if r.get("id")}
+    active_records = [r for r in records if r.get("is_active") is not False]
 
     corpus = summarise_corpus(records)
-    growth = growth_windows(records, as_of)
-    anchors = anchor_health(records)
+    corpus["active_records"] = len(active_records)
+    corpus["inactive_records"] = len(records) - len(active_records)
+    growth = growth_windows(active_records, as_of)
+    anchors = anchor_health(active_records)
 
     archive_runs_lines = (
         ARCHIVE_RUNS_LOG.read_text(encoding="utf-8").splitlines()
@@ -699,7 +846,13 @@ def build_report(
     confab = parse_confab_log(confab_lines)
 
     # §G earned-utility surfacing (reads surfaced.log; fast, mutates nothing).
-    surfacing = surfacing_section(surfacing_stats.aggregate_surfacing(SURFACED_LOG))
+    # The destination is resolved at CALL time through surfacing_log, so an
+    # operator who pinned PA_SURFACED_LOG reads the log they are writing
+    # (finding M-c); SURFACED_LOG is the shipped fallback.
+    surfaced_log_path = surfacing_log.default_log_path() or SURFACED_LOG
+    surfacing = surfacing_section(
+        surfacing_stats.aggregate_surfacing(surfaced_log_path), live_ids,
+    )
 
     # §H anchor drift trend (reads the drift-sweep.jsonl trend log; fast).
     drift_lines = (
@@ -744,10 +897,12 @@ def build_report(
             only_in_canonical="n/a", only_in_postgres="n/a", archive_parity=None
         )
 
-    # Integrity is clean iff: no dup-ids, no quarantine drops, no archive leak,
-    # and (when PG is reachable) no #55 missing-id beyond a small unsynced tail.
-    # A missing-id only fails when PG is reachable AND a leak/dup is present;
-    # the unsynced tail (live\PG) is expected and does NOT fail the report.
+    # Integrity is clean iff: no dup-ids, a quarantine count that is both
+    # KNOWN and zero, no archive leak, and (when PG is reachable) no #55
+    # missing-id beyond a small unsynced tail. A missing-id only fails when PG
+    # is reachable AND a leak/dup is present; the unsynced tail (live\PG) is
+    # expected and does NOT fail the report. An UNKNOWN quarantine count fails:
+    # an unreadable standing alarm is not a quiet one (finding AN8).
     clean = (
         integrity["duplicate_id_groups"] == 0
         and integrity["quarantine_count"] == 0
@@ -772,13 +927,31 @@ def build_report(
     if run_tier_c:
         repos = ta.broad_repo_set()
         basename_index = ta.build_basename_index(repos)
+        # Memoised per (resolver, ref): verify_file walks every repository and
+        # spawns up to two git processes each, and tier_c_audit re-resolves
+        # every failing file anchor a second time for the recovery split. The
+        # key carries the resolver's identity so a file ref and a commit ref
+        # that share text cannot share an answer (finding AN10).
+        ref_memo: dict[tuple[str, str], Any] = {}
+
+        def memoised(kind: str, fn: Callable[[str], Any]) -> Callable[[str], Any]:
+            """Wrap a single-ref resolver in a per-run cache."""
+            def call(ref: str) -> Any:
+                key = (kind, ref)
+                if key not in ref_memo:
+                    ref_memo[key] = fn(ref)
+                return ref_memo[key]
+            return call
+
         report["tier_c"] = tier_c_audit(
-            records,
+            active_records,
             as_of=as_of,
             days=tier_c_days,
             verify=lambda rec: av.verify_memory(rec, repos),
-            verify_file_ref=lambda ref: av.verify_file(ref, repos),
-            recover=lambda ref: ta.recovery_status(ref, basename_index),
+            verify_file_ref=memoised("file", lambda ref: av.verify_file(ref, repos)),
+            recover=memoised(
+                "recover", lambda ref: ta.recovery_status(ref, basename_index),
+            ),
         )
 
     return report, clean
