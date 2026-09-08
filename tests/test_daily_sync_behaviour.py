@@ -388,6 +388,45 @@ class TestDetachedHeadGuard:
             machine.data / "tasks" / "inbox.md"
         ).read_text(encoding="utf-8")
 
+    def test_overlapping_stashes_leave_a_gate_naming_the_stash(
+        self, world: SyncWorld
+    ) -> None:
+        """Second re-audit C1: a REFUSED pop must not exit silently.
+
+        When two stashes this run pushed touch the same file, the first
+        pop restores it and the second is refused outright — rc 1, "your
+        local changes would be overwritten", nothing unmerged. That fell
+        through to a bare `fail` with the remaining stash already
+        forgotten, so the next run exited 0 and wrote gate 0 over it while
+        the work sat in a stash nobody knew about.
+        """
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        # Both stashes will touch tasks/inbox.md at the same line.
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- from before the switch\n", encoding="utf-8"
+        )
+        result = world.run_sync(
+            machine, PA_TEST_ARCHIVER_DIRTIES="# Inbox\n\n- written mid-run\n"
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode != 0, combined
+        assert "STRANDED STASH" in combined, combined
+
+        leftovers = git("stash", "list", cwd=machine.data).stdout.strip().splitlines()
+        assert len(leftovers) == 1, leftovers
+        gate = world.gate("daily-sync-gate").splitlines()
+        assert gate and gate[0] == "1", gate
+        # Named by SHA, so the operator can actually recover it.
+        stranded_sha = git(
+            "rev-parse", "--short=8", "stash@{0}", cwd=machine.data
+        ).stdout.strip()
+        assert stranded_sha in "\n".join(gate), gate
+        # Oldest-first ordering: the branch-switch stash is the one that
+        # applied, so the later "daily-sync on <host>" stash is stranded.
+        assert "daily-sync on" in leftovers[0]
+        assert "branch-switch" not in leftovers[0]
+
     def test_detached_head_with_prose_edits_keeps_them(
         self, world: SyncWorld
     ) -> None:
@@ -456,9 +495,9 @@ class TestStashPopConflictPartitioning:
         )
         world.run_sync(machine)
 
-        gate = world.gate("daily-sync-gate").splitlines()
-        assert gate and gate[0] == "1", gate
-        assert "tasks/inbox.md" in gate[1]
+        gate = world.gate("daily-sync-gate")
+        assert gate.splitlines()[0] == "1", gate
+        assert "tasks/inbox.md" in gate
 
     def test_tag_vocabulary_conflict_is_resolved_like_the_corpus(
         self, world: SyncWorld
@@ -523,9 +562,9 @@ class TestStashPopConflictPartitioning:
             "conflict markers were committed and published"
         )
         assert "<<<<<<<" not in world.published_data_file("memories/memories.jsonl")
-        gate = world.gate("daily-sync-gate").splitlines()
-        assert gate and gate[0] == "1", gate
-        assert "memories/memories.jsonl" in gate[1]
+        gate = world.gate("daily-sync-gate")
+        assert gate.splitlines()[0] == "1", gate
+        assert "memories/memories.jsonl" in gate
 
     def test_clean_run_clears_the_gate(self, world: SyncWorld) -> None:
         """A gate left by an earlier wedge must not nag forever."""
@@ -563,9 +602,9 @@ class TestOrphanedStashWedge:
         assert result.returncode == 2, combined
         assert "ORPHANED STASH" in combined
 
-        gate = world.gate("daily-sync-gate").splitlines()
-        assert gate and gate[0] == "1", gate
-        assert "orphaned stash" in gate[1].lower()
+        gate = world.gate("daily-sync-gate")
+        assert gate.splitlines()[0] == "1", gate
+        assert "orphaned stash" in gate.lower()
         # The stash itself is preserved for the human.
         assert git("stash", "list", cwd=machine.data).stdout.strip()
 
@@ -587,9 +626,11 @@ class TestParentStashWedge:
         assert result.returncode == 2, combined
         assert "stash pop raised conflicts" in combined
 
-        gate = world.gate("daily-sync-gate").splitlines()
-        assert gate and gate[0] == "1", gate
-        assert "parent-repo stash pop conflicted" in gate[1]
+        gate = world.gate("daily-sync-gate")
+        assert gate.splitlines()[0] == "1", gate
+        assert "parent-repo stash pop conflicted" in gate
+        # …and the stash holding the work is named too (second re-audit C1).
+        assert "UNRECOVERED" in gate
         # The stash git preserved on a conflicted pop is still there.
         assert git("stash", "list", cwd=machine.pa).stdout.strip()
 

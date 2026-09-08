@@ -199,13 +199,21 @@ class TestGateRendering:
         assert "records survive in only ONE store" in result.stdout
 
     def test_daily_sync_gate_is_surfaced(self, rig: TriggerRig) -> None:
-        """Audit S3/S17: a wedged sync must be visible at session start."""
+        """Audit S3/S17: a wedged sync must be visible at session start.
+
+        Every detail line, not just the first: a wedged run records both
+        what stopped it and where any stranded work is (second re-audit
+        C1), and the operator needs both.
+        """
         rig.gate("daily-sync-gate").write_text(
-            "1\ndaily-sync STOPPED: stash pop conflicted on tasks/inbox.md\n",
+            "1\n"
+            "daily-sync left 1 of its own stash(es) UNRECOVERED: 0badc0de stash@{0}\n"
+            "daily-sync STOPPED: stash pop conflicted on tasks/inbox.md\n",
             encoding="utf-8",
         )
         result = rig.run()
         assert "[daily-sync gate]" in result.stdout
+        assert "UNRECOVERED: 0badc0de" in result.stdout
         assert "stash pop conflicted on tasks/inbox.md" in result.stdout
 
     def test_syncthing_gate_normal_layout(self, rig: TriggerRig) -> None:

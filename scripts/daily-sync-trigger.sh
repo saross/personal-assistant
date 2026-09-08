@@ -119,7 +119,13 @@ SYNC_GATE="${CACHE_DIR}/daily-sync-gate"
 if [[ -f "$SYNC_GATE" ]]; then
     SYNC_COUNT="$(head -1 "$SYNC_GATE" 2>/dev/null)"
     if [[ "$SYNC_COUNT" =~ ^[0-9]+$ ]] && [[ "$SYNC_COUNT" -gt 0 ]]; then
-        GATE_LINES+=("[daily-sync gate] $(tail -n +2 "$SYNC_GATE" | head -1)")
+        # EVERY detail line, not just the first: a wedged sync can record
+        # both the diagnosis (what stopped it) and a stranded stash (where
+        # the unrecovered work is), and the operator needs both.
+        GATE_LINES+=("[daily-sync gate] the sync is stuck and will not run until this is resolved:")
+        while IFS= read -r _sl; do
+            [[ -n "$_sl" ]] && GATE_LINES+=("  ${_sl}")
+        done < <(tail -n +2 "$SYNC_GATE")
     fi
 fi
 

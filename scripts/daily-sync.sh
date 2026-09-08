@@ -471,15 +471,23 @@ push_stash() {
     # push_stash <repo> <message> [pathspec ...]
     # Stash <repo>'s working tree (untracked files included) and print the
     # new entry's commit SHA. Returns non-zero if the push failed, or if it
-    # claimed success without producing an entry — a run that believes it
-    # stashed when it did not would later pop somebody else's work.
+    # did not actually create an entry.
+    #
+    # audit M3: `git stash push` exits 0 when it saves NOTHING — a pathspec
+    # that matches no dirty file, a tree whose only change is one stash
+    # cannot take — and refs/stash then still points at whatever was on top
+    # before, which may be a concurrent session's stash. Returning that SHA
+    # would make this run pop and drop somebody else's work. Compare
+    # refs/stash before and after, and accept only a genuinely new entry.
     local repo="$1" message="$2"
     shift 2
+    local before after
+    before="$(git -C "$repo" rev-parse --verify --quiet refs/stash || true)"
     git -C "$repo" stash push -u -m "$message" "$@" >>"$LOG_FILE" 2>&1 || return 1
-    local sha
-    sha="$(git -C "$repo" rev-parse --verify --quiet refs/stash || true)"
-    [[ -n "$sha" ]] || return 1
-    printf '%s' "$sha"
+    after="$(git -C "$repo" rev-parse --verify --quiet refs/stash || true)"
+    [[ -n "$after" ]] || return 1
+    [[ "$after" != "$before" ]] || return 1
+    printf '%s' "$after"
 }
 
 stash_ref_for() {
@@ -497,38 +505,86 @@ stash_ref_for() {
     return 1
 }
 
+# Recorded stashes are never removed from these lists: a popped entry
+# disappears from the stack, so "still resolvable by SHA" is exactly "still
+# unrecovered". That is what the EXIT handler below checks.
+#
+# stash_restore_allowed is cleared the moment the tree may be half-merged
+# or a pop was refused: re-popping into that state would corrupt it.
+stash_restore_allowed=1
+
+stranded_stashes() {
+    # stranded_stashes <repo> <sha>...
+    # Print one "<sha8> <stash@{n}> <message>" line per recorded stash that
+    # is STILL on <repo>'s stack, i.e. still holding unrecovered work.
+    local repo="$1"
+    shift
+    local sha ref subject
+    for sha in "$@"; do
+        ref="$(stash_ref_for "$repo" "$sha")" || continue
+        subject="$(git -C "$repo" log -1 --format=%s "$sha" 2>/dev/null || true)"
+        printf '%s %s %s\n' "${sha:0:8}" "$ref" "$subject"
+    done
+}
+
+prepend_sync_gate_detail() {
+    # Put <detail> at the top of the gate's detail lines, keeping whatever a
+    # failing block already recorded. The trigger surfaces the first detail
+    # line, and unrecovered work outranks every other diagnosis.
+    local detail="$1" existing=() line
+    if [[ -f "$SYNC_GATE" ]]; then
+        while IFS= read -r line; do existing+=("$line"); done \
+            < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
+    fi
+    write_sync_gate 1 "$detail" ${existing[@]+"${existing[@]}"}
+}
+
 # If any step between a `git stash push` and its explicit pop below aborts
 # (e.g. pull fails in any non-interactive env without an SSH agent),
 # restore every stash this run pushed, so the user's working tree is not
-# silently buried in a stash stack that grows unbounded. Each list is
-# cleared once its explicit pop completes.
+# silently buried in a stash stack that grows unbounded.
+#
+# audit C1 (second re-audit): restoring is best-effort, and there are states
+# in which it must NOT be attempted — a half-merged tree, or a pop git
+# refused outright ("your local changes would be overwritten", which is what
+# two of this run's own stashes touching one file produce). The invariant
+# that matters is the one after it: a run must never exit while a stash it
+# pushed is still on the stack without saying so, by SHA and message, where
+# session start will show it.
 restore_stash_on_exit() {
-    local _i _ref _sha
-    if [[ ${#data_stash_shas[@]} -gt 0 ]]; then
-        log "WARNING: aborting before stash pop — restoring ${#data_stash_shas[@]} stashed change set(s) (data submodule)"
-        for (( _i=0; _i<${#data_stash_shas[@]}; _i++ )); do
-            _sha="${data_stash_shas[_i]}"
-            if ! _ref="$(stash_ref_for "$DATA_DIR" "$_sha")"; then
-                log "ERROR: stash ${_sha:0:8} is no longer on the data stack; cannot restore it"
-                continue
+    local _i _ref _sha _repo _line _stranded=()
+    if [[ $stash_restore_allowed -eq 1 ]]; then
+        for _repo in "$DATA_DIR" "$PA_DIR"; do
+            local -a _shas=()
+            if [[ "$_repo" == "$DATA_DIR" ]]; then
+                _shas=(${data_stash_shas[@]+"${data_stash_shas[@]}"})
+            else
+                _shas=(${parent_stash_shas[@]+"${parent_stash_shas[@]}"})
             fi
-            if ! git -C "$DATA_DIR" stash pop "$_ref" >>"$LOG_FILE" 2>&1; then
-                log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
-            fi
+            [[ ${#_shas[@]} -gt 0 ]] || continue
+            for (( _i=0; _i<${#_shas[@]}; _i++ )); do
+                _sha="${_shas[_i]}"
+                _ref="$(stash_ref_for "$_repo" "$_sha")" || continue
+                log "WARNING: aborting before stash pop — restoring ${_sha:0:8} in $_repo"
+                if ! git -C "$_repo" stash pop "$_ref" >>"$LOG_FILE" 2>&1; then
+                    log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
+                fi
+            done
         done
     fi
-    if [[ ${#parent_stash_shas[@]} -gt 0 ]]; then
-        log "WARNING: aborting before stash pop — restoring ${#parent_stash_shas[@]} stashed change set(s) (parent repo)"
-        for (( _i=0; _i<${#parent_stash_shas[@]}; _i++ )); do
-            _sha="${parent_stash_shas[_i]}"
-            if ! _ref="$(stash_ref_for "$PA_DIR" "$_sha")"; then
-                log "ERROR: stash ${_sha:0:8} is no longer on the parent stack; cannot restore it"
-                continue
-            fi
-            if ! git -C "$PA_DIR" stash pop "$_ref" >>"$LOG_FILE" 2>&1; then
-                log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
-            fi
-        done
+
+    # The invariant. Anything of ours still on a stack is unrecovered work.
+    while IFS= read -r _line; do
+        [[ -n "$_line" ]] && _stranded+=("data submodule: $_line")
+    done < <(stranded_stashes "$DATA_DIR" ${data_stash_shas[@]+"${data_stash_shas[@]}"})
+    while IFS= read -r _line; do
+        [[ -n "$_line" ]] && _stranded+=("parent repo: $_line")
+    done < <(stranded_stashes "$PA_DIR" ${parent_stash_shas[@]+"${parent_stash_shas[@]}"})
+    if [[ ${#_stranded[@]} -gt 0 ]]; then
+        log "STRANDED STASH: ${#_stranded[@]} stash(es) this run pushed are still on a stack:"
+        for _i in "${_stranded[@]}"; do log "  $_i"; done
+        prepend_sync_gate_detail \
+            "daily-sync left ${#_stranded[@]} of its own stash(es) UNRECOVERED — they hold work that is in no commit: ${_stranded[*]}. Recover with: git -C <repo> stash pop <ref> (inspect first: git -C <repo> stash show -p <ref>)"
     fi
 }
 trap restore_stash_on_exit EXIT
@@ -661,22 +717,23 @@ fi
 # to be on top of the stack.
 if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
     log "data submodule: popping ${#data_stash_shas[@]} stashed change set(s)"
-    # Iterate a snapshot and clear the trap's list up front: from here on
-    # this block owns those entries, and an abort part-way through must
-    # leave the half-merged tree alone rather than re-pop into it.
-    _pending_stashes=("${data_stash_shas[@]}")
-    data_stash_shas=()
-    for (( _si=0; _si<${#_pending_stashes[@]}; _si++ )); do
-        _sha="${_pending_stashes[_si]}"
+    # Oldest first, so where two of them touch one file the most recent
+    # state ends up on top. The list is NOT cleared here: an entry that
+    # pops leaves the stack, so whatever is still resolvable at exit is
+    # still unrecovered, and the EXIT handler gates exactly that.
+    for (( _si=0; _si<${#data_stash_shas[@]}; _si++ )); do
+        _sha="${data_stash_shas[_si]}"
         if ! _sref="$(stash_ref_for "$DATA_DIR" "$_sha")"; then
             log "data submodule: stash ${_sha:0:8} is no longer on the stack — skipping"
             continue
         fi
         if ! git stash pop "$_sref" >>"$LOG_FILE" 2>&1; then
-            # `git stash pop` applied the stash to the working tree but
-            # left it conflicted; the stash entry is preserved by git
-            # in this case. The trap's list is already empty, so it will
-            # not re-pop into the half-merged tree.
+            # `git stash pop` either applied the stash and left the tree
+            # conflicted (the entry is preserved by git), or refused to
+            # apply it at all. Either way the EXIT handler must not try to
+            # re-pop: into a half-merged tree that corrupts it, and into a
+            # refusal it just fails again.
+            stash_restore_allowed=0
             log "stash pop raised conflicts — running resolver"
             conflicted_files=()
             while IFS= read -r line; do
@@ -689,7 +746,16 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             done < <(git status --porcelain)
 
             if [[ ${#conflicted_files[@]} -eq 0 ]]; then
-                fail "stash pop failed but no unmerged paths detected — bailing for manual intervention"
+                # audit C1 (second re-audit): `git stash pop` REFUSES
+                # outright — rc 1, "your local changes would be
+                # overwritten", nothing unmerged — when applying it would
+                # clobber the working tree. Two stashes this run pushed
+                # that touch the same file do exactly that: the first pop
+                # restores the file, the second is refused. The tree is
+                # untouched and the entry is still on the stack, so the
+                # EXIT handler's stranded-stash check gates it by SHA and
+                # message; do not try to be cleverer than that here.
+                fail "stash pop of $_sref was refused (nothing unmerged) — the stash is preserved; see the gate line for how to recover it"
             fi
 
             # audit S3: partition exactly as the rebase path does
@@ -894,18 +960,18 @@ fi
 if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
     log "parent repo: popping ${#parent_stash_shas[@]} stashed change set(s)"
     # audit C1: same treatment as the data half — pop the entries this run
-    # pushed, by SHA, oldest first. The trap's list is cleared up front so
-    # an abort part-way through leaves the tree as git left it.
-    _pending_parent_stashes=("${parent_stash_shas[@]}")
-    parent_stash_shas=()
-    for (( _si=0; _si<${#_pending_parent_stashes[@]}; _si++ )); do
-        _sha="${_pending_parent_stashes[_si]}"
+    # pushed, by SHA, oldest first, leaving the list intact so the EXIT
+    # handler can gate anything that did not come back.
+    for (( _si=0; _si<${#parent_stash_shas[@]}; _si++ )); do
+        _sha="${parent_stash_shas[_si]}"
         if ! _sref="$(stash_ref_for "$PA_DIR" "$_sha")"; then
             log "parent repo: stash ${_sha:0:8} is no longer on the stack — skipping"
             continue
         fi
         if ! git stash pop "$_sref" >>"$LOG_FILE" 2>&1; then
-            # Stash applied but conflicted; the entry is preserved by git.
+            # Stash applied but conflicted (or refused); the entry is
+            # preserved by git, and the EXIT handler must not re-pop.
+            stash_restore_allowed=0
             #
             # audit M3: this wedges every later run — the next
             # `git stash push -u -- ':!data'` refuses while a path is
