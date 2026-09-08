@@ -100,7 +100,22 @@ fi
 # resolve_path <path> — absolute, symlink-resolved path, for a file that
 # need not exist yet (its parent directory must).
 resolve_path() {
-    local path="$1" dir base
+    local path="$1" dir base resolved
+    # Round 4d-3: resolve the LEAF too when it exists. Resolving only the
+    # directory left a symlink FILE naming the live CLAUDE.md
+    # unrecognised — `--target ~/link-to-claude-md` compared as itself,
+    # so the guard did not fire. (The write would not have gone THROUGH
+    # the link: `mv` replaces the link itself. It would have destroyed the
+    # operator's symlink and left the live file stale but present, which
+    # is its own quiet failure and is exactly the intent the guard exists
+    # to catch.)
+    if [[ -e "$path" ]]; then
+        resolved="$(readlink -f -- "$path" 2>/dev/null || true)"
+        if [[ -n "$resolved" ]]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
     dir="$(dirname "$path")"
     base="$(basename "$path")"
     if [[ -d "$dir" ]]; then
