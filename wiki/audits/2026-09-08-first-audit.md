@@ -484,9 +484,17 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     successful cycle of the script that raised it; exit 5 only for a
     refusal this run; any quarantine raises a warning gate; five or more
     rows refused alike with no success hold and gate, with a named escape
-    hatch. After merge the PreCompact and SessionEnd hook commands in
-    `~/.claude/settings.json` on both machines must follow the new
-    template.
+    hatch. Fourth round done (f276454–fbe17f4): one gate per script,
+    cleared only by a completed cycle; exit 5 only for a refusal this
+    run, `--force` clears, vanished archives pruned; correlated hold at
+    five or more with `--quarantine-anyway`; the hook chain fails on an
+    archive failure again; exit 7 for a cap overflow; malformed SQLSTATE
+    → environment; transient remedy for classes 40 and 57; a structural
+    test pins every gate write to an injectable path after the suite
+    wrote a fabricated gate under the real `~/.cache` a third time. Suite
+    1,540, measured. Fourth pass running. After merge the PreCompact and
+    SessionEnd hook commands in `~/.claude/settings.json` on both
+    machines must follow the new template.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
