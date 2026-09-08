@@ -45,6 +45,7 @@ from _sync_cursor import (  # noqa: E402
     QUARANTINE_WRITTEN,
     append_quarantine_entry,
     count_quarantine_entries,
+    read_quarantine_entries,
     normalise_timestamp_cursor,
     CursorKeyVanished,
     quarantine_record,
@@ -505,39 +506,44 @@ def _sync_advisory_lock(
         conn.close()
 
 
-def _load_quarantined_ids() -> set[str]:
+def _load_quarantined_ids() -> set[str] | None:
     """
     Return the set of ids already present in the quarantine JSONL.
 
-    Used to avoid appending duplicate rows on repeated sync runs
-    against a halted cursor.
+    Used to avoid appending duplicate rows on repeated runs against a
+    halted cursor.
+
+    Reads through :func:`read_quarantine_entries`, the one parser, so
+    this cannot come to disagree with the gate about what is in the
+    file. Returns ``None`` when the file cannot be read at all: the
+    duplicate check is then UNKNOWN, and the caller writes anyway,
+    because a repeated entry is a nuisance and a lost one is a lost row
+    (eleventh re-audit, finding M2).
     """
     if not QUARANTINE_FILE.exists():
+        # For a WRITER about to create the file, "not there" is not the
+        # ambiguity it is for the gate: there is nothing to duplicate.
         return set()
+    entries = read_quarantine_entries(QUARANTINE_FILE)
+    if entries is None:
+        # One bad byte used to raise UnicodeDecodeError straight out of
+        # here and out of _write_quarantine with it, so a single damaged
+        # character stopped every quarantine write on the machine for
+        # ever. Unknown is not empty and not fatal.
+        return None
     ids: set[str] = set()
-    with QUARANTINE_FILE.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(rec, dict):
-                continue
-            # Two shapes live in this one file. ``_write_quarantine``
-            # appends the bare row, so the id is at the top level;
-            # ``_sync_cursor.quarantine_record`` wraps it as
-            # ``{"reason", "quarantined_at", "record"}``, so the id is
-            # one level down. Reading only the first shape meant the
-            # dedup could not see entries written by the second
-            # (re-audit, low finding).
-            for candidate in (rec, rec.get("record")):
-                if isinstance(candidate, dict):
-                    sid = candidate.get("id")
-                    if isinstance(sid, str):
-                        ids.add(sid)
+    for rec in entries:
+        # Two shapes live in this one file. ``_write_quarantine``
+        # appends the bare row, so the id is at the top level;
+        # ``_sync_cursor.quarantine_record`` wraps it as
+        # ``{"reason", "quarantined_at", "record"}``, so the id is one
+        # level down. Reading only the first shape meant the dedup could
+        # not see entries written by the second (re-audit, low finding).
+        for candidate in (rec, rec.get("record")):
+            if isinstance(candidate, dict):
+                sid = candidate.get("id")
+                if isinstance(sid, str):
+                    ids.add(sid)
     return ids
 
 
@@ -553,7 +559,15 @@ def _write_quarantine(
     cursor do not grow the file linearly.
     """
     already = _load_quarantined_ids()
-    new_rows = [r for r in dropped_rows if r.get("id") not in already]
+    if already is None:
+        logger.warning(
+            "Could not read %s to check for duplicates — appending "
+            "without deduplicating. A repeated entry is a nuisance; a "
+            "dropped session is a lost row.", QUARANTINE_FILE,
+        )
+        new_rows = list(dropped_rows)
+    else:
+        new_rows = [r for r in dropped_rows if r.get("id") not in already]
     if not new_rows:
         logger.info(
             "All %d dropped session row(s) already in quarantine — "

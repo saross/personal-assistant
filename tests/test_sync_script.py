@@ -3365,3 +3365,76 @@ class TestAnExitSixDoesNotRepeatItself:
         assert "cursor was reset" not in problem.detail, (
             "one rebuild was announced twice"
         )
+
+
+class TestAnUnreadableQuarantineDoesNotStopTheWrites:
+    """
+    Eleventh re-audit, M2 — ``_load_quarantined_ids`` was a fourth reader
+    of the quarantine file with its own rules and no error handling. One
+    bad byte raised UnicodeDecodeError out of it, out of
+    ``_write_quarantine`` with it, and out of the run: a single damaged
+    character stopped every quarantine write on the machine, for ever.
+    """
+
+    def test_one_bad_byte_does_not_stop_the_write(
+        self, monkeypatch, tmp_path, caplog,
+    ):
+        """
+        The mutation this kills: reading the file here instead of through
+        ``read_quarantine_entries``, which handles the decode error.
+        """
+        quarantine = tmp_path / "quarantine.jsonl"
+        quarantine.write_bytes(b'{"id": "m-old"}\n\xff\xfe not utf-8 \n')
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        with caplog.at_level(logging.WARNING):
+            sync_mod._write_quarantine(
+                [{"id": "m-new"}], logging.getLogger("test-m2"),
+            )
+
+        assert "without deduplicating" in caplog.text
+        text = quarantine.read_text(encoding="utf-8", errors="replace")
+        assert "m-new" in text, "the record was lost to a decoding error"
+
+    def test_the_dedup_still_works_on_a_readable_file(
+        self, monkeypatch, tmp_path,
+    ):
+        """
+        The guard must not amount to never deduplicating: with the file
+        readable, an id already present is still skipped.
+        """
+        import _sync_cursor
+
+        quarantine = tmp_path / "quarantine.jsonl"
+        quarantine.write_text('{"id": "m-old"}\n', encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        _sync_cursor._FINGERPRINT_CACHE.clear()
+
+        sync_mod._write_quarantine(
+            [{"id": "m-old"}], logging.getLogger("test-m2-dedup"),
+        )
+
+        assert _sync_cursor.count_quarantine_entries(quarantine) == 1
+
+    def test_a_file_that_does_not_exist_yet_is_not_a_warning(
+        self, monkeypatch, tmp_path, caplog,
+    ):
+        """
+        For a writer about to create the file, "not there" is not the
+        ambiguity it is for the gate. The mutation this kills: treating a
+        missing file as unreadable, which puts a warning in front of
+        every first-ever quarantine write.
+        """
+        import _sync_cursor
+
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        _sync_cursor._FINGERPRINT_CACHE.clear()
+
+        with caplog.at_level(logging.WARNING):
+            sync_mod._write_quarantine(
+                [{"id": "m-first"}], logging.getLogger("test-m2-new"),
+            )
+
+        assert "without deduplicating" not in caplog.text
+        assert _sync_cursor.count_quarantine_entries(quarantine) == 1
