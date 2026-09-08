@@ -625,28 +625,46 @@ sampled twice; no US spellings.
 
 Scope: `memory-health-report.py`, `drift-sweep.py`, `anchor_verify.py`,
 `triage_anchors.py`, `audit-postgres-sync.py`, and the commands that invoke
-them. Lens A: 3 critical, 7 medium, 8 low. Fix round 4f on
-`claude/audit-round4f` once Lens B reports.
+them. Lens A: 3 critical, 7 medium, 8 low. Lens B: 68 mutations, 39
+survived; five criticals of its own — the Postgres reconciliation engine
+and the health report's entry points are unreached by any test (an inverted
+set difference, a hard-coded table, and an injected DELETE all pass the
+full suite), and the repository discovery resolves from the home directory
+so a worktree run verifies against the wrong repositories. Fix round 4f on
+`claude/audit-round4f`: `--literal-pathspecs` and a magic gate in the
+verifier; transient failures are "pending" and never lower confidence;
+recovery scoped to the memory's own project (`--allow-cross-repo` to
+override); the audit compares row fingerprints and refuses writes through
+a SQL-evaluating fake; the health report drives its entry points, filters
+`is_active`, counts only verifiable anchors, and treats an unreadable
+quarantine file as UNKNOWN; the sweep refuses a degraded repository set and
+fails when a trend row is lost; one repository discovery shared with
+`project_id`. Recorded for Shawn: AN15 (a rule for absolute anchors); the
+conftest watch list additions; unifying the two fake-Postgres helpers.
+Live consequence: the first `audit-postgres-sync` run after merge will
+likely exit 1 on the live store (every record edited by `/update`,
+`/forget`, or anchor recovery diverges from Postgres under the insert-only
+sync), and fifteen glob-referenced anchors re-verify false.
 
 ### Critical (anchors)
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| AN1 | `anchor_verify.py:98-106` — `git log --all -- <ref>` runs without `--literal-pathspecs`, so a file reference with glob characters is matched as a pattern and a junk anchor verifies true (then `confidence: high`); fifteen live records carry such a reference | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
-| AN2 | `anchor_verify.py:195-222` with `triage_anchors.py:50-88` — the recovery index pools every repository's file list into one namespace, so a dead path in project A "recovers" to a same-suffix file in project B, verifies true, and `recover_anchors.py:131-155` writes the foreign reference into the corpus | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
-| AN3 | `anchor_verify.py:93-95,109-110,258-259` — a missing `git`, an unreadable repository, or an unmounted mount returns "false", never "pending", against the module contract at `:32-35`; the drift sweep then logs a permanent bogus failure spike and `recover_anchors` rewrites `verified` and `confidence` from it | CONFIRMED by repro | **next** (round 4f, `claude/audit-round4f`) |
+| AN1 | `anchor_verify.py:98-106` — `git log --all -- <ref>` runs without `--literal-pathspecs`, so a file reference with glob characters is matched as a pattern and a junk anchor verifies true (then `confidence: high`); fifteen live records carry such a reference | CONFIRMED by repro | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN2 | `anchor_verify.py:195-222` with `triage_anchors.py:50-88` — the recovery index pools every repository's file list into one namespace, so a dead path in project A "recovers" to a same-suffix file in project B, verifies true, and `recover_anchors.py:131-155` writes the foreign reference into the corpus | CONFIRMED by repro | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN3 | `anchor_verify.py:93-95,109-110,258-259` — a missing `git`, an unreadable repository, or an unmounted mount returns "false", never "pending", against the module contract at `:32-35`; the drift sweep then logs a permanent bogus failure spike and `recover_anchors` rewrites `verified` and `confidence` from it | CONFIRMED by repro | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
 
 ### Medium (readers)
 
 | # | Finding | Disposition |
 |---|---|---|
-| AN4 | `memory-health-report.py:721` reaches `audit-postgres-sync.py:246-250`, which `sys.exit(2)`s on a schema mismatch inside a library function, so a schema bump kills `/memory-health` with no report although most sections need no Postgres | **next** (round 4f, `claude/audit-round4f`) |
-| AN5 | `memory-health-report.py:197-224` — "anchored" counts records whose anchors are all of unknown type (103 live), overstating verifiable coverage; a string-valued `anchors` iterates per character | **next** (round 4f, `claude/audit-round4f`) |
-| AN6 | `drift-sweep.py:69-86` — a record with a missing or unparseable `created_at` is silently excluded from the "never ages out" back-set | **next** (round 4f, `claude/audit-round4f`) |
-| AN7 | `drift-sweep.py:79-86` — no floor on the repository set: a degraded set (other machine, unmounted repo) makes every anchor false and appends the fabricated spike to the append-only trend log | **next** (round 4f, `claude/audit-round4f`) |
-| AN8 | `memory-health-report.py:63,490-503` — an unreadable quarantine file becomes a count of zero and an overall PASS; the quarantine path is the one constant without the symlink fallback | **next** (round 4f, `claude/audit-round4f`) |
-| AN9 | `audit-postgres-sync.py:139-168,282-291` — the audit compares id sets only, so divergent content, duplicate lines collapsed to one id, and Postgres-only orphans all read "clean" although content divergence is the sync's expected failure mode | **next** (round 4f, `claude/audit-round4f`) |
-| AN10 | `drift-sweep.py:83-85`, `memory-health-report.py:771-773` — unmemoised resolvers: one unresolvable reference costs up to 72 git spawns, repeated per duplicate across 5,537 anchored records (SUSPECTED) | **next** (round 4f, `claude/audit-round4f`) |
+| AN4 | `memory-health-report.py:721` reaches `audit-postgres-sync.py:246-250`, which `sys.exit(2)`s on a schema mismatch inside a library function, so a schema bump kills `/memory-health` with no report although most sections need no Postgres | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN5 | `memory-health-report.py:197-224` — "anchored" counts records whose anchors are all of unknown type (103 live), overstating verifiable coverage; a string-valued `anchors` iterates per character | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN6 | `drift-sweep.py:69-86` — a record with a missing or unparseable `created_at` is silently excluded from the "never ages out" back-set | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN7 | `drift-sweep.py:79-86` — no floor on the repository set: a degraded set (other machine, unmounted repo) makes every anchor false and appends the fabricated spike to the append-only trend log | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN8 | `memory-health-report.py:63,490-503` — an unreadable quarantine file becomes a count of zero and an overall PASS; the quarantine path is the one constant without the symlink fallback | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN9 | `audit-postgres-sync.py:139-168,282-291` — the audit compares id sets only, so divergent content, duplicate lines collapsed to one id, and Postgres-only orphans all read "clean" although content divergence is the sync's expected failure mode | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
+| AN10 | `drift-sweep.py:83-85`, `memory-health-report.py:771-773` — unmemoised resolvers: one unresolvable reference costs up to 72 git spawns, repeated per duplicate across 5,537 anchored records (SUSPECTED) | **round 4f done** (`claude/audit-round4f`, 8 commits, 88 new tests, suite 2,560; one correction in progress — an absent quarantine file is "never written", not a failure — then PR and re-audit) |
 
 Lows recorded: AN11 `..` escapes the repository in the existence check; AN12
 four-character hex accepted as a commit reference across 36 repositories;
