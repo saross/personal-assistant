@@ -186,6 +186,7 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
 | H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
 | H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
+| H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | **decision** — needs a safe-advance position (the last point with no skip pending) rather than a guard, which would duplicate the window's own memories; round 3 design |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -325,7 +326,9 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    history and replace the fixture in a normal commit (queued in round 3
    either way). Recommendation: (a) now, (c) for `main`, and a standing
    rule for fix agents: fixtures are synthetic, never read from `tasks/`,
-   `wiki/`, or the data submodule (added to the shared brief).
+   `wiki/`, or the data submodule (added to the shared brief). Whatever is
+   decided, PR #115 should be squash-merged so the six commits carrying
+   the rows never enter `main`'s history.
 
 ## Fix rounds
 
@@ -369,9 +372,17 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     (being fixed); two archiver commit tests depended on the operator's
     `~/.gitconfig` (fixed on main, b25fe3e); CR-only `.env` files now
     parse wrongly and backtick/`&` values go unflagged (being fixed); the
-    desensitised fixture still reads as this week's house move (being
-    generalised). `tests/test_zotero.py` carries published author surnames
-    from a bibliographic fixture; Shawn's call.
+    desensitised fixture still reads as this week's house move. Third
+    round (48736e9–1b96351): all fixed; the agent's sweep also found six
+    more fixtures in the same file carrying the real focus slot verbatim
+    (project, slug, rotation date, the prose deadline and its client),
+    several from its own earlier work — all replaced by an invented 2024
+    equipment log. `tests/test_digest.py` and `tests/test_retrieval_hook.py`
+    carry project slugs the repository names openly (left);
+    `tests/test_zotero.py` carries published author surnames from a
+    bibliographic fixture (Shawn's call). Narrow third pass running.
+    Merge waits on D6; a squash merge would keep the private rows out of
+    `main`'s history whatever is decided about the branch.
   - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
     guard pushes a second stash and only one is popped, so a run that
     reports success leaves the day's appends in a stash (the very loss
