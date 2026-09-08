@@ -507,3 +507,42 @@ class TestEnumerationOrder:
             for c in resample.enumerate_live_candidates(resample.live_globs(root))
         )
         assert sources == ["live", "subagent"]
+
+
+class TestAtomicWriteStaysOnOneFilesystem:
+    """The manifest's temp file must be a sibling of the manifest."""
+
+    def test_temp_file_is_created_in_the_target_directory(self, tmp_path, monkeypatch):
+        """The finding: dropping dir= survived every test on one filesystem."""
+        import tempfile as tempfile_module
+
+        recorded: list = []
+        real_mkstemp = tempfile_module.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            recorded.append(kwargs.get("dir"))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile_module, "mkstemp", recording_mkstemp)
+        target = tmp_path / "manifests" / "sample-manifest.json"
+        resample.write_json_atomic(target, {"sessions": []})
+        assert recorded == [str(target.parent)]
+
+    def test_write_survives_a_cross_device_rename_barrier(self, tmp_path, monkeypatch):
+        """Simulate EXDEV: the manifest lives on the data submodule's mount."""
+        import errno
+        import os as os_module
+
+        real_replace = os_module.replace
+
+        def replace_refusing_cross_directory(src, dst):
+            if Path(src).parent != Path(dst).parent:
+                raise OSError(
+                    errno.EXDEV, "Invalid cross-device link", str(src), None, str(dst)
+                )
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os_module, "replace", replace_refusing_cross_directory)
+        target = tmp_path / "manifests" / "sample-manifest.json"
+        resample.write_json_atomic(target, {"sessions": []})
+        assert json.loads(target.read_text()) == {"sessions": []}

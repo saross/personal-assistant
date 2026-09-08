@@ -1150,3 +1150,48 @@ class TestRefusalExitCodesAreDistinct:
             "--out-dir", str(tmp_path / "out"),
         ])
         assert code == 2
+
+
+class TestAtomicWriteStaysOnOneFilesystem:
+    """``os.replace`` cannot cross a filesystem boundary."""
+
+    def test_temp_file_is_created_in_the_target_directory(self, tmp_path, monkeypatch):
+        """The finding: dropping dir= survived every test on one filesystem.
+
+        In production the responses live under data/experiments while the
+        default temp directory is /tmp — different filesystems here — so a
+        temp file made in the default location would make os.replace raise
+        EXDEV on every write.
+        """
+        import tempfile as tempfile_module
+
+        recorded: list = []
+        real_mkstemp = tempfile_module.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            recorded.append(kwargs.get("dir"))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile_module, "mkstemp", recording_mkstemp)
+        target = tmp_path / "responses" / "session.json"
+        bom.write_json_atomic(target, {"ok": True})
+        assert recorded == [str(target.parent)]
+
+    def test_write_survives_a_cross_device_rename_barrier(self, tmp_path, monkeypatch):
+        """Simulate EXDEV: a rename between directories must never be needed."""
+        import errno
+        import os as os_module
+
+        real_replace = os_module.replace
+
+        def replace_refusing_cross_directory(src, dst):
+            if Path(src).parent != Path(dst).parent:
+                raise OSError(
+                    errno.EXDEV, "Invalid cross-device link", str(src), None, str(dst)
+                )
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os_module, "replace", replace_refusing_cross_directory)
+        target = tmp_path / "responses" / "session.json"
+        bom.write_json_atomic(target, {"ok": True})
+        assert json.loads(target.read_text()) == {"ok": True}
