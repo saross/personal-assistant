@@ -1347,3 +1347,156 @@ class TestPruningIsScopedToTheRecordedRoot:
         indexer.main(["--archive-root", str(root), "--force"])
 
         assert indexer.load_refusals(pinned_refusal_file) == {}
+
+
+# ---------------------------------------------------------------------------
+# Eighth re-audit, finding M2 — a gate lock that could not be taken must
+# not rewrite the verdict on the indexing
+# ---------------------------------------------------------------------------
+
+
+class TestAGateLockFailureNeverChangesTheExitCode:
+    """
+    The archive root behind the refusal memory was read under
+    ``gate_lock`` directly, from a call sitting outside ``main``'s
+    handler. The lock lives in ``~/.cache``, so an unwritable directory
+    or a stuck lock file turned any run at all — a clean one included —
+    into an exit 1 traceback with no gate written.
+    """
+
+    def _archive(self, tmp_path: Path) -> Path:
+        """One indexable transcript under a fresh root."""
+        root = tmp_path / "archive"
+        session = root / "proj" / "2026-09-01T10-00_abc"
+        session.mkdir(parents=True)
+        (session / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "abc"},
+                "project": {"name": "proj"},
+            }),
+            encoding="utf-8",
+        )
+        (session / "session.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "hello"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return root
+
+    def test_an_unwritable_cache_still_indexes_and_exits_zero(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        The mutation this kills: calling ``gate_lock`` directly again
+        instead of through the guarded helper — a run that indexed
+        everything then exits 1 because a lock file could not be made.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda c: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+        # ~/.cache is a file, so the gate's lock cannot be created.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(indexer, "GATE_FILE", blocker / "gate")
+
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == 0, (
+            "a gate lock that could not be taken changed the exit code"
+        )
+
+    def test_an_unreadable_gate_leaves_the_refusal_memory_alone(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        The memory's keys are paths relative to an archive root, so a run
+        that cannot learn which root the memory was built for must treat
+        it as read-only rather than assume it is its own. The mutation
+        this kills: returning ``(None, True)`` from the helper on
+        failure, which makes an unknown root look like "no root recorded"
+        and hands a foreign memory to the run.
+        """
+        archive = self._archive(tmp_path)
+        pinned_refusal_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_refusal_file.write_text(
+            json.dumps({"proj/2026-09-01T10-00_abc/session.jsonl": 1.0}),
+            encoding="utf-8",
+        )
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda c: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(indexer, "GATE_FILE", blocker / "gate")
+
+        indexer.index_archive(
+            archive, None, False, False, pinned_refusal_file,
+        )
+
+        assert json.loads(
+            pinned_refusal_file.read_text(encoding="utf-8")
+        ) == {"proj/2026-09-01T10-00_abc/session.jsonl": 1.0}, (
+            "the refusal memory was rewritten from an unknown root"
+        )
+
+    def test_the_helper_reports_the_root_when_the_lock_works(
+        self, indexer, tmp_path, pinned_gate_file,
+    ):
+        """The guard must not amount to never reading the gate at all."""
+        import logging
+
+        import _sync_gate
+
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_COMPLETED,
+                connected=True,
+                processed=1,
+                archive_root=str(tmp_path / "archive"),
+                script="index-session-content.py",
+            ),
+            gate_path=pinned_gate_file,
+            logger=logging.getLogger("test-seed"),
+        )
+
+        root, known = indexer._recorded_archive_root(
+            pinned_gate_file, logging.getLogger("test"),
+        )
+
+        assert known is True
+        assert root == str(tmp_path / "archive")
+
+    def test_no_script_takes_a_gate_lock_outside_a_try(self):
+        """
+        Structural guard: ``gate_lock`` raises on an unwritable or
+        contended lock, and every caller outside the gate module itself
+        must be prepared for that. Written because the one unguarded call
+        sat two hundred lines from ``main`` and nothing pointed at it.
+        """
+        import ast
+
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        offenders: list[str] = []
+        for script in sorted(scripts.glob("*.py")):
+            if script.name == "_sync_gate.py":
+                continue
+            tree = ast.parse(script.read_text(encoding="utf-8"))
+            guarded: set[int] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Try):
+                    for child in ast.walk(node):
+                        guarded.add(id(child))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "gate_lock"
+                    and id(node) not in guarded
+                ):
+                    offenders.append(f"{script.name}:{node.lineno}")
+        assert not offenders, (
+            f"gate_lock is called with nothing to catch its failure: "
+            f"{offenders}"
+        )

@@ -400,6 +400,38 @@ def load_refusals(refusal_file: Path | None = None) -> dict[str, float]:
     }
 
 
+def _recorded_archive_root(
+    gate_path: Path, logger: logging.Logger,
+) -> tuple[str | None, bool]:
+    """
+    Read the archive root the refusal memory was built against.
+
+    Returns ``(root, known)``. ``known`` is ``False`` when the gate could
+    not be read at all. The lock lives in ``~/.cache``, so an unwritable
+    directory or a stuck lock file raised ``OSError``/``TimeoutError``
+    from a call sitting outside ``main``'s handler, and any run at all
+    became an exit 1 with no gate written — a lock problem rewriting the
+    verdict on the indexing (eighth re-audit, finding M2). A gate is a
+    diagnostic surface; failing to read one is never a reason to change
+    what the run reports.
+
+    An unreadable gate makes the refusal memory READ-ONLY for the run
+    rather than assumed to be ours: the memory's keys are relative paths,
+    and acting on one built for a different archive root is the failure
+    the recorded root exists to prevent.
+    """
+    try:
+        with gate_lock(gate_path):
+            return read_state(gate_path, logger).archive_root, True
+    except (OSError, TimeoutError) as exc:
+        logger.warning(
+            "Could not read the gate state under its lock (%s: %s) — "
+            "leaving the refusal memory untouched for this run.",
+            type(exc).__name__, exc,
+        )
+        return None, False
+
+
 def save_refusals(
     refusals: dict[str, float],
     refusal_file: Path | None = None,
@@ -508,14 +540,15 @@ def index_archive(archive_root: Path, project: str | None,
     # Read under the gate lock, like every other consumer of this state
     # (seventh re-audit, low), and compare RESOLVED paths so a symlink or
     # a trailing slash cannot make our own root look foreign.
-    with gate_lock(GATE_FILE):
-        recorded_root = read_state(GATE_FILE, logger).archive_root
+    recorded_root, root_known = _recorded_archive_root(GATE_FILE, logger)
     resolved_root = str(Path(archive_root).resolve())
-    memory_is_ours = (
+    memory_is_ours = root_known and (
         recorded_root is None
         or str(Path(recorded_root).resolve()) == resolved_root
     )
-    if not memory_is_ours:
+    if not root_known:
+        consult_memory = False
+    elif not memory_is_ours:
         logger.warning(
             "The refusal memory was built against %s and this run scans "
             "%s — leaving it untouched.", recorded_root, archive_root)
