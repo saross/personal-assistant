@@ -426,91 +426,6 @@ resolve_rebase_conflicts() {
 }
 
 # ---------------------------------------------------------------------------
-# reconcile_orphaned_stashes — CRASH-SAFE recovery, runs at START of a run.
-#
-# ⚠ THIS IS THE LOAD-BEARING FIX (2026-08-20). daily-sync runs as a child of
-# a Claude Code SessionStart hook with a 90s timeout, so it can be killed
-# mid-run — and a killed shell does not run its EXIT trap. The existing
-# `restore_stash_on_exit` trap is therefore necessary but NOT sufficient:
-# on 2026-08-19 a run stashed at 10:20:34, died before its pop, released
-# the flock (fd closed on process death), and a second run started at
-# 10:20:37 onto the now-clean tree. 41 memory records were orphaned that
-# way across two incidents (2026-07-18 and 2026-08-19).
-#
-# Nothing the dying process does can be relied upon, so recovery must
-# happen at the START of the NEXT run. That is what this does.
-# ---------------------------------------------------------------------------
-reconcile_orphaned_stashes() {
-    # Ask the drift detector which stashes still hold records found nowhere
-    # else. This is deliberately NOT "pop every daily-sync stash": once a
-    # stash has been recovered by other means its records are already in the
-    # canonical file, and re-applying it would either conflict or duplicate.
-    # The detector owns that judgement because it is the thing that can see
-    # all three stores. If it cannot run (PostgreSQL down), it exits non-zero
-    # and prints nothing — and "unknown" must mean "touch nothing".
-    local -a orphans=()
-    local ref
-    while IFS= read -r ref; do
-        [[ -n "$ref" ]] && orphans+=("$ref")
-    done < <("$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-memory-drift.py" \
-                 --list-recoverable-stashes 2>>"$LOG_FILE" || true)
-    [[ ${#orphans[@]} -eq 0 ]] && return 0
-
-    log "ORPHANED STASH: ${#orphans[@]} stash(es) hold memory records found"
-    log "  nowhere else — from a previous run killed before it could pop."
-    local i
-    # Oldest last in `git stash list`, so walk backwards to replay in order.
-    for (( i=${#orphans[@]}-1 ; i>=0 ; i-- )); do
-        ref="${orphans[i]}"
-        if [[ $DRY_RUN -eq 1 ]]; then
-            log "  [dry-run] would pop $ref"
-            continue
-        fi
-        if git stash pop "$ref" >>"$LOG_FILE" 2>&1; then
-            log "  recovered $ref"
-        else
-            # A conflicted pop leaves the tree half-merged and preserves the
-            # stash. Do NOT try to tidy up: `git checkout -- .` here would
-            # destroy a concurrent session's uncommitted prose edits. Stop
-            # and let a human resolve it — the stash is still intact.
-            #
-            # audit S17: this wedges every LATER session too. The tree
-            # stays conflicted, the extraction hook keeps appending to a
-            # now-invalid JSONL, and each run re-enters this function,
-            # fails again ("cannot pop, you have unmerged files"), and
-            # never reaches the sync. Nothing surfaced that state but the
-            # log, so write the gate as well.
-            write_sync_gate 1 \
-                "daily-sync STOPPED: orphaned stash $ref did not apply cleanly; $DATA_DIR is conflicted and every session start will fail here until it is resolved by hand (git -C $DATA_DIR status; git -C $DATA_DIR stash show -p $ref)"
-            fail "ORPHANED STASH $ref did not apply cleanly; tree is conflicted and the stash is preserved. Resolve by hand: git -C $DATA_DIR stash show -p $ref"
-        fi
-    done
-}
-
-# ---------------------------------------------------------------------------
-# Data submodule sync
-# ---------------------------------------------------------------------------
-
-# audit S19: on an uninitialised submodule (first run on a new machine, or
-# after `git submodule deinit`) this `cd` aborted under `set -e` with
-# status 1 — reported by the trigger as lock contention. Worse, when
-# data/ exists but holds no .git, every `git` call below silently
-# operates on the PARENT repository instead of the submodule, because git
-# walks up to the enclosing work tree.
-if [[ ! -e "$DATA_DIR/.git" ]]; then
-    fail "data submodule is not initialised ($DATA_DIR/.git absent) — run: git -C $PA_DIR submodule update --init"
-fi
-cd "$DATA_DIR" || fail "cannot enter the data submodule at $DATA_DIR"
-
-# Crash-safe recovery FIRST — before anything reads or writes the tree.
-reconcile_orphaned_stashes
-
-# Stash local changes FIRST (typically memories.jsonl + tag-vocabulary.txt
-# from extraction hooks). Stashing works on any ref including detached
-# HEAD, and leaves a clean tree so the subsequent checkout/pull cannot
-# trip over "local changes would be overwritten".
-
-# ---------------------------------------------------------------------------
 # Stash bookkeeping (audit C1)
 #
 # A run can push MORE THAN ONE stash. The branch-switch guard below stashes
@@ -576,6 +491,109 @@ stash_ref_for() {
 # stash_restore_allowed is cleared the moment the tree may be half-merged
 # or a pop was refused: re-popping into that state would corrupt it.
 stash_restore_allowed=1
+
+# ---------------------------------------------------------------------------
+# reconcile_orphaned_stashes — CRASH-SAFE recovery, runs at START of a run.
+#
+# ⚠ THIS IS THE LOAD-BEARING FIX (2026-08-20). daily-sync runs as a child of
+# a Claude Code SessionStart hook with a 90s timeout, so it can be killed
+# mid-run — and a killed shell does not run its EXIT trap. The existing
+# `restore_stash_on_exit` trap is therefore necessary but NOT sufficient:
+# on 2026-08-19 a run stashed at 10:20:34, died before its pop, released
+# the flock (fd closed on process death), and a second run started at
+# 10:20:37 onto the now-clean tree. 41 memory records were orphaned that
+# way across two incidents (2026-07-18 and 2026-08-19).
+#
+# Nothing the dying process does can be relied upon, so recovery must
+# happen at the START of the NEXT run. That is what this does.
+# ---------------------------------------------------------------------------
+reconcile_orphaned_stashes() {
+    # Ask the drift detector which stashes still hold records found nowhere
+    # else. This is deliberately NOT "pop every daily-sync stash": once a
+    # stash has been recovered by other means its records are already in the
+    # canonical file, and re-applying it would either conflict or duplicate.
+    # The detector owns that judgement because it is the thing that can see
+    # all three stores. If it cannot run (PostgreSQL down), it exits non-zero
+    # and prints nothing — and "unknown" must mean "touch nothing".
+    local -a orphans=()
+    local ref sha
+    while IFS= read -r ref; do
+        [[ -n "$ref" ]] || continue
+        # audit (low, second re-audit): the detector hands back `stash@{n}`
+        # selectors produced by ANOTHER process. An index is a position,
+        # not an identity — one concurrent `git stash push` or `drop`
+        # renumbers the stack, and stash@{2} is then somebody else's work.
+        # Resolve each selector to a commit SHA the moment it is read, and
+        # do every pop below by SHA, like the rest of this script.
+        sha="$(git rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null || true)"
+        if [[ -z "$sha" ]]; then
+            log "ORPHANED STASH: $ref no longer resolves (already recovered?) — skipping"
+            continue
+        fi
+        orphans+=("$sha")
+    done < <("$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-memory-drift.py" \
+                 --list-recoverable-stashes 2>>"$LOG_FILE" || true)
+    [[ ${#orphans[@]} -eq 0 ]] && return 0
+
+    log "ORPHANED STASH: ${#orphans[@]} stash(es) hold memory records found"
+    log "  nowhere else — from a previous run killed before it could pop."
+    local i
+    # Oldest last in `git stash list`, so walk backwards to replay in order.
+    for (( i=${#orphans[@]}-1 ; i>=0 ; i-- )); do
+        sha="${orphans[i]}"
+        if [[ $DRY_RUN -eq 1 ]]; then
+            log "  [dry-run] would pop ${sha:0:8}"
+            continue
+        fi
+        if ! ref="$(stash_ref_for "$DATA_DIR" "$sha")"; then
+            log "  ${sha:0:8} is no longer on the stack — skipping"
+            continue
+        fi
+        if git stash pop "$ref" >>"$LOG_FILE" 2>&1; then
+            log "  recovered ${sha:0:8} ($ref)"
+        else
+            # A conflicted pop leaves the tree half-merged and preserves the
+            # stash. Do NOT try to tidy up: `git checkout -- .` here would
+            # destroy a concurrent session's uncommitted prose edits. Stop
+            # and let a human resolve it — the stash is still intact.
+            #
+            # audit S17: this wedges every LATER session too. The tree
+            # stays conflicted, the extraction hook keeps appending to a
+            # now-invalid JSONL, and each run re-enters this function,
+            # fails again ("cannot pop, you have unmerged files"), and
+            # never reaches the sync. Nothing surfaced that state but the
+            # log, so write the gate as well.
+            stash_restore_allowed=0
+            write_sync_gate 1 \
+                "daily-sync STOPPED: orphaned stash ${sha:0:8} ($ref) did not apply cleanly; $DATA_DIR is conflicted and every session start will fail here until it is resolved by hand (git -C $DATA_DIR status; git -C $DATA_DIR stash show -p $ref)"
+            fail "ORPHANED STASH ${sha:0:8} ($ref) did not apply cleanly; tree is conflicted and the stash is preserved. Resolve by hand: git -C $DATA_DIR stash show -p $ref"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Data submodule sync
+# ---------------------------------------------------------------------------
+
+# audit S19: on an uninitialised submodule (first run on a new machine, or
+# after `git submodule deinit`) this `cd` aborted under `set -e` with
+# status 1 — reported by the trigger as lock contention. Worse, when
+# data/ exists but holds no .git, every `git` call below silently
+# operates on the PARENT repository instead of the submodule, because git
+# walks up to the enclosing work tree.
+if [[ ! -e "$DATA_DIR/.git" ]]; then
+    fail "data submodule is not initialised ($DATA_DIR/.git absent) — run: git -C $PA_DIR submodule update --init"
+fi
+cd "$DATA_DIR" || fail "cannot enter the data submodule at $DATA_DIR"
+
+# Crash-safe recovery FIRST — before anything reads or writes the tree.
+reconcile_orphaned_stashes
+
+# Stash local changes FIRST (typically memories.jsonl + tag-vocabulary.txt
+# from extraction hooks). Stashing works on any ref including detached
+# HEAD, and leaves a clean tree so the subsequent checkout/pull cannot
+# trip over "local changes would be overwritten".
+
 
 stranded_stashes() {
     # stranded_stashes <repo> <sha>...

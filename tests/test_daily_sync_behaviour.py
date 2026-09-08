@@ -806,6 +806,47 @@ class TestUnusableHomeIsNotLockContention:
         assert world.published_data_head() == before
 
 
+class TestOrphanStashesAreResolvedByIdentity:
+    """The drift detector hands back ``stash@{n}`` selectors produced by
+    another process. An index is a position, not an identity: one
+    concurrent push or drop renumbers the stack. Resolve to a SHA at read
+    time and pop by SHA (second re-audit, low)."""
+
+    def test_a_stale_selector_does_not_wedge_the_sync(
+        self, world: SyncWorld
+    ) -> None:
+        """A selector that no longer resolves means the stash is gone —
+        skip it. Popping it blind failed and took the whole sync down."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-orphan")
+
+        result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{7}")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "no longer resolves" in combined
+        # The run carried on and did its work.
+        assert "2026-09-08-orphan" in world.published_data_file(
+            "memories/memories.jsonl"
+        )
+
+    def test_a_real_orphan_is_recovered_and_published(
+        self, world: SyncWorld
+    ) -> None:
+        """The load-bearing 2026-08-20 recovery still recovers."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-stranded")
+        git("stash", "push", "-q", "-m", "orphaned by a killed run", cwd=machine.data)
+
+        result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "recovered" in combined
+        assert not git("stash", "list", cwd=machine.data).stdout.strip()
+        assert "2026-09-08-stranded" in world.published_data_file(
+            "memories/memories.jsonl"
+        )
+
+
 class TestBrokenCheckoutIsNotLockContention:
     """``daily-sync-trigger.sh`` maps exit 1 to "another sync is running".
     A broken checkout must therefore never exit 1 (audit S19)."""
