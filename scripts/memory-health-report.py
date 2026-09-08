@@ -69,6 +69,11 @@ if not QUARANTINE_FILE.exists():
 # One parser for the quarantine file, shared with the sync pipeline
 # and the session-start gate (tenth re-audit, L4).
 from _sync_cursor import read_quarantine_entries  # noqa: E402
+# ONE predicate for "has this memory been forgotten", shared with
+# fetch-memories.py and digest.py. An inline ``is not False`` test reads a
+# string "false" — which the corpus does carry — as active, which is exactly
+# the divergence this module exists to abolish (round 4f-3, finding M2).
+from _soft_delete import is_active as record_is_active  # noqa: E402
 
 CONFAB_LOG = PA_DIR / "data" / "logs" / "confab-flags.log"
 if not CONFAB_LOG.exists():
@@ -865,7 +870,7 @@ def build_report(
     """
     records = load_records(MEMORIES_FILE)
     live_ids = {str(r["id"]) for r in records if r.get("id")}
-    active_records = [r for r in records if r.get("is_active") is not False]
+    active_records = [r for r in records if record_is_active(r)]
 
     corpus = summarise_corpus(records)
     corpus["active_records"] = len(active_records)

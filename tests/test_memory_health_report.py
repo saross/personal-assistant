@@ -891,3 +891,59 @@ class TestTierCSurvivesADiscoveryFailure:
         report, clean = _build(run_tier_c=True)
         assert "tier_c" not in report
         assert clean is True
+
+
+class TestTheSoftDeletePredicateIsShared:
+    """One definition of "forgotten", not one per reader (finding M2)."""
+
+    def test_a_string_false_is_not_active(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """Kills the inline ``r.get("is_active") is not False``.
+
+        The corpus carries the JSON boolean, the string "false", the string
+        "False", and a numeric 0 — ``/forget`` and the sync have written all
+        of them over time. An identity test against ``False`` sees only the
+        first, so a forgotten record would be counted as active here while
+        fetch-memories and the digest, which use _soft_delete.is_active,
+        correctly hide it.
+        """
+        _write_corpus(report_paths, [
+            _anchored(id="m-live"),
+            _anchored(id="m-bool", is_active=False),
+            _anchored(id="m-str", is_active="false"),
+            _anchored(id="m-caps", is_active="False"),
+            _anchored(id="m-zero", is_active=0),
+        ])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-live", "is_active": True},
+            {"id": "m-bool", "is_active": False},
+            {"id": "m-str", "is_active": False},
+            {"id": "m-caps", "is_active": False},
+            {"id": "m-zero", "is_active": False},
+        ]))
+        report, _clean = _build()
+        assert report["corpus"]["total_records"] == 5
+        assert report["corpus"]["active_records"] == 1
+        assert report["anchors"]["total_records"] == 1
+
+    def test_the_membership_tripwire_still_sees_every_line(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """live_ids must NOT be filtered: PostgreSQL keeps forgotten rows.
+
+        Kills the mutation that filters live_ids by is_active — every
+        soft-deleted record would then look like a PostgreSQL-only orphan.
+        """
+        _write_corpus(report_paths, [
+            _anchored(id="m-live"),
+            _anchored(id="m-gone", is_active=False),
+        ])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-live", "is_active": True},
+            {"id": "m-gone", "is_active": False},
+        ]))
+        report, clean = _build()
+        assert report["integrity"]["only_in_postgres"] == 0
+        assert report["integrity"]["only_in_canonical"] == 0
+        assert clean is True
