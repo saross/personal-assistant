@@ -127,9 +127,11 @@ class TestDryRunGating:
             "RESET_TARGETS must cover all three kinds"
         )
 
-        # Tables: memories + sessions
+        # Tables: every table holding data derived from a canonical
+        # source. session_chunks joined the schema on 2026-06-21 and was
+        # missed until audit round two, finding P4.
         table_names = {t.name for t in targets if t.kind == "table"}
-        assert table_names == {"memories", "sessions"}
+        assert table_names == {"memories", "sessions", "session_chunks"}
 
         # Sync state rows: all three from schema.sql
         ss_names = {t.name for t in targets if t.kind == "sync_state_row"}
@@ -265,6 +267,19 @@ class TestTruncateTable:
         logger = rebuild_mod.setup_logging()
         rebuild_mod.truncate_table(conn, "memories", logger)
         cur.execute.assert_called_with("TRUNCATE TABLE memories")
+
+    def test_truncate_for_session_chunks(self, rebuild_mod):
+        """
+        Audit round two, finding P4 (lens A-M1): session_chunks is
+        derived from the archive tree and nothing else truncates it, so
+        the docstring's "same shape as a freshly applied schema.sql"
+        guarantee was false. The mutation this kills: dropping
+        "session_chunks" from DERIVED_TABLES.
+        """
+        conn, cur = _build_fake_conn()
+        logger = rebuild_mod.setup_logging()
+        rebuild_mod.truncate_table(conn, "session_chunks", logger)
+        cur.execute.assert_called_with("TRUNCATE TABLE session_chunks")
 
     def test_truncate_for_sessions(self, rebuild_mod):
         conn, cur = _build_fake_conn()

@@ -22,6 +22,10 @@ sources:
 
 * memories — from ``data/memories/memories.jsonl``
 * sessions — from ``~/cc-archives/`` ``session.meta.json`` files
+* session_chunks — from the ``~/cc-archives/`` transcripts, by
+  ``index-session-content.py`` (which must be re-run explicitly; a
+  truncated table simply reindexes everything, since it tracks state in
+  its own ``source_mtime`` column rather than in a cursor file)
 * embeddings — backfilled by ``sync-to-postgres.py`` (or run
   ``backfill-embeddings.py`` directly to embed in one pass)
 * Zotero notes — re-emitted by ``sync-to-zotero.py``
@@ -95,7 +99,16 @@ CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
 # stays untouched. ``sync_state`` is reset via UPDATE rather than
 # TRUNCATE so the row identities and seeded values from ``schema.sql``
 # survive.
-DERIVED_TABLES: tuple[str, ...] = ("memories", "sessions")
+#
+# ``session_chunks`` (schema.sql, added 2026-06-21) is derived from the
+# archive tree exactly as ``sessions`` is, and nothing else truncates it.
+# Omitting it was the same defect this script was written to fix, quietly
+# reintroduced by a later schema addition (audit round two, finding P4 /
+# lens A-M1). It needs no cursor key: the content indexer tracks state
+# via ``source_mtime`` in the table itself, so truncating the table *is*
+# resetting its cursor — the next ``index-session-content.py`` run then
+# reindexes every transcript.
+DERIVED_TABLES: tuple[str, ...] = ("memories", "sessions", "session_chunks")
 
 # Cursor keys to remove from ``sync-cursors.json``. After removal the
 # sync scripts fall back to their hard-coded defaults
