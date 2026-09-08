@@ -145,6 +145,28 @@ def _under_repo(repo: Path, relpath: str) -> Path | None:
     return Path(joined) if joined.startswith(repo_str + os.sep) else None
 
 
+def _resolves_inside(repo: Path, candidate: Path) -> bool:
+    """Does *candidate*, followed through symlinks, still live inside *repo*?
+
+    :func:`_under_repo` is lexical and must stay that way — it also guards the
+    git probes, where the file may have been deleted and ``resolve`` would
+    touch the filesystem. But a lexical check alone lets a SYMLINK inside the
+    repository stand in for a path outside it: ``<repo>/link/secret.txt``
+    passes the prefix test while the bytes live anywhere at all (round 4f-3,
+    finding L1). This second check runs only where a file was actually found,
+    so it costs a ``resolve`` on the hit path and nothing on the miss path.
+
+    A resolve that raises (a broken symlink, a permission wall, a symlink
+    loop) is treated as "not inside": we could not show that it is.
+    """
+    try:
+        real = candidate.resolve()
+        root = repo.resolve()
+    except (OSError, RuntimeError):
+        return False
+    return real == root or str(real).startswith(str(root) + os.sep)
+
+
 def _git_knows_path(repo: Path, relpath: str) -> str:
     """Does *relpath* exist at HEAD or anywhere in *repo*'s history?
 
@@ -322,9 +344,11 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
         if candidate is None:
             continue
         try:
-            if candidate.exists():
+            if candidate.exists() and _resolves_inside(repo, candidate):
                 return "true"
         except OSError:
+            # The stat itself failed: an unmounted volume, a permission wall.
+            # We did not check, so we must not later say "absent".
             pending_seen = True
 
     # Filesystem miss — try HEAD + history in each repo.
@@ -763,8 +787,9 @@ def bind_confidence(
       * ``verified == "true"`` and (not guidance category, or both
         ``why`` and ``how_to_apply`` populated) → ``"high"``
       * ``verified == "true"`` but guidance fields incomplete → ``"medium"``
-      * ``verified in {"tier3", "pending"}`` → ``"medium"``, or *current*
-        when the record already carries ``"high"``
+      * ``verified in {"tier3", "pending"}`` → *current* when the record
+        already carries ``"high"`` or ``"low"`` (case-folded), else
+        ``"medium"``
       * ``verified == "false"`` → ``"low"``
       * ``verified is None`` (no anchors checked) → ``"low"``
 
@@ -773,10 +798,11 @@ def bind_confidence(
     forward compatibility.
 
     *current* is the confidence the record already carries, and it exists so
-    that a re-verification pass cannot DEMOTE a record on the strength of a
+    that a re-verification pass cannot MOVE a record on the strength of a
     check that did not complete. ``"pending"`` means "we could not look", not
     "we looked and found nothing" (finding AN3): an unmounted repository
-    during one sweep must not cost a verified-true memory its ``high``.
+    during one sweep must not cost a verified-true memory its ``high``, and
+    must not hand an unverified one a ``medium`` it did not earn (L2).
     A ``"false"`` verdict still demotes — that one is committal.
     """
     if verified == "true":
@@ -786,6 +812,13 @@ def bind_confidence(
             return "high"
         return "medium"
     if verified in ("tier3", "pending"):
-        return "high" if current == "high" else "medium"
+        # A check that did not complete is not evidence in EITHER direction:
+        # it must not demote a "high" record, and it must not promote a "low"
+        # one to "medium" on the strength of having failed to look (round
+        # 4f-3, finding L2). Case-folded: the corpus carries "High".
+        existing = str(current or "").strip().lower()
+        if existing in ("high", "low"):
+            return existing
+        return "medium"
     # 'false' or None — both treated as untrusted.
     return "low"

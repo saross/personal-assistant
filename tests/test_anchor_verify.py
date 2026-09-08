@@ -785,8 +785,15 @@ class TestTransientFailureIsPending:
         next recovery pass simply because a mount was missing.
         """
         assert av.bind_confidence("pending", current="high") == "high"
-        assert av.bind_confidence("pending", current="low") == "medium"
+        # ... and must not RAISE one either: failing to look is not evidence
+        # for the memory (round 4f-3, finding L2).
+        assert av.bind_confidence("pending", current="low") == "low"
+        # Case-folded: the corpus carries "High" as well as "high".
+        assert av.bind_confidence("pending", current="High") == "high"
+        assert av.bind_confidence("pending", current="  LOW ") == "low"
+        # No prior rating (a fresh record) keeps the documented default.
         assert av.bind_confidence("pending") == "medium"
+        assert av.bind_confidence("pending", current="nonsense") == "medium"
         # "false" is committal and still demotes, whatever the record says.
         assert av.bind_confidence("false", current="high") == "low"
 
@@ -917,3 +924,38 @@ class TestABrokenRepositoryIsExcludedNotContagious:
         broken.mkdir()
         av.verify_file("scripts/ghost.py", [broken])
         assert str(broken) in av.unusable_repos()
+
+
+class TestASymlinkCannotSmuggleAPathIntoTheRepo:
+    """The lexical guard needs a resolve on the hit path (finding L1)."""
+
+    def test_a_symlink_pointing_outside_does_not_verify(self, tmp_path):
+        """Kills the mutation dropping ``_resolves_inside`` from verify_file.
+
+        ``<repo>/link/secret.txt`` passes the lexical prefix test while the
+        bytes live outside every repository — the AN11 escape wearing a
+        different hat.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not in the repo\n", encoding="utf-8")
+        (repo / "link").symlink_to(outside, target_is_directory=True)
+        assert av.verify_file("link/secret.txt", [repo]) == "false"
+
+    def test_a_symlink_inside_the_repo_still_verifies(self, tmp_path):
+        """The control: an internal symlink is a legitimate repo path.
+
+        The personal-assistant checkout is built on exactly this shape —
+        ``memories`` is a symlink to ``data/memories`` — so the guard must
+        not reject it.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        (repo / "inner").mkdir()
+        (repo / "inner" / "note.md").write_text("here\n", encoding="utf-8")
+        (repo / "alias").symlink_to(repo / "inner", target_is_directory=True)
+        assert av.verify_file("alias/note.md", [repo]) == "true"
+
+    def test_a_real_file_is_unaffected(self, tmp_path):
+        repo = _throwaway_repo(tmp_path / "repo")
+        assert av.verify_file("scripts/real.py", [repo]) == "true"
