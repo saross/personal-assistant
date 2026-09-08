@@ -507,9 +507,16 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     last-separator rule; a vanished file reads as "manual". Seventh
     round running: the gate is cleared only where the run completed;
     `--check` has its own failure code and the guard maps only 0/1/3 to
-    corpus verdicts; the interpreter is verified first. Both machines'
-    corpora pass `--check` at 15:20; no stash in either repository; no
-    `merge.conflictStyle` set.
+    corpus verdicts; the interpreter is verified first. Seventh round
+    done (9a58f13–17f5aeb; suite 1,718): all three fixed as briefed;
+    signals exit 130/143 and append an interruption line; a
+    conflicted-then-abandoned apply is a third state; a block with more
+    than one separator is refused; and the agent found the corpus guard
+    was being called inside `$(...)`, so its gate details were discarded
+    and its `fail` exited only the subshell — now an array in the main
+    shell. Seventh pass running. Both machines' corpora pass `--check`
+    at 15:50; no stash in either repository; no `merge.conflictStyle`
+    set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
@@ -631,8 +638,21 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     its own event; the AST check resolves aliases; an autouse session
     fixture asserts the suite left nothing under the real `~/.cache`; the
     trigger reports a never-written or stale gate; the flock is bounded.
-    Eighth pass running. First session after merge will report all three
-    gates as never written until each script has run once.
+    Eighth pass: **do not merge** — a mixed slice with one bad line never
+    reports its quarantine (the parse-layer count reaches the result only
+    on the empty-slice return); the new staleness check fires three false
+    alarms after any sleep longer than six hours; two more degraded returns
+    still drop connectivity; the indexer takes the gate lock unguarded
+    outside the machine; the ack reports success over a half-written gate;
+    rows re-refused after an ack and a rebuild count as duplicates and say
+    nothing; a lock timeout loses that tick's count; the staleness hours
+    variable is an arithmetic-injection sink. Ninth round running: the
+    quarantine problem is re-derived from the append-only quarantine file
+    against an acked position stored in the sidecar (reset on a cursor
+    reset), so no tick can be lost and no delta can be wrong; the
+    staleness check is guarded by uptime and boot time. First session
+    after merge will report all three gates as never written until each
+    script has run once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
