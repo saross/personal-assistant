@@ -219,3 +219,158 @@ class TestApiCostGate:
         assert requests == 3
         assert input_tokens > 0
         assert output_tokens == 7 * backfill.EST_OUTPUT_TOKENS_PER_MEMORY
+
+
+class BatchResultsStub(StubAnthropic):
+    """A client whose batch results are scripted by the test."""
+
+    scripted_results: list = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.messages.batches = types.SimpleNamespace(
+            create=self._batch_create,
+            retrieve=self._retrieve,
+            results=self._results,
+        )
+
+    def _retrieve(self, batch_id: str):
+        StubAnthropic.calls.append(f"batches.retrieve:{batch_id}")
+        return types.SimpleNamespace(
+            processing_status="ended",
+            request_counts=types.SimpleNamespace(
+                succeeded=1, errored=0, expired=0, canceled=0, processing=0
+            ),
+        )
+
+    def _results(self, batch_id: str):
+        StubAnthropic.calls.append(f"batches.results:{batch_id}")
+        return iter(BatchResultsStub.scripted_results)
+
+
+def _succeeded_result(custom_id: str, payload: list[dict]):
+    """One successful batch result carrying the given JSON reply."""
+    block = types.SimpleNamespace(text=json.dumps(payload))
+    message = types.SimpleNamespace(content=[block])
+    return types.SimpleNamespace(
+        custom_id=custom_id,
+        result=types.SimpleNamespace(type="succeeded", message=message),
+    )
+
+
+class TestOutOfBatchIdsAreIgnored:
+    """AR5 — a reply may only change the records its request carried.
+
+    The model chooses the ids in its output. Before 2026-09-08 the writer
+    applied every one of them that existed in the canonical, so a
+    hallucinated or copied-across id replaced an unrelated memory's summary
+    with a summary of something else — silently, and with no way to tell
+    afterwards which summaries were real.
+    """
+
+    @pytest.fixture()
+    def batch_harness(self, harness, monkeypatch: pytest.MonkeyPatch):
+        """A canonical of three memories and a one-request batch over two."""
+        in_batch = ["2026-03-02-000000", "2026-03-02-000001"]
+        victim = "2026-03-02-000002"
+        backfill.BATCH_STATE_FILE.write_text(
+            json.dumps({
+                "batch_id": "msgbatch_stub",
+                "n_requests": 1,
+                "batch_index_map": {"batch-0": in_batch},
+            }),
+            encoding="utf-8",
+        )
+        stub_module = types.ModuleType("anthropic")
+        stub_module.Anthropic = BatchResultsStub
+        monkeypatch.setitem(sys.modules, "anthropic", stub_module)
+        return types.SimpleNamespace(
+            in_batch=in_batch, victim=victim, memories=harness.memories
+        )
+
+    def _summaries(self, path: Path) -> dict[str, str]:
+        return {
+            json.loads(line)["id"]: json.loads(line).get("summary")
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+
+    def test_only_in_batch_records_change(
+        self, batch_harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One out-of-batch id in the reply must not touch its namesake."""
+        BatchResultsStub.scripted_results = [
+            _succeeded_result("batch-0", [
+                {"id": batch_harness.in_batch[0], "summary": "First decision."},
+                {"id": batch_harness.in_batch[1], "summary": "Second decision."},
+                {"id": batch_harness.victim, "summary": "WRONG — not sent."},
+            ])
+        ]
+
+        _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
+
+        summaries = self._summaries(batch_harness.memories)
+        assert summaries[batch_harness.in_batch[0]] == "First decision."
+        assert summaries[batch_harness.in_batch[1]] == "Second decision."
+        assert summaries[batch_harness.victim] is None, (
+            "a memory that was never sent to the model had its summary "
+            "overwritten by a summary of a different memory"
+        )
+
+    def test_a_wholly_invented_id_is_ignored(
+        self, batch_harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An id that matches nothing is dropped, not carried through."""
+        BatchResultsStub.scripted_results = [
+            _succeeded_result("batch-0", [
+                {"id": batch_harness.in_batch[0], "summary": "First decision."},
+                {"id": "2026-03-02-ffffff", "summary": "Invented."},
+            ])
+        ]
+
+        _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
+
+        text = batch_harness.memories.read_text(encoding="utf-8")
+        assert "Invented." not in text
+        assert "2026-03-02-ffffff" not in text
+
+    def test_a_result_outside_the_index_map_is_skipped(
+        self, batch_harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A custom_id this batch never submitted writes nothing at all."""
+        BatchResultsStub.scripted_results = [
+            _succeeded_result("batch-999", [
+                {"id": batch_harness.in_batch[0], "summary": "Stray."},
+            ])
+        ]
+
+        _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
+
+        assert "Stray." not in batch_harness.memories.read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_mismatched_batch_state_refuses(
+        self, batch_harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Applying batch A's results through batch B's map is refused."""
+        BatchResultsStub.scripted_results = []
+
+        with pytest.raises(SystemExit) as exit_info:
+            _run_main(monkeypatch, "--batch-apply", "msgbatch_other")
+
+        assert exit_info.value.code != 0
+        assert not any(
+            call.startswith("batches.retrieve") for call in StubAnthropic.calls
+        )
+
+    def test_a_missing_batch_state_refuses(
+        self, batch_harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no index map there is no safe way to apply anything."""
+        backfill.BATCH_STATE_FILE.unlink()
+
+        with pytest.raises(SystemExit) as exit_info:
+            _run_main(monkeypatch, "--batch-apply", "msgbatch_stub")
+
+        assert exit_info.value.code != 0

@@ -263,18 +263,45 @@ def write_memories(records: list[dict | None]) -> None:
 def _apply_summaries_under_lock(
     summaries: dict[str, str],
     logger: logging.Logger,
-) -> tuple[int, int]:
+    allowed_ids: set[str] | None = None,
+) -> tuple[int, int, int]:
     """
     Apply a ``{id: summary}`` mapping to the canonical under LOCK_EX.
 
     Re-reads the file inside the lock, attaches each summary to the
     matching record, and rewrites. Re-reading inside the lock means
     any extraction-hook appends that landed since the previous
-    invocation are preserved. Returns ``(applied, missing)`` —
-    summaries that matched a record vs ones whose id was not found.
+    invocation are preserved.
+
+    *allowed_ids* is the set of memory ids that were actually SENT in the
+    request this reply answers. Anything else in the reply is discarded and
+    counted. Without it the writer trusted the model's ids: a hallucinated or
+    copied-across id that happened to exist in the canonical had an unrelated
+    memory's summary replaced with a summary of a different memory, silently
+    and permanently (audit 2026-09-08, finding AR5). The model chooses the
+    ids in its output; it must not thereby choose which records we rewrite.
+
+    Returns ``(applied, missing, ignored)`` — summaries that matched a
+    record, ones whose id was not found, and ones rejected as out-of-batch.
     """
+    ignored = 0
+    if allowed_ids is not None:
+        rejected = sorted(set(summaries) - allowed_ids)
+        if rejected:
+            ignored = len(rejected)
+            logger.warning(
+                "Discarding %d summary id(s) the model returned that were "
+                "not in the request: %s",
+                ignored, ", ".join(rejected[:5]) + (
+                    ", …" if len(rejected) > 5 else ""
+                ),
+            )
+            summaries = {
+                mid: text for mid, text in summaries.items()
+                if mid in allowed_ids
+            }
     if not summaries:
-        return 0, 0
+        return 0, 0, ignored
     with lock_jsonl_for_rewrite(MEMORIES_FILE):
         records = load_memories()
         applied = 0
@@ -301,7 +328,7 @@ def _apply_summaries_under_lock(
             write_memories(records)
         else:
             logger.info("No summaries matched on re-read — skipping rewrite")
-    return applied, missing
+    return applied, missing, ignored
 
 
 
@@ -497,7 +524,13 @@ def run_sync(
         # Write after each batch for incremental progress, holding
         # LOCK_EX so concurrent extraction-hook appends are queued
         # behind us rather than silently overwritten.
-        applied, missing = _apply_summaries_under_lock(summaries, logger)
+        applied, missing, _ignored = _apply_summaries_under_lock(
+            summaries, logger,
+            allowed_ids={
+                record.get("id") for _, record in batch_items
+                if record.get("id")
+            },
+        )
         if missing:
             logger.warning(
                 "Batch %d: %d summary id(s) not found in canonical "
@@ -623,6 +656,28 @@ def run_batch_apply(
         batch_id,
     )
 
+    # The batch's own index map is what makes application safe: it says
+    # which memory ids were sent in which request, and therefore which ids a
+    # reply is allowed to change. Without it we would be back to trusting the
+    # model's ids (AR5), so a missing or mismatched state file is a refusal.
+    if not BATCH_STATE_FILE.exists():
+        logger.error(
+            "No batch state at %s — cannot tell which memories were sent in "
+            "which request, so results cannot be applied safely.",
+            BATCH_STATE_FILE,
+        )
+        sys.exit(1)
+    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
+    if state.get("batch_id") != batch_id:
+        logger.error(
+            "Batch state at %s describes batch %s, not %s. Applying one "
+            "batch's results through another's index map would rewrite the "
+            "wrong memories.",
+            BATCH_STATE_FILE, state.get("batch_id"), batch_id,
+        )
+        sys.exit(1)
+    batch_index_map: dict[str, list[str]] = state.get("batch_index_map", {})
+
     client = Anthropic()
 
     # Check batch status
@@ -667,7 +722,10 @@ def run_batch_apply(
     total_applied = 0
     total_failed = 0
     total_parse_errors = 0
+    total_out_of_batch = 0
     pending_summaries: dict[str, str] = {}
+    # Ids the replies were entitled to change, accumulated per request.
+    allowed_ids: set[str] = set()
 
     for result in client.messages.batches.results(batch_id):
         custom_id = result.custom_id
@@ -695,7 +753,27 @@ def run_batch_apply(
             total_parse_errors += 1
             continue
 
+        # Only the ids this request actually carried may be written by its
+        # reply. An id from another batch, or one the model invented, is
+        # logged and dropped rather than applied to whatever record happens
+        # to share it (AR5).
+        request_ids = set(batch_index_map.get(custom_id, []))
+        if not request_ids:
+            logger.warning(
+                "Request %s is not in this batch's index map — skipping",
+                custom_id,
+            )
+            total_failed += 1
+            continue
         for mem_id, summary in summaries.items():
+            if mem_id not in request_ids:
+                total_out_of_batch += 1
+                logger.warning(
+                    "Request %s returned id %s, which it was not sent — "
+                    "ignoring", custom_id, mem_id,
+                )
+                continue
+            allowed_ids.add(mem_id)
             idx = id_to_index.get(mem_id)
             if idx is not None and all_records[idx] is not None:
                 all_records[idx]["summary"] = summary
@@ -704,8 +782,8 @@ def run_batch_apply(
 
     # Write updated records under LOCK_EX (re-reads inside the lock).
     if pending_summaries:
-        applied, missing = _apply_summaries_under_lock(
-            pending_summaries, logger,
+        applied, missing, ignored = _apply_summaries_under_lock(
+            pending_summaries, logger, allowed_ids=allowed_ids,
         )
         if missing:
             logger.warning(
@@ -713,17 +791,23 @@ def run_batch_apply(
                 "(likely dedup happened between load and write)",
                 missing,
             )
+        if ignored:
+            logger.warning(
+                "%d summary id(s) rejected at the write as out-of-batch",
+                ignored,
+            )
 
     total_with_summaries = sum(
         1 for r in all_records
         if r is not None and r.get("summary")
     )
     logger.info(
-        "Applied %d summaries (%d failed, %d parse errors). "
-        "Total with summaries: %d/%d",
+        "Applied %d summaries (%d failed, %d parse errors, "
+        "%d out-of-batch ids ignored). Total with summaries: %d/%d",
         total_applied,
         total_failed,
         total_parse_errors,
+        total_out_of_batch,
         total_with_summaries,
         sum(1 for r in all_records if r is not None),
     )
