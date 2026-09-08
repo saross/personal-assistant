@@ -66,8 +66,14 @@ def _connect() -> sqlite3.Connection:
             f"is in a non-standard location."
         )
 
+    # Audit round 4d (E24): build the URI with Path.as_uri() rather than
+    # f-string concatenation. The old form produced four slashes after
+    # "file:" (the path already begins with one) and left the path
+    # unencoded, so a ZOTERO_DATA_DIR containing "#" or "?" silently
+    # truncated the database path into a fragment or query string and the
+    # open failed with a misleading "unable to open database file".
     conn = sqlite3.connect(
-        f"file:///{ZOTERO_DB}?immutable=1",
+        f"{ZOTERO_DB.as_uri()}?immutable=1",
         uri=True,
     )
     conn.row_factory = sqlite3.Row
@@ -781,7 +787,10 @@ def format_citation(item: dict[str, Any]) -> str:
     else:
         author_str = f"{authors[0]['last_name']} et al."
 
-    year = item.get("date", "n.d.")
+    # `_build_item_dict` always supplies a "date" key, empty when the item
+    # has no date, so the dict default never fires. Audit round 4d (E12):
+    # test the VALUE, or a dateless item renders as "Smith () A study".
+    year = item.get("date") or "n.d."
     # Extract just the year if date is longer
     year_match = re.search(r"\d{4}", year)
     if year_match:

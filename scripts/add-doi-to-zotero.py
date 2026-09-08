@@ -154,7 +154,10 @@ def main() -> int:
     doi = args.doi.strip()
 
     # Idempotency: refuse to duplicate a DOI already in any local library.
-    conn = sqlite3.connect(f"file://{m.ZOTERO_SQLITE}?immutable=1", uri=True)
+    # as_uri() URL-encodes the path (audit round 4d, E24).
+    conn = sqlite3.connect(
+        f"{m.ZOTERO_SQLITE.as_uri()}?immutable=1", uri=True
+    )
     existing = m.find_existing_by_doi(doi, conn)
     conn.close()
     if existing:

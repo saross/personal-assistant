@@ -1482,7 +1482,11 @@ def run_import(args: argparse.Namespace) -> int:
         )
 
     # Open sqlite for dedup
-    conn = sqlite3.connect(f"file://{ZOTERO_SQLITE}?immutable=1", uri=True)
+    # as_uri() URL-encodes the path, so a "#" or "?" anywhere in it
+    # cannot truncate the database path (audit round 4d, E24).
+    conn = sqlite3.connect(
+        f"{ZOTERO_SQLITE.as_uri()}?immutable=1", uri=True
+    )
 
     # CrossRef client
     cr_client = httpx.Client(headers={"User-Agent": USER_AGENT})
