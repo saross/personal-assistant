@@ -1354,12 +1354,27 @@ class TestStashTrackedHalfLanded:
             repo, sha, " M t.txt", " M t.txt\n?? somebody-elses-file.md"
         ) == "NOT-LANDED"
 
-    def test_the_tracked_path_changing_is_the_tracked_half(
+    def test_the_tracked_path_changing_is_not_enough_on_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        """Audit C1 (third re-audit) corrected this case.
+
+        It used to assert LANDED from a status change alone, with no apply
+        having happened at all -- which is precisely the defect: anything
+        that writes to one of the entry's paths in the window then reads
+        as "the entry landed". The entry's own hunks have to be in the
+        files, and here nothing put them there.
+        """
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(repo, sha, "", " M t.txt") == "NOT-LANDED"
+
+    def test_an_apply_that_really_landed_is_evidence(
         self, tmp_path: Path
     ) -> None:
         """And the other direction, or nothing would ever be dropped."""
         repo, sha = self._entry(tmp_path)
-        assert self._ask(repo, sha, "", " M t.txt") == "LANDED"
+        _git("stash", "apply", sha, cwd=repo)
+        assert self._ask(repo, sha, "", " M t.txt\n?? u.txt") == "LANDED"
 
     def test_an_entry_with_no_tracked_half_lands_nothing(
         self, tmp_path: Path
@@ -1762,3 +1777,124 @@ class TestPublishedShrinkPrecondition:
             "a push the guard could not check was waved through: " + result.stdout
         )
         assert "no origin/main" in result.stderr, result.stderr
+
+
+class TestTrackedHalfEvidenceIsTheHunks:
+    """`applied` -- the verdict that lets an entry be deleted -- must rest
+    on the entry's OWN hunks being in the files on disk, not on something
+    having changed."""
+
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+
+    def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
+        """Run the predicate over two recorded porcelain snapshots."""
+        result = _run_shell(
+            'apply_before_status="$PA_TEST_BEFORE"\n'
+            'apply_after_status="$PA_TEST_AFTER"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+            {"PA_TEST_BEFORE": before, "PA_TEST_AFTER": after},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def _two_path_entry(self, tmp_path: Path, name: str) -> tuple[Path, str]:
+        """The production shape: one entry touching a prose file and the
+        corpus, which is the most-stashed and most-hook-written file here."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "t.txt").write_text("base\n", encoding="utf-8")
+        (repo / "memories.jsonl").write_text('{"id": "seed"}\n', encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "t.txt").write_text("stashed\n", encoding="utf-8")
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "m1-only-in-stash"}\n', encoding="utf-8"
+        )
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def test_a_hook_write_during_a_refused_merge_is_not_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-C1-residual: comparing `git status` LINES.
+
+        A local edit to t.txt makes git refuse the merge outright, and the
+        extraction hook appends to memories.jsonl inside the window. Both
+        tracked paths' status words then differ, none of it because the
+        entry landed -- and the entry holds the only copy of
+        m1-only-in-stash.
+        """
+        repo, sha = self._two_path_entry(tmp_path, "hookwrite")
+        # The refusal: git wrote nothing.
+        (repo / "t.txt").write_text("a local edit\n", encoding="utf-8")
+        before = " M t.txt"
+        # …and the hook fired in the apply window.
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "written-by-the-hook"}\n', encoding="utf-8"
+        )
+        after = " M memories.jsonl\n M t.txt"
+
+        assert self._ask(repo, sha, before, after) == "NOT-LANDED"
+        # And the record that would have been destroyed is still there.
+        held = _git("show", f"{sha}:memories.jsonl", cwd=repo).stdout
+        assert "m1-only-in-stash" in held, held
+
+    def test_one_of_two_tracked_paths_moving_is_not_enough(
+        self, tmp_path: Path
+    ) -> None:
+        """EVERY path the entry touches, not any one of them."""
+        repo, sha = self._two_path_entry(tmp_path, "halfway")
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "written-by-the-hook"}\n', encoding="utf-8"
+        )
+        assert self._ask(repo, sha, "", " M memories.jsonl") == "NOT-LANDED"
+
+    def test_a_clean_apply_into_a_tree_that_moved_on_is_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """The other direction, or nothing would ever be dropped. The
+        stash's hunk and the tree's own movement are in different regions,
+        which is the ordinary cross-machine case."""
+        repo = tmp_path / "movedon"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "f.txt").write_text(
+            "".join(f"line {n}\n" for n in range(1, 13)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        lines = (repo / "f.txt").read_text(encoding="utf-8").splitlines()
+        lines[1] = "line 2 CHANGED BY THE STASH"
+        (repo / "f.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # main moved on, elsewhere in the file…
+        lines = (repo / "f.txt").read_text(encoding="utf-8").splitlines()
+        lines[9] = "line 10 CHANGED ON MAIN"
+        (repo / "f.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "main moved on", cwd=repo)
+        # …and the entry applies cleanly on top of it.
+        _git("stash", "apply", sha, cwd=repo)
+
+        assert self._ask(repo, sha, "", " M f.txt") == "LANDED"
+
+    def test_a_binary_path_is_never_called_landed(self, tmp_path: Path) -> None:
+        """`git diff` says "Binary files differ" and `git apply` refuses
+        it. Reading that as not-landed keeps the entry, which is the safe
+        direction for a file no text tool can merge."""
+        repo = tmp_path / "binary"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02seed\n")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02stashed\n")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02stashed\n")
+
+        assert self._ask(repo, sha, "", " M blob.bin") == "NOT-LANDED"

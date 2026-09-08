@@ -1721,8 +1721,43 @@ stash_tracked_half_landed() {
     #
     # A byte comparison against the entry would be wrong here: a clean
     # apply MERGES its change into a tree that has moved on, so the
-    # result is deliberately not the entry's content. What is checkable
-    # is whether the tree's word about those paths CHANGED.
+    # result is deliberately not the entry's content.
+    #
+    # audit C1 (third re-audit): nor is "the status word about one of
+    # those paths changed" evidence. Reproduced on git 2.48.1 with the
+    # two files this system stashes on nearly every run — an entry
+    # touching t.txt and memories.jsonl, a local edit to t.txt that makes
+    # git refuse the merge outright (a documented production state: see
+    # the REFUSED branch in the parent half), and the extraction hook
+    # appending to memories.jsonl inside the apply window. Every tracked
+    # path's status had changed, none of it because the entry landed, and
+    # the entry — holding the only copy of that day's records — was
+    # dropped.
+    #
+    # The evidence has to be the entry's OWN HUNKS, so ask git: take the
+    # diff the tracked half is, and require it to REVERSE-APPLY cleanly.
+    # That succeeds exactly when those hunks are present in the files as
+    # they now stand, which is the thing a drop would destroy, and it is
+    # indifferent to whatever else moved in the same window.
+    #
+    #   --check          nothing is written, this only asks
+    #   --reverse        "are these hunks already here?"
+    #   (no --index)     against the FILES ON DISK, because that is what
+    #                    the drop endangers; the index legitimately
+    #                    differs after a conflicted-then-resolved apply
+    #   (no --recount)   the diff comes from git, in this very pipeline,
+    #                    so its line counts are authoritative — recounting
+    #                    would only paper over a corrupt one
+    #
+    # A binary path makes `git diff` emit "Binary files differ", which
+    # `git apply` refuses: that reads as not-landed, and keeping the
+    # entry is the safe direction.
+    #
+    # Both tests must pass. The status test alone was the defect above;
+    # the reverse-apply test alone would call an entry landed when the
+    # other machine had independently made the same edit — which loses
+    # nothing, but a clean apply reports rc 0 and never reaches here, so
+    # the stricter conjunction costs only a kept entry.
     local repo="$1" sha="$2" path
     local -a paths=()
     while IFS= read -r -d '' path; do
@@ -1731,8 +1766,14 @@ stash_tracked_half_landed() {
     # An entry with no tracked half has nothing to land, so nothing can
     # be concluded from the tree having changed.
     [[ ${#paths[@]} -gt 0 ]] || return 1
-    [[ "$(status_lines_for "$apply_before_status" "${paths[@]}")" \
-        != "$(status_lines_for "$apply_after_status" "${paths[@]}")" ]]
+    # EVERY path it touches, not any: the re-auditor's case is an entry
+    # touching two paths of which one moved.
+    for path in "${paths[@]}"; do
+        [[ "$(status_lines_for "$apply_before_status" "$path")" \
+            != "$(status_lines_for "$apply_after_status" "$path")" ]] || return 1
+    done
+    git -C "$repo" diff "${sha}^1" "$sha" -- "${paths[@]}" 2>/dev/null \
+        | git -C "$repo" apply --check --reverse >/dev/null 2>&1
 }
 
 snapshot_before_apply() {
