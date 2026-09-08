@@ -19,10 +19,14 @@ Rule: a commit is flagged when all of these hold —
 - it is dated on or after the ruling; and
 - it carries a ``Co-Authored-By`` trailer naming Codex, or its author
   identity names Codex; and
-- it does not carry a ``Claude-Session`` trailer. A commit made from a
-  Claude Code session carries that trailer and may credit the Codex agent
-  as co-author for a reviewed patch; the Codex agent's own commits never
-  carry it. (Forgeable, like everything here; this is a tripwire.)
+- it does not carry a ``Claude-Session`` trailer, or its author identity
+  names Codex regardless. A commit made from a Claude Code session carries
+  that trailer and may credit the Codex agent as co-author for a reviewed
+  patch; the Codex agent's own commits never carry it. The trailer is a
+  one-line opt-out that Codex could add (the hook is readable to it), so
+  this exemption is a guard against mistakes, not an adversary; the
+  alternative is a per-machine ``--ack`` for every such commit. Shawn's
+  ruling is pending (audit decision D4).
 
 Subject lines mentioning Codex are deliberately not a signal: Claude's own
 documentation commits mention Codex constantly.
@@ -42,11 +46,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 REPO = Path.home() / "personal-assistant"
 REFS = ("origin/main", "main")        # first that resolves wins
-SINCE = "2026-09-07T00:00:00"         # the ruling day from midnight (a bare date means "now")
+SINCE = "2026-09-07T00:00:00+10:00"   # the ruling day from local midnight; zone pinned (AEST)
 ACK_FILE = Path.home() / ".cache" / "pa-codex-main-tripwire.ack"
 WEB_FLOW_EMAIL = "noreply@github.com"
 CODEX_MARKERS = ("codex",)            # matched case-insensitively
@@ -55,7 +60,7 @@ MAX_COMMITS = 500
 
 # NUL is the one byte git guarantees cannot appear in a commit message, so
 # it is the field separator; it reaches git as the %x00 escape (argv cannot
-# carry a NUL) and comes back as the byte. Records are fixed groups of seven
+# carry a NUL) and comes back as the byte. Records are fixed groups of FIELDS
 # fields, so a hostile subject or trailer cannot shift or forge a record.
 FIELD_SEP = "\x00"
 FIELD_SEP_FMT = "%x00"
@@ -106,7 +111,7 @@ def flagged_commits(
         repo, "log", "--first-parent", "--no-merges", f"--since={since}",
         "--reverse", f"--format={fmt}", ref,
     )
-    # Output is: f1 NUL f2 NUL … f7 NUL "\n" per commit — the newline git adds
+    # Output is: f1 NUL f2 NUL … f8 NUL "\n" per commit — the newline git adds
     # after each record is glued to the next record's SHA, so groups are
     # exactly FIELDS wide and the SHA is stripped of it.
     parts = out.split(FIELD_SEP)
@@ -119,9 +124,10 @@ def flagged_commits(
             continue
         if sha in acked or committer_email.strip().lower() == WEB_FLOW_EMAIL:
             continue
-        if claude_session.strip():
+        by_identity = names_codex(author) or names_codex(author_email)
+        if claude_session.strip() and not by_identity:
             continue          # made from a Claude session; a co-author credit is not a push
-        if names_codex(trailers) or names_codex(author) or names_codex(author_email):
+        if by_identity or names_codex(trailers):
             flagged.append({
                 "sha": sha, "date": date, "subject": printable(subject),
                 "author": printable(author),
@@ -130,8 +136,19 @@ def flagged_commits(
 
 
 def printable(text: str, limit: int = 120) -> str:
-    """Strip control characters (a subject cannot forge extra output lines)."""
-    return "".join(ch for ch in text if ch.isprintable())[:limit]
+    """Strip control characters and every bracket-like character.
+
+    A subject cannot forge extra output lines, and an author name cannot
+    close the ``[author]`` group early to plant text inside the block that
+    is relayed to Shawn. Unicode open and close punctuation (categories Ps
+    and Pe: fullwidth brackets, ornate parentheses, and the like) goes too;
+    deleting the two ASCII brackets alone left lookalikes working
+    (re-audit, 2026-09-08).
+    """
+    return "".join(
+        ch for ch in text
+        if ch.isprintable() and unicodedata.category(ch) not in ("Ps", "Pe")
+    )[:limit]
 
 
 def read_acks(path: Path = ACK_FILE) -> frozenset[str]:

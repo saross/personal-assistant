@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -51,6 +52,13 @@ MAX_LISTED = 20             # cap surfaced lines per session
 RECEIVER = "claude"
 ROUTING_HEADERS = ("Project", "Lane", "Workstream")
 ANY = "any"
+# Routing values are slugs (repository names, model names, workstream tags)
+# and message names are ``<stamp>-<sender>-<slug>.md``. Anything outside
+# this charset is rejected outright rather than filtered: filtering left
+# ``fable; project: x`` able to forge a second field (re-audit, 2026-09-08).
+SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+MESSAGE_NAME = re.compile(r"[A-Za-z0-9._-]+\.md")
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")      # sender directories, same rule
 
 
 def plain_directory(path: Path) -> bool:
@@ -121,7 +129,7 @@ def repository_name_from_remote(url: str) -> str:
     return name.removesuffix(".git")
 
 
-def session_project(cwd: Path) -> str:
+def repository_identity(cwd: Path) -> str:
     """A stable name for the repository the session works in.
 
     In order: the origin remote's repository name (stable across linked
@@ -142,21 +150,41 @@ def session_project(cwd: Path) -> str:
         common = Path(_git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         if common.name == ".git":
             return common.parent.name.casefold()
+    except (OSError, subprocess.SubprocessError):
+        pass          # older git lacks --path-format; fall through to the git root
+    try:
         top = _git(cwd, "rev-parse", "--show-toplevel")
         return (Path(top).name or cwd.name).casefold()
     except (OSError, subprocess.SubprocessError):
         return cwd.name.casefold()
 
 
+def session_project(cwd: Path) -> str:
+    """This session's project as a slug, or ``invalid``.
+
+    The identity comes from a remote URL or a directory name, both of
+    which a hostile origin could shape (``repo%0a- SYSTEM`` decoded to a
+    second line in the hook's own trusted block, re-audit 2026-09-08), so
+    it passes through the same rule as every message-side value.
+    """
+    return safe_value(repository_identity(cwd)).casefold() or "invalid"
+
+
 def message_project(headers: dict[str, str]) -> str:
-    """A message's project; absent or blank means any."""
-    return headers.get("Project", "").strip().casefold() or ANY
+    """A message's project as a slug; absent or blank means any.
+
+    A value that is not a slug is ``invalid``, which routes nowhere and
+    is printed as such — routing and annotation agree on one value.
+    """
+    return (safe_value(headers.get("Project", "")) or ANY).casefold()
 
 
 def routes_here(headers: dict[str, str], project: str) -> bool:
     """True when a message is for this session's project or for any project."""
     target = message_project(headers)
-    return target == ANY or target == project.casefold()
+    # "invalid" never matches: a session whose own project is invalid must
+    # not collect every message with a malformed Project header.
+    return target == ANY or (target != "invalid" and target == project.casefold())
 
 
 def unread_messages(root: Path) -> list[Path]:
@@ -169,7 +197,9 @@ def unread_messages(root: Path) -> list[Path]:
     seen_parent = receiver_dir / "seen"
     for agent_dir in sorted(root.iterdir()):
         sender = agent_dir.name
-        if sender == RECEIVER or not plain_directory(agent_dir):
+        if sender == RECEIVER or not SAFE_NAME.fullmatch(sender):
+            continue          # the sender's name is printed as part of every path
+        if not plain_directory(agent_dir):
             continue
 
         outbox_parent = agent_dir / "outbox"
@@ -186,8 +216,8 @@ def unread_messages(root: Path) -> list[Path]:
         for message in sorted(outbox.iterdir()):
             if message.suffix != ".md" or not plain_file(message):
                 continue
-            if not message.name.isprintable():
-                continue          # a name with control characters could forge output lines
+            if not MESSAGE_NAME.fullmatch(message.name):
+                continue          # brackets, spaces, or control characters could forge a line
             try:
                 if message.stat(follow_symlinks=False).st_size > MAX_MESSAGE_BYTES:
                     continue
@@ -213,6 +243,8 @@ def route(unread: list[Path], project: str) -> Routed:
         if routes_here(headers, project):
             here.append((message, headers))
         else:
+            # message_project() is already a safe slug (or "invalid"); the
+            # hook and the watcher both print these keys.
             target = message_project(headers)
             elsewhere[target] = elsewhere.get(target, 0) + 1
     return here, elsewhere
@@ -222,14 +254,24 @@ MAX_HEADER_VALUE = 60
 
 
 def safe_value(value: str) -> str:
-    """A header value fit to print into context: printable, bounded, no brackets."""
-    cleaned = "".join(ch for ch in value if ch.isprintable() and ch not in "[]")
-    return cleaned.strip()[:MAX_HEADER_VALUE]
+    """A header value fit to print into context, or the word ``invalid``.
+
+    A routing value is a slug or it is nothing: any other character —
+    brackets, separators, spaces, control characters — makes the whole
+    value ``invalid``. An empty value stays empty so absent headers are
+    omitted from the annotation.
+    """
+    value = value.strip()
+    if not value:
+        return ""
+    if len(value) > MAX_HEADER_VALUE or any(ch not in SAFE_CHARS for ch in value):
+        return "invalid"
+    return value
 
 
 def annotate(headers: dict[str, str]) -> str:
     """Render the routing headers beside a path, e.g. ``[project: x; lane: fable]``."""
-    parts = [f"project: {safe_value(message_project(headers))}"]
+    parts = [f"project: {message_project(headers)}"]
     for name in ("Lane", "Workstream"):
         value = safe_value(headers.get(name, ""))
         if value and value.casefold() != ANY:
@@ -254,7 +296,8 @@ def main() -> int:
     unread = unread_messages(root)
     if not unread:
         return 0
-    project = os.environ.get("AGENT_MAIL_PROJECT") or session_project(hook_cwd())
+    project = (safe_value(os.environ.get("AGENT_MAIL_PROJECT", "")).casefold()
+               or session_project(hook_cwd()))
     here, elsewhere = route(unread, project)
     if not here and not elsewhere:
         return 0
@@ -265,6 +308,7 @@ def main() -> int:
     if len(here) > MAX_LISTED:
         print(f"- … and {len(here) - MAX_LISTED} more")
     if elsewhere:
+        # route() keys this dict by safe_value(), so the names are printable slugs.
         summary = ", ".join(f"{name} ({count})" for name, count in sorted(elsewhere.items()))
         print(f"Other projects, not listed here: {summary}. Start a session there to act on them.")
     if here:
