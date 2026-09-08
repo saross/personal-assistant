@@ -364,8 +364,14 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     an untested cursor prune; two old tests reading the real scratchpads.
     Tip purged (41ae79b); the rest fixed in ten commits (2d36e39–5c1e7a1;
     the agent also desensitised three older fixtures with collaborator
-    names). Second pass running. `tests/test_zotero.py` carries published
-    author surnames from a bibliographic fixture; Shawn's call.
+    names). Second pass: no critical; the new cursor advance could drop a
+    pending slash-command skip and re-extract a `/remember` response
+    (being fixed); two archiver commit tests depended on the operator's
+    `~/.gitconfig` (fixed on main, b25fe3e); CR-only `.env` files now
+    parse wrongly and backtick/`&` values go unflagged (being fixed); the
+    desensitised fixture still reads as this week's house move (being
+    generalised). `tests/test_zotero.py` carries published author surnames
+    from a bibliographic fixture; Shawn's call.
   - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
     guard pushes a second stash and only one is popped, so a run that
     reports success leaves the day's appends in a stash (the very loss
