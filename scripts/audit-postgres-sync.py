@@ -24,10 +24,12 @@ recall leak: an archived id still ``is_active=TRUE``. See the
 ``ArchiveParityResult`` docstring for the asymmetric semantics.
 
 Exit codes:
-  0 — No rows are missing from PostgreSQL (and no archived id leaked active)
-  1 — At least one canonical id is missing from PostgreSQL (the bug), OR an
-      archived id is still is_active=TRUE under --archive-parity
-  2 — Audit could not run (e.g., DB unavailable, JSONL missing)
+  0 — The two stores agree (and no archived id leaked active)
+  1 — At least one canonical id is missing from PostgreSQL (the bug), a row
+      diverges in content/is_active/verified, a memories row exists only in
+      PostgreSQL, OR an archived id is still is_active=TRUE under
+      --archive-parity
+  2 — Audit could not run (e.g., DB unavailable, JSONL missing, schema drift)
 
 Usage:
     venv/bin/python3 scripts/audit-postgres-sync.py
@@ -42,7 +44,7 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 # Schema-version guard (audit IC5 / B-X1).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -92,18 +94,38 @@ def setup_logging() -> logging.Logger:
 
 @dataclass
 class AuditResult:
-    """Summary of a reconciliation between canonical and PostgreSQL."""
+    """Summary of a reconciliation between canonical and PostgreSQL.
+
+    ``divergent`` holds ids present on both sides whose content, ``is_active``
+    flag, or ``verified`` value disagrees. The sync mirrors with
+    ``INSERT ... ON CONFLICT DO NOTHING``, so an edited record is exactly what
+    it CANNOT propagate — comparing id sets alone reported "in sync" for the
+    system's most likely failure (audit 2026-09-08, finding AN9).
+
+    ``duplicate_canonical_ids`` reports ids appearing on more than one JSONL
+    line: set semantics hid them, and PostgreSQL keeps only one of them.
+
+    ``strict_orphans`` decides whether a PostgreSQL-only row fails the audit.
+    It does for memories — a row ``/recall`` can return that the canonical
+    corpus does not contain is a real divergence. It does not for sessions,
+    where the local archive mirror is legitimately partial.
+    """
 
     source_name: str
     canonical_count: int
     postgres_count: int
     only_in_canonical: list[str]
     only_in_postgres: list[str]
+    divergent: list[str] = field(default_factory=list)
+    duplicate_canonical_ids: list[str] = field(default_factory=list)
+    strict_orphans: bool = False
 
     @property
     def is_clean(self) -> bool:
-        """True when no canonical ids are missing from PostgreSQL."""
-        return len(self.only_in_canonical) == 0
+        """True when the two stores agree on membership AND on content."""
+        if self.only_in_canonical or self.divergent:
+            return False
+        return not (self.strict_orphans and self.only_in_postgres)
 
 
 @dataclass
@@ -168,15 +190,20 @@ def _read_jsonl_ids(jsonl_path: Path, logger: logging.Logger) -> set[str]:
     return ids
 
 
-def _read_postgres_ids(
-    table: str,
-    logger: logging.Logger,
-) -> set[str] | None:
-    """
-    Return the set of ids from a PostgreSQL table, or ``None`` on error.
+def _connect_read_only(logger: logging.Logger):
+    """Open a read-only, schema-checked connection, or return ``None``.
 
-    Uses the same connection conventions as the sync scripts
-    (``postgresql:///claude_memories`` via peer auth).
+    The session is set read-only before any statement runs, and the caller
+    ends it with ``rollback()`` rather than ``with conn:`` — psycopg2's
+    connection context manager COMMITS on exit, and a reconciliation tool
+    has nothing to commit.
+
+    Raises :class:`SchemaVersionError` on a schema mismatch instead of
+    calling ``sys.exit(2)``. This function is imported by
+    ``memory-health-report.py``, where a bare ``sys.exit`` inside a library
+    helper killed the whole report — including the eight sections that need
+    no database at all (audit 2026-09-08, finding AN4). Callers translate the
+    exception into their own exit code or degrade around it.
     """
     try:
         import psycopg2
@@ -192,25 +219,119 @@ def _read_postgres_ids(
         logger.error("Cannot connect to PostgreSQL: %s", exc)
         return None
 
-    # Schema-version guard (audit IC5). Audit exits 2 on schema
-    # mismatch — distinct from "missing rows" exit 1, mirroring the
-    # script's existing exit-code conventions.
+    try:
+        conn.set_session(readonly=True)
+    except Exception as exc:  # noqa: BLE001 — a fake or an old driver
+        logger.warning("Could not set a read-only session: %s", exc)
+
+    # Schema-version guard (audit IC5), before any schema-dependent query.
     try:
         assert_schema_version(conn)
     except SchemaVersionError:
         conn.close()
-        sys.exit(2)
+        raise
+    return conn
 
+
+def _read_jsonl_fingerprints(
+    jsonl_path: Path,
+    logger: logging.Logger,
+) -> tuple[dict[str, str], list[str]]:
+    """Return ``({id: fingerprint}, duplicate_ids)`` for a canonical JSONL.
+
+    The LAST line wins for a repeated id, matching "the newest line is the
+    record" convention used elsewhere in the pipeline. Duplicates are
+    returned rather than silently collapsed: PostgreSQL keeps only one of
+    them, so a duplicate is a divergence waiting to happen (finding AN9).
+    """
+    fingerprints: dict[str, str] = {}
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    with jsonl_path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                logger.warning("Malformed JSON at line %d: %s", line_number, exc)
+                continue
+            mid = record.get("id")
+            if not mid:
+                logger.warning("Missing id at line %d (skipped)", line_number)
+                continue
+            mid = str(mid)
+            if mid in seen:
+                duplicates.append(mid)
+            seen.add(mid)
+            fingerprints[mid] = row_fingerprint(
+                record.get("content"),
+                record.get("is_active"),
+                record.get("verified"),
+            )
+    return fingerprints, sorted(set(duplicates))
+
+
+def _read_postgres_ids(
+    table: str,
+    logger: logging.Logger,
+) -> set[str] | None:
+    """
+    Return the set of ids from a PostgreSQL table, or ``None`` on error.
+
+    Uses the same connection conventions as the sync scripts
+    (``postgresql:///claude_memories`` via peer auth). Raises
+    :class:`SchemaVersionError` on schema drift.
+    """
+    conn = _connect_read_only(logger)
+    if conn is None:
+        return None
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT id FROM {table}")
-                rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM {table}")
+            rows = cur.fetchall()
         return {str(r[0]) for r in rows}
     except Exception as exc:
         logger.error("Query against %s failed: %s", table, exc)
         return None
     finally:
+        conn.rollback()
+        conn.close()
+
+
+def row_fingerprint(
+    content: object, is_active: object, verified: object,
+) -> str:
+    """A comparable digest of the three fields the sync can silently diverge on.
+
+    One function for both sides, so JSONL and PostgreSQL normalise
+    identically: a missing or NULL ``is_active`` counts as active (the column
+    defaults to TRUE), and ``verified`` is case-folded because the corpus
+    holds a JSON boolean where the column holds text.
+    """
+    active = "f" if is_active is False else "t"
+    mark = "" if verified is None else str(verified).lower()
+    return "\x1f".join([str(content if content is not None else ""), active, mark])
+
+
+def _read_postgres_fingerprints(
+    logger: logging.Logger,
+) -> dict[str, str] | None:
+    """Return ``{id: fingerprint}`` for every memories row, or ``None``."""
+    conn = _connect_read_only(logger)
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, content, is_active, verified FROM memories")
+            rows = cur.fetchall()
+        return {str(r[0]): row_fingerprint(r[1], r[2], r[3]) for r in rows}
+    except Exception as exc:
+        logger.error("Fingerprint query against memories failed: %s", exc)
+        return None
+    finally:
+        conn.rollback()
         conn.close()
 
 
@@ -222,46 +343,31 @@ def _read_postgres_active_map(
     Return ``{id: is_active}`` for the subset of ``ids`` present in PG.
 
     Ids absent from the result dict are absent from PostgreSQL entirely.
-    Returns ``None`` on any error (DB unavailable, schema mismatch handled
-    by exiting 2, as elsewhere). ``ANY(%s)`` sends the id list as a single
+    Returns ``None`` when the database is unavailable and RAISES
+    :class:`SchemaVersionError` on schema drift, so a caller that can produce
+    a partial report (``memory-health-report.py``) may degrade rather than
+    die (finding AN4). ``ANY(%s)`` sends the id list as a single
     array parameter, so we are not bound by the per-statement parameter
     ceiling even for tens of thousands of archived ids.
     """
     if not ids:
         return {}
-    try:
-        import psycopg2
-    except ImportError:
-        logger.error(
-            "psycopg2 not installed. Run: venv/bin/pip install psycopg2-binary"
-        )
+    conn = _connect_read_only(logger)
+    if conn is None:
         return None
-
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
-    except psycopg2.OperationalError as exc:
-        logger.error("Cannot connect to PostgreSQL: %s", exc)
-        return None
-
-    try:
-        assert_schema_version(conn)
-    except SchemaVersionError:
-        conn.close()
-        sys.exit(2)
-
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, is_active FROM memories WHERE id = ANY(%s)",
-                    (ids,),
-                )
-                rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, is_active FROM memories WHERE id = ANY(%s)",
+                (ids,),
+            )
+            rows = cur.fetchall()
         return {str(r[0]): r[1] for r in rows}
     except Exception as exc:
         logger.error("is_active query failed: %s", exc)
         return None
     finally:
+        conn.rollback()
         conn.close()
 
 
@@ -269,18 +375,30 @@ def audit_memories(
     jsonl_path: Path,
     logger: logging.Logger,
 ) -> AuditResult | None:
-    """Reconcile memory ids between the JSONL canonical and PostgreSQL."""
+    """Reconcile memory ids AND row content between JSONL and PostgreSQL.
+
+    Membership in both directions, plus a per-row fingerprint over content,
+    ``is_active``, and ``verified``: the mirror inserts with ``ON CONFLICT DO
+    NOTHING``, so an edited record never reaches PostgreSQL and an id-only
+    comparison would call that "in sync" (finding AN9).
+    """
     if not jsonl_path.exists():
         logger.error("Canonical JSONL not found: %s", jsonl_path)
         return None
 
-    canonical_ids = _read_jsonl_ids(jsonl_path, logger)
-    postgres_ids = _read_postgres_ids("memories", logger)
-    if postgres_ids is None:
+    canonical, duplicates = _read_jsonl_fingerprints(jsonl_path, logger)
+    postgres = _read_postgres_fingerprints(logger)
+    if postgres is None:
         return None
 
+    canonical_ids = set(canonical)
+    postgres_ids = set(postgres)
     only_canonical = sorted(canonical_ids - postgres_ids)
     only_postgres = sorted(postgres_ids - canonical_ids)
+    divergent = sorted(
+        mid for mid in canonical_ids & postgres_ids
+        if canonical[mid] != postgres[mid]
+    )
 
     return AuditResult(
         source_name="memories",
@@ -288,6 +406,11 @@ def audit_memories(
         postgres_count=len(postgres_ids),
         only_in_canonical=only_canonical,
         only_in_postgres=only_postgres,
+        divergent=divergent,
+        duplicate_canonical_ids=duplicates,
+        # A PostgreSQL row with no canonical line is a row /recall can return
+        # and the corpus does not contain.
+        strict_orphans=True,
     )
 
 
@@ -336,6 +459,9 @@ def audit_sessions(
         postgres_count=len(postgres_ids),
         only_in_canonical=only_canonical,
         only_in_postgres=only_postgres,
+        # ~/cc-archives on any one machine is a mirror, not the union, so a
+        # PostgreSQL session row with no local metadata is expected.
+        strict_orphans=False,
     )
 
 
@@ -412,6 +538,8 @@ def print_report(result: AuditResult) -> None:
     print(f"  postgres count  : {result.postgres_count:>8}")
     print(f"  only in canonical: {len(result.only_in_canonical):>7}")
     print(f"  only in postgres : {len(result.only_in_postgres):>7}")
+    print(f"  divergent rows   : {len(result.divergent):>7}")
+    print(f"  duplicate ids    : {len(result.duplicate_canonical_ids):>7}")
 
     if result.only_in_canonical:
         print()
@@ -427,15 +555,37 @@ def print_report(result: AuditResult) -> None:
 
     if result.only_in_postgres:
         print()
+        label = "FAILURE — " if result.strict_orphans else ""
         print(
-            "  The following ids exist only in PostgreSQL "
-            "(likely orphans from deletions):"
+            f"  {label}The following ids exist only in PostgreSQL "
+            "(orphans: reachable by /recall, absent from the canonical):"
         )
         for mid in result.only_in_postgres[:5]:
             print(f"    - {mid}")
         if len(result.only_in_postgres) > 5:
             remaining = len(result.only_in_postgres) - 5
             print(f"    ... and {remaining} more")
+
+    if result.divergent:
+        print()
+        print(
+            "  FAILURE — the following ids differ in content, is_active, or "
+            "verified between the canonical and PostgreSQL (the mirror "
+            "inserts ON CONFLICT DO NOTHING, so edits do not propagate):"
+        )
+        for mid in result.divergent[:20]:
+            print(f"    - {mid}")
+        if len(result.divergent) > 20:
+            print(f"    ... and {len(result.divergent) - 20} more")
+
+    if result.duplicate_canonical_ids:
+        print()
+        print(
+            "  The following ids appear on more than one canonical line "
+            "(PostgreSQL keeps one of them):"
+        )
+        for mid in result.duplicate_canonical_ids[:10]:
+            print(f"    - {mid}")
 
 
 def print_archive_parity_report(result: ArchiveParityResult) -> None:
@@ -519,33 +669,40 @@ def main() -> int:
 
     results: list[AuditResult] = []
 
-    mem_result = audit_memories(args.memories_file, logger)
-    if mem_result is None:
+    # A schema mismatch is exit 2 for THIS script (it can produce no audit at
+    # all without the schema), but the readers raise rather than exiting so
+    # that library callers can degrade instead (finding AN4).
+    try:
+        mem_result = audit_memories(args.memories_file, logger)
+        if mem_result is None:
+            return 2
+        results.append(mem_result)
+        print_report(mem_result)
+
+        if args.sessions:
+            print()
+            sess_result = audit_sessions(args.archive_root, logger)
+            if sess_result is None:
+                return 2
+            results.append(sess_result)
+            print_report(sess_result)
+
+        # Track parity cleanliness separately — ArchiveParityResult has its own
+        # is_clean semantics (a leak, not a missing id, is the failure).
+        archive_clean = True
+        if args.archive_parity:
+            print()
+            parity_result = audit_archive_parity(args.archive_dir, logger)
+            if parity_result is None:
+                return 2
+            print_archive_parity_report(parity_result)
+            archive_clean = parity_result.is_clean
+    except SchemaVersionError:
         return 2
-    results.append(mem_result)
-    print_report(mem_result)
 
-    if args.sessions:
-        print()
-        sess_result = audit_sessions(args.archive_root, logger)
-        if sess_result is None:
-            return 2
-        results.append(sess_result)
-        print_report(sess_result)
-
-    # Track parity cleanliness separately — ArchiveParityResult has its own
-    # is_clean semantics (a leak, not a missing id, is the failure).
-    archive_clean = True
-    if args.archive_parity:
-        print()
-        parity_result = audit_archive_parity(args.archive_dir, logger)
-        if parity_result is None:
-            return 2
-        print_archive_parity_report(parity_result)
-        archive_clean = parity_result.is_clean
-
-    # Exit 1 if any audit found canonical rows missing from PostgreSQL, or
-    # an archived id leaked back into the active set.
+    # Exit 1 if any audit found canonical rows missing from PostgreSQL, rows
+    # whose content diverges, a PostgreSQL-only memories orphan, or an
+    # archived id leaked back into the active set.
     if any(not r.is_clean for r in results) or not archive_clean:
         return 1
     return 0

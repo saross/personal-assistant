@@ -718,7 +718,15 @@ def build_report(
     if pg is not None:
         only_in_canonical = len(live_ids - pg["ids"])
         only_in_postgres = len(pg["ids"] - live_ids)
-        parity = _audit_mod.audit_archive_parity(ARCHIVE_DIR, logger)
+        try:
+            parity = _audit_mod.audit_archive_parity(ARCHIVE_DIR, logger)
+        except _audit_mod.SchemaVersionError:
+            # A schema bump must not cost the operator the whole report: the
+            # eight sections above need no database (finding AN4).
+            logger.warning(
+                "PG sections skipped: schema mismatch — archive parity omitted"
+            )
+            parity = None
         if parity is not None:
             archive_parity_dict = {
                 "archive_count": parity.archive_count,
