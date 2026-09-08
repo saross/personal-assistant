@@ -265,3 +265,41 @@ class TestOnlyACompletedCycleClears:
         assert memories.GATE_FILE == _sync_gate.MEMORIES_GATE
         assert sessions.GATE_FILE == _sync_gate.SESSIONS_GATE
         assert memories.GATE_FILE != sessions.GATE_FILE
+
+
+def test_no_script_writes_a_gate_outside_a_pinned_path():
+    """
+    Every gate call site must use its module's own ``GATE_FILE``
+    constant, never the helper's default and never the shared import
+    alias. Three separate occasions during this audit a test wrote the
+    operator's real gate and put a fabricated infrastructure problem in
+    front of him at session start; this is the structural check that
+    makes the next one a test failure instead.
+    """
+    for script_name in (
+        "sync-to-postgres.py",
+        "sync-sessions-to-postgres.py",
+        "index-session-content.py",
+    ):
+        source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+        assert "gate_path=_DEFAULT_GATE_FILE" not in source, script_name
+        assert "GATE_FILE = _DEFAULT_GATE_FILE" in source, script_name
+        for call in ("write_gate(", "clear_gate("):
+            position = 0
+            while True:
+                position = source.find(call, position)
+                if position == -1:
+                    break
+                window = source[position:position + 900]
+                # Either the module constant directly, or a gate_path
+                # parameter the caller filled from it — never the
+                # helper's own default, which has none by design.
+                assert (
+                    "gate_path=GATE_FILE" in window
+                    or "gate_path=gate_path" in window
+                ), f"{script_name}: a {call} call does not pin gate_path"
+                position += 1
+        # And where a helper takes the path as a parameter, main passes
+        # the module constant.
+        if "_apply_gate_policy(" in source:
+            assert "QUARANTINE_FILE, GATE_FILE, logger," in source
