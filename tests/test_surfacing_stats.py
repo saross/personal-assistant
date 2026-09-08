@@ -165,3 +165,109 @@ def test_writer_output_parses_in_aggregator(tmp_path: Path) -> None:
     assert stats["x"]["active_retrievals"] == 1
     assert stats["x"]["digest_exposures"] == 1
     assert stats["y"]["active_retrievals"] == 1
+
+
+# ============================================================================
+# Lens B RT11 — the renderer and the CLI entry point
+# ============================================================================
+
+import json  # noqa: E402
+import pytest  # noqa: E402
+
+
+def _stats_log(tmp_path: Path) -> Path:
+    """A small log: one heavily retrieved memory, one only ever in a digest."""
+    log = tmp_path / "surfaced.log"
+    log.write_text(
+        "\n".join([
+            _line("2026-06-01T09:00:00+00:00", "hot", "fetch"),
+            _line("2026-06-02T09:00:00+00:00", "hot", "recall"),
+            _line("2026-06-03T09:00:00+00:00", "hot", "mcp"),
+            _line("2026-06-01T09:00:00+00:00", "cold", "digest"),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    return log
+
+
+class TestRenderHuman:
+    """The human summary is the thing an operator actually reads."""
+
+    def test_ranks_the_most_actively_retrieved_first(self, tmp_path: Path) -> None:
+        """Kills: dropping ``reverse=True`` from the ranking sort.
+
+        Reversed, the report headlines the memories nobody has ever asked
+        for — the opposite of the value signal it exists to show.
+        """
+        stats = surfacing_stats.aggregate_surfacing(_stats_log(tmp_path))
+        rendered = surfacing_stats._render_human(stats, top=20)
+        body = rendered.split("## Top", 1)[1]
+        assert body.index("hot") < body.index("cold")
+
+    def test_totals_appear_in_the_summary(self, tmp_path: Path) -> None:
+        stats = surfacing_stats.aggregate_surfacing(_stats_log(tmp_path))
+        rendered = surfacing_stats._render_human(stats, top=20)
+        assert "Total active retrievals:           3" in rendered
+        assert "Total digest exposures (passive):  1" in rendered
+
+    def test_top_n_truncates(self, tmp_path: Path) -> None:
+        """Kills: ignoring the --top bound."""
+        stats = surfacing_stats.aggregate_surfacing(_stats_log(tmp_path))
+        rendered = surfacing_stats._render_human(stats, top=1)
+        assert "## Top 1 most actively retrieved" in rendered
+        assert "cold" not in rendered.split("## Top", 1)[1]
+
+    def test_empty_log_still_renders(self, tmp_path: Path) -> None:
+        """Pre-accrual is the normal state; it must not raise."""
+        rendered = surfacing_stats._render_human({}, top=20)
+        assert "Distinct memories surfaced:        0" in rendered
+        assert "## Top" not in rendered
+
+
+class TestMain:
+    """``main()`` had no test: aggregating an empty dict passed."""
+
+    def test_human_output_reports_the_real_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Kills: main() aggregating ``{}`` instead of the log it was given."""
+        log = _stats_log(tmp_path)
+        monkeypatch.setattr(
+            sys, "argv", ["surfacing_stats.py", "--log-path", str(log)],
+        )
+        surfacing_stats.main()
+        out = capsys.readouterr().out
+        assert "Distinct memories surfaced:        2" in out
+        assert "hot" in out
+
+    def test_json_output_carries_summary_and_per_memory_stats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        log = _stats_log(tmp_path)
+        monkeypatch.setattr(
+            sys, "argv", ["surfacing_stats.py", "--log-path", str(log), "--json"],
+        )
+        surfacing_stats.main()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["summary"]["total_active_retrievals"] == 3
+        assert payload["memories"]["hot"]["active_retrievals"] == 3
+
+    def test_missing_log_reports_zeroes_rather_than_failing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", [
+            "surfacing_stats.py", "--log-path", str(tmp_path / "absent.log"),
+        ])
+        surfacing_stats.main()
+        assert "Distinct memories surfaced:        0" in capsys.readouterr().out
+
+
+def test_mcp_lines_count_as_active_retrieval(tmp_path: Path) -> None:
+    """Audit R5: an MCP serve is intent-driven, like fetch and recall."""
+    log = _stats_log(tmp_path)
+    stats = surfacing_stats.aggregate_surfacing(log)
+    assert stats["hot"]["active_retrievals"] == 3
+    assert stats["hot"]["last_active_at"] == "2026-06-03T09:00:00+00:00"

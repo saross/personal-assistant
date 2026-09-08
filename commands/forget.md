@@ -26,7 +26,11 @@ want to correct rather than retire.
 2. **If `is_active` is already `false`**: report "already inactive" and
    stop — do not double-stamp the revisions array.
 3. **Construct the updated record:**
-   - Set `is_active: false`
+   - Set `is_active` to the JSON boolean `false` — bare `false`, **not**
+     the string `"false"` and not `0`. Every reader normalises the other
+     shapes (audit M1), so a slip is no longer a visibility split, but the
+     boolean is the canonical form and the only one `is_active = TRUE`
+     comparisons in SQL read without a cast.
    - Append a new entry to `revisions[]`:
      `{"revised_at": "<ISO timestamp now>", "action": "forget", "reason": "<reason>"}`
      (omit the `reason` key if no reason supplied)
@@ -63,6 +67,16 @@ want to correct rather than retire.
    PostgreSQL currently runs only on amd-tower; on a machine without it the
    helper prints a no-op notice, and that machine's recall reads the
    git-synced JSONL directly, so the JSONL edit alone suffices there.
+
+   That last claim holds only because every JSONL-reading path now honours
+   the flag (audit R2, 2026-09-08 — before that fix it was false, and a
+   forgotten memory resurfaced on any database-less machine). The paths
+   that must, and now do, drop `is_active: false`:
+   `fetch-memories.py:matches_filters` (the CLI fallback and the cold
+   archive), the `search_memories` and `get_memory` JSONL fallbacks in
+   `memory_mcp.py`, the session-start hook's four legacy retrieval buckets,
+   and the `/recall` procedure in `commands/recall.md`. Anything reading the
+   JSONL that is added later must apply the same filter.
 
 ## Autonomous use (Claude self-invocation)
 

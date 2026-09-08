@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Any
 # Schema-version guard (audit IC5 / B-X1).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+from _soft_delete import is_active  # noqa: E402  (shared with digest.py, audit M1)
 import surfacing_log  # noqa: E402  (item 16 earned-utility instrumentation)
 
 # ============================================================================
@@ -46,6 +48,49 @@ CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
 SYNC_CONFIG_FILE = PA_DIR / "data" / "config" / "sync.json"
 DB_NAME = "claude_memories"
 MAX_RESULTS = 10
+
+# Connection bounds (audit R9, extended from search-sessions.py to this
+# script: the same unbounded-connect defect). /recall is interactive, so a
+# server that is up but not answering must fail fast into the JSONL
+# fallback rather than hang the session.
+CONNECT_TIMEOUT_SECONDS = 5
+STATEMENT_TIMEOUT_MS = 30_000
+
+#: Environment variable pinning the tier-2 invocation log (audit R17).
+#: ``log-recall.py`` writes to the same file and honours the same variable,
+#: so one override redirects both halves of the retrieval log.
+LOG_PATH_ENV = "PA_FETCH_LOG"
+
+#: The shipped destination, derived from ``__file__`` rather than ``HOME``.
+#: Resolve through :func:`default_log_path` rather than reading this.
+SHIPPED_LOG_PATH = PA_DIR / "logs" / "fetch-memories.log"
+
+
+def default_log_path() -> Path | None:
+    """Where an unpinned write goes, or ``None`` for "write nothing".
+
+    Resolved at CALL time, never bound as a default argument: nothing here
+    touches the filesystem until something actually logs. The rules, in
+    order (audit S22, extended to this script by audit R17):
+
+    1. ``PA_FETCH_LOG`` wins whenever it is set to a non-empty value.
+    2. Under pytest there is NO destination — the caller gets ``None`` and
+       writes nothing at all.
+    3. Otherwise :data:`SHIPPED_LOG_PATH`.
+
+    Rule 2 matters because ``SHIPPED_LOG_PATH`` comes from ``__file__``,
+    not from ``HOME``: it points at the operator's own checkout wherever
+    the suite pins ``HOME``, and runs through the ``logs`` symlink into the
+    private data submodule. A test exercising this path would otherwise
+    append live-looking rows to the operator's real instrumentation.
+    """
+    override = os.environ.get(LOG_PATH_ENV)
+    if override:
+        return Path(override)
+    if "pytest" in sys.modules:
+        return None
+    return SHIPPED_LOG_PATH
+
 
 # Freshness-warning thresholds (M3). Both must be exceeded for a warning
 # to fire, so a quiet day doesn't flood stderr.
@@ -162,7 +207,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         metavar="QUERY",
-        help="Semantic similarity search (requires pgvector + embeddings).",
+        help="Semantic similarity search (requires pgvector + embeddings). "
+             "Carries its own query text, so it cannot be combined with "
+             "--query or --id; --tag and --category do apply. Only rows "
+             "that already have an embedding are searched — the count of "
+             "active rows without one is reported on stderr. Falls back to "
+             "full-text search if semantic search is unavailable or returns "
+             "nothing.",
     )
     parser.add_argument(
         "--limit", "-n",
@@ -183,6 +234,19 @@ def parse_args() -> argparse.Namespace:
 
     if args.limit < 1:
         parser.error("--limit must be a positive integer")
+
+    # --semantic carries its own query text and try_semantic takes no
+    # memory_id, so combining it with --query or --id silently DISCARDED
+    # the other selector (audit R6): --semantic X --query Y searched for X
+    # and never mentioned that Y was dropped. Refuse the combination rather
+    # than guess which one the caller meant.
+    if args.semantic and (args.query or args.memory_id):
+        parser.error(
+            "--semantic cannot be combined with --query or --id: it carries "
+            "its own query text and cannot filter by id. Use --semantic "
+            "alone (optionally with --tag/--category), or drop --semantic "
+            "to run a full-text/id search."
+        )
 
     # Require at least one filter
     if not any([args.tags, args.query, args.category, args.memory_id, args.semantic]):
@@ -223,7 +287,11 @@ def try_postgres(
         return None
 
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+        )
     except psycopg2.OperationalError as exc:
         print(
             f"[fetch-memories] PostgreSQL unavailable: {exc}",
@@ -320,6 +388,7 @@ def try_semantic(
     category: str | None = None,
     tags: list[str] | None = None,
     limit: int = MAX_RESULTS,
+    stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """
     Semantic similarity search via pgvector cosine distance.
@@ -328,11 +397,21 @@ def try_semantic(
     the closest memories by cosine similarity. Returns None if pgvector,
     Ollama, or PostgreSQL is unavailable (caller falls back to FTS).
 
+    **Coverage caveat (audit R7).** The query filters on
+    ``embedding IS NOT NULL``, so a memory written since the last
+    ``backfill-embeddings.py`` run is not ranked last — it is not searched
+    at all, and nothing in the result said so. The number of active rows
+    in that state is now counted on the same connection and reported back
+    through *stats*, so every caller can tell the user what was skipped.
+
     Args:
         query: Free-text search query.
         category: Optional category filter (exact match).
         tags: Optional tag filter (array overlap).
         limit: Maximum results.
+        stats: Optional dict the function fills in with coverage numbers:
+            ``unembedded_active`` (rows excluded for want of an embedding)
+            and ``total_active``. Left untouched when the query fails.
 
     Returns:
         List of memory dicts with an added ``similarity`` field,
@@ -363,7 +442,11 @@ def try_semantic(
         return None
 
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+        )
     except psycopg2.OperationalError as exc:
         print(
             f"[fetch-memories] PostgreSQL unavailable: {exc}",
@@ -406,6 +489,18 @@ def try_semantic(
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+
+            # Coverage count on the SAME connection (audit R7), so the
+            # figure describes the corpus the search just ran against
+            # rather than a separately-timed snapshot.
+            if stats is not None:
+                cur.execute(
+                    "SELECT COUNT(*) FILTER (WHERE embedding IS NULL), "
+                    "COUNT(*) FROM active_memories"
+                )
+                counted = cur.fetchone()
+                stats["unembedded_active"] = int(counted[0])
+                stats["total_active"] = int(counted[1])
 
         results: list[dict[str, Any]] = []
         for row in rows:
@@ -469,14 +564,24 @@ def matches_filters(
     """
     Check whether a memory matches the given filter criteria.
 
+    A record retired with ``/forget`` (``is_active: false``) never
+    matches, whatever the filters say — the PostgreSQL paths get that for
+    free from the ``active_memories`` view, and before audit R2
+    (2026-09-08) every JSONL path silently disagreed, resurfacing
+    forgotten memories on any machine without a database.
+
     All provided filters are combined with AND logic:
     - **Tags:** any of the provided tags must appear in the memory's
-      ``research_tags`` (case-insensitive).
+      ``research_tags`` (case-insensitive). An empty list is "no filter".
     - **Query:** case-insensitive substring search across ``content``,
       ``summary``, and ``source_context``.
     - **Category:** exact match on the ``category`` field.
     - **ID:** exact match on the ``id`` field.
     """
+    # Soft-delete filter (audit R2): forgotten records never surface.
+    if not is_active(mem):
+        return False
+
     # ID filter (exact match)
     if memory_id is not None:
         if mem.get("id") != memory_id:
@@ -487,8 +592,13 @@ def matches_filters(
         if mem.get("category") != category:
             return False
 
-    # Tag filter (any tag overlaps, case-insensitive)
-    if tags is not None:
+    # Tag filter (any tag overlaps, case-insensitive). An EMPTY list is
+    # "no filter", matching how the callers normalise it and how
+    # ``research_tags && '{}'`` behaves in PostgreSQL. Testing
+    # ``is not None`` made ``tags=[]`` reject every record, because
+    # ``any()`` over an empty sequence is False (audit R16) -- unreachable
+    # from today's two callers, and a trap for the third.
+    if tags:
         mem_tags = mem.get("research_tags") or []
         if isinstance(mem_tags, str):
             mem_tags = [mem_tags]
@@ -512,17 +622,33 @@ def matches_filters(
 
 def _parse_datetime(dt_str: str) -> datetime:
     """
-    Parse an ISO datetime string for sorting.
+    Parse an ISO datetime string for sorting, ALWAYS timezone-aware.
 
-    Returns epoch (1970-01-01) for unparseable values so they
+    Returns epoch (1970-01-01 UTC) for unparseable values so they
     sort to the end.
+
+    Every return is aware. A naive stamp — including the legacy date-only
+    ``YYYY-MM-DD`` form documented in ``scripts/_timestamps.py``, which
+    ``fromisoformat`` parses to a naive midnight — is assumed UTC, the same
+    receiver-side defence ``hooks/session-start-retrieval.py:parse_created_at``
+    applies. Without it a corpus mixing naive and offset-bearing stamps made
+    ``sorted`` raise ``TypeError`` ("can't compare offset-naive and
+    offset-aware datetimes"), so the JSONL fallback and the cold-archive
+    search died exactly when PostgreSQL was down (audit R1, 2026-09-08).
+
+    ``_timestamps.coerce_to_iso`` is deliberately NOT reused here: its
+    unparseable fallback is *now*, which would sort a corrupt stamp to the
+    TOP of a newest-first list. Sorting needs the opposite sentinel.
     """
     try:
         # Handle timezone-aware strings (with +00:00 or Z)
         cleaned = dt_str.replace("Z", "+00:00")
-        return datetime.fromisoformat(cleaned)
+        parsed = datetime.fromisoformat(cleaned)
     except (ValueError, TypeError, AttributeError):
         return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def fallback_jsonl(
@@ -539,10 +665,17 @@ def fallback_jsonl(
     ``created_at`` descending (most recent first), and returns the
     top *limit* matches.
 
-    Note: this fallback does not apply decay rules — it returns all
-    memories regardless of ``is_active`` status.  When PostgreSQL is
-    unavailable, returning slightly more results is better than
-    returning nothing.
+    What this fallback does and does not apply, exactly:
+
+    - **Soft deletes ARE honoured.** A record with ``is_active: false``
+      (retired via ``/forget``) is excluded, matching the
+      ``active_memories`` view (audit R2).
+    - **Category decay is NOT applied.** The view also drops records
+      older than their category's retention window; this path has no
+      decay table, so a decayed-but-still-present record can appear.
+      When PostgreSQL is unavailable, returning a slightly stale record
+      is better than returning nothing — but returning a *forgotten* one
+      is not.
     """
     memories = load_jsonl_memories()
     matched = [
@@ -661,9 +794,15 @@ def format_output(memories: list[dict[str, Any]]) -> str:
     """
     Format memory results as markdown for CC consumption.
 
-    Produces a structured output with full content, verification status,
-    tags, and source context for each result.  Returns a zero-results
-    message if the list is empty.
+    Produces a structured output with the memory ID, full content,
+    verification status, tags, and source context for each result.
+    Returns a zero-results message if the list is empty.
+
+    The ID is shown because it is the handle ``/forget`` and ``/update``
+    take, and ``commands/forget.md`` tells the operator to get IDs from
+    recall. Until audit R15 no retrieval path printed one, so the only way
+    to retire a memory was to grep the JSONL by hand -- while
+    ``surfaced.log`` was recording ids the operator had never seen.
     """
     count = len(memories)
 
@@ -689,7 +828,9 @@ def format_output(memories: list[dict[str, Any]]) -> str:
 
         source = mem.get("source_context") or "(no source)"
 
+        mem_id = mem.get("id") or "(no id)"
         lines.append(f"### [{i}] {category} — {created}")
+        lines.append(f"ID: {mem_id}")
         lines.append(content)
         similarity = mem.get("similarity")
         if similarity is not None:
@@ -724,18 +865,33 @@ def main() -> None:
     if warning:
         print(warning, file=sys.stderr)
 
-    # Determine the effective text query for FTS/JSONL fallback.
-    # --semantic provides the query text if --query is not also set.
+    # The effective text query for FTS/JSONL. parse_args refuses
+    # --semantic together with --query, so at most one of them is set and
+    # this is simply "whichever the caller gave".
     effective_query = args.query or args.semantic
 
     # Semantic search path (pgvector cosine similarity)
     if args.semantic:
+        coverage: dict[str, Any] = {}
         results = try_semantic(
             query=args.semantic,
             category=args.category,
             tags=args.tags,
             limit=args.limit,
+            stats=coverage,
         )
+        # Say what the search could not see (audit R7). Un-embedded rows
+        # are excluded outright, not ranked last, so a silent count of
+        # zero results can mean "nothing matched" or "nothing indexed".
+        skipped = coverage.get("unembedded_active")
+        if skipped:
+            print(
+                f"[fetch-memories] NOTE: {skipped} of "
+                f"{coverage.get('total_active', '?')} active memories have "
+                "no embedding and were NOT searched. Run "
+                "scripts/backfill-embeddings.py to close the gap.",
+                file=sys.stderr,
+            )
         if results is None:
             # Semantic unavailable — fall through to FTS
             print(
@@ -743,6 +899,18 @@ def main() -> None:
                 "trying FTS",
                 file=sys.stderr,
             )
+        elif not results:
+            # Semantic ran and matched nothing. The stderr contract above
+            # promises FTS as the backstop, and before audit R6 an empty
+            # list short-circuited it: the caller got "0 results" from a
+            # path that only searches embedded rows. Reset to None so the
+            # FTS branch below runs on the same query text.
+            print(
+                "[fetch-memories] Semantic search returned no matches, "
+                "trying FTS",
+                file=sys.stderr,
+            )
+            results = None
 
     # Standard search path (FTS via PostgreSQL)
     if results is None and (
@@ -803,14 +971,32 @@ def main() -> None:
     _log_invocation(args, results)
 
 
-def _log_invocation(args: argparse.Namespace, results: Any) -> None:
+def _clean(value: object) -> str:
+    """Collapse all whitespace in a log field so it cannot forge a column.
+
+    ``--tag`` and ``--category`` are free-form CLI values written straight
+    into a tab-separated record that ``log-recall.py`` also appends to and
+    the 2026-06-13 review parser reads. A tab in a category name split the
+    line into extra columns that the parser then read as real fields
+    (audit L2). ``log-recall.py:format_line`` has collapsed its fields
+    since audit R10; this is the same treatment for the sibling writer.
+    """
+    return " ".join(str(value).split())
+
+
+def _log_invocation(
+    args: argparse.Namespace,
+    results: Any,
+    log_path: Path | None = None,
+) -> None:
     """Append a one-line tier-2 retrieval record to fetch-memories.log.
 
     Tab-separated: timestamp, the selectors used, limit, and result
-    count. Best-effort — any failure is swallowed so instrumentation can
+    count. Every free-form field is whitespace-collapsed so none can forge
+    a column. Best-effort — any failure is swallowed so instrumentation can
     never degrade the retrieval path itself.
     """
-    log_path = PA_DIR / "logs" / "fetch-memories.log"
+    target = log_path if log_path is not None else default_log_path()
     try:
         # Use ``key:value`` (colon) for selectors that log a value, so the
         # joined field reads ``selectors=tag:foo`` not ``selectors=tag=foo``
@@ -818,25 +1004,29 @@ def _log_invocation(args: argparse.Namespace, results: Any) -> None:
         # log only the selector name — never the search text (privacy).
         selectors = []
         if getattr(args, "tags", None):
-            selectors.append(f"tag:{','.join(args.tags)}")
+            selectors.append(f"tag:{','.join(_clean(t) for t in args.tags)}")
         if getattr(args, "query", None):
             selectors.append("query")
         if getattr(args, "semantic", None):
             selectors.append("semantic")
         if getattr(args, "category", None):
-            selectors.append(f"category:{args.category}")
+            selectors.append(f"category:{_clean(args.category)}")
         if getattr(args, "memory_id", None):
             selectors.append("id")
         n = len(results) if isinstance(results, list) else 0
         line = (
             f"{datetime.now(timezone.utc).isoformat()}\t"
-            f"selectors={';'.join(selectors) or 'none'}\t"
-            f"limit={getattr(args, 'limit', '?')}\t"
+            f"selectors={_clean(';'.join(selectors)) or 'none'}\t"
+            f"limit={_clean(getattr(args, 'limit', '?')) or '-'}\t"
             f"results={n}\n"
         )
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+        # The mkdir sits inside the "we have a destination" branch: an
+        # unpinned call under pytest must not even create the directory,
+        # since ``logs`` runs into the private data submodule.
+        if target is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(line)
     except Exception:  # noqa: BLE001 — instrumentation must never raise
         pass
     # Item 16 (earned-utility, Stage 1): log which memories this autonomous

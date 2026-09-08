@@ -16,6 +16,9 @@ import pytest
 # Module import (file has no .py-friendly name, load via spec)
 # -------------------------------------------------------------------------
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _fake_pg import FakeMemoryDB, connect_factory  # noqa: E402
+
 MODULE_PATH = (
     Path(__file__).resolve().parent.parent / "scripts" / "memory_mcp.py"
 )
@@ -253,8 +256,10 @@ class TestSearchMemories:
         data = json.loads(out)
         assert data["source"] == "jsonl"
         assert data["count"] == 2
-        # Pin the decay warning string — it's the reason the note exists
-        assert "decay rules NOT applied" in data["note"]
+        # Pin the fallback note: it must say soft deletes ARE honoured and
+        # decay is NOT (audit R2 — the old wording conflated the two).
+        assert "is_active: false) ARE excluded" in data["note"]
+        assert "decay is NOT applied" in data["note"]
 
     def test_limit_respected(self) -> None:
         """The limit parameter is passed through to try_postgres."""
@@ -412,7 +417,9 @@ class TestListRecent:
         data = json.loads(out)
         assert data["count"] == 0
         assert "error" in data
-        # Connection failure reason propagates to client
+        # Whatever _pg_connect reports reaches the envelope. In production
+        # that message is deliberately generic (audit R18); what is pinned
+        # here is that the tool does not swallow it.
         assert "connection refused" in data["error"]
 
     def test_query_uses_make_interval(self) -> None:
@@ -475,6 +482,7 @@ class TestListRecent:
                 "content-text",
                 "summary-text",
                 "high",
+                "true",
                 ["tag1", "tag2"],
                 "context-text",
                 "2026-04-12T10:00:00",
@@ -499,6 +507,7 @@ class TestListRecent:
         assert r["content"] == "content-text"
         assert r["summary"] == "summary-text"
         assert r["confidence"] == "high"
+        assert r["verified"] == "true"   # RT18: same shape as search_memories
         assert r["research_tags"] == ["tag1", "tag2"]
         assert r["source_context"] == "context-text"
         assert r["created_at"] == "2026-04-12T10:00:00"
@@ -596,8 +605,14 @@ class TestMemoryStatistics:
 class TestErrorHandling:
     """Tests that errors don't crash the MCP subprocess."""
 
-    def test_search_survives_jsonl_load_failure(self) -> None:
-        """A JSONL load exception is caught and returns an error envelope."""
+    def test_search_survives_jsonl_load_failure(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A JSONL load exception is caught and returns an error envelope.
+
+        The detail belongs in the server log, not in the envelope crossing
+        to the client (audit R18).
+        """
         with (
             patch.object(
                 memory_mcp.fetch_memories,
@@ -614,7 +629,8 @@ class TestErrorHandling:
 
         data = json.loads(out)
         assert "error" in data
-        assert "disk error" in data["error"]
+        assert "disk error" not in data["error"]
+        assert "disk error" in caplog.text
 
     def test_list_recent_survives_query_failure(self) -> None:
         """A DB query exception is caught and returns an error envelope."""
@@ -766,7 +782,8 @@ class TestGetMemoryJsonlNotFound:
             ))
         data = json.loads(out)
         assert data["count"] == 1
-        assert "decay rules NOT applied" in data["note"]
+        assert "is_active: false) ARE excluded" in data["note"]
+        assert "decay is NOT applied" in data["note"]
 
 
 # -------------------------------------------------------------------------
@@ -876,3 +893,626 @@ class TestToolSchemas:
         props = tool.inputSchema["properties"]
         assert props["days"]["minimum"] == 1
         assert props["days"]["maximum"] == 365
+
+
+# -------------------------------------------------------------------------
+# Audit R2 (2026-09-08): forgotten memories must not surface via MCP
+# -------------------------------------------------------------------------
+
+class TestSoftDeleteInJsonlFallbacks:
+    """``is_active: false`` excludes a record from both JSONL fallbacks.
+
+    Deliberately does NOT stub ``matches_filters`` (lens B, RT7): the
+    fallback's own filtering is the thing under test.
+    """
+
+    @staticmethod
+    def _corpus() -> list[dict]:
+        """Two records, one of them retired via ``/forget``."""
+        retired = {**SAMPLE_RESULTS[0], "id": "2026-04-12-retired",
+                   "is_active": False}
+        live = {**SAMPLE_RESULTS[1], "id": "2026-04-11-live"}
+        return [retired, live]
+
+    def test_search_memories_fallback_drops_forgotten(self) -> None:
+        """Kills: removing the ``is_active`` guard from ``matches_filters``."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            out = _run(memory_mcp.search_memories(
+                project="-home-shawn-personal-assistant"))
+        data = json.loads(out)
+        assert [r["id"] for r in data["results"]] == ["2026-04-11-live"]
+
+    def test_get_memory_fallback_reports_forgotten_as_not_found(self) -> None:
+        """Kills: dropping ``and fetch_memories.is_active(mem)`` in get_memory."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            out = _run(memory_mcp.get_memory(memory_id="2026-04-12-retired"))
+        data = json.loads(out)
+        assert data["count"] == 0
+        assert "not found" in data["error"]
+
+    def test_get_memory_fallback_still_serves_a_live_record(self) -> None:
+        """The guard must not break the ordinary fallback hit."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            out = _run(memory_mcp.get_memory(memory_id="2026-04-11-live"))
+        data = json.loads(out)
+        assert data["count"] == 1
+        assert data["source"] == "jsonl"
+
+    def test_fallback_notes_say_what_is_and_is_not_applied(self) -> None:
+        """The note must not imply soft deletes are ignored (audit R2)."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            search_note = json.loads(_run(memory_mcp.search_memories(
+                project="-home-shawn-personal-assistant")))["note"]
+            get_note = json.loads(_run(memory_mcp.get_memory(
+                memory_id="2026-04-11-live")))["note"]
+        for note in (search_note, get_note):
+            assert "is_active: false) ARE excluded" in note
+            assert "decay is NOT applied" in note
+
+
+# -------------------------------------------------------------------------
+# Audit R5 (2026-09-08): MCP retrieval feeds the earned-utility signal
+# -------------------------------------------------------------------------
+
+class TestSurfacingInstrumentation:
+    """Every tool that returns memory content logs the ids it served.
+
+    The MCP server was the one retrieval surface writing nothing to
+    ``surfaced.log``, so memories served to Claude Desktop or claude.ai were
+    invisible to the aggregator a future archival decision rests on.
+    """
+
+    @staticmethod
+    def _ids_logged(mock_log) -> list[list[str]]:
+        """The id lists passed to ``log_surfaced``, call by call."""
+        return [
+            [m["id"] for m in call.args[0]]
+            for call in mock_log.call_args_list
+        ]
+
+    def test_search_memories_postgres_logs_exactly_what_it_returns(self) -> None:
+        """Kills: deleting the ``_log_surfaced(results)`` call in the PG branch."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=SAMPLE_RESULTS),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            out = _run(memory_mcp.search_memories(query="database"))
+        returned = [r["id"] for r in json.loads(out)["results"]]
+        assert self._ids_logged(mock_log) == [returned]
+
+    def test_search_memories_jsonl_logs_the_truncated_list(self) -> None:
+        """The logged ids are the ones actually served, not the pre-limit set."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=SAMPLE_RESULTS),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            out = _run(memory_mcp.search_memories(
+                project="-home-shawn-personal-assistant", limit=1))
+        returned = [r["id"] for r in json.loads(out)["results"]]
+        assert len(returned) == 1
+        assert self._ids_logged(mock_log) == [returned]
+
+    def test_semantic_search_logs_after_the_similarity_filter(self) -> None:
+        """Only the memories that survive min_similarity are logged."""
+        scored = [
+            {**SAMPLE_RESULTS[0], "similarity": 0.91},
+            {**SAMPLE_RESULTS[1], "similarity": 0.20},
+        ]
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_semantic",
+                         return_value=scored),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            out = _run(memory_mcp.semantic_search(query="x", min_similarity=0.5))
+        returned = [r["id"] for r in json.loads(out)["results"]]
+        assert self._ids_logged(mock_log) == [returned]
+
+    def test_get_memory_logs_the_single_record(self) -> None:
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=[SAMPLE_RESULTS[0]]),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            _run(memory_mcp.get_memory(memory_id=SAMPLE_RESULTS[0]["id"]))
+        assert self._ids_logged(mock_log) == [[SAMPLE_RESULTS[0]["id"]]]
+
+    def test_list_recent_logs_its_rows(self) -> None:
+        columns = [
+            "id", "category", "content", "summary", "confidence", "verified",
+            "research_tags", "source_context", "created_at", "project",
+        ]
+        row = tuple(SAMPLE_RESULTS[0].get(c, "true") for c in columns)
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [row]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        with (
+            patch.object(memory_mcp, "_pg_connect", return_value=(conn, None)),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            _run(memory_mcp.list_recent(days=7))
+        assert self._ids_logged(mock_log) == [[SAMPLE_RESULTS[0]["id"]]]
+
+    def test_tools_log_under_a_path_the_aggregator_counts(self) -> None:
+        """``path=mcp`` must be a label the writer accepts and the reader counts.
+
+        Kills: logging under an unknown label (the line would be written but
+        never counted as active retrieval).
+        """
+        import importlib
+
+        sys.path.insert(0, str(MODULE_PATH.parent))
+        surfacing_log = importlib.import_module("surfacing_log")
+        surfacing_stats = importlib.import_module("surfacing_stats")
+        assert memory_mcp.SURFACING_PATH in surfacing_log.VALID_PATHS
+        assert memory_mcp.SURFACING_PATH in surfacing_stats.ACTIVE_PATHS
+
+    def test_error_paths_log_nothing(self) -> None:
+        """A tool that returns no memories must not write a surfacing line."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_semantic",
+                         return_value=None),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            _run(memory_mcp.semantic_search(query="x"))
+        mock_log.assert_not_called()
+
+
+# -------------------------------------------------------------------------
+# Audit R7 (2026-09-08): semantic search declares what it cannot see
+# -------------------------------------------------------------------------
+
+class TestSemanticCoverageNote:
+    """Un-embedded memories are excluded outright, so say so."""
+
+    @staticmethod
+    def _semantic_with_coverage(missing: int, total: int):
+        """A try_semantic stand-in that fills the coverage dict it is given."""
+
+        def _fake(**kwargs):
+            kwargs["stats"]["unembedded_active"] = missing
+            kwargs["stats"]["total_active"] = total
+            return [SAMPLE_RESULTS[0]]
+
+        return _fake
+
+    def test_note_reports_the_uncovered_count(self) -> None:
+        """Kills: dropping the note (a caller cannot tell empty from unindexed)."""
+        with patch.object(
+            memory_mcp.fetch_memories, "try_semantic",
+            self._semantic_with_coverage(4, 10),
+        ):
+            data = json.loads(_run(memory_mcp.semantic_search(query="canopy")))
+        assert "4 of 10 active memories have no embedding" in data["note"]
+
+    def test_full_coverage_adds_no_note(self) -> None:
+        """No gap, no noise."""
+        with patch.object(
+            memory_mcp.fetch_memories, "try_semantic",
+            self._semantic_with_coverage(0, 10),
+        ):
+            data = json.loads(_run(memory_mcp.semantic_search(query="canopy")))
+        assert "note" not in data
+
+    def test_tool_description_states_the_limitation(self) -> None:
+        """The contract is in the tool description, not only the envelope."""
+        tools = {t.name: t for t in _run(memory_mcp.mcp.list_tools())}
+        assert "embedding" in tools["semantic_search"].description
+
+
+# -------------------------------------------------------------------------
+# search_sessions tool: envelopes and bounds (lens B RT5, audit R9)
+# -------------------------------------------------------------------------
+
+class TestSearchSessionsTool:
+    """The tool's own error and empty-result handling, not the search itself."""
+
+    def test_results_are_wrapped_in_a_postgres_envelope(self) -> None:
+        rows = [{"archive_dir": "2026-04-02T09-15_notebook", "turn_idx": 3,
+                 "role": "user", "project": "sherds"}]
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          return_value=rows) as mock_search:
+            data = json.loads(_run(memory_mcp.search_sessions(query="loader")))
+        assert data["source"] == "postgres"
+        assert data["count"] == 1
+        # The tool's arguments must reach the search function unchanged.
+        assert mock_search.call_args.kwargs["substring"] is False
+
+    def test_empty_result_carries_the_guidance_note(self) -> None:
+        """Kills: dropping the note (the caller is told nothing to try next)."""
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          return_value=[]):
+            data = json.loads(_run(memory_mcp.search_sessions(query="loader")))
+        assert data["source"] == "none"
+        assert "--substring" in data["note"]
+
+    def test_import_error_becomes_an_error_envelope(self) -> None:
+        """Kills: deleting the ImportError branch (an unhandled traceback)."""
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          side_effect=ImportError("no psycopg2")):
+            data = json.loads(_run(memory_mcp.search_sessions(query="loader")))
+        assert data["count"] == 0
+        assert "psycopg2" in data["error"]
+
+    def test_usage_error_text_reaches_the_caller(self) -> None:
+        """The trigram floor must be actionable, not a generic failure."""
+        with patch.object(
+            memory_mcp.search_sessions_mod, "search",
+            side_effect=ValueError("--substring needs at least 3 characters"),
+        ):
+            data = json.loads(_run(memory_mcp.search_sessions(
+                query="ab", substring=True)))
+        assert "at least 3 characters" in data["error"]
+
+    def test_filters_are_forwarded(self) -> None:
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          return_value=[]) as mock_search:
+            _run(memory_mcp.search_sessions(
+                query="loader", project="sherds", role="user",
+                substring=True, limit=5))
+        kwargs = mock_search.call_args.kwargs
+        assert kwargs == {"project": "sherds", "role": "user",
+                          "limit": 5, "substring": True}
+
+
+class TestMcpConnectionBounds:
+    """_pg_connect must bound both the connect and the statement (audit R9)."""
+
+    def test_connect_kwargs_carry_both_timeouts(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: dropping connect_timeout or the statement_timeout option."""
+        import psycopg2
+
+        recorded: dict = {}
+
+        def _fake_connect(**kwargs):
+            recorded.update(kwargs)
+            conn = MagicMock()
+            cur = MagicMock()
+            cur.fetchone.return_value = ("3",)
+            conn.cursor.return_value.__enter__.return_value = cur
+            return conn
+
+        monkeypatch.setattr(psycopg2, "connect", _fake_connect)
+        conn, err = memory_mcp._pg_connect()
+        assert err is None
+        # Documented literals, not the constants under test: setting either
+        # to 0 removes the bound (PostgreSQL reads 0 as "no limit") while
+        # satisfying a self-referential assertion (audit L3).
+        assert recorded["connect_timeout"] == 5
+        assert recorded["options"] == "-c statement_timeout=30000"
+        assert memory_mcp.CONNECT_TIMEOUT_SECONDS > 0
+        assert memory_mcp.STATEMENT_TIMEOUT_MS > 0
+
+
+# -------------------------------------------------------------------------
+# Audit R18 (2026-09-08): driver detail stays server-side
+# -------------------------------------------------------------------------
+
+class TestErrorEnvelopesAreGeneric:
+    """psycopg2's text names sockets, hosts, and databases. Log it, don't ship it."""
+
+    _SECRET = "could not connect to server: /var/run/postgresql/.s.PGSQL.5432"
+
+    def test_connection_failure_detail_is_logged_not_returned(
+        self, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Kills: interpolating the exception into the (None, message) tuple."""
+        import psycopg2
+
+        def _refuse(**kwargs):
+            raise psycopg2.OperationalError(self._SECRET)
+
+        monkeypatch.setattr(psycopg2, "connect", _refuse)
+        with caplog.at_level("WARNING"):
+            conn, err = memory_mcp._pg_connect()
+        assert conn is None
+        assert self._SECRET not in err
+        assert self._SECRET in caplog.text
+
+    @pytest.mark.parametrize("tool", ["list_recent", "memory_statistics"])
+    def test_connection_failure_envelope_carries_no_detail(
+        self, monkeypatch: pytest.MonkeyPatch, tool: str,
+    ) -> None:
+        """Both database-only tools report the generic message."""
+        monkeypatch.setattr(
+            memory_mcp, "_pg_connect",
+            lambda: (None, memory_mcp.GENERIC_DB_ERROR),
+        )
+        data = json.loads(_run(getattr(memory_mcp, tool)()))
+        assert "/var/run/postgresql" not in data["error"]
+        assert "PostgreSQL unavailable" in data["error"]
+
+    def test_query_failure_envelope_carries_no_detail(
+        self, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Kills: interpolating the query exception into the envelope."""
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.execute.side_effect = RuntimeError(
+            'relation "active_memories" does not exist'
+        )
+        conn.cursor.return_value.__enter__.return_value = cursor
+        monkeypatch.setattr(memory_mcp, "_pg_connect", lambda: (conn, None))
+        with caplog.at_level("ERROR"):
+            data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert "active_memories" not in data["error"]
+        assert "active_memories" in caplog.text
+
+    def test_schema_mismatch_message_is_still_actionable(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Our own message has no host detail and tells the operator what to run.
+
+        Kills: sweeping the schema-version text into the generic branch.
+        """
+        import psycopg2
+
+        def _connect(**kwargs):
+            conn = MagicMock()
+            cur = MagicMock()
+            cur.fetchone.return_value = ("0",)
+            conn.cursor.return_value.__enter__.return_value = cur
+            return conn
+
+        monkeypatch.setattr(psycopg2, "connect", _connect)
+        conn, err = memory_mcp._pg_connect()
+        assert conn is None
+        assert "schema_version" in err
+
+
+# -------------------------------------------------------------------------
+# Lens B RT13 and RT18: exact id match, and one memory shape across tools
+# -------------------------------------------------------------------------
+
+class TestResultShapeAndMatching:
+    """Two contracts the tools share."""
+
+    def test_get_memory_jsonl_fallback_matches_the_id_exactly(self) -> None:
+        """Kills: ``==`` -> ``startswith`` in the fallback scan."""
+        corpus = [{**SAMPLE_RESULTS[0], "id": "2026-04-12-abcdef123456"}]
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=corpus),
+        ):
+            data = json.loads(_run(memory_mcp.get_memory(
+                memory_id="2026-04-12-abc")))
+        assert data["count"] == 0
+
+    def test_list_recent_and_search_memories_agree_on_the_columns(self) -> None:
+        """Kills: letting the two column lists drift apart.
+
+        A client that fetches a memory through one tool and then the other
+        should not find a field has vanished; ``verified`` was missing from
+        list_recent's list (lens B, RT18).
+        """
+        columns = [
+            "id", "category", "content", "summary", "confidence", "verified",
+            "research_tags", "source_context", "created_at", "project",
+        ]
+        row = tuple(SAMPLE_RESULTS[0].get(c, "true") for c in columns)
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [row]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        with patch.object(memory_mcp, "_pg_connect", return_value=(conn, None)):
+            recent = json.loads(_run(memory_mcp.list_recent(days=7)))
+        with patch.object(memory_mcp.fetch_memories, "try_postgres",
+                          return_value=[{c: "x" for c in columns}]):
+            searched = json.loads(_run(memory_mcp.search_memories(query="x")))
+        assert set(recent["results"][0]) == set(searched["results"][0])
+
+
+# -------------------------------------------------------------------------
+# Lens B RT7: the JSONL fallback's own filtering and ranking
+# -------------------------------------------------------------------------
+
+class TestJsonlFallbackBehaviour:
+    """Exercises the fallback WITHOUT stubbing matches_filters.
+
+    The previous fallback test patched matches_filters to return True, so
+    dropping the project filter, reversing the sort, and dropping the
+    truncation all passed together.
+    """
+
+    @staticmethod
+    def _corpus() -> list[dict]:
+        """Three projects, three stamps, one of them legacy date-only."""
+        return [
+            {**SAMPLE_RESULTS[0], "id": "old-mine",
+             "project": "-home-shawn-personal-assistant",
+             "created_at": "2026-04-01T09:00:00+00:00"},
+            {**SAMPLE_RESULTS[0], "id": "new-mine",
+             "project": "-home-shawn-personal-assistant",
+             "created_at": "2026-04-03T08:00:00+10:00"},
+            {**SAMPLE_RESULTS[0], "id": "mid-mine",
+             "project": "-home-shawn-personal-assistant",
+             "created_at": "2026-04-02"},
+            {**SAMPLE_RESULTS[0], "id": "theirs",
+             "project": "-home-shawn-Code-inscriptions",
+             "created_at": "2026-04-09T09:00:00+00:00"},
+        ]
+
+    def _search(self, **kwargs):
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            return json.loads(_run(memory_mcp.search_memories(**kwargs)))
+
+    def test_project_filter_is_applied(self) -> None:
+        """Kills: dropping ``and (not project or m.get("project") == project)``."""
+        data = self._search(project="-home-shawn-personal-assistant")
+        assert "theirs" not in {r["id"] for r in data["results"]}
+
+    def test_sorted_newest_first_across_mixed_stamps(self) -> None:
+        """Kills: reversing the sort, or comparing the raw strings.
+
+        "2026-04-03T08:00:00+10:00" is 2026-04-02T22:00Z — newer than the
+        date-only record, which a string sort would rank above it.
+        """
+        data = self._search(project="-home-shawn-personal-assistant")
+        assert [r["id"] for r in data["results"]] == [
+            "new-mine", "mid-mine", "old-mine",
+        ]
+
+    def test_limit_truncates_the_fallback(self) -> None:
+        """Kills: dropping ``[:limit]`` (the whole corpus comes back)."""
+        data = self._search(
+            project="-home-shawn-personal-assistant", limit=2)
+        assert data["count"] == 2
+
+    def test_ranking_matches_the_cli_fallback(self) -> None:
+        """The CLI and the MCP server must agree about the same corpus."""
+        corpus = self._corpus()
+        with patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                          return_value=corpus):
+            cli = memory_mcp.fetch_memories.fallback_jsonl(category="decision")
+        data = self._search(category="decision")
+        assert [r["id"] for r in data["results"]] == [m["id"] for m in cli]
+        assert len(cli) == 4  # the comparison is not vacuous
+
+
+# -------------------------------------------------------------------------
+# Audit M2: list_recent's own SQL, evaluated rather than mocked
+# -------------------------------------------------------------------------
+
+class TestListRecentQueryBody:
+    """TestListRecent above uses a MagicMock cursor, so the statement itself
+    was unobservable: swapping the ``active_memories`` view for the base
+    table, and ``DESC`` for ``ASC``, both survived the full suite.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_postgres(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unpatched connect in this class is a test bug, not a query."""
+        import psycopg2
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError(
+                "psycopg2.connect reached the real driver; patch it"
+            )
+
+        monkeypatch.setattr(psycopg2, "connect", _forbidden)
+
+    @staticmethod
+    def _row(mem_id: str, *, days_old: int = 1, category: str = "decision",
+             is_active: bool = True, decayed: bool = False) -> dict:
+        """One seeded row, aged relative to now so make_interval bites."""
+        from datetime import datetime, timedelta, timezone
+
+        created = datetime.now(timezone.utc) - timedelta(days=days_old)
+        return {
+            "id": mem_id, "category": category, "content": f"content {mem_id}",
+            "summary": f"summary {mem_id}", "confidence": "high",
+            "verified": "true", "research_tags": ["survey"],
+            "source_context": "planning", "created_at": created.isoformat(),
+            "project": "-home-shawn-Code-fieldwork", "embedding": None,
+            "is_active": is_active, "decayed": decayed,
+        }
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, rows: list[dict]):
+        import psycopg2
+
+        connect = connect_factory(FakeMemoryDB(rows))
+        monkeypatch.setattr(psycopg2, "connect", connect)
+        return connect
+
+    def test_reads_the_view_not_the_base_table(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: ``FROM active_memories`` -> ``FROM memories``.
+
+        The view is where the soft-delete and decay rules live, so the base
+        table would list memories the operator has already retired.
+        """
+        self._install(monkeypatch, [
+            self._row("live"),
+            self._row("forgotten", is_active=False),
+            self._row("decayed-out", decayed=True),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert [r["id"] for r in data["results"]] == ["live"]
+
+    def test_orders_newest_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills: ``ORDER BY created_at DESC`` -> ``ASC``."""
+        self._install(monkeypatch, [
+            self._row("older", days_old=5),
+            self._row("newest", days_old=1),
+            self._row("middle", days_old=3),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert [r["id"] for r in data["results"]] == [
+            "newest", "middle", "older",
+        ]
+
+    def test_window_excludes_older_memories(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: dropping the make_interval window (everything comes back)."""
+        self._install(monkeypatch, [
+            self._row("inside", days_old=2),
+            self._row("outside", days_old=90),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert [r["id"] for r in data["results"]] == ["inside"]
+
+    def test_category_filter_applies(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: dropping the optional ``AND category = %s`` clause."""
+        self._install(monkeypatch, [
+            self._row("wanted", category="decision"),
+            self._row("other", category="progress"),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(
+            days=7, category="decision")))
+        assert [r["id"] for r in data["results"]] == ["wanted"]
+
+    def test_limit_is_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills: dropping ``LIMIT %s``."""
+        self._install(monkeypatch, [
+            self._row(f"m{i}", days_old=i + 1) for i in range(5)
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=30, limit=2)))
+        assert data["count"] == 2
+
+    def test_connection_is_closed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The ``finally: conn.close()`` contract, non-vacuously."""
+        connect = self._install(monkeypatch, [self._row("live")])
+        _run(memory_mcp.list_recent(days=7))
+        assert connect.connections, "no connection was opened"
+        assert all(c.closed for c in connect.connections)

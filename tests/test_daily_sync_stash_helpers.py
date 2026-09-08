@@ -56,8 +56,30 @@ def _extract_function(name: str) -> str:
     return "\n".join(lines[start : end + 1])
 
 
-def _run_shell(body: str) -> subprocess.CompletedProcess[str]:
-    """Run ``body`` with the stash helpers defined, as the script does."""
+#: Extracted into every harness shell: the helpers the stash tests below
+#: were originally written against.
+_BASE_FUNCTIONS = (
+    "add_sync_gate_detail",
+    "push_stash",
+    "stash_ref_for",
+    "drop_stash_by_sha",
+)
+
+
+def _run_shell(
+    body: str,
+    functions: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Run ``body`` with the named script functions defined, as the script does.
+
+    ``functions`` is extracted in addition to ``_BASE_FUNCTIONS``; order
+    is irrelevant because bash resolves calls at run time, so the list may
+    be given in whatever order reads best at the call site. ``extra_env``
+    is the way to hand the shell a string that must not be re-parsed —
+    a gate line full of ``$(...)`` interpolations, for instance.
+    """
     script = "\n".join(
         [
             "set -euo pipefail",
@@ -65,16 +87,17 @@ def _run_shell(body: str) -> subprocess.CompletedProcess[str]:
             # The script's own logger writes to stderr via tee; here it
             # just goes to stderr, which the assertions read.
             'log() { printf "%s\\n" "$*" >&2; }',
+            # `fail` exits; the real one also writes a gate line.
+            'fail() { printf "FAIL: %s\\n" "$1" >&2; exit "${2:-2}"; }',
             "sync_gate_details=()",
-            _extract_function("add_sync_gate_detail"),
-            _extract_function("push_stash"),
-            _extract_function("stash_ref_for"),
-            _extract_function("drop_stash_by_sha"),
+            "DRY_RUN=0",
+            *[_extract_function(name) for name in (*_BASE_FUNCTIONS, *functions)],
             body,
         ]
     )
     env = os.environ.copy()
     env.update(_GIT_ENV)
+    env.update(extra_env or {})
     return subprocess.run(
         ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
     )
@@ -309,3 +332,1863 @@ class TestUnmergedStatusRegex:
                     ["bash", "-c", script], capture_output=True, text=True, check=False
                 )
                 assert "MATCH" not in result.stdout, (regex, line)
+
+
+# ============================================================================
+# The stash-state sidecar: what a run records for the NEXT run to read
+# ============================================================================
+
+#: Everything ``write_stash_state`` and its readers need, extracted live.
+_SIDECAR_FUNCTIONS = (
+    "ancestor_blocks_checkout",
+    "mode_matches",
+    "append_stash_state_row",
+    "write_stash_state",
+    "previously_recorded_stashes",
+    "record_conflicted_stash",
+    "record_partial_stash",
+    "partial_records_for",
+    "partial_repo_for",
+    "describe_stash",
+    "unrestored_untracked_paths",
+)
+
+
+def _sidecar_preamble(repo: Path, sidecar: Path) -> str:
+    """Shell that puts the sidecar writers in a runnable state."""
+    return "\n".join(
+        [
+            f'STASH_STATE_FILE="{sidecar}"',
+            f'DATA_DIR="{repo}"',
+            f'PA_DIR="{repo}"',
+            "stash_state_written_shas=()",
+            "conflicted_stash_records=()",
+            "applied_stash_shas=()",
+            "partial_stash_shas=()",
+            "partial_stash_records=()",
+        ]
+    )
+
+
+class TestWriteStashState:
+    """The sidecar is how one run tells the next whose markers a
+    half-merged tree holds. A row that is wrong sends the operator to
+    delete an entry that holds the only copy of something."""
+
+    def test_one_row_per_sha_and_applied_outranks_conflicted(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Audit M3 (tenth re-audit). An entry that conflicted, was then
+        RESOLVED, and whose drop failed is recorded in both lists. Two
+        independent loops wrote a row from each, so the stale
+        ``conflicted`` row survived alongside the true ``applied`` one —
+        and was matched against an unrelated conflict in the same path on
+        a later run. Kills: restoring the second `printf ... conflicted`
+        loop's independence from the applied loop.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "memories/memories.jsonl"\n'
+            + f'applied_stash_shas+=("{sha}")\n'
+            + "write_stash_state\n",
+            _SIDECAR_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        rows = sidecar.read_text(encoding="utf-8").splitlines()
+        assert len(rows) == 1, rows
+        assert rows[0].split("\t")[2] == "applied", rows
+
+    def test_partial_outranks_applied(self, repo: Path, tmp_path: Path) -> None:
+        """Audit S27. `partial` is the one state whose advice is "do not
+        delete this entry", so nothing may downgrade it."""
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'applied_stash_shas+=("{sha}")\n'
+            + f'record_partial_stash "{repo}" "{sha}" "missing\treports/only-here.md"\n'
+            + "write_stash_state\n",
+            _SIDECAR_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        rows = sidecar.read_text(encoding="utf-8").splitlines()
+        assert len(rows) == 1, rows
+        assert rows[0].split("\t")[2] == "partial", rows
+        assert rows[0].split("\t")[3] == "reports/only-here.md", rows
+
+    def test_a_dropped_entry_gets_no_row(self, repo: Path, tmp_path: Path) -> None:
+        """The write-side expiry. A stash that is gone cannot be the
+        source of anything, and a row naming it sends the operator hunting
+        for an entry that is not there. Kills: dropping the
+        `stash_ref_for ... || return 0` guard in append_stash_state_row.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        gone = _stash_shas(repo)[0]
+        _git("stash", "drop", "--quiet", cwd=repo)
+        sidecar = tmp_path / "sidecar"
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'record_conflicted_stash "{repo}" "{gone}" "memories/memories.jsonl"\n'
+            + "write_stash_state\n",
+            _SIDECAR_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == "", sidecar.read_text()
+
+    def test_a_path_with_a_space_and_a_comma_survives_the_round_trip(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Audit L1 (tenth re-audit). The paths were comma-joined into one
+        field and word-split on the way back, so `notes/a b, c.md` was read
+        as three paths, matched none of them, and lost its attribution —
+        for exactly the filenames a human is most likely to create.
+
+        Kills: `"${paths//$'\\n'/,}"` in record_conflicted_stash together
+        with `for path in ${paths//,/ }` on the read side. Two paths, so
+        the join has something to join and the damage is visible.
+        """
+        awkward = "notes/a b, c.md"
+        plain = "memories/memories.jsonl"
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        current = f"{awkward}\n{plain}"
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "{awkward}\n{plain}"\n'
+            + "write_stash_state\n"
+            + f'previously_recorded_stashes "{repo}" conflicted "{current}"\n',
+            _SIDECAR_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        rows = sidecar.read_text(encoding="utf-8").splitlines()
+        assert [r.split("\t")[3] for r in rows] == [awkward, plain], rows
+        assert sha[:8] in result.stdout, (
+            "a path holding a space and a comma lost its attribution: "
+            + result.stdout
+        )
+        assert awkward in result.stdout, result.stdout
+        assert plain in result.stdout, result.stdout
+
+
+class TestPreviouslyRecordedStashes:
+    """Only a stash an earlier run RECORDED conflicting on, that is still
+    on the stack, and whose recorded path is unmerged NOW, may be named as
+    the source of these markers. Every one of those three conditions has
+    "delete an entry holding the only copy of something" on the other
+    side of it."""
+
+    def _row(self, repo: Path, sha: str, state: str, path: str) -> str:
+        """One sidecar row, in the file's own format."""
+        return f"{repo}\t{sha}\t{state}\t{path}\n"
+
+    def test_a_recorded_path_is_matched_whole_not_as_a_substring(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """`grep -qxF`, not `grep -qF`. A row recording `notes/a.md` says
+        nothing about a conflict in `notes/a.md.bak`: different file,
+        somebody else's conflict, and the advice is to delete an entry
+        that has nothing to do with it.
+
+        Kills: `grep -qxF` -> `grep -qF`.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(self._row(repo, sha, "conflicted", "notes/a.md"),
+                           encoding="utf-8")
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'previously_recorded_stashes "{repo}" conflicted "notes/a.md.bak"\n',
+            _SIDECAR_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "", (
+            "a row about notes/a.md was blamed for a conflict in "
+            "notes/a.md.bak: " + result.stdout
+        )
+
+    def test_a_row_with_no_path_is_never_a_marker_source(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """A path-less row says "this entry's content is already in your
+        tree", never "these markers are its content". Without the guard
+        the empty field matches nothing and the row is skipped anyway —
+        unless `current` is itself empty, at which point every path-less
+        row becomes the source of every conflict.
+
+        Kills: `[[ -n "$path" ]] || continue`.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(self._row(repo, sha, "conflicted", ""), encoding="utf-8")
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'previously_recorded_stashes "{repo}" conflicted ""\n',
+            _SIDECAR_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "", result.stdout
+
+    def test_a_partial_row_is_not_returned_as_a_conflicted_one(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The two states get opposite closing advice — "delete that
+        entry" versus "recover its files before you delete it" — so the
+        reader must not conflate them."""
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(self._row(repo, sha, "partial", "notes/a.md"),
+                           encoding="utf-8")
+
+        conflicted = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'previously_recorded_stashes "{repo}" conflicted "notes/a.md"\n',
+            _SIDECAR_FUNCTIONS,
+        )
+        partial = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + f'previously_recorded_stashes "{repo}" partial "notes/a.md"\n',
+            _SIDECAR_FUNCTIONS,
+        )
+        assert conflicted.stdout.strip() == "", conflicted.stdout
+        assert sha[:8] in partial.stdout, partial.stdout
+
+
+# ============================================================================
+# Classifying a failed `git stash apply` (audit S27)
+# ============================================================================
+
+_CLASSIFY_FUNCTIONS = (
+    "unmerged_paths",
+    "snapshot_before_apply",
+    "classify_apply_failure",
+    "stash_tracked_half_landed",
+    "status_lines_for",
+    "unrestored_untracked_paths",
+    "ancestor_blocks_checkout",
+    "mode_matches",
+)
+
+
+class TestUnmergedPaths:
+    """``classify_apply_failure`` feeds two of these lists to ``comm``,
+    which compares them with the LOCALE's collating sequence. git emits
+    paths in byte order, and the two disagree the moment a repository
+    holds both an upper-case and a lower-case name."""
+
+    def test_the_list_is_sorted_for_comm_not_left_in_git_order(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: dropping `| sort -u` from unmerged_paths.
+
+        git lists `B.md` before `a.md` (byte order); a UTF-8 locale puts
+        `a.md` first, and GNU comm compares with the locale's collation.
+        Unsorted input makes comm report a path that was ALREADY unmerged
+        as new — i.e. blame this apply for somebody else's conflict,
+        which is how an entry gets condemned.
+
+        Pinned to a UTF-8 locale, because in the C locale git's order and
+        sort's order coincide and there is nothing to test.
+        """
+        locale = _utf8_locale()
+        repo = _conflicted_repo(tmp_path, ["B.md", "a.md"])
+        raw = _git(
+            "diff", "--name-only", "--diff-filter=U", cwd=repo
+        ).stdout.split()
+        assert raw == ["B.md", "a.md"], f"git no longer emits byte order: {raw}"
+
+        result = _run_shell(
+            f'PA_DIR="{repo}"\nunmerged_paths "{repo}"\n',
+            _CLASSIFY_FUNCTIONS,
+            {"LC_ALL": locale},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["a.md", "B.md"], (
+            "the list is in git's byte order, which comm does not share: "
+            + result.stdout
+        )
+
+    def test_an_already_unmerged_path_is_not_blamed_on_this_apply(
+        self, tmp_path: Path
+    ) -> None:
+        """The consequence of the sort, at the site that depends on it.
+
+        `comm -13` walks two lists in step. Fed git's byte order under a
+        UTF-8 locale it falls out of step at the first case difference and
+        reports `B.md` — already unmerged before this apply — as something
+        this apply did, which is what condemns an innocent entry.
+        """
+        locale = _utf8_locale()
+        repo = _conflicted_repo(tmp_path, ["B.md", "a.md"])
+        result = _run_shell(
+            f'PA_DIR="{repo}"\n'
+            f'apply_before_unmerged="a.md"\n'
+            f'apply_before_status="$(git -C "{repo}" status --porcelain)"\n'
+            f'classify_apply_failure "{repo}" HEAD\n'
+            'printf "%s\\n" "$apply_outcome_paths"\n',
+            _CLASSIFY_FUNCTIONS,
+            {"LC_ALL": locale},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["B.md"], (
+            "a path that was already unmerged was attributed to this "
+            "apply: " + result.stdout
+        )
+
+    def test_the_parents_data_gitlink_is_excluded(self, tmp_path: Path) -> None:
+        """Audit L3 (tenth re-audit). The parent stash is taken with
+        `-- ':!data'`, so it can never contain the gitlink and a conflict
+        there can never be its doing. Attributing one to a stash is how an
+        entry gets deleted.
+
+        Kills: dropping the `':!data'` pathspec.
+        """
+        repo = _conflicted_repo(tmp_path, ["data", "settings.json"])
+        result = _run_shell(
+            f'PA_DIR="{repo}"\nunmerged_paths "{repo}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert "settings.json" in result.stdout, result.stdout
+        assert "data" not in result.stdout.split(), (
+            "the parent's data gitlink was offered as a stash's doing: "
+            + result.stdout
+        )
+
+
+class TestUnrestoredUntrackedPaths:
+    """The predicate the whole S27 fix rests on: which files are still
+    only inside a stash entry."""
+
+    def test_a_file_the_apply_could_not_write_is_reported(
+        self, tmp_path: Path
+    ) -> None:
+        """The measured shape: an untracked file the stash holds, which
+        the working tree now holds at somebody else's content."""
+        repo = tmp_path / "s27"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "mem.jsonl").write_text("line1\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "report.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        (repo / "report.txt").write_text("theirs\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        # `differs`, not `missing`: a copy IS at that path, which is why
+        # the apply declined it, and why a checkout would overwrite it.
+        assert result.stdout.strip() == "differs\treport.txt", result.stdout
+
+    def test_a_restored_file_is_not_reported(self, tmp_path: Path) -> None:
+        """Byte-identical content means the entry holds nothing unique,
+        and the drop guard must not stand in the way of an ordinary run."""
+        repo = tmp_path / "s27ok"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "mem.jsonl").write_text("line1\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "report.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        (repo / "report.txt").write_text("ours\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "", result.stdout
+
+    def test_an_entry_with_no_untracked_tree_is_silent(self, repo: Path) -> None:
+        """A stash pushed without `-u` has no third parent at all; the
+        guard must not turn that into a refusal to drop anything, ever."""
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "", result.stdout
+
+
+# ============================================================================
+# stranded_stashes: which word the operator gets about a leftover entry
+# ============================================================================
+
+_STRANDED_FUNCTIONS = (
+    "stash_was_partial",
+    "stash_was_applied",
+    "stash_was_conflicted",
+    "stash_was_blocked",
+    "stranded_stashes",
+)
+
+
+def _stranded_preamble() -> str:
+    """Empty state arrays, as the script has before any apply."""
+    return "\n".join(
+        [
+            "partial_stash_shas=()",
+            "applied_stash_shas=()",
+            "conflicted_stash_shas=()",
+            "blocked_stash_shas=()",
+        ]
+    )
+
+
+class TestStrandedStashPrecedence:
+    """One entry can be in more than one list — the ordinary
+    conflicted-then-resolved-then-undroppable path puts it in two — and
+    the states carry opposite advice. The order the checks run in IS the
+    advice the operator gets."""
+
+    def test_applied_outranks_conflicted(self, repo: Path) -> None:
+        """An apply that conflicted and was then RESOLVED has its content
+        in the tree in usable form: the advice is "delete the entry", not
+        "resolve the markers" that are no longer there.
+
+        Kills: reordering `stash_was_applied` after `stash_was_conflicted`.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        result = _run_shell(
+            _stranded_preamble()
+            + "\n"
+            + f'conflicted_stash_shas+=("{sha}")\n'
+            + f'applied_stash_shas+=("{sha}")\n'
+            + f'stranded_stashes "{repo}" "{sha}"\n',
+            _STRANDED_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split()[0] == "applied", result.stdout
+
+    def test_partial_outranks_applied(self, repo: Path) -> None:
+        """Audit S27: `partial` is the one state whose advice is "do not
+        delete this entry", because it still holds the only copy of
+        something. Nothing may downgrade it."""
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        result = _run_shell(
+            _stranded_preamble()
+            + "\n"
+            + f'applied_stash_shas+=("{sha}")\n'
+            + f'partial_stash_shas+=("{sha}")\n'
+            + f'stranded_stashes "{repo}" "{sha}"\n',
+            _STRANDED_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split()[0] == "partial", result.stdout
+
+
+# ============================================================================
+# Gate supersession keys (audit M2, tenth re-audit)
+# ============================================================================
+
+_GATE_KEY_FUNCTIONS = (
+    "gate_line_class",
+    "gate_sha_keys",
+    "gate_claim_keys",
+    "gate_subject_keys",
+)
+
+#: The line check_interrupted_state writes when it can attribute nothing.
+#: It LISTS every entry on the stack precisely because it has no claim to
+#: make about any of them.
+_UNATTRIBUTED_LINE = (
+    "daily-sync STOPPED: /repo (data submodule) has unmerged paths from an "
+    "operation this run cannot identify — UU notes/a.md. Resolve them by "
+    "hand. Do NOT touch any stash entry until the sync has run far enough "
+    "to reconcile orphans; the entries on the stack right now are: "
+    "0badc0de stash@{0} On main: daily-sync branch-switch"
+)
+
+#: The line the EXIT handler writes about an entry git refused to apply
+#: because the index was already unmerged.
+_BLOCKED_LINE = (
+    "daily-sync could not apply 1 of its own stash(es) because the index "
+    "was ALREADY unmerged: data submodule: 0badc0de stash@{0} On main: "
+    "daily-sync branch-switch. Their entries are intact and their work is "
+    "nowhere else."
+)
+
+
+class TestGateSupersedeKeys:
+    """Which gate lines a later run may retire. Getting this wrong in
+    either direction is a live failure: too eager erases a still-true
+    warning, too shy leaves contradictory advice side by side."""
+
+    def test_the_unattributed_line_claims_no_stash(self) -> None:
+        """Audit M2 (tenth re-audit). The SHAs on that line are a listing
+        of what is on the stack, not a claim about any of them — so a run
+        that can attribute nothing must not retire an earlier run's
+        specific, still-true word about every entry it happened to list.
+
+        Kills: harvesting `_our_shas` from the whole line text.
+        """
+        result = _run_shell(
+            f'gate_claim_keys "{_UNATTRIBUTED_LINE}"\n', _GATE_KEY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["unattributed"], result.stdout
+        assert "0badc0de" not in result.stdout, result.stdout
+
+    def test_a_specific_line_claims_its_stash(self) -> None:
+        """The other direction: a claim about an entry must still retire
+        an earlier, contradictory claim about that same entry."""
+        result = _run_shell(
+            f'gate_claim_keys "{_BLOCKED_LINE}"\n', _GATE_KEY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "stash:0badc0de", result.stdout
+
+    def test_every_stash_naming_gate_line_is_classified(self) -> None:
+        """A wording change must not silently switch supersession off.
+
+        Every gate detail the script writes that names a stash — by
+        `describe_stash` or by a truncated SHA — has to classify as
+        something other than `other`, or a later run cannot retire it and
+        contradictory advice accumulates.
+        """
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        naming = [
+            line.strip().strip('"')
+            for line in source.splitlines()
+            if line.strip().startswith('"daily-sync')
+            and ("describe_stash" in line or "sha:0:8" in line or "_sha:0:8" in line)
+        ]
+        assert naming, "no stash-naming gate lines found; has the format changed?"
+        for line in naming:
+            # The line is handed over in the environment, not spliced into
+            # the shell: it is full of `$(describe_stash ...)` and would
+            # otherwise be re-parsed rather than classified.
+            result = _run_shell(
+                'gate_line_class "$PA_TEST_GATE_LINE"\n',
+                _GATE_KEY_FUNCTIONS,
+                {"PA_TEST_GATE_LINE": line},
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout != "other", (
+                "this gate line names a stash but classifies as `other`, so "
+                "no later run can retire it: " + line
+            )
+
+
+def _utf8_locale() -> str:
+    """
+    Return an installed UTF-8 locale, or skip.
+
+    The sort/comm coupling only bites where the locale's collation differs
+    from byte order, which the C locale's does not.
+    """
+    available = subprocess.run(
+        ["locale", "-a"], capture_output=True, text=True, check=False
+    ).stdout.splitlines()
+    for candidate in ("en_AU.utf8", "en_GB.utf8", "en_US.utf8"):
+        if candidate in available:
+            return candidate
+    pytest.skip("no UTF-8 locale installed; git and sort agree in C")
+
+
+def _conflicted_repo(tmp_path: Path, names: list[str]) -> Path:
+    """
+    Build a repository whose index holds an add/add conflict on ``names``.
+
+    Used where the test needs unmerged paths without caring how they got
+    there. ``data`` among the names becomes a gitlink recorded straight
+    into the index (`update-index --cacheinfo 160000`), which is what the
+    parent repository's `data` entry is and the only way to stage a
+    conflicted submodule pointer without a second working tree.
+    """
+    repo = tmp_path / ("conflicted-" + "-".join(n.replace("/", "_") for n in names))
+    repo.mkdir()
+    _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+    def _side(branch: str, content: str, gitlink: str) -> None:
+        """Commit one version of every conflicting path on ``branch``."""
+        _git("checkout", "--quiet", "-B", branch, "main", cwd=repo)
+        for name in names:
+            if name == "data":
+                _git("update-index", "--add", "--cacheinfo",
+                     f"160000,{gitlink},data", cwd=repo)
+            else:
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                _git("add", "--", name, cwd=repo)
+        _git("commit", "--quiet", "-m", f"{branch} version", cwd=repo)
+
+    # Two distinct, well-formed object names; neither has to exist, and a
+    # gitlink to a commit git cannot see is exactly the S1 state anyway.
+    _side("theirs", "theirs\n", "1" * 40)
+    _side("ours", "ours\n", "2" * 40)
+    merge = _run_shell(f'git -C "{repo}" merge theirs || true\n')
+    assert merge.returncode == 0, merge.stderr
+    return repo
+
+
+#: Everything the single drop site consults before letting an entry go.
+_DROP_GUARD_FUNCTIONS = (
+    "drop_applied_stash",
+    "unrestored_untracked_paths",
+    "ancestor_blocks_checkout",
+    "mode_matches",
+    "record_partial_stash",
+    "describe_stash",
+)
+
+
+class TestDropAppliedStashGuard:
+    """The S27 invariant, at the one place that drops an applied entry.
+    The classification above decides what the operator is TOLD; this
+    decides what happens to the only copy of the file."""
+
+    def test_an_entry_holding_an_unrestored_file_is_never_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-S27: dropping the `unrestored_untracked_paths` guard
+        from `drop_applied_stash`. Without it the entry goes and the file
+        — in no commit, no index, and no working tree — goes with it."""
+        repo = tmp_path / "guard"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "mem.jsonl").write_text("line1\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "report.txt").write_text("the only copy\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # The other machine's copy is what is in the tree now, which is
+        # why `git stash apply` gave up on the untracked half.
+        (repo / "report.txt").write_text("theirs\n", encoding="utf-8")
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    "partial_stash_shas=()",
+                    "partial_stash_records=()",
+                    "applied_stash_shas=()",
+                    f'drop_applied_stash "{repo}" "{sha}" "data submodule" || echo KEPT',
+                    'printf "%s\\n" "${partial_stash_shas[@]}"',
+                ]
+            ),
+            _DROP_GUARD_FUNCTIONS,
+        )
+        assert "KEPT" in result.stdout, result.stdout + result.stderr
+        assert sha in result.stdout, "the entry was not recorded as partial"
+        assert _stash_shas(repo) == [sha], "the only copy of report.txt was dropped"
+
+    def test_an_entry_whose_files_are_all_back_is_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard must not become a refusal to drop anything ever: the
+        ordinary clean apply has to still tidy up after itself, or every
+        run leaves an entry the next one applies again."""
+        repo = tmp_path / "guard-ok"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "mem.jsonl").write_text("line1\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "report.txt").write_text("the only copy\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        (repo / "report.txt").write_text("the only copy\n", encoding="utf-8")
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    "partial_stash_shas=()",
+                    "partial_stash_records=()",
+                    "applied_stash_shas=()",
+                    f'drop_applied_stash "{repo}" "{sha}" "data submodule"',
+                ]
+            ),
+            _DROP_GUARD_FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert _stash_shas(repo) == [], "the entry was left on the stack"
+
+
+class TestUnrestoredUntrackedStates:
+    """`missing` and `differs` carry opposite recovery commands, and the
+    wrong one destroys the other machine's file (audit C1, eleventh
+    re-audit)."""
+
+    def _entry_with(self, tmp_path: Path, name: str, make) -> tuple[Path, str]:
+        """A repo holding one seed commit and a stash of one untracked
+        thing, built by ``make(repo)``."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        make(repo)
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def _report(self, repo: Path, sha: str) -> str:
+        """Run the predicate against one entry."""
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_an_absent_path_is_missing_not_differs(self, tmp_path: Path) -> None:
+        """The entry really does hold the only copy: a checkout is safe
+        and is the only way to get it back."""
+        repo, sha = self._entry_with(
+            tmp_path,
+            "absent",
+            lambda r: (r / "report.txt").write_text("only copy\n", encoding="utf-8"),
+        )
+        assert self._report(repo, sha).strip() == "missing\treport.txt"
+
+    def test_a_present_but_different_path_is_differs(self, tmp_path: Path) -> None:
+        """Kills DS-C1: reporting a bare path, so every gate says the file
+        exists "ONLY inside the entry" and offers `git checkout <sha>^3 --
+        <path>` -- which overwrites the copy that IS there, stages it, and
+        has the next run publish it."""
+        repo, sha = self._entry_with(
+            tmp_path,
+            "different",
+            lambda r: (r / "report.txt").write_text("ours\n", encoding="utf-8"),
+        )
+        (repo / "report.txt").write_text("the other machine's\n", encoding="utf-8")
+        assert self._report(repo, sha).strip() == "differs\treport.txt"
+
+    def test_an_identical_path_is_reported_at_all(self, tmp_path: Path) -> None:
+        """Byte-identical means the entry holds nothing unique, whatever
+        git said about it."""
+        repo, sha = self._entry_with(
+            tmp_path,
+            "identical",
+            lambda r: (r / "report.txt").write_text("same\n", encoding="utf-8"),
+        )
+        (repo / "report.txt").write_text("same\n", encoding="utf-8")
+        assert self._report(repo, sha).strip() == ""
+
+    def test_a_restored_symlink_is_not_reported_for_ever(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-M2: `hash-object` follows the link and hashes what is
+        at the other end -- for a dangling link it fails outright -- so
+        every untracked symlink was permanently unrestored, its entry
+        could never be dropped, and each run pushed another stash."""
+        def _make(repo: Path) -> None:
+            """A dangling symlink, which is what a relative link into an
+            unmounted tree looks like."""
+            (repo / "link").symlink_to("/nowhere/in/particular")
+
+        repo, sha = self._entry_with(tmp_path, "symlink", _make)
+        (repo / "link").symlink_to("/nowhere/in/particular")
+        assert self._report(repo, sha).strip() == "", (
+            "an untracked symlink is unrecoverable for ever"
+        )
+
+    def test_a_symlink_pointing_somewhere_else_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """The other direction: a link that now points elsewhere is a
+        different file and must still be reported."""
+        repo, sha = self._entry_with(
+            tmp_path, "symlink2", lambda r: (r / "link").symlink_to("/one/place")
+        )
+        (repo / "link").symlink_to("/somewhere/else")
+        assert self._report(repo, sha).strip() == "differs\tlink"
+
+
+class TestPartialRecoveryAdvice:
+    """The gate's words. The invariant: never advise a command that
+    overwrites a file present in the working tree."""
+
+    _FUNCTIONS = ("partial_recovery_advice", "partial_paths_list")
+
+    def test_a_missing_path_gets_a_checkout(self) -> None:
+        """Nothing is there, so writing the stashed copy destroys nothing."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "missing\tnotes/a.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "checkout 0badc0de^3" in result.stdout, result.stdout
+        assert "DIFFERENT" not in result.stdout, result.stdout
+
+    def test_a_differing_path_never_gets_a_checkout(self) -> None:
+        """Kills DS-C1's advice half: a bare checkout here replaces the
+        other machine's file, stages it, and the next run publishes it."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "differs\tnotes/a.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "checkout" not in result.stdout, (
+            "advised a command that overwrites a file that is present: "
+            + result.stdout
+        )
+        assert "show 0badc0de^3" in result.stdout, result.stdout
+        assert "merge by hand" in result.stdout, result.stdout
+
+    def test_both_kinds_in_one_entry_get_their_own_command(self) -> None:
+        """One entry can hold both, and the paths must not be pooled."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "missing\tnotes/gone.md\ndiffers\tnotes/here.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        before_show = result.stdout.split("DIFFERENT")[0]
+        assert "notes/gone.md" in before_show, result.stdout
+        assert "notes/here.md" not in before_show, (
+            "a path that is present was swept into the checkout advice: "
+            + result.stdout
+        )
+
+    def test_the_advice_always_says_how_to_finish(self) -> None:
+        """Audit low (eleventh re-audit): without this the entry sits on
+        the stack for ever and every run re-reports it."""
+        result = _run_shell(
+            'partial_recovery_advice /repo 0badc0de "$PA_TEST_LINES"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LINES": "missing\tnotes/a.md"},
+        )
+        assert "stash drop <ref>" in result.stdout, result.stdout
+
+
+class TestStashAlreadyInTree:
+    """The re-apply guard in the EXIT handler. Applying an entry whose
+    content is already in the tree lays it on top of itself, which for a
+    corpus committed in between means UU markers in the live
+    memories.jsonl with rc 0."""
+
+    _FUNCTIONS = (
+        "stash_already_in_tree",
+        "stash_was_applied",
+        "stash_was_conflicted",
+        "stash_was_partial",
+    )
+
+    def _ask(self, setup: str) -> str:
+        """Run the predicate with the state arrays as ``setup`` leaves them."""
+        result = _run_shell(
+            "partial_stash_shas=()\napplied_stash_shas=()\n"
+            "conflicted_stash_shas=()\nblocked_stash_shas=()\n"
+            + setup
+            + '\nif stash_already_in_tree deadbeef; then echo SKIP; else echo APPLY; fi\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    @pytest.mark.parametrize(
+        "array",
+        ["applied_stash_shas", "conflicted_stash_shas", "partial_stash_shas"],
+    )
+    def test_every_state_that_reached_the_tree_blocks_a_re_apply(
+        self, array: str
+    ) -> None:
+        """Kills: dropping any one of the three from the predicate --
+        notably `stash_was_partial`, whose entry has its tracked half in
+        the tree already."""
+        assert self._ask(f'{array}+=("deadbeef")') == "SKIP"
+
+    def test_an_untouched_entry_is_still_restored(self) -> None:
+        """The guard must not become "never restore anything": that is the
+        failure mode the EXIT trap exists to prevent."""
+        assert self._ask("blocked_stash_shas+=(\"deadbeef\")") == "APPLY"
+
+
+class TestCarryForwardPartialStashes:
+    """Re-reading the sidecar at the start of every run is what keeps a
+    partly-applied entry's warning alive. It must not cost one pass over
+    the entry's whole untracked tree per RECORDED PATH."""
+
+    def test_each_entry_is_examined_once_however_many_rows_it_has(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Audit low (eleventh re-audit): the sidecar holds one row per
+        path, and re-deriving an entry's state re-reads `<sha>^3` and
+        hashes every file in it. Three rows for one entry meant three
+        passes at every session start.
+
+        Kills: dropping the `done_shas` guard from
+        carry_forward_partial_stashes.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(
+            "".join(
+                f"{repo}\t{sha}\tpartial\tnotes/{name}.md\n"
+                for name in ("one", "two", "three")
+            ),
+            encoding="utf-8",
+        )
+        calls = tmp_path / "calls"
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'STASH_STATE_FILE="{sidecar}"',
+                    f'DATA_DIR="{repo}"',
+                    f'PA_DIR="{repo}"',
+                    "partial_stash_shas=()",
+                    "partial_stash_records=()",
+                    # A stand-in for the real predicate that counts how
+                    # often the entry is examined.
+                    "unrestored_untracked_paths() {",
+                    f'    printf "call\\n" >> "{calls}"',
+                    "    printf 'missing\\tnotes/one.md\\n'",
+                    "}",
+                    "carry_forward_partial_stashes",
+                    'printf "%s\\n" "${#partial_stash_records[@]}"',
+                ]
+            ),
+            ("carry_forward_partial_stashes", "record_partial_stash"),
+        )
+        assert result.returncode == 0, result.stderr
+        assert calls.read_text(encoding="utf-8").count("call") == 1, (
+            "the entry was examined once per recorded row: "
+            + calls.read_text(encoding="utf-8")
+        )
+        assert result.stdout.strip() == "1", result.stdout
+
+
+class TestStashTrackedHalfLanded:
+    """The positive evidence `applied` rests on. "The tree changed" is
+    not that evidence: git 2.48.1 restores the untracked half BEFORE the
+    tracked merge, so an entry whose files came back and whose merge was
+    then refused changes the tree without landing a byte of what it was
+    asked to land."""
+
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+
+    def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
+        """Run the predicate over two recorded porcelain snapshots."""
+        result = _run_shell(
+            'apply_before_status="$PA_TEST_BEFORE"\n'
+            'apply_after_status="$PA_TEST_AFTER"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+            {"PA_TEST_BEFORE": before, "PA_TEST_AFTER": after},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def _entry(self, tmp_path: Path) -> tuple[Path, str]:
+        """A repo whose stash changes one tracked file and adds one
+        untracked file -- the shape the C1 sequence needs."""
+        repo = tmp_path / "landed"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "t.txt").write_text("base\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "t.txt").write_text("stashed\n", encoding="utf-8")
+        (repo / "u.txt").write_text("new file\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def test_an_untracked_file_appearing_is_not_the_tracked_half(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-C1: reading `git status` differing as evidence.
+
+        The measured git 2.48.1 signature -- `?? u.txt` appears because
+        the untracked half was restored first, and `t.txt` says exactly
+        what it said before because the merge was refused.
+        """
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(repo, sha, " M t.txt", " M t.txt\n?? u.txt") == "NOT-LANDED"
+
+    def test_an_unrelated_write_is_not_the_tracked_half(
+        self, tmp_path: Path
+    ) -> None:
+        """The weaker variant: anything at all writing in the window
+        between the snapshot and the classification."""
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(
+            repo, sha, " M t.txt", " M t.txt\n?? somebody-elses-file.md"
+        ) == "NOT-LANDED"
+
+    def test_the_tracked_path_changing_is_not_enough_on_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        """Audit C1 (third re-audit) corrected this case.
+
+        It used to assert LANDED from a status change alone, with no apply
+        having happened at all -- which is precisely the defect: anything
+        that writes to one of the entry's paths in the window then reads
+        as "the entry landed". The entry's own hunks have to be in the
+        files, and here nothing put them there.
+        """
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(repo, sha, "", " M t.txt") == "NOT-LANDED"
+
+    def test_an_apply_that_really_landed_is_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """And the other direction, or nothing would ever be dropped."""
+        repo, sha = self._entry(tmp_path)
+        _git("stash", "apply", sha, cwd=repo)
+        assert self._ask(repo, sha, "", " M t.txt\n?? u.txt") == "LANDED"
+
+    def test_an_entry_with_no_tracked_half_lands_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """An untracked-only entry has nothing to land, so a changed tree
+        says nothing about it either way."""
+        repo = tmp_path / "untracked-only"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "only.txt").write_text("only\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        assert self._ask(repo, sha, "", "?? only.txt") == "NOT-LANDED"
+
+
+class TestAncestorBlocksCheckout:
+    """`git checkout <sha>^3 -- <path>` creates every directory on the way
+    to <path>. An ancestor that is a regular file is deleted; an ancestor
+    that is a symlink -- this repository's whole root layout -- is
+    replaced by a real directory."""
+
+    def _report(self, repo: Path, sha: str) -> str:
+        """The predicate's verdict for one entry."""
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def _entry_holding(self, tmp_path: Path, name: str, inner: str) -> tuple[Path, str]:
+        """A repo whose stash holds one untracked file at ``inner``."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        target = repo / inner
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stashed\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def test_a_regular_file_where_a_directory_belongs_is_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-M1: testing only the leaf. `fileclash/deep.md` is
+        absent, but `fileclash` is a FILE -- and the advised checkout
+        deletes it."""
+        repo, sha = self._entry_holding(tmp_path, "fileclash", "fileclash/deep.md")
+        (repo / "fileclash").write_text("somebody's notes\n", encoding="utf-8")
+        assert self._report(repo, sha) == "differs\tfileclash/deep.md"
+
+    def test_a_symlinked_ancestor_is_differs(self, tmp_path: Path) -> None:
+        """This repository's root is symlinks into the data submodule --
+        `memories -> data/memories`, `logs -> data/logs`. Checking a path
+        out through one replaces the link with a real directory."""
+        repo, sha = self._entry_holding(tmp_path, "linkdir", "linkdir/new.md")
+        (repo / "real-target").mkdir()
+        (repo / "linkdir").symlink_to("real-target")
+        assert self._report(repo, sha) == "differs\tlinkdir/new.md"
+
+    def test_a_real_directory_ancestor_is_still_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard must not turn every nested path into `differs`: an
+        ordinary directory is exactly what a checkout expects."""
+        repo, sha = self._entry_holding(tmp_path, "plaindir", "notes/new.md")
+        (repo / "notes").mkdir(exist_ok=True)
+        assert self._report(repo, sha) == "missing\tnotes/new.md"
+
+
+class TestSymlinkWhereAFileBelongs:
+    """A symlink standing where the entry holds a regular file is
+    something in the tree, and it is not this."""
+
+    def test_a_symlink_to_identical_content_is_still_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: deleting the symlink-in-tree branch. Without it the path
+        falls through to `hash-object`, which FOLLOWS the link and hashes
+        what is at the other end -- so a link pointing at a byte-identical
+        file reads as restored, and the entry is dropped while the real
+        file it held is nowhere."""
+        repo = tmp_path / "linkfile"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "report.txt").write_text("the same bytes\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # A symlink to a file whose content matches the stashed blob.
+        (repo / "elsewhere.txt").write_text("the same bytes\n", encoding="utf-8")
+        (repo / "report.txt").symlink_to("elsewhere.txt")
+
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "differs\treport.txt", result.stdout
+
+
+class TestModeIsPartOfRestored:
+    """Identical bytes at the wrong mode is not a restored file."""
+
+    def test_an_executable_bit_lost_in_the_tree_is_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L3: comparing content alone. A hook the entry holds as
+        100755 and the tree holds as 0644 does not run, and dropping the
+        entry loses the only record that it should."""
+        repo = tmp_path / "modes"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        script = repo / "hook.sh"
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # Same bytes, restored without the bit.
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o644)
+
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "differs\thook.sh", result.stdout
+
+
+class TestCorpusLineCount:
+    """Both shrink sites count the same way, and a corpus whose last
+    record lacks its newline must not read as one record shorter."""
+
+    def test_an_unterminated_last_record_still_counts(self) -> None:
+        """Kills DS-L4: `wc -l`, which counts newlines. A commit that only
+        drops the trailing terminator then reads as a one-line shrink and
+        raises a false exit 4 on a corpus nobody truncated."""
+        result = _run_shell(
+            'printf \'{"a":1}\\n{"b":2}\' | corpus_line_count\n',
+            ("corpus_line_count",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "2", result.stdout
+
+    def test_a_terminated_corpus_counts_the_same(self) -> None:
+        """The same two records, terminated: the count must not move."""
+        result = _run_shell(
+            'printf \'{"a":1}\\n{"b":2}\\n\' | corpus_line_count\n',
+            ("corpus_line_count",),
+        )
+        assert result.stdout.strip() == "2", result.stdout
+
+    def test_an_empty_corpus_is_zero(self) -> None:
+        """`grep -c ''` exits 1 on no match; that must not abort the run."""
+        result = _run_shell("printf '' | corpus_line_count\n", ("corpus_line_count",))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "0", result.stdout
+
+
+class TestAdvisedCheckoutIsSafe:
+    """The advised command is run verbatim by a human under stress. It
+    must be the command that works."""
+
+    def test_the_path_separator_is_present_and_load_bearing(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: dropping `--` from the advised checkout. A path
+        beginning with a dash is a path, not an option, and without the
+        separator git rejects the command the operator was shown."""
+        repo = tmp_path / "dash"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        awkward = "-dash-leading.md"
+        (repo / awkward).write_text("the only copy\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        assert not (repo / awkward).exists()
+
+        advice = _run_shell(
+            'partial_recovery_advice "$PA_TEST_REPO" "$PA_TEST_SHA" "$PA_TEST_LINES"\n',
+            ("partial_recovery_advice", "partial_paths_list"),
+            {
+                "PA_TEST_REPO": str(repo),
+                "PA_TEST_SHA": sha,
+                "PA_TEST_LINES": f"missing\t{awkward}",
+            },
+        )
+        assert advice.returncode == 0, advice.stderr
+        assert " -- " in advice.stdout, advice.stdout
+
+        command = advice.stdout.split("restore with ", 1)[1].split(". ", 1)[0]
+        run = subprocess.run(command, shell=True, cwd=str(repo),
+                             capture_output=True, text=True, check=False)
+        assert run.returncode == 0, run.stderr
+        assert (repo / awkward).read_text(encoding="utf-8") == "the only copy\n"
+
+
+class TestSidecarIsWrittenWhole:
+    """A sidecar is read by the NEXT run to decide whether an entry may be
+    deleted. Half of one is worse than none: rows for some entries and not
+    others reads as "that stash produced nothing"."""
+
+    def test_a_failed_write_leaves_the_previous_sidecar_intact(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L2: unlinking the live file and appending to it with
+        `|| true`. The old rows were destroyed before the first byte of
+        the new ones was written, and a failure to write them was
+        swallowed."""
+        holder = tmp_path / "cache"
+        holder.mkdir()
+        sidecar = holder / "daily-sync-stash-state"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n", encoding="utf-8"
+        )
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        holder.chmod(0o555)
+        try:
+            result = _run_shell(
+                _sidecar_preamble(repo, sidecar)
+                + "\n"
+                + f'record_conflicted_stash "{repo}" "{sha}" "notes/b.md"\n'
+                + "write_stash_state\n"
+                + 'printf "%s\\n" "${sync_gate_details[@]}"\n',
+                _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+            )
+        finally:
+            holder.chmod(0o755)
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "the previous sidecar was destroyed by a write that then failed"
+        assert "could not write" in result.stdout, (
+            "a sidecar that could not be written said nothing: " + result.stdout
+        )
+        assert not list(holder.glob("daily-sync-stash-state.*")), (
+            "a temporary file was left behind"
+        )
+
+
+    def test_a_row_that_fails_to_write_does_not_replace_the_sidecar(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L2's second half: renaming the temporary file into
+        place regardless of whether every row reached it. A sidecar
+        holding some entries and not others reads as "that stash produced
+        nothing", which is the verdict that ends in a deleted entry."""
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n", encoding="utf-8"
+        )
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            # A row writer that cannot write: a full disk, a revoked
+            # permission, anything that fails part-way.
+            + "append_stash_state_row() { return 1; }\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "notes/b.md"\n'
+            + "write_stash_state\n"
+            + 'printf "%s\\n" "${sync_gate_details[@]}"\n',
+            _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "a half-written sidecar replaced a good one"
+        assert "could not write" in result.stdout, result.stdout
+        assert not list(tmp_path.glob("sidecar.*")), "a temporary file was left behind"
+
+
+class TestCarriedForwardRows:
+    """What the early trap rewrites the sidecar from. A row it does not
+    carry is a row the next run cannot read."""
+
+    _FUNCTIONS = (
+        "carry_forward_partial_stashes",
+        "record_partial_stash",
+        "record_conflicted_stash",
+        "unrestored_untracked_paths",
+        "ancestor_blocks_checkout",
+        "mode_matches",
+    )
+
+    def _carry(self, repo: Path, sidecar: Path) -> subprocess.CompletedProcess[str]:
+        """Run the carry-forward over one sidecar and print what it took."""
+        return _run_shell(
+            "\n".join(
+                [
+                    f'STASH_STATE_FILE="{sidecar}"',
+                    f'DATA_DIR="{repo}"',
+                    f'PA_DIR="{repo}"',
+                    "partial_stash_shas=()",
+                    "partial_stash_records=()",
+                    "conflicted_stash_shas=()",
+                    "conflicted_stash_records=()",
+                    "carry_forward_partial_stashes",
+                    'printf "partial=%s\\n" "${#partial_stash_records[@]}"',
+                    'printf "conflicted=%s\\n" "${#conflicted_stash_records[@]}"',
+                ]
+            ),
+            self._FUNCTIONS,
+        )
+
+    def test_a_conflicted_row_is_carried(self, repo: Path, tmp_path: Path) -> None:
+        """Kills DS-M2: carrying only `partial`. An early exit then
+        rewrote the sidecar from this run's arrays alone and dropped every
+        previous run's conflicted row -- the rows
+        previously_recorded_stashes needs to say whose markers a
+        half-merged tree holds."""
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(f"{repo}\t{sha}\tconflicted\tnotes/a.md\n", encoding="utf-8")
+
+        result = self._carry(repo, sidecar)
+        assert result.returncode == 0, result.stderr
+        assert "conflicted=1" in result.stdout, result.stdout
+
+    def test_an_applied_row_is_not_carried(self, repo: Path, tmp_path: Path) -> None:
+        """Kills: `[[ "$state" == "partial" ]]` -> `-n "$state"`, and the
+        same widening of the case below it. An `applied` row is a
+        statement about a tree this run has not looked at; re-asserting it
+        lets a stale row outlive the state it describes.
+
+        The entry deliberately HOLDS an unrestored untracked file, so a
+        widened match would record it as partial rather than falling
+        through on an empty comparison.
+        """
+        (repo / "notes-only.md").write_text("only in the stash\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        assert not (repo / "notes-only.md").exists()
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(f"{repo}\t{sha}\tapplied\t\n", encoding="utf-8")
+
+        result = self._carry(repo, sidecar)
+        assert result.returncode == 0, result.stderr
+        assert "partial=0" in result.stdout, result.stdout
+        assert "conflicted=0" in result.stdout, result.stdout
+
+
+class TestPublishedShrinkPrecondition:
+    """The guard is called from two sites, both of which now establish
+    that origin/main exists first. Reaching it without one means a push
+    site was added without that gate — and a guard that cannot check a
+    push must not pass it."""
+
+    def test_a_missing_origin_ref_is_refused_not_waved_through(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-M4's silent `return 0`: the one push that publishes
+        commits nothing in the run inspected went out with no record that
+        its guard had not run."""
+        repo = tmp_path / "no-origin"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "one"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        logs = tmp_path / "logs"
+        logs.mkdir()
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            ("abort_on_published_shrink", "corpus_line_count"),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, (
+            "a push the guard could not check was waved through: " + result.stdout
+        )
+        assert "no origin/main" in result.stderr, result.stderr
+
+
+class TestTrackedHalfEvidenceIsTheHunks:
+    """`applied` -- the verdict that lets an entry be deleted -- must rest
+    on the entry's OWN hunks being in the files on disk, not on something
+    having changed."""
+
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+
+    def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
+        """Run the predicate over two recorded porcelain snapshots."""
+        result = _run_shell(
+            'apply_before_status="$PA_TEST_BEFORE"\n'
+            'apply_after_status="$PA_TEST_AFTER"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+            {"PA_TEST_BEFORE": before, "PA_TEST_AFTER": after},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def _two_path_entry(self, tmp_path: Path, name: str) -> tuple[Path, str]:
+        """The production shape: one entry touching a prose file and the
+        corpus, which is the most-stashed and most-hook-written file here."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "t.txt").write_text("base\n", encoding="utf-8")
+        (repo / "memories.jsonl").write_text('{"id": "seed"}\n', encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "t.txt").write_text("stashed\n", encoding="utf-8")
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "m1-only-in-stash"}\n', encoding="utf-8"
+        )
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def test_a_hook_write_during_a_refused_merge_is_not_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-C1-residual: comparing `git status` LINES.
+
+        A local edit to t.txt makes git refuse the merge outright, and the
+        extraction hook appends to memories.jsonl inside the window. Both
+        tracked paths' status words then differ, none of it because the
+        entry landed -- and the entry holds the only copy of
+        m1-only-in-stash.
+        """
+        repo, sha = self._two_path_entry(tmp_path, "hookwrite")
+        # The refusal: git wrote nothing.
+        (repo / "t.txt").write_text("a local edit\n", encoding="utf-8")
+        before = " M t.txt"
+        # …and the hook fired in the apply window.
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "written-by-the-hook"}\n', encoding="utf-8"
+        )
+        after = " M memories.jsonl\n M t.txt"
+
+        assert self._ask(repo, sha, before, after) == "NOT-LANDED"
+        # And the record that would have been destroyed is still there.
+        held = _git("show", f"{sha}:memories.jsonl", cwd=repo).stdout
+        assert "m1-only-in-stash" in held, held
+
+    def test_one_of_two_tracked_paths_moving_is_not_enough(
+        self, tmp_path: Path
+    ) -> None:
+        """EVERY path the entry touches, not any one of them."""
+        repo, sha = self._two_path_entry(tmp_path, "halfway")
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "written-by-the-hook"}\n', encoding="utf-8"
+        )
+        assert self._ask(repo, sha, "", " M memories.jsonl") == "NOT-LANDED"
+
+    def test_a_clean_apply_into_a_tree_that_moved_on_is_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """The other direction, or nothing would ever be dropped. The
+        stash's hunk and the tree's own movement are in different regions,
+        which is the ordinary cross-machine case."""
+        repo = tmp_path / "movedon"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "f.txt").write_text(
+            "".join(f"line {n}\n" for n in range(1, 13)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        lines = (repo / "f.txt").read_text(encoding="utf-8").splitlines()
+        lines[1] = "line 2 CHANGED BY THE STASH"
+        (repo / "f.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # main moved on, elsewhere in the file…
+        lines = (repo / "f.txt").read_text(encoding="utf-8").splitlines()
+        lines[9] = "line 10 CHANGED ON MAIN"
+        (repo / "f.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "main moved on", cwd=repo)
+        # …and the entry applies cleanly on top of it.
+        _git("stash", "apply", sha, cwd=repo)
+
+        assert self._ask(repo, sha, "", " M f.txt") == "LANDED"
+
+    def test_hunks_already_there_before_the_apply_are_not_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-C1's second conjunct: dropping the per-path status
+        test and resting on the reverse-apply alone.
+
+        The hunks reverse-apply because they ARE in the files -- somebody
+        put them there before this apply, which reported a failure and
+        moved nothing. `applied` is a claim about what THIS apply did, and
+        the entry is kept until something can say so.
+        """
+        repo, sha = self._two_path_entry(tmp_path, "already-there")
+        # The content the entry holds, put there by other means, and
+        # committed so the tree is clean and says nothing changed.
+        (repo / "t.txt").write_text("stashed\n", encoding="utf-8")
+        (repo / "memories.jsonl").write_text(
+            '{"id": "seed"}\n{"id": "m1-only-in-stash"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the same edit from elsewhere", cwd=repo)
+
+        assert self._ask(repo, sha, "", "") == "NOT-LANDED"
+
+    def test_a_binary_path_is_never_called_landed(self, tmp_path: Path) -> None:
+        """`git diff` says "Binary files differ" and `git apply` refuses
+        it. Reading that as not-landed keeps the entry, which is the safe
+        direction for a file no text tool can merge."""
+        repo = tmp_path / "binary"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02seed\n")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02stashed\n")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02stashed\n")
+
+        assert self._ask(repo, sha, "", " M blob.bin") == "NOT-LANDED"
+
+
+class TestCorpusLineCountIsBinarySafe:
+    """The count is what decides whether a shrink is real. Getting it
+    wrong upward hides a truncation exactly when the corpus is damaged."""
+
+    def test_a_nul_byte_does_not_inflate_the_count(self, tmp_path: Path) -> None:
+        """Kills DS-M-b: `grep -c ''` without `-a`. GNU grep 3.11 treats a
+        file holding a NUL as binary and prints "binary file matches"
+        instead of a count -- measured 3 for `a\\0b\\nc\\n`, true 2 -- so
+        lines_after was inflated precisely when the corpus was corrupt and
+        a truncation could pass."""
+        corrupt = tmp_path / "nul.jsonl"
+        corrupt.write_bytes(b'{"a":1}\x00{"b":2}\n{"c":3}\n')
+        result = _run_shell(
+            f'corpus_line_count < "{corrupt}"\n', ("corpus_line_count",)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "2", result.stdout
+
+    def test_a_count_that_cannot_be_produced_is_a_failure(self) -> None:
+        """Kills DS-L4: `|| true` in the REAL corpus_line_count. grep
+        exits 2 on a read error and prints nothing; the empty string then
+        compared as 0 at every call site, so a guard whose measurement had
+        failed passed in silence.
+
+        `grep` is shadowed to behave as it does on a read error, which is
+        the one way to reach that branch without an unreadable file the
+        test would then have to create and clean up.
+        """
+        result = _run_shell(
+            "grep() { return 2; }\n"
+            'if printf "x\\n" | corpus_line_count; then\n'
+            "  echo PASSED\nelse\n  echo FAILED\nfi\n",
+            ("corpus_line_count",),
+        )
+        assert "FAILED" in result.stdout, result.stdout + result.stderr
+        assert "could not count the corpus" in result.stderr, result.stderr
+
+    def test_an_unreadable_blob_stops_the_run(self, tmp_path: Path) -> None:
+        """And the caller treats it as one: a guard that cannot measure
+        must not wave a push through."""
+        repo = tmp_path / "unreadable"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories.jsonl").write_text('{"id": "one"}\n', encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'cd "{repo}"',
+                    f'DATA_DIR="{repo}"',
+                    # A counter that cannot count, standing in for grep
+                    # exiting 2 on a read error.
+                    "corpus_line_count() { return 1; }",
+                    'corpus_lines_at "HEAD:memories.jsonl"',
+                    "echo REACHED-THE-VERDICT",
+                ]
+            ),
+            ("corpus_lines_at",),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-VERDICT" not in result.stdout, result.stdout
+        assert "could not count" in result.stderr, result.stderr
+
+    def test_a_blob_that_is_not_there_is_zero_records(
+        self, tmp_path: Path
+    ) -> None:
+        """A path absent from a tree is a real answer, and the commonest
+        one: the corpus did not exist before the commit that added it."""
+        repo = tmp_path / "absent"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "other.txt").write_text("x\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'cd "{repo}"',
+                    f'DATA_DIR="{repo}"',
+                    'corpus_lines_at "HEAD:memories.jsonl"',
+                    'printf "%s\\n" "$corpus_lines"',
+                ]
+            ),
+            ("corpus_lines_at", "corpus_line_count"),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "0", result.stdout
+
+
+class TestOrphanedSidecarTemps:
+    """write_stash_state builds the sidecar beside itself and renames it
+    into place. A run killed in that window leaves the half-built file
+    for ever."""
+
+    _FUNCTIONS = ("sweep_orphaned_stash_state_temps",)
+
+    def test_a_leftover_temp_is_swept(self, tmp_path: Path) -> None:
+        """Kills DS-L3: no sweep at all. They accumulate in ~/.cache and
+        are indistinguishable from live state to anyone looking."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+        orphan = cache / "daily-sync-stash-state.Ab12Cd"
+        orphan.write_text("half a row\n", encoding="utf-8")
+        unrelated = cache / "daily-sync-gate"
+        unrelated.write_text("0\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not orphan.exists(), "the orphaned temporary file survived"
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/repo\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "the sweep took the sidecar with it"
+        assert unrelated.exists(), "the sweep took an unrelated gate file"
+        assert not list(cache.glob("*sweepmark*")), "the marker was left behind"
+
+
+class TestAppendRowWriteFailure:
+    """The row writer's own failure path -- not a stub standing in for
+    it. A row that never reached the temporary file must stop that file
+    being renamed over a good sidecar."""
+
+    def test_a_real_write_failure_keeps_the_previous_sidecar(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Kills DS-L1: `|| return 1` -> `|| true` in
+        append_stash_state_row. The existing test stubbed the whole
+        function, so the mutation survived and a part-written temp would
+        have been renamed into place -- an empty sidecar over a good one.
+
+        `mktemp` is shadowed to hand back a file it cannot write to,
+        which is what a full disk or a revoked permission looks like from
+        inside the function. `mv` still succeeds on an unwritable source,
+        so without the guard the empty file lands.
+        """
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n", encoding="utf-8"
+        )
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+
+        result = _run_shell(
+            _sidecar_preamble(repo, sidecar)
+            + "\n"
+            + "mktemp() {\n"
+            '    local made\n'
+            '    made="$(command mktemp "$1")" || return 1\n'
+            '    chmod 0444 "$made"\n'
+            '    printf "%s" "$made"\n'
+            "}\n"
+            + f'record_conflicted_stash "{repo}" "{sha}" "notes/b.md"\n'
+            + "write_stash_state\n"
+            + 'printf "%s\\n" "${sync_gate_details[@]}"\n',
+            _SIDECAR_FUNCTIONS + ("record_partial_stash",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert sidecar.read_text(encoding="utf-8") == (
+            "/somewhere\tdeadbeef\tconflicted\tnotes/a.md\n"
+        ), "a sidecar no row reached was renamed over a good one"
+        assert "could not write" in result.stdout, result.stdout
+        # audit L2: and the gate says the kept file is an earlier run's.
+        assert "EARLIER run's rows" in result.stdout, result.stdout
+        assert not list(tmp_path.glob("sidecar.*")), "a temporary file was left"
+
+
+class TestRetryPushRechecksTheShrink:
+    """push_with_retry fetches, rebases, and re-pushes. Every shrink check
+    the run has made by then happened BEFORE that rebase -- which is
+    exactly where the append-safe resolver rewrites the corpus -- and once
+    the retry push succeeds nothing else looks.
+
+    Driven with a stub `git` rather than a real race: what has to be
+    pinned is the ORDER of the calls, and staging a genuine push race that
+    also conflicts on rebase depends on git's patch-offset heuristics
+    rather than on anything this script does.
+    """
+
+    def test_the_guard_runs_between_the_rebase_and_the_retry_push(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L5: dropping the post-rebase abort_on_published_shrink."""
+        trace = tmp_path / "trace"
+        result = _run_shell(
+            "\n".join(
+                [
+                    'RETRY_ON_REJECT="true"',
+                    "RETRY_ATTEMPTS=3",
+                    "RETRY_BACKOFF=0",
+                    'PA_DIR="/nonexistent"',
+                    'RESOLVER="/nonexistent"',
+                    "sleep() { :; }",
+                    f'trace="{trace}"',
+                    # A git that rejects the first push and takes the
+                    # second, and rebases cleanly in between.
+                    "git() {",
+                    '    case "$*" in',
+                    '        *"push origin main"*)',
+                    '            printf "push\\n" >> "$trace"',
+                    '            [[ -f "$trace.pushed" ]] && return 0',
+                    '            touch "$trace.pushed"',
+                    "            return 1 ;;",
+                    '        *"fetch origin main"*) printf "fetch\\n" >> "$trace" ;;',
+                    '        *"pull --rebase"*)     printf "rebase\\n" >> "$trace" ;;',
+                    '        *"status --porcelain"*) ;;',
+                    "    esac",
+                    "    return 0",
+                    "}",
+                    "abort_on_published_shrink() {",
+                    '    printf "shrink-check %s\\n" "$1" >> "$trace"',
+                    "}",
+                    'push_with_retry "data submodule"',
+                ]
+            ),
+            ("push_with_retry",),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        steps = trace.read_text(encoding="utf-8").split()
+        assert steps[:1] == ["push"], steps
+        assert "rebase" in steps, steps
+        rebase_at = steps.index("rebase")
+        assert "shrink-check" in steps[rebase_at:], (
+            "the corpus was never re-measured after the rebase: " + str(steps)
+        )
+        check_at = steps.index("shrink-check", rebase_at)
+        assert "push" in steps[check_at:], (
+            "the re-check did not precede the retry push: " + str(steps)
+        )
+
+    def test_the_parent_repo_is_not_measured(self, tmp_path: Path) -> None:
+        """The parent holds no corpus; asking about one there would fail
+        the run on a repository the guard knows nothing about."""
+        trace = tmp_path / "trace-parent"
+        result = _run_shell(
+            "\n".join(
+                [
+                    'RETRY_ON_REJECT="true"',
+                    "RETRY_ATTEMPTS=3",
+                    "RETRY_BACKOFF=0",
+                    'PA_DIR="/nonexistent"',
+                    'RESOLVER="/nonexistent"',
+                    "sleep() { :; }",
+                    f'trace="{trace}"',
+                    "git() {",
+                    '    case "$*" in',
+                    '        *"push origin main"*)',
+                    '            [[ -f "$trace.pushed" ]] && return 0',
+                    '            touch "$trace.pushed"',
+                    "            return 1 ;;",
+                    "    esac",
+                    "    return 0",
+                    "}",
+                    'abort_on_published_shrink() { printf "shrink-check\\n" >> "$trace"; }',
+                    'push_with_retry "parent repo"',
+                ]
+            ),
+            ("push_with_retry",),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not trace.exists(), "the parent repo was measured for a corpus"
