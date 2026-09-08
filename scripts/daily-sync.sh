@@ -142,15 +142,14 @@ fail() {
     # stderr message the SessionStart hook chain never surfaces.
     #
     # Blocks that raised a more specific gate keep it: this only fills the
-    # gap. write_sync_gate is defined below and always by the time any
-    # fail can run.
+    # gap. The gate itself is rendered once, at exit.
     log "ERROR: $*"
     # audit M1 (fourth re-audit): APPEND, unconditionally. Skipping when a
     # gate already existed meant the non-fatal withheld-bump gate — which
     # a healthy-ish run can raise — swallowed the reason for a real
     # failure later in the same run: sync-symlinks.sh failing left the
     # operator reading about a submodule pointer.
-    append_sync_gate_detail "daily-sync FAILED and will keep failing until this is resolved: $*"
+    add_sync_gate_detail "daily-sync FAILED and will keep failing until this is resolved: $*"
     exit "${2:-2}"
 }
 
@@ -168,48 +167,51 @@ fail() {
 # ---------------------------------------------------------------------------
 SYNC_GATE="$CACHE_DIR/daily-sync-gate"
 
-# Most gate writes are followed by `fail`, but not all: audit M1's withheld
-# pointer bump is a problem in a run that otherwise completes. Remember that
-# so the end-of-run clear does not wipe a gate this very run raised.
-sync_gate_problems=0
+# audit C1 (fifth re-audit): the gate is built in MEMORY during the run and
+# rendered exactly once, from the EXIT handler. Writers used to touch the
+# file directly — some truncating it, some appending — so a wedged sync
+# appended the same paragraph on every run and the trigger relayed all N
+# copies, while a truncating writer could erase a diagnosis another block
+# had just recorded. The file now reflects the problems of the LATEST run
+# only, each exactly once; a clean run renders "0" and clears itself.
+sync_gate_details=()
 
-write_sync_gate() {
-    # write_sync_gate <count> [detail ...]
-    # Never fatal: a gate that cannot be written must not itself abort a
-    # sync, and the log line beside every call site still records the state.
+add_sync_gate_detail() {
+    # add_sync_gate_detail <detail>
+    # Record a problem for this run. Order is preserved — the diagnosis of
+    # what stopped the run has to reach the reader before any recovery
+    # advice (audit L5) — and a repeat of something already recorded is
+    # dropped rather than said twice.
+    local detail="$1" existing
+    for existing in ${sync_gate_details[@]+"${sync_gate_details[@]}"}; do
+        [[ "$existing" == "$detail" ]] && return 0
+    done
+    sync_gate_details+=("$detail")
+}
+
+render_sync_gate() {
+    # Write the gate file: first line a problem count, then one line per
+    # problem. Never fatal — a gate that cannot be written must not turn a
+    # working sync into a failing one, and every call site logs as well.
     #
-    # audit (low, fourth re-audit): and never under --dry-run. The usage
-    # banner promises "no changes", and a dry run that leaves a gate file
-    # behind nags at every session start until a real run clears it.
+    # Never under --dry-run either: the usage banner promises no changes,
+    # and a dry run that left a gate behind would nag at every session
+    # start until a real run cleared it.
     if [[ $DRY_RUN -eq 1 ]]; then
         return 0
     fi
-    sync_gate_problems="$1"
     mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
-    printf '%s\n' "$@" > "$SYNC_GATE" 2>/dev/null || true
+    printf '%s\n' "${#sync_gate_details[@]}" \
+        ${sync_gate_details[@]+"${sync_gate_details[@]}"} \
+        > "$SYNC_GATE" 2>/dev/null || true
 }
 
-append_sync_gate_detail() {
-    # Add <detail> after whatever a failing block already recorded.
-    #
-    # audit L5: order matters to the reader. The diagnosis — what stopped
-    # the run, and whether the tree is half-merged — has to come before
-    # "recover with git stash pop", because popping into a half-merged
-    # tree is the wrong first move. The trigger renders every detail line
-    # in order.
-    local detail="$1" existing=() line
-    if [[ -f "$SYNC_GATE" ]] && [[ $DRY_RUN -eq 0 ]]; then
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && existing+=("$line")
-        done < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
-    fi
-    existing+=("$detail")
-    # audit M1: the count is the number of problems recorded, not a
-    # hardcoded 1. The trigger only tests it against zero, but a gate
-    # whose header disagrees with its own body is the sort of thing an
-    # operator stops trusting.
-    write_sync_gate "${#existing[@]}" "${existing[@]}"
-}
+# Render on the way out, however the run ends. This early trap covers the
+# failures that happen before the stash machinery exists — an uninitialised
+# submodule, an unopenable lock — which would otherwise exit having recorded
+# a reason nobody ever sees. It is replaced further down by the full EXIT
+# handler, which renders the gate as its own last act.
+trap render_sync_gate EXIT
 
 # ---------------------------------------------------------------------------
 # push_with_retry — push the current branch, rebasing on rejection.
@@ -423,7 +425,7 @@ refuse_memory_markers() {
     if [[ ${#marked[@]} -eq 0 ]]; then
         return 0
     fi
-    write_sync_gate 1 \
+    add_sync_gate_detail \
         "daily-sync STOPPED: ${marked[*]} contain git conflict markers and must not be committed. Resolve with: $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py ${marked[*]/#/$DATA_DIR/} — then just run the sync again. Do NOT 'git add' them by hand: staging markers is how they reach origin."
     fail "$context: ${marked[*]} contain conflict markers; refusing to stage or commit them"
 }
@@ -692,7 +694,7 @@ reconcile_orphaned_stashes() {
                 # run would apply it again and duplicate every record.
                 log "  APPLIED ${sha:0:8} but could not drop it — it will be"
                 log "  applied again next run unless dropped by hand"
-                append_sync_gate_detail \
+                add_sync_gate_detail \
                     "daily-sync applied orphaned stash ${sha:0:8} in $DATA_DIR but could not drop it; drop it by hand (git -C $DATA_DIR stash list) or the next run will apply it again and duplicate those records"
             fi
         else
@@ -708,7 +710,7 @@ reconcile_orphaned_stashes() {
             # never reaches the sync. Nothing surfaced that state but the
             # log, so write the gate as well.
             stash_restore_allowed=0
-            write_sync_gate 1 \
+            add_sync_gate_detail \
                 "daily-sync STOPPED: orphaned stash ${sha:0:8} ($ref) did not apply cleanly; $DATA_DIR is conflicted and every session start will fail here until it is resolved by hand (git -C $DATA_DIR status; git -C $DATA_DIR stash show -p $ref)"
             fail "ORPHANED STASH ${sha:0:8} ($ref) did not apply cleanly; tree is conflicted and the stash is preserved. Resolve by hand: git -C $DATA_DIR stash show -p $ref"
         fi
@@ -799,9 +801,13 @@ restore_stash_on_exit() {
     if [[ ${#_stranded[@]} -gt 0 ]]; then
         log "STRANDED STASH: ${#_stranded[@]} stash(es) this run pushed are still on a stack:"
         for _i in "${_stranded[@]}"; do log "  $_i"; done
-        append_sync_gate_detail \
+        add_sync_gate_detail \
             "daily-sync left ${#_stranded[@]} of its own stash(es) UNRECOVERED — they hold work that is in no commit: ${_stranded[*]}. Recover with: git -C <repo> stash pop <ref> (inspect first: git -C <repo> stash show -p <ref>)"
     fi
+
+    # audit C1 (fifth re-audit): the gate is rendered here, once, after
+    # every writer has had its say — including the stranded check above.
+    render_sync_gate
 }
 trap restore_stash_on_exit EXIT
 
@@ -884,7 +890,7 @@ if [[ $DRY_RUN -eq 0 ]]; then
         # An UNMERGED path is "dirty" too, and add/add or delete/delete
         # conflicts leave no markers for the content check above to find.
         if [[ "$_mf_status" =~ ^(UU|AA|DD|AU|UA|DU|UD)\  ]]; then
-            write_sync_gate 1 \
+            add_sync_gate_detail \
                 "daily-sync STOPPED: $_mf is unmerged in $DATA_DIR. Resolve it — $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py $DATA_DIR/$_mf for a text conflict, otherwise by hand — then run the sync again. Do NOT 'git add' it while markers remain."
             fail "$_mf is unmerged; refusing to stage or commit it"
         fi
@@ -996,7 +1002,7 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 # the stash still on the stack (git preserves the entry
                 # when a pop conflicts). Anything tidier — `git checkout
                 # -- .`, a re-pop — would risk the very edits at stake.
-                write_sync_gate 1 \
+                add_sync_gate_detail \
                     "daily-sync STOPPED: stash pop conflicted on ${unsupported_conflicts[*]} in $DATA_DIR; conflict markers and the stash are preserved. Resolve by hand (git -C $DATA_DIR status), then the next session syncs."
                 fail "stash pop conflicted on unsupported paths (${unsupported_conflicts[*]}) — manual resolution required; conflict markers and the stash are preserved"
             fi
@@ -1208,7 +1214,7 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # `git stash push -u -- ':!data'` refuses while a path is
             # unmerged — and, like the data half, nothing but the log said
             # so. Gate it before failing.
-            write_sync_gate 1 \
+            add_sync_gate_detail \
                 "daily-sync STOPPED: parent-repo stash pop conflicted in $PA_DIR; conflict markers and the stash are preserved, and every session start will fail here until it is resolved by hand (git -C $PA_DIR status)"
             fail "parent repo: stash pop raised conflicts — manual resolution required"
         else
@@ -1231,7 +1237,7 @@ if [[ $DRY_RUN -eq 0 ]] && ! git diff --quiet data; then
         push_with_retry "parent repo"
     else
         log "parent repo: pointer moved but the data submodule is not verifiably published — bump WITHHELD"
-        write_sync_gate 1 \
+        add_sync_gate_detail \
             "daily-sync: the data submodule has no origin/main ref, so the parent pointer bump was withheld — publishing it would name a pa-data commit the other machine cannot fetch. Check the submodule's remote (git -C $DATA_DIR remote -v) and fetch it."
     fi
 else
@@ -1533,14 +1539,6 @@ if [[ $DRY_RUN -eq 0 ]]; then
             log "archive drift check: *** DRIFT DETECTED *** — un-archived raw sessions; see ~/.cache/cc-archive-drift-gate"
         fi
     fi
-fi
-
-# audit S3/S17: the run finished, so whatever wedged state a previous run
-# recorded is over. Clearing here (rather than at the top) means the gate
-# keeps nagging for exactly as long as the sync is actually stuck — and not
-# when THIS run raised a non-fatal problem of its own (audit M1).
-if [[ $DRY_RUN -eq 0 ]] && [[ "$sync_gate_problems" -eq 0 ]]; then
-    write_sync_gate 0
 fi
 
 log "=== daily-sync complete on $HOST ==="

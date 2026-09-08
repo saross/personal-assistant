@@ -446,6 +446,42 @@ class TestCrossMachineRebase:
             "the real failure was swallowed by the earlier gate: " + repr(details)
         )
 
+    def test_the_gate_reflects_only_the_latest_run(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C1 (fifth re-audit): the gate is the state of the LAST
+        run, each problem once.
+
+        `fail` appended and nothing reset the file at run start, so a
+        wedged sync — which fails the same way every session — appended
+        the same paragraph again and again and the trigger relayed every
+        copy. Three runs, three identical gates.
+        """
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- local commitment\n", encoding="utf-8"
+        )
+        machine.commit_data("local inbox edit", "tasks/inbox.md")
+        world.publish_data_change("tasks/inbox.md", "# Inbox\n\n- remote item\n")
+
+        for _ in range(3):
+            assert world.run_sync(machine).returncode == 2
+
+        details = gate_details(world)
+        assert len(details) == len(set(details)), f"duplicated lines: {details}"
+        assert len(details) <= 2, details
+
+    def test_a_clean_run_after_a_wedge_clears_the_gate(
+        self, world: SyncWorld
+    ) -> None:
+        """And the render clears it when the run succeeds."""
+        machine = world.add_machine("a")
+        (world.home / ".cache" / "daily-sync-gate").write_text(
+            "2\nstale one\nstale two\n", encoding="utf-8"
+        )
+        assert world.run_sync(machine).returncode == 0
+        assert world.gate("daily-sync-gate").splitlines() == ["0"]
+
     def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
         """Kills DS-M6: routing an unknown path to the submodule branch
         would resolve a conflicted prose file trust-ours instead."""
