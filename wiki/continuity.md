@@ -2404,11 +2404,11 @@ every round with its re-audit outcome, six decisions for Shawn).
   guards — no network, no live Postgres, store snapshots that tolerate live
   appends and warn on concurrent source edits unless
   `PA_HERMETICITY_STRICT=1` — plus the midnight flake, 282e6b3, after three
-  re-audits). Open with re-audits or fix rounds in flight: #128
-  (style-analyser scripts, round 4g-2 fixing two tests), #129 (memory
-  readers and anchors, round 4f-3), #133 (external-services follow-ups),
-  #134 (bake-off follow-ups); rounds 3c-6, 4a-5, and 4c-3 running. Main
-  suite about 3,650. Two operational lessons recorded in the
+  re-audits), #133 (external-services follow-ups, 96650de). Open with
+  re-audits or fix rounds in flight: #128 (style-analyser scripts, second
+  re-audit), #129 (memory readers and anchors, second re-audit), #134
+  (bake-off follow-ups, re-audit), #135 (daily-sync lows, re-audit);
+  rounds 4a-5, 4c-3, and 4d-4 running. Main suite about 3,700. Two operational lessons recorded in the
   scratchpad: concurrent agents need private scratch directories, and
   concurrent suites need isolated `--basetemp` and a bounded /tmp
   footprint (the 16 GB tmpfs filled and ran out of inodes twice). Decisions
