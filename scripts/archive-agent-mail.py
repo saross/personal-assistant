@@ -16,7 +16,12 @@ Rules:
 - **Append-only.** Nothing is ever removed from the archive. A source file
   that goes missing stays archived; a source file whose bytes change (they
   should not — messages and receipts are write-once) is re-copied and the
-  index records the new hash.
+  index records the new hash, unless it has grown past the size cap, in
+  which case it is refused and the earlier copy is kept.
+- **Only protocol names enter the repository.** Agent and peer directory
+  names and message names must be slugs (``[A-Za-z0-9._-]``, messages
+  ending in ``.md``), the same rule the reading hook applies; anything
+  else is refused and named on stderr, never copied.
 - **Copy, never move.** The live mailbox is untouched; both agents' subtrees
   are read only.
 - **Both agents' mail is archived**, under the same relative layout as the
@@ -42,7 +47,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -53,6 +57,8 @@ DEFAULT_ROOT = Path(os.environ.get("AGENT_MAIL_ROOT", "~/agent-mail")).expanduse
 DEFAULT_ARCHIVE = PA_DIR / "data" / "agent-mail"
 MAX_HEADER_BYTES = 4_096
 MAX_MESSAGE_BYTES = 65_536   # same cap as the hooks; larger files are not mail
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")          # agent and peer directories
+MESSAGE_NAME = re.compile(r"[A-Za-z0-9._-]+\.md")   # same rule as the reading hook
 HEADER_NAMES = ("From", "To", "Project", "Lane", "Workstream", "Date", "Re")
 # The first date-shaped token on a receipt's first line, with an optional
 # time on the same token. Neither agent writes one fixed form.
@@ -86,17 +92,26 @@ def mail_files(root: Path, *, max_bytes: int | None = MAX_MESSAGE_BYTES,
                refused: list[Path] | None = None) -> list[Path]:
     """Every regular ``.md`` under ``<agent>/outbox/*/`` and ``<agent>/seen/*/``.
 
-    A file that is not mail by the protocol (unprintable name, or larger
-    than ``max_bytes``) is skipped and, when ``refused`` is given, recorded
-    there so the run can say so — a silent refusal would contradict the
-    archive's claim to be the complete record. The archive itself is
-    scanned with ``max_bytes=None``: what was accepted once stays indexed.
+    A file that is not mail by the protocol (a directory or message name
+    outside the slug rule, or larger than ``max_bytes``) is skipped and,
+    when ``refused`` is given, recorded there so the run can say so — a
+    silent refusal would contradict the archive's claim to be the complete
+    record. The archive itself is scanned with ``max_bytes=None``: what
+    was accepted once stays indexed.
     """
     found: list[Path] = []
     if not root.is_dir():
         return found
+
+    def refuse(path: Path) -> None:
+        if refused is not None:
+            refused.append(path)
+
     for agent_dir in sorted(root.iterdir()):
         if agent_dir.is_symlink() or not agent_dir.is_dir():
+            continue
+        if not SAFE_NAME.fullmatch(agent_dir.name):
+            refuse(agent_dir)               # its name would be mirrored into the repo
             continue
         for kind in ("outbox", "seen"):
             kind_dir = agent_dir / kind
@@ -105,19 +120,41 @@ def mail_files(root: Path, *, max_bytes: int | None = MAX_MESSAGE_BYTES,
             for peer_dir in sorted(kind_dir.glob("*")):
                 if peer_dir.is_symlink() or not peer_dir.is_dir():
                     continue
+                if not SAFE_NAME.fullmatch(peer_dir.name):
+                    refuse(peer_dir)
+                    continue
                 for path in sorted(peer_dir.iterdir()):
-                    if path.suffix != ".md" or path.is_symlink() or not path.is_file():
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    if not MESSAGE_NAME.fullmatch(path.name):
+                        if path.suffix == ".md" or not path.name.isprintable():
+                            refuse(path)    # meant as mail, or hostile; either way say so
                         continue
                     try:
                         oversized = max_bytes is not None and path.stat().st_size > max_bytes
                     except OSError:
                         continue
-                    if oversized or not path.name.isprintable():
-                        if refused is not None:
-                            refused.append(path)
-                        continue            # not mail by the protocol; never into the repo
+                    if oversized:
+                        refuse(path)        # not mail by the protocol; never into the repo
+                        continue
                     found.append(path)
     return found
+
+
+def copy_bounded(source: Path, target: Path, max_bytes: int = MAX_MESSAGE_BYTES) -> bool:
+    """Copy at most ``max_bytes``; return False (copying nothing) if the source is larger.
+
+    The size was checked by ``stat`` a moment earlier; reading a bounded
+    amount closes the window in which a source could grow between the
+    check and the copy (re-audit, 2026-09-08).
+    """
+    with source.open("rb") as handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return True
 
 
 def copy_new(root: Path, archive: Path, refused: list[Path] | None = None) -> tuple[int, int]:
@@ -135,8 +172,13 @@ def copy_new(root: Path, archive: Path, refused: list[Path] | None = None) -> tu
             changed += 1
         else:
             added += 1
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        if not copy_bounded(source, target):
+            if refused is not None:
+                refused.append(source)
+            if target.exists():
+                changed -= 1
+            else:
+                added -= 1
     return added, changed
 
 
@@ -193,7 +235,7 @@ def build_index(archive: Path) -> list[dict]:
                 note = receipt_path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 note = []
-            first_line = (note[0] if note else "")[:500]
+            first_line = "".join(ch for ch in (note[0] if note else "") if ch.isprintable())[:500]
             receipt = {
                 "path": receipt_path.relative_to(archive).as_posix(),
                 "when": when_from_note(first_line),

@@ -58,6 +58,7 @@ ANY = "any"
 # ``fable; project: x`` able to forge a second field (re-audit, 2026-09-08).
 SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 MESSAGE_NAME = re.compile(r"[A-Za-z0-9._-]+\.md")
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")      # sender directories, same rule
 
 
 def plain_directory(path: Path) -> bool:
@@ -159,8 +160,12 @@ def session_project(cwd: Path) -> str:
 
 
 def message_project(headers: dict[str, str]) -> str:
-    """A message's project; absent or blank means any."""
-    return headers.get("Project", "").strip().casefold() or ANY
+    """A message's project as a slug; absent or blank means any.
+
+    A value that is not a slug is ``invalid``, which routes nowhere and
+    is printed as such — routing and annotation agree on one value.
+    """
+    return (safe_value(headers.get("Project", "")) or ANY).casefold()
 
 
 def routes_here(headers: dict[str, str], project: str) -> bool:
@@ -179,7 +184,9 @@ def unread_messages(root: Path) -> list[Path]:
     seen_parent = receiver_dir / "seen"
     for agent_dir in sorted(root.iterdir()):
         sender = agent_dir.name
-        if sender == RECEIVER or not plain_directory(agent_dir):
+        if sender == RECEIVER or not SAFE_NAME.fullmatch(sender):
+            continue          # the sender's name is printed as part of every path
+        if not plain_directory(agent_dir):
             continue
 
         outbox_parent = agent_dir / "outbox"
@@ -223,8 +230,9 @@ def route(unread: list[Path], project: str) -> Routed:
         if routes_here(headers, project):
             here.append((message, headers))
         else:
-            # Keyed by a safe value: the hook and the watcher both print these keys.
-            target = safe_value(message_project(headers)) or "invalid"
+            # message_project() is already a safe slug (or "invalid"); the
+            # hook and the watcher both print these keys.
+            target = message_project(headers)
             elsewhere[target] = elsewhere.get(target, 0) + 1
     return here, elsewhere
 
@@ -250,7 +258,7 @@ def safe_value(value: str) -> str:
 
 def annotate(headers: dict[str, str]) -> str:
     """Render the routing headers beside a path, e.g. ``[project: x; lane: fable]``."""
-    parts = [f"project: {safe_value(message_project(headers))}"]
+    parts = [f"project: {message_project(headers)}"]
     for name in ("Lane", "Workstream"):
         value = safe_value(headers.get(name, ""))
         if value and value.casefold() != ANY:

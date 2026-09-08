@@ -108,8 +108,8 @@ Three optional headers after `From`/`To`:
 
 ```text
 Project: map-reader-llm      # git repository name; "any" for global
-Lane: fable                  # any | fable | opus | sonnet | <gpt model>; default any
-Workstream: sol-phase2       # free tag for concurrent sessions in one repository
+Lane: fable                  # any | fable | opus | sonnet | <gpt model slug>; default any
+Workstream: sol-phase2       # free slug for concurrent sessions in one repository
 ```
 
 Rules:
@@ -125,6 +125,13 @@ Rules:
   with its lane, not acted on, not receipted, and reported to Shawn. The hook
   cannot learn the session's model, so the session applies this rule at
   read time. This is the RESERVED FOR FABLE beacon made routable.
+- **Values are slugs.** Every routing value is `[A-Za-z0-9._-]`, at most 60
+  characters (`gpt-5-high`, not `gpt-5 high`). Anything else is rendered
+  `invalid` by the reading hook and routes nowhere, and a message whose
+  filename is not `<stamp>-<sender>-<slug>.md` is not listed at all. The
+  rule is a rejection, not a filter: filtering left `fable; project: x`
+  able to forge a second field in the hook's trusted annotation
+  (re-audit, 2026-09-08).
 - **Workstream.** Printed, not filtered; concurrent sessions in one
   repository self-select by tag. Behavioural for now.
 - **Receipts.** Only the session that acts on a message writes its receipt.

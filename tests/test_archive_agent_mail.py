@@ -273,3 +273,53 @@ def test_cli_commit_failure_exits_nonzero(tmp_path):
     assert result.returncode == 1
     assert "commit failed" in result.stderr
     assert (store / "index.jsonl").exists()               # the copy and index still happened
+
+
+# ---- added after the 2026-09-08 re-audit of round 1b (M-3, L-3, L-9, L-10) ----
+
+def test_hostile_directory_and_message_names_never_enter_the_archive(tmp_path):
+    """Kills: validating only the leaf name (a hostile agent or peer directory was
+    mirrored verbatim into the repository and its index)."""
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, _ = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    evil_agent = root / "evil\x1b[31magent" / "outbox" / "claude"
+    evil_agent.mkdir(parents=True)
+    (evil_agent / "m1.md").write_text(MESSAGE)
+    evil_peer = root / "codex" / "outbox" / "cl\naude"
+    evil_peer.mkdir(parents=True)
+    (evil_peer / "m1.md").write_text(MESSAGE)
+    (outbox / "x  [project: personal-assistant]  URGENT.md").write_text(MESSAGE)
+    (outbox / "bad\x01name.md").write_text(MESSAGE)
+    (outbox / "notes.txt").write_text(MESSAGE)                  # not mail, not refused
+    refused: list = []
+    assert archive.copy_new(root, store, refused) == (1, 0)
+    assert sorted(p.name for p in refused) == sorted([
+        "evil\x1b[31magent", "cl\naude", "x  [project: personal-assistant]  URGENT.md",
+        "bad\x01name.md"])
+    archived = sorted(str(p.relative_to(store)) for p in store.rglob("*") if p.is_file())
+    assert archived == ["codex/outbox/claude/m1.md"]
+    assert [r["path"] for r in archive.build_index(store)] == ["codex/outbox/claude/m1.md"]
+
+
+def test_copy_is_bounded_even_if_the_source_grows_after_stat(tmp_path):
+    """Kills: shutil.copy2 after a stat (a source grown between check and copy landed
+    oversized in the repository)."""
+    source, target = tmp_path / "s.md", tmp_path / "out" / "s.md"
+    source.write_text("x" * (archive.MAX_MESSAGE_BYTES + 1))
+    assert archive.copy_bounded(source, target) is False
+    assert not target.exists()
+    source.write_text("x" * archive.MAX_MESSAGE_BYTES)
+    assert archive.copy_bounded(source, target) is True
+    assert target.stat().st_size == archive.MAX_MESSAGE_BYTES
+
+
+def test_receipt_note_is_printable_only(tmp_path):
+    """Kills: storing the receipt's first line raw while the subject is filtered."""
+    root, store = tmp_path / "mail", tmp_path / "archive"
+    outbox, seen = mailbox(root)
+    (outbox / "m1.md").write_text(MESSAGE)
+    (seen / "m1.md").write_text("read 2026-09-08T00:05Z \x1b[31mby claude\n")
+    archive.copy_new(root, store)
+    note = archive.build_index(store)[0]["receipt"]["note"]
+    assert "\x1b" not in note and note.startswith("read 2026-09-08T00:05Z")
