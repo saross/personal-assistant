@@ -2468,3 +2468,146 @@ class TestBinaryStashIsNotCalledRefused:
             ("stash_tracked_half_is_binary",),
         )
         assert result.stdout.strip() == "TEXT", result.stdout
+
+
+class TestMergeWithNoCorpusInAnyParent:
+    """A merge none of whose parents holds the corpus cannot be measured
+    against anything, and the corpus it publishes came from its own
+    resolution."""
+
+    def test_it_is_refused_as_unjudgeable(self, tmp_path: Path) -> None:
+        """Kills DS-M1's refusal branch. Counting a corpus-less parent as
+        zero records leaves this refused too -- by the fail-closed rule --
+        but saying "the shrink could not be attributed" of a merge whose
+        parents simply have no corpus sends the operator looking for the
+        wrong thing."""
+        repo = tmp_path / "no-corpus-parents"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(5)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        origin = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/main", origin, cwd=repo)
+
+        # Two parentless commits, neither holding a corpus…
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        one = _git("commit-tree", empty, "-m", "side one", cwd=repo).stdout.strip()
+        two = _git("commit-tree", empty, "-m", "side two", cwd=repo).stdout.strip()
+        # …merged into a commit that introduces a corpus of its own.
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "one record"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git(
+            "commit-tree", tree, "-p", one, "-p", two, "-m", "Merge two strangers",
+            cwd=repo
+        ).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        logs = tmp_path / "logs-no-corpus"
+        logs.mkdir()
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+
+
+class TestGuardsDoNotPipeIntoGrepQ:
+    """`grep -q` exits on its first match; the upstream then dies of
+    SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. In a
+    guard that decides whether data is published, that turns a match into
+    its opposite -- a real trailer into "no trailer", a binary path into
+    "no binary paths" -- on a race decided by how much the upstream had
+    written."""
+
+    def test_the_publishing_guards_read_rather_than_pipe(self) -> None:
+        """Kills: rewriting either guard as `<producer> | grep -q ...`.
+
+        Scoped to the two functions whose answer gates a push. Elsewhere
+        in the script the same shape is bounded and its worst outcome is
+        a skipped optional pass, so it is left alone rather than churned.
+        """
+        for name in ("stash_tracked_half_is_binary", "has_bulk_rewrite_trailer"):
+            body = _extract_function(name)
+            assert "| grep -q" not in body.replace("\n", " "), (
+                f"{name} pipes into `grep -q`, whose match reads as a failure "
+                "under `set -o pipefail`: " + body
+            )
+            assert "grep" in body, (
+                f"{name} no longer greps at all; this test is checking the "
+                "wrong thing"
+            )
+
+
+class TestSweepCollectsItsOwnMarker:
+    """A run killed between creating the sweep's marker and removing it
+    must leave something a later sweep can collect -- otherwise the
+    function that exists to clear litter is a source of it."""
+
+    def test_a_marker_left_by_a_killed_sweep_is_collected_next_time(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L-a: naming the marker so the sweep's own glob can
+        never match it.
+
+        `find` and `rm` are stubbed in the first pass, which is what a
+        kill between the mktemp and the rest of the function looks like
+        from the next run's point of view. (A pass that gets as far as its
+        own `find` already collects its own marker, since a file is not
+        NEWER than itself -- so only a kill in that narrow window can
+        strand one.)
+        """
+        cache = tmp_path / "cache-marker"
+        cache.mkdir()
+        sidecar = cache / "daily-sync-stash-state"
+        sidecar.write_text("/repo\tdeadbeef\tconflicted\tnotes/a.md\n",
+                           encoding="utf-8")
+
+        first = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\n'
+            "find() { :; }\n"
+            "rm() { :; }\n"
+            "sweep_orphaned_stash_state_temps\n",
+            ("sweep_orphaned_stash_state_temps",),
+        )
+        assert first.returncode == 0, first.stderr
+        stranded = [p for p in cache.iterdir() if p.name != sidecar.name]
+        assert stranded, "the first pass left no marker, so nothing is being tested"
+
+        # Dated back, so the second pass's marker is newer than it.
+        for path in stranded:
+            subprocess.run(["touch", "-d", "-1 hour", str(path)], check=True)
+        second = _run_shell(
+            f'STASH_STATE_FILE="{sidecar}"\nsweep_orphaned_stash_state_temps\n',
+            ("sweep_orphaned_stash_state_temps",),
+        )
+        assert second.returncode == 0, second.stderr
+        assert [p for p in cache.iterdir()] == [sidecar], (
+            "the marker a killed sweep left behind is unreachable by any "
+            "later sweep: " + str(list(cache.iterdir()))
+        )

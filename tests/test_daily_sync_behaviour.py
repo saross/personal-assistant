@@ -3845,6 +3845,16 @@ class TestUnjudgeableMerge:
         )
         joined = "\n".join(gate_details(world))
         assert "SHORTER than origin" in joined, joined
+        # The corpus-less parent is EXCLUDED, so the merge is measured
+        # against the one parent that has a corpus and the shrink is
+        # attributed to it. Counting that parent as zero records leaves
+        # the shrink unattributed -- also refused, by the fail-closed
+        # rule, but for the wrong reason and one commit too late.
+        report = next(iter((machine.pa / "logs").glob("daily-sync-shrink-*.log")))
+        written = report.read_text(encoding="utf-8")
+        assert "could not be attributed" not in written, written
+        merge_sha = machine.head("data")
+        assert merge_sha in written, written
 
     def test_a_normal_no_ff_bulk_merge_still_publishes(
         self, world: SyncWorld
