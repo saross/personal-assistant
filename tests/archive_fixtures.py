@@ -118,7 +118,12 @@ def tool_result_record(
                     "type": "tool_result",
                     "tool_use_id": f"toolu_{index - 1:04d}",
                     "content": "wrote 4 lines" * 400,
-                }
+                },
+                # Real tool-result records often carry a text block beside
+                # the result. It is still the harness reporting, not the
+                # operator speaking, so the whole record is skipped — which
+                # is only observable when a text block is present.
+                {"type": "text", "text": "tool output preview: wrote 4 lines"},
             ],
         },
     }

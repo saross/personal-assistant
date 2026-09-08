@@ -35,7 +35,10 @@ from archive_fixtures import (  # noqa: E402
     age_file,
     make_archive_entry,
     make_raw_store,
+    prose_record,
     substantive_records,
+    tool_result_record,
+    tool_use_record,
     trivial_records,
     write_transcript,
 )
@@ -759,3 +762,260 @@ class TestCanonicalStorageIsEnforcedByVerify:
         pipeline.verify()
 
         assert "Non-canonical storage" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The archive command's own contract: what lands, what is recorded, what is
+# refused (lens B finding 3 — no test ran any cmd_* entry point at all)
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveCommandContract:
+    """What ``archive`` writes, what it records, and what it must not swallow."""
+
+    def test_dry_run_writes_nothing(self, pipeline: Pipeline) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        pipeline.archive(dry_run=True)
+
+        assert pipeline.entries() == []
+        assert not pipeline.checkpoint.exists()
+
+    def test_a_failure_is_recorded_and_the_run_continues(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One bad session must not cost the other 599."""
+        pipeline.add_session(SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+
+        from cc_session_toolkit import archive as toolkit_archive
+        real_archive = toolkit_archive.archive_session
+
+        def fail_on_a(*, session_path, **kwargs):
+            if SID_A in str(session_path):
+                raise RuntimeError("synthetic archive failure")
+            return real_archive(session_path=session_path, **kwargs)
+
+        monkeypatch.setattr(toolkit_archive, "archive_session", fail_on_a)
+
+        pipeline.archive()
+
+        state = pipeline.checkpoint_state()
+        assert state["archived_ids"] == [SID_B]
+        assert SID_A in state["failed_ids"]
+        assert "synthetic archive failure" in state["failed_ids"][SID_A]
+
+    def test_a_keyboard_interrupt_is_not_swallowed(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``except Exception`` is deliberate; BaseException would not be.
+
+        Widening it would make Ctrl-C look like a per-session failure: the
+        run would record the interrupt in failed_ids and carry on.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        from cc_session_toolkit import archive as toolkit_archive
+
+        def interrupted(**kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(toolkit_archive, "archive_session", interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            pipeline.archive()
+
+    def test_the_checkpoint_is_written_as_each_session_lands(
+        self, pipeline: Pipeline
+    ) -> None:
+        """Dropping the checkpoint update makes every resume re-archive all."""
+        pipeline.add_session(SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+
+        pipeline.archive()
+
+        assert sorted(pipeline.checkpoint_state()["archived_ids"]) == sorted(
+            [SID_A, SID_B]
+        )
+        assert pipeline.checkpoint_state()["stats"]["total_archived"] == 2
+
+    def test_subagents_are_archived_beside_their_session(
+        self, pipeline: Pipeline
+    ) -> None:
+        """A subagent transcript is a research record, archived in full.
+
+        Pins two things that were separately removable: that the
+        ``subagents`` directory is looked for at all, and that the copy
+        streams the WHOLE file rather than one 8 KiB block.
+        """
+        pipeline.add_session(SID_A)
+        subagents = pipeline.project_dir / SID_A / "subagents"
+        subagents.mkdir(parents=True)
+        body = "".join(
+            json.dumps({"type": "assistant", "seq": n, "pad": "z" * 200})
+            + "\n"
+            for n in range(200)
+        )
+        assert len(body) > 8192, "the fixture must exceed one read block"
+        (subagents / "agent-5a7b.jsonl").write_text(body, encoding="utf-8")
+
+        manifest = pipeline.discover()
+        assert manifest[0]["subagent_count"] == 1, (
+            "discovery did not see the subagents directory"
+        )
+
+        pipeline.archive()
+
+        archived = list(
+            pipeline.archive_root.rglob("subagents/agent-5a7b.jsonl.gz")
+        )
+        assert len(archived) == 1
+        with gzip.open(archived[0], "rt", encoding="utf-8") as handle:
+            assert handle.read() == body, (
+                "the subagent archive is truncated; only the first block of "
+                "the transcript was copied"
+            )
+
+
+class TestSubagentsCommand:
+    """``subagents`` backfills orphans into archives that predate them."""
+
+    def test_an_orphan_is_attached_to_its_archived_parent(
+        self, pipeline: Pipeline
+    ) -> None:
+        entry = make_archive_entry(pipeline.archive_root, SID_A)
+        orphan = pipeline.project_dir / "agent-9d0e.jsonl"
+        orphan.write_text(
+            json.dumps({"sessionId": SID_A, "type": "assistant"}) + "\n",
+            encoding="utf-8",
+        )
+
+        bulk_archive.cmd_subagents(
+            argparse.Namespace(
+                mode="subagents", source_root=pipeline.raw_root,
+                dry_run=False,
+            ),
+            LOGGER,
+        )
+
+        assert (entry / "subagents" / "agent-9d0e.jsonl.gz").exists()
+
+    def test_dry_run_attaches_nothing(self, pipeline: Pipeline) -> None:
+        entry = make_archive_entry(pipeline.archive_root, SID_A)
+        orphan = pipeline.project_dir / "agent-9d0e.jsonl"
+        orphan.write_text(
+            json.dumps({"sessionId": SID_A, "type": "assistant"}) + "\n",
+            encoding="utf-8",
+        )
+
+        bulk_archive.cmd_subagents(
+            argparse.Namespace(
+                mode="subagents", source_root=pipeline.raw_root, dry_run=True,
+            ),
+            LOGGER,
+        )
+
+        assert not (entry / "subagents").exists()
+
+    def test_an_orphan_with_no_archived_parent_is_quarantined_not_dropped(
+        self, pipeline: Pipeline
+    ) -> None:
+        """Some subagents outlived their session file entirely."""
+        orphan = pipeline.project_dir / "agent-1c2d.jsonl"
+        orphan.write_text(
+            json.dumps({"sessionId": SID_C, "type": "assistant"}) + "\n",
+            encoding="utf-8",
+        )
+
+        bulk_archive.cmd_subagents(
+            argparse.Namespace(
+                mode="subagents", source_root=pipeline.raw_root,
+                dry_run=False,
+            ),
+            LOGGER,
+        )
+
+        held = (
+            pipeline.archive_root / "_legacy" / "_orphan-subagents" / SID_C
+            / "subagents" / "agent-1c2d.jsonl.gz"
+        )
+        assert held.exists(), "an unattachable subagent was discarded"
+
+
+class TestLegacyRelocation:
+    """Sessions launched from outside a project tree have a filing precedent."""
+
+    def test_a_new_entry_joins_its_existing_legacy_directory(
+        self, pipeline: Pipeline
+    ) -> None:
+        """Without this the same project splits across two locations."""
+        legacy = pipeline.archive_root / "_legacy" / "workshop"
+        legacy.mkdir(parents=True)
+        fresh = pipeline.archive_root / "workshop" / "2026-03-02_entry"
+        fresh.mkdir(parents=True)
+        (fresh / "session.meta.json").write_text("{}", encoding="utf-8")
+
+        moved = bulk_archive.relocate_to_legacy_precedent(
+            [fresh], pipeline.archive_root, LOGGER
+        )
+
+        assert moved == 1
+        assert (legacy / "2026-03-02_entry" / "session.meta.json").exists()
+        assert not fresh.exists()
+
+    def test_no_precedent_means_no_move(self, pipeline: Pipeline) -> None:
+        """This step must never invent a new legacy project."""
+        fresh = pipeline.archive_root / "workshop" / "2026-03-02_entry"
+        fresh.mkdir(parents=True)
+        (fresh / "session.meta.json").write_text("{}", encoding="utf-8")
+
+        assert bulk_archive.relocate_to_legacy_precedent(
+            [fresh], pipeline.archive_root, LOGGER
+        ) == 0
+        assert fresh.exists()
+
+
+class TestUserMessageSampling:
+    """The enrichment prompt is built from what the operator actually said."""
+
+    def test_tool_results_are_not_sampled_as_user_prose(
+        self, tmp_path: Path
+    ) -> None:
+        """A tool_result is the machine talking back, not a user message."""
+        path = write_transcript(tmp_path / "s.jsonl", [
+            prose_record("user", "Plan the terrace survey grid properly.", index=1),
+            tool_use_record(2),
+            tool_result_record(3),
+            prose_record("user", "Now write the field notes template.", index=4),
+        ])
+
+        sampled, _files = bulk_archive._sample_user_messages(path)
+
+        assert all("wrote 4 lines" not in message for message in sampled), (
+            "tool output was sampled into the enrichment prompt as the "
+            "operator's own words"
+        )
+        assert any("terrace survey grid" in message for message in sampled)
+
+    def test_the_last_messages_are_kept_as_well_as_the_first(
+        self, tmp_path: Path
+    ) -> None:
+        """First 2 + last 2: dropping the tail loses where a session ended."""
+        records = []
+        for n in range(6):
+            records.append(prose_record(
+                "user", f"Substantive question number {n} about the survey.",
+                index=n + 1,
+            ))
+        path = write_transcript(tmp_path / "s.jsonl", records)
+
+        sampled, _files = bulk_archive._sample_user_messages(path)
+
+        assert any("number 5" in message for message in sampled), (
+            "the final user messages were dropped from the sample"
+        )
+        assert any("number 0" in message for message in sampled)

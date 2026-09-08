@@ -31,7 +31,8 @@ THE PREDICATE
 -------------
 A session is *substantive* when the conversational prose it contains reaches
 :data:`MIN_CONTENT_CHARS`. "Conversational prose" means the text of
-``user``/``assistant`` records only: tool traffic, thinking blocks, and
+``user``/``assistant`` records only: tool traffic (including the text
+preview the harness writes beside a ``tool_result``), thinking blocks, and
 machine-injected records (``isMeta``, ``isCompactSummary``, ``isSidechain``)
 are excluded, because none of them is something a person said or a model
 said back.
@@ -99,7 +100,18 @@ def _record_prose_chars(record: dict[str, Any]) -> int:
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
-        # Only ``text`` blocks: ``tool_use``, ``tool_result``, and ``thinking``
+        # A record carrying a ``tool_result`` IS the tool reporting back, not
+        # a turn: the harness files it with ``"role": "user"`` and often adds
+        # a ``text`` preview of the output beside it. Counting that preview
+        # would let a session of pure tool churn clear the substance floor on
+        # the strength of the machine's own words. ``bulk-archive.py``'s
+        # message sampler skips these records for the same reason.
+        if any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        ):
+            return 0
+        # Otherwise only ``text`` blocks count: ``tool_use`` and ``thinking``
         # blocks are machinery, not something anyone said.
         return sum(
             len(block.get("text") or "")

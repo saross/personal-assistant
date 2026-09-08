@@ -388,3 +388,52 @@ class TestApplyRefusesTheWrongBatch:
         )
 
         assert ApplyStub.calls[0] == "retrieve:msgbatch_first"
+
+
+class TestRewriteGuardIsWired:
+    """ART8 — the bulk-rewrite guard must actually run before the append.
+
+    cmd_apply appends to memories.jsonl and rewrites tag-vocabulary.txt, so
+    it is a bulk-rewrite-class writer: it has to serialise against the
+    extraction hook and the scheduled sync. Nothing checked that the call was
+    still there.
+    """
+
+    def test_apply_calls_the_guard_before_touching_the_canonical(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_file = tmp_path / "batch-state.json"
+        state_file.write_text(json.dumps({
+            "batch_id": "msgbatch_guard",
+            "n_requests": 0,
+            "request_map": {},
+        }), encoding="utf-8")
+        memories = tmp_path / "mem.jsonl"
+        monkeypatch.setattr(reprocess, "BATCH_STATE_FILE", state_file)
+        monkeypatch.setattr(
+            reprocess, "BATCH_STATE_DIR", tmp_path / "batch-state"
+        )
+        monkeypatch.setattr(reprocess, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(reprocess, "load_env", lambda: None)
+        monkeypatch.setattr(reprocess, "release_lock", lambda: None)
+
+        called: list[str] = []
+        monkeypatch.setattr(
+            reprocess, "ensure_safe_to_rewrite",
+            lambda reason: called.append(reason),
+        )
+        stub_module = types.ModuleType("anthropic")
+        stub_module.Anthropic = ApplyStub
+        ApplyStub.calls = []
+        monkeypatch.setitem(sys.modules, "anthropic", stub_module)
+
+        reprocess.cmd_apply(
+            types.SimpleNamespace(mode="apply", batch_id="msgbatch_guard"),
+            LOGGER,
+        )
+
+        assert called, (
+            "cmd_apply appended to the canonical without taking the "
+            "bulk-rewrite guard"
+        )
+        assert "msgbatch_guard" in called[0]
