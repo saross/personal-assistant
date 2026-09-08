@@ -12,6 +12,7 @@ Usage:
     venv/bin/python3 scripts/sync-to-postgres.py
 """
 
+import argparse
 import json
 import logging
 import sys
@@ -32,11 +33,14 @@ from _sync_cursor import (  # noqa: E402
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 # Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
 from _pg_row_guard import (  # noqa: E402
+    DEFAULT_QUARANTINE_CAP,
     ENVIRONMENT,
     OUTAGE,
+    QUARANTINE_CAP_ENV_VAR,
     EnvironmentFault,
     classify_pg_error,
     insert_rows_individually,
+    resolve_quarantine_cap,
     sanitise_nuls,
 )
 
@@ -639,6 +643,7 @@ def _quarantine_refused_records(
 def insert_memories(
     records: list[tuple],
     logger: logging.Logger,
+    quarantine_cap: int | None = None,
 ) -> InsertResult:
     """
     Insert memory records into PostgreSQL with full accounting.
@@ -809,6 +814,9 @@ def insert_memories(
                 psycopg2_module=psycopg2,
                 execute_values=execute_values,
                 logger=logger,
+                quarantine_cap=resolve_quarantine_cap(
+                    quarantine_cap, logger=logger,
+                ),
             )
             if status == OUTAGE:
                 return InsertResult(
@@ -1058,7 +1066,7 @@ def check_canonical_for_duplicates(logger: logging.Logger) -> None:
         )
 
 
-def sync(logger: logging.Logger) -> None:
+def sync(logger: logging.Logger, quarantine_cap: int | None = None) -> None:
     """
     Run one sync cycle: read new JSONL lines, insert into PostgreSQL,
     update cursor.
@@ -1076,10 +1084,13 @@ def sync(logger: logging.Logger) -> None:
     with _sync_advisory_lock(logger) as acquired:
         if not acquired:
             return
-        _sync_locked(logger)
+        _sync_locked(logger, quarantine_cap)
 
 
-def _sync_locked(logger: logging.Logger) -> None:
+def _sync_locked(
+    logger: logging.Logger,
+    quarantine_cap: int | None = None,
+) -> None:
     """Core sync cycle, executed under the advisory lock."""
     cursor_line = load_cursor()
     # Whether the key existed when we read it, for the compare-and-set at
@@ -1179,7 +1190,7 @@ def _sync_locked(logger: logging.Logger) -> None:
         return
 
     # Insert into PostgreSQL (returns InsertResult with full accounting).
-    result = insert_memories(records, logger)
+    result = insert_memories(records, logger, quarantine_cap)
 
     # Cursor advance policy (#55, refined by audit round two finding P2):
     # advance ONLY when we have positive evidence every input row is
@@ -1241,10 +1252,23 @@ def main() -> None:
         6 - a rebuild removed this sync's cursor key mid-run; the position
             was deliberately not written back
     """
+    parser = argparse.ArgumentParser(
+        description="Sync memories from the canonical JSONL to PostgreSQL",
+    )
+    parser.add_argument(
+        "--quarantine-cap", type=int, default=None,
+        help=(
+            "Stop and report an environment fault once this many rows have "
+            f"been refused in one run (default: {DEFAULT_QUARANTINE_CAP}, or "
+            f"${QUARANTINE_CAP_ENV_VAR}). 0 means stop at the first refusal."
+        ),
+    )
+    args = parser.parse_args()
+
     logger = setup_logging()
     logger.info("Starting sync")
     try:
-        sync(logger)
+        sync(logger, args.quarantine_cap)
     except EnvironmentFault as exc:
         # Reachable database, wrong state. Retrying cannot help, so exit
         # non-zero rather than reporting success over a database we never

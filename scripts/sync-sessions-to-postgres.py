@@ -47,11 +47,14 @@ from _sync_cursor import (  # noqa: E402
 )
 # Row-level Postgres guards (audit round two, finding P1 / lens A-X1+A-X2).
 from _pg_row_guard import (  # noqa: E402
+    DEFAULT_QUARANTINE_CAP,
     ENVIRONMENT,
     OUTAGE,
+    QUARANTINE_CAP_ENV_VAR,
     EnvironmentFault,
     classify_pg_error,
     insert_rows_individually,
+    resolve_quarantine_cap,
     sanitise_nuls,
 )
 # Schema-version guard (audit IC5 / B-X1).
@@ -528,6 +531,7 @@ def _quarantine_refused_rows(
 def upsert_sessions(
     rows: list[dict[str, Any]],
     logger: logging.Logger,
+    quarantine_cap: int | None = None,
 ) -> InsertResult:
     """
     Upsert session rows into PostgreSQL with full accounting.
@@ -691,6 +695,9 @@ def upsert_sessions(
                 psycopg2_module=psycopg2,
                 execute_values=execute_values,
                 logger=logger,
+                quarantine_cap=resolve_quarantine_cap(
+                    quarantine_cap, logger=logger,
+                ),
             )
             if status == OUTAGE:
                 return InsertResult(
@@ -768,6 +775,7 @@ def sync(
     archive_root: Path,
     full_resync: bool,
     logger: logging.Logger,
+    quarantine_cap: int | None = None,
 ) -> None:
     """
     Run one sync cycle: find new session.meta.json files, upsert into
@@ -780,13 +788,14 @@ def sync(
     with _sync_advisory_lock(logger) as acquired:
         if not acquired:
             return
-        _sync_locked(archive_root, full_resync, logger)
+        _sync_locked(archive_root, full_resync, logger, quarantine_cap)
 
 
 def _sync_locked(
     archive_root: Path,
     full_resync: bool,
     logger: logging.Logger,
+    quarantine_cap: int | None = None,
 ) -> None:
     """Core sync cycle, executed under the advisory lock."""
     since = None if full_resync else load_cursor()
@@ -859,7 +868,7 @@ def _sync_locked(
         return
 
     # Upsert into PostgreSQL (returns InsertResult with full accounting).
-    result = upsert_sessions(rows, logger)
+    result = upsert_sessions(rows, logger, quarantine_cap)
 
     # Cursor advance policy (#55, refined by audit round two finding P1):
     # advance ONLY when the DB was reachable AND every input id is
@@ -916,12 +925,23 @@ def main() -> None:
         action="store_true",
         help="Ignore cursor and resync all sessions",
     )
+    parser.add_argument(
+        "--quarantine-cap", type=int, default=None,
+        help=(
+            "Stop and report an environment fault once this many sessions "
+            f"have been refused in one run (default: "
+            f"{DEFAULT_QUARANTINE_CAP}, or ${QUARANTINE_CAP_ENV_VAR}). "
+            "0 means stop at the first refusal."
+        ),
+    )
     args = parser.parse_args()
 
     logger = setup_logging()
     logger.info("Starting session sync (archive_root=%s)", args.archive_root)
     try:
-        sync(args.archive_root, args.full_resync, logger)
+        sync(
+            args.archive_root, args.full_resync, logger, args.quarantine_cap,
+        )
     except EnvironmentFault as exc:
         # Reachable database, wrong state: permissions, a missing table or
         # column, an aborted transaction. Retrying cannot help, so say so

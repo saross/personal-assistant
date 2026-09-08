@@ -185,11 +185,80 @@ class TestClassifyPgError:
         assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "row"
 
     def test_missing_class_on_the_module_is_tolerated(self) -> None:
-        """A partial stand-in module must not make the classifier throw."""
+        """
+        A partial stand-in module must not make the classifier throw. With
+        no SQLSTATE and no recognisable class it falls to the conservative
+        default — hold, do not quarantine.
+        """
         partial = types.ModuleType("psycopg2")
         partial.Error = _Error
+        verdict = _pg_row_guard.classify_pg_error(_DataError("x"), partial)
+        assert verdict in ("row", "environment", "outage")
+
+    @pytest.mark.parametrize("pgcode,expected", [
+        # Row: the content of this row is wrong.
+        ("21000", "row"),      # cardinality_violation
+        ("22001", "row"),      # string_data_right_truncation
+        ("22007", "row"),      # invalid_datetime_format
+        ("22P02", "row"),      # invalid_text_representation
+        ("22P05", "row"),      # untranslatable_character — a NUL in jsonb
+        ("23502", "row"),      # not_null_violation
+        ("23505", "row"),      # unique_violation
+        ("23503", "row"),      # foreign_key_violation
+        # Outage: connection exception, and only that.
+        ("08006", "outage"),   # connection_failure
+        ("08003", "outage"),   # connection_does_not_exist
+        # Environment: reachable, wrong state.
+        ("0A000", "environment"),  # feature_not_supported
+        ("25P02", "environment"),  # in_failed_sql_transaction
+        ("3D000", "environment"),  # invalid_catalog_name
+        ("3F000", "environment"),  # invalid_schema_name
+        ("42501", "environment"),  # insufficient_privilege
+        ("42P01", "environment"),  # undefined_table
+        ("42703", "environment"),  # undefined_column
+        ("53100", "environment"),  # disk_full
+        ("53300", "environment"),  # too_many_connections
+        ("54000", "environment"),  # program_limit_exceeded
+        ("55P03", "environment"),  # lock_not_available
+        ("57014", "environment"),  # query_canceled
+        ("57P01", "environment"),  # admin_shutdown
+        ("58030", "environment"),  # io_error
+        ("XX000", "environment"),  # internal_error
+        ("40P01", "environment"),  # deadlock_detected — conservative default
+    ])
+    def test_sqlstate_class_matrix(self, pgcode, expected) -> None:
+        """
+        The SQLSTATE decides, not the Python class (second re-audit, C1).
+        The same ``OperationalError`` class carries both 08006 (a closed
+        socket, retry) and 53100 (a full disk, tell someone); the same
+        ``ProgrammingError`` carries both 42501 (a REVOKE) and a
+        client-side adaptation failure with no SQLSTATE at all. The
+        mutation this kills: classifying by exception class.
+        """
+        # Deliberately the *wrong* class for several of these, to prove the
+        # SQLSTATE is what is being read.
+        exc = _OperationalError("something happened", pgcode)
+        assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == expected
+
+    def test_disk_full_is_not_an_outage(self) -> None:
+        """
+        M5: psycopg2 raises DiskFull as OperationalError, so it was routed
+        to "PostgreSQL may be stopped", cursor held, exit 0 — a full disk
+        reported as a maybe-outage, silently, every five minutes.
+        """
+        exc = _OperationalError("could not extend file: No space left", "53100")
         assert (
-            _pg_row_guard.classify_pg_error(_DataError("x"), partial) == "row"
+            _pg_row_guard.classify_pg_error(exc, _fake_psycopg2())
+            == "environment"
+        )
+        assert _pg_row_guard.is_outage_error(exc, _fake_psycopg2()) is False
+
+    def test_connection_error_without_a_sqlstate_is_an_outage(self) -> None:
+        """A closed socket never gets as far as a SQLSTATE."""
+        exc = _OperationalError("server closed the connection unexpectedly")
+        assert exc.pgcode is None
+        assert (
+            _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "outage"
         )
 
 
@@ -297,29 +366,56 @@ class TestInsertRowsIndividually:
         assert [pid for pid, _ in poison] == ["only"]
         assert status == "row"
 
-    def test_all_rows_refused_alike_is_an_environment_fault(
+    def test_correlated_poison_is_still_quarantined(
         self, conn: MagicMock, logger: logging.Logger,
     ) -> None:
         """
-        Every row refused, none succeeded, one SQLSTATE between them: that
-        is the database or the schema, not four independently bad rows.
-        Quarantining them would advance the cursor past all four. The
-        mutation this kills: dropping the all-alike check and returning
-        ``ROW`` whenever no outage or environment class was raised.
+        Two rows failing identically is ordinary, not evidence of an
+        environment fault: two archived sessions from one LLM run both
+        carrying a NUL raise the same 22P05. An earlier version of this
+        branch held the cursor here — re-creating the exact stall the
+        branch exists to fix, with no escape. The mutation this kills:
+        reinstating an "every row failed alike" rule.
         """
-        rows = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        rows = [("nul-a", 1), ("nul-b", 2)]
         returned, poison, status = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
             execute_values=self._execute_values(
-                {"a", "b", "c", "d"},
-                lambda rid: _DataError("value too long", "22001"),
+                {"nul-a", "nul-b"},
+                lambda rid: _DataError(
+                    "unsupported Unicode escape sequence", "22P05",
+                ),
             ),
             logger=logger,
         )
-        assert status == "environment"
-        assert poison == [], "nothing may be quarantined on an environment fault"
+        assert status == "row"
+        assert [pid for pid, _ in poison] == ["nul-a", "nul-b"]
         assert returned == set()
+
+    def test_a_whole_batch_of_correlated_poison_is_quarantined(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        Same shape at batch scale: one buggy extraction run producing 20
+        records that all violate the same NOT NULL. Every one is
+        quarantined and the caller may advance — under the cap, which is
+        what bounds this.
+        """
+        rows = [(f"r{i}", i) for i in range(20)]
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", rows,
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=self._execute_values(
+                {row[0] for row in rows},
+                lambda rid: _IntegrityError(
+                    'null value in column "project"', "23502",
+                ),
+            ),
+            logger=logger,
+        )
+        assert status == "row"
+        assert len(poison) == 20
 
     def test_all_rows_refused_but_differently_is_still_row_poison(
         self, conn: MagicMock, logger: logging.Logger,
@@ -333,6 +429,7 @@ class TestInsertRowsIndividually:
         def _call(cur, sql, values, page_size=None, fetch=False):
             rid = values[0][0]
             raise _DataError(f"refused {rid}", codes[rid])
+
 
         returned, poison, status = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", [("a", 1), ("b", 2)],
@@ -400,10 +497,10 @@ class TestInsertRowsIndividually:
         kills: removing the cap check from the replay loop.
         """
         rows = [(f"r{i}", i) for i in range(20)]
-        # Distinct SQLSTATEs so the all-alike rule cannot be what fires.
+
         def _call(cur, sql, values, page_size=None, fetch=False):
             rid = values[0][0]
-            raise _DataError(f"refused {rid}", f"22{rid[1:]:>03}")
+            raise _DataError(f"refused {rid}", "22001")
 
         returned, poison, status = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
@@ -424,7 +521,7 @@ class TestInsertRowsIndividually:
         def _call(cur, sql, values, page_size=None, fetch=False):
             rid = values[0][0]
             if rid in ("r1", "r2"):
-                raise _DataError(f"refused {rid}", f"22{rid[1:]:>03}")
+                raise _DataError(f"refused {rid}", "22001")
             return [(rid,)]
 
         returned, poison, status = _pg_row_guard.insert_rows_individually(

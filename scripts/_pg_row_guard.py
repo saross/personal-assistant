@@ -23,13 +23,20 @@ narrative text, PostgreSQL rejects ``\\u0000`` inside ``jsonb``, and because
 stale with the wrong diagnosis in the log.
 
 The re-audit of that fix found a third case hiding inside the second, and
-the split is now three-way (finding C1). ``ProgrammingError`` and
-``InternalError`` are *not* about the row: a REVOKE, a half-applied
-migration, or an already-aborted transaction refuses every row alike. Left
-in the "refused row" class they would quarantine an entire cursor window
-and advance past it. They belong with the outage: hold the cursor,
-quarantine nothing — but exit non-zero, because unlike an outage no amount
-of retrying will fix them.
+the split is now three-way (finding C1). A REVOKE, a half-applied
+migration, an already-aborted transaction, or a full disk refuses every row
+alike. Left in the "refused row" class they would quarantine an entire
+cursor window and advance past it. They belong with the outage: hold the
+cursor, quarantine nothing — but exit non-zero, because unlike an outage no
+amount of retrying will fix them.
+
+The second re-audit then found that the *exception class* is the wrong
+discriminator. ``ProgrammingError`` covers both a REVOKE and a client-side
+"can't adapt type 'dict'"; ``OperationalError`` covers both a closed socket
+and a full disk. Classification is now by SQLSTATE class — the identifier
+PostgreSQL's own error documentation is organised around — with the Python
+class consulted only when there is no SQLSTATE at all, which means psycopg2
+raised the error before the server ever saw it.
 
 This module supplies the four pieces both scripts need:
 
@@ -53,28 +60,63 @@ quarantine of the skipped record.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Callable, Iterable
 
-#: psycopg2 exception classes that mean "we could not talk to the database".
-#: ``OperationalError`` covers connection loss, authentication failure, and
-#: server shutdown; ``InterfaceError`` covers use of a connection that has
-#: already gone away. Transient: hold the cursor and retry next tick.
-OUTAGE_ERROR_NAMES: tuple[str, ...] = ("OperationalError", "InterfaceError")
+#: psycopg2 exception classes that mean "we could not reach the database" —
+#: but only when they carry NO SQLSTATE. A server that answers well enough to
+#: send back an error code is, by definition, reachable: psycopg2 raises
+#: ``OperationalError`` for DiskFull (53100), LockNotAvailable (55P03), and
+#: QueryCanceled (57014) among others, and routing those to "outage, retry,
+#: exit 0" hid a full disk behind a message about PostgreSQL possibly being
+#: stopped (second re-audit, finding M5).
+CONNECTION_ERROR_NAMES: tuple[str, ...] = ("OperationalError", "InterfaceError")
 
-#: psycopg2 exception classes that mean "the database is not in the state
-#: this script was written for". Verified against psycopg2 2.9.12:
-#: ``InsufficientPrivilege`` (a REVOKE), ``UndefinedTable`` and
-#: ``UndefinedColumn`` (a half-applied migration or a restore) are all
-#: ``ProgrammingError``; ``InFailedSqlTransaction`` is ``InternalError``.
+#: Exception classes psycopg2 raises *client-side*, with no SQLSTATE, when a
+#: value cannot be adapted — "can't adapt type 'dict'", a NUL in a text
+#: parameter. As row-specific as an error gets.
+CLIENT_SIDE_ROW_ERROR_NAMES: tuple[str, ...] = (
+    "ProgrammingError", "DataError", "IntegrityError",
+)
+
+#: SQLSTATE class 08 — connection exception. The one server-reported family
+#: that is genuinely an outage.
+OUTAGE_SQLSTATE_CLASSES: frozenset[str] = frozenset({"08"})
+
+#: SQLSTATE classes that describe *this row's content*, and nothing else:
 #:
-#: These look identical to a refused row — every row fails — but nothing is
-#: wrong with the data. Quarantining the slice and advancing would empty a
-#: whole cursor window into a quarantine file (42k rows after a cursor
-#: reset) and exit 0 into a log nobody reads. Hold the cursor, quarantine
-#: nothing, and exit non-zero so the operator is told (audit round two
-#: re-audit, finding C1).
-ENVIRONMENT_ERROR_NAMES: tuple[str, ...] = (
-    "ProgrammingError", "InternalError", "NotSupportedError",
+#: * ``21`` cardinality violation
+#: * ``22`` data exception — bad timestamp, value too long, and 22P05
+#:   ``untranslatable_character``, which is what a NUL in jsonb raises
+#: * ``23`` integrity constraint violation — NOT NULL, unique, foreign key
+#:
+#: Quarantine these and move on: the next row may well be fine, and retrying
+#: this one for ever cannot help.
+ROW_SQLSTATE_CLASSES: frozenset[str] = frozenset({"21", "22", "23"})
+
+#: Everything else the server can report is an environment fault: the
+#: database is reachable and answering, but is not in the state this script
+#: was written for, and no row is to blame. Classified by exclusion rather
+#: than by list so a SQLSTATE nobody anticipated defaults to "hold the cursor
+#: and tell someone" rather than "quarantine the data and carry on" — the
+#: safe direction, because a wrongly held cursor is recoverable and wrongly
+#: skipped data is not.
+#:
+#: Named for the reader, all confirmed against psycopg2 2.9.12:
+#:   ``0A`` feature not supported          ``42`` syntax error / access rule
+#:   ``25`` invalid transaction state      ``53`` insufficient resources
+#:   ``3D``/``3F`` invalid catalog/schema  ``54`` program limit exceeded
+#:   ``55`` object not in prerequisite state
+#:   ``57`` operator intervention (57014 QueryCanceled, 57P01 admin shutdown)
+#:   ``58`` system error                   ``XX`` internal error
+#:
+#: Note ``40`` (transaction rollback: deadlock, serialisation failure) also
+#: lands here. Retrying would in principle succeed, so an outage-style silent
+#: retry would be defensible — but both syncs already serialise themselves
+#: with a PostgreSQL advisory lock, so a deadlock here means something
+#: unexpected is writing to these tables, which is exactly worth surfacing.
+ENVIRONMENT_SQLSTATE_CLASSES_DOCUMENTED: tuple[str, ...] = (
+    "0A", "25", "3D", "3F", "42", "53", "54", "55", "57", "58", "XX",
 )
 
 #: Outcome of :func:`classify_pg_error`.
@@ -85,14 +127,12 @@ ROW = "row"
 #: Most rows a single run may quarantine before it stops and reports
 #: instead. A handful of poison rows is a data problem; hundreds is a
 #: symptom of something systemic that quarantining would merely hide,
-#: and every quarantined row is one the cursor then skips.
+#: and every quarantined row is one the cursor then skips. Override with
+#: ``PA_PG_QUARANTINE_CAP`` or ``--quarantine-cap``.
 DEFAULT_QUARANTINE_CAP = 200
 
-#: Fewest rows in a replay before "every row failed identically" counts as
-#: evidence of an environment fault rather than of bad data. One refusal is
-#: no evidence at all — and a lone poison row is exactly what the per-row
-#: replay exists to isolate.
-MIN_ROWS_FOR_ALL_ALIKE = 2
+#: Environment variable overriding :data:`DEFAULT_QUARANTINE_CAP`.
+QUARANTINE_CAP_ENV_VAR = "PA_PG_QUARANTINE_CAP"
 
 
 class EnvironmentFault(RuntimeError):
@@ -104,9 +144,66 @@ class EnvironmentFault(RuntimeError):
     retrying will not help until a human changes something.
     """
 
+
 #: The NUL code point. Legal in JSON (as the escape ``\u0000``) and in a
 #: Python string, but rejected by PostgreSQL in both ``text`` and ``jsonb``.
 NUL = "\x00"
+
+
+def resolve_quarantine_cap(
+    explicit: int | None = None,
+    *,
+    logger: logging.Logger | None = None,
+) -> int:
+    """
+    Return the per-run quarantine cap, honouring the override chain.
+
+    Precedence: an explicit value (the ``--quarantine-cap`` flag) beats
+    the ``PA_PG_QUARANTINE_CAP`` environment variable, which beats
+    :data:`DEFAULT_QUARANTINE_CAP`. A non-numeric or negative environment
+    value is reported and ignored rather than silently disabling the cap.
+
+    Zero is accepted and means "quarantine nothing": every refused row
+    becomes an environment fault. Useful for an operator who wants the
+    run to stop at the first refusal.
+    """
+    if explicit is not None:
+        return max(0, explicit)
+
+    raw = os.environ.get(QUARANTINE_CAP_ENV_VAR)
+    if raw is None or not raw.strip():
+        return DEFAULT_QUARANTINE_CAP
+    try:
+        value = int(raw)
+    except ValueError:
+        if logger is not None:
+            logger.warning(
+                "Ignoring %s=%r — not an integer; using the default of %d.",
+                QUARANTINE_CAP_ENV_VAR, raw, DEFAULT_QUARANTINE_CAP,
+            )
+        return DEFAULT_QUARANTINE_CAP
+    if value < 0:
+        if logger is not None:
+            logger.warning(
+                "Ignoring %s=%r — negative; using the default of %d.",
+                QUARANTINE_CAP_ENV_VAR, raw, DEFAULT_QUARANTINE_CAP,
+            )
+        return DEFAULT_QUARANTINE_CAP
+    return value
+
+
+def sqlstate_class(exc: BaseException) -> str | None:
+    """
+    Return the two-character SQLSTATE class of ``exc``, or None.
+
+    ``None`` means the exception carries no SQLSTATE at all, which is the
+    signature of a client-side failure: psycopg2 raised it without ever
+    reaching the server.
+    """
+    pgcode = getattr(exc, "pgcode", None)
+    if isinstance(pgcode, str) and len(pgcode) >= 2:
+        return pgcode[:2].upper()
+    return None
 
 
 def _matches_any(exc: BaseException, psycopg2_module: Any,
@@ -127,6 +224,14 @@ def classify_pg_error(exc: BaseException, psycopg2_module: Any) -> str:
     """
     Sort a database exception into one of three response classes.
 
+    The verdict comes from the SQLSTATE the server sent, not from the
+    Python exception class. That is the second re-audit's finding C1: the
+    class is far too coarse. ``ProgrammingError`` covers both a REVOKE and
+    a client-side "can't adapt type 'dict'"; ``OperationalError`` covers
+    both a closed socket and a full disk. The SQLSTATE separates them
+    exactly, and it is the identifier PostgreSQL's own documentation is
+    organised around.
+
     Parameters
     ----------
     exc:
@@ -139,38 +244,43 @@ def classify_pg_error(exc: BaseException, psycopg2_module: Any) -> str:
     Returns
     -------
     str
-        * :data:`OUTAGE` — the database is unreachable. Hold the cursor,
-          quarantine nothing, retry on the next tick.
-        * :data:`ENVIRONMENT` — the database is reachable but not in the
-          expected state (permissions revoked, a table or column missing,
-          a transaction already aborted). Recognised by class *and* by
-          carrying a server SQLSTATE. Hold the cursor, quarantine
-          nothing, and report non-zero: retrying will not help, and
-          quarantining would discard good data to no purpose.
-        * :data:`ROW` — the database refused *this row's content*
-          (``DataError``, ``IntegrityError``, or an adaptation
-          ``ValueError``/``TypeError``). Quarantine it and move on.
+        * :data:`OUTAGE` — SQLSTATE class 08, or a connection-level
+          exception with no SQLSTATE at all. Hold the cursor, quarantine
+          nothing, retry on the next tick, exit 0.
+        * :data:`ROW` — SQLSTATE classes 21, 22, or 23; or a client-side
+          adaptation failure (``ValueError``, ``TypeError``, or a psycopg2
+          error with no SQLSTATE). This row's content is wrong.
+          Quarantine it and carry on.
+        * :data:`ENVIRONMENT` — every other server-reported SQLSTATE.
+          Reachable but not in the expected state. Hold the cursor,
+          quarantine nothing, report non-zero.
 
-    The three-way split replaces an earlier two-way one that put
-    ``ProgrammingError`` and ``InternalError`` in the ``ROW`` class. That
-    was a regression on the pre-branch behaviour: a REVOKE or a
-    half-applied migration refuses every row, so the whole slice was
-    quarantined, the cursor advanced past it, and the process exited 0.
+    An earlier version of this branch also treated "every row in the batch
+    failed identically" as an environment fault. That rule was withdrawn:
+    correlated poison is ordinary here — two archived sessions from the
+    same LLM run both carrying a NUL, two records from one buggy
+    extraction sharing 23502 — and the rule turned exactly the situation
+    this branch exists to fix into a permanent stall with no escape.
     """
-    if _matches_any(exc, psycopg2_module, OUTAGE_ERROR_NAMES):
+    state_class = sqlstate_class(exc)
+
+    if state_class is not None:
+        # Server-reported: the SQLSTATE decides, with no appeal to the
+        # Python class.
+        if state_class in OUTAGE_SQLSTATE_CLASSES:
+            return OUTAGE
+        if state_class in ROW_SQLSTATE_CLASSES:
+            return ROW
+        return ENVIRONMENT
+
+    # No SQLSTATE: psycopg2 raised this before the server saw it.
+    if _matches_any(exc, psycopg2_module, CONNECTION_ERROR_NAMES):
         return OUTAGE
-    if _matches_any(exc, psycopg2_module, ENVIRONMENT_ERROR_NAMES):
-        # One qualification, and it matters: psycopg2 also raises
-        # ``ProgrammingError`` *client-side* when it cannot adapt a Python
-        # value ("can't adapt type 'dict'"), which is as row-specific as an
-        # error gets. Server-side errors carry the SQLSTATE PostgreSQL sent
-        # (``pgcode``); a client-side adaptation failure has none. Use that
-        # to tell them apart, and let the all-alike rule in
-        # :func:`insert_rows_individually` catch anything this misjudges.
-        if getattr(exc, "pgcode", None):
-            return ENVIRONMENT
+    if isinstance(exc, (ValueError, TypeError)):
         return ROW
-    return ROW
+    if _matches_any(exc, psycopg2_module, CLIENT_SIDE_ROW_ERROR_NAMES):
+        return ROW
+    return ENVIRONMENT
 
 
 def is_outage_error(exc: BaseException, psycopg2_module: Any) -> bool:
@@ -178,24 +288,11 @@ def is_outage_error(exc: BaseException, psycopg2_module: Any) -> bool:
     Return True when ``exc`` means the database was unreachable.
 
     Thin wrapper over :func:`classify_pg_error` for callers that only need
-    the "retry later" question answered.
+    the "retry later" question answered. Note that this is now False for a
+    full disk or a cancelled query, which psycopg2 also reports as
+    ``OperationalError`` — see :data:`CONNECTION_ERROR_NAMES`.
     """
     return classify_pg_error(exc, psycopg2_module) == OUTAGE
-
-
-def _error_signature(exc: BaseException) -> str:
-    """
-    Return a coarse identity for an error, for the all-rows-alike check.
-
-    Prefers the SQLSTATE (``pgcode``) that PostgreSQL attaches to every
-    server-side error, because two rows failing with 22P02 are the same
-    fault; falls back to the exception class name for adaptation errors
-    raised client-side, which carry no SQLSTATE.
-    """
-    pgcode = getattr(exc, "pgcode", None)
-    if isinstance(pgcode, str) and pgcode:
-        return f"sqlstate:{pgcode}"
-    return f"class:{type(exc).__name__}"
 
 
 def insert_rows_individually(
@@ -252,7 +349,9 @@ def insert_rows_individually(
     quarantine_cap:
         Stop and report an environment fault once this many rows have been
         refused. A handful of poison rows is a data problem; hundreds is a
-        symptom, and each quarantined row is one the cursor skips.
+        symptom, and each quarantined row is one the cursor skips. Resolve
+        it with :func:`resolve_quarantine_cap` so ``PA_PG_QUARANTINE_CAP``
+        and ``--quarantine-cap`` are honoured.
 
     Returns
     -------
@@ -270,22 +369,13 @@ def insert_rows_individually(
           cursor and quarantine nothing: rows not yet attempted have neither
           landed nor been quarantined.
 
-    A replay in which *no* row succeeded and every one of two or more rows
-    was refused with the same error signature (SQLSTATE, or exception class
-    for client-side adaptation errors) is reported as :data:`ENVIRONMENT`
-    even when the class says ``DataError``. Data poison is sporadic; "all
-    of them, identically, and not one success" is a fault in the database
-    or the schema, and quarantining a whole cursor window on that evidence
-    destroys more than it saves.
-
-    Two deliberate limits on that rule. A single refused row is left in the
-    :data:`ROW` class: with one row there is no "all alike" evidence, and a
-    lone poison record is the case this whole replay exists to handle. And
-    any success in the same replay proves the environment is healthy, so
-    the remaining failures are per-row by demonstration. The cost of the
-    rule is a false hold when a small slice happens to be uniformly bad —
-    recoverable, because the run now exits non-zero and says so, where the
-    opposite mistake silently skips data.
+    Every refusal is judged on its own SQLSTATE, and nothing is inferred
+    from how many rows failed together. An earlier version of this branch
+    treated "every row failed identically" as evidence of an environment
+    fault; correlated poison is ordinary here — two archived sessions from
+    one LLM run both carrying a NUL, two memories from one buggy
+    extraction sharing 23502 — so that rule turned the exact case this
+    replay exists for into a permanent stall.
     """
     # M1: never replay from inside an aborted transaction. Harmless on a
     # healthy connection; on an aborted one it is the difference between
@@ -299,7 +389,6 @@ def insert_rows_individually(
     total_rows = len(rows)
     returned_ids: set[str] = set()
     poison: list[tuple[str, str]] = []
-    signatures: set[str] = set()
 
     for attempted, row in enumerate(rows, start=1):
         try:
@@ -316,21 +405,21 @@ def insert_rows_individually(
                     "cursor held.",
                     exc, attempted, total_rows,
                 )
+                _log_landed_rows(returned_ids, logger)
                 return returned_ids, [], OUTAGE
             if verdict == ENVIRONMENT:
                 logger.error(
                     "PostgreSQL refused row %s for a reason that is not "
-                    "about the data (%s: %s) — this is an environment "
-                    "fault (permissions, a missing table or column, an "
-                    "aborted transaction). Holding the cursor and "
-                    "quarantining nothing.",
-                    id_of(row), type(exc).__name__, str(exc).strip(),
+                    "about the data (%s, SQLSTATE %s: %s) — environment "
+                    "fault. Holding the cursor and quarantining nothing.",
+                    id_of(row), type(exc).__name__,
+                    sqlstate_class(exc) or "none", str(exc).strip(),
                 )
+                _log_landed_rows(returned_ids, logger)
                 return returned_ids, [], ENVIRONMENT
 
             row_id = id_of(row)
             poison.append((row_id, str(exc).strip()))
-            signatures.add(_error_signature(exc))
             logger.error(
                 "PostgreSQL refused row %s — quarantining it and continuing: "
                 "%s", row_id, str(exc).strip(),
@@ -342,30 +431,39 @@ def insert_rows_individually(
                     "That many at once is a symptom, not a data problem, "
                     "and quarantining them would advance the cursor past "
                     "every one. Holding the cursor and quarantining "
-                    "nothing.",
-                    quarantine_cap,
+                    "nothing. Raise the ceiling with %s or "
+                    "--quarantine-cap if this is genuinely a bad batch.",
+                    quarantine_cap, QUARANTINE_CAP_ENV_VAR,
                 )
+                _log_landed_rows(returned_ids, logger)
                 return returned_ids, [], ENVIRONMENT
 
-    # Every row refused, none succeeded, all alike: a fault in the database
-    # or schema wearing a row error's clothes. Needs at least two rows —
-    # see the note in the docstring on why a single refusal stays a row
-    # fault — and no successes, since one success proves the environment is
-    # fine and makes the remaining failures per-row by demonstration.
-    if (total_rows >= MIN_ROWS_FOR_ALL_ALIKE
-            and not returned_ids
-            and len(poison) == total_rows
-            and len(signatures) == 1):
-        logger.error(
-            "Every one of the %d row(s) was refused with the same error "
-            "(%s) and not one succeeded — that is an environment fault, "
-            "not %d independently bad rows. Holding the cursor and "
-            "quarantining nothing.",
-            total_rows, next(iter(signatures)), total_rows,
-        )
-        return returned_ids, [], ENVIRONMENT
-
     return returned_ids, poison, ROW
+
+
+def _log_landed_rows(
+    returned_ids: set[str],
+    logger: logging.Logger,
+) -> None:
+    """
+    Say which rows committed before the replay was abandoned.
+
+    They are in the database while the cursor stays behind them, so the
+    next run re-attempts them — harmless (``ON CONFLICT`` covers it) but
+    invisible without this line, which left an operator comparing counts
+    with no way to tell what had already landed (second re-audit, low
+    finding L4).
+    """
+    if not returned_ids:
+        logger.info("No row had landed before the run was abandoned.")
+        return
+    landed = sorted(returned_ids)
+    logger.warning(
+        "%d row(s) DID land before the run was abandoned and are already "
+        "in PostgreSQL; the cursor stays behind them, so the next run "
+        "re-attempts them harmlessly. First 10: %s",
+        len(landed), landed[:10],
+    )
 
 
 def sanitise_nuls(value: Any) -> tuple[Any, int]:

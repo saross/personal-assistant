@@ -1193,3 +1193,298 @@ class TestQuarantineDedupSeesBothShapes:
             if line.strip()
         ]
         assert len(entries) == 1
+
+
+class TestCorrelatedPoison:
+    """
+    Second re-audit, C1 — the case the withdrawn all-alike rule broke.
+
+    The live September 2026 incident was *two* archived sessions carrying
+    a NUL in LLM-generated narrative. Both raise the same SQLSTATE. A rule
+    keyed on "every row failed alike" therefore held the cursor on exactly
+    the incident the branch was written to fix.
+    """
+
+    def test_two_nul_sessions_are_quarantined_and_the_cursor_advances(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """
+        Both sessions refused with 22P05 (untranslatable_character, what
+        PostgreSQL raises for a NUL in jsonb). Both quarantined, cursor
+        advanced, exit clean. The mutation this kills: reinstating an
+        "every row failed alike" environment rule.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        def _both_nul(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2DataError(
+                "unsupported Unicode escape sequence: "
+                "\\u0000 cannot be converted to text",
+                "22P05",
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=_both_nul,
+        )
+
+        sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 2
+
+    def test_disk_full_holds_the_cursor(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """
+        53100 arrives as an OperationalError, so the class-based split
+        called it an outage and exited 0 — a full disk reported as
+        "PostgreSQL may be stopped", every five minutes, silently (M5).
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        def _disk_full(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2OperationalError(
+                "could not extend file: No space left on device", "53100",
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=_disk_full,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        assert not quarantine.exists()
+        if cursor_file.exists():
+            assert "sessions_sync_timestamp" not in json.loads(
+                cursor_file.read_text(encoding="utf-8")
+            )
+
+    def test_mixed_row_and_environment_faults_hold(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        One genuinely bad row and one REVOKE: the environment fault wins,
+        because the run cannot tell how much of the rest it failed to
+        attempt. Nothing is quarantined.
+        """
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+
+        def _mixed(cur, sql, values, page_size=None, fetch=False):
+            ids = [row[0] for row in values]
+            if len(ids) > 1:
+                raise _FakePsycopg2DataError("batch aborted", "22001")
+            if ids[0] == "s1":
+                raise _FakePsycopg2DataError("value too long", "22001")
+            raise _FakePsycopg2ProgrammingError(
+                "permission denied for table sessions", "42501",
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[], execute_values_side_effect=_mixed,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.upsert_sessions(
+                [_minimal_row("s1"), _minimal_row("s2")], test_logger,
+            )
+        assert not (tmp_path / "quarantine.jsonl").exists()
+
+    def test_default_quarantine_cap_is_exercised(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        Every other cap test passes ``cap=5``, so the shipped default was
+        never exercised (M1). Refusing one row past the default must stop
+        the run; refusing exactly the default must not.
+        """
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        cap = sync_mod.DEFAULT_QUARANTINE_CAP
+        rows = [_minimal_row(f"s{i}") for i in range(cap + 1)]
+
+        def _all_bad(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2DataError("value too long", "22001")
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[], execute_values_side_effect=_all_bad,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.upsert_sessions(rows, test_logger)
+
+    def test_env_var_overrides_the_cap(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """``PA_PG_QUARANTINE_CAP`` tunes it without a code change (M2)."""
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setenv("PA_PG_QUARANTINE_CAP", "1")
+
+        def _all_bad(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2DataError("value too long", "22001")
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[], execute_values_side_effect=_all_bad,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.upsert_sessions(
+                [_minimal_row(f"s{i}") for i in range(3)], test_logger,
+            )
+
+    def test_explicit_cap_beats_the_environment(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """The ``--quarantine-cap`` flag wins over the variable."""
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setenv("PA_PG_QUARANTINE_CAP", "1")
+
+        def _all_bad(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2DataError("value too long", "22001")
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[], execute_values_side_effect=_all_bad,
+        )
+
+        result = sync_mod.upsert_sessions(
+            [_minimal_row(f"s{i}") for i in range(3)],
+            test_logger,
+            quarantine_cap=10,
+        )
+        assert len(result.quarantined) == 3
+
+
+class TestSessionsCursorResetMidRun:
+    """
+    M1 — the sessions sync's compare-and-set had no test at all, so
+    ``expect_present=()`` survived as a mutation.
+    """
+
+    def test_vanished_cursor_key_is_not_written_back(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """
+        A rebuild clears the cursors mid-cycle; the sessions timestamp
+        must not be written back over it. The mutation this kills:
+        dropping ``expect_present`` from the sessions ``save_cursor``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"sessions_sync_timestamp": "2026-03-15T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[
+                "abc12345-6789-0000-aaaa-bbbbccccdddd",
+                "def67890-1234-0000-aaaa-bbbbccccdddd",
+            ],
+        )
+
+        original_upsert = sync_mod.upsert_sessions
+
+        def _rebuild_runs_now(rows, logger, quarantine_cap=None):
+            cursor_file.write_text(json.dumps({}), encoding="utf-8")
+            return original_upsert(rows, logger, quarantine_cap)
+
+        monkeypatch.setattr(sync_mod, "upsert_sessions", _rebuild_runs_now)
+
+        with pytest.raises(sync_mod.CursorKeyVanished):
+            sync_mod.sync(archive_tree, full_resync=False, logger=test_logger)
+
+        assert "sessions_sync_timestamp" not in json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )
+
+    def test_main_exits_six(self, monkeypatch, tmp_path, archive_tree):
+        """The documented exit code, asserted end to end (M1)."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"sessions_sync_timestamp": "2026-03-15T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[
+                "abc12345-6789-0000-aaaa-bbbbccccdddd",
+                "def67890-1234-0000-aaaa-bbbbccccdddd",
+            ],
+        )
+
+        original_upsert = sync_mod.upsert_sessions
+
+        def _rebuild_runs_now(rows, logger, quarantine_cap=None):
+            cursor_file.write_text(json.dumps({}), encoding="utf-8")
+            return original_upsert(rows, logger, quarantine_cap)
+
+        monkeypatch.setattr(sync_mod, "upsert_sessions", _rebuild_runs_now)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree)],
+        )
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 6
+
+    def test_first_run_with_no_cursor_key_still_writes(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """A key that was never there is a first run, and must still write."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[
+                "abc12345-6789-0000-aaaa-bbbbccccdddd",
+                "def67890-1234-0000-aaaa-bbbbccccdddd",
+            ],
+        )
+
+        sync_mod.sync(archive_tree, full_resync=False, logger=test_logger)
+
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"

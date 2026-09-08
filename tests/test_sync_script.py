@@ -1482,6 +1482,7 @@ class TestEnvironmentFaults:
             execute_values_side_effect=self._undefined_column,
         )
 
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
         try:
             with pytest.raises(SystemExit) as excinfo:
                 sync_mod.main()
@@ -1490,13 +1491,17 @@ class TestEnvironmentFaults:
 
         assert excinfo.value.code == 4
 
-    def test_every_record_refused_alike_holds_the_cursor(
+    def test_correlated_poison_is_quarantined_and_advances(
         self, monkeypatch, tmp_path, test_logger,
     ):
         """
-        Even a DataError becomes an environment fault when every record
-        fails with the same SQLSTATE and not one succeeds — a schema or
-        server problem wearing a row error's clothes.
+        Three records refused with the same 22P05 — one buggy extraction
+        run, or three sessions from one LLM batch all carrying a NUL.
+        Every one is quarantined and the cursor advances. An earlier
+        version of this branch held the cursor and exited 4 here, every
+        tick, for ever, with no escape hatch: P1 rebuilt on correlated
+        poison. The mutation this kills: reinstating an "every row failed
+        alike" environment rule.
         """
         memories = tmp_path / "memories.jsonl"
         self._canonical(memories, ["m1", "m2", "m3"])
@@ -1508,21 +1513,24 @@ class TestEnvironmentFaults:
         monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
 
         def _same_fault(cur, sql, values, page_size=None, fetch=False):
-            raise _FakePsycopg2DataError("value too long for type", "22001")
+            raise _FakePsycopg2DataError(
+                "unsupported Unicode escape sequence", "22P05",
+            )
 
         _install_fake_psycopg2(
             monkeypatch, present_before_ids=[], returned_ids=[],
             execute_values_side_effect=_same_fault,
         )
 
-        with pytest.raises(sync_mod.EnvironmentFault):
-            sync_mod.sync(test_logger)
+        sync_mod.sync(test_logger)
 
-        assert not quarantine.exists()
-        if cursor_file.exists():
-            assert json.loads(
-                cursor_file.read_text()
-            ).get("postgres_sync_line", 0) == 0
+        assert json.loads(cursor_file.read_text())["postgres_sync_line"] == 3
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert sorted(e["record"]["id"] for e in entries) == ["m1", "m2", "m3"]
 
     def test_a_single_poison_record_still_advances(
         self, monkeypatch, tmp_path, test_logger,
@@ -1648,10 +1656,10 @@ class TestCursorResetMidRun:
 
         original_insert = sync_mod.insert_memories
 
-        def _rebuild_runs_now(records, logger):
+        def _rebuild_runs_now(records, logger, quarantine_cap=None):
             """Simulate rebuild-postgres.py clearing the cursors mid-cycle."""
             cursor_file.write_text(json.dumps({}), encoding="utf-8")
-            return original_insert(records, logger)
+            return original_insert(records, logger, quarantine_cap)
 
         monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
 
@@ -1686,12 +1694,13 @@ class TestCursorResetMidRun:
 
         original_insert = sync_mod.insert_memories
 
-        def _rebuild_runs_now(records, logger):
+        def _rebuild_runs_now(records, logger, quarantine_cap=None):
             cursor_file.write_text(json.dumps({}), encoding="utf-8")
-            return original_insert(records, logger)
+            return original_insert(records, logger, quarantine_cap)
 
         monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
 
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
         try:
             with pytest.raises(SystemExit) as excinfo:
                 sync_mod.main()
