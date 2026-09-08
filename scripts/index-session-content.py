@@ -30,6 +30,14 @@ include them with --include-subagents.
 ⛔ A `--force` full re-index feeds `session_chunks`, and the same gates as
 `sync-sessions-to-postgres.py --full-resync` apply: see the rebuild
 preconditions in global-claude-md/postgresql-reference.md.
+
+Exit codes:
+    0 - ran to completion (possibly indexing nothing)
+    2 - psycopg2 is missing, or the database schema version is not the
+        one this script was written against
+    3 - PostgreSQL is unreachable. Not critical: the archive tree is
+        canonical and the index can be rebuilt at any time by re-running
+        this script.
 """
 
 from __future__ import annotations
@@ -41,6 +49,18 @@ import logging
 import os
 import sys
 from pathlib import Path
+
+# Schema-version guard (audit IC5 / B-X1). scripts/schema.sql states the
+# contract: "Every PG-touching script asserts meta.schema_version ...
+# before issuing any query." This was the one script in the Postgres
+# tranche that did not (audit round two, finding P5 / lens A-M2).
+# Imported by filesystem path because the script may be invoked from any
+# working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _schema_version import (  # noqa: E402
+    SchemaVersionError,
+    assert_schema_version,
+)
 
 DB_NAME = "claude_memories"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
@@ -213,12 +233,43 @@ def discover(archive_root: Path, project: str | None, include_subagents: bool):
 # --- Indexing ---------------------------------------------------------------
 
 def index_archive(archive_root: Path, project: str | None,
-                  include_subagents: bool, force: bool) -> tuple[int, int, int]:
-    """Index matching transcripts. Returns (files_indexed, files_skipped, chunks)."""
+                  include_subagents: bool,
+                  force: bool) -> tuple[int, int, int] | None:
+    """Index matching transcripts.
+
+    Returns ``(files_indexed, files_skipped, chunks)``, or ``None`` when
+    PostgreSQL is unreachable.
+
+    A stopped database used to produce a raw traceback here — ``connect``
+    was unguarded and ``main`` caught only ``ImportError`` — while every
+    other script in the Postgres tranche degrades with "PostgreSQL may be
+    stopped: this is not critical" (audit round two, finding P5 / lens
+    A-M3). The archive tree is canonical; the index is rebuildable.
+    """
     import psycopg2
     from psycopg2.extras import execute_values
 
-    conn = psycopg2.connect(dbname=DB_NAME)
+    try:
+        conn = psycopg2.connect(dbname=DB_NAME)
+    except psycopg2.OperationalError as exc:
+        logger.error("Cannot connect to PostgreSQL: %s", exc)
+        logger.error(
+            "PostgreSQL may be stopped — this is not critical. The archive "
+            "tree remains canonical; re-run this script once it is back to "
+            "rebuild the index."
+        )
+        return None
+
+    # Refuse to write against a schema shape this script was not written
+    # for: session_chunks' columns and its (archive_path, turn_idx) unique
+    # key are exactly what the INSERT below depends on.
+    try:
+        assert_schema_version(conn)
+    except SchemaVersionError as exc:
+        logger.error("Schema-version mismatch: %s", exc)
+        conn.close()
+        sys.exit(2)
+
     conn.autocommit = False
     files_indexed = files_skipped = total_chunks = 0
     try:
@@ -304,11 +355,16 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Indexing session content from %s%s ...", archive_root,
                 f" (project={args.project})" if args.project else "")
     try:
-        indexed, skipped, chunks = index_archive(
+        result = index_archive(
             archive_root, args.project, args.include_subagents, args.force)
     except ImportError:
         logger.error("psycopg2 is required; install it in the venv.")
         return 2
+    if result is None:
+        # Database unreachable — reported by index_archive, not fatal to
+        # the archive itself. Non-zero so a wrapper or cron job notices.
+        return 3
+    indexed, skipped, chunks = result
     logger.info("Done: %d file(s) indexed, %d skipped (unchanged), %d chunks.",
                 indexed, skipped, chunks)
     return 0
