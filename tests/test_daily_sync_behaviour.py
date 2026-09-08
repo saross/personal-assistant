@@ -199,6 +199,31 @@ class TestCrossMachineRebase:
         assert world.published_data_head() == published_before
 
 
+class TestStashIsRestoredWhenTheRunAborts:
+    """If anything between the stash and the pop fails, the EXIT trap must
+    put the working tree back. An un-popped stash is invisible until
+    someone goes looking — the shape that orphaned 41 records."""
+
+    def test_failed_pull_restores_the_stashed_edits(self, world: SyncWorld) -> None:
+        """Kills DS-M5: removing `trap restore_stash_on_exit EXIT` leaves
+        the day's uncommitted work buried in a stash."""
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- unsaved work\n", encoding="utf-8"
+        )
+        # Break the data remote so the pull cannot succeed.
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "unsaved work" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8"), "the edit is buried in a stash"
+        assert not git("stash", "list", cwd=machine.data).stdout.strip()
+
+
 class TestShrinkDetector:
     """A net shrink of memories.jsonl without a ``Rewrite-Class: bulk``
     trailer must undo the commit and abort before the push."""
