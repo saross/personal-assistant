@@ -3537,3 +3537,79 @@ class TestAnUnusableLineCursorReachesTheGate:
 
         assert cycle.degraded_detail is None
         assert cycle.processed == 1
+
+
+# ===========================================================================
+# The cursor and the backlog gate share one definition of "a line"
+#
+# Audit 2026-09-08, round 4a-2, finding M2. This cycle SAVED the cursor as a
+# ``splitlines()`` count while the bulk rewriters' backlog gate COMPARED it
+# against ``_sync_cursor.count_jsonl_lines`` (a b"\n" count). A raw U+2028
+# below the cursor made the two disagree, and the gate then read "caught up"
+# with records still unsynced beneath it.
+# ===========================================================================
+
+
+class TestCursorMatchesTheBacklogGate:
+    """What the cycle saves must be what the gate measures."""
+
+    def test_saved_cursor_equals_count_jsonl_lines(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """A corpus carrying a RAW separator saves a cursor the gate agrees with.
+
+        Kills the mutation ``split_jsonl_lines(...)`` ->
+        ``....splitlines()``: three records, one holding a raw U+2028, count
+        as three by newline and four by splitlines, so the cursor would be
+        saved one line past the end of the file the gate measures.
+        """
+        import _sync_cursor
+
+        separator = "\u2028"
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            "".join(
+                json.dumps({
+                    "id": mid,
+                    "category": "progress",
+                    "content": content,
+                    "created_at": "2026-04-23T00:00:00Z",
+                }, ensure_ascii=False) + "\n"
+                for mid, content in (
+                    ("mem-a", "plain"),
+                    ("mem-b", f"one{separator}two"),
+                    ("mem-c", "plain"),
+                )
+            ),
+            encoding="utf-8",
+        )
+        # The defect only exists while a raw separator is on disk.
+        assert len(memories.read_text(encoding="utf-8").splitlines()) == 4
+        assert _sync_cursor.count_jsonl_lines(memories) == 3
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE",
+                            tmp_path / "quarantine.jsonl")
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=["mem-a", "mem-b", "mem-c"],
+        )
+
+        sync_mod.sync(test_logger)
+
+        saved = json.loads(cursor_file.read_text(encoding="utf-8"))
+        assert saved["postgres_sync_line"] == 3, (
+            "the cursor was saved with a line count the backlog gate does "
+            "not share"
+        )
+        assert saved["postgres_sync_line"] == _sync_cursor.count_jsonl_lines(
+            memories)
+        # And the gate therefore reads the corpus as caught up.
+        assert _sync_cursor.unsynced_line_backlog(memories, cursor_file) == 0
