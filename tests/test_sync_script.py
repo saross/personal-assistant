@@ -525,6 +525,10 @@ class _FakePsycopg2InternalError(_FakePsycopg2Error):
     """Stand-in for ``psycopg2.InternalError`` — e.g. InFailedSqlTransaction."""
 
 
+class _FakePsycopg2IntegrityError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.IntegrityError`` — e.g. a NOT NULL violation."""
+
+
 def _poisoning_execute_values(
     poison_ids: set[str],
     error_class: type[Exception] = _FakePsycopg2DataError,
@@ -591,6 +595,7 @@ def _install_fake_psycopg2(
     fake_psycopg2.DataError = _FakePsycopg2DataError
     fake_psycopg2.ProgrammingError = _FakePsycopg2ProgrammingError
     fake_psycopg2.InternalError = _FakePsycopg2InternalError
+    fake_psycopg2.IntegrityError = _FakePsycopg2IntegrityError
 
     # Fake Json wrapper for JSONB columns (v2 schema). record_to_tuple
     # imports Json lazily from psycopg2.extras to wrap anchors/links/
@@ -1873,3 +1878,187 @@ class TestTheCycleReadsTheCursorUnderTheLock:
         assert observations[0] is True, (
             "the cycle's first cursor read was taken without the lock"
         )
+
+
+class TestMemoriesGatePolicyIsWired:
+    """
+    Finding M5 — the memories sync's correlated hold had no end-to-end
+    test, so replacing its guard with ``if False`` survived.
+    """
+
+    def _canonical(self, path: Path, ids: list[str]) -> None:
+        """Write a small valid canonical file."""
+        path.write_text(
+            "".join(
+                json.dumps({
+                    "id": mid, "category": "progress", "content": "c",
+                    "created_at": "2026-09-01T00:00:00+00:00",
+                }) + "\n"
+                for mid in ids
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_correlated_batch_holds_the_cursor_end_to_end(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        Five records refused alike: cursor held, nothing quarantined,
+        exit 4, gate naming the SQLSTATE and the exact command. The
+        mutation this kills: ``if status == CORRELATED`` → ``if False``
+        in ``insert_memories``.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, [f"m{i}" for i in range(5)])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+
+        def _all_alike(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2IntegrityError(
+                'null value in column "project"', "23502",
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=_all_alike,
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 4
+        assert not quarantine.exists()
+        if cursor_file.exists():
+            assert json.loads(
+                cursor_file.read_text()
+            ).get("postgres_sync_line", 0) == 0
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "23502" in gate
+        assert "venv/bin/python3" in gate
+        assert "--quarantine-anyway" in gate
+
+    def test_an_idle_tick_leaves_the_gate_end_to_end(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        Finding C1 through ``main``: the commonest run of all — nothing
+        new to sync — must not lower a standing gate.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 1}), encoding="utf-8",
+        )
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text(
+            "3\nrows were refused earlier\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("3"), (
+            "a no-op tick lowered a standing gate"
+        )
+
+    def test_an_unexpected_exception_raises_a_gate(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        Finding M2: exit 1 raised no gate, so a sync that died in a way
+        nobody anticipated stayed dead silently, every five minutes.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1"])
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+
+        def _boom(logger, *args, **kwargs):
+            raise RuntimeError("something nobody anticipated")
+
+        monkeypatch.setattr(sync_mod, "sync", _boom)
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 1
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "UNEXPECTED ERROR" in gate
+        assert "something nobody anticipated" in gate
+
+    def test_a_schema_mismatch_exit_raises_a_gate(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        Finding M2: assert_schema_version exits 2 from deep in the stack,
+        and SystemExit is a BaseException, so it sailed past the handler
+        and raised nothing.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1"])
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+
+        def _exit_two(logger, *args, **kwargs):
+            sys.exit(2)
+
+        monkeypatch.setattr(sync_mod, "sync", _exit_two)
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 2
+        assert "exit 2" in pinned_gate_file.read_text(encoding="utf-8")

@@ -36,19 +36,107 @@ stops being reported without anyone having to delete anything.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
+from typing import NamedTuple
 
-#: What one sync cycle achieved. Only :data:`CYCLE_COMPLETED` licenses a
-#: caller to clear its gate: a run that deferred to another instance, or
-#: that could not reach the database, has learnt nothing about the fault
-#: the gate is reporting (third re-audit, finding C1).
+#: The governing invariant, and the fourth re-audit's one finding in three
+#: places: **a gate is lowered only by evidence that the fault it records
+#: is gone. Absence of work is not evidence.** A run that found nothing to
+#: do has not shown that yesterday's quarantined rows were repaired, that
+#: the revoked grant was restored, or that the disk was emptied. It has
+#: shown nothing at all.
+#:
+#: Hence five outcomes rather than three. The distinction that matters is
+#: not "did the run finish" but "did the run learn anything".
+#:
+#: Processed at least one row and advanced the cursor. The only outcome
+#: that can lower a gate.
 CYCLE_COMPLETED = "completed"
+#: Nothing to do — no new lines, no new archives. Touches no gate. This is
+#: the case that cleared a standing quarantine warning within one
+#: five-minute tick before the fourth re-audit.
+CYCLE_IDLE = "idle"
 #: Another instance held the advisory lock; this run did nothing.
 CYCLE_CONTENDED = "contended"
-#: The run could not do its job — unreachable database, missing canonical,
-#: rows unaccounted for. The cursor did not advance.
+#: PostgreSQL could not be reached. Feeds the consecutive-outage counter.
+CYCLE_OUTAGE = "outage"
+#: Reached the database, or never needed to, but could not complete
+#: safely: rows unaccounted for, a missing canonical, an archive root that
+#: is absent or empty. The cursor did not advance.
 CYCLE_DEGRADED = "degraded"
+
+#: Consecutive unreachable runs before the gate says so. At a five-minute
+#: cron tick this is roughly fifteen minutes, which is long enough not to
+#: nag over a restart and short enough to matter (fourth re-audit, M4).
+OUTAGE_STREAK_THRESHOLD = 3
+
+#: What fault a standing gate currently records, so a later run can tell
+#: whether its evidence addresses *that* fault. Connecting is evidence
+#: against an outage gate and says nothing about a quarantine gate.
+REASON_OUTAGE = "outage"
+REASON_QUARANTINE = "quarantine"
+REASON_FAULT = "fault"
+
+
+class GateState(NamedTuple):
+    """
+    The sidecar state behind a gate file.
+
+    The gate file itself is a fixed two-line format the trigger parses;
+    it has nowhere to record *why* it was raised or how many consecutive
+    runs have failed to connect. This sits beside it.
+    """
+
+    #: One of the ``REASON_*`` constants, or None when no gate stands.
+    reason: str | None = None
+    #: Consecutive runs that could not reach PostgreSQL.
+    outage_streak: int = 0
+
+
+def state_path_for(gate_path: Path) -> Path:
+    """Return the sidecar state path beside a gate file."""
+    return gate_path.with_name(gate_path.name + ".state.json")
+
+
+def read_state(gate_path: Path) -> GateState:
+    """
+    Read the sidecar state, defaulting to "no gate, no outages".
+
+    Any unreadable or malformed state reads as the default: this is
+    bookkeeping that improves the message, never a gate on correctness.
+    """
+    try:
+        raw = json.loads(
+            state_path_for(gate_path).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, ValueError):
+        return GateState()
+    if not isinstance(raw, dict):
+        return GateState()
+    reason = raw.get("reason")
+    streak = raw.get("outage_streak", 0)
+    return GateState(
+        reason=reason if isinstance(reason, str) else None,
+        outage_streak=streak if isinstance(streak, int) and streak >= 0 else 0,
+    )
+
+
+def write_state(gate_path: Path, state: GateState) -> None:
+    """Persist the sidecar state, ignoring I/O failure."""
+    path = state_path_for(gate_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "reason": state.reason,
+                "outage_streak": state.outage_streak,
+            }, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 #: One gate file per script, never a shared one (third re-audit, finding
 #: C1). A single file with two writers and an unconditional clear meant a
@@ -138,3 +226,123 @@ def clear_gate(
             logger.error("Could not clear the gate file %s: %s", gate_path, exc)
         return False
     return True
+
+
+class CycleResult(NamedTuple):
+    """
+    What one sync cycle learnt, which is what the gate policy needs.
+
+    ``connected`` is deliberately tri-state. ``True`` means we reached
+    PostgreSQL — evidence against an outage gate. ``False`` means we tried
+    and could not — evidence *for* one. ``None`` means we never tried,
+    which is the case for a cycle that found nothing to do, and which must
+    not move the outage counter in either direction.
+    """
+
+    outcome: str
+    quarantined: int = 0
+    processed: int = 0
+    connected: bool | None = None
+
+
+def apply_sync_gate(
+    result: CycleResult,
+    *,
+    script: str,
+    gate_path: Path,
+    quarantine_file: Path,
+    logger: logging.Logger,
+) -> None:
+    """
+    Raise, lower, or leave a script's gate on this cycle's evidence.
+
+    The rules, in order, each one a finding from the fourth re-audit:
+
+    1. **Rows were quarantined** — raise the warning gate, whatever the
+       outcome. Data left the pipeline; a degraded run that also
+       quarantined used to discard the count entirely (M3).
+    2. **Three consecutive unreachable runs** — raise the outage gate. A
+       persistent outage produced no session-start signal at all before
+       this: the syncs exit 0 on an outage by design, so nothing surfaced
+       (M4).
+    3. **We connected and the standing gate was an outage** — lower it.
+       Connecting is precisely the evidence that "unreachable" is over.
+    4. **Completed, processed at least one row, quarantined none** —
+       lower the gate. This is the only evidence that a quarantine
+       warning or a fault is actually resolved.
+    5. **Anything else** — leave the gate exactly as it stands. An idle,
+       contended, or outage run has learnt nothing about the recorded
+       fault, and saying otherwise is how a five-minute no-op tick came
+       to erase a standing alarm.
+    """
+    state = read_state(gate_path)
+    if result.connected is True:
+        streak = 0
+    elif result.connected is False:
+        streak = state.outage_streak + 1
+    else:
+        streak = state.outage_streak
+
+    if result.quarantined:
+        write_gate(
+            f"[{script}] {result.quarantined} row(s) were REFUSED by "
+            f"PostgreSQL and quarantined to {quarantine_file}; the cursor "
+            f"advanced past them, so they are NOT in the database. Repair "
+            f"and replay them.",
+            gate_path=gate_path,
+            count=result.quarantined,
+            logger=logger,
+        )
+        write_state(gate_path, GateState(REASON_QUARANTINE, streak))
+        return
+
+    if streak >= OUTAGE_STREAK_THRESHOLD:
+        write_gate(
+            f"[{script}] PostgreSQL has been unreachable for {streak} "
+            f"consecutive runs (~{streak * 5} minutes). The sync is making "
+            f"no progress and nothing is reaching the query layer; /recall "
+            f"and /search-sessions are serving stale data. Check that "
+            f"PostgreSQL is running.",
+            gate_path=gate_path,
+            count=streak,
+            logger=logger,
+        )
+        write_state(gate_path, GateState(REASON_OUTAGE, streak))
+        return
+
+    if result.connected is True and state.reason == REASON_OUTAGE:
+        logger.info("PostgreSQL is reachable again — lowering the gate.")
+        clear_gate(gate_path=gate_path, logger=logger)
+        write_state(gate_path, GateState(None, 0))
+        return
+
+    if result.outcome == CYCLE_COMPLETED and result.processed >= 1:
+        clear_gate(gate_path=gate_path, logger=logger)
+        write_state(gate_path, GateState(None, streak))
+        return
+
+    logger.info(
+        "Cycle outcome %r with %d row(s) processed — no evidence about any "
+        "standing gate, so it is left alone.",
+        result.outcome, result.processed,
+    )
+    write_state(gate_path, GateState(state.reason, streak))
+
+
+def raise_fault_gate(
+    detail: str,
+    *,
+    gate_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """
+    Raise a gate for a fault that stopped the run, and record why.
+
+    Used by the exit paths (an environment fault, a correlated refusal, a
+    cap overflow, a schema mismatch, an unexpected exception). Keeps the
+    outage streak, which is about connectivity rather than about this
+    fault.
+    """
+    state = read_state(gate_path)
+    write_gate(detail, gate_path=gate_path, logger=logger)
+    write_state(gate_path, GateState(REASON_FAULT, state.outage_streak))

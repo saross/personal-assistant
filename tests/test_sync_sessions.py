@@ -1655,7 +1655,11 @@ class TestCorrelatedRefusalAtTheSyncLevel:
         gate = pinned_gate_file.read_text(encoding="utf-8")
         assert "23502" in gate
         assert "schema fault" in gate
-        assert "PA_PG_QUARANTINE_ANYWAY" in gate
+        # The gate must give the exact command, not a hint (fourth
+        # re-audit, low): interpreter, script path, and flag.
+        assert "venv/bin/python3" in gate
+        assert "scripts/sync-sessions-to-postgres.py" in gate
+        assert "--quarantine-anyway" in gate
 
     def test_two_alike_still_quarantine_and_advance(
         self, monkeypatch, tmp_path, archive_tree, test_logger,
@@ -1673,11 +1677,11 @@ class TestCorrelatedRefusalAtTheSyncLevel:
             execute_values_side_effect=self._all_alike,
         )
 
-        outcome, quarantined = sync_mod.sync(
+        cycle = sync_mod.sync(
             archive_tree, full_resync=True, logger=test_logger,
         )
 
-        assert quarantined == 2
+        assert cycle.quarantined == 2
         assert json.loads(
             cursor_file.read_text(encoding="utf-8")
         )["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"
@@ -1740,12 +1744,12 @@ class TestCorrelatedRefusalAtTheSyncLevel:
             execute_values_side_effect=self._all_alike,
         )
 
-        outcome, quarantined = sync_mod.sync(
+        cycle = sync_mod.sync(
             archive_root, full_resync=True, logger=test_logger,
             quarantine_anyway=True,
         )
 
-        assert quarantined == 5
+        assert cycle.quarantined == 5
         assert "sessions_sync_timestamp" in json.loads(
             cursor_file.read_text(encoding="utf-8")
         )
@@ -1809,3 +1813,208 @@ class TestTheCycleReadsTheCursorUnderTheLock:
         assert observations[0] is True, (
             "the cycle's first cursor read was taken without the lock"
         )
+
+
+class TestAnAbsentOrEmptyArchiveRootIsDegraded:
+    """
+    Fourth re-audit, finding C2 — "no new sessions" and "the disk is not
+    mounted" look identical from inside the walk, and the difference
+    decides whether the run may lower a gate.
+    """
+
+    def _standing_gate(self, gate: Path) -> None:
+        """Raise a gate, as a previous refusal would have."""
+        gate.parent.mkdir(parents=True, exist_ok=True)
+        gate.write_text("2\nrows were refused earlier\n", encoding="utf-8")
+
+    def test_a_missing_root_does_not_clear_the_gate(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: returning CYCLE_IDLE (or COMPLETED) when
+        the archive root does not exist.
+        """
+        self._standing_gate(pinned_gate_file)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+
+        cycle = sync_mod.sync(
+            tmp_path / "not-mounted", full_resync=True, logger=test_logger,
+        )
+
+        assert cycle.outcome == sync_mod.CYCLE_DEGRADED
+        sync_mod.apply_sync_gate(
+            cycle, script="sync-sessions-to-postgres.py",
+            gate_path=pinned_gate_file,
+            quarantine_file=tmp_path / "q.jsonl", logger=test_logger,
+        )
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("2")
+
+    def test_an_empty_root_does_not_clear_the_gate(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        An existing but empty root is an unmounted disk or the wrong
+        path, not a quiet week. The mutation this kills: dropping the
+        ``archive_root_is_populated`` check.
+        """
+        self._standing_gate(pinned_gate_file)
+        empty_root = tmp_path / "empty-archive"
+        empty_root.mkdir()
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+
+        cycle = sync_mod.sync(
+            empty_root, full_resync=True, logger=test_logger,
+        )
+
+        assert cycle.outcome == sync_mod.CYCLE_DEGRADED
+        sync_mod.apply_sync_gate(
+            cycle, script="sync-sessions-to-postgres.py",
+            gate_path=pinned_gate_file,
+            quarantine_file=tmp_path / "q.jsonl", logger=test_logger,
+        )
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("2")
+
+    def test_a_populated_root_with_nothing_new_is_idle(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+        pinned_gate_file,
+    ):
+        """
+        A genuinely quiet week is idle, not degraded — and idle still
+        leaves the gate alone, but for the right reason.
+        """
+        self._standing_gate(pinned_gate_file)
+        cursor_file = tmp_path / "cursors.json"
+        cursor_file.write_text(
+            json.dumps({"sessions_sync_timestamp": "2099-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+
+        cycle = sync_mod.sync(
+            archive_tree, full_resync=False, logger=test_logger,
+        )
+
+        assert cycle.outcome == sync_mod.CYCLE_IDLE
+        sync_mod.apply_sync_gate(
+            cycle, script="sync-sessions-to-postgres.py",
+            gate_path=pinned_gate_file,
+            quarantine_file=tmp_path / "q.jsonl", logger=test_logger,
+        )
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("2"), (
+            "an idle tick lowered a standing gate"
+        )
+
+
+class TestSessionsGatePolicyIsWired:
+    """
+    Finding M5 — the sessions sync's gate policy had no test of its own,
+    so replacing its guard with ``if False`` survived.
+    """
+
+    def test_an_idle_run_leaves_the_gate_end_to_end(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """
+        Through ``main``, not the policy in isolation: a no-op tick must
+        not lower a standing gate. The mutation this kills: clearing on
+        any outcome in the sessions ``main``.
+        """
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text("1\na standing fault\n", encoding="utf-8")
+        cursor_file = tmp_path / "cursors.json"
+        cursor_file.write_text(
+            json.dumps({"sessions_sync_timestamp": "2099-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree)],
+        )
+
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1")
+
+    def test_a_real_sync_lowers_the_gate_end_to_end(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """The counterpart: work done, nothing refused, gate lowered."""
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text("1\na standing fault\n", encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[
+                "abc12345-6789-0000-aaaa-bbbbccccdddd",
+                "def67890-1234-0000-aaaa-bbbbccccdddd",
+            ],
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree), "--full-resync"],
+        )
+
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"
+
+    def test_the_escape_hatch_losing_the_lock_exits_non_zero(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """
+        Low finding: an override run that never got the lock reported
+        "Session sync complete (outcome=contended)" and exit 0, leaving
+        the operator believing the batch had been cleared.
+        """
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[], advisory_lock_acquired=False,
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree), "--quarantine-anyway"],
+        )
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 8
+        assert "did not run" in pinned_gate_file.read_text(encoding="utf-8")

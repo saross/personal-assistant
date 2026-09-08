@@ -14,6 +14,7 @@ problem in front of Shawn at his next session start.
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 import subprocess
@@ -146,160 +147,298 @@ class TestGateFormat:
         assert "postgres-sync-memories" not in result.stdout
 
 
-@pytest.mark.parametrize("script_name", [
+GATE_CALLS = ("write_gate", "clear_gate", "raise_fault_gate")
+GATED_SCRIPTS = (
     "sync-to-postgres.py",
     "sync-sessions-to-postgres.py",
-])
-def test_both_syncs_raise_and_clear_the_gate(script_name: str) -> None:
+    "index-session-content.py",
+)
+
+
+def _gate_call_nodes(source: str):
+    """Yield every AST call node that raises or lowers a gate."""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(
+            func, "attr", None,
+        )
+        if name in GATE_CALLS:
+            yield name, node
+
+
+@pytest.mark.parametrize("script_name", GATED_SCRIPTS)
+def test_every_gate_call_pins_the_path_to_the_module_constant(script_name):
     """
-    Source-level wiring check: each sync must raise the gate on both
-    human-action exits and lower it on a clean run. A gate written by only
-    one of the two, or never cleared, is worse than none — it either
-    misses half the faults or nags for ever.
+    Parsed, not grepped (fourth re-audit, finding M6).
+
+    The substring version of this test was defeated by anything that
+    merely *contained* the right text — ``gate_path=GATE_FILE if False
+    else Path.home() / ".cache" / "x"`` passed it while writing the
+    operator's real gate. Three times during this audit a test wrote a
+    real gate file and would have put a fabricated infrastructure
+    problem in front of Shawn at session start; this is the check that
+    makes the next one a test failure.
+
+    Every gate call must pass ``gate_path`` as a bare Name, and that name
+    must be the script's own ``GATE_FILE`` (or a parameter of a helper
+    that main fills from it) — never an expression, never the shared
+    default, never a literal path.
     """
     source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
-    assert "write_gate(" in source
-    assert "clear_gate(" in source
-    # Every gate call goes through the module's pinnable constant, so a
-    # test can never write the operator's real gate.
-    assert "gate_path=_DEFAULT_GATE_FILE" not in source
-    exit_four = source.index("sys.exit(4)")
-    exit_six = source.index("sys.exit(6)")
-    assert "write_gate(" in source[exit_four - 900:exit_four]
-    assert "write_gate(" in source[exit_six - 900:exit_six]
-    # And the clear is reached only through the outcome policy, never
-    # unconditionally at the end of main (finding C1).
-    assert source.count("clear_gate(") == 1
-    assert "_apply_gate_policy(" in source
+    calls = list(_gate_call_nodes(source))
+    assert calls, f"{script_name} raises no gate at all"
+
+    for name, node in calls:
+        keywords = {kw.arg: kw.value for kw in node.keywords}
+        assert "gate_path" in keywords, (
+            f"{script_name}:{node.lineno}: {name} does not pass gate_path"
+        )
+        value = keywords["gate_path"]
+        assert isinstance(value, ast.Name), (
+            f"{script_name}:{node.lineno}: gate_path is a "
+            f"{type(value).__name__}, not a plain name — an expression "
+            f"here can evaluate to any path at all"
+        )
+        assert value.id in ("GATE_FILE", "gate_path"), (
+            f"{script_name}:{node.lineno}: gate_path is bound to "
+            f"{value.id!r}, not the module's GATE_FILE"
+        )
 
 
-class TestOnlyACompletedCycleClears:
+@pytest.mark.parametrize("script_name", GATED_SCRIPTS)
+def test_each_script_defines_its_own_gate_constant(script_name):
     """
-    Finding C1's invariant, at the level of the policy both syncs share:
-    a gate is cleared only by a cycle of *that* script that completed.
+    ``GATE_FILE`` must be assigned from the shared module's per-script
+    constant, so tests can pin it and the three scripts cannot collide.
     """
+    source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+    assignments = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "GATE_FILE"
+            for target in node.targets
+        )
+    ]
+    assert len(assignments) == 1, f"{script_name}: GATE_FILE is not assigned once"
+    value = assignments[0].value
+    assert isinstance(value, ast.Name) and value.id == "_DEFAULT_GATE_FILE", (
+        f"{script_name}: GATE_FILE is not the shared per-script constant"
+    )
 
-    def _load_sync(self):
-        """Import the memories sync (its policy is the shared one)."""
-        import importlib.util
-        path = SCRIPTS_DIR / "sync-to-postgres.py"
-        spec = importlib.util.spec_from_file_location("sync_gate_probe", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+
+@pytest.mark.parametrize("script_name", (
+    "sync-to-postgres.py", "sync-sessions-to-postgres.py",
+))
+def test_the_syncs_route_clearing_through_the_shared_policy(script_name):
+    """
+    Neither sync may clear its gate directly: the decision belongs to
+    ``apply_sync_gate``, which is where the evidence rule lives.
+    """
+    source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+    names = [name for name, _ in _gate_call_nodes(source)]
+    assert "clear_gate" not in names, (
+        f"{script_name} clears its gate outside the shared policy"
+    )
+    assert "apply_sync_gate(" in source
+
+
+class TestEvidenceLowersAGate:
+    """
+    The fourth re-audit's governing invariant: a gate is lowered only by
+    evidence that the fault it records is gone. Absence of work is not
+    evidence.
+    """
 
     @pytest.fixture
-    def raised(self, tmp_path: Path) -> Path:
+    def gate(self, tmp_path: Path) -> Path:
         """A gate already standing, as a previous exit-4 run left it."""
+        path = tmp_path / "postgres-sync-memories-gate"
+        _sync_gate.raise_fault_gate(
+            "a previous run exited 4", gate_path=path,
+            logger=logging.getLogger("test-gate"),
+        )
+        return path
+
+    def _apply(self, gate, result):
+        """Run the shared policy against a standing gate."""
+        _sync_gate.apply_sync_gate(
+            result,
+            script="sync-to-postgres.py",
+            gate_path=gate,
+            quarantine_file=gate.parent / "quarantine.jsonl",
+            logger=logging.getLogger("test-gate"),
+        )
+
+    def _standing(self, gate) -> bool:
+        """Is the gate still raised?"""
+        return gate.read_text(encoding="utf-8").splitlines()[0] != "0"
+
+    @pytest.mark.parametrize("result", [
+        # Nothing to do: the case that cleared a standing alarm every
+        # five minutes before this fix.
+        _sync_gate.CycleResult(_sync_gate.CYCLE_IDLE),
+        # Deferred to another instance.
+        _sync_gate.CycleResult(_sync_gate.CYCLE_CONTENDED, connected=True),
+        # Could not reach the database.
+        _sync_gate.CycleResult(_sync_gate.CYCLE_OUTAGE, connected=False),
+        # Reached it, but could not finish safely.
+        _sync_gate.CycleResult(_sync_gate.CYCLE_DEGRADED, connected=True),
+        # Completed, but processed nothing — no evidence either.
+        _sync_gate.CycleResult(
+            _sync_gate.CYCLE_COMPLETED, processed=0, connected=True,
+        ),
+    ])
+    def test_a_run_that_learnt_nothing_leaves_the_gate(self, gate, result):
+        """
+        The mutation this kills: lowering the gate on any outcome, or on
+        a completed cycle that processed no rows.
+        """
+        self._apply(gate, result)
+        assert self._standing(gate), f"{result.outcome} lowered the gate"
+
+    def test_processing_a_row_cleanly_lowers_the_gate(self, gate) -> None:
+        """The one case that is evidence: work was done and none refused."""
+        self._apply(gate, _sync_gate.CycleResult(
+            _sync_gate.CYCLE_COMPLETED, processed=3, connected=True,
+        ))
+        assert not self._standing(gate)
+
+    def test_quarantining_raises_the_warning_gate(self, tmp_path) -> None:
+        """Data leaving the pipeline is worth a gate at any outcome."""
         gate = tmp_path / "postgres-sync-memories-gate"
-        _sync_gate.write_gate("a previous run exited 4", gate_path=gate)
-        return gate
-
-    def test_a_contended_run_leaves_the_gate(self, raised, tmp_path) -> None:
-        """
-        A run that deferred to another instance learnt nothing about the
-        fault. The mutation this kills: clearing on any outcome.
-        """
-        sync_mod = self._load_sync()
-        sync_mod._apply_gate_policy(
-            _sync_gate.CYCLE_CONTENDED, 0, "sync-to-postgres.py",
-            tmp_path / "quarantine.jsonl", raised,
-            logging.getLogger("test-gate-policy"),
-        )
-        assert raised.read_text(encoding="utf-8").startswith("1")
-
-    def test_an_outage_run_leaves_the_gate(self, raised, tmp_path) -> None:
-        """A run that never reached the database learnt nothing either."""
-        sync_mod = self._load_sync()
-        sync_mod._apply_gate_policy(
-            _sync_gate.CYCLE_DEGRADED, 0, "sync-to-postgres.py",
-            tmp_path / "quarantine.jsonl", raised,
-            logging.getLogger("test-gate-policy"),
-        )
-        assert raised.read_text(encoding="utf-8").startswith("1")
-
-    def test_a_completed_clean_run_clears_the_gate(
-        self, raised, tmp_path,
-    ) -> None:
-        """The one case that may clear it."""
-        sync_mod = self._load_sync()
-        sync_mod._apply_gate_policy(
-            _sync_gate.CYCLE_COMPLETED, 0, "sync-to-postgres.py",
-            tmp_path / "quarantine.jsonl", raised,
-            logging.getLogger("test-gate-policy"),
-        )
-        assert raised.read_text(encoding="utf-8").strip() == "0"
-
-    def test_a_completed_run_that_quarantined_raises_a_warning(
-        self, tmp_path,
-    ) -> None:
-        """
-        Finding C3's first invariant: quarantining is data leaving the
-        pipeline, and it happened silently at exit 0 with no gate at all.
-        """
-        gate = tmp_path / "postgres-sync-memories-gate"
-        sync_mod = self._load_sync()
-        sync_mod._apply_gate_policy(
-            _sync_gate.CYCLE_COMPLETED, 7, "sync-to-postgres.py",
-            tmp_path / "quarantine.jsonl", gate,
-            logging.getLogger("test-gate-policy"),
-        )
+        self._apply(gate, _sync_gate.CycleResult(
+            _sync_gate.CYCLE_COMPLETED, quarantined=7, processed=7,
+            connected=True,
+        ))
         lines = gate.read_text(encoding="utf-8").splitlines()
         assert lines[0] == "7"
         assert "REFUSED" in lines[1]
-        assert "quarantine.jsonl" in lines[1]
 
-    def test_neither_sync_can_clear_the_other(self) -> None:
+    def test_a_degraded_run_that_quarantined_still_gates(self, tmp_path):
         """
-        Structural guarantee rather than a race: the two scripts name
-        different constants, so there is no interleaving in which one
-        clears the other's alarm.
+        Finding M3: a degraded run discarded its quarantine count, so rows
+        that had left the pipeline went unreported. The mutation this
+        kills: testing the outcome before the count.
         """
-        memories = self._load_sync()
-        import importlib.util
-        path = SCRIPTS_DIR / "sync-sessions-to-postgres.py"
-        spec = importlib.util.spec_from_file_location("sessions_probe", path)
-        sessions = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(sessions)
-
-        assert memories.GATE_FILE == _sync_gate.MEMORIES_GATE
-        assert sessions.GATE_FILE == _sync_gate.SESSIONS_GATE
-        assert memories.GATE_FILE != sessions.GATE_FILE
+        gate = tmp_path / "postgres-sync-memories-gate"
+        self._apply(gate, _sync_gate.CycleResult(
+            _sync_gate.CYCLE_DEGRADED, quarantined=2, connected=True,
+        ))
+        assert gate.read_text(encoding="utf-8").splitlines()[0] == "2"
 
 
-def test_no_script_writes_a_gate_outside_a_pinned_path():
+class TestOutageStreak:
     """
-    Every gate call site must use its module's own ``GATE_FILE``
-    constant, never the helper's default and never the shared import
-    alias. Three separate occasions during this audit a test wrote the
-    operator's real gate and put a fabricated infrastructure problem in
-    front of him at session start; this is the structural check that
-    makes the next one a test failure instead.
+    Finding M4 — the syncs exit 0 on an outage by design, so a persistent
+    outage produced no session-start signal at all.
     """
-    for script_name in (
-        "sync-to-postgres.py",
-        "sync-sessions-to-postgres.py",
-        "index-session-content.py",
-    ):
-        source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
-        assert "gate_path=_DEFAULT_GATE_FILE" not in source, script_name
-        assert "GATE_FILE = _DEFAULT_GATE_FILE" in source, script_name
-        for call in ("write_gate(", "clear_gate("):
-            position = 0
-            while True:
-                position = source.find(call, position)
-                if position == -1:
-                    break
-                window = source[position:position + 900]
-                # Either the module constant directly, or a gate_path
-                # parameter the caller filled from it — never the
-                # helper's own default, which has none by design.
-                assert (
-                    "gate_path=GATE_FILE" in window
-                    or "gate_path=gate_path" in window
-                ), f"{script_name}: a {call} call does not pin gate_path"
-                position += 1
-        # And where a helper takes the path as a parameter, main passes
-        # the module constant.
-        if "_apply_gate_policy(" in source:
-            assert "QUARANTINE_FILE, GATE_FILE, logger," in source
+
+    def _apply(self, gate, result):
+        """Run the shared policy."""
+        _sync_gate.apply_sync_gate(
+            result,
+            script="sync-to-postgres.py",
+            gate_path=gate,
+            quarantine_file=gate.parent / "quarantine.jsonl",
+            logger=logging.getLogger("test-gate"),
+        )
+
+    def _count(self, gate) -> str:
+        """The gate's problem count, or "0" when no gate exists."""
+        if not gate.exists():
+            return "0"
+        return gate.read_text(encoding="utf-8").splitlines()[0]
+
+    def test_three_consecutive_outages_raise_a_gate(self, tmp_path) -> None:
+        """
+        Two is a restart; three is a problem. The mutation this kills:
+        never incrementing the streak.
+        """
+        gate = tmp_path / "postgres-sync-memories-gate"
+        outage = _sync_gate.CycleResult(
+            _sync_gate.CYCLE_OUTAGE, connected=False,
+        )
+
+        self._apply(gate, outage)
+        assert self._count(gate) == "0"
+        self._apply(gate, outage)
+        assert self._count(gate) == "0"
+
+        self._apply(gate, outage)
+        lines = gate.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "3"
+        assert "unreachable for 3 consecutive runs" in lines[1]
+
+    def test_connecting_again_lowers_the_outage_gate(self, tmp_path) -> None:
+        """
+        Connecting IS the evidence that "unreachable" is over, even on an
+        otherwise idle run. The mutation this kills: requiring a completed
+        cycle to clear an outage gate.
+        """
+        gate = tmp_path / "postgres-sync-memories-gate"
+        outage = _sync_gate.CycleResult(
+            _sync_gate.CYCLE_OUTAGE, connected=False,
+        )
+        for _ in range(3):
+            self._apply(gate, outage)
+        assert self._count(gate) == "3"
+
+        self._apply(gate, _sync_gate.CycleResult(
+            _sync_gate.CYCLE_IDLE, connected=True,
+        ))
+        assert gate.read_text(encoding="utf-8").strip() == "0"
+
+    def test_an_idle_run_that_never_connected_does_not_count(self, tmp_path):
+        """
+        ``connected=None`` means we never tried: it must move the counter
+        in neither direction, or a quiet week would look like an outage.
+        """
+        gate = tmp_path / "postgres-sync-memories-gate"
+        for _ in range(10):
+            self._apply(gate, _sync_gate.CycleResult(_sync_gate.CYCLE_IDLE))
+        assert self._count(gate) == "0"
+
+    def test_the_streak_resets_on_a_successful_run(self, tmp_path) -> None:
+        """An outage that recovers must not accumulate towards the next."""
+        gate = tmp_path / "postgres-sync-memories-gate"
+        outage = _sync_gate.CycleResult(
+            _sync_gate.CYCLE_OUTAGE, connected=False,
+        )
+        self._apply(gate, outage)
+        self._apply(gate, outage)
+        self._apply(gate, _sync_gate.CycleResult(
+            _sync_gate.CYCLE_COMPLETED, processed=1, connected=True,
+        ))
+        assert _sync_gate.read_state(gate).outage_streak == 0
+
+        self._apply(gate, outage)
+        assert self._count(gate) == "0"
+
+
+def test_the_gate_files_are_distinct():
+    """One gate file per script — the third re-audit's finding C1."""
+    assert len(set(_sync_gate.ALL_GATES)) == len(_sync_gate.ALL_GATES)
+
+
+def test_this_module_did_not_lose_tests_to_an_edit():
+    """
+    A guard against the mistake that produced this line: a scripted
+    rewrite of this file truncated fourteen tests off the end, and the
+    suite went green because the tests were simply gone. Collection count
+    is the cheapest possible tripwire for that.
+    """
+    import ast as _ast
+
+    tree = _ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    tests = [
+        node for node in _ast.walk(tree)
+        if isinstance(node, _ast.FunctionDef)
+        and node.name.startswith("test_")
+    ]
+    assert len(tests) >= 20, (
+        f"only {len(tests)} test functions remain in this module — an "
+        f"edit has removed some"
+    )
