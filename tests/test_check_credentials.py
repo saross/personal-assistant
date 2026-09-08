@@ -1425,3 +1425,48 @@ class TestMainWiring:
         assert code == 1
         assert any("update the record" in f for f in cc.findings), out
         assert live.isoformat() in out
+
+
+class TestParseEnvFinalLine:
+    """Audit round three M2: a file whose last line has no terminator."""
+
+    def test_a_single_line_without_a_trailing_newline_parses(self, tmp_path):
+        """Kills dropping ``|$`` from ``_LINE_SPLIT``.
+
+        Without that branch the regex matches nothing on a file with no
+        final terminator, so ``ZOTERO_API_KEY=abc`` parses to ``{}`` with
+        zero findings — the checker reports a clean bill of health for a
+        file it did not read. Editors that omit the final newline are
+        common enough that no test had ever written one.
+        """
+        path = tmp_path / "no-newline.env"
+        path.write_bytes(b"ZOTERO_API_KEY=abcfake")
+        env = cc.parse_env(path)
+        assert env == {"ZOTERO_API_KEY": "abcfake"}
+        assert cc.findings == []
+
+    def test_a_two_line_file_without_a_trailing_newline_parses(self, tmp_path):
+        """Kills a split that keeps only the terminated lines.
+
+        The second line is the one that disappears, so a one-line fixture
+        alone would not notice.
+        """
+        path = tmp_path / "no-newline.env"
+        path.write_bytes(b"FIRST_VAR=one\nSECOND_VAR=two")
+        env = cc.parse_env(path)
+        assert env == {"FIRST_VAR": "one", "SECOND_VAR": "two"}
+        assert cc.findings == []
+
+    def test_a_malformed_final_line_without_a_newline_is_still_flagged(
+        self, tmp_path
+    ):
+        """Kills the same mutation at the finding level, not just the dict.
+
+        A file ending mid-line is exactly where a hand-edit goes wrong, so
+        the last line is the one that most needs checking.
+        """
+        path = tmp_path / "no-newline.env"
+        path.write_bytes(b"GOOD_VAR=one\nbad-name=two")
+        cc.parse_env(path)
+        assert len(cc.findings) == 1
+        assert cc.findings[0].startswith("line 2:")
