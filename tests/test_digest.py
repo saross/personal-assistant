@@ -706,3 +706,93 @@ class TestCapMarkdownToBudget:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Audit round two M2: the module defaults themselves
+# ---------------------------------------------------------------------------
+
+
+class TestModuleDefaults:
+    """The constants were unpinned: every test passed them explicitly.
+
+    ``byte_budget=1500`` and ``window_days=7`` appear as literals in every
+    cap and ranking test above, so ``DEFAULT_BYTE_BUDGET`` and
+    ``DEFAULT_WINDOW_DAYS`` could take any value with the suite green — and
+    the live hook calls ``build_digest`` without either argument.
+    """
+
+    @staticmethod
+    def _fat_pool(n: int = 200) -> list[dict]:
+        """Verified in-window records far larger than any sane budget."""
+        return [
+            _mem(
+                id=f"m{i}",
+                summary="X" * 300,
+                research_tags=[f"tag{i}", "alpha"],
+                created_at=_iso(i % 7),
+            )
+            for i in range(n)
+        ]
+
+    def test_the_default_byte_budget_binds_at_1500(self):
+        """Kills ``DEFAULT_BYTE_BUDGET = 1500`` -> a larger value.
+
+        Called the way the hook calls it — no ``byte_budget`` argument —
+        against 200 fat entries, so the cap must both be 1,500 and actually
+        bind. SessionStart stdout goes straight into the model's context, so
+        the constant is the bound.
+        """
+        res = digest.build_digest(
+            self._fat_pool(), now=NOW, project_tags={"alpha"}
+        )
+        assert digest.DEFAULT_BYTE_BUDGET == 1500
+        assert res.byte_budget == 1500
+        assert res.rendered_bytes <= 1500
+        assert len(res.text.encode("utf-8")) <= 1500
+        # The cap bound: far fewer entries shown than were available.
+        assert 0 < len(res.entries) < res.verified_available
+
+    def test_the_default_window_is_seven_days(self):
+        """Kills ``DEFAULT_WINDOW_DAYS = 7`` -> any other value.
+
+        Records at six, seven, and eight days old, ranked with no
+        ``window_days`` argument: the first two are in, the third is out.
+        A wider default silently drags stale records into every session.
+        """
+        six = _mem(id="six", created_at=_iso(6))
+        seven = _mem(id="seven", created_at=_iso(7))
+        eight = _mem(id="eight", created_at=_iso(8))
+        pool = digest.rank_verified(
+            [six, seven, eight], now=NOW, project_tags=set()
+        )
+        assert [m["id"] for m in pool] == ["six", "seven"]
+        assert digest.DEFAULT_WINDOW_DAYS == 7
+
+    def test_the_window_edge_is_inclusive(self):
+        """Kills ``created.timestamp() >= now.timestamp() - …`` -> ``>``.
+
+        A record created exactly ``window_days`` ago is inside the window.
+        The strict form drops it, which is invisible in any test whose
+        fixtures sit at whole days on either side of the edge.
+        """
+        exact = _mem(id="exact", created_at=_iso(7))
+        just_outside = _mem(id="outside", created_at=_iso(7.000_02))
+        pool = digest.rank_verified(
+            [exact, just_outside], now=NOW, project_tags=set(), window_days=7
+        )
+        assert [m["id"] for m in pool] == ["exact"]
+
+    def test_the_default_window_reaches_the_rendered_text_and_result(self):
+        """Kills passing a different window through to _assemble or the result.
+
+        The digest tells the reader which window it covers; if the prose and
+        the selection disagree, every entry is presented under a false
+        claim.
+        """
+        res = digest.build_digest(
+            [_mem(id="m1", created_at=_iso(1))], now=NOW, project_tags=set()
+        )
+        assert res.window_days == 7
+        assert "in the last 7 days" in res.text
+        assert "Verified-true entries from the last 7 days" in res.text
