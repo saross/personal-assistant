@@ -747,9 +747,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     read; the post-boot grace made real; symlinked and absent roots
     handled; the live-database test marked integration with a structural
     guard; five more mutations killed. Eleventh pass running, asked to
-    weigh what remains as merge-blocking versus follow-up. First session
-    after merge will report all three gates as never written until each
-    script has run once.
+    weigh what remains as merge-blocking versus follow-up. Eleventh pass:
+    **hold on one item, then merge** — the second quarantine writer never
+    repairs a missing separator, so a newline-less row the counter now
+    counts is destroyed by the next append (one call to fix); follow-ups:
+    the timestamp cursor is not validated (a garbage value idles the
+    sessions sync for ever), a fourth quarantine reader is unguarded, a
+    negative cursor resets the ack silently. Closing round running.
+    First session after merge will report all three gates as never
+    written until each script has run once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
