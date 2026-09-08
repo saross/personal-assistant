@@ -123,6 +123,13 @@ CYCLE_ACK = "ack"
 #: Consecutive unreachable runs before the outage problem stands. At a
 #: five-minute tick this is roughly fifteen minutes: long enough not to
 #: nag over a restart, short enough to matter.
+#: What :func:`read_state_with_status` found on disk. A missing sidecar
+#: and a corrupt one both yield an empty state, and only the status tells
+#: them apart (ninth re-audit, finding M2).
+STATE_MISSING = "missing"
+STATE_OK = "ok"
+STATE_CORRUPT = "corrupt"
+
 OUTAGE_STREAK_THRESHOLD = 3
 
 #: How long to wait for another process's gate lock before giving up and
@@ -521,10 +528,34 @@ def read_state(
     A missing file is ordinary and silent. An unreadable or corrupt one is
     reported: it means a script is about to forget every standing problem,
     and that must never happen quietly (fifth re-audit).
+
+    Callers that need to tell "there is nothing recorded" from "there is
+    something recorded and it is rubbish" — the acknowledgement is the
+    only one — must use :func:`read_state_with_status` instead. Both
+    conditions produce an empty state, and treating the first as the
+    second refused to acknowledge anything on a healthy pipeline (ninth
+    re-audit, finding M2).
+    """
+    return read_state_with_status(gate_path, logger)[0]
+
+
+def read_state_with_status(
+    gate_path: Path,
+    logger: logging.Logger | None = None,
+) -> tuple[GateState, str]:
+    """
+    Read the sidecar and say which of three things happened.
+
+    Returns ``(state, status)`` where status is one of
+    :data:`STATE_MISSING` (no sidecar — a machine that has never run this
+    script, or one whose cache was cleared), :data:`STATE_OK` (read and
+    parsed, however empty), or :data:`STATE_CORRUPT` (present but not
+    usable). The state is empty in the first and last cases alike, which
+    is why the status has to be carried separately.
     """
     path = state_path_for(gate_path)
     if not path.exists():
-        return GateState()
+        return GateState(), STATE_MISSING
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -534,22 +565,22 @@ def read_state(
                 "standing problem as resolved, which may hide one.",
                 path, exc,
             )
-        return GateState()
-    except (json.JSONDecodeError, ValueError) as exc:
+        return GateState(), STATE_CORRUPT
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as exc:
         if logger is not None:
             logger.error(
                 "Gate state %s is corrupt (%s) — treating every standing "
                 "problem as resolved, which may hide one. It is rewritten "
                 "from this run's observations.", path, exc,
             )
-        return GateState()
+        return GateState(), STATE_CORRUPT
 
     if not isinstance(raw, dict):
         if logger is not None:
             logger.error(
                 "Gate state %s is not an object — ignoring it.", path,
             )
-        return GateState()
+        return GateState(), STATE_CORRUPT
 
     problems: dict[str, Problem] = {}
     for key, value in (raw.get("problems") or {}).items():
@@ -567,7 +598,7 @@ def read_state(
         outage_streak=streak if isinstance(streak, int) and streak >= 0 else 0,
         acked=acked if isinstance(acked, dict) else {},
         archive_root=root if isinstance(root, str) else None,
-    )
+    ), STATE_OK
 
 
 def write_state(
@@ -603,6 +634,43 @@ def write_state(
     return True
 
 
+def render_text(state: GateState) -> str:
+    """
+    The exact text a gate file holds for this state.
+
+    Factored out of :func:`render_gate` so a caller can ask whether the
+    file on disk still AGREES with the state, without matching on a
+    substring of the problem text. A sentinel word in the detail is a
+    check that stops working the day someone improves the wording (ninth
+    re-audit, low).
+    """
+    standing = [
+        state.problems[key] for key in PROBLEM_ORDER if key in state.problems
+    ]
+    # A problem under a key this version does not know about still shows.
+    standing.extend(
+        problem for key, problem in state.problems.items()
+        if key not in PROBLEM_ORDER
+    )
+    body = "\n".join(" ".join(problem.detail.split()) for problem in standing)
+    return f"{len(standing)}\n" + (body + "\n" if body else "")
+
+
+def gate_matches_state(gate_path: Path, state: GateState) -> bool:
+    """
+    Does the rendered gate file say exactly what this state says?
+
+    ``False`` when the file is missing, unreadable, or out of step — all
+    of which mean session start is showing something other than the
+    truth. Used by the acknowledgement, which is the one command for
+    which a half-completed write IS the error.
+    """
+    try:
+        return gate_path.read_text(encoding="utf-8") == render_text(state)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def render_gate(
     gate_path: Path,
     state: GateState,
@@ -616,19 +684,8 @@ def render_gate(
     says exactly how many independent things are wrong, and a clamp is how
     a count comes to mean something other than what it says.
     """
-    standing = [
-        state.problems[key] for key in PROBLEM_ORDER if key in state.problems
-    ]
-    # A problem under a key this version does not know about still shows.
-    standing.extend(
-        problem for key, problem in state.problems.items()
-        if key not in PROBLEM_ORDER
-    )
-    body = "\n".join(" ".join(problem.detail.split()) for problem in standing)
     try:
-        _atomic_write(
-            gate_path, f"{len(standing)}\n" + (body + "\n" if body else ""),
-        )
+        _atomic_write(gate_path, render_text(state))
     except OSError as exc:
         if logger is not None:
             logger.error(

@@ -45,10 +45,13 @@ from _sync_gate import (  # noqa: E402
     CYCLE_ACK,
     CYCLE_OUTAGE,
     PROBLEM_QUARANTINE,
+    STATE_CORRUPT,
     MEMORIES_GATE as _DEFAULT_GATE_FILE,
     GateEvent,
     apply_gate,
+    gate_matches_state,
     read_state_safely,
+    read_state_with_status,
     state_path_for,
 )
 from _pg_row_guard import (  # noqa: E402
@@ -1433,24 +1436,29 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
 
     Records the POSITION in the append-only quarantine file rather than a
     count, so rows quarantined after this moment are still reported
-    (eighth re-audit, finding C1).
+    (eighth re-audit, finding C1). A file whose length cannot be read is
+    therefore a refusal, not a no-op: recording an unknown position would
+    either dismiss rows nobody has seen or silently do nothing while
+    reporting success (ninth re-audit, finding M3).
 
     The verdict comes from BOTH artefacts on disk afterwards — the
     sidecar and the rendered gate (eighth re-audit, finding M3). A write
     that half-succeeded used to report success or "nothing changed",
     while the other half still said the opposite.
     """
-    entries = count_quarantine_entries(QUARANTINE_FILE)
-    state_file = state_path_for(GATE_FILE)
-    before = read_state_safely(GATE_FILE, logger)
-    if state_file.exists() and not (before.problems or before.acked):
-        # An unreadable or corrupt sidecar reads as "no problems", which
-        # is indistinguishable from a clean one — say which it is rather
-        # than reporting nothing to do (eighth re-audit, low).
+    before, status = read_state_with_status(GATE_FILE, logger)
+    if status == STATE_CORRUPT:
+        # A corrupt sidecar reads as "no problems", which is
+        # indistinguishable from a clean one — say which it is rather
+        # than reporting nothing to do (eighth re-audit, low). An ABSENT
+        # sidecar is not corrupt: on a healthy pipeline that has nothing
+        # to report there is simply nothing there, and calling it corrupt
+        # made every ack on a working machine exit 9 (ninth re-audit,
+        # finding M2).
         logger.error(
             "The gate state %s exists but could not be read. Refusing to "
             "report on a quarantine problem whose state is unknown; fix "
-            "or delete the file and re-run.", state_file,
+            "or delete the file and re-run.", state_path_for(GATE_FILE),
         )
         return 9
     if PROBLEM_QUARANTINE not in before.problems:
@@ -1459,6 +1467,19 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
             "clear. Nothing to do."
         )
         return 0
+
+    # Only now that there is something to clear does an unreadable
+    # quarantine file matter. Checking it first turned every ack on a
+    # machine that has never quarantined anything into an exit 9.
+    entries = count_quarantine_entries(QUARANTINE_FILE)
+    if entries is None:
+        logger.error(
+            "--ack-quarantine could not read the quarantine file %s, so "
+            "it cannot record how far you have read. The standing problem "
+            "is UNCHANGED. Check that the data submodule is mounted and "
+            "the file is readable, then run this again.", QUARANTINE_FILE,
+        )
+        return 9
 
     standing = before.problems[PROBLEM_QUARANTINE].count
     apply_gate(
@@ -1473,12 +1494,10 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
 
     after = read_state_safely(GATE_FILE, logger)
     sidecar_cleared = PROBLEM_QUARANTINE not in after.problems
-    try:
-        rendered = GATE_FILE.read_text(encoding="utf-8")
-    except OSError as exc:
-        logger.error("Could not read back the gate file %s: %s", GATE_FILE, exc)
-        rendered = ""
-    gate_cleared = "REFUSED" not in rendered
+    # Compare the file with what this state renders to, rather than
+    # hunting for a word in the problem text: a substring sentinel stops
+    # working the day the wording improves (ninth re-audit, low).
+    gate_cleared = gate_matches_state(GATE_FILE, after)
 
     if not sidecar_cleared:
         logger.error(
@@ -1490,7 +1509,7 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
     if not gate_cleared:
         logger.error(
             "--ack-quarantine updated the gate state but could NOT "
-            "re-render %s, which still reports the problem. The state is "
+            "re-render %s, which no longer matches it. The state is "
             "correct, so the next run of this script repairs the gate "
             "file; until then session start shows a problem that is "
             "already dismissed.", GATE_FILE,
@@ -1503,8 +1522,6 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
         standing, QUARANTINE_FILE,
     )
     return 0
-
-
 def _gate_fault(
     logger: logging.Logger,
     detail: str,

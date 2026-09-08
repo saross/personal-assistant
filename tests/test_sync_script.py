@@ -2436,6 +2436,160 @@ class TestAcknowledgementIsStateOnly:
         assert "could not be read" in caplog.text
         assert "Nothing to do" not in caplog.text
 
+    def _ack_env(self, monkeypatch, tmp_path, quarantine):
+        """Point the module at a tmp tree and run --ack-quarantine."""
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+
+    def test_an_ack_on_a_machine_with_no_sidecar_is_not_an_error(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Ninth re-audit, M2 — a healthy pipeline that has never had a
+        problem has no sidecar at all, and calling that corrupt made
+        every acknowledgement on a working machine exit 9 while telling
+        the operator their gate state was damaged. Missing, ok, and
+        corrupt are three different things.
+
+        The mutation this kills: keying the refusal on the sidecar
+        reading empty rather than on it being unreadable.
+        """
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._ack_env(monkeypatch, tmp_path, quarantine)
+        state_file = pinned_gate_file.with_name(
+            pinned_gate_file.name + ".state.json",
+        )
+        assert not state_file.exists()
+
+        try:
+            with caplog.at_level(logging.INFO):
+                with pytest.raises(SystemExit) as excinfo:
+                    sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 0
+        assert "no standing quarantine problem" in caplog.text
+        assert "could not be read" not in caplog.text
+
+    def test_an_ack_with_an_empty_but_valid_sidecar_is_not_an_error(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        The same case one step on, and the one an upgrade produces: a
+        sidecar written by a version that recorded no acknowledged
+        position, holding no problems and an empty ack block. It is
+        perfectly valid and says "nothing is wrong"; the ack must read it
+        as such.
+        """
+        quarantine = tmp_path / "quarantine.jsonl"
+        quarantine.write_text("", encoding="utf-8")
+        state_file = pinned_gate_file.with_name(
+            pinned_gate_file.name + ".state.json",
+        )
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            json.dumps({
+                "problems": {},
+                "outage_streak": 0,
+                "acked": {},
+                "archive_root": None,
+            }),
+            encoding="utf-8",
+        )
+        self._ack_env(monkeypatch, tmp_path, quarantine)
+
+        try:
+            with caplog.at_level(logging.INFO):
+                with pytest.raises(SystemExit) as excinfo:
+                    sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 0
+        assert "no standing quarantine problem" in caplog.text
+
+    def test_an_unreadable_quarantine_file_fails_the_ack(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Ninth re-audit, M3 — the acknowledgement records how far into the
+        file the operator has read. With the file unreadable there is no
+        position to record, and the old code applied an event carrying
+        None, changed nothing, and reported success: the problem stood
+        and the operator believed they had cleared it.
+
+        The mutation this kills: applying the ack event with
+        ``quarantine_entries=None`` instead of refusing.
+        """
+        import _sync_gate
+
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._standing_quarantine(pinned_gate_file, quarantine)
+        # A directory where the file should be: present, unreadable.
+        quarantine.unlink()
+        quarantine.mkdir()
+        self._ack_env(monkeypatch, tmp_path, quarantine)
+
+        try:
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(SystemExit) as excinfo:
+                    sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 9
+        assert "could not read the quarantine file" in caplog.text
+        assert str(quarantine) in caplog.text
+        # And the problem really is untouched.
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE in state.problems
+
+    def test_the_render_check_does_not_match_on_a_magic_word(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        Ninth re-audit, low — the render check looked for "REFUSED" in
+        the gate file, so rewording the problem text would silently turn
+        the check into a no-op. It now compares the file with what the
+        state renders to.
+
+        Here the gate file is left holding a DIFFERENT standing problem,
+        one whose text has never contained the old sentinel: the ack must
+        still notice that the file and the state disagree.
+        """
+        import _sync_gate
+
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._standing_quarantine(pinned_gate_file, quarantine)
+        self._ack_env(monkeypatch, tmp_path, quarantine)
+
+        real_write = _sync_gate._atomic_write
+
+        def _stale_render(path, text):
+            if path.name.endswith(".state.json"):
+                return real_write(path, text)
+            return real_write(path, "1\nsomething else entirely\n")
+
+        monkeypatch.setattr(_sync_gate, "_atomic_write", _stale_render)
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 9, (
+            "the gate file disagreed with the state and the ack called it "
+            "a success"
+        )
+
     def test_both_syncs_check_both_halves_of_the_write(self):
         """
         The two scripts carry the same acknowledgement, and a fix applied
