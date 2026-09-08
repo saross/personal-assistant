@@ -557,9 +557,16 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     discrimination are untested. Tenth round running: per-apply
     classification from an unmerged-path snapshot before and after each
     apply (with a third "blocked" outcome); sidecar rows carry the paths
-    a stash produced and expire with the entry. Both machines at 16:40:
-    corpora pass `--check`, no stash, no in-progress operation in either
-    repository, `timeout` present, no `merge.conflictStyle`.
+    a stash produced and expire with the entry. Tenth round done
+    (2bfe6e5; suite 1,754): per-apply classification with a "blocked"
+    outcome; a resolved conflict outranks an abandoned one; sidecar rows
+    carry repo, SHA, state, and paths; attribution needs a path
+    intersection; a later word about a SHA supersedes; a bisect stops
+    the sync without moving HEAD; the parent check no longer blocks the
+    data half; the backtick removed. Tenth pass running, asked to weigh
+    what remains. Both machines at 17:05: corpora pass `--check`, no
+    stash, no in-progress operation or bisect in either repository,
+    `timeout` present, no `merge.conflictStyle`.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
