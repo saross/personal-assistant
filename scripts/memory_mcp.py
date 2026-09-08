@@ -78,6 +78,12 @@ _ss_spec.loader.exec_module(search_sessions_mod)
 DB_NAME = "claude_memories"
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
+#: Connection bounds (audit R9). An MCP server has no operator watching it:
+#: an unbounded connect or a runaway query would leave the client waiting
+#: forever with no way to interrupt. Mirrors search-sessions.py.
+CONNECT_TIMEOUT_SECONDS = 5
+STATEMENT_TIMEOUT_MS = 30_000
+
 # Schema-version guard (audit IC5 / B-X1). Imported here so MCP tools
 # can call ``assert_schema_version`` on every connection they open.
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -123,7 +129,11 @@ def _pg_connect() -> tuple[Any | None, str | None]:
         logger.warning(msg)
         return None, msg
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+        )
     except Exception as exc:  # noqa: BLE001 — graceful degradation
         msg = f"PostgreSQL unavailable: {exc}"
         logger.warning(msg)
@@ -429,7 +439,9 @@ async def search_sessions(
     substring: Annotated[
         bool,
         Field(description="Exact/identifier match (trigram ILIKE) instead of "
-              "stemmed full-text — use for code tokens like 'build_model_f1'"),
+              "stemmed full-text — use for code tokens like 'build_model_f1'. "
+              "Needs a query of at least 3 characters (pg_trgm indexes "
+              "trigrams); shorter patterns are refused."),
     ] = False,
     limit: Annotated[
         int,
@@ -455,6 +467,11 @@ async def search_sessions(
         )
     except ImportError:
         return _error_envelope("psycopg2 not installed; session search unavailable.")
+    except ValueError as exc:
+        # A usage error raised by search() itself (currently the trigram
+        # floor on substring patterns). Its text is ours, written for the
+        # caller, so it passes through verbatim.
+        return _error_envelope(str(exc))
     except Exception as exc:  # noqa: BLE001 — graceful degradation to the client
         return _error_envelope(f"Session search failed: {exc}")
 

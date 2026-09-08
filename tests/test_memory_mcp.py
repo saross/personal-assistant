@@ -1108,3 +1108,86 @@ class TestSemanticCoverageNote:
         """The contract is in the tool description, not only the envelope."""
         tools = {t.name: t for t in _run(memory_mcp.mcp.list_tools())}
         assert "embedding" in tools["semantic_search"].description
+
+
+# -------------------------------------------------------------------------
+# search_sessions tool: envelopes and bounds (lens B RT5, audit R9)
+# -------------------------------------------------------------------------
+
+class TestSearchSessionsTool:
+    """The tool's own error and empty-result handling, not the search itself."""
+
+    def test_results_are_wrapped_in_a_postgres_envelope(self) -> None:
+        rows = [{"archive_dir": "2026-04-02T09-15_notebook", "turn_idx": 3,
+                 "role": "user", "project": "sherds"}]
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          return_value=rows) as mock_search:
+            data = json.loads(_run(memory_mcp.search_sessions(query="loader")))
+        assert data["source"] == "postgres"
+        assert data["count"] == 1
+        # The tool's arguments must reach the search function unchanged.
+        assert mock_search.call_args.kwargs["substring"] is False
+
+    def test_empty_result_carries_the_guidance_note(self) -> None:
+        """Kills: dropping the note (the caller is told nothing to try next)."""
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          return_value=[]):
+            data = json.loads(_run(memory_mcp.search_sessions(query="loader")))
+        assert data["source"] == "none"
+        assert "--substring" in data["note"]
+
+    def test_import_error_becomes_an_error_envelope(self) -> None:
+        """Kills: deleting the ImportError branch (an unhandled traceback)."""
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          side_effect=ImportError("no psycopg2")):
+            data = json.loads(_run(memory_mcp.search_sessions(query="loader")))
+        assert data["count"] == 0
+        assert "psycopg2" in data["error"]
+
+    def test_usage_error_text_reaches_the_caller(self) -> None:
+        """The trigram floor must be actionable, not a generic failure."""
+        with patch.object(
+            memory_mcp.search_sessions_mod, "search",
+            side_effect=ValueError("--substring needs at least 3 characters"),
+        ):
+            data = json.loads(_run(memory_mcp.search_sessions(
+                query="ab", substring=True)))
+        assert "at least 3 characters" in data["error"]
+
+    def test_filters_are_forwarded(self) -> None:
+        with patch.object(memory_mcp.search_sessions_mod, "search",
+                          return_value=[]) as mock_search:
+            _run(memory_mcp.search_sessions(
+                query="loader", project="sherds", role="user",
+                substring=True, limit=5))
+        kwargs = mock_search.call_args.kwargs
+        assert kwargs == {"project": "sherds", "role": "user",
+                          "limit": 5, "substring": True}
+
+
+class TestMcpConnectionBounds:
+    """_pg_connect must bound both the connect and the statement (audit R9)."""
+
+    def test_connect_kwargs_carry_both_timeouts(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: dropping connect_timeout or the statement_timeout option."""
+        import psycopg2
+
+        recorded: dict = {}
+
+        def _fake_connect(**kwargs):
+            recorded.update(kwargs)
+            conn = MagicMock()
+            cur = MagicMock()
+            cur.fetchone.return_value = ("3",)
+            conn.cursor.return_value.__enter__.return_value = cur
+            return conn
+
+        monkeypatch.setattr(psycopg2, "connect", _fake_connect)
+        conn, err = memory_mcp._pg_connect()
+        assert err is None
+        assert recorded["connect_timeout"] == memory_mcp.CONNECT_TIMEOUT_SECONDS
+        assert recorded["options"] == (
+            f"-c statement_timeout={memory_mcp.STATEMENT_TIMEOUT_MS}"
+        )

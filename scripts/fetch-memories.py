@@ -47,6 +47,13 @@ SYNC_CONFIG_FILE = PA_DIR / "data" / "config" / "sync.json"
 DB_NAME = "claude_memories"
 MAX_RESULTS = 10
 
+# Connection bounds (audit R9, extended from search-sessions.py to this
+# script: the same unbounded-connect defect). /recall is interactive, so a
+# server that is up but not answering must fail fast into the JSONL
+# fallback rather than hang the session.
+CONNECT_TIMEOUT_SECONDS = 5
+STATEMENT_TIMEOUT_MS = 30_000
+
 # Freshness-warning thresholds (M3). Both must be exceeded for a warning
 # to fire, so a quiet day doesn't flood stderr.
 RECALL_UNSYNCED_LINE_THRESHOLD = 20
@@ -242,7 +249,11 @@ def try_postgres(
         return None
 
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+        )
     except psycopg2.OperationalError as exc:
         print(
             f"[fetch-memories] PostgreSQL unavailable: {exc}",
@@ -393,7 +404,11 @@ def try_semantic(
         return None
 
     try:
-        conn = psycopg2.connect(dbname=DB_NAME)
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+        )
     except psycopg2.OperationalError as exc:
         print(
             f"[fetch-memories] PostgreSQL unavailable: {exc}",
