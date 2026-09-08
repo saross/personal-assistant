@@ -20,7 +20,13 @@ Modes
   -request summary plus the first 300 characters of one example request body.
   No network calls.
 - Live mode (run only after explicit Shawn approval): submit to the chosen
-  provider and persist responses.
+  provider and persist responses. Guarded by the API Call Review Gate — the
+  model id, batch versus real-time, the request count, and the estimated
+  cost are printed before the confirmation, and ``--yes`` prints them too.
+- ``--haiku-apply`` (retrieval): NOT gated, deliberately. Retrieving a
+  finished batch costs nothing — the submission was the billed step — so it
+  runs without a confirmation prompt. It does announce the batch id and the
+  destination directory before fetching.
 
 Provider adapters
 -----------------
@@ -1216,6 +1222,90 @@ def build_rubric(
     print(f"Wrote blinding key to {key_path} (do not open before scoring)")
 
 
+def provider_model_id(provider: str) -> str:
+    """Return the model id a provider name actually dispatches to."""
+    if provider == "haiku":
+        # The Batch adapter is the one arm not in PROVIDER_SPECS: that table
+        # lists the real-time Haiku arm ("haiku-rt") at the standard rate.
+        return HAIKU_MODEL
+    if provider in PROVIDER_SPECS:
+        return PROVIDER_SPECS[provider][0]
+    raise ValueError(f"unknown provider: {provider}")
+
+
+def provider_mode(provider: str) -> str:
+    """Return "batch" or "real-time" — the second figure the gate must show."""
+    return "batch" if provider == "haiku" else "real-time"
+
+
+def gate_summary_lines(
+    requests: list[SessionRequest], provider: str
+) -> list[str]:
+    """Render the API Call Review Gate figures for ``provider``.
+
+    The gate (global CLAUDE.md) requires four things in front of the operator
+    *before* any billed call: the model being called, batch versus real-time,
+    the number of calls, and the estimated cost. These are the same numbers
+    ``--dry-run`` prints, computed the same way, so approving here and
+    approving after a dry run mean the same thing.
+    """
+    cost = estimate_cost_usd(requests, provider=provider)
+    mode = provider_mode(provider)
+    mode_detail = (
+        "Message Batches API — ~24h SLA, 50% discount"
+        if mode == "batch"
+        else "synchronous request per session"
+    )
+    return [
+        f"  model:          {provider_model_id(provider)}  (--provider {provider})",
+        f"  mode:           {mode} ({mode_detail})",
+        f"  requests:       {cost['n_requests']}",
+        (
+            f"  estimated cost: ${cost['total_cost_usd']} "
+            f"(input ${cost['input_cost_usd']} over "
+            f"{cost['input_tokens']:,} tokens @ "
+            f"${cost['input_rate_per_mtok']}/Mtok; output "
+            f"${cost['output_cost_usd']} assuming 350 tokens/call)"
+        ),
+    ]
+
+
+def confirm_live_run(
+    requests: list[SessionRequest], provider: str, *, assume_yes: bool
+) -> bool:
+    """Show the gate figures and return True only on an explicit approval.
+
+    ``assume_yes`` still prints the figures: a ``--yes`` run leaves the same
+    record in the terminal and the log as an interactive one, which is the
+    point of the gate.
+
+    A closed stdin (cron, a pipeline, a captured subprocess) raises
+    ``EOFError`` from ``input()``. That must read as "no one is here to
+    approve", not as an unhandled traceback.
+    """
+    print("\n--- API Call Review Gate — these calls are BILLED ---")
+    for line in gate_summary_lines(requests, provider):
+        print(line)
+    if assume_yes:
+        print(
+            "  approval:       --yes given; recorded out-of-band. Proceeding."
+        )
+        return True
+    try:
+        answer = input(f"Type 'yes' to proceed with {provider} live calls: ")
+    except EOFError:
+        print(
+            "Aborted: stdin is closed, so no approval can be given here. "
+            "Re-run interactively, or pass --yes once the API Call Review "
+            "Gate approval has been recorded."
+        )
+        return False
+    if answer.strip().lower() != "yes":
+        print("Aborted.")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse ``argv`` (default ``sys.argv[1:]``) and run the requested mode."""
     parser = argparse.ArgumentParser(
@@ -1294,7 +1384,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    load_env()
+    # ``load_env`` hydrates provider secrets from the repository .env. Only
+    # the paths that actually reach a provider call it, so a dry run or a
+    # rubric build never pulls credentials into this process's environment.
 
     if args.build_rubric:
         if not (args.rubric_in and args.rubric_out):
@@ -1318,9 +1410,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.provider != "haiku":
             print("--haiku-apply is only valid with --provider haiku")
             return 2
+        # Retrieval is FREE: the batch was billed when it was submitted, and
+        # `batches.retrieve` / `batches.results` cost nothing. So it is
+        # deliberately not behind the API Call Review Gate — but it still
+        # says what it is about to fetch and where the results will land,
+        # because "ungated" must not mean "silent".
+        target_dir = args.out_dir / "haiku"
+        print(
+            f"[haiku] retrieving batch {args.haiku_apply} into {target_dir} "
+            "— retrieval is free and therefore ungated (the submission was "
+            "the billed step)."
+        )
+        load_env()
         # submit persists batch-state.json under the provider subdir
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
-        haiku_apply(args.haiku_apply, args.out_dir / "haiku")
+        haiku_apply(args.haiku_apply, target_dir)
         return 0
 
     requests = assemble_requests(args.manifest, args.prompt)
@@ -1332,25 +1436,19 @@ def main(argv: list[str] | None = None) -> int:
         dry_run_report(requests, args.provider, provider_dir)
         return 0
 
-    # Live mode — guarded by the API Call Review Gate. We do not invoke
-    # without an extra confirmation step; this branch exists for after
-    # Shawn approves the launch plan.
+    # Live mode — guarded by the API Call Review Gate. The gate prints the
+    # model, the mode, the request count, and the estimated cost before it
+    # asks anything, so an operator who has not run --dry-run still sees the
+    # four figures the gate requires.
     print(
         "Live mode requested. This will make billed API calls. "
-        "Re-run with --dry-run first if you have not yet reviewed the cost."
+        "Re-run with --dry-run first if you want the per-session breakdown."
     )
-    if args.yes:
-        print(
-            f"--yes flag set; proceeding with {args.provider} live calls "
-            "without interactive prompt."
-        )
-    else:
-        answer = input(
-            f"Type 'yes' to proceed with {args.provider} live calls: "
-        )
-        if answer.strip().lower() != "yes":
-            print("Aborted.")
-            return 0
+    if not confirm_live_run(requests, args.provider, assume_yes=args.yes):
+        return 0
+
+    # Credentials are hydrated only once the run is approved.
+    load_env()
 
     if args.provider == "haiku":
         haiku_submit(requests, provider_dir, system_prompt)

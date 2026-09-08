@@ -17,7 +17,6 @@ Every fixture is synthetic — see ``tests/fixtures``.
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import socket
 import sys
@@ -249,6 +248,200 @@ class TestRubricRefusalWritesNothing:
         code = bom.main([
             "--build-rubric",
             "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+        ])
+        assert code == 2
+        assert not (tmp_path / "out").exists()
+
+
+# ---------------------------------------------------------------------------
+# Provider boundary stubs
+# ---------------------------------------------------------------------------
+
+
+class RecordingGeminiClient:
+    """Stand-in for ``google.genai.Client`` that records every call."""
+
+    #: Shared across instances so a test can assert "never constructed".
+    calls: list[dict] = []
+
+    def __init__(self, *args, **kwargs):
+        RecordingGeminiClient.calls.append({"event": "client"})
+        self.models = self
+
+    def generate_content(self, *, model, contents, config):
+        """Return a canned response object with a ``.text`` attribute."""
+        RecordingGeminiClient.calls.append({"event": "generate", "model": model})
+        return type("FakeResponse", (), {"text": fx.RESPONSE_BARE})()
+
+
+@pytest.fixture
+def gemini_boundary(monkeypatch):
+    """Install a fake ``google.genai`` and return its call log."""
+    RecordingGeminiClient.calls = []
+    fake_genai = type(sys)("google.genai")
+    fake_genai.Client = RecordingGeminiClient
+    fake_google = type(sys)("google")
+    fake_google.genai = fake_genai
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    return RecordingGeminiClient.calls
+
+
+def _live_argv(manifest: Path, prompt: Path, out_dir: Path, *extra: str) -> list[str]:
+    """Argument vector for a live (non-dry-run) gemini invocation."""
+    return [
+        "--provider", "gemini",
+        "--manifest", str(manifest),
+        "--prompt", str(prompt),
+        "--out-dir", str(out_dir),
+        *extra,
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The API Call Review Gate
+# ---------------------------------------------------------------------------
+
+
+class TestApiCallReviewGate:
+    """No billed call without the four figures and an explicit approval."""
+
+    def test_summary_names_model_mode_count_and_cost(self, tmp_path):
+        manifest = _one_session_manifest(tmp_path)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        lines = "\n".join(bom.gate_summary_lines(requests, "gemini"))
+        assert bom.GEMINI_MODEL in lines
+        assert "real-time" in lines
+        assert "requests:       1" in lines
+        assert "estimated cost: $" in lines
+
+    def test_batch_provider_is_labelled_batch(self, tmp_path):
+        manifest = _one_session_manifest(tmp_path)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        lines = "\n".join(bom.gate_summary_lines(requests, "haiku"))
+        assert bom.HAIKU_MODEL in lines
+        assert "mode:           batch" in lines
+
+    def test_declining_makes_no_call_and_exits_0(
+        self, tmp_path, monkeypatch, capsys, gemini_boundary
+    ):
+        """The negative: a 'no' must reach the provider adapter never."""
+        manifest = _one_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "no")
+        code = bom.main(_live_argv(manifest, prompt, out_dir))
+        assert code == 0
+        assert gemini_boundary == []
+        printed = capsys.readouterr().out
+        assert bom.GEMINI_MODEL in printed  # the figures were shown first
+        assert not list((out_dir / "gemini").glob("*.json"))
+
+    def test_closed_stdin_refuses_cleanly(
+        self, tmp_path, monkeypatch, capsys, gemini_boundary
+    ):
+        """A closed stdin is 'nobody is here', not an EOFError traceback."""
+        manifest = _one_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+
+        def raise_eof(_prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", raise_eof)
+        code = bom.main(_live_argv(manifest, prompt, tmp_path / "out"))
+        assert code == 0
+        assert gemini_boundary == []
+        assert "stdin is closed" in capsys.readouterr().out
+
+    def test_yes_flag_prints_the_figures_and_proceeds(
+        self, tmp_path, monkeypatch, capsys, gemini_boundary
+    ):
+        """--yes is not a way to skip the disclosure, only the prompt."""
+        manifest = _one_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+
+        def refuse_input(_prompt=""):
+            raise AssertionError("--yes must not reach input()")
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        code = bom.main(_live_argv(manifest, prompt, out_dir, "--yes"))
+        assert code == 0
+        printed = capsys.readouterr().out
+        assert bom.GEMINI_MODEL in printed
+        assert "estimated cost: $" in printed
+        assert any(call["event"] == "generate" for call in gemini_boundary)
+        assert list((out_dir / "gemini").glob("*.json"))
+
+    def test_typed_yes_proceeds(
+        self, tmp_path, monkeypatch, gemini_boundary
+    ):
+        manifest = _one_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": " YES \n")
+        assert bom.main(_live_argv(manifest, prompt, tmp_path / "out")) == 0
+        assert any(call["event"] == "generate" for call in gemini_boundary)
+
+    def test_dry_run_never_reaches_the_gate(
+        self, tmp_path, monkeypatch, gemini_boundary
+    ):
+        manifest = _one_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+
+        def refuse_input(_prompt=""):
+            raise AssertionError("--dry-run must not prompt")
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        code = bom.main(_live_argv(manifest, prompt, out_dir, "--dry-run"))
+        assert code == 0
+        assert gemini_boundary == []
+        assert (out_dir / "gemini" / "dry-run-cost.json").exists()
+
+
+class TestUngatedRetrieval:
+    """``--haiku-apply`` is free, so it does not prompt — but it does speak."""
+
+    def test_haiku_apply_announces_what_it_retrieves(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        state_dir = tmp_path / "out" / "haiku"
+        state_dir.mkdir(parents=True)
+        (state_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_invented", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        retrieved: list[str] = []
+
+        def fake_apply(batch_id, out_dir):
+            retrieved.append(batch_id)
+
+        monkeypatch.setattr(bom, "haiku_apply", fake_apply)
+
+        def refuse_input(_prompt=""):
+            raise AssertionError("retrieval is free; it must not prompt")
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        code = bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_invented",
+            "--manifest", str(_one_session_manifest(tmp_path)),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+        ])
+        assert code == 0
+        assert retrieved == ["batch_invented"]
+        printed = capsys.readouterr().out
+        assert "batch_invented" in printed
+        assert "ungated" in printed
+
+    def test_haiku_apply_with_wrong_provider_exits_2(self, tmp_path):
+        code = bom.main([
+            "--provider", "gemini",
+            "--haiku-apply", "batch_invented",
+            "--manifest", str(_one_session_manifest(tmp_path)),
             "--prompt", str(_prompt_file(tmp_path)),
             "--out-dir", str(tmp_path / "out"),
         ])
