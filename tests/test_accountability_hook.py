@@ -532,27 +532,39 @@ def _stage_task_files(
         monkeypatch.setattr(accountability, attr, path)
 
 
-# Live conventions (shape only — every name, item, and date below is
-# synthetic): bold field labels, a ``- **Rotated in:**`` date with prose
-# after it, ``---`` between slot blocks, and a waiting-for table whose
-# completed rows close the strikethrough mid-cell and append an un-struck
-# project tag.
+# These fixtures reproduce the SHAPE of the live task files and nothing
+# else. Audit round two L4: an earlier version was a de-identified copy of
+# the real waiting-for file — same situation, same week — which is still
+# the private file in a public repository. Everything below is invented and
+# deliberately unrelated: a fictional observatory's equipment log, dated in
+# a different year.
+#
+# The shapes the tests actually pin: a header row containing "Waiting On",
+# a separator row, bold item cells with a backticked project tag, and a
+# completed row that closes its strikethrough MID-CELL before an un-struck
+# tag (the live convention, audit H8).
+#
+# The last row is struck cell by cell, which is the OTHER encoding the
+# counter documents — but note it is caught by the same first-cell rule, so
+# the whole-row branch below it in count_waiting_items is defensive and
+# unreachable in practice. No fixture here pins it, and none can while any
+# struck row's first cell also opens with ``~~``.
 _WAITING_LIVE = """# Waiting For
 
 | Item | Waiting On | Since | Last Poked | Next Action If No Response |
 |------|------------|-------|------------|---------------------------|
-| **Venue booking confirmation** (`personal`/move) | Alex | 2026-09-08 | — | Call Wed. |
-| **Removal quote** (`personal`/move) | Acme Removals | 2026-08-27 | 2026-08-28 | Call Monday. |
-| **Logo artwork** (`efn`) | Designer | 2026-09-04 | 2026-09-04 | Chase Mon 8 Sept. |
-| ~~Car service — slot requested~~ (`personal`) | ~~Garage~~ | 2026-08-18 | — | Resolved. |
-| ~~Trainee profile info~~ | ~~Pat Example~~ | ~~2026-03-17~~ | — | Received. |
+| **Spectrograph calibration slot** (`observatory`) | Roster desk | 2024-03-11 | — | Ask again. |
+| **Filter wheel spare part** (`observatory`/optics) | Supplier | 2024-02-19 | 2024-02-26 | Reorder. |
+| **Dome shutter service report** (`observatory`) | Contractor | 2024-03-04 | 2024-03-04 | Escalate. |
+| ~~Telescope time application~~ (`observatory`) | ~~Panel~~ | 2024-01-15 | — | Granted. |
+| ~~Star catalogue licence~~ | ~~Publisher~~ | ~~2023-11-02~~ | — | Renewed. |
 """
 
 _INBOX_LIVE = """# Inbox
 
-- [ ] Ring the plumber first thing
-- [x] File the receipt screenshot
-- [ ] Book the charity drop-off
+- [ ] Recalibrate the guide camera
+- [x] Log last night's seeing conditions
+- [ ] Order replacement desiccant
 """
 
 
