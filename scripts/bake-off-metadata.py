@@ -52,6 +52,8 @@ import importlib.util
 import hashlib
 import json
 import os
+import random
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -992,6 +994,58 @@ def dry_run_report(
 # ---------------------------------------------------------------------------
 
 
+#: Markers delimiting the generated session blocks in the rubric template.
+BEGIN_SESSIONS_MARKER = "<!--BEGIN-SESSIONS-->"
+END_SESSIONS_MARKER = "<!--END-SESSIONS-->"
+
+#: An **unpopulated** marker pair: the two markers with nothing between them
+#: but whitespace. ``\s*`` deliberately tolerates a blank line, a trailing
+#: space, and CRLF line endings — a template that differs from the canonical
+#: one only in whitespace should still populate. It does NOT tolerate
+#: content: see ``validate_rubric_template`` for why that must be a refusal.
+SESSIONS_SPAN_RE = re.compile(
+    re.escape(BEGIN_SESSIONS_MARKER) + r"\s*" + re.escape(END_SESSIONS_MARKER)
+)
+
+
+class RubricTemplateError(RuntimeError):
+    """The rubric template cannot be populated safely; nothing was written."""
+
+
+def validate_rubric_template(template: str) -> None:
+    """Refuse a rubric template that ``build_rubric`` cannot populate safely.
+
+    The populate step is a *replacement* of the empty span between the two
+    session markers. When that span is not empty — because the rubric has
+    already been populated once — the replacement silently matches nothing
+    and the old session blocks survive, while the blinding key beside the
+    rubric is regenerated from the CURRENT filesystem. Add a provider arm,
+    re-run, and every blinded score then decodes to the wrong model with no
+    error and a cheerful "Wrote populated rubric" on stdout. So the only
+    safe response to an already-populated (or malformed) template is to
+    refuse before anything is written.
+
+    Raises:
+        RubricTemplateError: the markers are missing, duplicated, or already
+            carry session blocks between them.
+    """
+    n_begin = template.count(BEGIN_SESSIONS_MARKER)
+    n_end = template.count(END_SESSIONS_MARKER)
+    if n_begin != 1 or n_end != 1:
+        raise RubricTemplateError(
+            f"the template must carry exactly one {BEGIN_SESSIONS_MARKER} and "
+            f"one {END_SESSIONS_MARKER}; found {n_begin} and {n_end}"
+        )
+    if SESSIONS_SPAN_RE.search(template) is None:
+        raise RubricTemplateError(
+            "the session markers are not an empty pair — the template already "
+            "carries session blocks. Populating it would leave the OLD blocks "
+            "in place while writing a NEW blinding key, so every blinded score "
+            "would decode to the wrong model. Re-run --build-rubric against "
+            "the pristine template instead."
+        )
+
+
 def build_rubric(
     manifest_path: Path,
     prompt_path: Path,
@@ -1009,6 +1063,9 @@ def build_rubric(
     extractor = _load_extractor()
     manifest = json.loads(manifest_path.read_text())
     template = rubric_template.read_text()
+    # Validate BEFORE any work: a refusal must leave the rubric, the
+    # blinding key, and everything else on disk exactly as it found them.
+    validate_rubric_template(template)
 
     # Patch the summary table cells with real metadata.
     for i, entry in enumerate(manifest["sessions"], 1):
@@ -1123,10 +1180,20 @@ def build_rubric(
         blocks.append(block)
 
     sessions_block = "\n".join(blocks)
-    populated = template.replace(
-        "<!--BEGIN-SESSIONS-->\n<!--END-SESSIONS-->",
-        f"<!--BEGIN-SESSIONS-->\n{sessions_block}\n<!--END-SESSIONS-->",
+    # ``re.sub`` with a *function* replacement, not a string: the session
+    # blocks carry JSON, and backslash sequences in a string replacement
+    # would be interpreted as group references.
+    replacement = (
+        f"{BEGIN_SESSIONS_MARKER}\n{sessions_block}\n{END_SESSIONS_MARKER}"
     )
+    populated, n_replaced = SESSIONS_SPAN_RE.subn(
+        lambda _match: replacement, template, count=1
+    )
+    if n_replaced != 1:  # pragma: no cover — validate_rubric_template guards
+        raise RubricTemplateError(
+            "the session-marker span vanished between validation and "
+            "substitution; nothing was written"
+        )
     rubric_out.write_text(populated)
     print(f"Wrote populated rubric to {rubric_out}")
 
@@ -1149,7 +1216,8 @@ def build_rubric(
     print(f"Wrote blinding key to {key_path} (do not open before scoring)")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Parse ``argv`` (default ``sys.argv[1:]``) and run the requested mode."""
     parser = argparse.ArgumentParser(
         description=(
             "Bake-off runner — Anthropic Haiku Batch vs Gemini Flash Flex "
@@ -1224,7 +1292,7 @@ def main() -> int:
         type=Path,
         help="Populated rubric markdown (output).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     load_env()
 
@@ -1232,10 +1300,14 @@ def main() -> int:
         if not (args.rubric_in and args.rubric_out):
             print("--build-rubric requires --rubric-in and --rubric-out")
             return 2
-        build_rubric(
-            args.manifest, args.prompt, args.out_dir,
-            args.rubric_in, args.rubric_out,
-        )
+        try:
+            build_rubric(
+                args.manifest, args.prompt, args.out_dir,
+                args.rubric_in, args.rubric_out,
+            )
+        except RubricTemplateError as exc:
+            print(f"--build-rubric refused: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     if not args.provider:
