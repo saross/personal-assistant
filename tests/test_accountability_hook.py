@@ -81,7 +81,7 @@ class TestCountWaitingItems:
             "| Item | Waiting On | Since | Last Poked | Next Action |\n"
             "|------|------------|-------|------------|-------------|\n"
             "| Canvas access | ANU IT | 2026-02-07 | - | Follow up |\n"
-            "| Review feedback | Brian | 2026-02-10 | - | Chase |\n"
+            "| Review feedback | Reviewer | 2026-02-10 | - | Chase |\n"
         )
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
         assert accountability.count_waiting_items() == 2
@@ -122,7 +122,7 @@ class TestCountWaitingItems:
             "| ~~Trainee profile info~~ | ~~Pat Example~~ "
             "| ~~2026-03-17~~ | — | "
             "**Received 2026-03-19.** Processing today. |\n"
-            "| Europe trip dates | Vivi's mother | 2026-04-28 "
+            "| Trip dates | Travel agent | 2026-04-28 "
             "| — | Late June |\n"
         )
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
@@ -484,7 +484,7 @@ class TestAuditRoundTwo:
         focus = tmp_path / "FOCUS.md"
         focus.write_text(
             "## Slot 1: EFN website\n\n- **Started:** 2026-08-17\n"
-            "- **Deadline:** **~26 Aug commitment to Steve**; contracted **mid-Sept**.\n\n---\n"
+            "- **Deadline:** **~26 Aug commitment to the client**; contracted **mid-Sept**.\n\n---\n"
         )
         monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
         slots = accountability.parse_focus_slots()
