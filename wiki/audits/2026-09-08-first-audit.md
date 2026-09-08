@@ -530,9 +530,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     keeps the previous interruption line; the guard and the interrupted
     check run before orphan reconciliation; the marker parser fails
     closed (tested at line 13); the resolver runs under `timeout 60`.
-    Eighth pass running. Both machines at 16:15: corpora pass `--check`,
-    no stash, no in-progress rebase or merge, no unmerged path, no
-    `merge.conflictStyle` set.
+    Eighth pass: **do not merge** — the exit handler can itself create a
+    conflicted apply without classifying it (so the gate says pop for a
+    tree holding markers); the new interrupted-state advice orders the
+    deletion of an unnamed stash before orphan reconciliation has run;
+    the parent repository is never checked for in-progress state; `git
+    am`, a resolved-but-uncommitted merge, cherry-pick, and revert get the
+    wrong command; the completion flag and the start-of-run guard are
+    untested. Ninth round running: classify a conflicted restore; name
+    every stash by SHA and only claim "in the tree" for a proven applied
+    one; check both repositories; per-operation commands. Both machines
+    at 16:15: corpora pass `--check`, no stash, no in-progress rebase or
+    merge, no unmerged path, no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
