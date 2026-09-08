@@ -990,3 +990,138 @@ class TestGateQuotesWhatWillBeSent:
         )) == 0
         assert gemini_boundary == []
         assert "nothing to send" in capsys.readouterr().out
+
+
+class TestBatchSubmitIsNotRepeatable:
+    """A Message Batch is billed at creation and its id lives in one file."""
+
+    @pytest.fixture
+    def submit_stub(self, monkeypatch):
+        """Fake ``anthropic`` whose batches.create records and returns an id."""
+        created: list[list[dict]] = []
+
+        class FakeBatches:
+            def create(self, requests):
+                created.append(requests)
+                return type("Batch", (), {"id": f"batch_{len(created):03d}"})()
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return created
+
+    def _argv(self, manifest, prompt, out_dir, *extra):
+        return [
+            "--provider", "haiku",
+            "--manifest", str(manifest),
+            "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+            "--yes",
+            *extra,
+        ]
+
+    def test_second_submit_is_refused_and_names_the_stored_batch(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """The finding: a re-run paid twice and orphaned the first batch."""
+        manifest = _one_session_manifest(tmp_path, "batch-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        assert len(submit_stub) == 1
+        capsys.readouterr()
+
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
+        assert len(submit_stub) == 1  # nothing was created the second time
+        message = capsys.readouterr().err
+        assert "batch_001" in message
+        assert "--haiku-apply batch_001" in message
+        assert f"--out-dir {out_dir}" in message
+        assert "the SAME manifest" in message
+
+    def test_a_different_manifest_is_still_refused_but_says_so(
+        self, tmp_path, capsys, submit_stub
+    ):
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        first = _one_session_manifest(tmp_path, "batch-bbbb-1111")
+        assert bom.main(self._argv(first, prompt, out_dir)) == 0
+        second_transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "other.jsonl", n_records=8
+        )
+        second = fx.write_manifest(
+            tmp_path / "other-manifest.json",
+            [fx.manifest_row("batch-cccc-2222", second_transcript)],
+        )
+        capsys.readouterr()
+        assert bom.main(self._argv(second, prompt, out_dir)) == 2
+        assert "a DIFFERENT manifest" in capsys.readouterr().err
+
+    def test_force_resubmits_and_keeps_the_old_id(
+        self, tmp_path, submit_stub
+    ):
+        manifest = _one_session_manifest(tmp_path, "batch-dddd-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--force")) == 0
+        state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
+        assert state["batch_id"] == "batch_002"
+        assert state["superseded_batches"] == ["batch_001"]
+
+    def test_resumed_submit_tops_up_only_the_missing_sessions(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A top-up must not pay for sessions already retrieved."""
+        rows = []
+        for session_id in ("batch-eeee-1111", "batch-ffff-2222"):
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=8
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        provider_dir = out_dir / "haiku"
+        provider_dir.mkdir(parents=True)
+        (provider_dir / "batch-eeee-1111.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        assert len(submit_stub[0]) == 1
+        assert submit_stub[0][0]["custom_id"] == bom.build_custom_id("batch-ffff-2222")
+        assert "requests:       1" in capsys.readouterr().out
+
+    def test_state_records_the_manifest_fingerprint(self, tmp_path, submit_stub):
+        manifest = _one_session_manifest(tmp_path, "batch-gggg-1111")
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, _prompt_file(tmp_path), out_dir)) == 0
+        state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
+        assert state["manifest_sha256"] == bom.file_sha256(manifest)
+        assert state["manifest_path"] == str(manifest)
+
+    def test_colliding_custom_ids_are_refused_before_the_billed_call(
+        self, tmp_path, submit_stub, monkeypatch
+    ):
+        """Injectivity is checked before batches.create, not after."""
+        monkeypatch.setattr(bom, "build_custom_id", lambda _session_id: "sess-same")
+        rows = []
+        for session_id in ("clash-aaaa", "clash-bbbb"):
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=6
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(ValueError, match="custom_id collision"):
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        assert submit_stub == []
+        assert not (out_dir / "batch-state.json").exists()
