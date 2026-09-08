@@ -87,6 +87,27 @@ import time and fail collection when the data submodule is uninitialised
 (`tests/test_jsonl_flock.py`, `tests/test_tag_gardening.py`; H12's class).
 Deferred; the worktrees stub the directories.
 
+### Round 1c — re-audit of round 1b (fresh agent, 2026-09-08)
+
+No critical; 5 medium, 10 low; every round-1b finding confirmed fixed
+under mutation, no live mail regresses. Fixed in 0f94722 (suite 1,283):
+
+| # | Finding | Disposition |
+|---|---|---|
+| M-1 | Tripwire output bracket-forgeable: an author name closed the `[author]` group and planted text in the relayed block (CONFIRMED) | fixed: `printable()` drops brackets |
+| M-2 | `Claude-Session` exemption is a one-line, Codex-readable opt-out; per-commit `--ack` already existed | narrowed (a Codex author identity is flagged regardless); the exemption itself is **decision D4** |
+| M-3 | Archiver mirrored hostile agent/peer directory names into the repository and index (CONFIRMED; Codex can create `codex/outbox/<name>/`) | fixed: slug rule on directories and message names, refusals named |
+| M-4 | Hook printed an unvalidated sender directory name in every path | fixed: slug rule on sender directories |
+| M-5 | The split-try test could not fail (run from the repo root, both fallbacks agree) | fixed: runs from a subdirectory |
+| L-1 | Runbook claimed a bad filename is shown as `invalid`; it is skipped silently | fixed: wording |
+| L-2, L-3 | `fullmatch` anchoring and the archiver's name refusal untested | fixed: tests |
+| L-4 | Protocol allowed `gpt-5 high` and free-text workstreams, which now render `invalid` | fixed: proposal defines routing values as slugs (Astra to mirror) |
+| L-5, L-6 | `routes_here` and `annotate` disagreed on a non-slug project; dead `or "invalid"` branch | fixed: `message_project()` is the single sanitised value |
+| L-7, L-8 | Stale "seven fields" comments; docstring wrong about a grown source | fixed |
+| L-9 | Receipt note stored raw while the subject is filtered | fixed |
+| L-10 | Stat-then-copy race could land an oversized file (SUSPECTED) | fixed: bounded read |
+| — | Double-encoded `%252F` passes one `unquote` (SUSPECTED, server-dependent) | deferred |
+
 ## Tranche 1 — session hooks
 
 Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
@@ -224,13 +245,22 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    append-only paths (memories, scratchpads, notes inbox); (b) keep sweeping
    everything; (c) sweep but never push a commit that touched `tasks/` or
    `wiki/`. Recommendation: (a).
+4. **D4 — the tripwire's `Claude-Session` exemption.** A Claude-session
+   commit that credits the Codex agent as co-author (every reviewed patch)
+   would otherwise trip the wire on every machine until acked there, since
+   the ack file is per machine. The exemption is a one-line opt-out that
+   Codex could add to its own commits; it guards against mistakes, not an
+   adversary (a Codex author identity is still flagged). Options: keep it
+   (recommended, matching the guardrails-not-obstacles stance), or drop it
+   and ack each such commit on each machine.
 3. **Sessions table stale since 17 August (P1).** Fixing the error split and
    sanitising NUL will let 48+ sessions sync on the next run. No decision needed
    unless you want to inspect the two affected archive files first.
 
 ## Fix rounds
 
-- Round 1 (done, 0577648): tranche 0. Re-audited: round 1b (06225a0, 5798dc9).
+- Round 1 (done, 0577648): tranche 0. Re-audited twice: round 1b (06225a0,
+  5798dc9) and round 1c (0f94722).
 - Round 2, hooks (done, 300ee10): H2–H4, H8–H13, H15–H18. Re-audit pending.
 - Round 2, remainder (in progress on four branches, each in its own
   worktree, to be reviewed and merged by PR): hook tests H5–H7, H20–H22 and
