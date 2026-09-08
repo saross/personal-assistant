@@ -406,10 +406,13 @@ def cursor_entry(cursor: dict, session_id: str) -> tuple[str | None, bool]:
         return record, False
     if isinstance(record, dict):
         uuid = record.get("uuid")
-        return (
-            uuid if isinstance(uuid, str) else None,
-            bool(record.get("skip_pending")),
-        )
+        if not isinstance(uuid, str):
+            # No position means no window to resume, so the flag has nothing
+            # to apply to. Returning it anyway seeded a skip from the top of
+            # the transcript and swallowed the first assistant turn, which
+            # belongs to no command (audit round six L-3).
+            return None, False
+        return uuid, bool(record.get("skip_pending"))
     return None, False
 
 
@@ -548,6 +551,12 @@ def _entry_text(entry: dict) -> str:
     Structured content arrives as a list of blocks; only ``text`` and
     ``thinking`` carry prose. Shared by the cursor-position check and the
     main parse so the two cannot disagree about what an entry says.
+
+    Every payload is checked, not just the outer shape (audit round six
+    M-C1): a block ``{"type": "text", "text": 99}`` used to raise TypeError
+    in the join, and ``{"type": "thinking", "thinking": 99}`` in the slice.
+    Both would surface as a Stop / PreCompact / SessionEnd hook dying on an
+    entry shape nobody had seen, so a non-string payload is skipped instead.
     """
     msg = entry.get("message", {})
     content = msg.get("content", "") if isinstance(msg, dict) else ""
@@ -556,17 +565,33 @@ def _entry_text(entry: dict) -> str:
         for block in content:
             if isinstance(block, dict):
                 if block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
+                    text = block.get("text", "")
+                    if isinstance(text, str):
+                        text_parts.append(text)
                 elif block.get("type") == "thinking":
                     # Include thinking for LLM research value
                     thinking = block.get("thinking", "")
-                    if MAX_THINKING_CHARS:
-                        thinking = thinking[:MAX_THINKING_CHARS]
-                    text_parts.append(f"[THINKING]: {thinking}")
+                    if isinstance(thinking, str):
+                        if MAX_THINKING_CHARS:
+                            thinking = thinking[:MAX_THINKING_CHARS]
+                        text_parts.append(f"[THINKING]: {thinking}")
             elif isinstance(block, str):
                 text_parts.append(block)
         content = " ".join(text_parts)
-    return content if isinstance(content, str) else ""
+    if isinstance(content, str):
+        return content
+    # Truthy but unreadable: an unwrapped block, say
+    # ``{"content": {"type": "text", "text": "…"}}``. Returning "" silently
+    # would let the cursor advance past real prose with no trace, so name
+    # the entry (audit round six L-2). The uuid is the only handle an
+    # operator has for finding it in the transcript.
+    if content:
+        logger.warning(
+            "Entry %s: message.content is %s, not text — treated as empty",
+            entry.get("uuid"),
+            type(content).__name__,
+        )
+    return ""
 
 
 def parse_transcript(

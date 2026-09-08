@@ -2507,3 +2507,203 @@ class TestRoundFiveSurvivors:
             "assistant turn that belongs to no command"
         )
         assert window.last_uuid == "u3"
+
+
+class TestRoundSixEntryShapes:
+    """Audit round six M-C1 and L-2: block payloads and unreadable content."""
+
+    def test_a_non_string_text_payload_does_not_raise(self):
+        """Kills appending ``block.get("text")`` without a type check.
+
+        ``{"type": "text", "text": 99}`` raised TypeError in the join —
+        out of a Stop / PreCompact / SessionEnd hook, so the session close
+        died on an entry shape nobody had seen.
+        """
+        entry = {
+            "type": "user",
+            "uuid": "u1",
+            "message": {"content": [{"type": "text", "text": 99}]},
+        }
+        assert _entry_text_result(entry) == ""
+
+    def test_a_non_string_thinking_payload_does_not_raise(self):
+        """Kills slicing ``block.get("thinking")`` without a type check.
+
+        Same failure one branch over: ``99[:MAX_THINKING_CHARS]`` raises.
+        """
+        entry = {
+            "type": "assistant",
+            "uuid": "u1",
+            "message": {"content": [{"type": "thinking", "thinking": 99}]},
+        }
+        assert _entry_text_result(entry) == ""
+
+    def test_a_text_block_with_no_text_key_does_not_raise(self):
+        """Kills ``block.get("text", "")`` -> ``block["text"]``.
+
+        A text block missing its payload is not a reason to abort the
+        session close; it is a reason to have nothing to say about it.
+        """
+        entry = {
+            "type": "user",
+            "uuid": "u1",
+            "message": {"content": [{"type": "text"}, {"type": "text", "text": "kept"}]},
+        }
+        assert _entry_text_result(entry) == " kept"
+
+    def test_a_thinking_block_with_no_payload_does_not_raise(self):
+        """Kills ``block.get("thinking", "")`` -> ``block["thinking"]``."""
+        entry = {
+            "type": "assistant",
+            "uuid": "u1",
+            "message": {"content": [{"type": "thinking"}]},
+        }
+        assert _entry_text_result(entry) == "[THINKING]: "
+
+    def test_good_blocks_around_a_bad_one_still_parse(self, tmp_path):
+        """The consequence: one malformed block must not lose the window."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": 99},
+                            {"type": "text", "text": "REAL PROSE"},
+                        ]
+                    },
+                },
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == ["REAL PROSE"]
+
+    def test_unreadable_content_is_named_in_a_warning(self, tmp_path, caplog):
+        """Kills returning "" silently for truthy-but-unreadable content.
+
+        An unwrapped block — ``{"content": {"type": "text", "text": "…"}}``
+        — yields no text, and the cursor then advances past real prose. The
+        uuid is the only handle an operator has for finding that entry in
+        the transcript, so it goes in the warning (audit round six L-2).
+        """
+        entry = {
+            "type": "user",
+            "uuid": "uuid-unwrapped",
+            "message": {"content": {"type": "text", "text": "REAL PROSE"}},
+        }
+        with caplog.at_level("WARNING"):
+            assert _entry_text_result(entry) == ""
+        assert "uuid-unwrapped" in caplog.text
+        assert "not text" in caplog.text
+
+    def test_absent_content_does_not_warn(self, tmp_path, caplog):
+        """Kills warning on every entry regardless.
+
+        An empty or missing content field is ordinary — tool-use-only
+        assistant entries have one on every turn — and warning about those
+        would bury the case that matters.
+        """
+        entry = {"type": "user", "uuid": "u1", "message": {"content": ""}}
+        with caplog.at_level("WARNING"):
+            assert _entry_text_result(entry) == ""
+        assert caplog.text == ""
+
+
+class TestRoundSixCursorPins:
+    """Audit round six L-3 and the four unasserted mutations."""
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_row_without_a_string_uuid_carries_no_flag(self):
+        """Kills returning the flag from a row with no position (L-3).
+
+        ``{"uuid": null, "skip_pending": true}`` seeded a skip with nowhere
+        to resume from, so the parse started at the top of the transcript
+        with a skip owed and swallowed the first assistant turn — which
+        belongs to no command at all.
+        """
+        assert eh.cursor_entry({"s": {"uuid": None, "skip_pending": True}}, "s") == (
+            None,
+            False,
+        )
+        assert eh.cursor_entry({"s": {"skip_pending": True}}, "s") == (None, False)
+        assert eh.cursor_entry({"s": {"uuid": 7, "skip_pending": True}}, "s") == (
+            None,
+            False,
+        )
+
+    def test_a_row_with_a_string_uuid_still_carries_its_flag(self):
+        """Kills discarding the flag from every row."""
+        assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": True}}, "s") == (
+            "u1",
+            True,
+        )
+
+    def test_a_null_uuid_row_does_not_swallow_the_first_answer(self, tmp_path):
+        """The consequence of L-3, through the parse."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [make_live_shape_entry("assistant", "THE FIRST ANSWER", "u1")],
+        )
+        uuid, skip = eh.cursor_entry({"s": {"uuid": None, "skip_pending": True}}, "s")
+        window = eh.parse_transcript(str(transcript), uuid, skip)
+        assert [m["content"] for m in window.messages] == ["THE FIRST ANSWER"]
+
+    def test_the_load_cursor_warning_is_emitted(self, tmp_path, monkeypatch, caplog):
+        """Kills deleting the WARNING from the non-object branch (M7).
+
+        The branch was pinned by its return value only, so the operator's
+        one signal that a cursor file was discarded could vanish silently.
+        """
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text("[]", encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        with caplog.at_level("WARNING"):
+            assert eh.load_cursor() == {}
+        assert "not an object" in caplog.text
+        assert "list" in caplog.text
+
+    def test_the_corrupt_cursor_warning_is_emitted(self, tmp_path, monkeypatch, caplog):
+        """Kills deleting the WARNING from the JSONDecodeError branch."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        with caplog.at_level("WARNING"):
+            assert eh.load_cursor() == {}
+        assert "Corrupt cursor file" in caplog.text
+
+    def test_the_cursor_on_command_check_fires_positively(self, tmp_path):
+        """Kills ``if any(...)`` -> ``if False and any(...)`` (M10).
+
+        The negative case (a non-command entry at the cursor) passes either
+        way; only asserting that a command entry DOES arm the flag pins the
+        condition itself.
+        """
+        marker = self._marker()
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+            ],
+        )
+        armed = eh.parse_transcript(str(transcript), "u1")
+        assert armed.messages == [], "the response was not skipped"
+
+        # And the negative, so the check is not simply always-on.
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "an ordinary question", "u1"),
+                make_live_shape_entry("assistant", "AN ORDINARY ANSWER", "u2"),
+            ],
+        )
+        idle = eh.parse_transcript(str(transcript), "u1")
+        assert [m["content"] for m in idle.messages] == ["AN ORDINARY ANSWER"]
