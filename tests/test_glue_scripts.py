@@ -1113,3 +1113,104 @@ class TestCommitDataSafetyContracts:
 
         assert result.returncode == 2
         assert "?? memories.jsonl" in _git("status", "--porcelain", cwd=data_dir).stdout
+
+    # ---- fourth re-audit of PR #114 (2026-09-08): the untested guards ----
+
+    def test_plain_file_guard_fires_before_anything_is_pushed(self, tmp_path: Path) -> None:
+        """The guard used to sit in the parent half, AFTER the data commit and push,
+        so exit 2 no longer meant 'nothing happened'."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "commit-data.sh").symlink_to(COMMIT_DATA_SCRIPT)
+        data_dir = pa_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("init", "--quiet", "--initial-branch=main", cwd=pa_dir)
+        _git("add", "data/memories.jsonl", cwd=pa_dir)
+        _git("commit", "--quiet", "-m", "wrongly tracked", cwd=pa_dir)
+        data_remote = tmp_path / "data.git"
+        data_remote.mkdir()
+        _git("init", "--bare", "--quiet", "--initial-branch=main", cwd=data_remote)
+        _git("init", "--quiet", "--initial-branch=main", cwd=data_dir)
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "data", cwd=data_dir)
+        _git("remote", "add", "origin", str(data_remote), cwd=data_dir)
+        _git("push", "--quiet", "origin", "main", cwd=data_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n{"id": "m2"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 2
+        assert "Committing these paths" not in result.stdout
+        assert self._commit_count(data_dir) == 1                        # nothing committed
+        assert _git("rev-list", "--count", "main", cwd=data_remote).stdout.strip() == "1"
+
+    def test_parent_bump_commit_leaves_another_sessions_staged_parent_file_alone(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """Kills: dropping `-- data` from the parent bump commit (the staged parent
+        file rode along under the bump's message)."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (pa_dir / "NOTES.md").write_text("another session's parent edit\n")
+        _git("add", "NOTES.md", cwd=pa_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        shown = _git("show", "--stat", "--format=", "HEAD", cwd=pa_dir).stdout
+        assert "data" in shown and "NOTES.md" not in shown
+        assert "NOTES.md" in _git("diff", "--cached", "--name-only", cwd=pa_dir).stdout
+
+    def test_unborn_parent_is_handled_after_the_data_push(self, tmp_path: Path) -> None:
+        """Kills: removing the unborn-HEAD guard (the branch query died with rc 128
+        after the data had been pushed)."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "commit-data.sh").symlink_to(COMMIT_DATA_SCRIPT)
+        data_remote = tmp_path / "data.git"
+        data_remote.mkdir()
+        _git("init", "--bare", "--quiet", "--initial-branch=main", cwd=data_remote)
+        data_dir = pa_dir / "data"
+        data_dir.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=data_dir)
+        (data_dir / "seed.txt").write_text("seed\n")
+        _git("add", "seed.txt", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "seed", cwd=data_dir)
+        _git("remote", "add", "origin", str(data_remote), cwd=data_dir)
+        _git("push", "--quiet", "origin", "main", cwd=data_dir)
+        _git("init", "--quiet", "--initial-branch=main", cwd=pa_dir)      # no commit
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "no commit yet" in result.stdout
+        assert _git("rev-list", "--count", "main", cwd=data_remote).stdout.strip() == "2"
+
+    def test_stale_tracking_ref_does_not_cause_a_false_refusal(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """Kills: dropping the `fetch` before the on-origin check (a commit that IS on
+        the remote but not in the stale origin/main ref gave a false exit 3)."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        _git("-c", "advice.addEmbeddedRepo=false", "add", "data", cwd=pa_dir)
+        _git("commit", "--quiet", "-m", "record pointer", cwd=pa_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "pushed elsewhere", cwd=data_dir)
+        _git("push", "--quiet", "origin", "HEAD:main", cwd=data_dir)
+        old = _git("rev-parse", "HEAD~1", cwd=data_dir).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/main", old, cwd=data_dir)   # stale ref
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "already on origin" in result.stdout
+        assert "already-pushed data commit" in result.stdout            # the final line

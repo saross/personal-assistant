@@ -18,7 +18,8 @@
 #      `git am`, or a bisect that detached HEAD lands here too)
 #   2  the data submodule has an unfinished merge, cherry-pick, revert, or
 #      bisect, or unmerged index entries left by a conflicted stash pop or
-#      `apply -3` — nothing was staged
+#      `apply -3`; or `data` is tracked in the parent as ordinary files
+#      rather than a submodule — in every case nothing was staged
 #   3  this run had nothing of its own, but paths are staged and
 #      uncommitted (another session's, or a run that died mid-commit), or
 #      the parent's data pointer is stale and data's HEAD is not on origin
@@ -39,6 +40,18 @@ exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     echo "Another daily-sync or commit-data is running (lock held). Exiting." >&2
     exit 1
+fi
+
+# Third re-audit: `data` must be a gitlink (mode 160000) in the parent index,
+# or absent. If it is tracked as ordinary files, the pointer bump's
+# `git add -- data` would commit the private submodule's CONTENTS into the
+# public parent. Checked here, before anything is committed or pushed, so
+# exit 2 keeps its "nothing happened" meaning (fourth re-audit).
+DATA_MODES="$(git -C "$PA_DIR" ls-files -s -- data | cut -c1-6 | sort -u | tr '\n' ' ')"
+if [[ -n "$DATA_MODES" && "$DATA_MODES" != "160000 " ]]; then
+    echo "ERROR: data is tracked in the parent as ordinary files (modes: $DATA_MODES)," >&2
+    echo "  not as a submodule. Refusing to commit its contents into the parent." >&2
+    exit 2
 fi
 
 cd "$PA_DIR/data"
@@ -196,16 +209,6 @@ if ! git rev-parse -q --verify HEAD >/dev/null; then
     exit 0
 fi
 
-# Third re-audit: `data` must be a gitlink (mode 160000) in the parent index,
-# or absent. If it is tracked as ordinary files, `git add -- data` would
-# commit the private submodule's CONTENTS into the public parent.
-DATA_MODES="$(git ls-files -s -- data | cut -c1-6 | sort -u | tr '\n' ' ')"
-if [[ -n "$DATA_MODES" && "$DATA_MODES" != "160000 " ]]; then
-    echo "ERROR: data is tracked in the parent as ordinary files (modes: $DATA_MODES)," >&2
-    echo "  not as a submodule. Refusing to commit its contents into the parent." >&2
-    exit 2
-fi
-
 # Second and third re-audits: a previous run may have committed and pushed
 # the data submodule and died before the pointer bump below, leaving the
 # parent with a stale pointer and every later run saying "nothing to do".
@@ -228,7 +231,10 @@ if [[ $DATA_COMMITTED -eq 0 ]]; then
         echo "  (git submodule update) or they diverged. Nothing committed."
         exit 0
     fi
-    git -C data fetch --quiet origin main 2>/dev/null || true    # honest tracking ref
+    # Refresh the tracking ref so a stale one cannot give a false exit 3; never
+    # prompt for credentials here (an expired token would block on the tty),
+    # and never let a failed fetch abort the run — the next test says why.
+    GIT_TERMINAL_PROMPT=0 git -C data fetch --quiet origin main 2>/dev/null || true
     if ! git -C data merge-base --is-ancestor "$DATA_HEAD" origin/main 2>/dev/null; then
         echo "ERROR: the parent's data pointer is stale and data's HEAD (${DATA_HEAD:0:7})" >&2
         echo "  is not on origin/main. If that commit is this machine's own dead run," >&2
@@ -244,8 +250,9 @@ fi
 PARENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$PARENT_BRANCH" != "main" ]]; then
     echo "WARNING: parent repo is on branch '$PARENT_BRANCH', not 'main'." >&2
-    echo "  Submodule reference will be committed locally but not pushed." >&2
-    echo "  Push manually once you have decided where the bump should land." >&2
+    echo "  The submodule reference is NOT committed or pushed from here; the data" >&2
+    echo "  itself is on origin. Commit the bump yourself once you have decided" >&2
+    echo "  where it should land." >&2
     exit 0
 fi
 
