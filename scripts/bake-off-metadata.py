@@ -1,17 +1,34 @@
 #!/usr/bin/env python3
 """
-Bake-off runner: side-by-side quality comparison of Anthropic Claude Haiku 4.5
-(Batch API) vs Google Gemini 3.5 Flash (Flex tier) for auto-generating
-session metadata in Shawn Ross's personal-assistant system.
+Bake-off runner: side-by-side quality comparison of several Large Language
+Model (LLM) providers for auto-generating session metadata in Shawn Ross's
+personal-assistant system.
 
-Originally landed for the 2026-05-18 Haiku-vs-Gemini-3-Flash-Preview
-bake-off; updated 2026-05-23 to default to Gemini 3.5 Flash (the
-current production extractor per the 2026-05-22 toolkit migration).
+``--provider`` offers six arms, in three families:
 
-The runner has two provider adapters that share an identical user prompt (the
-contents of ``prompt.md``). The same N session transcripts are sent to each
-provider; outputs are persisted side-by-side under ``--out-dir`` for human
-review against ``review-rubric.md``.
+- ``haiku`` — Anthropic Claude Haiku 4.5 via the Message Batches API.
+- ``haiku-rt`` / ``sonnet-5`` — the same Anthropic models in real time via
+  the Messages API.
+- ``gemini`` — Google Gemini 3.6 Flash on the Flex tier.
+- ``luna`` / ``terra`` — OpenAI GPT-5.6 Luna and Terra via the Responses API.
+
+Originally landed for the 2026-05-18 Haiku-versus-Gemini-3-Flash-Preview
+bake-off; the Gemini arm moved to 3.5 Flash on 2026-05-23 and to 3.6 Flash
+on 2026-07-28, when the two OpenAI arms and the real-time Anthropic arms
+were added.
+
+Every arm shares an identical user prompt (the contents of ``prompt.md``).
+The same N session transcripts are sent to each provider; outputs are
+persisted side-by-side under ``--out-dir`` for human review against
+``review-rubric.md``.
+
+Interpreter
+-----------
+Run this under the repository virtual environment
+(``venv/bin/python3 scripts/bake-off-metadata.py …``). The system
+``python3`` the shebang resolves to has neither ``cc_session_toolkit`` —
+which the transcript extractor imports unconditionally — nor the provider
+SDKs.
 
 Modes
 -----
@@ -194,6 +211,11 @@ def _load_extractor():
     """Import ``scripts/extract-transcript-text.py`` as a module.
 
     The script name contains hyphens, so we cannot use a normal import.
+
+    The extractor re-exports ``cc_session_toolkit.transcript_text``, which is
+    installed in the repository virtual environment and nowhere else, so an
+    ImportError here almost always means the wrong interpreter. Say that,
+    rather than surfacing a bare "No module named cc_session_toolkit".
     """
     path = Path(__file__).with_name("extract-transcript-text.py")
     spec = importlib.util.spec_from_file_location(
@@ -202,7 +224,14 @@ def _load_extractor():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load extractor from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Cannot load the transcript extractor ({exc}). Re-run under the "
+            f"repository virtual environment: "
+            f"venv/bin/python3 scripts/{Path(__file__).name} …"
+        ) from exc
     return module
 
 
@@ -643,7 +672,7 @@ def haiku_submit(
     # the hint copy-pastes cleanly.
     print(
         f"[haiku] retrieve with: "
-        f"scripts/bake-off-metadata.py --provider haiku "
+        f"venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
         f"--haiku-apply {batch_job.id} --out-dir {out_dir.parent}"
     )
     return batch_job.id
@@ -874,8 +903,14 @@ def gemini_run(
 def luna_call_once(
     user_message: str, system_prompt: str, *, service_tier: str = "flex",
     model: str = LUNA_MODEL,
-) -> tuple[str, dict[str, Any]]:
-    """Single Responses-API call. Returns ``(text, usage)``.
+) -> tuple[str, dict[str, Any], str]:
+    """Single Responses-API call. Returns ``(text, usage, service_tier)``.
+
+    The third element is the tier the request was actually served on —
+    ``payload["service_tier"]`` when the API reports one, otherwise the tier
+    that was asked for. It is recorded beside the usage figures because Flex
+    and the default tier are priced differently, so a silent fallback would
+    otherwise make the recorded cost wrong with nothing to show for it.
 
     Uses the **Responses API** (``POST /v1/responses``) rather than Chat
     Completions: OpenAI's guidance is that "Responses is recommended for all
@@ -888,7 +923,9 @@ def luna_call_once(
       server-side. Keeps the arm stateless and avoids leaving transcript
       content in OpenAI's storage.
     - ``reasoning.effort="none"`` — **symmetry with the Gemini arm**, which
-      sets ``thinking_budget=0``. Reasoning tokens bill at the *output* rate,
+      sets ``thinking_config.thinking_level="minimal"`` (``thinking_budget=0``
+      is rejected by gemini-3.6-flash; ``minimal`` is the closest available
+      equivalent). Reasoning tokens bill at the *output* rate,
       so leaving the default ``medium`` would both inflate cost and give Luna
       a capability the Gemini arm was denied. Fair comparison requires both
       reasoning modes off.
@@ -940,19 +977,20 @@ def luna_call_once(
                 if part.get("type") in ("output_text", "text") and part.get("text"):
                     chunks.append(part["text"])
         text = "".join(chunks)
-    return text, payload.get("usage", {})
+    return text, payload.get("usage", {}), payload.get("service_tier") or service_tier
 
 
 def luna_call_with_retry(
     user_message: str, system_prompt: str, *, model: str = LUNA_MODEL
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], str]:
     """Flex call with backoff on 429, falling back to the default tier.
 
     OpenAI documents Flex as returning ``429 Resource Unavailable`` under
     contention, explicitly *without* charging for the failed call. We retry on
     the same waits the Gemini arm uses, then degrade to the default tier so a
     busy Flex pool cannot stall the bake-off. The tier actually used is
-    reported so the cost estimate can be corrected afterwards.
+    returned, and ``luna_run`` records it in ``_usage.json``, so the cost
+    estimate can be corrected afterwards.
     """
     import urllib.error
 
@@ -1006,7 +1044,7 @@ def luna_run(
             f"({r.bin}, {r.content_tokens:,} tokens) …"
         )
         try:
-            raw_text, usage = luna_call_with_retry(
+            raw_text, usage, service_tier = luna_call_with_retry(
                 r.user_message, system_prompt, model=model
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
@@ -1015,7 +1053,9 @@ def luna_run(
             print(f"[{tag}]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
-        usage_log.append({"session_id": r.session_id, **usage})
+        usage_log.append(
+            {"session_id": r.session_id, "service_tier": service_tier, **usage}
+        )
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:

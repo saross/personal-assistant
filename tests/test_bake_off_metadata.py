@@ -723,3 +723,83 @@ class TestEmptyManifest:
         ])
         assert code == 0
         assert gemini_boundary == []
+
+
+class TestOpenAiBoundary:
+    """The Luna/Terra arm speaks HTTP directly, so the boundary is urlopen."""
+
+    @pytest.fixture
+    def urlopen_stub(self, monkeypatch):
+        """Replace ``urlopen`` with a recorder returning a canned payload."""
+        import urllib.request
+
+        calls: list[dict] = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = json.dumps(payload).encode("utf-8")
+
+            def read(self):
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            body = json.loads(request.data.decode("utf-8"))
+            calls.append(body)
+            return FakeResponse({
+                "output_text": fx.RESPONSE_BARE,
+                "usage": {"input_tokens": 1234, "output_tokens": 56},
+                "service_tier": "default",
+            })
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(bom, "resolve_openai_key", lambda _scope: "invented-key")
+        return calls
+
+    def test_service_tier_actually_used_is_recorded(self, tmp_path, urlopen_stub):
+        """A silent Flex-to-default fallback changes the price; record it."""
+        manifest = _one_session_manifest(tmp_path, "7777bbbb-cccc-dddd")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "luna"
+        out_dir.mkdir()
+        bom.luna_run(requests, out_dir, "system prompt")
+        rows = json.loads((out_dir / "_usage.json").read_text())
+        assert rows[0]["service_tier"] == "default"
+        assert rows[0]["input_tokens"] == 1234
+
+    def test_the_request_never_leaves_the_stub(self, tmp_path, urlopen_stub):
+        manifest = _one_session_manifest(tmp_path, "8888bbbb-cccc-dddd")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "luna"
+        out_dir.mkdir()
+        bom.luna_run(requests, out_dir, "system prompt")
+        assert len(urlopen_stub) == 1
+        assert urlopen_stub[0]["model"] == bom.LUNA_MODEL
+        assert urlopen_stub[0]["store"] is False
+
+
+class TestInterpreterHint:
+    """The dependency lives only in the repository virtual environment."""
+
+    def test_extractor_import_failure_names_the_venv(self, tmp_path, monkeypatch):
+        """A bare "No module named cc_session_toolkit" helps nobody."""
+        real_exec = importlib.util.module_from_spec
+
+        def boom(spec):
+            module = real_exec(spec)
+
+            class Loader:
+                def exec_module(self, _module):
+                    raise ImportError("No module named 'cc_session_toolkit'")
+
+            spec.loader = Loader()
+            return module
+
+        monkeypatch.setattr(importlib.util, "module_from_spec", boom)
+        with pytest.raises(RuntimeError, match="venv/bin/python3"):
+            bom._load_extractor()
