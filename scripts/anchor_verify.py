@@ -108,12 +108,19 @@ def reset_unusable_repos() -> None:
     """Clear the registry. For tests and long-lived callers."""
     _UNUSABLE_REPOS.clear()
 
-# Minimum hex characters we will treat as a commit reference. Git itself
-# resolves a 4-character prefix in a small repository, which made
-# ``verify_commit`` accept four hex characters of prose as a hash and find a
-# collision in one of ~36 repositories (finding AN12). Seven is git's own
-# ``core.abbrev`` floor and the length every tool in this repo records.
-_MIN_COMMIT_HEX = 7
+# Minimum hex characters that can be a commit reference AT ALL. Four is
+# git's own minimum abbreviation, and the corpus carries eight anchors in the
+# 4-6 range written before the tooling settled on seven. The shape gate must
+# accept them or ``recover_anchors`` strips them as malformed and the memory
+# loses its only anchor (round 4f-3, finding L8).
+_MIN_COMMIT_HEX = 4
+
+# Length at or above which a single repository's hit is trusted on its own.
+# Below it, ~36 repositories give a short prefix real odds of colliding with
+# an unrelated object (finding AN12), so :func:`verify_commit` requires the
+# ref to resolve in EXACTLY ONE repository and otherwise withholds a verdict
+# rather than minting a false positive or condemning the anchor.
+_UNAMBIGUOUS_COMMIT_HEX = 7
 
 # Minimum hex characters before a separator-free, extension-free ref is read as
 # a mis-typed object id rather than a short filename (``cafe`` stays a file).
@@ -497,9 +504,23 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
     binary, an exit code other than "no such object", or an empty repo set
     (finding AN3). A ref that is not hash-shaped is ``"false"`` without any
     subprocess: that is a completed check of the ref's own shape.
+
+    A SHORT ref — four to six hex characters, git's own minimum abbreviation
+    and the shape of eight anchors written before the tooling settled on
+    seven — is handled differently (finding L8). Across ~36 repositories a
+    short prefix has real odds of colliding with an unrelated object, so one
+    hit is not proof; but the ref is not junk either, and calling it
+    ``"false"`` would feed it to ``recover_anchors``. Such a ref is
+    ``"true"`` only when it resolves in EXACTLY ONE repository, and
+    ``"pending"`` otherwise — zero hits included. It is never ``"false"``,
+    so it is never stripped.
     """
     if not hash_ or not _looks_like_hash(hash_):
         return "false"
+    # Below the unambiguous length, one hit does not settle it: scan every
+    # repository and count.
+    short_ref = len(hash_) < _UNAMBIGUOUS_COMMIT_HEX
+    hits = 0
 
     pending_seen = False
     checked_any = False
@@ -524,7 +545,11 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
             note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
             continue
         if result.returncode == 0:
-            return "true"
+            if not short_ref:
+                return "true"
+            hits += 1
+            checked_any = True
+            continue
         if result.returncode == 1:
             # rev-parse --verify --quiet: the object is not in this repo.
             checked_any = True
@@ -536,21 +561,30 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
                     "utf-8", "replace").strip()[:120] or "git exit 128",
             )
 
+    if short_ref:
+        # Exactly one repository knew it → trust it. Otherwise withhold: a
+        # collision across repositories is not proof, and zero hits on a
+        # four-character ref is not proof of absence either.
+        return "true" if hits == 1 else "pending"
     return "false" if checked_any and not pending_seen else "pending"
 
 
-def _looks_like_hash(s: str, *, min_len: int = _MIN_COMMIT_HEX) -> bool:
+def _looks_like_hash(s: str, *, min_len: int = _MIN_COMMIT_HEX) -> bool:  # noqa: E501
     """Cheap sanity check before launching git. Avoids spawning a
     subprocess for obviously non-hash strings.
 
-    *min_len* defaults to :data:`_MIN_COMMIT_HEX`, the floor for a ref we are
-    willing to call a commit. Four hex characters is a legitimate git prefix
-    but also an ordinary word (``face``, ``beef``, ``cafe``), and
-    :func:`verify_commit` searches ~36 repositories — enough of them for a
-    four-character prefix to collide with something (finding AN12).
-    :func:`_looks_like_file_ref` passes the looser
-    :data:`_MIN_ID_HEX` because it is answering a different question: is this
-    token a mis-typed object id rather than a short filename?
+    *min_len* defaults to :data:`_MIN_COMMIT_HEX` — four, git's own minimum
+    abbreviation. Four hex characters is also an ordinary word (``face``,
+    ``beef``, ``cafe``) and :func:`verify_commit` searches ~36 repositories,
+    so a short ref is not TRUSTED on one hit; that judgement lives in the
+    resolver, which requires a unique hit below
+    :data:`_UNAMBIGUOUS_COMMIT_HEX` (findings AN12 and L8). Keeping the shape
+    gate permissive matters because a ref it rejects is stripped from the
+    corpus as malformed.
+
+    :func:`_looks_like_file_ref` passes the looser :data:`_MIN_ID_HEX`
+    because it is answering a different question: is this token a mis-typed
+    object id rather than a short filename?
     """
     if not s or len(s) < min_len or len(s) > 40:
         return False

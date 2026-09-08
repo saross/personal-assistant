@@ -633,15 +633,28 @@ class TestPathspecMagicNeverVerifies:
 
 
 class TestCommitRefHexFloor:
-    """Four hex characters is a word, not a commit (finding AN12)."""
+    """A short hex ref is not trusted, and not condemned either.
+
+    Seven characters is what every tool here records, and one hit on a
+    shorter prefix across ~36 repositories is not proof (finding AN12). But
+    eight live anchors predate that convention, and a ref the SHAPE gate
+    rejects is stripped from the corpus as malformed — so the judgement moved
+    into the resolver (finding L8).
+    """
 
     @pytest.mark.parametrize("ref", ["cafe", "beef", "face", "d0d0", "abcdef"])
-    def test_short_hex_is_not_a_commit_ref(self, ref):
-        """Kills the mutation restoring ``len(s) < 4`` in _looks_like_hash."""
+    def test_a_short_hex_ref_is_shape_valid(self, ref):
+        """Kills the mutation restoring ``_MIN_COMMIT_HEX = 7``.
+
+        recover_anchors strips anything wellformed_anchor rejects, so a
+        rejected short ref costs the memory its only anchor.
+        """
+        assert av._looks_like_hash(ref) is True
+        assert av.wellformed_anchor({"type": "commit", "ref": ref})[0] is True
+
+    @pytest.mark.parametrize("ref", ["abc", "", "zzzz", "g" * 8])
+    def test_a_ref_that_is_not_hex_or_too_short_is_rejected(self, ref):
         assert av._looks_like_hash(ref) is False
-        assert av.wellformed_anchor({"type": "commit", "ref": ref}) == (
-            False, "malformed-commit-ref")
-        assert av.verify_commit(ref, [Path("/nonexistent-repo")]) == "false"
 
     def test_seven_hex_is_still_a_commit_ref(self):
         """The floor is seven, not eight: git's own abbreviation length."""
@@ -650,6 +663,45 @@ class TestCommitRefHexFloor:
     def test_a_short_word_is_still_a_plausible_filename(self):
         """The file gate keeps its looser six-character id floor."""
         assert av._looks_like_file_ref("cafe") is True
+
+
+class TestShortCommitRefsNeedAUniqueHit:
+    """4-6 hex: true on exactly one repository, pending otherwise (L8)."""
+
+    def _head(self, repo: Path) -> str:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return out.stdout.strip()
+
+    def test_a_unique_short_hit_is_true(self, tmp_path):
+        repo = _throwaway_repo(tmp_path / "one")
+        other = _throwaway_repo(tmp_path / "two")
+        short = self._head(repo)[:6]
+        assert av.verify_commit(short, [repo, other]) == "true"
+
+    def test_a_short_ref_nobody_knows_is_pending_not_false(self, tmp_path):
+        """Never "false": a false verdict feeds it to recover_anchors."""
+        repo = _throwaway_repo(tmp_path / "one")
+        assert av.verify_commit("cafe", [repo]) == "pending"
+
+    def test_a_short_ref_matching_two_repositories_is_pending(self, tmp_path):
+        """A collision across repositories is not proof of anything.
+
+        Kills the mutation returning "true" on the first hit for a short ref.
+        """
+        repo = _throwaway_repo(tmp_path / "one")
+        head = self._head(repo)
+        # A second repository whose tip shares the same short prefix, forced
+        # by committing until one matches would be slow; instead point the
+        # same repository at itself twice, which is the collision's shape.
+        assert av.verify_commit(head[:6], [repo, repo]) == "pending"
+
+    def test_a_full_length_ref_still_short_circuits(self, tmp_path):
+        """The control: seven or more characters trusts the first hit."""
+        repo = _throwaway_repo(tmp_path / "one")
+        assert av.verify_commit(self._head(repo), [repo, repo]) == "true"
 
 
 # ============================================================================
