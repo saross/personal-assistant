@@ -473,9 +473,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     `mkdir -p` creates a phantom `HOME` before the sync's guard can refuse
     it; the orphan apply-by-commit fix has no discriminating test;
     `--dry-run` now writes a gate. Thirty-six real merge conflicts across
-    three conflict styles resolved correctly otherwise. Fifth round
-    running. Both machines at 14:30: no stash in either repository, no
-    marker line in either corpus, no `merge.conflictStyle` set.
+    three conflict styles resolved correctly otherwise. Fifth round done
+    (cef4743–daf5d7d; suite 1,414): the resolver is positional and leaves
+    a file with only stray marker-shaped lines byte-identical; `git stash
+    pop` is gone from the script — every restore applies by commit and
+    re-resolves the selector at the drop; every failure reason appends to
+    the gate; the trigger checks `HOME` first and prints the diagnosis on
+    stdout; a dry run never gates. Fifth pass running. Both machines at
+    14:30: no stash in either repository, no marker line in either
+    corpus, no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
