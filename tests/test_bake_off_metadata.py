@@ -1423,6 +1423,93 @@ class TestBatchSubmitIsNotRepeatable:
         assert len(submit_stub.created) == 1
         assert "nothing to send" in capsys.readouterr().out
 
+    def test_the_state_check_fires_before_the_gate(
+        self, tmp_path, capsys, monkeypatch, submit_stub
+    ):
+        """Pin the main-level check independently of the adapter backstop.
+
+        Both layers refuse, so deleting the one in main() left every
+        existing test green -- the adapter simply raised instead. What
+        distinguishes them is WHEN: main refuses before the API Call
+        Review Gate, so an operator is never asked to approve a run that
+        cannot happen. Assert on that, not merely on the exit code.
+        """
+        manifest = _one_session_manifest(tmp_path, "gateorder-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        capsys.readouterr()
+
+        def refuse_input(_prompt=""):
+            raise AssertionError(
+                "an already-submitted directory must be refused before the "
+                "gate, not after it"
+            )
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        # No --yes: reaching the gate at all would call input().
+        code = bom.main([
+            "--provider", "haiku",
+            "--manifest", str(manifest),
+            "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ])
+        assert code == 2
+        captured = capsys.readouterr()
+        assert "API Call Review Gate" not in captured.out
+        assert len(submit_stub.created) == 1
+
+    def test_the_adapter_refuses_on_its_own(self, tmp_path, submit_stub):
+        """Pin the backstop independently of main's check.
+
+        main passes allow_resubmit=args.force or args.resubmit; hardcoding
+        that to True is invisible through main, because main's own check
+        fires first in every case that would differ. The guard is real
+        defence for any other caller, so it is exercised directly.
+        """
+        manifest = _one_session_manifest(tmp_path, "adapter-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        provider_dir = out_dir / "haiku"
+        state_path = provider_dir / "batch-state.json"
+        before = state_path.read_bytes()
+        submitted = len(submit_stub.created)
+
+        requests = bom.assemble_requests(manifest, prompt)
+        with pytest.raises(bom.BatchStateExistsError):
+            bom.haiku_submit(
+                requests, provider_dir, "system prompt",
+                manifest_path=manifest, allow_resubmit=False,
+            )
+        # Nothing sent, nothing written.
+        assert len(submit_stub.created) == submitted
+        assert state_path.read_bytes() == before
+
+    def test_three_colliding_sessions_are_all_reported(
+        self, tmp_path, submit_stub, monkeypatch
+    ):
+        """Truncating the clash list hides a session from the operator."""
+        monkeypatch.setattr(bom, "build_custom_id", lambda _session_id: "sess-same")
+        rows = []
+        for name in ("clash-first", "clash-second", "clash-third"):
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{name}.jsonl", n_records=6
+            )
+            rows.append(fx.manifest_row(name, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(ValueError) as excinfo:
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        message = str(excinfo.value)
+        for name in ("clash-first", "clash-second", "clash-third"):
+            assert name in message, name
+        assert submit_stub.created == []
+
     def test_state_records_the_manifest_fingerprint(self, tmp_path, submit_stub):
         manifest = _one_session_manifest(tmp_path, "batch-gggg-1111")
         out_dir = tmp_path / "out"
@@ -1737,6 +1824,12 @@ class TestEmptyContentBranchCounts:
         printed = capsys.readouterr().out
         assert "wrote 0 successes and 1 failures" in printed
         assert "kept" not in printed
+        # The diagnostic is the only thing that tells an operator WHY a
+        # session the API called "succeeded" produced an error record.
+        assert (
+            "[haiku] succeeded result for empty-session carried no content "
+            "blocks — recording empty-content error"
+        ) in printed
         assert json.loads((out_dir / "empty-session.json").read_text()) == {
             "error": "succeeded result had empty content list"
         }
