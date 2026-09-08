@@ -455,9 +455,19 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     reset; `fail` itself gates every non-zero exit; the marker list
     captured before the abort; orphans applied by commit; a non-existent
     `HOME` refused; the five surviving mutations killed. Suite 1,398.
-    Fourth pass running. Both machines at 14:30: no stash in either
-    repository, no marker line in either corpus, no `merge.conflictStyle`
-    set.
+    Fourth pass: **do not merge** — two more criticals in the round-four
+    fixes: the resolver's new base-section handling truncates a file to
+    the end on a stray `|||||||` line outside any conflict block (and the
+    gate text tells the operator to run that resolver); the post-resolver
+    stash drop uses a selector resolved before the pop, and a concurrent
+    drop in that window destroyed another session's stash with exit 0.
+    Also: `fail` skips its gate line after a non-fatal gate; the trigger's
+    `mkdir -p` creates a phantom `HOME` before the sync's guard can refuse
+    it; the orphan apply-by-commit fix has no discriminating test;
+    `--dry-run` now writes a gate. Thirty-six real merge conflicts across
+    three conflict styles resolved correctly otherwise. Fifth round
+    running. Both machines at 14:30: no stash in either repository, no
+    marker line in either corpus, no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
