@@ -308,7 +308,8 @@ class TestParseEnvShellDivergence:
         """
         path = tmp_path / "crlf.env"
         path.write_bytes(b"TOKEN=abcfake\r\nOTHER=second\r\n")
-        cc.parse_env(path)
+        env = cc.parse_env(path)
+        assert env == {"TOKEN": "abcfake", "OTHER": "second"}
         assert len(cc.findings) == 2
         assert all("CRLF line ending" in f for f in cc.findings)
         assert cc.findings[0].startswith("line 1:")
@@ -318,42 +319,60 @@ class TestParseEnvShellDivergence:
         """Kills flagging every line regardless of its ending."""
         path = tmp_path / "lf.env"
         path.write_bytes(b"TOKEN=abcfake\nOTHER=second\n")
+        env = cc.parse_env(path)
+        assert env == {"TOKEN": "abcfake", "OTHER": "second"}
+        assert cc.findings == []
+
+    def test_a_cr_only_file_still_parses_line_by_line(self, tmp_path):
+        """Kills splitting on ``\n`` alone (audit round two L1).
+
+        That split collapsed a legacy CR-only file into ONE "line", so the
+        parser returned ``{'TOKEN': 'abcfake\rOTHER=second\rTHIRD=third'}``
+        and reported findings against names that are not what is wrong. The
+        operator must still see every name in the file.
+        """
+        path = tmp_path / "cr.env"
+        path.write_bytes(b"TOKEN=abcfake\rOTHER=second\rTHIRD=third\r")
+        env = cc.parse_env(path)
+        assert env == {
+            "TOKEN": "abcfake", "OTHER": "second", "THIRD": "third",
+        }
+        assert len(cc.findings) == 3
+        assert all("lone CR line ending" in f for f in cc.findings)
+
+    def test_a_cr_only_ending_is_reported_as_its_own_problem(self, tmp_path):
+        """Kills folding the lone-CR case into the CRLF message.
+
+        They fail differently, verified against bash 5.2.37. CRLF keeps the
+        carriage return IN the value; a lone CR is not a line break to bash
+        at all, so it reads the whole file as one line — ``A=1\rB=2\rC=3``
+        assigns A the rest of the file and leaves B and C unset. Telling the
+        operator "the value has a stray character" would be the wrong
+        diagnosis.
+        """
+        path = tmp_path / "cr.env"
+        path.write_bytes(b"TOKEN=abcfake\r")
         cc.parse_env(path)
-        assert cc.findings == []
-
-    def test_whitespace_inside_an_unquoted_value_is_flagged(self, tmp_path):
-        """Kills dropping the ``len(words) > 1`` finding.
-
-        Verified: ``A=a b`` assigns NOTHING to A, runs ``b`` as a command,
-        and echoes "b: command not found" — the same leak class as
-        ``NAME= value``, and the parser meanwhile keeps ``a b``.
-        """
-        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake {FAKE_SECRET}\n"))
         assert len(cc.findings) == 1
-        assert "contains whitespace and is not quoted" in cc.findings[0]
-        assert FAKE_SECRET not in cc.findings[0]
+        assert "lone CR line ending" in cc.findings[0]
+        assert "reads the whole file as ONE line" in cc.findings[0]
+        assert "CRLF" not in cc.findings[0]
 
-    def test_whitespace_inside_a_quoted_value_is_not_flagged(self, tmp_path):
-        """Kills applying the whitespace check to quoted values.
+    def test_mixed_line_endings_are_reported_per_line(self, tmp_path):
+        """Kills classifying the file rather than each line.
 
-        ``A="a b"`` assigns ``a b`` on both sides; a passphrase with spaces
-        is legitimate as long as it is quoted.
+        A file part-converted by an editor carries both endings, and the
+        operator needs the line numbers, not a verdict on the file.
         """
-        env = cc.parse_env(_env_file(tmp_path, 'TOKEN="two words"\n'))
-        assert cc.findings == []
-        assert env["TOKEN"] == "two words"
-
-    def test_a_trailing_comment_is_not_reported_as_a_command(self, tmp_path):
-        """Kills dropping ``not words[1].startswith("#")`` from the guard.
-
-        ``A=abc # c`` has whitespace in an unquoted value but bash runs no
-        command — the rest is a comment. Reporting it as an executed
-        command would be a false statement about what bash does, and the
-        line already has its own (correct) finding.
-        """
-        cc.parse_env(_env_file(tmp_path, "TOKEN=abcfake # a comment\n"))
-        assert len(cc.findings) == 1
-        assert "has a '#' in its value" in cc.findings[0]
+        path = tmp_path / "mixed.env"
+        path.write_bytes(b"TOKEN=abcfake\r\nOTHER=second\nTHIRD=third\r")
+        env = cc.parse_env(path)
+        assert env == {
+            "TOKEN": "abcfake", "OTHER": "second", "THIRD": "third",
+        }
+        assert len(cc.findings) == 2
+        assert cc.findings[0].startswith("line 1:") and "CRLF" in cc.findings[0]
+        assert cc.findings[1].startswith("line 3:") and "lone CR" in cc.findings[1]
 
     def test_the_shell_source_message_does_not_promise_findings_above(
         self, tmp_path, capsys

@@ -28,8 +28,11 @@ Three passes, cheapest first:
    quotes (bash expands it, to nothing for an unset name, so the process
    gets no credential while the file looks populated); a trailing backslash
    (bash treats it as a line continuation and swallows the next line,
-   leaving that variable unset); and a CRLF line ending (bash keeps the
-   carriage return as the last character of the value).
+   leaving that variable unset); and a line ending bash reads differently
+   from this parser — CRLF keeps the carriage return as the last character
+   of the value, while a lone CR is not a line break to bash at all, so it
+   reads the whole file as one line and leaves every name after the first
+   unset.
 
 2. **Shell-source test.** Sources the file in a subshell; any output at all
    is a finding.
@@ -75,6 +78,9 @@ import urllib.error
 import urllib.request
 
 VALID_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+# One line plus its terminator. Group 2 is "" only for a final line with no
+# terminator at all, so the three endings stay distinguishable (audit L1).
+_LINE_SPLIT = re.compile(r"([^\r\n]*)(\r\n|\r|\n|$)")
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
 GITHUB_API = "https://api.github.com"
@@ -97,17 +103,17 @@ def note(msg: str) -> None:
 def parse_env(path: pathlib.Path) -> dict[str, str]:
     """Parse KEY=VALUE lines, anchoring on '=' so malformed names are visible."""
     out: dict[str, str] = {}
-    # ``newline=""`` and ``split("\n")`` rather than ``read_text().splitlines()``
-    # so a CRLF line ending survives into ``raw``. Text-mode reads translate
-    # ``\r\n`` to ``\n`` and ``splitlines()`` strips what is left, so the
-    # carriage return was doubly invisible — which is exactly why the CRLF
-    # divergence went unreported (audit round two M4). A legacy CR-only file
-    # collapses to one long "line" here, yields no usable parse, and is caught
-    # by the shell-source pass instead.
+    # ``newline=""`` so the real line terminators survive the read: text mode
+    # translates ``\r\n`` to ``\n``, and ``splitlines()`` would then strip what
+    # is left, which is why the CRLF divergence went unreported (audit round
+    # two M4). Splitting on ``\r\n|\r|\n`` rather than ``\n`` alone keeps a
+    # legacy CR-only file parsing line by line — splitting on ``\n`` collapsed
+    # it into one "line" and reported the wrong names (audit round two L1) —
+    # while ``term`` still says which ending each line actually had.
     with path.open(encoding="utf-8", newline="") as handle:
         text = handle.read()
-    for lineno, raw in enumerate(text.split("\n"), start=1):
-        has_cr = raw.endswith("\r")
+    for lineno, match in enumerate(_LINE_SPLIT.finditer(text), start=1):
+        raw, term = match.group(1), match.group(2)
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -201,7 +207,7 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 "it as a line continuation and swallows the NEXT line into this "
                 "value, leaving that variable unset. Remove or escape it."
             )
-        if has_cr:
+        if term == "\r\n":
             # Verified against bash 5.2: sourcing a CRLF file assigns "x\r" for
             # ``A=x``. Python's text-mode read hides this twice over, which is
             # why it went unreported until audit round two M4.
@@ -209,6 +215,18 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 f"line {lineno}: CRLF line ending — bash keeps the carriage return "
                 f"as the last character of {name}'s value while this parser drops "
                 "it. Convert the file to LF line endings."
+            )
+        elif term == "\r":
+            # A lone CR is not a line ending to bash at all. Verified against
+            # bash 5.2: a whole CR-only file is ONE line, so `A=1\rB=2\rC=3`
+            # assigns A the entire rest of the file and leaves B and C unset.
+            # This parser reads it line by line, so the two disagree about how
+            # many variables the file even defines.
+            note(
+                f"line {lineno}: lone CR line ending — bash does not treat it as a "
+                "line break, so it reads the whole file as ONE line: only the first "
+                f"name is assigned (the rest of the file becomes its value) and "
+                f"{name} may never be set at all. Convert the file to LF endings."
             )
         if not quoted and (" #" in value or value.startswith("#")):
             # bash sourcing drops an unquoted trailing comment; the Codex launcher
