@@ -135,6 +135,25 @@ For each file, check every line against these categories:
   names, filenames) — see CLAUDE.md for the conversion table
 - Code style compliance (PEP 8 for Python, etc.)
 
+### 2a-note. Running the suite during an audit
+
+Run the suite from a **clean copy** with the strict hermeticity switch on:
+
+```bash
+D=$(mktemp -d) && git archive --format=tar HEAD | tar -x -C "$D"
+cd "$D" && PA_HERMETICITY_STRICT=1 venv/bin/python3 -m pytest -q
+```
+
+`PA_HERMETICITY_STRICT=1` makes a change to the checkout's source trees
+(`wiki/`, `scripts/`, `hooks/`, `commands/`, `global-claude-md/`,
+`global-agent-guidance/`, `tasks/`) fail the run rather than warn. Leave it
+unset in a working checkout: this repository is worked by several concurrent
+sessions by design, a run takes about two minutes, and another session
+editing a wiki page in that window is ordinary work rather than a test
+misbehaving — failing for it blames the suite for something the suite did not
+do. The canonical memory store and `logs/` are strict either way, except that
+an append by the live system is recognised as an append and tolerated.
+
 ### 2b. Lens B — test adequacy
 
 Not "are there tests?" but "would these tests fail if the feature were broken?"

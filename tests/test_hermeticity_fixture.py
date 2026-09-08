@@ -632,6 +632,20 @@ def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
 # ===========================================================================
 
 
+
+@pytest.fixture
+def strict_hermeticity(monkeypatch):
+    """Run the source-tree half of the guard in fail-fast mode.
+
+    Round 4a-3 addendum: a change under wiki/, scripts/, and friends is
+    ADVISORY in a shared checkout, because several sessions work this
+    repository at once and a two-minute run routinely straddles someone
+    else's edit. Failing on it blames the suite for another session's work.
+    A clean copy sets PA_HERMETICITY_STRICT=1, and so do these tests, which
+    is where a test that really did write to the checkout is caught.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+
 def _throwaway_store(tmp_path, monkeypatch):
     """A tree shaped like the repo: data/memories + logs, reached by symlink."""
     real_dir = tmp_path / "data" / "memories"
@@ -650,6 +664,7 @@ def _throwaway_store(tmp_path, monkeypatch):
         tmp_path / "memories" / "tag-vocabulary.txt",
     ))
     monkeypatch.setattr(conftest, "_CANONICAL_DIRS", (tmp_path / "logs",))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", (tmp_path / "logs",))
     return corpus, vocabulary, logs_dir
 
 
@@ -672,8 +687,9 @@ def test_the_guard_raises_on_a_rewritten_canonical(tmp_path, monkeypatch):
 
     with pytest.raises(AssertionError, match="canonical memory store"):
         conftest.assert_canonical_store_untouched(before, after)
-    assert str(corpus.resolve()) in conftest.canonical_store_changes(
-        before, after)
+    violations, appends = conftest.classify_store_changes(before, after)
+    assert str(corpus.resolve()) in violations
+    assert appends == [], "a rewrite is not an append"
 
 
 def test_the_guard_raises_on_a_created_or_deleted_canonical(tmp_path,
@@ -997,6 +1013,7 @@ def _throwaway_checkout(tmp_path, monkeypatch):
         tmp_path / name for name in (
             "tasks", "global-claude-md", "wiki", "commands", "hooks", "scripts")
     ))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", ())
     return tmp_path
 
 
@@ -1007,7 +1024,8 @@ def _throwaway_checkout(tmp_path, monkeypatch):
     "scripts/example.py",
 ])
 def test_the_guard_catches_a_clobbered_checkout_file(tmp_path, monkeypatch,
-                                                     relative):
+                                                     relative,
+                                                     strict_hermeticity):
     """Each of the probe's targets must now be caught.
 
     The mutation this kills: narrowing ``_CANONICAL_DIRS`` back to ``logs``
@@ -1020,13 +1038,13 @@ def test_the_guard_catches_a_clobbered_checkout_file(tmp_path, monkeypatch,
     before = conftest._canonical_store_snapshot()
     target.write_text("clobbered by a careless test\n", encoding="utf-8")
 
-    with pytest.raises(AssertionError, match="REAL checkout"):
-        conftest.assert_canonical_store_untouched(
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
-def test_the_guard_catches_a_file_created_in_a_watched_tree(tmp_path,
-                                                            monkeypatch):
+def test_the_guard_catches_a_file_created_in_a_watched_tree(
+        tmp_path, monkeypatch, strict_hermeticity):
     """A NEW file in a watched directory is a change too."""
     root = _throwaway_checkout(tmp_path, monkeypatch)
 
@@ -1035,7 +1053,7 @@ def test_the_guard_catches_a_file_created_in_a_watched_tree(tmp_path,
                                                    encoding="utf-8")
 
     with pytest.raises(AssertionError):
-        conftest.assert_canonical_store_untouched(
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
@@ -1270,7 +1288,8 @@ def test_the_autouse_fixture_uses_the_assertion():
     assert "pg_env_snapshot" in called
 
 
-def test_a_new_empty_directory_is_caught(tmp_path, monkeypatch):
+def test_a_new_empty_directory_is_caught(tmp_path, monkeypatch,
+                                         strict_hermeticity):
     """Creating an empty directory in a watched tree is a change.
 
     Kills the mutation that records files only: a test could leave a new
@@ -1283,12 +1302,13 @@ def test_a_new_empty_directory_is_caught(tmp_path, monkeypatch):
     before = conftest._canonical_store_snapshot()
     (root / "wiki" / "invented-section").mkdir()
 
-    with pytest.raises(AssertionError, match="REAL checkout"):
-        conftest.assert_canonical_store_untouched(
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
-def test_a_removed_directory_is_caught(tmp_path, monkeypatch):
+def test_a_removed_directory_is_caught(tmp_path, monkeypatch,
+                                       strict_hermeticity):
     """And so is deleting one."""
     root = _throwaway_checkout(tmp_path, monkeypatch)
     (root / "wiki" / "section").mkdir()
@@ -1297,7 +1317,7 @@ def test_a_removed_directory_is_caught(tmp_path, monkeypatch):
     (root / "wiki" / "section").rmdir()
 
     with pytest.raises(AssertionError):
-        conftest.assert_canonical_store_untouched(
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
@@ -1309,7 +1329,7 @@ def test_a_generated_cache_directory_is_still_ignored(tmp_path, monkeypatch):
     (root / "scripts" / "__pycache__").mkdir()
     (root / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"\x00")
 
-    conftest.assert_canonical_store_untouched(
+    conftest.report_source_tree_changes(
         before, conftest._canonical_store_snapshot())
 
 
@@ -1318,7 +1338,8 @@ def test_a_generated_cache_directory_is_still_ignored(tmp_path, monkeypatch):
     "wiki", "commands", "hooks", "scripts",
 ])
 def test_each_watched_directory_is_really_watched(tmp_path, monkeypatch,
-                                                  watched):
+                                                  watched,
+                                                  strict_hermeticity):
     """One behavioural check per watched tree, not just a name list.
 
     ``test_the_watched_paths_name_the_canonical_files`` compares
@@ -1346,8 +1367,8 @@ def test_each_watched_directory_is_really_watched(tmp_path, monkeypatch,
     before = conftest._canonical_store_snapshot()
     (root / watched / "stray.md").write_text("left behind\n", encoding="utf-8")
 
-    with pytest.raises(AssertionError, match="REAL checkout"):
-        conftest.assert_canonical_store_untouched(
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
             before, conftest._canonical_store_snapshot())
 
 
@@ -1451,3 +1472,158 @@ def test_the_current_home_is_registered_for_cleanup_at_exit():
         if isinstance(node, ast.Call)
     }
     assert "sweep_stale_suite_homes" in called
+
+
+# ===========================================================================
+# Concurrency: strict in a clean copy, advisory in a shared checkout
+#
+# Audit round 4a-3 addendum, CONFIRMED by reproduction. The widened guard
+# snapshots the REAL checkout, and this repository is worked by several
+# concurrent sessions BY DESIGN (CLAUDE.md). A two-minute run therefore
+# straddles other people's edits routinely -- and data/logs/extraction.log
+# was rewritten by a session hook mid-run during the investigation. Failing
+# for that blames the suite for work the suite did not do, which is the
+# fastest way to get a guard switched off.
+# ===========================================================================
+
+
+def test_an_append_to_a_watched_log_is_tolerated(tmp_path, monkeypatch):
+    """The extraction hook adding a line must not fail the run.
+
+    Kills the mutation that treats any size change as a violation: the live
+    system appends to memories.jsonl and data/logs/* continuously, and the
+    suite has no business reporting that.
+    """
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("first line\n", encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("a line the hook appended mid-run\n")
+
+    appended = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+
+    assert appended == [str(log.resolve())]
+
+
+def test_an_append_to_the_corpus_is_tolerated(tmp_path, monkeypatch):
+    """The same for memories.jsonl itself."""
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write('{"id": "2031-01-02-ddddeeeeffff"}\n')
+
+    appended = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert appended == [str(corpus.resolve())]
+
+
+def test_a_rewritten_prefix_is_not_an_append(tmp_path, monkeypatch):
+    """A file that GREW but whose earlier bytes changed is still a rewrite.
+
+    Kills the mutation that accepts any size increase without checking the
+    prefix: a dedup pass that rewrote the store and happened to end up
+    larger would sail through.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    corpus.write_text(
+        '{"id": "rewritten-by-a-careless-test"}\n'
+        '{"id": "2031-01-02-ddddeeeeffff"}\n',
+        encoding="utf-8",
+    )
+    assert corpus.stat().st_size > 0
+
+    with pytest.raises(AssertionError, match="APPEND"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_truncated_log_is_still_a_violation(tmp_path, monkeypatch):
+    """A shrink is never an append."""
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    log.write_text("one\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_source_edit_warns_without_strict(tmp_path, monkeypatch, capsys):
+    """A concurrent session's edit is reported, not fatal.
+
+    Kills the mutation that raises unconditionally: in a shared checkout
+    that is a false failure on every run that straddles someone else's work.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "someone-elses-note.md").write_text(
+        "another session's work\n", encoding="utf-8")
+
+    changed = conftest.report_source_tree_changes(
+        before, conftest._canonical_store_snapshot())
+
+    assert changed == [str((root / "wiki" / "someone-elses-note.md").resolve())]
+    err = capsys.readouterr().err
+    assert "HERMETICITY WARNING" in err
+    assert "CONCURRENT SESSION" in err
+    assert conftest.STRICT_ENV_VAR in err, "the warning must name the escape"
+    assert "someone-elses-note.md" in err, "the warning must name the path"
+
+
+def test_the_same_source_edit_fails_under_strict(tmp_path, monkeypatch):
+    """A clean copy has nothing else writing, so the finding is fatal there.
+
+    Kills the mutation that warns unconditionally: the guard would then
+    never catch a test that really did write to the checkout.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "written-by-a-test.md").write_text("oops\n",
+                                                        encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="source trees"):
+        conftest.report_source_tree_changes(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_strict_is_off_unless_the_variable_is_exactly_one(monkeypatch):
+    """Only ``1`` turns it on; a stray truthy string does not."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    assert conftest.hermeticity_is_strict() is False
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "0")
+    assert conftest.hermeticity_is_strict() is False
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "true")
+    assert conftest.hermeticity_is_strict() is False
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    assert conftest.hermeticity_is_strict() is True
+
+
+def test_the_store_half_is_strict_in_both_modes(tmp_path, monkeypatch):
+    """Advisory mode applies to the SOURCE trees only.
+
+    A test that rewrites memories.jsonl fails whether or not STRICT is set:
+    that is the guard's original purpose and nothing about concurrency
+    excuses it.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    corpus.write_text('{"id": "clobbered"}\n', encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())

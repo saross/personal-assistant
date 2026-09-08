@@ -3,9 +3,32 @@ Shared fixtures for personal-assistant test suite.
 
 Provides temporary directories and sample data for hook testing
 without touching the real memory system.
+
+Hermeticity guards
+------------------
+Several session-scoped guards live here. They are described where they are
+defined; the one thing a reader needs up front is the environment switch:
+
+``PA_HERMETICITY_STRICT=1``
+    Makes a change to the checkout's SOURCE trees (``wiki/``, ``scripts/``,
+    ``hooks/``, ``commands/``, ``global-claude-md/``,
+    ``global-agent-guidance/``, ``tasks/``) fail the run instead of printing
+    a warning. Set it in a clean copy — a ``git archive`` export, a
+    re-audit, CI — where nothing but the suite is writing. Leave it unset in
+    a working checkout: this repository is worked by several concurrent
+    sessions by design (see CLAUDE.md), a run takes about two minutes, and
+    another session editing a wiki page in that window is ordinary work, not
+    a test misbehaving.
+
+    The canonical memory store and ``logs/`` are strict in BOTH modes, with
+    one allowance: an APPEND by the live system (the extraction hook adding
+    a memory, a script adding a log line) is verified as an append — the old
+    bytes must still be an unchanged prefix — and tolerated. A shrink, a
+    rewritten prefix, a deletion, or a new file is a failure either way.
 """
 
 import atexit
+import hashlib
 import json
 import os
 import shutil
@@ -694,14 +717,19 @@ _CANONICAL_FILES = (
     PROJECT_ROOT / "memories" / "memories.jsonl",
     PROJECT_ROOT / "memories" / "tag-vocabulary.txt",
 )
+#: Watched trees whose files the LIVE SYSTEM appends to while the suite runs
+#: — the extraction hook appending a memory, a script appending to a log. An
+#: append there is legitimate and must not be reported (round 4a-3 addendum);
+#: a shrink, a rewritten prefix, a deletion, or a NEW file still is.
+_APPEND_TOLERANT_DIRS = (PROJECT_ROOT / "logs",)
+
 #: Directories whose entire contents are watched, recursively. Widened by the
 #: round 4a-2 addendum: a probe test clobbered global-claude-md/claude.md
 #: (the source the composer reads), data/tasks/FOCUS.md, and
 #: wiki/continuity.md in the checkout and the suite stayed green. Everything
 #: here is instruction, task state, or executable code that a stray write
 #: would corrupt silently.
-_CANONICAL_DIRS = (
-    PROJECT_ROOT / "logs",
+_CANONICAL_DIRS = _APPEND_TOLERANT_DIRS + (
     PROJECT_ROOT / "tasks",              # -> data/tasks
     PROJECT_ROOT / "global-claude-md",
     PROJECT_ROOT / "global-agent-guidance",
@@ -715,6 +743,52 @@ _CANONICAL_DIRS = (
 #: written by the interpreter itself the moment a test imports a script, so
 #: watching it would fail every run for a reason that is not a leak.
 _SNAPSHOT_SKIP_DIRS = frozenset({"__pycache__", ".git", ".pytest_cache"})
+
+#: Set this to make a change under a SOURCE tree fail the run rather than
+#: warn. See :func:`report_source_tree_changes` for why it is off by default.
+STRICT_ENV_VAR = "PA_HERMETICITY_STRICT"
+
+
+def hermeticity_is_strict() -> bool:
+    """Is the source-tree half of the guard set to fail rather than warn?"""
+    return os.environ.get(STRICT_ENV_VAR, "") == "1"
+
+
+def _append_tolerant_roots() -> tuple[str, ...]:
+    """Resolved prefixes under which an append is not a violation."""
+    return tuple(str(path.resolve()) for path in _APPEND_TOLERANT_DIRS)
+
+
+def _is_append_tolerant(path: str) -> bool:
+    """True for the two store files and anything under ``logs/``."""
+    if path in {str(candidate.resolve()) for candidate in _CANONICAL_FILES}:
+        return True
+    return any(
+        path == root or path.startswith(root + os.sep)
+        for root in _append_tolerant_roots()
+    )
+
+
+def _digest_prefix(path: Path, length: int) -> str | None:
+    """Hash the first ``length`` bytes of ``path``, or ``None`` if unreadable.
+
+    Streamed in chunks so hashing a 45 MB corpus does not hold it in memory.
+    """
+    if length < 0:
+        return None
+    digest = hashlib.blake2b(digest_size=16)
+    remaining = length
+    try:
+        with path.open("rb") as handle:
+            while remaining > 0:
+                chunk = handle.read(min(1 << 20, remaining))
+                if not chunk:
+                    return None  # the file is shorter than it was
+                remaining -= len(chunk)
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
@@ -731,12 +805,22 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
 
     def record(path: Path) -> None:
         resolved = path.resolve()
+        key = str(resolved)
         try:
             stat = resolved.stat()
         except OSError:
-            snapshot[str(resolved)] = None
+            snapshot[key] = None
             return
-        snapshot[str(resolved)] = (stat.st_mtime_ns, stat.st_size)
+        if _is_append_tolerant(key):
+            # Three-tuple: the digest is what lets an APPEND by the live
+            # system be told apart from a rewrite at teardown. Hashed once
+            # here; at teardown only the changed files are re-read.
+            snapshot[key] = (
+                stat.st_mtime_ns, stat.st_size,
+                _digest_prefix(resolved, stat.st_size),
+            )
+        else:
+            snapshot[key] = (stat.st_mtime_ns, stat.st_size)
 
     def walk(directory: Path) -> None:
         """Record every file AND directory under ``directory``.
@@ -772,40 +856,119 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
     return snapshot
 
 
-def canonical_store_changes(
-    before: dict[str, tuple[int, int] | None],
-    after: dict[str, tuple[int, int] | None],
-) -> list[str]:
-    """Paths whose recorded state differs between two snapshots.
+def classify_store_changes(
+    before: dict[str, object],
+    after: dict[str, object],
+) -> tuple[list[str], list[str]]:
+    """Split the changed paths into (violations, benign appends).
 
-    Covers creation, modification, and deletion in one comparison, because
-    ``None`` is a recorded state rather than an absent key.
+    A path under an append-tolerant root (the two store files and ``logs/``)
+    whose size only GREW, and whose first ``old size`` bytes still hash to
+    what they hashed before, is an append by the live system — the
+    extraction hook adding a memory, a script adding a log line — and not
+    something the suite did. Everything else about those paths (a shrink, a
+    rewritten prefix, a deletion, a NEW file) is a violation, and so is any
+    change at all outside them.
+
+    The prefix is read at teardown, once, and only for files that changed,
+    so the common case where nothing moved costs nothing.
     """
-    return sorted(
-        path for path in set(after) | set(before)
-        if before.get(path) != after.get(path)
-    )
+    violations: list[str] = []
+    appends: list[str] = []
+    for path in sorted(set(after) | set(before)):
+        old = before.get(path)
+        new = after.get(path)
+        if old == new:
+            continue
+        if not _is_append_tolerant(path):
+            violations.append(path)
+            continue
+        # Both states must be present files for an append to be possible.
+        if not (isinstance(old, tuple) and isinstance(new, tuple)
+                and len(old) == 3 and len(new) == 3):
+            violations.append(path)
+            continue
+        _old_mtime, old_size, old_digest = old
+        _new_mtime, new_size, _new_digest = new
+        if new_size < old_size or old_digest is None:
+            violations.append(path)
+            continue
+        if _digest_prefix(Path(path), old_size) == old_digest:
+            appends.append(path)
+        else:
+            violations.append(path)
+    return violations, appends
 
 
 def assert_canonical_store_untouched(
-    before: dict[str, tuple[int, int] | None],
-    after: dict[str, tuple[int, int] | None],
-) -> None:
+    before: dict[str, object],
+    after: dict[str, object],
+) -> list[str]:
     """Raise if the suite created, modified, or deleted a canonical file.
+
+    Returns the benign appends it tolerated, so the caller can report them.
 
     A named function rather than an inline assert so its behaviour can be
     exercised in-process by ``test_hermeticity_fixture.py`` — a guard whose
     own failure path is never executed is a guard nobody has checked (audit
     round 4a-2, finding M5).
     """
-    touched = canonical_store_changes(before, after)
-    assert not touched, (
-        "the test suite wrote to the REAL checkout — the canonical memory "
-        "store, the task files, the instruction sources, or the code. A test "
-        "that forgot to patch a module's path constant rewrote the "
-        "operator's data.\n"
-        f"  touched: {touched}"
+    violations, appends = classify_store_changes(before, after)
+    store_violations = [path for path in violations if _is_append_tolerant(path)]
+    assert not store_violations, (
+        "the test suite wrote to the REAL canonical memory store or its "
+        "logs. An APPEND by the live system is tolerated; this was not — a "
+        "shrink, a rewritten prefix, a deletion, or a new file. A test that "
+        "forgot to patch a module's path constant rewrote the operator's "
+        "data.\n"
+        f"  touched: {store_violations}"
     )
+    return appends
+
+
+def report_source_tree_changes(
+    before: dict[str, object],
+    after: dict[str, object],
+) -> list[str]:
+    """Warn — or, under ``PA_HERMETICITY_STRICT=1``, fail — on source edits.
+
+    This repository is worked by SEVERAL CONCURRENT SESSIONS by design
+    (CLAUDE.md says so outright), and a suite run takes about two minutes.
+    Another session editing ``wiki/continuity.md`` or a script in that window
+    is ordinary, expected work — and failing the run for it blames the suite
+    for something the suite did not do, which is the fastest way to get a
+    guard switched off (round 4a-3 addendum, reproduced live).
+
+    So in a shared checkout this is ADVISORY: a loud warning naming the
+    paths, and the run continues. In a clean copy — a git-archive export, a
+    re-audit, CI — nothing else is writing, so
+    ``PA_HERMETICITY_STRICT=1`` makes the same finding fatal, which is where
+    a test that really did write to the checkout gets caught.
+
+    Returns the changed paths.
+    """
+    violations, _appends = classify_store_changes(before, after)
+    changed = [path for path in violations if not _is_append_tolerant(path)]
+    if not changed:
+        return changed
+    detail = "\n".join(f"    {path}" for path in changed)
+    if hermeticity_is_strict():
+        raise AssertionError(
+            "the test suite changed the REAL checkout's source trees "
+            f"({STRICT_ENV_VAR}=1, so this is fatal):\n{detail}"
+        )
+    print(
+        "\n"
+        "!! HERMETICITY WARNING: the checkout's source trees changed during "
+        "this run.\n"
+        "!! In a shared checkout this is usually a CONCURRENT SESSION, not "
+        "the suite.\n"
+        f"!! Re-run with {STRICT_ENV_VAR}=1 in a clean copy to make it "
+        "fatal.\n"
+        f"{detail}\n",
+        file=sys.stderr,
+    )
+    return changed
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -855,5 +1018,16 @@ def no_real_cache_writes():
     )
 
     # The canonical store is the graver case: a stray write there corrupts
-    # the memory system itself, not a cache the pipeline can rebuild.
-    assert_canonical_store_untouched(store_before, store_after)
+    # the memory system itself, not a cache the pipeline can rebuild. An
+    # APPEND by the live system (the extraction hook, a log line) is
+    # tolerated; anything else is not. The source trees are reported
+    # separately, because a concurrent session editing them is ordinary work
+    # — see report_source_tree_changes.
+    report_source_tree_changes(store_before, store_after)
+    appended = assert_canonical_store_untouched(store_before, store_after)
+    if appended:
+        print(
+            "note: the live system appended to "
+            f"{len(appended)} watched file(s) during this run: {appended}",
+            file=sys.stderr,
+        )
