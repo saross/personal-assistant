@@ -562,3 +562,40 @@ class TestAtomicWriteStaysOnOneFilesystem:
         target = tmp_path / "manifests" / "sample-manifest.json"
         resample.write_json_atomic(target, {"sessions": []})
         assert json.loads(target.read_text()) == {"sessions": []}
+
+
+class TestRefusalComesFirst:
+    """A doomed run must not spend minutes walking the transcript pool."""
+
+    def test_existing_out_is_refused_before_enumeration(
+        self, pool, tmp_path, monkeypatch, capsys
+    ):
+        """The finding: the refusal fired only after the whole pass."""
+
+        def refuse_enumeration(_patterns):
+            raise AssertionError(
+                "enumeration ran even though --out was already occupied"
+            )
+
+        monkeypatch.setattr(resample, "enumerate_archive_candidates", refuse_enumeration)
+        monkeypatch.setattr(resample, "enumerate_live_candidates", refuse_enumeration)
+        out = tmp_path / "manifest.json"
+        out.write_text('{"sessions": ["do not lose me"]}\n', encoding="utf-8")
+        assert run_main(pool, "--out", str(out)) == 2
+        assert "already exists" in capsys.readouterr().err
+        assert json.loads(out.read_text()) == {"sessions": ["do not lose me"]}
+
+    def test_force_still_enumerates(self, pool, tmp_path):
+        out = tmp_path / "manifest.json"
+        out.write_text('{"sessions": ["stale"]}\n', encoding="utf-8")
+        assert run_main(pool, "--out", str(out), "--force") == 0
+        assert json.loads(out.read_text())["sessions"] != ["stale"]
+
+    def test_the_writer_still_refuses_on_its_own(self, tmp_path):
+        """The late check closes the window between the early one and the write."""
+        out = tmp_path / "manifest.json"
+        out.write_text("{}\n", encoding="utf-8")
+        with pytest.raises(resample.ManifestExistsError):
+            resample.write_manifest(
+                [], {}, out, seed=42, generated_at=FROZEN_CLOCK,
+            )

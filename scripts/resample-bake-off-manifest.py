@@ -132,6 +132,15 @@ class ManifestExistsError(RuntimeError):
     """The requested ``--out`` path already holds a manifest."""
 
 
+def manifest_exists_message(out_path: Path) -> str:
+    """Explain why an existing ``--out`` file will not be replaced."""
+    return (
+        f"{out_path} already exists. Re-sampling would break the link "
+        "between the existing manifest and any responses generated "
+        "against it; pass --force to replace it deliberately."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Extractor import
 # ---------------------------------------------------------------------------
@@ -686,12 +695,11 @@ def write_manifest(
             manifest, so silently replacing one destroys the only link
             between those responses and the sessions that produced them.
     """
+    # Checked here as well as in ``main``: the early check keeps a doomed
+    # run from doing minutes of work, and this one closes the window
+    # between that check and the write.
     if out_path.exists() and not force:
-        raise ManifestExistsError(
-            f"{out_path} already exists. Re-sampling would break the link "
-            "between the existing manifest and any responses generated "
-            "against it; pass --force to replace it deliberately."
-        )
+        raise ManifestExistsError(manifest_exists_message(out_path))
     manifest = build_manifest(
         picks, pool_stats, seed=seed, generated_at=generated_at
     )
@@ -798,6 +806,13 @@ def main(argv: list[str] | None = None) -> int:
             "manifest on every run).",
             file=sys.stderr,
         )
+        return 2
+
+    # Refuse an occupied --out BEFORE enumerating: extraction and scoring
+    # walk every archived and live transcript and take minutes, and the
+    # answer at the end would be the same refusal.
+    if args.out is not None and args.out.exists() and not args.force:
+        print(f"Refused: {manifest_exists_message(args.out)}", file=sys.stderr)
         return 2
 
     extractor = _load_extractor()
