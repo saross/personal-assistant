@@ -101,6 +101,50 @@ def load_vocabulary() -> set[str]:
     }
 
 
+def rewrite_vocabulary(path: Path, keep: set[str]) -> int:
+    """Rewrite the vocabulary file so it holds exactly ``keep``, in place.
+
+    Structure is preserved (audit 2026-09-08, finding A4): every ``#``
+    comment line and every blank line is written back at its original
+    position, and only tag lines change. A retired tag's line is dropped;
+    a tag that is new to the file is appended, sorted, after the existing
+    content — the honest minimum, since nothing in the file says which
+    section a new tag belongs to.
+
+    The write is atomic and durable (finding A2/A15): a temp file in the
+    SAME directory, flushed and fsynced, then :func:`os.rename` over the
+    original. The caller MUST already hold
+    :func:`_bulk_rewrite_guard.lock_jsonl_for_rewrite` on ``path`` — the
+    extraction hook appends to this file under ``LOCK_SH``, so an unlocked
+    rewrite silently drops a concurrent append.
+
+    Returns the number of tags in the rewritten file.
+    """
+    existing = path.read_text(encoding="utf-8").split("\n") if path.exists() else []
+    if existing and existing[-1] == "":
+        existing.pop()  # trailing newline, not a final blank line
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in existing:
+        tag = line.strip()
+        if not tag or tag.startswith("#"):
+            out.append(line)  # structural line: verbatim, in place
+            continue
+        if tag in keep and tag not in seen:
+            out.append(line)
+            seen.add(tag)
+    out.extend(sorted(keep - seen))
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        fh.write("\n".join(out) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.rename(str(tmp_path), str(path))
+    return len(keep)
+
+
 def _get_tags(mem: dict[str, Any]) -> list[str]:
     """
     Get the tag list from a memory, using consistent field resolution.
@@ -683,17 +727,8 @@ def cmd_merge(args: argparse.Namespace) -> None:
             # Remove losers, add winners
             vocab -= set(replacements.keys())
             vocab |= set(replacements.values())
-            # Write sorted
-            sorted_vocab = sorted(vocab)
-            tmp_vocab = VOCABULARY_FILE.with_suffix(
-                VOCABULARY_FILE.suffix + ".tmp"
-            )
-            tmp_vocab.write_text(
-                "\n".join(sorted_vocab) + "\n",
-                encoding="utf-8",
-            )
-            os.rename(str(tmp_vocab), str(VOCABULARY_FILE))
-            print(f"  Updated: {VOCABULARY_FILE} ({len(sorted_vocab)} tags)")
+            n_tags = rewrite_vocabulary(VOCABULARY_FILE, vocab)
+            print(f"  Updated: {VOCABULARY_FILE} ({n_tags} tags)")
 
     # Log
     _log_merge(plan, memories_touched, tags_replaced)
@@ -747,17 +782,25 @@ def cmd_orphans(args: argparse.Namespace) -> None:
 
     if args.action == "clean":
         if orphaned or missing:
-            new_vocab = (vocab - set(orphaned)) | set(missing)
-            sorted_vocab = sorted(new_vocab)
-            VOCABULARY_FILE.write_text(
-                "\n".join(sorted_vocab) + "\n",
-                encoding="utf-8",
-            )
+            # `clean` rewrites a protected file, so it takes the same
+            # protection as `merge` (audit 2026-09-08, finding A2): the
+            # bulk-rewrite guard, then the vocabulary's own exclusive flock
+            # across the whole read-modify-rename window. Without them a
+            # concurrent extraction-hook append (taken under LOCK_SH) was
+            # silently lost, and daily-sync could commit a half-written file.
+            ensure_safe_to_rewrite(reason="tag-gardening orphans --action clean")
+            atexit.register(release_lock)
+            with lock_jsonl_for_rewrite(VOCABULARY_FILE):
+                # Re-read inside the lock: the counts above were taken
+                # without it, so an append since then must not be dropped.
+                vocab_now = load_vocabulary()
+                new_vocab = (vocab_now - set(orphaned)) | set(missing)
+                n_tags = rewrite_vocabulary(VOCABULARY_FILE, new_vocab)
             print(
                 f"\nUpdated {VOCABULARY_FILE}: "
                 f"removed {len(orphaned)} orphaned, "
                 f"added {len(missing)} missing "
-                f"({len(sorted_vocab)} total)"
+                f"({n_tags} total)"
             )
         else:
             print("\nVocabulary is clean — nothing to do.")

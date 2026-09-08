@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import tempfile
+import threading
 from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
@@ -906,3 +908,202 @@ class TestGuardWiring:
 
         assert len(calls) == 1
         assert "tag-gardening merge" in calls[0]
+
+
+# -------------------------------------------------------------------------
+# Vocabulary rewrites (audit 2026-09-08, findings A2 and A4)
+# -------------------------------------------------------------------------
+
+#: A vocabulary shaped like the live one: section headers, a blank line
+#: between sections, and sorted tags underneath.
+STRUCTURED_VOCAB = (
+    "# Infrastructure\n"
+    "api\n"
+    "pipeline\n"
+    "pipelines\n"
+    "\n"
+    "# Fieldwork\n"
+    "orphaned-tag\n"
+    "validation\n"
+)
+
+#: Holds a shared lock on a file, the way the extraction hook does while it
+#: appends, and reports readiness on stdout so the test need not sleep.
+_SHARED_LOCK_HOLDER = """
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR)
+fcntl.flock(fd, fcntl.LOCK_SH)
+print("locked", flush=True)
+time.sleep(30)
+"""
+
+
+class TestVocabularyRewrite:
+    """The vocabulary is a protected file; both writers must treat it so."""
+
+    def test_merge_preserves_comments_and_blank_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        """Section headers and the blank line keep their positions.
+
+        Kills the mutation that rewrites the file as a flat sorted list:
+        that drops all eight section headers from the live vocabulary.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        vocab.write_text(STRUCTURED_VOCAB, encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        # Retiring "pipelines" removes only its own line; the two headers
+        # and the blank line still sit exactly where they were, each still
+        # heading its own section.
+        assert vocab.read_text(encoding="utf-8") == (
+            "# Infrastructure\n"
+            "api\n"
+            "pipeline\n"
+            "\n"
+            "# Fieldwork\n"
+            "orphaned-tag\n"
+            "validation\n"
+        )
+
+    def test_orphans_clean_preserves_comments_and_blank_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        """``orphans --action clean`` keeps the file's structure too.
+
+        Kills the mutation that replaces the structured rewrite with a bare
+        ``write_text`` of a sorted tag list.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        vocab.write_text(STRUCTURED_VOCAB, encoding="utf-8")
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="clean"))
+
+        # The unused "orphaned-tag" line goes; the tags the corpus uses but
+        # the file lacks are appended, sorted, after the existing content.
+        # Both headers and the blank line survive in place.
+        assert vocab.read_text(encoding="utf-8") == (
+            "# Infrastructure\n"
+            "api\n"
+            "pipeline\n"
+            "pipelines\n"
+            "\n"
+            "# Fieldwork\n"
+            "validation\n"
+            "api-integration\n"
+            "architecture\n"
+            "data-quality\n"
+            "singleton-tag\n"
+            "testing\n"
+        )
+
+    def test_orphans_clean_invokes_the_guard(self, tmp_path: Path) -> None:
+        """``clean`` mutates a protected file, so it must take the guard.
+
+        Kills the mutation that deletes the ``ensure_safe_to_rewrite`` call
+        from the clean branch.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        write_sample_vocab(vocab)
+        calls: list[str] = []
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(
+                tag_gardening, "ensure_safe_to_rewrite",
+                lambda reason: calls.append(reason),
+            ),
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="clean"))
+
+        assert calls == ["tag-gardening orphans --action clean"]
+
+    def test_orphans_list_does_not_invoke_the_guard(
+        self, tmp_path: Path,
+    ) -> None:
+        """``list`` is read-only and must never touch the daily-sync lock."""
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        write_sample_vocab(vocab)
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise SystemExit(2)
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "ensure_safe_to_rewrite", refuse),
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="list"))
+
+    def test_orphans_clean_waits_for_a_shared_lock_holder(
+        self, tmp_path: Path,
+    ) -> None:
+        """A concurrent ``LOCK_SH`` holder blocks the clean rewrite.
+
+        Uses the real lock helper in a separate process — the extraction
+        hook's append pattern. Kills the mutation that drops
+        ``lock_jsonl_for_rewrite`` from the clean branch: without it the
+        rewrite completes immediately and the append is lost.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        vocab.write_text(STRUCTURED_VOCAB, encoding="utf-8")
+
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _SHARED_LOCK_HOLDER, str(vocab)],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "locked"
+            finished = threading.Event()
+
+            def run_clean() -> None:
+                with (
+                    patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+                    patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+                ):
+                    tag_gardening.cmd_orphans(
+                        argparse.Namespace(action="clean")
+                    )
+                finished.set()
+
+            worker = threading.Thread(target=run_clean, daemon=True)
+            worker.start()
+            assert not finished.wait(0.5), (
+                "the rewrite proceeded while another process held LOCK_SH"
+            )
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+            if holder.stdout is not None:
+                holder.stdout.close()
+
+        assert finished.wait(10), "the rewrite must proceed once unlocked"
+        worker.join(timeout=10)
