@@ -8,6 +8,7 @@ Tests pure functions only; does not require a running PostgreSQL instance.
 import importlib.util
 import json
 import logging
+import os
 import sys
 import types
 from pathlib import Path
@@ -168,6 +169,30 @@ class TestSessionCursor:
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
 
         assert sync_mod.load_cursor() == "2000-01-01T00:00:00Z"
+
+    def test_save_cursor_is_atomic(self, tmp_path, monkeypatch):
+        """
+        Audit round two, finding P16: an interrupted cursor save must
+        leave the previous file — including the *other* syncs' cursors —
+        intact. The mutation this kills: reverting ``save_cursor`` to
+        ``CURSOR_FILE.write_text(...)``, which truncates in place.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        original = {
+            "postgres_sync_line": 15809,
+            "sessions_sync_timestamp": "2026-03-15T04:00:00Z",
+        }
+        cursor_file.write_text(json.dumps(original), encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            sync_mod.save_cursor("2026-03-16T04:00:00Z")
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
 
 
 # ============================================================================

@@ -8,6 +8,7 @@ Tests pure functions only; does not require a running PostgreSQL instance.
 import importlib.util
 import json
 import logging
+import os
 import sys
 import types
 from pathlib import Path
@@ -88,6 +89,47 @@ class TestCursorLoadSave:
         sync_mod.save_cursor(50)
         sync_mod.save_cursor(100)
         assert sync_mod.load_cursor() == 100
+
+    def test_save_cursor_is_atomic(self, tmp_path, monkeypatch):
+        """
+        Audit round two, finding P16: a cursor save interrupted part-way
+        must leave the previous file intact.
+
+        The old implementation used ``Path.write_text``, which truncates
+        the real path before writing — a kill in that window reset *every*
+        sync's cursor at once. The replacement writes a temp file and
+        renames, so an interrupted save is a no-op. The mutation this
+        kills: reverting ``save_cursor`` to ``CURSOR_FILE.write_text(...)``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        original = {"postgres_sync_line": 10, "zotero_sync_line": 3}
+        cursor_file.write_text(json.dumps(original), encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            sync_mod.save_cursor(11)
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
+
+    def test_save_sync_timestamp_is_atomic(self, tmp_path, monkeypatch):
+        """The freshness marker takes the same atomic path (finding P16)."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        original = {"postgres_sync_line": 10}
+        cursor_file.write_text(json.dumps(original), encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            sync_mod.save_sync_timestamp()
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
 
 
 # ============================================================================

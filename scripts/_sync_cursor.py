@@ -40,6 +40,19 @@ The ``record`` field is whatever the caller hands us — typically the original
 parsed dict, or for parse failures the offending raw line. The operator can
 later reconcile by reading the file back.
 
+Appends are deduplicated on the ``(reason, record)`` pair by default (audit
+round two, finding P14): a halted cursor re-reads the same input slice on every
+cron tick, and without dedup one poison line accretes 288 identical entries a
+day, burying the entries that are genuinely distinct.
+
+Shared cursor file
+------------------
+:func:`update_cursor_file` is the one supported way to change
+``memories/sync-cursors.json``. It takes an exclusive ``flock`` for the whole
+read-modify-write cycle and writes via temp-file + :func:`os.replace`, so
+neither an interleaving between the three sync processes nor a kill part-way
+through a write can lose a cursor (audit round two, finding P16).
+
 Quarantine file location
 ------------------------
 We deliberately keep the existing quarantine paths used by the postgres syncs
@@ -60,11 +73,15 @@ the cursor to ``0`` (forcing a full re-scan), and proceed. This catches D-C3.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import logging
+import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 # ---------------------------------------------------------------------------
@@ -77,12 +94,83 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _entry_fingerprint(reason: str, record: Any) -> str:
+    """
+    Return a stable hash identifying one quarantine entry.
+
+    The ``quarantined_at`` timestamp is deliberately excluded — two
+    appends of the same ``(reason, record)`` pair are the *same* event
+    observed twice (audit round two, finding P14 / lens A-M12), not two
+    events. ``sort_keys`` makes dict ordering irrelevant; ``default=str``
+    keeps a non-serialisable record hashable rather than raising here
+    (the write path reports that failure).
+    """
+    try:
+        payload = json.dumps(
+            {"reason": reason, "record": record},
+            sort_keys=True, ensure_ascii=False, default=str,
+        )
+    except (TypeError, ValueError):  # pragma: no cover — default=str is total
+        payload = f"{reason}\x1f{record!r}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: Per-path cache of the fingerprints already on disk, keyed by the file's
+#: ``(size, mtime_ns)`` signature so an unchanged file is read once per
+#: process rather than once per quarantine call.
+_FINGERPRINT_CACHE: dict[Path, tuple[tuple[int, int], set[str]]] = {}
+
+
+def _existing_fingerprints(quarantine_path: Path) -> set[str]:
+    """
+    Return the fingerprints of every entry already in ``quarantine_path``.
+
+    Returns an empty set when the file is missing or unreadable — a
+    quarantine we cannot read is treated as empty, which risks a
+    duplicate append but never suppresses a genuine one.
+    """
+    try:
+        stat = quarantine_path.stat()
+    except OSError:
+        return set()
+
+    signature = (stat.st_size, stat.st_mtime_ns)
+    cached = _FINGERPRINT_CACHE.get(quarantine_path)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    fingerprints: set[str] = set()
+    try:
+        with quarantine_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                fingerprints.add(
+                    _entry_fingerprint(
+                        str(entry.get("reason", "")), entry.get("record"),
+                    )
+                )
+    except OSError:
+        return set()
+
+    _FINGERPRINT_CACHE[quarantine_path] = (signature, fingerprints)
+    return fingerprints
+
+
 def quarantine_record(
     quarantine_path: Path,
     record: Any,
     reason: str,
     *,
     logger: logging.Logger | None = None,
+    dedup: bool = True,
 ) -> bool:
     """
     Append a single quarantine entry to ``quarantine_path``.
@@ -100,15 +188,34 @@ def quarantine_record(
     logger:
         Optional logger; if provided, a single INFO line records the
         quarantine event, or an ERROR line if the write fails.
+    dedup:
+        When true (the default), an entry whose ``(reason, record)`` pair
+        is already present in the file is not appended a second time.
+        Audit round two, finding P14 (lens A-M12): while a sync cursor is
+        halted, every five-minute cron tick re-parses the same input
+        slice and re-quarantines the same lines — 288 duplicate entries
+        per poison line per day. Pass ``dedup=False`` only when repeated
+        occurrences of an identical record are themselves the signal.
 
     Returns
     -------
     bool
-        ``True`` on successful write; ``False`` if the underlying I/O
-        operation raised. The caller can use the return to decide
-        whether to advance the cursor anyway (poison-record case) or
-        halt and retry next cycle.
+        ``True`` when the entry is on disk — whether this call wrote it
+        or a previous one did; ``False`` if the underlying I/O operation
+        raised. The caller can use the return to decide whether to
+        advance the cursor anyway (poison-record case) or halt and retry
+        next cycle.
     """
+    fingerprint = _entry_fingerprint(reason, record)
+    if dedup and fingerprint in _existing_fingerprints(quarantine_path):
+        if logger is not None:
+            logger.debug(
+                "Quarantine entry already present (reason=%r) in %s — "
+                "not appending a duplicate",
+                reason, quarantine_path,
+            )
+        return True
+
     entry = {
         "reason": reason,
         "quarantined_at": _iso_now(),
@@ -125,6 +232,20 @@ def quarantine_record(
                 quarantine_path, reason, exc,
             )
         return False
+
+    # Keep the cache in step with our own append so a second call in the
+    # same process dedups even where the filesystem's mtime granularity
+    # would not reveal the change.
+    cached = _FINGERPRINT_CACHE.get(quarantine_path)
+    if cached is not None:
+        cached[1].add(fingerprint)
+        try:
+            stat = quarantine_path.stat()
+            _FINGERPRINT_CACHE[quarantine_path] = (
+                (stat.st_size, stat.st_mtime_ns), cached[1],
+            )
+        except OSError:  # pragma: no cover — the file was just written
+            _FINGERPRINT_CACHE.pop(quarantine_path, None)
 
     if logger is not None:
         logger.info(
@@ -195,6 +316,130 @@ def advance_or_quarantine(
         logger=logger,
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Shared cursor file (memories/sync-cursors.json)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def cursor_file_lock(cursor_path: Path) -> Iterator[None]:
+    """
+    Hold an exclusive advisory lock over a cursor file's sidecar lock.
+
+    Why a sidecar rather than the cursor file itself: the cursor is
+    rewritten via temp-file + :func:`os.replace`, so any lock held on the
+    original inode would be invalidated by the rename. A lock file that is
+    never renamed sidesteps that hazard. This mirrors
+    ``hooks/extraction-hook.py::cursor_file_lock``, which solved the same
+    problem for the extraction cursor.
+
+    Why this exists (audit round two, finding P16 / lens A-M14): three
+    processes — ``sync-to-postgres.py``, ``sync-sessions-to-postgres.py``
+    and ``sync-to-zotero.py`` — each do ``read → mutate → write`` on the
+    one ``memories/sync-cursors.json``. An interleaving loses one
+    process's update; a kill part-way through a non-atomic write truncates
+    the file and resets *every* cursor at once.
+
+    ``fcntl.flock`` is advisory: it only serialises callers that take the
+    same lock. Linux-only, matching this project's infrastructure.
+    """
+    lock_path = cursor_path.with_name(cursor_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            # Closing the fd releases the lock; unlocking explicitly makes
+            # the lifetime obvious to a reader.
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            except OSError:  # pragma: no cover — fd is still open here
+                pass
+
+
+def read_cursor_file(cursor_path: Path) -> dict[str, Any]:
+    """
+    Return the cursor file's JSON object, or ``{}`` when unusable.
+
+    A missing, unreadable, malformed, or non-object cursor file yields an
+    empty dict so every caller falls back to its own hard-coded default
+    rather than raising mid-sync.
+    """
+    if not cursor_path.exists():
+        return {}
+    try:
+        data = json.loads(cursor_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError, TypeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_cursor_file(cursor_path: Path, data: dict[str, Any]) -> None:
+    """
+    Write ``data`` over ``cursor_path`` atomically.
+
+    Temp file in the same directory (so :func:`os.replace` stays within one
+    filesystem and is therefore atomic), flushed and fsynced before the
+    rename. A reader either sees the whole previous file or the whole new
+    one; a kill mid-write can never leave a truncated cursor file behind.
+    The temp name carries the pid so two processes cannot collide on it
+    even if one of them skipped :func:`cursor_file_lock`.
+    """
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cursor_path.with_name(f"{cursor_path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, cursor_path)
+    except BaseException:
+        # Never leave a stray temp file behind on failure (including a
+        # KeyboardInterrupt part-way through the write).
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def update_cursor_file(
+    cursor_path: Path,
+    updates: dict[str, Any] | None = None,
+    *,
+    delete_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """
+    Merge ``updates`` into the shared cursor file under an exclusive lock.
+
+    The whole read-modify-write cycle happens inside
+    :func:`cursor_file_lock`, and the write itself is atomic, so a
+    concurrent sync can neither observe a half-written file nor silently
+    drop the key this call is setting.
+
+    Parameters
+    ----------
+    cursor_path:
+        The shared cursor JSON file.
+    updates:
+        Keys to set. ``None`` is treated as ``{}`` (useful with
+        ``delete_keys``).
+    delete_keys:
+        Keys to remove, applied after ``updates``.
+
+    Returns
+    -------
+    dict[str, Any]
+        The cursor object as written.
+    """
+    with cursor_file_lock(cursor_path):
+        data = read_cursor_file(cursor_path)
+        if updates:
+            data.update(updates)
+        for key in delete_keys:
+            data.pop(key, None)
+        _write_cursor_file(cursor_path, data)
+    return data
 
 
 # ---------------------------------------------------------------------------

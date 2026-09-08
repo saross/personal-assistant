@@ -21,7 +21,11 @@ from typing import Any, Iterator, NamedTuple
 
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _sync_cursor import quarantine_record  # noqa: E402
+from _sync_cursor import (  # noqa: E402
+    quarantine_record,
+    read_cursor_file,
+    update_cursor_file,
+)
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
@@ -135,28 +139,23 @@ def load_cursor(cursor_key: str = "postgres_sync_line") -> int:
 
     Returns 0 if the file doesn't exist or the key is missing.
     """
-    if not CURSOR_FILE.exists():
-        return 0
     try:
-        data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        return int(data.get(cursor_key, 0))
-    except (json.JSONDecodeError, ValueError, TypeError):
+        return int(read_cursor_file(CURSOR_FILE).get(cursor_key, 0))
+    except (ValueError, TypeError):
         return 0
 
 
 def save_cursor(line_number: int, cursor_key: str = "postgres_sync_line") -> None:
-    """Save the current sync position to the cursor file."""
-    data = {}
-    if CURSOR_FILE.exists():
-        try:
-            data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-    data[cursor_key] = line_number
-    CURSOR_FILE.write_text(
-        json.dumps(data, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    """Save the current sync position to the cursor file.
+
+    Routed through :func:`_sync_cursor.update_cursor_file` (audit round
+    two, finding P16): three processes read-modify-write this one file,
+    so the whole cycle runs under an exclusive flock and the write itself
+    is temp-file + ``os.replace``. Before that, an interleaving lost one
+    process's advance, and a kill part-way through the write truncated
+    the file and reset every cursor at once.
+    """
+    update_cursor_file(CURSOR_FILE, {cursor_key: line_number})
 
 
 def save_sync_timestamp() -> None:
@@ -169,16 +168,9 @@ def save_sync_timestamp() -> None:
     and warn the caller that /recall results may be incomplete.
     """
     from datetime import datetime, timezone
-    data = {}
-    if CURSOR_FILE.exists():
-        try:
-            data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-    data["postgres_last_sync_ts"] = datetime.now(timezone.utc).isoformat()
-    CURSOR_FILE.write_text(
-        json.dumps(data, indent=2) + "\n",
-        encoding="utf-8",
+    update_cursor_file(
+        CURSOR_FILE,
+        {"postgres_last_sync_ts": datetime.now(timezone.utc).isoformat()},
     )
 
 

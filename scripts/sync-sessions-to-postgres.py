@@ -28,7 +28,11 @@ from typing import Any, Iterator, NamedTuple
 
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _sync_cursor import quarantine_record  # noqa: E402
+from _sync_cursor import (  # noqa: E402
+    quarantine_record,
+    read_cursor_file,
+    update_cursor_file,
+)
 # Schema-version guard (audit IC5 / B-X1).
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 
@@ -93,28 +97,22 @@ def load_cursor() -> str:
 
     Returns ISO timestamp string. Defaults to epoch if no cursor exists.
     """
-    if not CURSOR_FILE.exists():
-        return "2000-01-01T00:00:00Z"
-    try:
-        data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        return str(data.get(CURSOR_KEY, "2000-01-01T00:00:00Z"))
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return "2000-01-01T00:00:00Z"
+    return str(read_cursor_file(CURSOR_FILE).get(
+        CURSOR_KEY, "2000-01-01T00:00:00Z",
+    ))
 
 
 def save_cursor(timestamp: str) -> None:
-    """Save the current sync timestamp to the shared cursor file."""
-    data = {}
-    if CURSOR_FILE.exists():
-        try:
-            data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-    data[CURSOR_KEY] = timestamp
-    CURSOR_FILE.write_text(
-        json.dumps(data, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    """Save the current sync timestamp to the shared cursor file.
+
+    Routed through :func:`_sync_cursor.update_cursor_file` (audit round
+    two, finding P16): this file is shared with ``sync-to-postgres.py``
+    and ``sync-to-zotero.py``, so the read-modify-write cycle runs under
+    an exclusive flock and the write is temp-file + ``os.replace``.
+    Previously a plain ``write_text`` could interleave with the memories
+    sync and lose one of the two cursor advances.
+    """
+    update_cursor_file(CURSOR_FILE, {CURSOR_KEY: timestamp})
 
 
 # ============================================================================
