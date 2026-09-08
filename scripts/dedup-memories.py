@@ -57,6 +57,17 @@ if not LOG_DIR.exists():
     LOG_DIR = PA_ROOT / "logs"
 LOG_FILE = LOG_DIR / "dedup-2026-04-14.log"
 
+
+def removal_journal_path(now: datetime | None = None) -> Path:
+    """Path of the dated journal of removed records and id remappings.
+
+    Lives beside the store it was cut from, is APPENDED to and never
+    truncated, and is dated so two runs on different days cannot overwrite
+    each other's evidence.
+    """
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    return MEMORIES_FILE.parent / f"dedup-removed-{stamp}.jsonl"
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -186,10 +197,16 @@ def reid_reprocess_collision(
 def dedup(
     records: list[tuple[int, dict | None, str]],
     logger: logging.Logger,
-) -> tuple[list[tuple[int, dict | None, str]], dict[str, int]]:
+) -> tuple[list[tuple[int, dict | None, str]], dict[str, int], dict[str, list]]:
     """
     Apply the resolution policies and return the deduped record list
-    (preserving original file order by lineno) plus a stats dict.
+    (preserving original file order by lineno), a stats dict, and a journal.
+
+    The journal carries what the stats cannot: ``removed`` holds every copy
+    dropped from the corpus (so it can be recovered), ``remapped`` holds each
+    ``old_id -> new_id`` pair minted by the re-id path (so surfaced.log,
+    ``superseded_by`` and the PostgreSQL row can be reconciled later), and
+    ``unclassified_ids`` names the duplicate groups no policy resolved.
     """
     stats: dict[str, int] = {
         "total_input_lines": len(records),
@@ -200,6 +217,12 @@ def dedup(
         "byte_identical_dropped": 0,
         "unclassified_groups": 0,
         "unclassified_groups_detail": 0,
+    }
+
+    journal: dict[str, list] = {
+        "removed": [],           # (reason, original_lineno, record)
+        "remapped": [],          # (old_id, new_id, original_lineno)
+        "unclassified_ids": [],  # ids of groups no policy could resolve
     }
 
     # Group by id
@@ -229,6 +252,8 @@ def dedup(
         if all(c[2] == copies[0][2] for c in copies):
             kept.append(copies[0])
             stats["byte_identical_dropped"] += len(copies) - 1
+            for lineno, rec, _raw in copies[1:]:
+                journal["removed"].append(("byte-identical", lineno, rec))
             continue
 
         # Summary-only diff? Keep summary winner.
@@ -241,6 +266,9 @@ def dedup(
             winner = pick_summary_winner(copies)
             kept.append(winner)
             stats["summary_only_dropped"] += len(copies) - 1
+            for lineno, rec, _raw in copies:
+                if lineno != winner[0]:
+                    journal["removed"].append(("summary-only", lineno, rec))
             continue
 
         # Reprocess chunk-collision? Re-id to preserve all.
@@ -250,9 +278,15 @@ def dedup(
                 reid_copies = reid_reprocess_collision(copies)
                 kept.extend(reid_copies)
                 stats["reprocess_reid"] += len(copies)
+                for lineno, rec, _raw in reid_copies:
+                    origin = rec.get("_dedup_origin", {})
+                    journal["remapped"].append(
+                        (origin.get("original_id"), rec["id"], lineno)
+                    )
                 continue
 
         # Unclassified — log for review, keep all verbatim
+        journal["unclassified_ids"].append(mid)
         stats["unclassified_groups"] += 1
         stats["unclassified_groups_detail"] += len(copies)
         logger.warning(
@@ -270,7 +304,7 @@ def dedup(
     output.extend(blank_lines)
     output.sort(key=lambda x: x[0])
 
-    return output, stats
+    return output, stats, journal
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +359,62 @@ def write_output(
     return line_count
 
 
+def write_removal_journal(
+    journal: dict[str, list],
+    logger: logging.Logger,
+) -> Path | None:
+    """
+    Append every removed record and id remapping to the dated journal.
+
+    Returns the journal path, or ``None`` when there was nothing to record.
+
+    Called BEFORE the corpus rename and fsynced, so a record is never
+    evicted from the canonical without a durable copy of it already on
+    disk (audit 2026-09-08, finding A6). The re-id mappings ride in the
+    same file (finding A10) because the two are read together: a mapping
+    is what lets ``surfaced.log``, ``superseded_by`` and the PostgreSQL
+    row for an old id be reconciled with the record's new id.
+    """
+    run_at = datetime.now(timezone.utc).isoformat()
+    entries: list[dict] = [
+        {
+            "type": "removed",
+            "run_at": run_at,
+            "reason": reason,
+            "original_lineno": lineno,
+            "record": rec,
+        }
+        for reason, lineno, rec in journal["removed"]
+    ]
+    entries.extend(
+        {
+            "type": "reid",
+            "run_at": run_at,
+            "old_id": old_id,
+            "new_id": new_id,
+            "original_lineno": lineno,
+        }
+        for old_id, new_id, lineno in journal["remapped"]
+    )
+    if not entries:
+        return None
+
+    path = removal_journal_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Append mode: a second run on the same day adds to the evidence rather
+    # than destroying the first run's.
+    with open(path, "a", encoding="utf-8") as fh:
+        for entry in entries:
+            fh.write(json.dumps(entry) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    logger.info(
+        "Removed records + id remappings written to %s (%d entries)",
+        path, len(entries),
+    )
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -336,6 +426,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logger = setup_logging()
+    journal_path: Path | None = None
     logger.info("=== dedup-memories starting (dry_run=%s) ===", args.dry_run)
     logger.info("Canonical: %s", MEMORIES_FILE)
 
@@ -355,9 +446,10 @@ def main() -> None:
     if args.dry_run:
         records, initial_bytes = load_records_with_position()
         logger.info("Loaded %d raw lines (%d bytes) from canonical", len(records), initial_bytes)
-        deduped, stats = _run_dedup_and_invariants(records, logger)
+        deduped, stats, journal = _run_dedup_and_invariants(records, logger)
         _log_stats(stats, deduped, logger)
         logger.info("Dry run: no file written. Exiting.")
+        _exit_if_nothing_resolved(stats, journal, logger)
         return
 
     # Real run: hold LOCK_EX on memories.jsonl for the entire
@@ -370,7 +462,7 @@ def main() -> None:
         records, initial_bytes = load_records_with_position()
         logger.info("Loaded %d raw lines (%d bytes) from canonical", len(records), initial_bytes)
 
-        deduped, stats = _run_dedup_and_invariants(records, logger)
+        deduped, stats, journal = _run_dedup_and_invariants(records, logger)
         _log_stats(stats, deduped, logger)
 
         # Belt-and-braces concurrent-append detection. Under correct
@@ -396,25 +488,73 @@ def main() -> None:
             )
             sys.exit(1)
 
+        # Durable evidence FIRST: every record about to be evicted, and
+        # every id remapping, is fsynced to the journal before the corpus
+        # rename. A crash between the two loses nothing (finding A6).
+        journal_path = write_removal_journal(journal, logger)
+
         final_count = write_output(deduped, new_tail_bytes, logger)
         logger.info("Wrote %d lines to %s", final_count, MEMORIES_FILE)
-    logger.info("Backup is at: %s", MEMORIES_FILE.with_suffix(".jsonl.bak.2026-04-14"))
+    if journal_path is None:
+        logger.info("No records removed or re-identified; no journal written.")
+    else:
+        logger.info("Removed records recoverable from: %s", journal_path)
     logger.info("=== dedup-memories complete ===")
+    _exit_if_nothing_resolved(stats, journal, logger)
+
+
+def _exit_if_nothing_resolved(
+    stats: dict[str, int],
+    journal: dict[str, list],
+    logger: logging.Logger,
+) -> None:
+    """Exit non-zero only when unclassified groups were the WHOLE story.
+
+    An unclassified duplicate group is kept verbatim and reported by id; it
+    must not abort a run that resolved everything else, or the sweep could
+    never make progress past one awkward group (audit 2026-09-08, finding
+    A13). It IS a non-zero exit when nothing at all could be resolved,
+    because then the run achieved nothing and needs a human.
+    """
+    unclassified = journal["unclassified_ids"]
+    if not unclassified:
+        return
+    logger.warning(
+        "%d duplicate group(s) left unresolved and kept verbatim: %s",
+        len(unclassified), ", ".join(unclassified[:20]),
+    )
+    resolved = (
+        stats["summary_only_dropped"]
+        + stats["reprocess_reid"]
+        + stats["byte_identical_dropped"]
+    )
+    if resolved == 0:
+        logger.error(
+            "Nothing could be resolved: every duplicate group is "
+            "unclassified. Review the ids above before re-running."
+        )
+        sys.exit(1)
 
 
 def _run_dedup_and_invariants(
     records: list[tuple[int, dict | None, str]],
     logger: logging.Logger,
-) -> tuple[list[tuple[int, dict | None, str]], dict[str, int]]:
+) -> tuple[list[tuple[int, dict | None, str]], dict[str, int], dict[str, list]]:
     """Run dedup and invariant checks; abort via sys.exit on failure."""
-    deduped, stats = dedup(records, logger)
+    deduped, stats, journal = dedup(records, logger)
 
-    # Invariant: no duplicate ids in output
+    # Invariant: no duplicate ids in output — EXCEPT the groups no policy
+    # could classify, which are deliberately kept verbatim (finding A13).
+    # Counting those here made one awkward group abort the entire run.
+    unclassified = set(journal["unclassified_ids"])
     ids_in_output: dict[str, int] = defaultdict(int)
     for _lineno, rec, _raw in deduped:
         if rec is not None and "id" in rec:
             ids_in_output[rec["id"]] += 1
-    dup_ids_remaining = {i: c for i, c in ids_in_output.items() if c > 1}
+    dup_ids_remaining = {
+        i: c for i, c in ids_in_output.items()
+        if c > 1 and i not in unclassified
+    }
     if dup_ids_remaining:
         logger.error(
             "INVARIANT FAILURE: %d duplicate ids remain after dedup",
@@ -438,7 +578,7 @@ def _run_dedup_and_invariants(
             logger.error("INVARIANT FAILURE: record not serialisable at lineno=%d: %s", lineno, exc)
             sys.exit(1)
     logger.info("INVARIANT OK: all kept records serialise as JSON")
-    return deduped, stats
+    return deduped, stats, journal
 
 
 def _log_stats(
