@@ -658,9 +658,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     quarantine problem is re-derived from the append-only quarantine file
     against an acked position stored in the sidecar (reset on a cursor
     reset), so no tick can be lost and no delta can be wrong; the
-    staleness check is guarded by uptime and boot time. First session
-    after merge will report all three gates as never written until each
-    script has run once.
+    staleness check is guarded by uptime and boot time. Ninth round done
+    (4a1eedf–fe10832; suite 1,704): the quarantine problem is derived from
+    the file against an acked position (reset on a cursor reset); staleness
+    is asserted only once uptime exceeds the window (a suspend longer than
+    the window still reports, since Linux counts suspended time —
+    documented); connectivity on every return, enforced by an AST test; the
+    indexer's direct lock read is guarded; the ack names which half of a
+    partial write failed; the stale-hours override is validated; the
+    hermeticity guard covers all eight gate globs and deletions; nine
+    mutations killed. Ninth pass running. First session after merge will
+    report all three gates as never written until each script has run
+    once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
