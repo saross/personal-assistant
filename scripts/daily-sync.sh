@@ -145,9 +145,12 @@ fail() {
     # gap. write_sync_gate is defined below and always by the time any
     # fail can run.
     log "ERROR: $*"
-    if [[ "${sync_gate_problems:-0}" -eq 0 ]]; then
-        write_sync_gate 1 "daily-sync FAILED and will keep failing until this is resolved: $*"
-    fi
+    # audit M1 (fourth re-audit): APPEND, unconditionally. Skipping when a
+    # gate already existed meant the non-fatal withheld-bump gate — which
+    # a healthy-ish run can raise — swallowed the reason for a real
+    # failure later in the same run: sync-symlinks.sh failing left the
+    # operator reading about a submodule pointer.
+    append_sync_gate_detail "daily-sync FAILED and will keep failing until this is resolved: $*"
     exit "${2:-2}"
 }
 
@@ -174,9 +177,38 @@ write_sync_gate() {
     # write_sync_gate <count> [detail ...]
     # Never fatal: a gate that cannot be written must not itself abort a
     # sync, and the log line beside every call site still records the state.
+    #
+    # audit (low, fourth re-audit): and never under --dry-run. The usage
+    # banner promises "no changes", and a dry run that leaves a gate file
+    # behind nags at every session start until a real run clears it.
+    if [[ $DRY_RUN -eq 1 ]]; then
+        return 0
+    fi
     sync_gate_problems="$1"
     mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
     printf '%s\n' "$@" > "$SYNC_GATE" 2>/dev/null || true
+}
+
+append_sync_gate_detail() {
+    # Add <detail> after whatever a failing block already recorded.
+    #
+    # audit L5: order matters to the reader. The diagnosis — what stopped
+    # the run, and whether the tree is half-merged — has to come before
+    # "recover with git stash pop", because popping into a half-merged
+    # tree is the wrong first move. The trigger renders every detail line
+    # in order.
+    local detail="$1" existing=() line
+    if [[ -f "$SYNC_GATE" ]] && [[ $DRY_RUN -eq 0 ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && existing+=("$line")
+        done < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
+    fi
+    existing+=("$detail")
+    # audit M1: the count is the number of problems recorded, not a
+    # hardcoded 1. The trigger only tests it against zero, but a gate
+    # whose header disagrees with its own body is the sort of thing an
+    # operator stops trusting.
+    write_sync_gate "${#existing[@]}" "${existing[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -719,22 +751,6 @@ stranded_stashes() {
         subject="$(git -C "$repo" log -1 --format=%s "$sha" 2>/dev/null || true)"
         printf '%s %s %s\n' "${sha:0:8}" "$ref" "$subject"
     done
-}
-
-append_sync_gate_detail() {
-    # Add <detail> after whatever a failing block already recorded.
-    #
-    # audit L5: order matters to the reader. The diagnosis — what stopped
-    # the run, and whether the tree is half-merged — has to come before
-    # "recover with git stash pop", because popping into a half-merged
-    # tree is the wrong first move. The trigger renders every detail line
-    # in order.
-    local detail="$1" existing=() line
-    if [[ -f "$SYNC_GATE" ]]; then
-        while IFS= read -r line; do existing+=("$line"); done \
-            < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
-    fi
-    write_sync_gate 1 ${existing[@]+"${existing[@]}"} "$detail"
 }
 
 # If any step between a `git stash push` and its explicit pop below aborts

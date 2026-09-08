@@ -26,6 +26,24 @@ def world(tmp_path: Path) -> SyncWorld:
     return build_world(tmp_path)
 
 
+def gate_details(world: SyncWorld) -> list[str]:
+    """
+    Return the daily-sync gate's detail lines, checking its own header.
+
+    The first line is a problem count and the rest are the problems. A
+    gate whose header disagrees with its body is the sort of thing an
+    operator stops trusting, so every gate assertion goes through here
+    (audit M1, fourth re-audit).
+    """
+    text = world.gate("daily-sync-gate")
+    assert text, "no gate was written"
+    lines = text.splitlines()
+    count, details = int(lines[0]), lines[1:]
+    assert count == len(details), f"header says {count}, body has {len(details)}: {lines}"
+    assert count > 0, lines
+    return details
+
+
 # ============================================================================
 # The sync body actually runs (audit C1 / S21)
 # ============================================================================
@@ -119,6 +137,20 @@ class TestSyncReachesTheEnd:
             + record.read_text(encoding="utf-8")
         )
 
+    def test_dry_run_writes_no_gate(self, world: SyncWorld) -> None:
+        """Audit (low, fourth re-audit): "no changes" includes the gate.
+
+        A dry run that leaves a gate behind nags at every session start
+        until a real run clears it — and with `fail` now gating every
+        failure, a dry run on a broken checkout would do exactly that.
+        """
+        machine = world.add_machine("a")
+        (machine.data / ".git").rename(machine.data / ".git-disabled")
+
+        result = world.run_sync(machine, "--dry-run")
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert world.gate("daily-sync-gate") == "", "a dry run wrote a gate file"
+
     def test_dry_run_commits_nothing_and_pushes_nothing(self, world: SyncWorld) -> None:
         """``--dry-run`` must leave every repository byte-identical."""
         machine = world.add_machine("a")
@@ -199,7 +231,7 @@ class TestSubmoduleCommitsArePublished:
         assert world.published_parent_head() == parent_before, (
             "published a pointer to a data commit that may be unfetchable"
         )
-        assert world.gate("daily-sync-gate").splitlines()[0] == "1"
+        assert gate_details(world)
 
     def test_second_machine_can_follow(self, world: SyncWorld) -> None:
         """The end-to-end consequence: machine B can update to A's push."""
@@ -319,10 +351,10 @@ class TestCrossMachineRebase:
         combined = result.stdout + result.stderr
         assert result.returncode == 2, combined
 
-        gate = world.gate("daily-sync-gate")
-        assert gate.splitlines()[0] == "1", gate
-        assert "rebase" in gate or "unsupported" in gate, gate
-        assert "daily-sync FAILED" in gate or "STOPPED" in gate, gate
+        details = gate_details(world)
+        joined = "\n".join(details)
+        assert "rebase" in joined or "unsupported" in joined, details
+        assert "daily-sync FAILED" in joined or "STOPPED" in joined, details
 
     def test_a_resolver_that_does_not_clean_stops_the_pull_rebase(
         self, world: SyncWorld
@@ -386,6 +418,33 @@ class TestCrossMachineRebase:
         assert result.returncode == 2, combined
         assert "conflict markers" in combined
         assert "<<<<<<<" not in world.published_data_file("memories/memories.jsonl")
+
+    def test_a_later_failure_is_named_even_after_a_softer_gate(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M1 (fourth re-audit): `fail` must APPEND its reason.
+
+        Skipping the gate whenever one already existed meant the
+        non-fatal withheld-bump gate — which an otherwise healthy run can
+        raise — swallowed the reason for a real failure later in the same
+        run, leaving the operator reading about a submodule pointer while
+        sync-symlinks was what actually broke.
+        """
+        machine = world.add_machine("a")
+        # Raise the soft gate: no origin/main, so the bump is withheld.
+        git("config", "--unset", "remote.origin.fetch", cwd=machine.data)
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=machine.data)
+        machine.append_memory("2026-09-08-m1-soft")
+
+        result = world.run_sync(machine, PA_TEST_SYMLINKS_RC="1")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        details = gate_details(world)
+        assert any("bump was withheld" in d for d in details), details
+        assert any("sync-symlinks" in d for d in details), (
+            "the real failure was swallowed by the earlier gate: " + repr(details)
+        )
 
     def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
         """Kills DS-M6: routing an unknown path to the submodule branch
@@ -560,13 +619,12 @@ class TestDetachedHeadGuard:
 
         leftovers = git("stash", "list", cwd=machine.data).stdout.strip().splitlines()
         assert len(leftovers) == 1, leftovers
-        gate = world.gate("daily-sync-gate").splitlines()
-        assert gate and gate[0] == "1", gate
+        details = gate_details(world)
         # Named by SHA, so the operator can actually recover it.
         stranded_sha = git(
             "rev-parse", "--short=8", "stash@{0}", cwd=machine.data
         ).stdout.strip()
-        assert stranded_sha in "\n".join(gate), gate
+        assert stranded_sha in "\n".join(details), details
         # Oldest-first ordering: the branch-switch stash is the one that
         # applied, so the later "daily-sync on <host>" stash is stranded.
         assert "daily-sync on" in leftovers[0]
@@ -781,9 +839,7 @@ class TestStashPopConflictPartitioning:
         )
         world.run_sync(machine)
 
-        gate = world.gate("daily-sync-gate")
-        assert gate.splitlines()[0] == "1", gate
-        assert "tasks/inbox.md" in gate
+        assert any("tasks/inbox.md" in d for d in gate_details(world))
 
     def test_tag_vocabulary_conflict_is_resolved_like_the_corpus(
         self, world: SyncWorld
@@ -972,9 +1028,7 @@ class TestStashPopConflictPartitioning:
             "conflict markers were committed and published"
         )
         assert "<<<<<<<" not in world.published_data_file("memories/memories.jsonl")
-        gate = world.gate("daily-sync-gate")
-        assert gate.splitlines()[0] == "1", gate
-        assert "memories/memories.jsonl" in gate
+        assert any("memories/memories.jsonl" in d for d in gate_details(world))
 
     def test_clean_run_clears_the_gate(self, world: SyncWorld) -> None:
         """A gate left by an earlier wedge must not nag forever."""
@@ -1012,9 +1066,7 @@ class TestOrphanedStashWedge:
         assert result.returncode == 2, combined
         assert "ORPHANED STASH" in combined
 
-        gate = world.gate("daily-sync-gate")
-        assert gate.splitlines()[0] == "1", gate
-        assert "orphaned stash" in gate.lower()
+        assert any("orphaned stash" in d.lower() for d in gate_details(world))
         # The stash itself is preserved for the human.
         assert git("stash", "list", cwd=machine.data).stdout.strip()
 
@@ -1036,14 +1088,12 @@ class TestParentStashWedge:
         assert result.returncode == 2, combined
         assert "stash pop raised conflicts" in combined
 
-        gate = world.gate("daily-sync-gate")
-        details = gate.splitlines()[1:]
-        assert gate.splitlines()[0] == "1", gate
-        assert any("parent-repo stash pop conflicted" in d for d in details), gate
+        details = gate_details(world)
+        assert any("parent-repo stash pop conflicted" in d for d in details), details
         # …and the stash holding the work is named too (second re-audit C1),
         # AFTER the diagnosis: popping into a half-merged tree is the wrong
         # first move, so the reader must meet the diagnosis first (L5).
-        assert any("UNRECOVERED" in d for d in details), gate
+        assert any("UNRECOVERED" in d for d in details), details
         diagnosis = next(i for i, d in enumerate(details) if "conflicted" in d)
         recovery = next(i for i, d in enumerate(details) if "UNRECOVERED" in d)
         assert diagnosis < recovery, details
