@@ -388,6 +388,14 @@ behavioural controls are inadequate.
   co-author trailer or author identity and was not a GitHub web squash.
   Silent when clean; a reviewed hit is silenced with `--ack <sha>`. A
   tripwire, not a control: trailers and dates are forgeable.
+- **Zero-byte `CLAUDE.md` and `.claude` inside Codex workspace roots** (seen
+  in `~/gpt-hub` and a Sol worktree) are Codex's own synthetic bubblewrap
+  mount targets: placeholders for workspace-relative read-only rules on
+  files that do not exist there, created at sandbox bootstrap and removed
+  on clean exit, left behind when a sandbox dies (registry:
+  `/tmp/codex-bwrap-synthetic-mount-targets-<uid>`). They are not
+  Claude-owned content despite the name; leave them alone and gitignore
+  them in the affected repository (established 2026-09-08).
 
 ---
 

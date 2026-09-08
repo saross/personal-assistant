@@ -2509,6 +2509,19 @@ only the runtime read-rule refresh), then `--apply && python3 -B
 scripts/check_live_acceptance.py --host --report /tmp/sol-live-acceptance-host.json`.
 Astra interprets the report. Live watch round 1 since Shawn's last message.
 
+**Host checkpoint run (8 Sep 10:00 local):** activation applied with the
+one expected diff (backup `~/.codex/backups/ownership-activation-5kzme643`);
+acceptance **blocked** in phase "trusted" after 0.53 s, no checks recorded —
+app-server launch-time failure class; request shapes verified against the
+generated schema, so not the cause. Asked Astra for a diagnosable harness
+(record which constant error fired; write app-server stderr to a sibling
+file); Shawn then re-runs only the acceptance command. **Stubs solved:** the
+zero-byte `CLAUDE.md`/`.claude` in `~/gpt-hub` are Codex synthetic
+bubblewrap mount targets (registry `/tmp/codex-bwrap-synthetic-mount-targets-1000`,
+marker PID 1921541, 18:30:04 on 7 Sep, same second as the stubs) left by a
+sandbox that did not exit cleanly. Not Claude-owned content; do not delete;
+proposed `.gitignore` entries in gpt-hub to Astra.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
@@ -2522,6 +2535,8 @@ Carry-forward (Claude-owned, from Sol's readiness review, in order):
   real history, forced positive verified).
 - [ ] Draft the map-reader-llm admission PR (`[[admitted_clones]]` entry) from
   Astra's disposable-repository acceptance record, when it arrives.
+- [ ] Investigate what recreates the gpt-hub stubs — DONE 8 Sep: Codex synthetic
+  mount targets; see above. Nothing to fix on the Claude side.
 - [x] 2026-09-07 PR #2 probes re-run at `8654cd9`; approved.
 - [x] 2026-09-08 #112 merged by Shawn himself (first hands-on `gh pr merge`).
 
