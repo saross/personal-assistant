@@ -176,6 +176,14 @@ FLEX_RETRY_WAITS_SECONDS = (30, 60, 120)
 # under-counted by ``SYSTEM_PROMPT_TOKENS_APPROX * n_requests`` tokens.
 SYSTEM_PROMPT_TOKENS_APPROX = 1500
 
+#: Exit code for a live run that was declined at the API Call Review Gate,
+#: whether the operator typed something other than "yes" or no operator was
+#: there at all (closed stdin). It is deliberately NOT 0: a cron or CI
+#: wrapper that reads 0 as "the run happened" would record a refusal as a
+#: completed bake-off. It is deliberately not 2 either, which this file uses
+#: for a usage error the caller can fix by changing the command line.
+EXIT_REFUSED_AT_GATE = 3
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -536,12 +544,18 @@ def response_is_complete(path: Path) -> bool:
 
 def record_failure(
     out_dir: Path, session_id: str, error: dict[str, Any], *, tag: str
-) -> None:
+) -> bool:
     """Persist an error record unless a complete response already exists.
 
     Deliberately unconditional, even under ``--force``: a re-run that fails
     must not destroy the answer an earlier run paid for. The refusal is
     printed, so a silently kept response cannot be mistaken for a fresh one.
+
+    Returns:
+        True when an error record was written, False when an existing
+        complete response was kept instead. Callers count the True cases:
+        the run summary reports files it actually created, and a kept
+        response is not a failure this run produced.
     """
     path = out_dir / f"{session_id}.json"
     if response_is_complete(path):
@@ -549,8 +563,23 @@ def record_failure(
             f"[{tag}]   a complete response for {session_id} is already on "
             "disk; keeping it rather than replacing it with this error"
         )
-        return
+        return False
     write_json_atomic(path, error)
+    return True
+
+
+def report_kept(n_kept: int, *, tag: str) -> None:
+    """Say how many earlier responses were kept in place of a failure.
+
+    Without this line the summary would simply omit them, and a run whose
+    calls all failed against an already-complete directory would report
+    "0 successes and 0 failures" with no explanation.
+    """
+    if n_kept:
+        print(
+            f"[{tag}] kept {n_kept} earlier complete response(s) rather than "
+            "recording a failure over them"
+        )
 
 
 def pending_requests(
@@ -639,28 +668,145 @@ def haiku_build_batch_requests(
     return out
 
 
+class BatchStateExistsError(RuntimeError):
+    """A batch has already been submitted into this output directory."""
+
+
+def file_sha256(path: Path) -> str:
+    """Return the hex SHA-256 of a file's bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def read_batch_state(out_dir: Path) -> dict[str, Any] | None:
+    """Return the persisted batch state for ``out_dir``, or None if absent."""
+    try:
+        state = json.loads((out_dir / "batch-state.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or not state.get("batch_id"):
+        return None
+    return state
+
+
+def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
+    """Return the exact command that retrieves ``batch_id`` from ``out_dir``.
+
+    ``out_dir`` is the provider subdirectory; ``--haiku-apply`` takes the
+    *root* output directory and navigates into it itself, so the printed
+    command names the parent and copy-pastes as it stands.
+    """
+    return (
+        "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
+        f"--haiku-apply {batch_id} --out-dir {out_dir.parent}"
+    )
+
+
+def batch_state_conflict(out_dir: Path, manifest_path: Path) -> str | None:
+    """Explain why submitting into ``out_dir`` again would lose money.
+
+    A Message Batch is billed when it is CREATED. The state file records the
+    only handle on it, so a second submit both pays twice and overwrites the
+    first batch's id, leaving the first job's results unreachable.
+
+    Returns:
+        A refusal message naming the stored batch id and the exact retrieval
+        command, or None when the directory holds no batch state.
+    """
+    state = read_batch_state(out_dir)
+    if state is None:
+        return None
+    batch_id = state["batch_id"]
+    stored_hash = state.get("manifest_sha256")
+    if stored_hash is None:
+        provenance = "manifest unrecorded (state written by an older version)"
+    elif stored_hash == file_sha256(manifest_path):
+        provenance = "the SAME manifest as --manifest"
+    else:
+        provenance = "a DIFFERENT manifest from --manifest"
+    return (
+        f"[haiku] refused: a batch has already been submitted into {out_dir}.\n"
+        f"  batch id:  {batch_id}\n"
+        f"  submitted: {state.get('submitted_at', 'unknown')}\n"
+        f"  requests:  {state.get('n_requests', 'unknown')} "
+        f"({provenance})\n"
+        "Submitting again would create a SECOND billed batch and replace the "
+        "stored id, leaving the first job unretrievable. Retrieve the "
+        "existing batch with:\n"
+        f"  {haiku_retrieve_command(batch_id, out_dir)}\n"
+        "Pass --force to submit anyway; the stored id is then kept under "
+        "superseded_batches."
+    )
+
+
 def haiku_submit(
     requests: list[SessionRequest],
     out_dir: Path,
     system_prompt: str,
+    *,
+    manifest_path: Path,
+    force: bool = False,
 ) -> str:
     """Submit a single Batch API job; persist state; return the batch ID.
 
     Mirrors ``scripts/backfill-summaries.py:run_batch_submit``.
+
+    Args:
+        requests: the sessions to submit (already filtered for resume).
+        out_dir: the provider subdirectory that holds ``batch-state.json``.
+        system_prompt: the shared system layer.
+        manifest_path: hashed into the state so a later submit can say
+            whether the stored batch came from the same manifest.
+        force: submit even though a batch state already exists.
+
+    Raises:
+        BatchStateExistsError: a batch is already recorded here and ``force``
+            is not set. Nothing is sent and nothing is written.
+        ValueError: two requests share a custom_id, which would silently
+            collapse two sessions into one batch entry.
     """
     from anthropic import Anthropic  # type: ignore[import-not-found]
+
+    previous = read_batch_state(out_dir)
+    if previous is not None and not force:
+        raise BatchStateExistsError(
+            batch_state_conflict(out_dir, manifest_path) or "batch already submitted"
+        )
+
+    # Injectivity is checked BEFORE the billed create call: the state file
+    # maps custom_id -> session_id, so a collision would drop a session from
+    # the map and write one session's output under another's name — after
+    # the batch had been paid for.
+    custom_to_session = {r.custom_id: r.session_id for r in requests}
+    if len(custom_to_session) != len(requests):
+        seen: dict[str, str] = {}
+        clashes = []
+        for request in requests:
+            if request.custom_id in seen:
+                clashes.append(
+                    f"{request.custom_id} <- {seen[request.custom_id]} and "
+                    f"{request.session_id}"
+                )
+            seen[request.custom_id] = request.session_id
+        raise ValueError(
+            "custom_id collision would lose a session in the batch state: "
+            + "; ".join(clashes)
+        )
 
     client = Anthropic()
     batch_requests = haiku_build_batch_requests(requests, system_prompt)
     batch_job = client.messages.batches.create(requests=batch_requests)
 
+    superseded = list(previous.get("superseded_batches", [])) if previous else []
+    if previous is not None:
+        superseded.append(previous["batch_id"])
     state = {
         "batch_id": batch_job.id,
         "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "n_requests": len(batch_requests),
-        "custom_id_to_session": {
-            r.custom_id: r.session_id for r in requests
-        },
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "superseded_batches": superseded,
+        "custom_id_to_session": custom_to_session,
     }
     state_path = out_dir / "batch-state.json"
     write_json_atomic(state_path, state)
@@ -670,11 +816,7 @@ def haiku_submit(
     # apply expects the user to pass the *root* ``--out-dir`` and
     # navigates into the provider subdir itself. Print the parent so
     # the hint copy-pastes cleanly.
-    print(
-        f"[haiku] retrieve with: "
-        f"venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
-        f"--haiku-apply {batch_job.id} --out-dir {out_dir.parent}"
-    )
+    print(f"[haiku] retrieve with: {haiku_retrieve_command(batch_job.id, out_dir)}")
     return batch_job.id
 
 
@@ -708,6 +850,7 @@ def haiku_apply(
 
     n_ok = 0
     n_fail = 0
+    n_kept = 0
     for result in client.messages.batches.results(batch_id):
         session_id = custom_to_session.get(result.custom_id)
         if not session_id:
@@ -717,22 +860,27 @@ def haiku_apply(
             print(f"[haiku] {session_id} already complete — skipping")
             continue
         if result.result.type != "succeeded":
-            record_failure(
+            if record_failure(
                 out_dir, session_id, {"error": result.result.type}, tag="haiku"
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             continue
         # An empty ``content`` list (rare but possible if the model
         # returns a successful result with no text blocks) would raise
         # IndexError below. Persist a structured failure record and
         # continue rather than crashing the whole retrieval loop.
         if not result.result.message.content:
-            record_failure(
+            if record_failure(
                 out_dir,
                 session_id,
                 {"error": "succeeded result had empty content list"},
                 tag="haiku",
-            )
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(
                 f"[haiku] succeeded result for {session_id} carried no "
                 "content blocks — recording empty-content error"
@@ -744,17 +892,20 @@ def haiku_apply(
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag="haiku",
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{session_id}.json", parsed)
             n_ok += 1
     print(f"[haiku] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag="haiku")
 
 
 # ---------------------------------------------------------------------------
@@ -864,6 +1015,7 @@ def gemini_run(
     client = genai.Client()
     n_ok = 0
     n_fail = 0
+    n_kept = 0
     for i, r in enumerate(requests, 1):
         print(
             f"[gemini] {i}/{len(requests)}  {r.session_id[:8]}  "
@@ -874,25 +1026,32 @@ def gemini_run(
                 client, r.user_message, system_prompt
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag="gemini")
-            n_fail += 1
+            if record_failure(
+                out_dir, r.session_id, {"error": str(exc)}, tag="gemini"
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(f"[gemini]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 r.session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag="gemini",
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
             n_ok += 1
     print(f"[gemini] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag="gemini")
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1196,7 @@ def luna_run(
         return
     n_ok = 0
     n_fail = 0
+    n_kept = 0
     usage_log: list[dict[str, Any]] = []
     for i, r in enumerate(requests, 1):
         print(
@@ -1048,8 +1208,12 @@ def luna_run(
                 r.user_message, system_prompt, model=model
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
-            n_fail += 1
+            if record_failure(
+                out_dir, r.session_id, {"error": str(exc)}, tag=tag
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(f"[{tag}]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
@@ -1059,13 +1223,15 @@ def luna_run(
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 r.session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag=tag,
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
             n_ok += 1
@@ -1073,6 +1239,7 @@ def luna_run(
     # comparison, merged so a resumed run keeps the earlier rows.
     merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag=tag)
     billed_in = sum(u.get("input_tokens", 0) for u in usage_log)
     billed_out = sum(u.get("output_tokens", 0) for u in usage_log)
     reasoning = sum(
@@ -1121,7 +1288,7 @@ def haiku_rt_run(
         print(f"[{tag}] nothing to do — every session already has a response")
         return
     client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    n_ok = n_fail = 0
+    n_ok = n_fail = n_kept = 0
     usage_log: list[dict[str, Any]] = []
     for i, r in enumerate(requests, 1):
         print(
@@ -1154,26 +1321,33 @@ def haiku_rt_run(
                 "output_tokens": resp.usage.output_tokens,
             })
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
-            n_fail += 1
+            if record_failure(
+                out_dir, r.session_id, {"error": str(exc)}, tag=tag
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(f"[{tag}]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 r.session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag=tag,
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
             n_ok += 1
     merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag=tag)
     print(
         f"[{tag}] billed: {sum(u['input_tokens'] for u in usage_log):,} input, "
         f"{sum(u['output_tokens'] for u in usage_log):,} output"
@@ -1554,7 +1728,9 @@ def confirm_live_run(
 
     A closed stdin (cron, a pipeline, a captured subprocess) raises
     ``EOFError`` from ``input()``. That must read as "no one is here to
-    approve", not as an unhandled traceback.
+    approve", not as an unhandled traceback — and the caller turns the
+    False returned here into ``EXIT_REFUSED_AT_GATE``, so an unattended
+    wrapper cannot mistake the refusal for a completed run.
     """
     print("\n--- API Call Review Gate — these calls are BILLED ---")
     for line in gate_summary_lines(requests, provider):
@@ -1736,32 +1912,49 @@ def main(argv: list[str] | None = None) -> int:
     # The figures describe what will ACTUALLY be sent: on a resumed run the
     # sessions that already have a complete response are dropped first, so
     # the count and the cost are the ones about to be incurred rather than
-    # the ones a first run would have incurred. The Batch arm is exempt —
-    # a batch is one job, and resume happens at --haiku-apply.
-    if args.provider != "haiku":
-        requests = pending_requests(
-            requests, provider_dir, force=args.force, tag=args.provider
+    # the ones a first run would have incurred. This includes the Batch arm:
+    # a re-submit after a partial --haiku-apply should top up the sessions
+    # that are still missing, not pay for the whole manifest again.
+    requests = pending_requests(
+        requests, provider_dir, force=args.force, tag=args.provider
+    )
+    if not requests:
+        print(
+            "Every session in the manifest already has a complete "
+            "response; nothing to send. Pass --force to re-run them."
         )
-        if not requests:
-            print(
-                "Every session in the manifest already has a complete "
-                "response; nothing to send. Pass --force to re-run them."
-            )
-            return 0
+        return 0
+
+    # A Message Batch is billed at creation and its id lives only in
+    # batch-state.json, so a second submit into the same directory pays
+    # twice AND orphans the first job. Refused before the gate: there is
+    # nothing to approve.
+    if args.provider == "haiku" and not args.force:
+        conflict = batch_state_conflict(provider_dir, args.manifest)
+        if conflict:
+            print(conflict, file=sys.stderr)
+            return 2
     print(
         "Live mode requested. This will make billed API calls. "
         "Re-run with --dry-run first if you want the per-session breakdown."
     )
     if not confirm_live_run(requests, args.provider, assume_yes=args.yes):
-        return 0
+        return EXIT_REFUSED_AT_GATE
 
     # Credentials are hydrated only once the run is approved.
     load_env()
 
     if args.provider == "haiku":
-        # Batch submission has no per-session resume: the whole batch is one
-        # job, so --force does not apply until --haiku-apply retrieves it.
-        haiku_submit(requests, provider_dir, system_prompt)
+        try:
+            haiku_submit(
+                requests, provider_dir, system_prompt,
+                manifest_path=args.manifest, force=args.force,
+            )
+        except BatchStateExistsError as exc:
+            # Unreachable via main (the check above fires first); kept so the
+            # adapter is safe for any other caller.
+            print(str(exc), file=sys.stderr)
+            return 2
     elif args.provider == "gemini":
         gemini_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "luna":
