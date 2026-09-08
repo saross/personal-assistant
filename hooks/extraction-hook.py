@@ -425,13 +425,28 @@ def set_cursor_entry(
 
 
 def load_cursor() -> dict:
-    """Load cursor tracking last processed position per session."""
+    """Load cursor tracking last processed position per session.
+
+    Anything that is not a JSON object starts fresh. Only malformed JSON
+    was caught before (audit round five L-3), so a file holding ``[]``,
+    ``null``, ``3`` or ``"s"`` parsed cleanly and then raised
+    ``AttributeError`` on the first ``.get`` — inside a Stop / PreCompact /
+    SessionEnd hook, where the traceback surfaces as a broken session
+    close rather than as anything an operator would connect to the cursor.
+    """
     if CURSOR_FILE.exists():
         try:
-            return json.loads(CURSOR_FILE.read_text())
+            data = json.loads(CURSOR_FILE.read_text())
         except json.JSONDecodeError:
             logger.warning("Corrupt cursor file, starting fresh")
             return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "Cursor file holds %s, not an object — starting fresh",
+                type(data).__name__,
+            )
+            return {}
+        return data
     return {}
 
 
@@ -702,7 +717,13 @@ def parse_transcript(
                 )
 
     # If cursor UUID was set but never found (stale/rotated transcript),
-    # fall back to processing the entire file from the start
+    # fall back to processing the entire file from the start.
+    #
+    # The stored skip flag is deliberately NOT passed down (audit round
+    # five, mutation 4): a full reparse starts before the command that set
+    # it, so the command is re-encountered on the way through and re-arms
+    # the flag by itself. Seeding it as well would suppress the first
+    # assistant turn in the file, which belongs to no command at all.
     if last_uuid is not None and not found_cursor:
         logger.warning(
             "Cursor UUID %s not found in transcript — stale cursor. "

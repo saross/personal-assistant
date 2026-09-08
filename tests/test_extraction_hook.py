@@ -34,6 +34,11 @@ eh = importlib.import_module("extraction-hook")
 # ============================================================================
 
 
+def _entry_text_result(entry: dict) -> str:
+    """Call the hook's content flattener (hyphenated module, private name)."""
+    return eh._entry_text(entry)
+
+
 def _cursor_state(cursor_file: Path, session_id: str) -> tuple[str | None, bool]:
     """Read ``(uuid, skip_pending)`` from a cursor FILE, as main() wrote it.
 
@@ -2267,3 +2272,196 @@ class TestMetaAssistantAndTheSkipFlag:
         window = eh.parse_transcript(str(transcript), None)
         assert [m["content"] for m in window.messages] == []
         assert window.skip_pending is False
+
+
+class TestCursorFileShapes:
+    """Audit round five L-3: a cursor file that is valid JSON but not an object."""
+
+    @pytest.mark.parametrize(
+        "payload", ["[]", "null", "3", '"s"', '["a", "b"]', "3.5"]
+    )
+    def test_a_non_object_cursor_starts_fresh(
+        self, tmp_path, monkeypatch, payload, caplog
+    ):
+        """Kills ``if not isinstance(data, dict): return {}``.
+
+        Only malformed JSON was caught before, so these parsed cleanly and
+        then raised ``AttributeError`` on the first ``.get`` — inside a
+        Stop / PreCompact / SessionEnd hook, where the traceback surfaces
+        as a broken session close and not as anything an operator would
+        connect to the cursor file.
+        """
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(payload, encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        assert eh.load_cursor() == {}
+
+    def test_a_non_object_cursor_does_not_break_main(self, tmp_path, monkeypatch):
+        """The consequence, not just the return value.
+
+        Kills the same guard at the level that matters: the hook has to
+        survive the file, not merely read it.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        cursor_file.write_text("[]", encoding="utf-8")
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-L3"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+        assert _cursor_state(cursor_file, "sess-L3") == ("uuid-A", False)
+
+    def test_a_valid_object_is_still_read(self, tmp_path, monkeypatch):
+        """Kills ``return {}`` unconditionally in place of the type check."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(json.dumps({"s1": "u1"}), encoding="utf-8")
+        monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+        assert eh.load_cursor() == {"s1": "u1"}
+
+
+class TestRoundFiveSurvivors:
+    """Audit round five: four mutations the suite did not catch."""
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    def test_a_sidechain_entry_at_the_cursor_does_not_arm_the_skip(
+        self, tmp_path
+    ):
+        """Kills dropping ``not entry.get("isSidechain")`` from the cursor check.
+
+        The cursor-on-command check reads the entry the cursor points at.
+        If a subagent's turn quoting a command header could arm the flag
+        there, the next genuine assistant answer would be dropped — the
+        same failure the sidechain guard prevents further down, reached by
+        a different route.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._marker() + "\nquoted by a subagent", "u1",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), "u1")
+        assert [m["content"] for m in window.messages] == [
+            "AN ORDINARY ANSWER THAT MUST SURVIVE"
+        ]
+        assert window.skip_pending is False
+
+    def test_a_sterile_window_still_stores_the_pending_skip(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``set_cursor_entry(..., window.skip_pending)`` -> ``False``
+        in the "no memories extracted" branch.
+
+        The model can return an empty list while a command response is
+        still owed. That branch advances the cursor like any other, so it
+        has to carry the flag too — otherwise the response is extracted on
+        the next firing, and only for windows Haiku happened to find
+        nothing in.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "chatter " + "c" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+            ],
+        )
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-R5"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            # The API succeeded and found nothing worth keeping.
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                "[]"
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        assert not store.exists(), "nothing should have been persisted"
+        assert _cursor_state(cursor_file, "sess-R5") == ("u2", True), (
+            "a sterile window dropped the pending skip"
+        )
+
+    @pytest.mark.parametrize(
+        "content", [{"unexpected": "dict"}, 42, None, {"type": "text"}]
+    )
+    def test_entry_text_survives_a_non_string_non_list_content(self, content):
+        """Kills ``_entry_text`` returning ``content`` unchanged.
+
+        ``message.content`` is a string or a list of blocks in every shape
+        measured, but the parser must not hand a dict or an int onward: the
+        marker test does ``marker in content`` and the append does
+        ``content[:MAX_MESSAGE_CHARS]``, both of which raise on a dict.
+        A hook may not die on an entry shape it has not seen.
+        """
+        entry = {"type": "user", "uuid": "u1", "message": {"content": content}}
+        assert _entry_text_result(entry) == ""
+
+    def test_a_malformed_entry_does_not_break_the_parse(self, tmp_path):
+        """The same, end to end: the window still parses around it."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "message": {"content": {"unexpected": "dict"}},
+                },
+                make_live_shape_entry("user", "a real question", "u2"),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == ["a real question"]
+        assert window.last_uuid == "u2"
+
+    def test_a_stale_cursor_reparse_still_skips_the_response(self, tmp_path):
+        """Pins why the stale-cursor fallback does NOT seed the stored flag.
+
+        A full reparse starts before the command, so the command re-arms
+        the flag on the way through and the response is still dropped.
+        Seeding it as well would suppress the first assistant turn in the
+        file, which belongs to no command at all — so this test would fail
+        in the other direction if someone "fixed" the fallback by passing
+        the flag down.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("assistant", "AN EARLIER ANSWER", "u1"),
+                make_live_shape_entry(
+                    "user", self._marker() + "\nsave", "u2", is_meta=True
+                ),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u3"),
+            ],
+        )
+        # A cursor pointing at an entry that is no longer in the file, with a
+        # skip still owed — the rotated-transcript case.
+        window = eh.parse_transcript(str(transcript), "gone-uuid", True)
+        texts = [m["content"] for m in window.messages]
+        assert "THE COMMAND RESPONSE" not in texts
+        assert "AN EARLIER ANSWER" in texts, (
+            "the stored flag was seeded into the reparse and swallowed an "
+            "assistant turn that belongs to no command"
+        )
+        assert window.last_uuid == "u3"
