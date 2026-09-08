@@ -148,8 +148,10 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             # RUN THE VALUE as that command, so the secret itself lands in
             # stderr ("<secret>: command not found"). Verified against bash 5.2.
             # ``line`` has already been stripped, so a value field that is only
-            # whitespace cannot reach here; the ``value and`` guard is
-            # defence-in-depth against a future refactor that drops the strip.
+            # whitespace cannot reach here: the ``value and`` conjunct is
+            # UNREACHABLE through parse_env and is kept only as
+            # defence-in-depth against a future refactor that drops that
+            # strip. No test pins it, because no input can (audit round two).
             note(
                 f"line {lineno}: whitespace after the '=' on {name!r} — bash sets "
                 f"{name} empty and runs the value as a command, echoing the secret "
