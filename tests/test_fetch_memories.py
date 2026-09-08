@@ -844,3 +844,56 @@ class TestTagFilterSemantics:
         )
         results = fetch_memories.fallback_jsonl(category="progress", tags=[])
         assert len(results) == 2
+
+
+# ============================================================================
+# Audit M1 — one soft-delete predicate, tolerant of hand-edited shapes
+# ============================================================================
+
+
+class TestSoftDeletePredicateIsShared:
+    """``/forget`` is executed by an LLM editing JSONL, so the value varies."""
+
+    def test_both_readers_use_the_same_function(self) -> None:
+        """Kills: either module growing its own copy again.
+
+        Two independent ``is not False`` copies were what let a
+        hand-written ``"false"`` hide a memory in PostgreSQL (which casts
+        it) while every JSONL reader kept serving it.
+        """
+        import digest
+
+        assert fetch_memories.is_active is digest.is_active
+
+    @pytest.mark.parametrize("value", [
+        False, "false", "False", " FALSE ", 0, "0",
+    ])
+    def test_forgotten_shapes_all_retire_the_record(self, value: Any) -> None:
+        """Kills: reverting to ``mem.get("is_active", True) is not False``."""
+        mem = _make_memory(mem_id="retired")
+        mem["is_active"] = value
+        assert not fetch_memories.is_active(mem)
+        assert not fetch_memories.matches_filters(mem, category="decision")
+
+    @pytest.mark.parametrize("record_extra", [
+        {}, {"is_active": True}, {"is_active": "true"}, {"is_active": None},
+        {"is_active": 1},
+    ])
+    def test_active_shapes_all_pass(self, record_extra: dict[str, Any]) -> None:
+        """The whole legacy corpus predates the field: absence means active."""
+        mem = {**_make_memory(), **record_extra}
+        assert fetch_memories.is_active(mem)
+
+    def test_string_false_is_excluded_from_the_jsonl_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The consequence on the offline path, not just the predicate."""
+        live = _make_memory(mem_id="live", category="progress")
+        retired = _make_memory(mem_id="retired", category="progress")
+        retired["is_active"] = "false"
+        _write_jsonl(tmp_path / "memories.jsonl", [retired, live])
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress")
+        assert [m["id"] for m in results] == ["live"]

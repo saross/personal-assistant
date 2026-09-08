@@ -26,7 +26,11 @@ want to correct rather than retire.
 2. **If `is_active` is already `false`**: report "already inactive" and
    stop — do not double-stamp the revisions array.
 3. **Construct the updated record:**
-   - Set `is_active: false`
+   - Set `is_active` to the JSON boolean `false` — bare `false`, **not**
+     the string `"false"` and not `0`. Every reader normalises the other
+     shapes (audit M1), so a slip is no longer a visibility split, but the
+     boolean is the canonical form and the only one `is_active = TRUE`
+     comparisons in SQL read without a cast.
    - Append a new entry to `revisions[]`:
      `{"revised_at": "<ISO timestamp now>", "action": "forget", "reason": "<reason>"}`
      (omit the `reason` key if no reason supplied)

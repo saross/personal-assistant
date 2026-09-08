@@ -32,6 +32,7 @@ from typing import Any
 # Schema-version guard (audit IC5 / B-X1).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+from _soft_delete import is_active  # noqa: E402  (shared with digest.py, audit M1)
 import surfacing_log  # noqa: E402  (item 16 earned-utility instrumentation)
 
 # ============================================================================
@@ -551,18 +552,6 @@ def load_jsonl_memories() -> list[dict[str, Any]]:
                 continue
 
     return records
-
-
-def is_active(mem: dict[str, Any]) -> bool:
-    """
-    False only when the record is explicitly forgotten (``is_active: false``).
-
-    A memory with no ``is_active`` field is active (the legacy default —
-    the key was added with ``/forget``). Mirrors ``scripts/digest.py``'s
-    helper of the same name so every reader shares one soft-delete
-    semantic.
-    """
-    return mem.get("is_active", True) is not False
 
 
 def matches_filters(
