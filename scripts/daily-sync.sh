@@ -1090,7 +1090,10 @@ if [[ $DRY_RUN -eq 0 ]]; then
         # non-zero. This makes transcript-partial state explicit instead
         # of silent — the failure mode that hid the meta-only shells.
         GATE_FILE="$HOME/.cache/cc-archives-gate"
-        "$HOME/personal-assistant/venv/bin/python3" - "$CC_ARCHIVES_LOCAL" "$GATE_FILE" <<'PYEOF' >>"$LOG_FILE" 2>&1 || log "cc-archives gate: check failed (see log)"
+        # audit L3: every other call in this script uses $PA_DIR; this one
+        # hardcoded ~/personal-assistant, so a run from a worktree or a
+        # relocated checkout would use another tree's interpreter (or none).
+        "$PA_DIR/venv/bin/python3" - "$CC_ARCHIVES_LOCAL" "$GATE_FILE" <<'PYEOF' >>"$LOG_FILE" 2>&1 || log "cc-archives gate: check failed (see log)"
 import json, sys
 from pathlib import Path
 root, gate = Path(sys.argv[1]), Path(sys.argv[2])

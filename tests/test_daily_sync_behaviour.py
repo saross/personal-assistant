@@ -711,6 +711,18 @@ class TestRebasePointerConflict:
             f"({foreign_sha[:8]}) instead of our freshly pushed submodule SHA"
         )
 
+    def test_every_interpreter_call_uses_pa_dir(self) -> None:
+        """Audit L3: one call hardcoded ~/personal-assistant/venv, so a run
+        from a worktree or a relocated checkout used another tree's
+        interpreter. The cc-archives block it sits in only runs with the
+        rpi-shares mount present, which no test can have — hence a source
+        assertion."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "daily-sync.sh").read_text(encoding="utf-8")
+        assert "$HOME/personal-assistant" not in source, (
+            "an interpreter or path is resolved through $HOME instead of $PA_DIR"
+        )
+
     def test_memory_append_list_has_one_source_of_truth(self) -> None:
         """Audit L1: the three conflict partitions must derive from
         MEMORY_APPEND_FILES, not each repeat it as a literal. With the
