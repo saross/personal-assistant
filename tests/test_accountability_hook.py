@@ -473,24 +473,24 @@ class TestAuditRoundTwo:
     def test_rotated_in_drives_the_day_counter(self, tmp_path, monkeypatch):
         focus = tmp_path / "FOCUS.md"
         focus.write_text(
-            "## Slot 1: EFN website\n\n- **Rotated in:** 2026-08-17, per the trigger\n"
+            "## Slot 1: Mirror recoating\n\n- **Rotated in:** 2024-02-05, per the trigger\n"
             "- **Deadline:** None\n\n---\n"
         )
         monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
         slots = accountability.parse_focus_slots()
-        assert slots and slots[0]["started"] == "2026-08-17"
+        assert slots and slots[0]["started"] == "2024-02-05"
 
     def test_prose_deadline_is_reported_unparseable_not_absent(self, tmp_path, monkeypatch):
         focus = tmp_path / "FOCUS.md"
         focus.write_text(
-            "## Slot 1: EFN website\n\n- **Started:** 2026-08-17\n"
-            "- **Deadline:** **~26 Aug commitment to the client**; contracted **mid-Sept**.\n\n---\n"
+            "## Slot 1: Mirror recoating\n\n- **Started:** 2024-02-05\n"
+            "- **Deadline:** **~14 Mar, observing run**; booked **mid-Apr**.\n\n---\n"
         )
         monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
         slots = accountability.parse_focus_slots()
-        assert slots[0]["deadline"].startswith("~26 Aug")
+        assert slots[0]["deadline"].startswith("~14 Mar")
         status = accountability.format_deadline_status(slots[0]["deadline"])
-        assert "UNPARSEABLE" in status and "~26 Aug" in status
+        assert "UNPARSEABLE" in status and "~14 Mar" in status
 
 
 # ============================================================================
@@ -553,9 +553,9 @@ _WAITING_LIVE = """# Waiting For
 
 | Item | Waiting On | Since | Last Poked | Next Action If No Response |
 |------|------------|-------|------------|---------------------------|
-| **Spectrograph calibration slot** (`observatory`) | Roster desk | 2024-03-11 | — | Ask again. |
-| **Filter wheel spare part** (`observatory`/optics) | Supplier | 2024-02-19 | 2024-02-26 | Reorder. |
-| **Dome shutter service report** (`observatory`) | Contractor | 2024-03-04 | 2024-03-04 | Escalate. |
+| **Spectrograph slot** (`observatory`) | Roster desk | 2024-03-11 | — | Ask again. |
+| **Filter wheel part** (`observatory`/optics) | Supplier | 2024-02-19 | 2024-02-26 | Reorder. |
+| **Dome shutter report** (`observatory`) | Contractor | 2024-03-04 | 2024-03-04 | Escalate. |
 | ~~Telescope time application~~ (`observatory`) | ~~Panel~~ | 2024-01-15 | — | Granted. |
 | ~~Star catalogue licence~~ | ~~Publisher~~ | ~~2023-11-02~~ | — | Renewed. |
 """
@@ -601,8 +601,8 @@ class TestBannerRendering:
         """
         focus = (
             "# Current Focus\n\n"
-            "## Slot 1: EFN — website content\n\n"
-            "- **Project:** business/efn (slug `efn`)\n\n"
+            "## Slot 1: Mirror recoating — aluminising run\n\n"
+            "- **Project:** observatory/optics (slug `optics`)\n\n"
             "---\n\n"
             "## Slot 3: Grant application\n\n"
             "- **Project:** research/grant\n\n"
@@ -631,8 +631,8 @@ class TestBannerRendering:
         """
         focus = (
             "# Current Focus\n\n"
-            "## Slot 1: EFN — website content\n\n"
-            "- **Project:** business/efn\n\n"
+            "## Slot 1: Mirror recoating — aluminising run\n\n"
+            "- **Project:** observatory/optics\n\n"
             "---\n"
         )
         _stage_task_files(tmp_path, monkeypatch, focus=focus)
@@ -703,8 +703,8 @@ class TestBannerRendering:
         """
         focus = (
             "# Current Focus\n\n"
-            "## Slot 1: EFN — website content\n\n"
-            "- **Project:** business/efn (slug `efn`)\n"
+            "## Slot 1: Mirror recoating — aluminising run\n\n"
+            "- **Project:** observatory/optics (slug `optics`)\n"
             f"- **Rotated in:** {_iso(-21)}, per the dated trigger\n"
             "- **Deadline:** None\n\n"
             "---\n"
@@ -722,7 +722,7 @@ class TestBannerRendering:
         accountability.main()
 
         out = capsys.readouterr().out
-        assert "  Slot 1: EFN — website content (day 22)" in out
+        assert "  Slot 1: Mirror recoating — aluminising run (day 22)" in out
         assert "Inbox: 2 items | Waiting for: 3 items" in out
         assert "  Slot 2: [Empty]" in out
         assert "  Slot 3: [Empty]" in out
