@@ -1220,7 +1220,11 @@ check_interrupted_state() {
             # human's working state: say it is there and move nothing.
             op="bisect"
             abort_cmd="git -C $repo bisect reset"
-            continue_cmd="git -C $repo bisect reset"
+            # No continue_cmd: a bisect has no "--continue", and the
+            # branch below never offers one for it (audit L4, tenth
+            # re-audit — the bisect arm used to set one, so a bisect
+            # that ALSO held unmerged paths was told to "finish it"
+            # with `git bisect reset`, which throws the bisect away).
         fi
     fi
     if [[ -n "$op" ]] && [[ -z "$abort_cmd" ]]; then
@@ -1231,20 +1235,23 @@ check_interrupted_state() {
     unmerged="$(git -C "$repo" status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)"
 
     if [[ -n "$op" ]]; then
-        if [[ -n "$unmerged" ]]; then
+        # audit L4 (tenth re-audit): the bisect arm comes FIRST, whether
+        # or not paths are unmerged. A bisect is a human's working state
+        # in either case, there is no `git bisect --continue` to offer,
+        # and the advice for the other operations ("resolve them and
+        # finish it") is wrong for one.
+        if [[ "$op" == "bisect" ]]; then
+            add_sync_gate_detail \
+                "daily-sync STOPPED: a git bisect is in progress in $repo ($label). That is somebody's working state and this script will not move HEAD out of it. Finish or abandon the bisect ($abort_cmd), then run the sync again."
+        elif [[ -n "$unmerged" ]]; then
             add_sync_gate_detail \
                 "daily-sync STOPPED: a previous run was interrupted mid-$op in $repo ($label), and paths are still unresolved — ${unmerged//$'\n'/, }. Resolve them and finish it ($continue_cmd), or throw the whole operation away ($abort_cmd). Nothing will sync until one or the other is done."
         else
             # audit M3 (eighth re-audit): an operation in progress with
             # NOTHING unresolved is a resolution waiting to be committed.
             # Aborting it discards work somebody has already done.
-            if [[ "$op" == "bisect" ]]; then
-                add_sync_gate_detail \
-                    "daily-sync STOPPED: a git bisect is in progress in $repo ($label). That is somebody's working state and this script will not move HEAD out of it. Finish or abandon the bisect ($abort_cmd), then run the sync again."
-            else
-                add_sync_gate_detail \
-                    "daily-sync STOPPED: a $op is in progress in $repo ($label) with nothing left unresolved — somebody resolved it and did not finish. Complete it: $continue_cmd. Do NOT abort: that would throw away the resolution."
-            fi
+            add_sync_gate_detail \
+                "daily-sync STOPPED: a $op is in progress in $repo ($label) with nothing left unresolved — somebody resolved it and did not finish. Complete it: $continue_cmd. Do NOT abort: that would throw away the resolution."
         fi
         fail "$label: a $op is in progress in $repo"
     fi

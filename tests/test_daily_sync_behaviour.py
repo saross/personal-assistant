@@ -2727,3 +2727,72 @@ class TestParentBranchGuard:
                   / "scripts" / "daily-sync.sh").read_text(encoding="utf-8")
         assert "parent_current_branch" in source
         assert "failed to switch parent repo to main" in source
+
+
+# ============================================================================
+# A bisect is never told to "finish it" (audit L4, tenth re-audit)
+# ============================================================================
+
+
+class TestBisectWithUnmergedPaths:
+    """A bisect holding unmerged paths took the generic arm, which offers
+    `$continue_cmd` — set, for a bisect, to `git bisect reset`. "Resolve
+    them and finish it (git bisect reset)" throws the bisect away."""
+
+    def test_a_bisect_with_unmerged_paths_is_still_named_a_bisect(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills: `continue_cmd="git -C $repo bisect reset"` in the bisect
+        arm, together with the ordering that let the unmerged branch run
+        for a bisect at all."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-bisect")
+        git("stash", "push", "-q", "-m", "a stash", cwd=machine.data)
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
+        assert "<<<<<<<" in machine.memories.read_text(encoding="utf-8")
+        head_before = machine.head("data")
+        (machine.data_git_dir / "BISECT_LOG").write_text("# bisect log\n",
+                                                         encoding="utf-8")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "bisect is in progress" in joined, joined
+        assert "will not move HEAD" in joined, joined
+        assert "finish it" not in joined, (
+            "a bisect was offered a --continue it does not have: " + joined
+        )
+        assert machine.head("data") == head_before
+
+
+# ============================================================================
+# The parent check runs before the parent branch guard
+# ============================================================================
+
+
+class TestParentCheckPrecedesTheBranchGuard:
+    """``check_interrupted_state`` on the parent exists to stop the branch
+    guard moving HEAD out of somebody's working state. Below the guard it
+    would be a report written after the damage."""
+
+    def test_a_parent_bisect_survives_a_feature_branch(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills: moving `check_interrupted_state "$PA_DIR"` below the
+        parent branch guard — `git checkout main` then runs mid-bisect and
+        the branch the human was on is gone."""
+        machine = world.add_machine("a")
+        git("checkout", "-q", "-b", "feature", cwd=machine.pa)
+        (machine.pa / ".git" / "BISECT_LOG").write_text("# bisect log\n",
+                                                        encoding="utf-8")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "bisect is in progress" in joined, joined
+        assert "parent repo" in joined, joined
+        assert machine.branch("parent") == "feature", (
+            "the branch guard checked out main in the middle of a bisect"
+        )
