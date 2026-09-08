@@ -1221,3 +1221,138 @@ class TestR2PushSafety:
         assert result.returncode == 0
         env_text = sandbox.env_log.read_text(encoding="utf-8")
         assert "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=from-ambient" in env_text
+
+
+# ----------------------------------------------------------------------------
+# ART5 — search-archives-safe.sh: the limits and the single-run lock
+# ----------------------------------------------------------------------------
+
+
+SEARCH_ARCHIVES_SCRIPT = REPO_ROOT / "scripts" / "search-archives-safe.sh"
+SCAN_ENGINE_SCRIPT = REPO_ROOT / "scripts" / "_scan_archives.py"
+
+
+class TestSearchArchivesSafety:
+    """The wrapper written after the 2026-06-21 machine lock-up.
+
+    Its whole job is the OS-level safety around the scan: nice, ionice, a
+    hard timeout, and a non-blocking lock so a second search refuses instead
+    of stacking (the amplifier that turned one bad pipeline into a frozen
+    desktop). Both were removable with the full suite green.
+
+    TMPDIR is pinned into the test tree so the lock file cannot collide with
+    a concurrent suite run or with the operator's own search.
+    """
+
+    @pytest.fixture()
+    def sandbox(self, tmp_path: Path):
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        script = pa_dir / "scripts" / "search-archives-safe.sh"
+        script.symlink_to(SEARCH_ARCHIVES_SCRIPT)
+        (pa_dir / "scripts" / "_scan_archives.py").symlink_to(
+            SCAN_ENGINE_SCRIPT
+        )
+
+        archive = tmp_path / "cc-archives" / "lantern-survey" / "2026-03-02_a"
+        archive.mkdir(parents=True)
+        import gzip as _gzip
+        with _gzip.open(archive / "session.jsonl.gz", "wb") as handle:
+            handle.write(
+                b'{"type":"user","message":{"role":"user",'
+                b'"content":"the LANTERN pattern"}}\n'
+            )
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        return SimpleNamespace(
+            script=script, archive_root=tmp_path / "cc-archives",
+            home=tmp_path / "home", tmpdir=run_dir, tmp_path=tmp_path,
+        )
+
+    def _env(self, sandbox, **extra) -> dict[str, str]:
+        env = {
+            "TMPDIR": str(sandbox.tmpdir),
+            "SAS_NO_CGROUP": "1",
+            "SAS_TIMEOUT": "30",
+        }
+        env.update(extra)
+        return env
+
+    def test_a_normal_search_reports_path_and_line_number(
+        self, sandbox
+    ) -> None:
+        sandbox.home.mkdir()
+        result = _run_script(
+            sandbox.script, "LANTERN", str(sandbox.archive_root),
+            home=sandbox.home, extra_env=self._env(sandbox),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert ":1:" in result.stdout, result.stdout
+
+    def test_a_second_search_refuses_while_the_lock_is_held(
+        self, sandbox
+    ) -> None:
+        """Exit 3 and REFUSED, not a queued second scan."""
+        sandbox.home.mkdir()
+        lock_path = sandbox.tmpdir / "cc-archive-search.lock"
+        with open(lock_path, "w", encoding="utf-8") as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                result = _run_script(
+                    sandbox.script, "LANTERN", str(sandbox.archive_root),
+                    home=sandbox.home, extra_env=self._env(sandbox),
+                )
+            finally:
+                fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "REFUSED" in result.stderr
+
+    def test_the_resource_limits_reach_the_executed_command(
+        self, sandbox
+    ) -> None:
+        """nice, ionice, and timeout must be in the argv that actually runs."""
+        sandbox.home.mkdir()
+        bin_dir = sandbox.tmp_path / "bin"
+        bin_dir.mkdir()
+        argv_log = sandbox.tmp_path / "limit-argv.txt"
+        stub = bin_dir / "nice"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$0" "$@" > {argv_log}\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        result = _run_script(
+            sandbox.script, "LANTERN", str(sandbox.archive_root),
+            home=sandbox.home,
+            extra_env=self._env(
+                sandbox, PATH=f"{bin_dir}:{os.environ['PATH']}"
+            ),
+        )
+
+        assert argv_log.exists(), (
+            "the scan ran without the nice/ionice/timeout wrapper: "
+            + result.stdout + result.stderr
+        )
+        argv = argv_log.read_text(encoding="utf-8").split("\n")
+        assert argv[1:3] == ["-n", "19"]
+        assert "ionice" in argv
+        assert "timeout" in argv
+        assert "30" in argv, "the wall-clock kill was not passed through"
+        assert any(a.endswith("_scan_archives.py") for a in argv)
+
+    def test_a_missing_search_path_exits_two(self, sandbox) -> None:
+        """A bad invocation must never look like 'no matches'."""
+        sandbox.home.mkdir()
+        result = _run_script(
+            sandbox.script, "LANTERN", str(sandbox.tmp_path / "absent"),
+            home=sandbox.home, extra_env=self._env(sandbox),
+        )
+
+        assert result.returncode == 2
+        assert "path not found" in result.stderr
