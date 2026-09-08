@@ -23,6 +23,7 @@ import importlib
 import json
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -86,13 +87,17 @@ class Pipeline:
         bulk_archive.cmd_discover(args, LOGGER)
         return json.loads(self.manifest.read_text(encoding="utf-8"))
 
-    def archive(self, *, dry_run: bool = False, limit: int = 0) -> None:
+    def archive(
+        self, *, dry_run: bool = False, limit: int = 0,
+        retry_failed: bool = False,
+    ) -> None:
         """Run ``archive`` over whatever the manifest currently holds."""
         args = argparse.Namespace(
             mode="archive",
             source_root=self.raw_root,
             dry_run=dry_run,
             limit=limit,
+            retry_failed=retry_failed,
             min_turns=0,
             min_content_tokens=0,
             min_content_chars=bulk_archive.MIN_CONTENT_CHARS,
@@ -164,27 +169,60 @@ class TestCompletenessGuard:
 
         assert [entry["session_id"] for entry in manifest] == [SID_B]
 
-    def test_archive_skips_a_transcript_that_grew_since_discovery(
+    def test_archive_skips_a_transcript_that_grew_and_is_still_live(
         self, pipeline: Pipeline
     ) -> None:
-        """The window between the two commands is where the prefix slips in."""
+        """The window between the two commands is where the prefix slips in.
+
+        Growth plus a fresh mtime is the dangerous combination: the session
+        resumed and may still be appending, so any copy is a prefix.
+        """
         source = pipeline.add_session(SID_A)
         manifest = pipeline.discover()
         assert [entry["session_id"] for entry in manifest] == [SID_A]
 
-        # The session resumed: more prose arrived after discovery ran.
+        # The session resumed after discovery and is writing right now.
         with source.open("a", encoding="utf-8") as handle:
             for record in substantive_records(SID_A, turns=1):
                 handle.write(json.dumps(record) + "\n")
-        age_file(source, hours=96)
+        age_file(source, hours=0.1)
 
         pipeline.archive()
 
         assert pipeline.entries() == [], (
-            "a transcript that changed after discovery was archived anyway; "
+            "a transcript that was still being written was archived anyway; "
             "the copy is a prefix and the archive now calls it complete"
         )
         assert pipeline.checkpoint_state()["archived_ids"] == []
+
+    def test_a_grown_but_quiescent_transcript_is_archived_in_full(
+        self, pipeline: Pipeline
+    ) -> None:
+        """A stale manifest is not evidence that the file is moving.
+
+        Discovery already skipped anything inside the grace window, so a
+        manifested session was quiescent when listed. If it is quiescent
+        again now, a size difference says the manifest is out of date — and
+        refusing on it made the refusal permanent, because the manifest kept
+        the old size (round 4c-2, finding 1).
+        """
+        source = pipeline.add_session(SID_A)
+        pipeline.discover()
+        with source.open("a", encoding="utf-8") as handle:
+            for record in substantive_records(SID_A, turns=1):
+                handle.write(json.dumps(record) + "\n")
+        age_file(source, hours=96)
+        expected = source.read_text(encoding="utf-8")
+
+        pipeline.archive()
+
+        entries = pipeline.entries()
+        assert len(entries) == 1
+        with gzip.open(entries[0] / "session.jsonl.gz", "rt", encoding="utf-8") as fh:
+            assert fh.read() == expected, (
+                "the archive holds the prefix discovery saw, not the whole "
+                "transcript"
+            )
 
     def test_archive_skips_a_transcript_still_inside_the_grace_window(
         self, pipeline: Pipeline
@@ -805,7 +843,10 @@ class TestArchiveCommandContract:
         state = pipeline.checkpoint_state()
         assert state["archived_ids"] == [SID_B]
         assert SID_A in state["failed_ids"]
-        assert "synthetic archive failure" in state["failed_ids"][SID_A]
+        record = state["failed_ids"][SID_A]
+        assert "synthetic archive failure" in record["reason"]
+        # A timestamp, so the entry can age out instead of blocking forever.
+        assert record["recorded_at"]
 
     def test_a_keyboard_interrupt_is_not_swallowed(
         self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
@@ -1019,3 +1060,166 @@ class TestUserMessageSampling:
             "the final user messages were dropped from the sample"
         )
         assert any("number 0" in message for message in sampled)
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-2 finding 1 — a recorded failure must not be permanent
+# ---------------------------------------------------------------------------
+
+
+class TestFailedIdsAreRetried:
+    """A failure is a moment, not a verdict.
+
+    The to_archive filter skips anything in failed_ids, and AR12's self-heal
+    pruned archived_ids against disk but left failed_ids untouched. So AR3
+    traded "silently truncated" for "permanently unarchivable": a session
+    that grew during a copy, or a failure entry synced from the other
+    machine, blocked archiving here on every future run while the drift gate
+    reported it forever.
+    """
+
+    def _checkpoint(self, pipeline: Pipeline, failed: dict) -> None:
+        pipeline.checkpoint.write_text(json.dumps({
+            "started_at": "2026-03-01T00:00:00+00:00",
+            "updated_at": "2026-03-01T00:00:00+00:00",
+            "archived_ids": [],
+            "skipped_trivial_ids": [],
+            "failed_ids": failed,
+            "stats": {
+                "total_archived": 0, "total_subagents": 0,
+                "total_compressed_bytes": 0,
+            },
+        }), encoding="utf-8")
+
+    def test_a_grown_then_stable_session_archives_on_the_second_run(
+        self, pipeline: Pipeline
+    ) -> None:
+        """No flags, no re-discovery: the retry is automatic."""
+        source = pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        # First run: the session is live again, so the guard refuses.
+        with source.open("a", encoding="utf-8") as handle:
+            for record in substantive_records(SID_A, turns=1):
+                handle.write(json.dumps(record) + "\n")
+        age_file(source, hours=0.1)
+        pipeline.archive()
+        assert pipeline.entries() == []
+
+        # Second run: the session has been quiet for days.
+        age_file(source, hours=96)
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1, (
+            "a session refused once was never retried"
+        )
+        assert pipeline.checkpoint_state()["archived_ids"] == [SID_A]
+
+    def test_a_transient_failure_is_retried_without_flags(
+        self, pipeline: Pipeline
+    ) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "source changed DURING the copy (10 -> 20 bytes)",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+        assert pipeline.checkpoint_state()["failed_ids"] == {}
+
+    def test_a_failure_for_a_session_now_on_disk_is_dropped(
+        self, pipeline: Pipeline
+    ) -> None:
+        """The record is simply wrong; some other path archived it."""
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "disk full",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        pipeline.archive()
+
+        assert SID_A not in pipeline.checkpoint_state()["failed_ids"]
+
+    def test_an_aged_failure_is_retried(self, pipeline: Pipeline) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        old = datetime.now(timezone.utc) - timedelta(
+            days=bulk_archive.FAILED_RETRY_AFTER_DAYS + 1
+        )
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "no space left on device",
+            "recorded_at": old.isoformat(),
+        }})
+
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+
+    def test_a_recent_hard_failure_still_blocks(
+        self, pipeline: Pipeline
+    ) -> None:
+        """The retry must not become "ignore failures entirely"."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "no space left on device",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        pipeline.archive()
+
+        assert pipeline.entries() == []
+        assert SID_A in pipeline.checkpoint_state()["failed_ids"]
+
+    def test_retry_failed_clears_even_a_recent_hard_failure(
+        self, pipeline: Pipeline
+    ) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "no space left on device",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        pipeline.archive(retry_failed=True)
+
+        assert len(pipeline.entries()) == 1
+
+    def test_a_legacy_bare_string_failure_is_retried_once(
+        self, pipeline: Pipeline
+    ) -> None:
+        """Entries written before this change carry no timestamp to age."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: "archive_session returned None"})
+
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+
+    def test_the_retry_decision_is_made_in_memory_not_by_the_rewrite(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The selection must use the pruned set, not the file it wrote.
+
+        With the checkpoint write suppressed, a run that still archives the
+        session proves ``already_failed`` itself was pruned — rather than the
+        skip being lifted as a side effect of rewriting failed_ids to disk.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "source changed DURING the copy (10 -> 20 bytes)",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+        monkeypatch.setattr(bulk_archive, "_save_checkpoint", lambda cp: None)
+
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1

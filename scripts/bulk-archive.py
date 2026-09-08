@@ -851,6 +851,102 @@ def _load_checkpoint() -> dict[str, Any]:
     }
 
 
+#: A failed_ids entry older than this is retried automatically. Failures are
+#: overwhelmingly environmental (a full disk, an unmounted store, a session
+#: that was live at the time); keeping one forever turns a transient problem
+#: into a permanently unarchivable session (audit round 4c-2, finding 1).
+FAILED_RETRY_AFTER_DAYS = 7
+
+#: Substrings of a recorded failure reason that mean "try again next run".
+#: These describe the state of the SOURCE at one moment, not a defect in the
+#: session, so the next run is entitled to a different answer.
+_TRANSIENT_FAILURE_MARKERS = (
+    "size changed since discovery",
+    "source changed DURING the copy",
+    "grace window",
+    "source transcript unreadable",
+)
+
+
+def _record_failure(
+    checkpoint: dict[str, Any], session_id: str, reason: str
+) -> None:
+    """Record a per-session failure with the time it happened.
+
+    Stored as ``{"reason": ..., "recorded_at": ...}``. The legacy bare-string
+    form is still read (see :func:`_partition_failed_ids`); without a
+    timestamp there is no way to expire an entry, which is half of why a
+    failure used to be permanent.
+    """
+    checkpoint["failed_ids"][session_id] = {
+        "reason": reason,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _failure_reason(entry: Any) -> str:
+    """Return the reason text from either checkpoint failure shape."""
+    if isinstance(entry, dict):
+        return str(entry.get("reason", ""))
+    return str(entry)
+
+
+def _partition_failed_ids(
+    failed: dict[str, Any],
+    on_disk: set[str],
+    *,
+    retry_all: bool = False,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Split ``failed_ids`` into (still binding, retried) with reasons.
+
+    A failure is retried when any of these holds:
+
+    * the session is on this machine's disk after all — some other path
+      archived it, so the record is simply wrong;
+    * the recorded reason describes a moment rather than a defect (the source
+      was growing, was in grace, was briefly unreadable);
+    * the entry has aged past :data:`FAILED_RETRY_AFTER_DAYS`, or carries no
+      timestamp at all (the legacy shape, which cannot be aged);
+    * ``--retry-failed`` was passed.
+
+    Everything else still blocks, so a genuinely broken session does not cost
+    a full re-run every night.
+    """
+    moment = now or datetime.now(timezone.utc)
+    binding: dict[str, Any] = {}
+    retried: dict[str, str] = {}
+    for session_id, entry in failed.items():
+        reason = _failure_reason(entry)
+        if retry_all:
+            retried[session_id] = "--retry-failed"
+            continue
+        if session_id in on_disk:
+            retried[session_id] = "already archived on this machine"
+            continue
+        if any(marker in reason for marker in _TRANSIENT_FAILURE_MARKERS):
+            retried[session_id] = f"transient failure ({reason[:60]})"
+            continue
+        recorded_at = entry.get("recorded_at") if isinstance(entry, dict) else None
+        if not recorded_at:
+            retried[session_id] = "no timestamp (legacy entry) — retrying once"
+            continue
+        try:
+            when = datetime.fromisoformat(recorded_at)
+        except ValueError:
+            retried[session_id] = "unparseable timestamp — retrying once"
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if (moment - when).days >= FAILED_RETRY_AFTER_DAYS:
+            retried[session_id] = (
+                f"failure is older than {FAILED_RETRY_AFTER_DAYS} days"
+            )
+            continue
+        binding[session_id] = entry
+    return binding, retried
+
+
 def _save_checkpoint(checkpoint: dict[str, Any]) -> None:
     """Persist the checkpoint to disk."""
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1211,13 +1307,22 @@ def refuse_incomplete_source(
     archive it IS the session, with every integrity check reporting clean,
     because until now every check compared the archive against itself.
 
-    Three refusals, cheapest first:
+    Two refusals:
 
     * the transcript has gone (moved, or the machine's store was cleaned);
     * it was last written inside the grace window, so a live session or an
-      in-flight compaction may still be appending;
-    * its size differs from the size discovery recorded, which means it grew
-      (or was rewritten) between the two commands.
+      in-flight compaction may still be appending.
+
+    A size that differs from the one discovery recorded is deliberately NOT a
+    refusal. Discovery already skipped anything inside the grace window, so a
+    manifested session was quiescent when it was listed; if it is quiescent
+    again now, the difference says the manifest is stale, not that the file
+    is moving. Refusing on it made the mismatch permanent — the manifest kept
+    the old size, so every later run refused for the same reason and the
+    session could never be archived without re-running discover (audit round
+    4c-2, finding 1). The caller refreshes the recorded size and says so.
+    What still protects the copy is the pair of checks about NOW: the grace
+    window above, and the before/after comparison around the copy itself.
     """
     try:
         stat = session_path.stat()
@@ -1229,9 +1334,10 @@ def refuse_incomplete_source(
             "(may still be growing)"
         )
     if expected_size is not None and stat.st_size != expected_size:
-        return (
-            f"size changed since discovery ({expected_size} -> "
-            f"{stat.st_size} bytes) — re-run discover"
+        logger.warning(
+            "%s: manifest records %d bytes, source now holds %d and is out "
+            "of the grace window — archiving the current content",
+            session_path.name, expected_size, stat.st_size,
         )
     logger.debug(
         "Completeness guard passed for %s (%d bytes)",
@@ -1299,7 +1405,30 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         )
         checkpoint["archived_ids"] = sorted(already_done)
         _save_checkpoint(checkpoint)
-    already_failed = set(checkpoint["failed_ids"].keys())
+
+    # The same self-heal for failed_ids. Without it AR3 traded one defect for
+    # a worse one: a session that was growing during a copy is recorded as
+    # failed, the to_archive filter below skips it on every subsequent run,
+    # and the drift gate reports it forever — silently truncated became
+    # permanently unarchivable (audit round 4c-2, finding 1). A failure
+    # entry synced from the other machine blocked archiving here in exactly
+    # the same way.
+    binding_failures, retried_failures = _partition_failed_ids(
+        dict(checkpoint["failed_ids"]),
+        on_disk,
+        retry_all=getattr(args, "retry_failed", False),
+    )
+    if retried_failures:
+        logger.info(
+            "Retrying %d previously failed session(s):", len(retried_failures)
+        )
+        for session_id, why in sorted(retried_failures.items())[:10]:
+            logger.info("  %s — %s", session_id[:8], why)
+        if len(retried_failures) > 10:
+            logger.info("  … and %d more", len(retried_failures) - 10)
+        checkpoint["failed_ids"] = binding_failures
+        _save_checkpoint(checkpoint)
+    already_failed = set(binding_failures)
 
     # Apply limit
     to_archive = [
@@ -1393,7 +1522,9 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
 
             if metadata is None:
                 # archive_session returns None on skip (dry_run or error)
-                checkpoint["failed_ids"][session_id] = "archive_session returned None"
+                _record_failure(
+                    checkpoint, session_id, "archive_session returned None"
+                )
                 _save_checkpoint(checkpoint)
                 continue
 
@@ -1434,7 +1565,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                     f"{archive_dir_str} may be truncated — re-archive"
                 )
                 logger.error("%s (%s): %s", session_id[:8], project_name, reason)
-                checkpoint["failed_ids"][session_id] = reason
+                _record_failure(checkpoint, session_id, reason)
                 _save_checkpoint(checkpoint)
                 continue
 
@@ -1454,7 +1585,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                 "Failed to archive %s (%s): %s",
                 session_id[:8], project_name, exc,
             )
-            checkpoint["failed_ids"][session_id] = str(exc)
+            _record_failure(checkpoint, session_id, str(exc))
             _save_checkpoint(checkpoint)
 
     relocate_to_legacy_precedent(
@@ -2747,6 +2878,15 @@ def main() -> None:
         "archive", help="Compress and archive sessions"
     )
     p_archive.add_argument("--dry-run", action="store_true")
+    p_archive.add_argument(
+        "--retry-failed", action="store_true",
+        help=(
+            "Clear every recorded failure and try all of them again. Rarely "
+            "needed: failures whose reason was transient, whose session is "
+            f"now on disk, or which are older than {FAILED_RETRY_AFTER_DAYS} "
+            "days are retried automatically."
+        ),
+    )
     p_archive.add_argument(
         "--force", action="store_true",
         help=(
