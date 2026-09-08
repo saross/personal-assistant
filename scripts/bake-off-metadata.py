@@ -1772,17 +1772,25 @@ def main(argv: list[str] | None = None) -> int:
         required=False,
         help="Which provider adapter to exercise (omit for --build-rubric).",
     )
+    # --manifest and --prompt are NOT required at the parser level: the
+    # retrieval path (--haiku-apply) reads neither, and demanding them there
+    # made the recovery line this script prints un-runnable as printed. The
+    # modes that do need them check for them explicitly, below.
     parser.add_argument(
         "--manifest",
-        required=True,
         type=Path,
-        help="Path to the sample manifest JSON.",
+        help=(
+            "Path to the sample manifest JSON. Required for a dry run, a "
+            "live run, and --build-rubric; unused by --haiku-apply."
+        ),
     )
     parser.add_argument(
         "--prompt",
-        required=True,
         type=Path,
-        help="Path to the prompt markdown file.",
+        help=(
+            "Path to the prompt markdown file. Required for a dry run, a "
+            "live run, and --build-rubric; unused by --haiku-apply."
+        ),
     )
     parser.add_argument(
         "--out-dir",
@@ -1864,6 +1872,12 @@ def main(argv: list[str] | None = None) -> int:
         if not (args.rubric_in and args.rubric_out):
             print("--build-rubric requires --rubric-in and --rubric-out")
             return 2
+        if not (args.manifest and args.prompt):
+            print(
+                "--build-rubric requires --manifest and --prompt",
+                file=sys.stderr,
+            )
+            return 2
         try:
             build_rubric(
                 args.manifest, args.prompt, args.out_dir,
@@ -1908,6 +1922,14 @@ def main(argv: list[str] | None = None) -> int:
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
         haiku_apply(args.haiku_apply, target_dir, force=args.force)
         return 0
+
+    if not (args.manifest and args.prompt):
+        print(
+            f"--provider {args.provider} requires --manifest and --prompt "
+            "(only --haiku-apply runs without them)",
+            file=sys.stderr,
+        )
+        return 2
 
     requests = assemble_requests(args.manifest, args.prompt)
     if not requests:

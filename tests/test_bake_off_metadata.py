@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shlex
 import socket
 import sys
 from datetime import datetime
@@ -1108,6 +1109,79 @@ class TestBatchSubmitIsNotRepeatable:
         assert line == "[haiku] retrieve with: " + self._expected_retrieve_command(
             "batch_001", out_dir
         )
+
+    def test_the_emitted_line_actually_runs(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """Execute the recovery line rather than matching a string.
+
+        The three equality tests above compare against a hand-written
+        expectation, so they pinned a line that could not be run: --manifest
+        and --prompt used to be required at the parser level, and feeding
+        the printed command back in exited 2 with "the following arguments
+        are required". This test splits the emitted line and hands the real
+        argument vector to main(), which must reach the retrieval path.
+        """
+        manifest = _one_session_manifest(tmp_path, "roundtrip-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        line = next(
+            line for line in capsys.readouterr().out.splitlines()
+            if line.startswith("[haiku] retrieve with: ")
+        )
+        command = shlex.split(line[len("[haiku] retrieve with: "):])
+        assert command[0].endswith("python3")
+        assert command[1].endswith("bake-off-metadata.py")
+
+        # The batch comes back with the one session it carried.
+        submit_stub.results = [
+            self._succeeded(
+                bom.build_custom_id("roundtrip-aaaa-1111"), fx.RESPONSE_BARE
+            )
+        ]
+        assert bom.main(command[2:]) == 0
+        written = out_dir / "haiku" / "roundtrip-aaaa-1111.json"
+        assert json.loads(written.read_text()) == fx.RESPONSE_OBJECT
+
+    def test_apply_needs_neither_manifest_nor_prompt(
+        self, tmp_path, submit_stub
+    ):
+        """The retrieval path reads neither, so it must not demand them."""
+        manifest = _one_session_manifest(tmp_path, "noargs-aaaa-1111")
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, _prompt_file(tmp_path), out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(
+                bom.build_custom_id("noargs-aaaa-1111"), fx.RESPONSE_BARE
+            )
+        ]
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
+        ]) == 0
+        assert (out_dir / "haiku" / "noargs-aaaa-1111.json").exists()
+
+    def test_a_live_run_still_demands_manifest_and_prompt(self, tmp_path, capsys):
+        """Relaxing the parser must not let a billed run start without them."""
+        code = bom.main([
+            "--provider", "gemini",
+            "--out-dir", str(tmp_path / "out"),
+            "--yes",
+        ])
+        assert code == 2
+        assert "requires --manifest and --prompt" in capsys.readouterr().err
+
+    def test_build_rubric_still_demands_manifest_and_prompt(self, tmp_path, capsys):
+        code = bom.main([
+            "--build-rubric",
+            "--out-dir", str(tmp_path / "out"),
+            "--rubric-in", str(tmp_path / "in.md"),
+            "--rubric-out", str(tmp_path / "out.md"),
+        ])
+        assert code == 2
+        assert "requires --manifest and --prompt" in capsys.readouterr().err
 
     def test_the_refusal_repeats_that_exact_line(
         self, tmp_path, capsys, submit_stub
