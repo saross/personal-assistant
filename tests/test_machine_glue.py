@@ -413,7 +413,11 @@ class TestSubmoduleUpdateIsGated:
     def test_uninitialised_submodule_is_initialised(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """"-" means no checkout: this is the case the step exists for."""
+        """"-" plus an EMPTY data/ is the case the step exists for."""
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
         _run_sync(
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
@@ -421,20 +425,111 @@ class TestSubmoduleUpdateIsGated:
         recorded = sync_sandbox["log"].read_text(encoding="utf-8")
         assert "git submodule update --init --recursive --quiet" in recorded
 
-    def test_a_stray_file_in_data_does_not_suppress_the_init(
+    def test_a_non_empty_data_reports_rather_than_attempting_the_init(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """The bug the emptiness test had: one stray file blocked bootstrap."""
+        """Round 4d-3 reverses round 4d-2's rule here, and says why.
+
+        Round 4d-2 asserted that a stray file in ``data/`` must not
+        suppress the init. Verified against a throwaway superproject, git
+        refuses to clone into a non-empty directory — "destination path
+        already exists and is not an empty directory" — so that init
+        could only ever fail, and under ``set -e`` it aborted the whole
+        run at step 1. Saying plainly what a human has to clear is the
+        useful behaviour.
+        """
         (sync_sandbox["pa_dir"] / "data" / "README-left-behind.md").write_text(
-            "a stray file in an uninitialised submodule\\n", encoding="utf-8"
+            "a stray file in an uninitialised submodule\n", encoding="utf-8"
         )
 
-        _run_sync(
+        result = _run_sync(
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
 
-        recorded = sync_sandbox["log"].read_text(encoding="utf-8")
-        assert "git submodule update --init --recursive --quiet" in recorded
+        assert result.returncode == 0, result.stderr
+        assert "uninitialised but not empty" in result.stdout
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_linked_worktree_never_initialises_data(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """M1/M2 — a worktree's data/ belongs to the main checkout.
+
+        A linked worktree carries a ``.git`` FILE rather than a directory,
+        holds stub directories under ``data/``, and reports the submodule
+        uninitialised. Round 4d-2 sent exactly that state into an init
+        that git refuses.
+        """
+        (sync_sandbox["pa_dir"] / ".git").write_text(
+            "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
+        )
+
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "belongs to the main checkout" in result.stdout
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_allow_worktree_completes_all_eight_steps(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The escape hatch has to actually work, stub dirs and all.
+
+        Reproduces M1: a worktree of this repository, ``data/`` holding
+        empty stub directories, ``git submodule status`` reporting "-",
+        and ``--allow-worktree`` given. Before this round the run exited 1
+        at step 1 and ~/.claude was never created.
+        """
+        (sync_sandbox["home"] / "personal-assistant").mkdir()
+        (sync_sandbox["pa_dir"] / ".git").write_text(
+            "gitdir: /elsewhere/.git/worktrees/synthetic\n", encoding="utf-8"
+        )
+        for stub in ("memories", "tasks", "logs"):
+            (sync_sandbox["pa_dir"] / "data" / stub).mkdir()
+
+        result = _run_sync(
+            sync_sandbox,
+            "--allow-worktree",
+            submodule_status="-1234abcd data",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "[8/8]" in result.stdout, result.stdout
+        claude = sync_sandbox["home"] / ".claude"
+        assert (claude / "settings.json").is_symlink()
+        assert (claude / "commands" / "fossick.md").is_symlink()
+        assert (claude / "skills" / "tally-sherds").is_symlink()
+        assert (claude / "agents" / "trench-scribe.md").is_symlink()
+        assert (claude / "output-styles" / "terse.md").is_symlink()
+        assert (claude / "CLAUDE.md").is_file()
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_submodule_line_is_future_tense_under_dry_run(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """"Submodule ready." read as done work in a preview."""
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+
+        # Step 7 legitimately fails here: with data/ genuinely empty the
+        # composer has no local source, which is the correct outcome for
+        # an uninitialised submodule. Step 1's narration is what is under
+        # test, and it has already been emitted.
+        assert "would have the submodule ready" in result.stdout
+        assert "Submodule ready." not in result.stdout
 
     def test_no_submodule_declared_is_a_no_op(
         self, sync_sandbox: dict[str, Path]
@@ -446,7 +541,6 @@ class TestSubmoduleUpdateIsGated:
         assert "submodule update" not in sync_sandbox["log"].read_text(
             encoding="utf-8"
         )
-
 
 class TestSyncSymlinksRefusesFromAWorktree:
     """Round 4d-2 — steps 2-6 relink the LIVE ~/.claude before step 7 dies.
