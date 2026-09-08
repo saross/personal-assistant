@@ -29,6 +29,7 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -830,6 +831,101 @@ class TestEnvFingerprintRequiresASalt:
 
         assert a.stdout != b.stdout
 
+
+class TestTheSaltNeverReachesArgv:
+    """C2 — /proc/<pid>/cmdline is world-readable; environ is not."""
+
+    @staticmethod
+    def _argv_recording_python(bin_dir: Path, log: Path) -> None:
+        """Shadow python3 with a wrapper that logs argv, then execs the real one."""
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        wrapper = bin_dir / "python3"
+        wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n'
+            f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+    def test_the_salt_is_not_in_the_child_process_argv(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """The interpreter is invoked without the secret on its command line."""
+        home = tmp_path / "home"
+        home.mkdir()
+        bin_dir = tmp_path / "pybin"
+        argv_log = tmp_path / "argv.log"
+        argv_log.write_text("", encoding="utf-8")
+        self._argv_recording_python(bin_dir, argv_log)
+
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+        env["ENV_FINGERPRINT_SALT"] = "salt-canary-argv-7e11"
+        result = subprocess.run(
+            ["bash", str(ENV_FINGERPRINT), str(synthetic_env)],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(home),
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr
+        recorded = argv_log.read_text(encoding="utf-8")
+        assert recorded.strip(), "the wrapper never ran"
+        assert "salt-canary-argv-7e11" not in recorded, recorded
+
+    def test_a_whitespace_only_salt_is_refused(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """"   " is not a salt; it passed the old emptiness test."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(synthetic_env, home, salt="   \t ")
+
+        assert result.returncode == 2
+        assert "ENV_FINGERPRINT_SALT" in result.stderr
+
+    def test_surrounding_whitespace_does_not_change_the_digest(
+        self, tmp_path: Path
+    ) -> None:
+        """A salt pasted with a trailing newline still matches its twin."""
+        home = tmp_path / "home"
+        home.mkdir()
+        env_file = tmp_path / "one.env"
+        env_file.write_text("SYNTHETIC_ONE=shared-value\n", encoding="utf-8")
+
+        tidy = _run_fingerprint(env_file, home, salt="shared-salt")
+        padded = _run_fingerprint(env_file, home, salt="  shared-salt\n")
+
+        assert tidy.returncode == 0 and padded.returncode == 0
+        assert tidy.stdout.splitlines()[-3:] == (
+            padded.stdout.splitlines()[-3:]
+        )
+
+    def test_the_documented_example_keeps_the_salt_off_the_command_line(
+        self,
+    ) -> None:
+        """Both the script header and the reference page must say so."""
+        header = ENV_FINGERPRINT.read_text(encoding="utf-8")
+        doc = (
+            REPO_ROOT / "wiki" / "docs" / "env-cross-machine-reference.md"
+        ).read_text(encoding="utf-8")
+        # Only the RUNNABLE examples: the page also quotes the old, unsafe
+        # form in prose to explain why it was withdrawn.
+        runnable = "\n".join(
+            block.split("\n", 1)[1]
+            for block in doc.split("```bash")[1:]
+        ).split("```")[0]
+        for text in (header, runnable):
+            assert "ENV_FINGERPRINT_SALT='$" not in text, (
+                "an example still puts the salt on a command line"
+            )
+        assert "printf 'export ENV_FINGERPRINT_SALT=%q" in runnable
+        assert "| ssh amd-tower 'bash -s'" in runnable
 
 class TestEnvFingerprintParsing:
     """Quotes, `export`, and the duplicate-key warning."""

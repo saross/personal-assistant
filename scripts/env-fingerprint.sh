@@ -28,16 +28,22 @@
 #
 # Usage
 # -----
-#   ENV_FINGERPRINT_SALT=<shared secret> scripts/env-fingerprint.sh \
-#       [path-to-env-file]
+#   read -rs ENV_FINGERPRINT_SALT; export ENV_FINGERPRINT_SALT
+#   scripts/env-fingerprint.sh [path-to-env-file]
 #
-# Defaults to ~/personal-assistant/.env. To compare two machines (use the
-# SAME salt on both, passed out of band, and keep it out of shell history):
+# Defaults to ~/personal-assistant/.env. To compare two machines, use the
+# SAME salt on both. Never put it on a command line — local or remote:
+# /proc/<pid>/cmdline is world-readable, so anyone with an account on the
+# box can read it while the process lives, and a shell command line also
+# lands in history. Send it down the remote shell's STDIN instead, ahead
+# of the script itself:
 #
 #   read -rs ENV_FINGERPRINT_SALT; export ENV_FINGERPRINT_SALT
 #   scripts/env-fingerprint.sh > /tmp/local.txt
-#   ssh other-host "ENV_FINGERPRINT_SALT='$ENV_FINGERPRINT_SALT' bash -s" \
-#       < scripts/env-fingerprint.sh > /tmp/remote.txt
+#   {
+#       printf 'export ENV_FINGERPRINT_SALT=%q\n' "$ENV_FINGERPRINT_SALT"
+#       cat scripts/env-fingerprint.sh
+#   } | ssh other-host 'bash -s' > /tmp/remote.txt
 #
 # then diff the three categories separately — keys only in A, keys only in B,
 # and keys in both whose hashes differ. **The third is the one that matters**
@@ -66,12 +72,25 @@ ENV_FILE="${1:-${HOME}/personal-assistant/.env}"
 # back to a default: a public default silently makes every fingerprint below
 # reversible, and a refusal is the only way the operator finds that out.
 # The value itself is never echoed.
-if [[ -z "${ENV_FINGERPRINT_SALT:-}" ]]; then
+#
+# Leading and trailing whitespace is stripped before use (round 4d-2, C2):
+# a salt pasted with a trailing newline or space would otherwise fingerprint
+# every value differently from the other machine's — reporting a
+# whole-file mismatch that is not there — and a salt that was ONLY
+# whitespace passed the emptiness test while protecting nothing.
+SALT="${ENV_FINGERPRINT_SALT:-}"
+SALT="${SALT#"${SALT%%[![:space:]]*}"}"
+SALT="${SALT%"${SALT##*[![:space:]]}"}"
+if [[ -z "$SALT" ]]; then
     echo "ERROR: ENV_FINGERPRINT_SALT is required (a private salt shared" >&2
     echo "  out of band with the machine you are comparing against)." >&2
     exit 2
 fi
-SALT="${ENV_FINGERPRINT_SALT}"
+# Handed to the child through the ENVIRONMENT, never through argv
+# (round 4d-2, C2): /proc/<pid>/cmdline is world-readable, so a salt on a
+# command line is readable by every account on the machine for as long as
+# the process lives, whereas /proc/<pid>/environ is owner-only.
+export ENV_FINGERPRINT_SALT="$SALT"
 
 echo "### host: $(hostname)"
 
@@ -88,15 +107,19 @@ echo "### stat:  $(stat -c 'bytes=%s mode=%a owner=%U mtime=%y' "${ENV_FILE}")"
 echo "### lines: $(wc -l < "${ENV_FILE}")"
 echo "### ---"
 
-python3 - "${ENV_FILE}" "${SALT}" <<'PY'
+python3 - "${ENV_FILE}" <<'PY'
 """Fingerprint each assignment in a .env file without emitting values."""
 import hashlib
+import os
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 
-env_path, salt = Path(sys.argv[1]), sys.argv[2]
+# The salt arrives in the environment, not in argv: /proc/<pid>/cmdline is
+# world-readable and /proc/<pid>/environ is not (round 4d-2, C2).
+env_path = Path(sys.argv[1])
+salt = os.environ["ENV_FINGERPRINT_SALT"]
 
 # Accept an optional leading `export`, then KEY=VALUE. Comments and blanks
 # fall through unmatched.
