@@ -85,9 +85,18 @@ def dedup_jsonl_by_id(lines: list[str]) -> list[str]:
         if not ln.strip():
             continue
         try:
-            mid = json.loads(ln).get("id")
+            parsed = json.loads(ln)
         except json.JSONDecodeError:
-            mid = None
+            parsed = None
+        # audit S12: a line that is valid JSON but not an object — `123`,
+        # `null`, `"text"`, `[1, 2]` — parses fine and then raises
+        # AttributeError on .get(), which escaped the except clause. The
+        # resolver died with a traceback, and daily-sync.sh turns that
+        # into `fail … 3`: the whole sync aborts with a conflicted tree
+        # left in place. The docstring promises malformed-but-non-empty
+        # lines are KEPT, so treat a non-object exactly like an
+        # unparseable one and dedup it by string equality.
+        mid = parsed.get("id") if isinstance(parsed, dict) else None
         if mid:
             if mid in seen_ids:
                 continue
