@@ -46,6 +46,8 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 PA_DIR = Path(__file__).resolve().parent.parent
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 DB_NAME = "claude_memories"  # scripts/sync-to-postgres.py:53
@@ -104,9 +106,20 @@ def extract_values(record: dict) -> dict:
     }
 
 
+#: The surgical UPDATE. ``embedding`` is cleared **only** when the content
+#: actually changed: the refill paths (sync-to-postgres, backfill-embeddings)
+#: select ``WHERE embedding IS NULL``, so an /update that replaced the text
+#: otherwise left semantic recall matching the pre-edit wording forever
+#: (audit 2026-09-08, finding A11). Inside an UPDATE's SET list a bare column
+#: reference is the row's OLD value, so ``content IS DISTINCT FROM %s``
+#: compares what is stored with what we are about to store, and a reconcile of
+#: an unchanged record stays a true no-op that keeps its embedding.
 UPDATE_SQL = (
     "UPDATE memories SET is_active=%s, content=%s, confidence=%s, "
-    "verified=%s, anchors=%s, revisions=%s WHERE id=%s"
+    "verified=%s, anchors=%s, revisions=%s, "
+    "embedding = CASE WHEN content IS DISTINCT FROM %s THEN NULL "
+    "ELSE embedding END "
+    "WHERE id=%s"
 )
 
 
@@ -122,9 +135,15 @@ def reconcile_pg(record: dict, *, dbname: str = DB_NAME, connect=None) -> int:
     import psycopg2
     from psycopg2.extras import Json
 
+    from _schema_version import assert_schema_version
+
     vals = extract_values(record)
     conn = (connect or (lambda: psycopg2.connect(dbname=dbname)))()
     try:
+        # Every PG-touching script checks the schema version before writing
+        # (scripts/_schema_version.py): a pre-v2 mirror missing a column here
+        # would otherwise surface as an opaque query failure (finding A17).
+        assert_schema_version(conn)
         with conn, conn.cursor() as cur:
             cur.execute(
                 UPDATE_SQL,
@@ -135,6 +154,7 @@ def reconcile_pg(record: dict, *, dbname: str = DB_NAME, connect=None) -> int:
                     vals["verified"],
                     Json(vals["anchors"]),
                     Json(vals["revisions"]),
+                    vals["content"],  # the embedding-invalidation comparison
                     record["id"],
                 ),
             )
