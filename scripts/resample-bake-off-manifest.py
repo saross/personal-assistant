@@ -64,18 +64,13 @@ import random
 import re
 import sys
 import tempfile
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-# Derived from ``__file__`` rather than hardcoded: a copy of the repository
-# (a git worktree, a clone on another machine) must resolve its OWN sibling
-# scripts, not the operator's checkout.
-PA_DIR = Path(__file__).resolve().parent.parent
 
 # Token floor — raised from the original >100 to >1,000 per Shawn's
 # suggestion ("raise to 1,000 if it helps weed out noise"). The live

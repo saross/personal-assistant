@@ -174,9 +174,25 @@ def run_main(pool_root: Path, *args: str) -> int:
 class TestPathDefaults:
     """Nothing resolves to the operator's checkout by hardcoded string."""
 
-    def test_pa_dir_is_file_derived(self):
-        """The finding: PA_DIR was a hardcoded absolute path."""
-        assert resample.PA_DIR == PROJECT_ROOT
+    def test_no_module_constant_holds_a_repository_root(self):
+        """PA_DIR was a hardcoded absolute path, then dead weight.
+
+        Once the extractor moved to a sibling lookup and both pools moved
+        behind --archive-root / --live-root, nothing needed a repository
+        root at all. A constant nobody reads is the one most likely to be
+        re-used wrongly later.
+        """
+        assert not hasattr(resample, "PA_DIR")
+
+    def test_every_glob_template_is_relative_to_a_root(self):
+        """No template may smuggle back an absolute /home/... path."""
+        templates = (
+            *resample.ARCHIVE_GLOB_TEMPLATES,
+            *resample.LIVE_GLOB_TEMPLATES,
+        )
+        assert templates
+        for template in templates:
+            assert not template.startswith("/"), template
 
     def test_globs_are_rooted_at_the_given_root(self, tmp_path):
         """Both pools follow --archive-root / --live-root, not $HOME."""
