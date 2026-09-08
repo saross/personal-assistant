@@ -2533,6 +2533,11 @@ corpus_line_count() {
 #: exits nothing but the subshell (the trap this script has fallen into
 #: twice before — see memory_files_with_markers).
 corpus_lines=""
+#: 1 when that tree HELD the corpus, 0 when it did not. "Zero records"
+#: and "no corpus here" are the same number and different facts, and the
+#: per-commit loop below has to tell them apart (audit M1, fourth
+#: re-audit).
+corpus_lines_present=0
 
 corpus_lines_at() {
     # corpus_lines_at <rev>:<path>
@@ -2545,8 +2550,10 @@ corpus_lines_at() {
     local spec="$1"
     if ! git rev-parse --verify --quiet "$spec" >/dev/null 2>&1; then
         corpus_lines=0
+        corpus_lines_present=0
         return 0
     fi
+    corpus_lines_present=1
     if ! corpus_lines="$(git show "$spec" 2>/dev/null | corpus_line_count)"; then
         add_sync_gate_detail \
             "daily-sync STOPPED: the records in $spec could not be counted, so this run cannot tell whether the corpus shrank. Nothing was pushed. Check that $DATA_DIR is readable and that memories.jsonl is not corrupt."
@@ -2578,7 +2585,8 @@ abort_on_published_shrink() {
     # Must be called from inside the data submodule, immediately before a
     # push.
     local context="$1" lines_before lines_after shrink_report
-    local commit parent before after offender=""
+    local commit parent before after offender="" offender_reason=""
+    local parents parents_with_corpus shortening=0
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
@@ -2614,31 +2622,63 @@ abort_on_published_shrink() {
         # truncates below both sides, which skipping merges entirely
         # (`--no-merges`) would miss.
         #
-        # A root commit has no parent, and a commit that added the file
-        # has no version of it in its parent: both are zero records, not
-        # errors.
+        # A root commit has no parent, and a commit that ADDED the file
+        # has no version of it in its parent: neither can have shortened
+        # anything, so both start from zero.
+        #
+        # audit M1 (fourth re-audit): but a parent that does not hold the
+        # corpus is UNKNOWN, not zero, and taking it into the minimum
+        # made every merge with such a parent unjudgeable — min = 0, so
+        # `after < before` is false however little the merge kept. An
+        # orphan or unrelated-history parent is all it takes. Those
+        # parents are excluded; a merge none of whose parents holds the
+        # corpus cannot be judged at all, and is refused rather than
+        # waved through.
         before=""
+        parents=0
+        parents_with_corpus=0
         while IFS= read -r parent; do
             [[ -n "$parent" ]] || continue
+            parents=$((parents + 1))
             corpus_lines_at "${parent}:$target"
+            [[ $corpus_lines_present -eq 1 ]] || continue
+            parents_with_corpus=$((parents_with_corpus + 1))
             if [[ -z "$before" ]] || [[ "$corpus_lines" -lt "$before" ]]; then
                 before="$corpus_lines"
             fi
         done < <(git rev-parse "${commit}^@" 2>/dev/null || true)
+        if [[ $parents -gt 1 ]] && [[ $parents_with_corpus -eq 0 ]]; then
+            offender="$commit"
+            offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
+            break
+        fi
+        # One parent and no corpus in it is the commit that added the
+        # file: nothing existed to shorten.
         [[ -n "$before" ]] || before=0
         corpus_lines_at "${commit}:$target"
         after="$corpus_lines"
         [[ "$after" -lt "$before" ]] || continue
+        shortening=$((shortening + 1))
         if git log -1 --format=%B "$commit" 2>/dev/null \
                 | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then
             continue
         fi
         offender="$commit"
+        offender_reason="shortened it without a 'Rewrite-Class: bulk' trailer"
         break
     done < <(git rev-list --reverse origin/main..HEAD 2>/dev/null || true)
-    if [[ -z "$offender" ]]; then
+    if [[ -z "$offender" ]] && [[ $shortening -gt 0 ]]; then
         log "corpus is shorter than origin/main, but every commit that shortened it carries a Rewrite-Class: bulk trailer — allowed"
         return 0
+    fi
+    if [[ -z "$offender" ]]; then
+        # audit M1 (fourth re-audit): FAIL CLOSED. The outer comparison
+        # saw the corpus shrink against origin and this loop could not
+        # say which commit did it — a history this guard does not
+        # understand, which is the last state in which to assume the
+        # best. There is no trailer to appeal to, because no commit has
+        # been identified to carry one.
+        offender_reason="the shrink could not be attributed to any commit in the range"
     fi
     shrink_report="$LOG_DIR/daily-sync-shrink-$(date +'%Y-%m-%d-%H%M%S').log"
     {
@@ -2648,8 +2688,11 @@ abort_on_published_shrink() {
         echo "HEAD:                 $lines_after lines"
         echo "Delta:                $((lines_after - lines_before))"
         echo ""
-        echo "First offending commit (shortened it, no trailer):"
-        git log -1 --format='%H %s' "$offender"
+        echo "Why this is refused:  $offender_reason"
+        if [[ -n "$offender" ]]; then
+            echo "Commit:"
+            git log -1 --format='%H %s' "$offender"
+        fi
         echo ""
         echo "Unpushed commits (git log --oneline origin/main..HEAD):"
         git log --oneline origin/main..HEAD
@@ -2659,7 +2702,7 @@ abort_on_published_shrink() {
     } > "$shrink_report" 2>&1
     log "SHRINK DETECTED against origin ($context): $lines_before -> $lines_after lines. Report: $shrink_report"
     add_sync_gate_detail \
-        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines), and ${offender:0:8} shortened it without a 'Rewrite-Class: bulk' trailer. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
+        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines) — ${offender:0:8}${offender:+ }$offender_reason. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
     fail "data submodule: refusing to publish a corpus shorter than origin's (see $shrink_report)" 4
 }
 

@@ -2192,3 +2192,94 @@ class TestRetryPushRechecksTheShrink:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert not trace.exists(), "the parent repo was measured for a corpus"
+
+
+class TestUnattributableShrinkFailsClosed:
+    """The outer comparison sees the corpus shorter than origin's; the
+    per-commit loop names no commit that shortened it. That is a history
+    this guard does not understand, which is the last state in which to
+    assume the best."""
+
+    def _repo_with(self, tmp_path: Path, records: int) -> Path:
+        """A repo whose HEAD holds ``records`` corpus lines."""
+        repo = tmp_path / f"unattributable-{records}"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        return repo
+
+    def _run_guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            ("abort_on_published_shrink", "corpus_lines_at", "corpus_line_count"),
+        )
+
+    def test_a_shrink_no_commit_explains_is_refused(self, tmp_path: Path) -> None:
+        """Kills DS-M1's fail-open: `return 0` when the loop named nobody.
+
+        origin/main is set to a commit that is NOT an ancestor of HEAD and
+        holds more records -- a diverged branch about to be published --
+        so the range holds no commit that shortened anything, and the
+        guard used to allow it.
+        """
+        repo = self._repo_with(tmp_path, 1)
+        logs = tmp_path / "logs-unattributable"
+        logs.mkdir()
+        # A richer corpus on a side history, published as origin/main.
+        _git("checkout", "--quiet", "-b", "side", cwd=repo)
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(5)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the other machine's captures", cwd=repo)
+        side = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("checkout", "--quiet", "main", cwd=repo)
+        # A local commit that touches nothing of the corpus.
+        (repo / "notes.md").write_text("a prose file\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "prose", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main", side, cwd=repo)
+
+        result = self._run_guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        reports = list(logs.glob("daily-sync-shrink-*.log"))
+        assert reports, "no report was written"
+        written = reports[0].read_text(encoding="utf-8")
+        assert "could not be attributed" in written, written
+
+    def test_a_shrink_every_commit_owns_is_still_allowed(
+        self, tmp_path: Path
+    ) -> None:
+        """The fail-closed rule must not swallow the escape hatch: a
+        commit that shortened it and says so still publishes."""
+        repo = self._repo_with(tmp_path, 5)
+        logs = tmp_path / "logs-allowed"
+        logs.mkdir()
+        origin = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/main", origin, cwd=repo)
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "kept"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+        result = self._run_guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
