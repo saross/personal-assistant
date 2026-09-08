@@ -897,3 +897,70 @@ class TestOneSpellingForATimestamp:
             assert 'replace("Z", "+00:00")' not in source, (
                 f"{name} normalises timestamps on its own again"
             )
+
+
+class TestATimestampCursorMustBeATimestamp:
+    """
+    Eleventh re-audit, M1 — any non-empty string was accepted. ``'abc'``
+    sorts after every real ISO timestamp, so the sessions sync skipped
+    every session it found, reported itself idle, and did that for ever
+    with nothing on the gate.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "2026-09-01T00:00:00Z",
+        "2026-09-01T00:00:00+00:00",
+        "2026-09-01T00:00:00",
+        "2026-09-01T00:00:00.123456+00:00",
+        "2026-09-01",
+    ])
+    def test_a_real_timestamp_is_kept_verbatim(self, value):
+        """
+        Accepted, and returned unchanged: the cursor file's own spelling
+        is what gets compared and written back.
+        """
+        assert _sync_cursor.normalise_timestamp_cursor(value) == value
+
+    @pytest.mark.parametrize("value", [
+        "abc",
+        "TBD",
+        "2026-13-45T99:99:99Z",
+        "yesterday",
+        "  ",
+        "2026/09/01",
+    ])
+    def test_anything_else_is_absent(self, value):
+        """The mutation this kills: accepting any non-empty string."""
+        assert _sync_cursor.normalise_timestamp_cursor(value) is None
+
+    def test_the_rejection_is_warned_about(self, caplog):
+        """A cursor nobody can read is a problem, not a quiet reset."""
+        logger = logging.getLogger("test-ts-cursor")
+        with caplog.at_level(logging.WARNING):
+            assert _sync_cursor.normalise_timestamp_cursor(
+                "abc", key="sessions_sync_archived_at", logger=logger,
+            ) is None
+        assert "not an ISO-8601 timestamp" in caplog.text
+        assert "sessions_sync_archived_at" in caplog.text
+
+
+class TestTheGateTextForABadCursor:
+    """
+    The warning goes to a log nobody reads; the gate is the surface that
+    reaches Shawn. It has to name the value and say what it has cost.
+    """
+
+    def test_it_names_the_value_and_the_consequence(self):
+        """The mutation this kills: dropping the value from the text."""
+        detail = _sync_cursor.cursor_fault_detail(
+            "sync-sessions-to-postgres.py",
+            "sessions_sync_archived_at",
+            Path("/data/sync-cursors.json"),
+            "abc",
+            "an ISO-8601 timestamp",
+        )
+        assert "'abc'" in detail
+        assert "sessions_sync_archived_at" in detail
+        assert "/data/sync-cursors.json" in detail
+        assert "acknowledged quarantine position has been reset" in detail
+        assert "Repair the cursor file" in detail

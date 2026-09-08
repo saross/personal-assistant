@@ -28,6 +28,7 @@ from _sync_cursor import (  # noqa: E402
     QUARANTINE_WRITTEN,
     append_quarantine_entry,
     count_quarantine_entries,
+    cursor_fault_detail,
     read_quarantine_entries,
     normalise_line_cursor,
     CursorKeyVanished,
@@ -1288,9 +1289,20 @@ def _sync_locked(
     # Two readers with different ideas of what counts as a cursor made
     # the gate see a rebuild the cycle had not noticed (tenth re-audit,
     # finding M1).
+    raw_cursor = snapshot.get("postgres_sync_line")
     started_at = normalise_line_cursor(
-        snapshot.get("postgres_sync_line"),
-        key="postgres_sync_line", logger=logger,
+        raw_cursor, key="postgres_sync_line", logger=logger,
+    )
+    # Present and unusable is not the same as absent, and it is the
+    # failure this gate exists for: the sync resyncs from the beginning
+    # every tick and the acknowledged quarantine position goes with it
+    # (eleventh re-audit, findings M1 and M3).
+    cursor_fault = (
+        cursor_fault_detail(
+            SCRIPT_NAME, "postgres_sync_line", CURSOR_FILE, raw_cursor,
+            "a line number",
+        )
+        if raw_cursor is not None and started_at is None else None
     )
     result = _sync_locked_body(
         logger, quarantine_cap, quarantine_anyway, lock_connected,
@@ -1305,6 +1317,7 @@ def _sync_locked(
         cursor_position=started_at,
         cursor_position_after=ended_at,
         cursor_seen=True,
+        degraded_detail=result.degraded_detail or cursor_fault,
     )
 
 

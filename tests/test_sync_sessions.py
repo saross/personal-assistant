@@ -2315,3 +2315,101 @@ class TestConnectivitySurvivesAnUnmountedRoot:
             "    return result\n"
         )
         assert _cycle_results_without_connectivity(source) == []
+
+
+# ============================================================================
+# Eleventh re-audit, findings M1 and M3 — a cursor that is present and
+# unusable is the failure this gate exists for
+# ============================================================================
+
+
+class TestAnUnusableCursorReachesTheGate:
+    """
+    ``'abc'`` sorts after every real ISO timestamp, so every session
+    found was skipped, the run reported itself idle, and it did that on
+    every tick for ever with nothing on the gate — the exact shape of the
+    incident these gates were built for.
+    """
+
+    def _archive(self, tmp_path: Path) -> Path:
+        """One archived session, ready to sync."""
+        root = tmp_path / "archive"
+        session = root / "proj" / "2026-09-01T10-00_abc"
+        session.mkdir(parents=True)
+        (session / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "s-1"},
+                "project": {"name": "proj"},
+                "archive": {"archived_at": "2026-09-01T10:00:00Z"},
+            }),
+            encoding="utf-8",
+        )
+        return root
+
+    def test_a_nonsense_cursor_is_reported_and_the_sync_recovers(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: accepting any non-empty string as a
+        timestamp cursor — the run then finds nothing, says nothing, and
+        the sessions table goes stale exactly as it did in September.
+        """
+        import _sync_gate
+
+        archive = self._archive(tmp_path)
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "abc"}), encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(monkeypatch, returned_ids=["s-1"])
+
+        cycle = sync_mod.sync(archive, full_resync=False, logger=test_logger)
+
+        assert cycle.processed == 1, (
+            "the nonsense cursor still hid every session"
+        )
+        assert cycle.degraded_detail is not None
+        assert "'abc'" in cycle.degraded_detail
+
+        sync_mod.apply_gate(
+            sync_mod.GateEvent(
+                outcome=cycle.outcome,
+                connected=cycle.connected,
+                processed=cycle.processed,
+                degraded_detail=cycle.degraded_detail,
+                script=sync_mod.SCRIPT_NAME,
+            ),
+            gate_path=pinned_gate_file, logger=test_logger,
+        )
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "'abc'" in gate
+        assert "Repair the cursor file" in gate
+
+    def test_a_good_cursor_raises_nothing(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        The guard must not report a fault on every ordinary run. The
+        mutation this kills: raising the degraded problem whenever the
+        cursor key is present.
+        """
+        archive = self._archive(tmp_path)
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({sync_mod.CURSOR_KEY: "2020-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(monkeypatch, returned_ids=["s-1"])
+
+        cycle = sync_mod.sync(archive, full_resync=False, logger=test_logger)
+
+        assert cycle.processed == 1
+        assert cycle.degraded_detail is None

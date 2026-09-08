@@ -186,12 +186,16 @@ def normalise_line_cursor(
     """
     if isinstance(value, bool):
         pass  # bools are ints in Python and are never a line number
-    elif isinstance(value, int):
-        return value if value >= 0 else None
+    elif isinstance(value, int) and value >= 0:
+        return value
     elif isinstance(value, str) and value.strip().isdigit():
         return int(value.strip())
     if value is None:
         return None
+    # A NEGATIVE integer falls through to the warning below rather than
+    # returning quietly: it is as unusable as a string of letters, it
+    # resets the acknowledged position, and the docstring has always
+    # promised it would be reported (eleventh re-audit, finding M3).
     if logger is not None:
         logger.warning(
             "%s is %r, which is not a line number — treating it as absent "
@@ -210,22 +214,50 @@ def normalise_timestamp_cursor(
     """
     Coerce a timestamp cursor to a ``str``, or ``None`` if it is not one.
 
-    The sessions cursor is an ISO-8601 instant, compared lexically. A
-    number or an object there is not a timestamp; treating it as absent
-    and saying so beats comparing it against a string and getting an
-    answer that means nothing (tenth re-audit, finding M1).
+    The sessions cursor is an ISO-8601 instant, compared lexically, so
+    the value has to BE one: ``'abc'`` sorts after every real timestamp,
+    which made the sync skip every session it found and report itself
+    idle for ever, with nothing on the gate (eleventh re-audit, finding
+    M1). A number, an object, or a string that will not parse is
+    therefore treated as absent and warned about.
     """
     if isinstance(value, str) and value.strip():
-        return value
+        candidate = comparable_timestamp(value)
+        try:
+            datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+        else:
+            return value
     if value is None:
         return None
     if logger is not None:
         logger.warning(
-            "%s is %r, which is not a timestamp — treating it as absent "
-            "and syncing from the beginning. Check the cursor file.",
-            key, value,
+            "%s is %r, which is not an ISO-8601 timestamp — treating it "
+            "as absent and syncing from the beginning. Check the cursor "
+            "file.", key, value,
         )
     return None
+
+
+def cursor_fault_detail(
+    script: str, key: str, cursor_file: Path, value: object, expected: str,
+) -> str:
+    """
+    The gate text for a cursor that is present and unusable.
+
+    A cursor nobody can read is the failure this gate exists for: the
+    sync resyncs from the beginning every tick, the acknowledged
+    quarantine position is reset with it, and without this line none of
+    that reaches anybody (eleventh re-audit, findings M1 and M3).
+    """
+    return (
+        f"[{script}] the sync cursor {key} in {cursor_file} is "
+        f"{value!r}, which is not {expected}. The sync is starting from "
+        f"the beginning on every run and the acknowledged quarantine "
+        f"position has been reset, so dismissed rows are being reported "
+        f"again. Repair the cursor file."
+    )
 
 
 def append_quarantine_entry(quarantine_path: Path, entry: Any) -> bool:

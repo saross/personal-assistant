@@ -46,6 +46,7 @@ from _sync_cursor import (  # noqa: E402
     append_quarantine_entry,
     comparable_timestamp,
     count_quarantine_entries,
+    cursor_fault_detail,
     read_quarantine_entries,
     normalise_timestamp_cursor,
     CursorKeyVanished,
@@ -985,8 +986,21 @@ def _sync_locked(
     # Two readers with different ideas of what counts as a cursor made
     # the gate see a rebuild the cycle had not noticed (tenth re-audit,
     # finding M1).
+    raw_cursor = snapshot.get(CURSOR_KEY)
     started_at = normalise_timestamp_cursor(
-        snapshot.get(CURSOR_KEY), key=CURSOR_KEY, logger=logger,
+        raw_cursor, key=CURSOR_KEY, logger=logger,
+    )
+    # Present and unusable is not the same as absent, and it is the
+    # failure this gate exists for: 'abc' sorts after every real
+    # timestamp, so every session was skipped and the sync reported
+    # itself idle for ever with nothing on the gate (eleventh re-audit,
+    # findings M1 and M3).
+    cursor_fault = (
+        cursor_fault_detail(
+            SCRIPT_NAME, CURSOR_KEY, CURSOR_FILE, raw_cursor,
+            "an ISO-8601 timestamp",
+        )
+        if raw_cursor is not None and started_at is None else None
     )
     result = _sync_locked_body(
         archive_root, full_resync, logger, quarantine_cap,
@@ -1001,6 +1015,7 @@ def _sync_locked(
         cursor_position=started_at,
         cursor_position_after=ended_at,
         cursor_seen=True,
+        degraded_detail=result.degraded_detail or cursor_fault,
     )
 
 
