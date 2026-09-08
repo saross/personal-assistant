@@ -403,6 +403,36 @@ def _normalise_doi(doi: str) -> str:
     return s
 
 
+def doi_match_candidates(doi: str) -> list[str]:
+    """
+    Return every stored spelling of ``doi`` that must count as the same DOI.
+
+    This is the single canonical DOI comparison rule for the repository:
+    ``find_by_doi`` below and the duplicate guard in
+    ``lit-scout-zotero-import.py`` both call it, so the reader and the
+    writer can never disagree about what a duplicate is.
+
+    SQLite has no prefix-strip primitive. Normalising the *stored* side
+    with a chained ``REPLACE`` (the previous approach) stripped ``doi:``
+    wherever it occurred, not only at the front, so the SQL rule and the
+    Python rule disagreed. Expanding the *lookup* side into the bare DOI
+    plus every wrapped spelling and comparing with ``IN`` reproduces the
+    prefix rule exactly, in both languages.
+
+    Args:
+        doi: A DOI in any of the accepted spellings.
+
+    Returns:
+        Lowercase candidates: the bare DOI first, then each wrapped form.
+        Empty list for a falsy or whitespace-only DOI, so a caller cannot
+        turn a missing DOI into a match-everything query.
+    """
+    bare = _normalise_doi(doi)
+    if not bare:
+        return []
+    return [bare] + [prefix + bare for prefix in _DOI_URL_PREFIXES]
+
+
 def find_by_doi(doi: str) -> list[dict[str, Any]]:
     """
     Return all items across every local library whose DOI field matches.
@@ -430,21 +460,21 @@ def find_by_doi(doi: str) -> list[dict[str, Any]]:
     text search vs 5/5 via this DOI-based query. See workstream H in
     wiki/continuity.md.
     """
-    if not doi or not doi.strip():
+    candidates = doi_match_candidates(doi)
+    if not candidates:
         return []
-
-    bare_doi = _normalise_doi(doi)
 
     conn = _connect()
     cur = conn.cursor()
 
     try:
-        # The DOI field can be stored as a bare DOI or wrapped in any
-        # of the URL/scheme prefixes in _DOI_URL_PREFIXES. Strip those
-        # from the stored value via chained REPLACE before comparing
-        # against the already-normalised bare_doi parameter.
+        # The DOI field can be stored bare or wrapped in any of the
+        # URL/scheme prefixes in _DOI_URL_PREFIXES. Compare the stored
+        # value against every accepted spelling of the lookup DOI rather
+        # than trying to strip prefixes in SQL — see doi_match_candidates.
+        placeholders = ", ".join("?" for _ in candidates)
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT
                 i.itemID, i.key, it.typeName,
                 COALESCE(g.name, 'My Library') AS library_name
@@ -456,23 +486,13 @@ def find_by_doi(doi: str) -> list[dict[str, Any]]:
             JOIN libraries l ON i.libraryID = l.libraryID
             LEFT JOIN groups g ON l.libraryID = g.libraryID
             WHERE f.fieldName = 'DOI'
-              AND REPLACE(
-                    REPLACE(
-                      REPLACE(
-                        REPLACE(
-                          REPLACE(LOWER(idv.value),
-                            'https://doi.org/', ''),
-                          'http://doi.org/', ''),
-                        'https://dx.doi.org/', ''),
-                      'http://dx.doi.org/', ''),
-                    'doi:', ''
-                  ) = ?
+              AND LOWER(TRIM(idv.value)) IN ({placeholders})
               AND it.typeName NOT IN ('attachment', 'note')
               AND i.itemID NOT IN (
                   SELECT itemID FROM deletedItems
               )
             """,
-            (bare_doi,),
+            tuple(candidates),
         )
 
         results = []

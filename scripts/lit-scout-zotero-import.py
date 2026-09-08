@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import email.utils
+import importlib.util
 import json
 import os
 import random
@@ -870,15 +871,53 @@ def fetch_datacite(doi: str, client: httpx.Client) -> dict | None:
 # ----------------------------------------------------------------------------
 
 
+def _load_zotero_client() -> Any:
+    """
+    Load ``scripts/zotero.py`` by path and return the module object.
+
+    This script has a hyphenated filename and is normally run as a
+    standalone program, so ``scripts/`` is not reliably on ``sys.path``
+    and a plain ``import zotero`` cannot be trusted to resolve. Loading by
+    an explicit spec (the same trick ``add-doi-to-zotero.py`` uses to
+    reach this module) keeps ONE Digital Object Identifier (DOI)
+    normaliser in the repository instead of a second, weaker copy here:
+    this script's duplicate guard and the reader's ``find_by_doi`` must
+    agree, or the importer creates duplicates the reader can already see.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "pa_zotero_client", Path(__file__).resolve().parent / "zotero.py"
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError("could not load zotero.py beside this script")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: The read-only Zotero client module, loaded once for its DOI normaliser.
+_ZOTERO_CLIENT = _load_zotero_client()
+
+
 def find_existing_by_doi(doi: str, conn: sqlite3.Connection) -> list[dict]:
     """
     Return all items across all local libraries whose DOI field matches.
 
-    Matching is case-insensitive on the canonical DOI string. Returns one
-    row per match with library + collection context.
+    Matching uses the repository's single canonical DOI rule
+    (``zotero.doi_match_candidates``): case-insensitive, and tolerant of
+    the URL/scheme wrappers Zotero's browser connector stores — so a
+    stored ``https://doi.org/10.1234/ABC`` is found by a bare lookup and
+    vice versa. This is the ONLY duplicate guard on both write paths
+    (``--live`` here and in ``add-doi-to-zotero.py``), so a narrower rule
+    here silently creates duplicates.
+
+    Returns one row per match with library + collection context.
     """
+    candidates = _ZOTERO_CLIENT.doi_match_candidates(doi)
+    if not candidates:
+        return []
+    placeholders = ", ".join("?" for _ in candidates)
     rows = conn.execute(
-        """
+        f"""
         SELECT i.itemID, i.key, l.libraryID, l.type,
                COALESCE(g.name, 'My Library') AS library_name,
                GROUP_CONCAT(c.collectionName, '; ') AS collections
@@ -891,11 +930,11 @@ def find_existing_by_doi(doi: str, conn: sqlite3.Connection) -> list[dict]:
         LEFT JOIN collectionItems ci ON i.itemID = ci.itemID
         LEFT JOIN collections c ON ci.collectionID = c.collectionID
         WHERE f.fieldName = 'DOI'
-          AND LOWER(idv.value) = LOWER(?)
+          AND LOWER(TRIM(idv.value)) IN ({placeholders})
           AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
         GROUP BY i.itemID
         """,
-        (doi,),
+        tuple(candidates),
     ).fetchall()
     return [
         {
