@@ -297,6 +297,28 @@ class SyncWorld:
         path = self.home / ".cache" / name
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
+    def publish_data_change(
+        self, path: str, content: str, message: str = "change from another machine"
+    ) -> str:
+        """
+        Push a change to the data remote as another machine would have.
+
+        Uses a scratch clone kept for the life of the world, so several
+        foreign pushes can be staged in sequence.
+        """
+        scratch = self.root / "publisher"
+        if scratch.exists():
+            git("pull", "-q", "--ff-only", "origin", "main", cwd=scratch)
+        else:
+            git("clone", "-q", str(self.data_remote), str(scratch), cwd=self.root)
+        target = scratch / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        git("add", "--", path, cwd=scratch)
+        git("commit", "-q", "-m", message, "--", path, cwd=scratch)
+        git("push", "-q", "origin", "main", cwd=scratch)
+        return git("rev-parse", "HEAD", cwd=scratch).stdout.strip()
+
     # -- construction -----------------------------------------------------
 
     def add_machine(self, name: str) -> Machine:

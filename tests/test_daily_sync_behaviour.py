@@ -140,6 +140,72 @@ class TestSubmoduleCommitsArePublished:
 
 
 # ============================================================================
+# Conflict partitioning (audit S3)
+# ============================================================================
+
+
+class TestStashPopConflictPartitioning:
+    """A stash-pop conflict on a prose file must abort, not be "resolved".
+
+    ``resolve-merge-conflicts.py`` strips conflict markers and unions both
+    sides. That is right for an append-only JSONL and destructive for
+    anything else: a conflicted ``tasks/inbox.md`` came back as an
+    interleaved union with duplicate lines dropped, was committed by the
+    block below, and was pushed. The rebase path has always partitioned;
+    this path did not.
+    """
+
+    def test_prose_conflict_aborts_and_preserves_the_tree(
+        self, world: SyncWorld
+    ) -> None:
+        """The tree is left as git left it and nothing is published."""
+        machine = world.add_machine("a")
+        world.publish_data_change(
+            "tasks/inbox.md", "# Inbox\n\n- from the other machine\n"
+        )
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- half-written local thought\n", encoding="utf-8"
+        )
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        inbox = (machine.data / "tasks" / "inbox.md").read_text(encoding="utf-8")
+        assert "<<<<<<<" in inbox, (
+            "the union resolver rewrote a prose file instead of aborting:\n" + inbox
+        )
+        assert "half-written local thought" in inbox
+        # The stash git preserved on a conflicted pop is still there.
+        assert git("stash", "list", cwd=machine.data).stdout.strip()
+        # Nothing was published.
+        assert world.published_data_head() == published_before
+
+    def test_prose_conflict_writes_a_gate_line(self, world: SyncWorld) -> None:
+        """The wedged state is surfaced at session start, not only logged."""
+        machine = world.add_machine("a")
+        world.publish_data_change("tasks/inbox.md", "# Inbox\n\n- theirs\n")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- ours\n", encoding="utf-8"
+        )
+        world.run_sync(machine)
+
+        gate = world.gate("daily-sync-gate").splitlines()
+        assert gate and gate[0] == "1", gate
+        assert "tasks/inbox.md" in gate[1]
+
+    def test_clean_run_clears_the_gate(self, world: SyncWorld) -> None:
+        """A gate left by an earlier wedge must not nag forever."""
+        machine = world.add_machine("a")
+        (world.home / ".cache" / "daily-sync-gate").write_text(
+            "1\nstale wedge from an earlier run\n", encoding="utf-8"
+        )
+        assert world.run_sync(machine).returncode == 0
+        assert world.gate("daily-sync-gate").splitlines() == ["0"]
+
+
+# ============================================================================
 # Rebase-conflict resolution on the submodule pointer (audit S4)
 # ============================================================================
 

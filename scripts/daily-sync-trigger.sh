@@ -87,6 +87,17 @@ if [[ -f "$DRIFT_GATE" ]]; then
     fi
 fi
 
+# audit S3/S17: a sync that wedges on a conflicted tree stops running at
+# all — every later session re-enters the same failure and bails — and
+# until now that state was visible only in logs/daily-sync.log.
+SYNC_GATE="${HOME}/.cache/daily-sync-gate"
+if [[ -f "$SYNC_GATE" ]]; then
+    SYNC_COUNT="$(head -1 "$SYNC_GATE" 2>/dev/null)"
+    if [[ "$SYNC_COUNT" =~ ^[0-9]+$ ]] && [[ "$SYNC_COUNT" -gt 0 ]]; then
+        GATE_LINES+=("[daily-sync gate] $(tail -n +2 "$SYNC_GATE" | head -1)")
+    fi
+fi
+
 ARCHIVE_DRIFT_GATE="${HOME}/.cache/cc-archive-drift-gate"
 if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
     AD_COUNT="$(head -1 "$ARCHIVE_DRIFT_GATE" 2>/dev/null)"

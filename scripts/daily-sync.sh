@@ -104,6 +104,28 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
+# Sync gate (audit S3/S17)
+#
+# Some failures leave a conflicted tree that every LATER run trips over as
+# well, so the sync stops running at all until a human intervenes. A log
+# line is not enough for that: this repo has three times found that a
+# signal emitted but not surfaced is indistinguishable from no signal (see
+# the channel-fix note in daily-sync-trigger.sh). Write the state to a gate
+# file in the same layout as the other gates the trigger reads — first line
+# a problem count, remaining lines the detail — so it is surfaced at every
+# session start until the sync completes cleanly again.
+# ---------------------------------------------------------------------------
+SYNC_GATE="$HOME/.cache/daily-sync-gate"
+
+write_sync_gate() {
+    # write_sync_gate <count> [detail ...]
+    # Never fatal: a gate that cannot be written must not itself abort a
+    # sync, and the log line beside every call site still records the state.
+    mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
+    printf '%s\n' "$@" > "$SYNC_GATE" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # push_with_retry — push the current branch, rebasing on rejection.
 #
 # On non-fast-forward rejection (race with another machine's push), the
@@ -496,9 +518,40 @@ if [[ $has_local_changes -eq 1 ]]; then
                 fail "stash pop failed but no unmerged paths detected — bailing for manual intervention"
             fi
 
+            # audit S3: partition exactly as the rebase path does
+            # (resolve_rebase_conflicts, see its header). The resolver
+            # strips conflict markers and unions both sides — correct for
+            # append-only files, destructive for anything else. Feeding it
+            # every conflicted path meant a conflicted tasks/inbox.md or
+            # wiki/continuity.md was silently rewritten as an interleaved
+            # union with duplicate lines dropped, then committed and
+            # pushed. Silently guessing on a prose file is how a
+            # concurrent session's work gets destroyed.
+            unsupported_conflicts=()
+            resolvable_conflicts=()
+            for f in "${conflicted_files[@]}"; do
+                case "$f" in
+                    memories/memories.jsonl|memories/tag-vocabulary.txt)
+                        resolvable_conflicts+=("$f")
+                        ;;
+                    *)
+                        unsupported_conflicts+=("$f")
+                        ;;
+                esac
+            done
+            if [[ ${#unsupported_conflicts[@]} -gt 0 ]]; then
+                # Leave the tree exactly as git left it: half-merged, with
+                # the stash still on the stack (git preserves the entry
+                # when a pop conflicts). Anything tidier — `git checkout
+                # -- .`, a re-pop — would risk the very edits at stake.
+                write_sync_gate 1 \
+                    "daily-sync STOPPED: stash pop conflicted on ${unsupported_conflicts[*]} in $DATA_DIR; conflict markers and the stash are preserved. Resolve by hand (git -C $DATA_DIR status), then the next session syncs."
+                fail "stash pop conflicted on unsupported paths (${unsupported_conflicts[*]}) — manual resolution required; conflict markers and the stash are preserved"
+            fi
+
             # Build absolute paths for the resolver
             resolver_paths=()
-            for f in "${conflicted_files[@]}"; do
+            for f in "${resolvable_conflicts[@]}"; do
                 resolver_paths+=("$DATA_DIR/$f")
             done
 
@@ -506,7 +559,7 @@ if [[ $has_local_changes -eq 1 ]]; then
                 "${resolver_paths[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "resolve-merge-conflicts.py failed" 3
 
-            git add "${conflicted_files[@]}" >>"$LOG_FILE" 2>&1 \
+            git add "${resolvable_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "git add after resolver failed"
             git stash drop >>"$LOG_FILE" 2>&1 || true
             log "conflicts resolved: ${conflicted_files[*]}"
@@ -969,6 +1022,13 @@ if [[ $DRY_RUN -eq 0 ]]; then
             log "archive drift check: *** DRIFT DETECTED *** — un-archived raw sessions; see ~/.cache/cc-archive-drift-gate"
         fi
     fi
+fi
+
+# audit S3/S17: the run finished, so whatever wedged state a previous run
+# recorded is over. Clearing here (rather than at the top) means the gate
+# keeps nagging for exactly as long as the sync is actually stuck.
+if [[ $DRY_RUN -eq 0 ]]; then
+    write_sync_gate 0
 fi
 
 log "=== daily-sync complete on $HOST ==="
