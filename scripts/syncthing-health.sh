@@ -64,7 +64,18 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --quiet)         QUIET=1 ;;
         --local-only)    LOCAL_ONLY=1 ;;
-        --simulate-need) SIMULATE_NEED="$2"; shift ;;
+        --simulate-need)
+            # Audit round 4d (E15): a trailing --simulate-need left $2
+            # unbound, and `set -u` then killed the script with status 1 —
+            # breaking the "always exits 0" invariant this monitor rests
+            # on. Report and carry on instead.
+            if [[ $# -lt 2 ]]; then
+                echo "WARNING: --simulate-need needs a byte count; ignoring" >&2
+            else
+                SIMULATE_NEED="$2"
+                shift
+            fi
+            ;;
     esac
     shift
 done
@@ -94,15 +105,19 @@ fi
 
 # read_expected <jq-ish path> — pull a value out of the expectations JSON.
 read_expected() {
+    # Audit round 4d (E16): the path arrives as argv[1], never
+    # interpolated into the program text. SYNCTHING_EXPECTED_FILE is
+    # operator-supplied, and a path containing a quote used to end the
+    # string literal and change the program.
     python3 -c "
 import json, sys
-d = json.load(open('$EXPECTED_FILE'))
-for key in sys.argv[1:]:
+d = json.load(open(sys.argv[1]))
+for key in sys.argv[2:]:
     d = d.get(key) if isinstance(d, dict) else None
     if d is None:
         sys.exit(0)
 print(d)
-" "$@"
+" "$EXPECTED_FILE" "$@"
 }
 
 FOLDER_ID="$(read_expected folder_id)"
@@ -118,10 +133,32 @@ run_on() {
     fi
 }
 
+# shq <value> — shell-quote a value for safe interpolation into the command
+# string run_on hands to `bash -c` or `ssh`. Audit round 4d (E16): the
+# container name and config directory come out of the expectations JSON and
+# were interpolated bare, so a value containing a space, a quote, or a
+# semicolon changed the command being run on this machine and on every host
+# reachable over SSH.
+shq() {
+    printf '%q' "$1"
+}
+
+# urlencode <value> — percent-encode a value for a URL query string. The
+# folder id is operator-supplied and lands in a `?folder=` parameter; a
+# `&` or a space there would silently change the request (round 4d-2).
+urlencode() {
+    python3 -c "import sys, urllib.parse; \
+print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+}
+
 # check_host <label> <ssh_host|""> <container> <config_dir> <expected_id> <always_on>
 check_host() {
     local label="$1" host="$2" container="$3" config_dir="$4" expected_id="$5" always_on="$6"
     local prefix="[$label]"
+    # Quoted forms for interpolation into the remote command strings below.
+    local q_container q_config_dir
+    q_container="$(shq "$container")"
+    q_config_dir="$(shq "$config_dir")"
 
     # Reachability first — an absent laptop is not a fault.
     if [[ -n "$host" ]]; then
@@ -135,10 +172,10 @@ check_host() {
 
     # --- A. container running -------------------------------------------
     local running
-    running="$(run_on "$host" "docker inspect -f '{{.State.Running}}' $container 2>/dev/null")"
+    running="$(run_on "$host" "docker inspect -f '{{.State.Running}}' $q_container 2>/dev/null")"
     if [[ "$running" != "true" ]]; then
         local finished
-        finished="$(run_on "$host" "docker inspect -f '{{.State.FinishedAt}}' $container 2>/dev/null")"
+        finished="$(run_on "$host" "docker inspect -f '{{.State.FinishedAt}}' $q_container 2>/dev/null")"
         note_problem "$prefix container '$container' is NOT running (last exit: ${finished:-unknown}) — nothing is syncing here"
         return
     fi
@@ -148,15 +185,15 @@ check_host() {
     # but the container's /config is a different directory. Compare inodes
     # rather than trusting the mount table.
     local host_inode container_inode
-    host_inode="$(run_on "$host" "stat -c %i $config_dir 2>/dev/null")"
-    container_inode="$(run_on "$host" "docker exec $container stat -c %i /config 2>/dev/null")"
+    host_inode="$(run_on "$host" "stat -c %i $q_config_dir 2>/dev/null")"
+    container_inode="$(run_on "$host" "docker exec $q_container stat -c %i /config 2>/dev/null")"
     if [[ -n "$host_inode" && -n "$container_inode" && "$host_inode" != "$container_inode" ]]; then
         note_problem "$prefix config bind is DETACHED — $config_dir (inode $host_inode) is not what the container sees at /config (inode $container_inode); it is running a stale config. Fix: docker compose down && docker compose up -d"
     fi
 
     # --- C. identity ------------------------------------------------------
     local actual_id
-    actual_id="$(run_on "$host" "docker exec $container syncthing cli --home /config show system 2>/dev/null" \
+    actual_id="$(run_on "$host" "docker exec $q_container syncthing cli --home /config show system 2>/dev/null" \
         | python3 -c "import sys,json;print(json.load(sys.stdin).get('myID',''))" 2>/dev/null)"
     if [[ -z "$actual_id" ]]; then
         note_problem "$prefix could not read device ID from the running daemon"
@@ -170,8 +207,9 @@ check_host() {
     # --- D/E/F. folder health, peers, progress ---------------------------
     # One CLI call each; parsed together so a partial failure still reports.
     local folders conns status
-    folders="$(run_on "$host" "docker exec $container syncthing cli --home /config config folders list 2>/dev/null")"
-    if ! grep -q "^${FOLDER_ID}$" <<<"$folders"; then
+    folders="$(run_on "$host" "docker exec $q_container syncthing cli --home /config config folders list 2>/dev/null")"
+    # -F -x: the folder id is data, not a regular expression (round 4d-2).
+    if ! grep -qxF -- "$FOLDER_ID" <<<"$folders"; then
         note_problem "$prefix folder '$FOLDER_ID' is MISSING from the running config"
         return
     fi
@@ -181,10 +219,16 @@ check_host() {
     # which would make this check silently vacuous). Go via the REST API
     # from inside the container instead: -k because the GUI serves a
     # self-signed cert, https because plain HTTP answers "CSRF Error".
-    status="$(run_on "$host" "docker exec $container sh -c '
+    # The folder id reaches the inner `sh -c` as a positional argument
+    # ($1), not as part of its program text, and is shell-quoted for the
+    # outer layer that `run_on` builds (round 4d-2, C1). It also goes into
+    # a URL query string, so it is percent-encoded first.
+    local q_folder_id
+    q_folder_id="$(shq "$(urlencode "$FOLDER_ID")")"
+    status="$(run_on "$host" "docker exec $q_container sh -c '
         KEY=\$(sed -n \"s|.*<apikey>\\(.*\\)</apikey>.*|\\1|p\" /config/config.xml)
-        curl -sk -H \"X-API-Key: \$KEY\" \"https://localhost:8384/rest/db/status?folder=$FOLDER_ID\"
-    ' 2>/dev/null")"
+        curl -sk -H \"X-API-Key: \$KEY\" \"https://localhost:8384/rest/db/status?folder=\$1\"
+    ' sh $q_folder_id 2>/dev/null")"
     if [[ -n "$status" ]]; then
         local parsed
         parsed="$(python3 -c "
@@ -218,7 +262,7 @@ print('%s|%s|%s|%s' % (d.get('state',''), d.get('errors',0), d.get('pullErrors',
     # error permanently. An alert that is always firing trains you to ignore
     # the gate, which is worse than no alert.
     local disco
-    disco="$(run_on "$host" "docker exec $container sh -c '
+    disco="$(run_on "$host" "docker exec $q_container sh -c '
         KEY=\$(sed -n \"s|.*<apikey>\\(.*\\)</apikey>.*|\\1|p\" /config/config.xml)
         curl -sk -H \"X-API-Key: \$KEY\" https://localhost:8384/rest/system/status
     ' 2>/dev/null")"
@@ -243,12 +287,12 @@ print(', '.join(bad))
         fi
     fi
 
-    conns="$(run_on "$host" "docker exec $container syncthing cli --home /config show connections 2>/dev/null")"
+    conns="$(run_on "$host" "docker exec $q_container syncthing cli --home /config show connections 2>/dev/null")"
     if [[ -n "$conns" ]]; then
         local offline
         offline="$(python3 -c "
 import sys, json
-exp = json.load(open('$EXPECTED_FILE'))
+exp = json.load(open(sys.argv[1]))
 always = {h['expected_device_id'] for h in exp['hosts'].values() if h.get('always_on')}
 names = exp['devices']
 try:
@@ -258,7 +302,7 @@ except Exception:
 bad = [names.get(k, k[:7]) for k, v in d.get('connections', {}).items()
        if k in always and not v.get('connected')]
 print(', '.join(bad))
-" <<<"$conns" 2>/dev/null)"
+" "$EXPECTED_FILE" <<<"$conns" 2>/dev/null)"
         if [[ -n "$offline" ]]; then
             note_problem "$prefix cannot reach always-on peer(s): $offline"
         fi
@@ -277,17 +321,23 @@ print(', '.join(bad))
     if [[ -z "$host" ]]; then
         local stats threshold_h
         threshold_h="$(read_expected thresholds peer_offline_hours)"
-        stats="$(run_on "$host" "docker exec $container sh -c '
+        stats="$(run_on "$host" "docker exec $q_container sh -c '
             KEY=\$(sed -n \"s|.*<apikey>\\(.*\\)</apikey>.*|\\1|p\" /config/config.xml)
             curl -sk -H \"X-API-Key: \$KEY\" https://localhost:8384/rest/stats/device
         ' 2>/dev/null")"
         if [[ -n "$stats" && -n "$threshold_h" ]]; then
             local absent
+            # Audit round 4d-2 (C1): argv[1..3] MUST be supplied at the
+            # invocation below. When the E16 rewrite moved these off the
+            # program text and nothing was passed, argv was ['-c'], line 3
+            # raised IndexError, `2>/dev/null` swallowed it, `absent` was
+            # always empty — and this alert could never fire again.
             absent="$(python3 -c "
 import sys, json, datetime
-exp = json.load(open('$EXPECTED_FILE'))
+exp = json.load(open(sys.argv[1]))
 names = exp['devices']
-me = '$expected_id'
+me = sys.argv[2]
+threshold_hours = float(sys.argv[3])
 # Only devices that have their own hosts entry, excluding this machine.
 tracked = {h['expected_device_id'] for h in exp['hosts'].values()
            if h.get('expected_device_id') and h['expected_device_id'] != me}
@@ -309,10 +359,10 @@ for dev, s in d.items():
     except ValueError:
         continue
     hours = (now - ts).total_seconds() / 3600
-    if hours >= $threshold_h:
+    if hours >= threshold_hours:
         out.append('%s (%dh ago)' % (names.get(dev, dev[:7]), int(hours)))
 print(', '.join(out))
-" <<<"$stats" 2>/dev/null)"
+" "$EXPECTED_FILE" "$expected_id" "$threshold_h" <<<"$stats" 2>/dev/null)"
             if [[ -n "$absent" ]]; then
                 note_problem "$prefix peer(s) absent beyond ${threshold_h}h: $absent — away, or quietly broken"
             fi
@@ -352,12 +402,12 @@ PYEOF
     stuck_hours="$(python3 -c "
 import json, sys, time
 try:
-    s = json.load(open('$STATE_FILE'))['$label']
+    s = json.load(open(sys.argv[1]))[sys.argv[2]]
 except Exception:
     sys.exit(0)
 if s.get('needBytes', 0) > 0:
     print(int((time.time() - s.get('since', time.time())) / 3600))
-" 2>/dev/null)"
+" "$STATE_FILE" "$label" 2>/dev/null)"
     if [[ -n "$stuck_hours" && -n "$threshold" ]] && (( stuck_hours >= threshold )); then
         note_problem "[$label] sync has not advanced in ${stuck_hours}h (still ${need} bytes behind) — stalled, not syncing"
     fi
@@ -379,8 +429,8 @@ while IFS='|' read -r label device_id container config_dir ssh_host always_on; d
         check_host "$label" "$ssh_host" "$container" "$config_dir" "$device_id" "$always_on"
     fi
 done < <(python3 -c "
-import json
-d = json.load(open('$EXPECTED_FILE'))
+import json, sys
+d = json.load(open(sys.argv[1]))
 for label, h in d['hosts'].items():
     print('|'.join([
         label,
@@ -390,7 +440,7 @@ for label, h in d['hosts'].items():
         h.get('ssh_host', ''),
         'true' if h.get('always_on') else 'false',
     ]))
-")
+" "$EXPECTED_FILE")
 
 # ---------------------------------------------------------------------------
 # Write the gate

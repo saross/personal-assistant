@@ -373,3 +373,153 @@ class TestFormatCitation:
         """Should use 'Unknown' when no creators."""
         item = {"creators": [], "date": "2024", "title": "Test"}
         assert zotero.format_citation(item).startswith("Unknown")
+
+
+# ============================================================================
+# ET3 / E24 / E12 — the real _connect, the real URI, and the n.d. fallback
+#
+# Every test above runs against an in-memory database handed in by the
+# autouse ``patch_connect`` fixture, so the module's central promise — the
+# connection is immutable, and can therefore never interfere with a running
+# Zotero — was itself untested: replacing ``_connect`` with a plain
+# read-write ``sqlite3.connect`` left the suite green (lens B, tranche 5,
+# finding 3). The tests below load a private copy of the module bound to a
+# synthetic on-disk library, so the REAL ``_connect`` runs.
+# ============================================================================
+
+import socket as _socket
+
+from zotero_sqlite_fixture import build_zotero_sqlite, load_zotero_module
+
+
+
+
+#: One invented item, enough for a connection and a lookup.
+_SYNTHETIC_LIBRARY = [
+    {
+        "key": "SYNTH001",
+        "fields": {
+            "title": "Chert Sourcing in the Struma Corridor",
+            "date": "2031",
+            "DOI": "10.2222/synthetic-one",
+        },
+        "creators": [("Iva", "Marinova")],
+    }
+]
+
+
+def _synthetic_data_dir(parent: Path, name: str = "ZoteroSynthetic") -> Path:
+    """Build a Zotero data directory called ``name`` under ``parent``."""
+    data_dir = parent / name
+    data_dir.mkdir(parents=True)
+    build_zotero_sqlite(data_dir / "zotero.sqlite", _SYNTHETIC_LIBRARY)
+    return data_dir
+
+
+class TestConnectIsImmutable:
+    """ET3 — the read-only promise, exercised through the real _connect."""
+
+    def test_a_write_through_the_connection_fails(self, tmp_path) -> None:
+        """An INSERT must be rejected, not merely discouraged by comment."""
+        zot = load_zotero_module(_synthetic_data_dir(tmp_path))
+        conn = zot._connect()
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                conn.execute(
+                    "INSERT INTO itemDataValues VALUES (9999, 'injected')"
+                )
+        finally:
+            conn.close()
+
+    def test_reads_still_work(self, tmp_path) -> None:
+        """The immutable connection is still a usable reader."""
+        zot = load_zotero_module(_synthetic_data_dir(tmp_path))
+        results = zot.search_items("Chert Sourcing")
+        assert [r["key"] for r in results] == ["SYNTH001"]
+
+    def test_the_uri_is_well_formed(self, tmp_path) -> None:
+        """Three slashes after ``file:``, and the immutable flag present."""
+        data_dir = _synthetic_data_dir(tmp_path)
+        zot = load_zotero_module(data_dir)
+        captured: list[str] = []
+        real_connect = sqlite3.connect
+
+        def _record(target, *args, **kwargs):
+            captured.append(str(target))
+            return real_connect(target, *args, **kwargs)
+
+        with patch.object(zot.sqlite3, "connect", _record):
+            zot._connect().close()
+
+        assert captured, "the module did not open a connection"
+        uri = captured[0]
+        assert uri.startswith("file:///"), uri
+        assert not uri.startswith("file:////"), uri
+        assert uri.endswith("?immutable=1"), uri
+
+    def test_awkward_characters_in_the_data_dir_are_encoded(
+        self, tmp_path
+    ) -> None:
+        """E24 — a '#' or '?' in the path must not truncate the URI."""
+        data_dir = _synthetic_data_dir(tmp_path, "Zotero #1 (what?)")
+        zot = load_zotero_module(data_dir)
+        conn = zot._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM items"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row[0] == len(_SYNTHETIC_LIBRARY)
+
+    def test_a_missing_database_raises_file_not_found(self, tmp_path) -> None:
+        """The absent-database branch is a clear error, not a create."""
+        empty = tmp_path / "NoZoteroHere"
+        empty.mkdir()
+        zot = load_zotero_module(empty)
+        with pytest.raises(FileNotFoundError):
+            zot._connect()
+        assert not (empty / "zotero.sqlite").exists(), (
+            "the connection attempt created a database file"
+        )
+
+
+class TestCitationWithoutADate:
+    """E12 — a dateless item must render "n.d.", not an empty bracket."""
+
+    def test_empty_date_renders_n_d(self) -> None:
+        """``_build_item_dict`` supplies "" for a dateless item."""
+        item = {
+            "creators": [
+                {
+                    "first_name": "Iva",
+                    "last_name": "Marinova",
+                    "type": "author",
+                }
+            ],
+            "date": "",
+            "title": "A Study Without a Date",
+        }
+        assert zotero.format_citation(item) == (
+            "Marinova (n.d.) A Study Without a Date"
+        )
+
+    def test_a_real_dateless_item_renders_n_d(self, tmp_path) -> None:
+        """The same, built through the real code path rather than by hand."""
+        data_dir = tmp_path / "ZoteroNoDate"
+        data_dir.mkdir()
+        build_zotero_sqlite(
+            data_dir / "zotero.sqlite",
+            [
+                {
+                    "key": "NODATE01",
+                    "fields": {"title": "Undated Survey Notes"},
+                    "creators": [("Iva", "Marinova")],
+                }
+            ],
+        )
+        zot = load_zotero_module(data_dir)
+        item = zot.get_item("NODATE01")
+        assert zot.format_citation(item) == (
+            "Marinova (n.d.) Undated Survey Notes"
+        )
