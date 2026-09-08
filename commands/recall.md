@@ -188,9 +188,18 @@ memory results.
 Run the search script via Bash, passing the user's text as an **argument**:
 
 ```bash
-python3 ~/personal-assistant/scripts/search-sessions.py "<user query>" \
+~/personal-assistant/venv/bin/python3 \
+  ~/personal-assistant/scripts/search-sessions.py "<user query>" \
   --limit 5 --json
 ```
+
+The **venv** interpreter, not a bare `python3`: this script imports
+`psycopg2`, which is installed only in the virtual environment. A system
+`python3` exits 2 with "psycopg2 is required", which the graceful-fallback
+rule below would then silently swallow as "PostgreSQL unavailable" — the
+session search would appear to work and never return anything. (The two
+instrumentation calls above are stdlib-only, so a bare `python3` is fine
+for them.)
 
 **Never build a SQL string containing the user's text.** This section used
 to hand `psql -c` a statement with the query pasted into a
