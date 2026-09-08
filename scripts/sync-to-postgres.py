@@ -27,6 +27,7 @@ from _sync_cursor import (  # noqa: E402
     QUARANTINE_FAILED,
     QUARANTINE_WRITTEN,
     count_quarantine_entries,
+    normalise_line_cursor,
     CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
@@ -1266,17 +1267,26 @@ def _sync_locked(
     Returns a :class:`CycleResult` — see :func:`sync`.
     """
     snapshot = read_cursor_file_locked(CURSOR_FILE)
-    started_at = snapshot.get("postgres_sync_line")
-    result = _sync_locked_body(
-        logger, quarantine_cap, quarantine_anyway, lock_connected, snapshot,
+    # Normalised ONCE, here, and handed to both the cycle and the gate.
+    # Two readers with different ideas of what counts as a cursor made
+    # the gate see a rebuild the cycle had not noticed (tenth re-audit,
+    # finding M1).
+    started_at = normalise_line_cursor(
+        snapshot.get("postgres_sync_line"),
+        key="postgres_sync_line", logger=logger,
     )
-    ended_at = read_cursor_file_locked(CURSOR_FILE).get("postgres_sync_line")
+    result = _sync_locked_body(
+        logger, quarantine_cap, quarantine_anyway, lock_connected,
+        snapshot, started_at,
+    )
+    ended_at = normalise_line_cursor(
+        read_cursor_file_locked(CURSOR_FILE).get("postgres_sync_line"),
+        key="postgres_sync_line", logger=logger,
+    )
     return replace(
         result,
-        cursor_position=started_at if isinstance(started_at, int) else None,
-        cursor_position_after=(
-            ended_at if isinstance(ended_at, int) else None
-        ),
+        cursor_position=started_at,
+        cursor_position_after=ended_at,
         cursor_seen=True,
     )
 
@@ -1287,8 +1297,13 @@ def _sync_locked_body(
     quarantine_anyway: bool,
     lock_connected: bool | None,
     cursor_snapshot: dict,
+    cursor_line: int | None,
 ) -> CycleResult:
     """The cycle itself, given the one locked cursor read above.
+
+    ``cursor_line`` is the normalised position from :func:`_sync_locked`
+    — the same value the gate is given, so the two can never disagree
+    about where the cursor stood (tenth re-audit, finding M1).
 
     Returns a :class:`CycleResult` — see :func:`sync`.
     """
@@ -1301,9 +1316,7 @@ def _sync_locked_body(
     # rebuild happened (finding M3). The read itself now happens in
     # :func:`_sync_locked`, which passes the snapshot in so the cursor's
     # starting position can be reported to the gate.
-    try:
-        cursor_line = int(cursor_snapshot.get("postgres_sync_line", 0))
-    except (ValueError, TypeError):
+    if cursor_line is None:
         cursor_line = 0
     cursor_key_was_present = "postgres_sync_line" in cursor_snapshot
 

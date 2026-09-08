@@ -133,6 +133,71 @@ def _ends_mid_line(path: Path) -> bool:
         return False
 
 
+def normalise_line_cursor(
+    value: object,
+    *,
+    key: str = "the cursor",
+    logger: logging.Logger | None = None,
+) -> int | None:
+    """
+    Coerce a line-number cursor to an ``int``, or ``None`` if it is not one.
+
+    The cursor file is JSON on disk that a rebuild, a merge, or a person
+    can rewrite, so its type is not guaranteed. Every reader must reach
+    the SAME conclusion about it: the cycle used to accept the string
+    ``"500"`` while the gate's type filter rejected it, so the gate saw
+    the cursor vanish and reported a rebuild that had not happened
+    (tenth re-audit, finding M1).
+
+    A digit string is coerced — it is unambiguously the same position.
+    Anything else is treated as absent and warned about once, because a
+    cursor nobody can read is a real problem and silently resyncing from
+    zero would hide it.
+    """
+    if isinstance(value, bool):
+        pass  # bools are ints in Python and are never a line number
+    elif isinstance(value, int):
+        return value if value >= 0 else None
+    elif isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    if value is None:
+        return None
+    if logger is not None:
+        logger.warning(
+            "%s is %r, which is not a line number — treating it as absent "
+            "and syncing from the beginning. Check the cursor file.",
+            key, value,
+        )
+    return None
+
+
+def normalise_timestamp_cursor(
+    value: object,
+    *,
+    key: str = "the cursor",
+    logger: logging.Logger | None = None,
+) -> str | None:
+    """
+    Coerce a timestamp cursor to a ``str``, or ``None`` if it is not one.
+
+    The sessions cursor is an ISO-8601 instant, compared lexically. A
+    number or an object there is not a timestamp; treating it as absent
+    and saying so beats comparing it against a string and getting an
+    answer that means nothing (tenth re-audit, finding M1).
+    """
+    if isinstance(value, str) and value.strip():
+        return value
+    if value is None:
+        return None
+    if logger is not None:
+        logger.warning(
+            "%s is %r, which is not a timestamp — treating it as absent "
+            "and syncing from the beginning. Check the cursor file.",
+            key, value,
+        )
+    return None
+
+
 def read_quarantine_entries(quarantine_path: Path) -> list[dict] | None:
     """
     Every complete record in a quarantine file, or ``None`` if unreadable.

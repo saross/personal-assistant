@@ -44,6 +44,7 @@ from _sync_cursor import (  # noqa: E402
     QUARANTINE_FAILED,
     QUARANTINE_WRITTEN,
     count_quarantine_entries,
+    normalise_timestamp_cursor,
     CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
@@ -963,18 +964,25 @@ def _sync_locked(
     Returns a :class:`CycleResult` — see :func:`sync`.
     """
     snapshot = read_cursor_file_locked(CURSOR_FILE)
-    started_at = snapshot.get(CURSOR_KEY)
+    # Normalised ONCE, here, and handed to both the cycle and the gate.
+    # Two readers with different ideas of what counts as a cursor made
+    # the gate see a rebuild the cycle had not noticed (tenth re-audit,
+    # finding M1).
+    started_at = normalise_timestamp_cursor(
+        snapshot.get(CURSOR_KEY), key=CURSOR_KEY, logger=logger,
+    )
     result = _sync_locked_body(
         archive_root, full_resync, logger, quarantine_cap,
-        quarantine_anyway, lock_connected, snapshot,
+        quarantine_anyway, lock_connected, snapshot, started_at,
     )
-    ended_at = read_cursor_file_locked(CURSOR_FILE).get(CURSOR_KEY)
+    ended_at = normalise_timestamp_cursor(
+        read_cursor_file_locked(CURSOR_FILE).get(CURSOR_KEY),
+        key=CURSOR_KEY, logger=logger,
+    )
     return replace(
         result,
-        cursor_position=started_at if isinstance(started_at, str) else None,
-        cursor_position_after=(
-            ended_at if isinstance(ended_at, str) else None
-        ),
+        cursor_position=started_at,
+        cursor_position_after=ended_at,
         cursor_seen=True,
     )
 
@@ -987,8 +995,14 @@ def _sync_locked_body(
     quarantine_anyway: bool,
     lock_connected: bool | None,
     cursor_snapshot: dict,
+    cursor_since: str | None,
 ) -> CycleResult:
     """The cycle itself, given the one locked cursor read above.
+
+    ``cursor_since`` is the normalised timestamp from
+    :func:`_sync_locked` — the same value the gate is given, so the two
+    can never disagree about where the cursor stood (tenth re-audit,
+    finding M1).
 
     Returns a :class:`CycleResult` — see :func:`sync`.
     """
@@ -998,8 +1012,8 @@ def _sync_locked_body(
     # at save time (finding M3). The read itself now happens in
     # :func:`_sync_locked`, which passes the snapshot in so the cursor's
     # starting position can be reported to the gate.
-    since = None if full_resync else str(
-        cursor_snapshot.get(CURSOR_KEY, "2000-01-01T00:00:00Z")
+    since = None if full_resync else (
+        cursor_since or "2000-01-01T00:00:00Z"
     )
     cursor_key_was_present = CURSOR_KEY in cursor_snapshot
     if since:

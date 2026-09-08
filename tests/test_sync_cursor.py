@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import multiprocessing
 import os
 import sys
@@ -654,3 +655,81 @@ class TestCountingQuarantineEntries:
         # The complete entries either side of the damage are countable,
         # and the damaged line is not one of them.
         assert _sync_cursor.count_quarantine_entries(path) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tenth re-audit, finding M1 — every reader must reach the same conclusion
+# about a cursor of the wrong type
+# ---------------------------------------------------------------------------
+
+
+class TestNormalisingACursor:
+    """
+    The cursor file is JSON a rebuild, a merge, or a person can rewrite,
+    so its type is not guaranteed. The cycle used to accept the string
+    "500" while the gate's type filter rejected it, so the gate saw the
+    cursor vanish and reported a rebuild that had not happened.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        (0, 0),
+        (500, 500),
+        ("500", 500),
+        ("  500  ", 500),
+        (None, None),
+        (-1, None),
+        (True, None),        # a bool is an int in Python, never a line
+        ("five hundred", None),
+        ("5.0", None),
+        (5.0, None),
+        ({}, None),
+        ([], None),
+    ])
+    def test_a_line_cursor(self, value, expected):
+        """The mutation this kills: dropping the digit-string coercion."""
+        assert _sync_cursor.normalise_line_cursor(value) == expected
+
+    @pytest.mark.parametrize("value,expected", [
+        ("2026-09-01T00:00:00Z", "2026-09-01T00:00:00Z"),
+        (None, None),
+        ("", None),
+        (500, None),
+        ({}, None),
+    ])
+    def test_a_timestamp_cursor(self, value, expected):
+        """The sessions cursor is compared lexically; a number is not one."""
+        assert _sync_cursor.normalise_timestamp_cursor(value) == expected
+
+    def test_garbage_is_warned_about_but_a_digit_string_is_not(self, caplog):
+        """
+        Coercing "500" is silent because it is unambiguously the same
+        position. Real garbage gets a warning: a cursor nobody can read
+        is a problem, and resyncing from zero without saying so hides it.
+
+        The mutation this kills: dropping the warning.
+        """
+        logger = logging.getLogger("test-normalise")
+        with caplog.at_level(logging.WARNING):
+            assert _sync_cursor.normalise_line_cursor(
+                "500", key="postgres_sync_line", logger=logger,
+            ) == 500
+        assert caplog.text == ""
+
+        with caplog.at_level(logging.WARNING):
+            assert _sync_cursor.normalise_line_cursor(
+                {"line": 5}, key="postgres_sync_line", logger=logger,
+            ) is None
+        assert "not a line number" in caplog.text
+        assert "postgres_sync_line" in caplog.text
+
+    def test_an_absent_cursor_is_not_warned_about(self, caplog):
+        """A first-ever run has no cursor and that is ordinary."""
+        logger = logging.getLogger("test-normalise-absent")
+        with caplog.at_level(logging.WARNING):
+            assert _sync_cursor.normalise_line_cursor(
+                None, logger=logger,
+            ) is None
+            assert _sync_cursor.normalise_timestamp_cursor(
+                None, logger=logger,
+            ) is None
+        assert caplog.text == ""

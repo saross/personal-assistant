@@ -2971,6 +2971,143 @@ class TestARebuildWithNoSyncRunningIsStillDetected:
             encoding="utf-8",
         )
 
+    def _quarantine_two_and_ack(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """Get to "two rows quarantined and acknowledged"."""
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            "".join(
+                json.dumps(self._record(mid)) + "\n"
+                for mid in ("m-bad-1", "m-bad-2")
+            ),
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        self._pin(monkeypatch, tmp_path, memories, cursor_file, quarantine)
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values(
+                {"m-bad-1", "m-bad-2"},
+            ),
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
+        )
+        try:
+            with pytest.raises(SystemExit):
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+        return cursor_file, quarantine
+
+    def _tick(self, caplog_level=logging.WARNING):
+        """Run one more cron tick."""
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+    def test_a_string_cursor_is_not_a_rebuild(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Tenth re-audit, M1 — the cycle accepted the string "2" and the
+        gate's type filter rejected it, so the gate saw the cursor vanish
+        and reported a rebuild that had not happened: every acknowledged
+        row came back on the next tick.
+
+        The mutation this kills: dropping the digit-string coercion from
+        the normaliser.
+        """
+        import _sync_gate
+
+        cursor_file, _ = self._quarantine_two_and_ack(
+            monkeypatch, tmp_path, pinned_gate_file,
+        )
+        cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
+        assert cursors["postgres_sync_line"] == 2
+        cursors["postgres_sync_line"] = "2"
+        cursor_file.write_text(json.dumps(cursors), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            self._tick()
+
+        assert "moved backwards" not in caplog.text
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems, (
+            "a cursor written as a string was read as a rebuild"
+        )
+
+    def test_a_string_cursor_leaves_a_real_rebuild_detectable(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        The half of M1 that bites later: with the position filtered away,
+        the recorded value stuck at None and ``cursor_went_backwards``
+        returns False against None for ever — so no rebuild is ever
+        detected again.
+
+        The mutation this kills: normalising only the STARTING position
+        and leaving the ending one type-filtered.
+        """
+        import _sync_gate
+
+        cursor_file, _ = self._quarantine_two_and_ack(
+            monkeypatch, tmp_path, pinned_gate_file,
+        )
+        cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
+        cursors["postgres_sync_line"] = "2"
+        cursor_file.write_text(json.dumps(cursors), encoding="utf-8")
+        self._tick()
+
+        # Now a real rebuild, with the string cursor having been the last
+        # thing recorded.
+        cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
+        del cursors["postgres_sync_line"]
+        cursor_file.write_text(json.dumps(cursors), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            self._tick()
+
+        assert "moved backwards" in caplog.text
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+
+    def test_a_garbage_cursor_is_warned_about_and_treated_as_absent(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        A cursor nobody can read is a real problem: the run resyncs from
+        the beginning, which is safe, and says so, which is the part that
+        was missing. The mutation this kills: dropping the warning and
+        silently coercing to zero.
+        """
+        cursor_file, _ = self._quarantine_two_and_ack(
+            monkeypatch, tmp_path, pinned_gate_file,
+        )
+        cursors = json.loads(cursor_file.read_text(encoding="utf-8"))
+        cursors["postgres_sync_line"] = {"line": 2}
+        cursor_file.write_text(json.dumps(cursors), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            self._tick()
+
+        assert "not a line number" in caplog.text
+        # And it recovers: the run wrote a real integer back.
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 2
+
     def test_ordinary_progress_is_not_mistaken_for_a_rebuild(
         self, monkeypatch, tmp_path, pinned_gate_file,
     ):
