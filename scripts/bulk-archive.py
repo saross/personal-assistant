@@ -513,6 +513,7 @@ def discover_sessions(
     total_skipped_archived = 0
     total_skipped_agent = 0
     total_skipped_duplicate = 0
+    total_skipped_in_grace = 0
     # session_id -> index into `manifest`, so a duplicate found on a second
     # machine can replace the first when its transcript is larger.
     seen: dict[str, int] = {}
@@ -539,6 +540,17 @@ def discover_sessions(
             # Deduplication check
             if session_id in archived_ids:
                 total_skipped_archived += 1
+                continue
+
+            # Completeness guard (audit 2026-09-08, AR3). A transcript
+            # written within the grace window may still be growing: the
+            # session is live, or a compaction is mid-flight. Archiving a
+            # growing file captures a prefix, and that prefix then becomes
+            # canonical — the archive says "complete", every checker agrees,
+            # and the tail of the session is gone. Wait instead; the next run
+            # picks it up.
+            if within_grace(jsonl_file):
+                total_skipped_in_grace += 1
                 continue
 
             # Extract stats for trivial filtering
@@ -628,10 +640,12 @@ def discover_sessions(
     logger.info(
         "Discovery complete: %d sessions to archive, "
         "%d skipped (trivial), %d skipped (already archived), "
-        "%d skipped (flat agents), %d skipped (cross-machine duplicate)",
+        "%d skipped (flat agents), %d skipped (cross-machine duplicate), "
+        "%d skipped (written within the %dh grace window — may still be "
+        "growing)",
         len(manifest), total_skipped_trivial,
         total_skipped_archived, total_skipped_agent,
-        total_skipped_duplicate,
+        total_skipped_duplicate, total_skipped_in_grace, GRACE_HOURS,
     )
 
     return manifest
@@ -1038,6 +1052,73 @@ def cmd_subagents(args: argparse.Namespace, logger: logging.Logger) -> None:
     print(f"\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
 
 
+def uncompressed_size(transcript: Path) -> int | None:
+    """Return the byte length an archived transcript decompresses to.
+
+    For ``session.jsonl.gz`` this reads the gzip ISIZE trailer — the last
+    four bytes of the member, little-endian — so the answer costs one seek
+    rather than a full decompression pass over the whole archive. ISIZE is
+    stored modulo 2**32; no session transcript comes close to 4 GiB, and a
+    file that did would report a wrapped value, which is why the caller
+    treats a mismatch as "report", never as "delete".
+
+    Returns ``None`` when the size cannot be determined.
+    """
+    try:
+        if transcript.suffix == ".gz":
+            with open(transcript, "rb") as handle:
+                if handle.seek(0, os.SEEK_END) < 8:
+                    return None
+                handle.seek(-4, os.SEEK_END)
+                return int.from_bytes(handle.read(4), "little")
+        return transcript.stat().st_size
+    except OSError:
+        return None
+
+
+def refuse_incomplete_source(
+    session_path: Path,
+    expected_size: int | None,
+    logger: logging.Logger,
+) -> str | None:
+    """Return a reason to refuse archiving *session_path*, or ``None``.
+
+    The completeness guard (audit 2026-09-08, finding AR3). Discovery and
+    archiving are separate commands, often minutes or days apart, and nothing
+    between them stopped the archiver copying a transcript that was still
+    being written. A copy taken mid-write is a prefix — and once it is in the
+    archive it IS the session, with every integrity check reporting clean,
+    because until now every check compared the archive against itself.
+
+    Three refusals, cheapest first:
+
+    * the transcript has gone (moved, or the machine's store was cleaned);
+    * it was last written inside the grace window, so a live session or an
+      in-flight compaction may still be appending;
+    * its size differs from the size discovery recorded, which means it grew
+      (or was rewritten) between the two commands.
+    """
+    try:
+        stat = session_path.stat()
+    except OSError as exc:
+        return f"source transcript unreadable ({exc})"
+    if within_grace(session_path):
+        return (
+            f"written within the {GRACE_HOURS}h grace window "
+            "(may still be growing)"
+        )
+    if expected_size is not None and stat.st_size != expected_size:
+        return (
+            f"size changed since discovery ({expected_size} -> "
+            f"{stat.st_size} bytes) — re-run discover"
+        )
+    logger.debug(
+        "Completeness guard passed for %s (%d bytes)",
+        session_path.name, stat.st_size,
+    )
+    return None
+
+
 def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the archive mode: compress and archive sessions."""
     # Add cc-session-toolkit to path
@@ -1108,6 +1189,8 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     archived_count = 0
     subagent_count = 0
     archived_dirs: list[Path] = []
+    # (session_id, reason) for sources the completeness guard refused.
+    skipped_incomplete: list[tuple[str, str]] = []
 
     for i, entry in enumerate(to_archive, 1):
         session_path = Path(entry["session_path"])
@@ -1128,6 +1211,20 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                 "Progress: %d/%d (%.0f%%)",
                 i, len(to_archive), i / len(to_archive) * 100,
             )
+
+        # Re-stat immediately before the copy, not at discovery time: the
+        # window between the two commands is exactly where a growing
+        # transcript slips through (AR3).
+        refusal = refuse_incomplete_source(
+            session_path, entry.get("size_bytes"), logger
+        )
+        if refusal:
+            logger.warning(
+                "Skipping %s (%s): %s", session_id[:8], project_name, refusal
+            )
+            skipped_incomplete.append((session_id, refusal))
+            continue
+        size_before_copy = session_path.stat().st_size
 
         try:
             metadata = archive_session(
@@ -1170,6 +1267,28 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
                         sa_count, session_id[:8],
                     )
 
+            # Compare the source again AFTER the copy. If it moved under us
+            # the archived entry may hold a prefix, so it is recorded as a
+            # failure rather than a success: it is not added to archived_ids,
+            # the drift gate keeps reporting the session, and `verify` will
+            # flag the size mismatch. The entry is left in place — deleting
+            # from the archive on a size heuristic is a worse failure mode
+            # than keeping a suspect entry that every checker now names.
+            try:
+                size_after_copy = session_path.stat().st_size
+            except OSError:
+                size_after_copy = -1
+            if size_after_copy != size_before_copy:
+                reason = (
+                    f"source changed DURING the copy ({size_before_copy} -> "
+                    f"{size_after_copy} bytes); archived entry at "
+                    f"{archive_dir_str} may be truncated — re-archive"
+                )
+                logger.error("%s (%s): %s", session_id[:8], project_name, reason)
+                checkpoint["failed_ids"][session_id] = reason
+                _save_checkpoint(checkpoint)
+                continue
+
             # Update checkpoint
             checkpoint["archived_ids"].append(session_id)
             checkpoint["stats"]["total_archived"] += 1
@@ -1197,6 +1316,13 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         "\nArchive complete: %d sessions, %d subagents archived",
         archived_count, subagent_count,
     )
+    if skipped_incomplete:
+        logger.warning(
+            "%d session(s) skipped by the completeness guard (not archived):",
+            len(skipped_incomplete),
+        )
+        for session_id, reason in skipped_incomplete:
+            logger.warning("  %s — %s", session_id[:8], reason)
     if checkpoint["failed_ids"]:
         logger.warning(
             "%d sessions failed — see checkpoint: %s",
@@ -2225,6 +2351,24 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
 # ============================================================================
 
 
+def _recorded_transcript_bytes(meta: dict[str, Any]) -> int | None:
+    """The uncompressed transcript length the metadata claims, or ``None``.
+
+    The v1.1 archive block records ``jsonl_bytes_uncompressed`` when the
+    transcript was gzipped and ``jsonl_bytes`` when it was not; older entries
+    carry only the latter. Both name the same quantity — the size of the raw
+    JSONL — so either answers the completeness question.
+    """
+    archive_block = meta.get("archive")
+    if not isinstance(archive_block, dict):
+        return None
+    for key in ("jsonl_bytes_uncompressed", "jsonl_bytes"):
+        value = archive_block.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
+
+
 def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run integrity checks and optionally rebuild the catalogue."""
     # Add cc-session-toolkit to path
@@ -2249,18 +2393,34 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
 
     for archive_dir in archive_dirs:
         meta_path = archive_dir / "session.meta.json"
-        has_jsonl = (
-            (archive_dir / "session.jsonl.gz").exists()
-            or (archive_dir / "session.jsonl").exists()
-        )
+        transcript: Path | None = None
+        for candidate in ("session.jsonl.gz", "session.jsonl"):
+            if (archive_dir / candidate).exists():
+                transcript = archive_dir / candidate
+                break
 
-        if not has_jsonl:
+        if transcript is None:
             issues.append(f"Missing JSONL: {archive_dir}")
 
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             project = meta.get("project", {}).get("name", "unknown")
             by_project[project] = by_project.get(project, 0) + 1
+
+            # Completeness check (AR3): the archived transcript must be as
+            # long as the metadata says it is. Until 2026-09-08 verify
+            # compared the archive only against itself — existence and a
+            # parseable meta — so a transcript copied mid-write passed every
+            # check that existed, forever.
+            if transcript is not None:
+                recorded = _recorded_transcript_bytes(meta)
+                actual = uncompressed_size(transcript)
+                if recorded is not None and actual is not None \
+                        and recorded != actual:
+                    issues.append(
+                        f"Size mismatch: {archive_dir} — metadata records "
+                        f"{recorded} bytes, {transcript.name} holds {actual}"
+                    )
 
             purpose = meta.get("auto_generated", {}).get("purpose", "")
             if (
