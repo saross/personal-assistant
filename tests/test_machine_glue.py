@@ -23,6 +23,7 @@ All fixture content is invented.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -879,6 +880,295 @@ class TestEnvFingerprintParsing:
 
         assert result.returncode == 0
         assert "MISSING" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# syncthing-bind-heal.sh — ET15
+#
+# The only restart anywhere in this tranche. No test referenced the script.
+# The stub `docker` below records argv and never contacts a daemon.
+# ---------------------------------------------------------------------------
+
+BIND_HEAL = SCRIPTS / "syncthing-bind-heal.sh"
+
+
+@pytest.fixture
+def heal_sandbox(tmp_path: Path) -> dict[str, Path]:
+    """A pinned HOME with a stub docker and no Syncthing setup yet."""
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "stubbin"
+    log = tmp_path / "argv.log"
+    log.write_text("", encoding="utf-8")
+    write_stub(bin_dir, "docker", log)
+    return {"home": home, "bin": bin_dir, "log": log}
+
+
+def _run_heal(sandbox: dict[str, Path]) -> subprocess.CompletedProcess[str]:
+    """Run the heal script with the stub docker first on PATH."""
+    return run_script(
+        BIND_HEAL, home=sandbox["home"], path_prefix=sandbox["bin"]
+    )
+
+
+def _compose_setup(home: Path, with_cert: bool) -> Path:
+    """Create the compose directory, optionally with a visible cert.pem."""
+    compose_dir = home / "docker" / "syncthing"
+    (compose_dir / "config").mkdir(parents=True)
+    (compose_dir / "docker-compose.yml").write_text(
+        "services:\n  syncthing:\n    image: synthetic\n", encoding="utf-8"
+    )
+    if with_cert:
+        (compose_dir / "config" / "cert.pem").write_text(
+            "not a real certificate\n", encoding="utf-8"
+        )
+    return compose_dir
+
+
+class TestSyncthingBindHeal:
+    """ET15 — the preconditions, pinned with a stub docker."""
+
+    def test_no_compose_file_means_no_action(
+        self, heal_sandbox: dict[str, Path]
+    ) -> None:
+        """A machine that does not run the container is a silent no-op.
+
+        The real config IS visible here, so only the missing compose file
+        can stop the script — otherwise this would pass for the wrong
+        reason (the cert precondition below).
+        """
+        config = heal_sandbox["home"] / "docker" / "syncthing" / "config"
+        config.mkdir(parents=True)
+        (config / "cert.pem").write_text(
+            "not a real certificate\n", encoding="utf-8"
+        )
+
+        result = _run_heal(heal_sandbox)
+
+        assert result.returncode == 0
+        assert heal_sandbox["log"].read_text(encoding="utf-8") == ""
+
+    def test_an_absent_cert_means_no_action(
+        self, heal_sandbox: dict[str, Path]
+    ) -> None:
+        """Home not mounted: recreating would re-bind the underlay."""
+        _compose_setup(heal_sandbox["home"], with_cert=False)
+
+        result = _run_heal(heal_sandbox)
+
+        assert result.returncode == 0
+        assert heal_sandbox["log"].read_text(encoding="utf-8") == ""
+        assert "refusing to act" in result.stderr
+
+    def test_both_present_recreates_once(
+        self, heal_sandbox: dict[str, Path]
+    ) -> None:
+        """With the compose file and the real config visible, it recreates."""
+        compose_dir = _compose_setup(heal_sandbox["home"], with_cert=True)
+
+        result = _run_heal(heal_sandbox)
+
+        assert result.returncode == 0
+        recorded = heal_sandbox["log"].read_text(encoding="utf-8")
+        recreates = [
+            line
+            for line in recorded.splitlines()
+            if "up -d --force-recreate" in line
+        ]
+        assert len(recreates) == 1, recorded
+        assert str(compose_dir / "docker-compose.yml") in recreates[0]
+
+    def test_it_always_exits_zero(
+        self, heal_sandbox: dict[str, Path]
+    ) -> None:
+        """A heal script must never break a login or a hook chain."""
+        _compose_setup(heal_sandbox["home"], with_cert=True)
+        write_stub(
+            heal_sandbox["bin"], "docker", heal_sandbox["log"], exit_code=1
+        )
+
+        result = _run_heal(heal_sandbox)
+
+        assert result.returncode == 0
+        assert "FAILED" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# syncthing-health.sh — E15 and E16
+# ---------------------------------------------------------------------------
+
+HEALTH = SCRIPTS / "syncthing-health.sh"
+
+
+def _expectations(path: Path, container: str = "syncthing") -> Path:
+    """Write a synthetic expectations file naming one unreachable host."""
+    path.write_text(
+        json.dumps(
+            {
+                "folder_id": "synthetic-folder",
+                "devices": {"AAAAAAA-BBBBBBB": "synthetic-node"},
+                "thresholds": {
+                    "peer_offline_hours": 48,
+                    "stuck_sync_hours": 12,
+                },
+                "hosts": {
+                    "not-this-machine": {
+                        "expected_device_id": "AAAAAAA-BBBBBBB",
+                        "container": container,
+                        "config_dir": "/synthetic/config",
+                        "ssh_host": "",
+                        "always_on": False,
+                    }
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestSyncthingHealthAlwaysExitsZero:
+    """E15 — `set -u` plus a trailing flag broke the one hard invariant."""
+
+    def test_simulate_need_without_a_value_still_exits_zero(
+        self, tmp_path: Path
+    ) -> None:
+        """A trailing --simulate-need must not kill the monitor."""
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        expectations = _expectations(tmp_path / "expected.json")
+
+        result = run_script(
+            HEALTH,
+            "--quiet",
+            "--simulate-need",
+            home=home,
+            extra_env={"SYNCTHING_EXPECTED_FILE": str(expectations)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "needs a byte count" in result.stderr
+
+    def test_a_missing_expectations_file_exits_zero(
+        self, tmp_path: Path
+    ) -> None:
+        """The documented degradation: a verdict in the gate, status 0."""
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+
+        result = run_script(
+            HEALTH,
+            "--quiet",
+            home=home,
+            extra_env={
+                "SYNCTHING_EXPECTED_FILE": str(tmp_path / "absent.json")
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        gate = (home / ".cache" / "syncthing-gate").read_text(
+            encoding="utf-8"
+        )
+        assert "expectations file missing" in gate
+
+
+class TestSyncthingHealthQuoting:
+    """E16 — a quote in a path must not change the program being run."""
+
+    def test_a_quote_in_the_expectations_path_is_survivable(
+        self, tmp_path: Path
+    ) -> None:
+        """The path reaches Python as argv, so it cannot end a literal."""
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        awkward = tmp_path / "it's a dir"
+        awkward.mkdir()
+        expectations = _expectations(awkward / "expected.json")
+
+        result = run_script(
+            HEALTH,
+            "--quiet",
+            "--local-only",
+            home=home,
+            extra_env={"SYNCTHING_EXPECTED_FILE": str(expectations)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        gate = (home / ".cache" / "syncthing-gate").read_text(
+            encoding="utf-8"
+        )
+        # The file was read, so the "missing" branch did not fire...
+        assert "expectations file missing" not in gate
+        # ...and no embedded Python was corrupted by the apostrophe, which
+        # is what interpolating the path into the program text would do.
+        assert "SyntaxError" not in result.stderr, result.stderr
+        assert "Traceback" not in result.stderr, result.stderr
+
+    def test_the_container_name_is_shell_quoted(self) -> None:
+        """Values from the JSON are quoted before reaching bash -c / ssh.
+
+        A source-level assertion: the command strings ``run_on`` builds are
+        executed by a shell, and every interpolation of an
+        operator-supplied value must go through ``shq`` first. Proving this
+        by execution would mean letting a crafted value run a command.
+        """
+        source = HEALTH.read_text(encoding="utf-8")
+        assert "shq()" in source
+        assert 'q_container="$(shq "$container")"' in source
+        assert 'q_config_dir="$(shq "$config_dir")"' in source
+        # No bare interpolation survives inside a run_on command string.
+        for line in source.splitlines():
+            if "run_on " in line or "docker exec" in line:
+                assert "$container " not in line, line
+                assert "$config_dir " not in line, line
+
+
+# ---------------------------------------------------------------------------
+# ollama-endpoint.sh — E20 / ET16
+# ---------------------------------------------------------------------------
+
+OLLAMA = SCRIPTS / "ollama-endpoint.sh"
+
+
+def _run_ollama(
+    tmp_path: Path, curl_exit: int
+) -> subprocess.CompletedProcess[str]:
+    """Run the endpoint probe with a stub curl of the given exit status."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    bin_dir = tmp_path / "stubbin"
+    log = tmp_path / "curl.log"
+    log.write_text("", encoding="utf-8")
+    write_stub(bin_dir, "curl", log, exit_code=curl_exit)
+    return run_script(OLLAMA, home=home, path_prefix=bin_dir)
+
+
+class TestOllamaEndpoint:
+    """ET16 — no direct test existed; exiting 0 unreachable survived."""
+
+    def test_the_first_reachable_candidate_is_printed(
+        self, tmp_path: Path
+    ) -> None:
+        """A responding probe yields one URL and status 0."""
+        result = _run_ollama(tmp_path, curl_exit=0)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == "http://192.168.1.150:11434"
+
+    def test_no_candidate_prints_nothing_and_exits_one(
+        self, tmp_path: Path
+    ) -> None:
+        """E20 — an empty LINE is a value; nothing is not."""
+        result = _run_ollama(tmp_path, curl_exit=7)
+
+        assert result.returncode == 1
+        assert result.stdout == "", repr(result.stdout)
+
+    def test_the_consuming_idiom_is_documented(self) -> None:
+        """`VAR=$(script) cmd` discards the status; say what to do instead."""
+        source = OLLAMA.read_text(encoding="utf-8")
+        assert "if url=$(" in source
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entry point
