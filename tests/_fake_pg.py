@@ -135,7 +135,12 @@ class FakeMemoryDB:
         if "FROM meta" in flat:
             return [(self.schema_version,)], [("value",)]
         if flat.startswith("SELECT COUNT(*) FILTER"):
-            rows = self._table_rows("active_memories")
+            # Read the table out of the statement rather than assuming it
+            # (audit L4): hard-coding "active_memories" here made the
+            # coverage query's own table unobservable, so a mutation
+            # counting over the base table passed the very test whose
+            # docstring claimed to kill it.
+            rows = self._table_rows(flat.partition(" FROM ")[2].split()[0])
             missing = sum(1 for r in rows if r.get("embedding") is None)
             return [(missing, len(rows))], [("count",), ("count",)]
 

@@ -16,6 +16,9 @@ import pytest
 # Module import (file has no .py-friendly name, load via spec)
 # -------------------------------------------------------------------------
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _fake_pg import FakeMemoryDB, connect_factory  # noqa: E402
+
 MODULE_PATH = (
     Path(__file__).resolve().parent.parent / "scripts" / "memory_mcp.py"
 )
@@ -1396,3 +1399,117 @@ class TestJsonlFallbackBehaviour:
         data = self._search(category="decision")
         assert [r["id"] for r in data["results"]] == [m["id"] for m in cli]
         assert len(cli) == 4  # the comparison is not vacuous
+
+
+# -------------------------------------------------------------------------
+# Audit M2: list_recent's own SQL, evaluated rather than mocked
+# -------------------------------------------------------------------------
+
+class TestListRecentQueryBody:
+    """TestListRecent above uses a MagicMock cursor, so the statement itself
+    was unobservable: swapping the ``active_memories`` view for the base
+    table, and ``DESC`` for ``ASC``, both survived the full suite.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_postgres(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unpatched connect in this class is a test bug, not a query."""
+        import psycopg2
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError(
+                "psycopg2.connect reached the real driver; patch it"
+            )
+
+        monkeypatch.setattr(psycopg2, "connect", _forbidden)
+
+    @staticmethod
+    def _row(mem_id: str, *, days_old: int = 1, category: str = "decision",
+             is_active: bool = True, decayed: bool = False) -> dict:
+        """One seeded row, aged relative to now so make_interval bites."""
+        from datetime import datetime, timedelta, timezone
+
+        created = datetime.now(timezone.utc) - timedelta(days=days_old)
+        return {
+            "id": mem_id, "category": category, "content": f"content {mem_id}",
+            "summary": f"summary {mem_id}", "confidence": "high",
+            "verified": "true", "research_tags": ["survey"],
+            "source_context": "planning", "created_at": created.isoformat(),
+            "project": "-home-shawn-Code-fieldwork", "embedding": None,
+            "is_active": is_active, "decayed": decayed,
+        }
+
+    def _install(self, monkeypatch: pytest.MonkeyPatch, rows: list[dict]):
+        import psycopg2
+
+        connect = connect_factory(FakeMemoryDB(rows))
+        monkeypatch.setattr(psycopg2, "connect", connect)
+        return connect
+
+    def test_reads_the_view_not_the_base_table(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: ``FROM active_memories`` -> ``FROM memories``.
+
+        The view is where the soft-delete and decay rules live, so the base
+        table would list memories the operator has already retired.
+        """
+        self._install(monkeypatch, [
+            self._row("live"),
+            self._row("forgotten", is_active=False),
+            self._row("decayed-out", decayed=True),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert [r["id"] for r in data["results"]] == ["live"]
+
+    def test_orders_newest_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills: ``ORDER BY created_at DESC`` -> ``ASC``."""
+        self._install(monkeypatch, [
+            self._row("older", days_old=5),
+            self._row("newest", days_old=1),
+            self._row("middle", days_old=3),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert [r["id"] for r in data["results"]] == [
+            "newest", "middle", "older",
+        ]
+
+    def test_window_excludes_older_memories(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: dropping the make_interval window (everything comes back)."""
+        self._install(monkeypatch, [
+            self._row("inside", days_old=2),
+            self._row("outside", days_old=90),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert [r["id"] for r in data["results"]] == ["inside"]
+
+    def test_category_filter_applies(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Kills: dropping the optional ``AND category = %s`` clause."""
+        self._install(monkeypatch, [
+            self._row("wanted", category="decision"),
+            self._row("other", category="progress"),
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(
+            days=7, category="decision")))
+        assert [r["id"] for r in data["results"]] == ["wanted"]
+
+    def test_limit_is_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills: dropping ``LIMIT %s``."""
+        self._install(monkeypatch, [
+            self._row(f"m{i}", days_old=i + 1) for i in range(5)
+        ])
+        data = json.loads(_run(memory_mcp.list_recent(days=30, limit=2)))
+        assert data["count"] == 2
+
+    def test_connection_is_closed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The ``finally: conn.close()`` contract, non-vacuously."""
+        connect = self._install(monkeypatch, [self._row("live")])
+        _run(memory_mcp.list_recent(days=7))
+        assert connect.connections, "no connection was opened"
+        assert all(c.closed for c in connect.connections)
