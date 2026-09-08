@@ -7,6 +7,7 @@ without touching the real memory system.
 
 import json
 import os
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -45,6 +46,9 @@ _SUITE_HOME = tempfile.TemporaryDirectory(prefix="pa-test-home-")
 REAL_HOME = os.environ.get("HOME")
 os.environ["HOME"] = _SUITE_HOME.name
 os.environ.pop("XDG_CACHE_HOME", None)
+# A stray ZOTERO_DATA_DIR points a test at the operator's real Zotero
+# library (audit round 4a-2 addendum); the suite supplies its own.
+os.environ.pop("ZOTERO_DATA_DIR", None)
 Path(_SUITE_HOME.name, ".cache").mkdir(parents=True, exist_ok=True)
 # A minimal identity, so a throwaway repository can commit without
 # borrowing the operator's name or failing outright.
@@ -53,6 +57,61 @@ Path(_SUITE_HOME.name, ".gitconfig").write_text(
     "\temail = tests@personal-assistant.invalid\n",
     encoding="utf-8",
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermeticity: no route to a real PostgreSQL, for ANY caller
+#
+# The ``no_live_postgres`` fixture below patches ``psycopg2.connect``. Two
+# holes survived that (audit round 4a-2, finding M8):
+#
+#   * a module that did ``from psycopg2 import connect`` at import time bound
+#     the REAL function before the fixture ever ran, and calling it reached
+#     the driver;
+#   * scripts that shell out to ``psql`` (monthly-archive.py,
+#     check-memory-drift.py) never touch psycopg2 at all.
+#
+# Both are closed here, at import time so that env changes are in place before
+# any module constant is baked and before any subprocess is spawned:
+#
+#   * ``PGHOST`` points at an empty directory inside the suite's own home, so
+#     libpq looks for a Unix socket that cannot be there and fails
+#     immediately. ``PGHOSTADDR`` is removed (it would override PGHOST) and
+#     ``PGPORT`` is pinned so a TCP fallback has nothing to reach either.
+#     This covers psycopg2 and psql alike, since both go through libpq.
+#   * a stub ``psql`` is placed FIRST on ``PATH``; it exits 1 with a message
+#     naming the suite, so a script that shells out gets a clean refusal
+#     rather than the operator's database.
+#
+# All of this lives in this process's environment only: it is inherited by
+# test subprocesses and by nothing else. No shell profile, no settings file,
+# and no file outside the suite's temporary home is touched, so nothing here
+# can reach a cron run, a hook, or an interactive session.
+# ---------------------------------------------------------------------------
+
+#: An empty directory: libpq will look for ``.s.PGSQL.<port>`` in it and fail.
+_NO_PG_SOCKET_DIR = Path(_SUITE_HOME.name, "no-postgres-here")
+_NO_PG_SOCKET_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["PGHOST"] = str(_NO_PG_SOCKET_DIR)
+os.environ.pop("PGHOSTADDR", None)  # would take precedence over PGHOST
+os.environ["PGPORT"] = "1"          # nothing listens on port 1
+os.environ.pop("PGSERVICE", None)   # a service file could name a real host
+os.environ.pop("PGSERVICEFILE", None)
+
+#: Text the stub prints, asserted by ``test_hermeticity_fixture.py``.
+PSQL_STUB_MESSAGE = "psql refused by the test suite"
+
+_STUB_BIN = Path(_SUITE_HOME.name, "bin")
+_STUB_BIN.mkdir(parents=True, exist_ok=True)
+_PSQL_STUB = _STUB_BIN / "psql"
+_PSQL_STUB.write_text(
+    "#!/bin/sh\n"
+    f'echo "{PSQL_STUB_MESSAGE}: $*" >&2\n'
+    "exit 1\n",
+    encoding="utf-8",
+)
+_PSQL_STUB.chmod(0o755)
+os.environ["PATH"] = f"{_STUB_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 #: The pytest marker that quarantines a test needing a live service, and
@@ -199,6 +258,117 @@ Last updated: 2024-02-08
 
 
 # ---------------------------------------------------------------------------
+# Hermeticity: the suite must not open a network connection
+#
+# A probe test that stood up a local TCP server and connected to it passed
+# with no complaint, which means an escaped httpx, pyzotero, urllib, or Slack
+# call from any test would have reached the real internet (audit round 4a-2
+# addendum). Nothing else in the suite was watching sockets at all.
+#
+# Policy: DEFAULT DENY, with an explicit opt-in that is ALSO restricted to
+# loopback. Allowing loopback unconditionally was rejected: this machine runs
+# the operator's real PostgreSQL and Ollama on 127.0.0.1, so "it is only
+# localhost" is not a safety boundary here — a stray connection could reach a
+# live service and, in Ollama's case, spend GPU time. A test that genuinely
+# owns a server it started declares ``@pytest.mark.local_socket`` (registered
+# in pytest.ini) and may then reach 127.0.0.1 / ::1 only; everything else,
+# marked or not, is refused.
+# ---------------------------------------------------------------------------
+
+#: The marker that opts a test into loopback connections it owns.
+LOCAL_SOCKET_MARKER = "local_socket"
+
+#: Hosts an opted-in test may reach. Nothing routable, ever.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "ip6-localhost"})
+
+#: Updated by ``pytest_runtest_setup`` so a refusal can name the test that
+#: caused it — a bare "no network" tells the reader nothing about where to
+#: look.
+_ACTIVE_TEST: dict[str, object] = {"nodeid": "<collection>", "local_socket": False}
+
+
+def pytest_configure(config):
+    """Register the opt-in marker even when pytest.ini is not the one in use."""
+    config.addinivalue_line(
+        "markers",
+        f"{LOCAL_SOCKET_MARKER}: test connects to a loopback server it "
+        f"started itself",
+    )
+
+
+def pytest_runtest_setup(item):
+    """Record which test is running, and whether it may use a local socket."""
+    _ACTIVE_TEST["nodeid"] = item.nodeid
+    _ACTIVE_TEST["local_socket"] = (
+        item.get_closest_marker(LOCAL_SOCKET_MARKER) is not None
+    )
+
+
+def _is_loopback(address) -> bool:
+    """True only for an AF_INET/AF_INET6 address on the loopback interface.
+
+    A Unix-domain path is deliberately NOT loopback: it is the route to the
+    operator's PostgreSQL socket, which this guard exists to block.
+    """
+    if not isinstance(address, tuple) or not address:
+        return False
+    host = address[0]
+    if not isinstance(host, str):
+        return False
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _network_refusal(address) -> str:
+    """The refusal text, naming the test and what it reached for."""
+    return (
+        f"refused by the test suite: no network. "
+        f"{_ACTIVE_TEST['nodeid']} tried to connect to {address!r}. "
+        f"Mock the client, or — if the test owns a loopback server it "
+        f"started itself — mark it @pytest.mark.{LOCAL_SOCKET_MARKER}."
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_network():
+    """Refuse every outbound connection for the whole session.
+
+    Patched at session scope rather than per test so a connection opened from
+    a fixture, a background thread, or an import is caught too. Both
+    ``socket.socket.connect`` and ``socket.create_connection`` are wrapped:
+    the latter goes through the former today, but belt and braces costs
+    nothing and the stdlib is free to change.
+    """
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+
+    def guarded_connect(self, address):
+        if _ACTIVE_TEST["local_socket"] and _is_loopback(address):
+            return real_connect(self, address)
+        raise AssertionError(_network_refusal(address))
+
+    def guarded_connect_ex(self, address):
+        if _ACTIVE_TEST["local_socket"] and _is_loopback(address):
+            return real_connect_ex(self, address)
+        raise AssertionError(_network_refusal(address))
+
+    def guarded_create_connection(address, *args, **kwargs):
+        if _ACTIVE_TEST["local_socket"] and _is_loopback(address):
+            return real_create_connection(address, *args, **kwargs)
+        raise AssertionError(_network_refusal(address))
+
+    socket.socket.connect = guarded_connect
+    socket.socket.connect_ex = guarded_connect_ex
+    socket.create_connection = guarded_create_connection
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect
+        socket.socket.connect_ex = real_connect_ex
+        socket.create_connection = real_create_connection
+
+
+# ---------------------------------------------------------------------------
 # Hermeticity: the suite must not write ~/.cache at all
 #
 # Three separate times during the September 2026 audit a test wrote a real
@@ -301,8 +471,27 @@ _CANONICAL_FILES = (
     PROJECT_ROOT / "memories" / "memories.jsonl",
     PROJECT_ROOT / "memories" / "tag-vocabulary.txt",
 )
-#: Directories whose entire contents are watched, recursively.
-_CANONICAL_DIRS = (PROJECT_ROOT / "logs",)
+#: Directories whose entire contents are watched, recursively. Widened by the
+#: round 4a-2 addendum: a probe test clobbered global-claude-md/claude.md
+#: (the source the composer reads), data/tasks/FOCUS.md, and
+#: wiki/continuity.md in the checkout and the suite stayed green. Everything
+#: here is instruction, task state, or executable code that a stray write
+#: would corrupt silently.
+_CANONICAL_DIRS = (
+    PROJECT_ROOT / "logs",
+    PROJECT_ROOT / "tasks",              # -> data/tasks
+    PROJECT_ROOT / "global-claude-md",
+    PROJECT_ROOT / "global-agent-guidance",
+    PROJECT_ROOT / "wiki",
+    PROJECT_ROOT / "commands",
+    PROJECT_ROOT / "hooks",
+    PROJECT_ROOT / "scripts",
+)
+
+#: Directory names skipped while walking the watched trees. ``__pycache__`` is
+#: written by the interpreter itself the moment a test imports a script, so
+#: watching it would fail every run for a reason that is not a leak.
+_SNAPSHOT_SKIP_DIRS = frozenset({"__pycache__", ".git", ".pytest_cache"})
 
 
 def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
@@ -311,6 +500,9 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
     ``None`` records "absent", so a test that CREATES one of these is caught
     as surely as one that rewrites it. Size as well as mtime: a rewrite
     within one clock tick can leave the mtime alone.
+
+    Cost is one ``stat`` per file and no reads, over roughly 240 files, so a
+    pair of snapshots adds milliseconds to a two-minute run.
     """
     snapshot: dict[str, tuple[int, int] | None] = {}
 
@@ -323,16 +515,62 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
             return
         snapshot[str(resolved)] = (stat.st_mtime_ns, stat.st_size)
 
+    def walk(directory: Path) -> None:
+        """Record every file under ``directory``, skipping generated trees."""
+        for entry in sorted(directory.iterdir()):
+            if entry.is_symlink() and entry.is_dir():
+                continue  # do not follow a symlinked subtree twice
+            if entry.is_dir():
+                if entry.name in _SNAPSHOT_SKIP_DIRS:
+                    continue
+                walk(entry)
+            elif entry.is_file():
+                record(entry)
+
     for path in _CANONICAL_FILES:
         record(path)
     for directory in _CANONICAL_DIRS:
         resolved_dir = directory.resolve()
         snapshot[str(resolved_dir)] = None if not resolved_dir.is_dir() else (0, 0)
         if resolved_dir.is_dir():
-            for child in sorted(resolved_dir.rglob("*")):
-                if child.is_file():
-                    record(child)
+            walk(resolved_dir)
     return snapshot
+
+
+def canonical_store_changes(
+    before: dict[str, tuple[int, int] | None],
+    after: dict[str, tuple[int, int] | None],
+) -> list[str]:
+    """Paths whose recorded state differs between two snapshots.
+
+    Covers creation, modification, and deletion in one comparison, because
+    ``None`` is a recorded state rather than an absent key.
+    """
+    return sorted(
+        path for path in set(after) | set(before)
+        if before.get(path) != after.get(path)
+    )
+
+
+def assert_canonical_store_untouched(
+    before: dict[str, tuple[int, int] | None],
+    after: dict[str, tuple[int, int] | None],
+) -> None:
+    """Raise if the suite created, modified, or deleted a canonical file.
+
+    A named function rather than an inline assert so its behaviour can be
+    exercised in-process by ``test_hermeticity_fixture.py`` — a guard whose
+    own failure path is never executed is a guard nobody has checked (audit
+    round 4a-2, finding M5).
+    """
+    touched = canonical_store_changes(before, after)
+    assert not touched, (
+        "the test suite wrote to the REAL checkout — the canonical memory "
+        "store, the task files, the instruction sources, or the code. A test "
+        "that forgot to patch a module's path constant rewrote the "
+        "operator's data.\n"
+        f"  touched: {touched}"
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -383,13 +621,4 @@ def no_real_cache_writes():
 
     # The canonical store is the graver case: a stray write there corrupts
     # the memory system itself, not a cache the pipeline can rebuild.
-    touched = sorted(
-        path for path in set(store_after) | set(store_before)
-        if store_before.get(path) != store_after.get(path)
-    )
-    assert not touched, (
-        "the test suite wrote to the REAL canonical memory store or its "
-        "logs. A test that forgot to patch a module's path constant rewrote "
-        "the operator's data.\n"
-        f"  touched: {touched}"
-    )
+    assert_canonical_store_untouched(store_before, store_after)

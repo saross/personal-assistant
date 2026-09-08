@@ -134,6 +134,15 @@ def rewrite_vocabulary(path: Path, keep: set[str]) -> int:
     extraction hook appends to this file under ``LOCK_SH``, so an unlocked
     rewrite silently drops a concurrent append.
 
+    Line endings are NORMALISED to ``"\n"`` (round 4a-2, a decision rather
+    than an accident): the file is machine-owned, every writer in the system
+    emits ``"\n"``, and the read below goes through universal newlines, so a
+    CRLF file cannot round-trip unchanged in any case. Tag text is untouched;
+    only the terminators change.
+
+    A duplicate tag line collapses to its FIRST occurrence, so a vocabulary
+    that already lists a tag twice comes back listing it once.
+
     Returns the number of tags in the rewritten file.
     """
     existing = path.read_text(encoding="utf-8").split("\n") if path.exists() else []
@@ -152,9 +161,14 @@ def rewrite_vocabulary(path: Path, keep: set[str]) -> int:
             seen.add(tag)
     out.extend(sorted(keep - seen))
 
+    # An empty result is an EMPTY file, not a file holding one blank line:
+    # "\n".join([]) + "\n" would write a bare newline that the next read
+    # takes as a blank line and preserves forever (round 4a-2, low finding).
+    body = "\n".join(out) + "\n" if out else ""
+
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as fh:
-        fh.write("\n".join(out) + "\n")
+    with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
         fh.flush()
         os.fsync(fh.fileno())
     os.rename(str(tmp_path), str(path))
@@ -758,9 +772,21 @@ def cmd_merge(args: argparse.Namespace) -> None:
     if VOCABULARY_FILE.exists():
         with lock_jsonl_for_rewrite(VOCABULARY_FILE):
             vocab = load_vocabulary()
-            # Remove losers, add winners
-            vocab -= set(replacements.keys())
-            vocab |= set(replacements.values())
+            # Remove losers, add winners — CASE-INSENSITIVELY on both sides.
+            # ``replacements`` is keyed by the lower-cased loser (finding
+            # A12), while the vocabulary file preserves whatever case a tag
+            # was written in, so a plain set difference left "API-Integration"
+            # in the file after the JSONL had been rewritten and the run had
+            # printed "Tags retired: 1" (audit round 4a-2, finding M7).
+            retired = set(replacements.keys())
+            vocab = {tag for tag in vocab if tag.lower() not in retired}
+            # A winner already present in some other case is the same tag; do
+            # not add a second spelling of it.
+            kept_lower = {tag.lower() for tag in vocab}
+            for winner in replacements.values():
+                if winner.lower() not in kept_lower:
+                    vocab.add(winner)
+                    kept_lower.add(winner.lower())
             n_tags = rewrite_vocabulary(VOCABULARY_FILE, vocab)
             print(f"  Updated: {VOCABULARY_FILE} ({n_tags} tags)")
 
@@ -891,6 +917,23 @@ def cmd_orphans(args: argparse.Namespace) -> None:
             print(f"  ... and {len(missing) - 50} more")
 
     if args.action == "clean":
+        # Refuse BEFORE the guard takes the exclusive daily-sync flock.
+        # lock_jsonl_for_rewrite opens the target without O_CREAT on purpose
+        # ("a missing canonical is an operator error and should fail loudly"),
+        # so an absent vocabulary used to surface as a bare FileNotFoundError
+        # from inside the guard, with the daily-sync lock already held — a
+        # traceback where the design says the operator should see a refusal
+        # (audit round 4a-2, finding M6). Creating the file here instead would
+        # contradict that contract and hide a store that has lost a canonical.
+        if not VOCABULARY_FILE.exists():
+            print(
+                f"\nError: {VOCABULARY_FILE} does not exist — refusing to "
+                f"clean a vocabulary that is not there. The extraction hook "
+                f"recreates it on the next capture; re-run `orphans --action "
+                f"clean` after that.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if orphaned or missing:
             # `clean` rewrites a protected file, so it takes the same
             # protection as `merge` (audit 2026-09-08, finding A2): the

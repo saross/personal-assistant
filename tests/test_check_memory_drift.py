@@ -392,3 +392,55 @@ class TestRecoveryWriteRobustness:
         _stub_psql(monkeypatch, drift_mod, [_pg_row("m-active")])
         record = json.loads(drift_mod._pg_records(["m-active"])[0][0])
         assert "decayed_at" not in record
+
+
+# ---------------------------------------------------------------------------
+# Round 4a-2, finding M1 — a recovered record must not plant a raw separator
+# ---------------------------------------------------------------------------
+
+#: A Unicode LINE SEPARATOR: legal inside a JSON string, and a line break to
+#: ``str.splitlines()`` but not to ``"\n"``-splitting or file iteration.
+LINE_SEPARATOR = "\u2028"
+
+
+class TestRecoveredRecordsStayEscaped:
+    """The recovery path appends to the canonical; it must serialise as the
+    extraction hook does."""
+
+    def test_separator_in_recovered_content_is_escaped(
+        self, drift_mod, monkeypatch,
+    ) -> None:
+        """Kills ``json.dumps(record)`` -> ``json.dumps(record,
+        ensure_ascii=False)``: that writes the separator raw, and the next
+        reader that splits on Unicode line boundaries tears the recovered
+        record into two unparseable fragments.
+        """
+        content = f"Recovered paragraph one{LINE_SEPARATOR}paragraph two."
+        _stub_psql(monkeypatch, drift_mod,
+                   [_pg_row("m-separator", content=content)])
+
+        lines, _soft_deleted = drift_mod._pg_records(["m-separator"])
+
+        assert len(lines) == 1
+        assert LINE_SEPARATOR not in lines[0], "the separator must stay escaped"
+        assert "\\u2028" in lines[0]
+        assert json.loads(lines[0])["content"] == content
+
+    def test_recovered_line_survives_a_newline_split(
+        self, drift_mod, monkeypatch, tmp_path, quiet_log,
+    ) -> None:
+        """The appended file still has one line per recovered record."""
+        content = f"Trench A{LINE_SEPARATOR}Trench B."
+        _stub_psql(monkeypatch, drift_mod,
+                   [_pg_row("m-sep-a", content=content),
+                    _pg_row("m-sep-b")])
+        canonical = tmp_path / "memories.jsonl"
+        canonical.write_text("", encoding="utf-8")
+        monkeypatch.setattr(drift_mod, "MEMORIES_FILE", canonical)
+
+        result = drift_mod.DriftResult(pg_only=["m-sep-a", "m-sep-b"])
+        assert drift_mod.recover(result, quiet_log) == 2
+
+        written = canonical.read_text(encoding="utf-8")
+        assert written.count("\n") == 2
+        assert LINE_SEPARATOR not in written
