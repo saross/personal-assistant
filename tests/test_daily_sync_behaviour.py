@@ -242,6 +242,30 @@ class TestCrossMachineRebase:
         assert "2026-09-08-from-b" in published, "the other machine's record was lost"
         assert "<<<<<<<" not in published
 
+    def test_rebase_conflict_on_the_tag_vocabulary_is_unioned(
+        self, world: SyncWorld
+    ) -> None:
+        """The rebase partition must route every MEMORY_APPEND_FILES entry
+        to the resolver, not just memories.jsonl (audit L1, behaviourally
+        — the twin of the stash-pop case above)."""
+        machine = world.add_machine("a")
+        (machine.data / "memories" / "tag-vocabulary.txt").write_text(
+            "seed-tag\nlocal-tag\n", encoding="utf-8"
+        )
+        machine.commit_data("local vocabulary", "memories/tag-vocabulary.txt")
+        world.publish_data_change(
+            "memories/tag-vocabulary.txt", "seed-tag\nremote-tag\n"
+        )
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "not fast-forwardable" in combined
+        published = world.published_data_file("memories/tag-vocabulary.txt")
+        assert "local-tag" in published
+        assert "remote-tag" in published
+        assert "<<<<<<<" not in published
+
     def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
         """Kills DS-M6: routing an unknown path to the submodule branch
         would resolve a conflicted prose file trust-ours instead."""
@@ -967,9 +991,15 @@ class TestRebasePointerConflict:
     def test_every_interpreter_call_uses_pa_dir(self) -> None:
         """Audit L3: one call hardcoded ~/personal-assistant/venv, so a run
         from a worktree or a relocated checkout used another tree's
-        interpreter. The cc-archives block it sits in only runs with the
-        rpi-shares mount present, which no test can have — hence a source
-        assertion."""
+        interpreter.
+
+        LIMITS: a source assertion, and a weak one — any rewrite that
+        spells the same path differently (``${HOME}``, an intermediate
+        variable) passes it. It cannot be behavioural: the only call site
+        sits inside the cc-archives block, which runs only with the
+        rpi-shares mount present, and audit S21 forbids a test from having
+        one. Treat it as a reminder, not a guarantee.
+        """
         source = (Path(__file__).resolve().parent.parent
                   / "scripts" / "daily-sync.sh").read_text(encoding="utf-8")
         assert "$HOME/personal-assistant" not in source, (
@@ -978,9 +1008,15 @@ class TestRebasePointerConflict:
 
     def test_memory_append_list_has_one_source_of_truth(self) -> None:
         """Audit L1: the three conflict partitions must derive from
-        MEMORY_APPEND_FILES, not each repeat it as a literal. With the
-        list written out three times, adding a file to the array would
-        have silently left every partition routing it to "unsupported"."""
+        MEMORY_APPEND_FILES, not each repeat it as a literal.
+
+        LIMITS: a source assertion, defeated by any rewrite that spells
+        the path differently. The behavioural cover is the pair of
+        tag-vocabulary tests — one through the stash-pop partition, one
+        through the rebase partition — which fail if either stops
+        consulting the array. This one only catches the list being
+        duplicated again.
+        """
         source = (Path(__file__).resolve().parent.parent
                   / "scripts" / "daily-sync.sh").read_text(encoding="utf-8")
         assert source.count("memories/tag-vocabulary.txt") == 1, (
