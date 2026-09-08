@@ -102,7 +102,16 @@ def stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A synthetic raw store and archive root, wired into the drift check."""
     raw_root = tmp_path / "claude" / "projects"
     archive_root = tmp_path / "cc-archives"
-    project_dir = make_raw_store(raw_root)
+    # TWO project directories, deliberately. A store always holds many, and
+    # with only one every "walk the store" bug is invisible: truncating the
+    # iteration to its first element left the suite green while the tripwire
+    # reported Clean over every project but the alphabetically first — the
+    # 2026-07-28 failure mode exactly (round 4c-2, finding 19). The second
+    # name sorts AFTER the first, so a truncated walk misses it.
+    project_dir = make_raw_store(raw_root, project_key="-home-tester-Workshop")
+    second_project_dir = make_raw_store(
+        raw_root, project_key="-home-tester-Zenodo-uploads"
+    )
     archive_root.mkdir(parents=True)
     gate = tmp_path / "cache" / "cc-archive-drift-gate"
     gate.parent.mkdir(parents=True)
@@ -112,7 +121,8 @@ def stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(drift, "GATE_FILE", gate)
     return argparse.Namespace(
         raw_root=raw_root, archive_root=archive_root,
-        project_dir=project_dir, gate=gate,
+        project_dir=project_dir, second_project_dir=second_project_dir,
+        gate=gate,
     )
 
 
@@ -179,6 +189,47 @@ class TestDriftReporting:
         age_file(path, hours=96)
 
         assert drift.main([]) == 0
+
+    def test_a_session_missing_from_the_second_project_is_reported(
+        self, stores
+    ) -> None:
+        """The store is walked whole, not just its first project.
+
+        The 2026-07-28 gap was 77 sessions spread across projects and
+        machines. A tripwire that reads only the first project directory
+        reports Clean on a store that is missing most of its archive.
+        """
+        first = "88888888-8888-4888-8888-888888888888"
+        second = "99999999-9999-4999-8999-999999999999"
+        _old_substantive(stores.project_dir, first)
+        _old_substantive(stores.second_project_dir, second)
+        # Only the FIRST project's session is archived.
+        make_archive_entry(stores.archive_root, first)
+
+        assert drift.main([]) == 1
+
+        lines = stores.gate.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "1"
+        assert any(second in line for line in lines[1:]), (
+            "the session missing from the second project directory was not "
+            "reported; the store is not being walked whole"
+        )
+
+    def test_every_project_directory_contributes_to_the_count(
+        self, stores
+    ) -> None:
+        """Two unarchived sessions, one per project, must both be counted."""
+        first = "aaaaaaaa-8888-4888-8888-888888888888"
+        second = "bbbbbbbb-9999-4999-8999-999999999999"
+        _old_substantive(stores.project_dir, first)
+        _old_substantive(stores.second_project_dir, second)
+
+        assert drift.main([]) == 1
+
+        lines = stores.gate.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "2", (
+            f"expected both projects counted, gate says {lines[0]}"
+        )
 
     def test_missing_store_exits_two(self, tmp_path, monkeypatch) -> None:
         """A store that is absent is 'cannot run', never 'clean'."""
