@@ -25,12 +25,27 @@ the fix for each of them:
   run used to leave a truncated file the next stage read as complete), honours
   a new ``--dry-run``, and the corpus manifest carries a provenance block.
 
+Audit round 4g added three more:
+
+* **Round 4g, surviving mutation** — nothing asserted that ``body.md`` holds
+  the *body* half of the split. Writing the cleaned full Markdown there
+  instead left the whole suite green, while every downstream body metric
+  silently counted the bibliography.
+* **Round 4g, Low 1** — a failed run writes ``extraction-error.txt`` into the
+  paper's directory and a later successful run never removed it, so a QA
+  sweep grepping the output tree reported a failure that no longer existed.
+* **Round 4g, Low 2** — ``abstract_present_but_not_promoted`` tested for the
+  literal ``"## Abstract"``, so an abstract the extractor promoted to
+  ``# Abstract`` or ``### ABSTRACT`` was reported as unpromoted.
+
 Everything here runs on the standard library. PyMuPDF and pdfplumber are not
 installed in this repository's virtual environment, the corpus PDFs are
 private, and the extractor is never invoked against a real document: the
 pure-text stages (the split detectors, the cleanup passes, the QA thresholds,
 the CLI wiring) are exercised directly with invented fixtures, and the
-extractor-dependent path is exercised only through its unavailability.
+extractor-dependent path is exercised either through its unavailability or
+against a scripted stand-in that hands ``extract_one`` invented Markdown (see
+:func:`_install_fake_extractor`).
 
 Every fixture below is synthetic. No paper key, title, sentence, or number is
 taken from the real corpus.
@@ -532,6 +547,147 @@ def test_extract_one_records_a_missing_pdf_when_not_dry_running(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# extract_one — the write path: which half of the split lands in which file
+# ---------------------------------------------------------------------------
+
+#: A whole synthetic paper, in the shape the upstream extractor emits: a title,
+#: two body sections, and a bibliography under a ``## References`` heading.
+#: Every heading here survives ``drop_fragment_headings`` (the section words
+#: are whitelisted, the title is three words or more) and nothing repeats often
+#: enough for ``strip_running_headers``, so the split sees the document whole.
+_SYNTHETIC_PAPER_MD = (
+    "# An invented paper titled AAAA1111\n\n"
+    "## Introduction\n\n"
+    "The invented survey recorded eleven mounds across two valleys.\n\n"
+    "## Discussion\n\n"
+    "Mound density fell away sharply beyond the invented ridge line.\n\n"
+    "## References\n\n"
+    "Aardvark, Q. (2011). An invented entry title. Invented Journal 4: 1-20.\n"
+    "Beetle, R. (2012). Another invented entry. Invented Press.\n"
+)
+
+
+def _install_fake_extractor(monkeypatch, markdown: str) -> None:
+    """Point ``extract_one`` at a scripted extractor instead of PyMuPDF.
+
+    PyMuPDF and pdfplumber are deliberately absent from this repository's
+    virtual environment and the corpus PDFs are private, so the only way to
+    exercise what ``extract_one`` WRITES is to hand it the Markdown the
+    upstream extractor would have produced. ``clean_reference_section`` is
+    replaced by the identity function so the assertions below see the split's
+    own output rather than an upstream reformatting of it.
+    """
+
+    class FakeExtractor:
+        """One scripted extraction: fixed Markdown, fixed stats, no PDF."""
+
+        def __init__(self) -> None:
+            self.config = {"extractor": "scripted stand-in, tests only"}
+            self.stats = {"pages": 4, "sections_detected": 5, "tables_found": 0}
+
+        def extract(self, pdf_path: Path) -> str:
+            """Return the scripted Markdown; the file itself is never opened."""
+            return markdown
+
+    monkeypatch.setattr(
+        extract_corpus,
+        "load_extractor",
+        lambda: (FakeExtractor, lambda text: text),
+    )
+
+
+def _paper_with_a_pdf(tmp_path: Path, key: str = "AAAA1111") -> dict:
+    """A manifest entry whose ``pdf_path`` exists (empty; never parsed)."""
+    pdf = tmp_path / "input" / f"{key}.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"")
+    return _manifest_entry(key, pdf_path=str(pdf))
+
+
+def test_body_md_holds_the_body_half_and_references_md_the_bibliography(
+        tmp_path, monkeypatch):
+    """``body.md`` is the body, not the whole cleaned document.
+
+    The mutation this kills: writing the cleaned full Markdown at the
+    ``body.md`` write — ``emit_text(paper_dir / "body.md", cleaned_md)`` in
+    place of ``body_md``. Nothing else in the suite looks at that file's
+    contents, so the bibliography would ride into every downstream body
+    metric (word counts, lexical diversity, the style guide itself) while the
+    run reported success.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    result = extract_corpus.extract_one(entry, output_dir)
+
+    assert result["status"] == "ok"
+    body = (output_dir / "AAAA1111" / "body.md").read_text(encoding="utf-8")
+    references = (output_dir / "AAAA1111" / "references.md").read_text(
+        encoding="utf-8")
+    # The body keeps its prose …
+    assert "eleven mounds across two valleys" in body
+    assert "beyond the invented ridge line" in body
+    # … and none of the bibliography, heading included.
+    assert "## References" not in body
+    assert "Aardvark" not in body
+    assert "Beetle" not in body
+    # The bibliography is in the file that exists to hold it.
+    assert "Aardvark, Q. (2011)" in references
+    assert "Beetle, R. (2012)" in references
+
+
+def test_a_successful_run_clears_the_error_file_a_failed_run_left(
+        tmp_path, monkeypatch):
+    """A stale ``extraction-error.txt`` must not outlive the failure.
+
+    The mutation this kills: dropping the ``unlink(missing_ok=True)`` on the
+    success path, under which a QA sweep grepping the output tree for the
+    filename reports a failure that a later run already fixed.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    stale = output_dir / "AAAA1111" / "extraction-error.txt"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("PDF not found: /nonexistent/invented/AAAA1111.pdf\n",
+                     encoding="utf-8")
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    result = extract_corpus.extract_one(entry, output_dir)
+
+    assert result["status"] == "ok"
+    assert not stale.exists()
+    # The real outputs are still there — the clearing is surgical.
+    assert (output_dir / "AAAA1111" / "body.md").exists()
+
+
+def test_a_dry_run_leaves_a_stale_error_file_alone(tmp_path, monkeypatch):
+    """``--dry-run`` deletes no more than it writes.
+
+    The mutation this kills: clearing the stale ``extraction-error.txt``
+    unconditionally, i.e. without the ``if not dry_run`` guard, under which a
+    dry run against a production path would silently destroy the record of a
+    real failure.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    stale = output_dir / "AAAA1111" / "extraction-error.txt"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    original = "PDF not found: /nonexistent/invented/AAAA1111.pdf\n"
+    stale.write_text(original, encoding="utf-8")
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    result = extract_corpus.extract_one(entry, output_dir, dry_run=True)
+
+    assert result["status"] == "ok"
+    assert stale.read_text(encoding="utf-8") == original
+    # And nothing was written either: the directory holds only the stale file.
+    assert sorted(p.name for p in (output_dir / "AAAA1111").iterdir()) == [
+        "extraction-error.txt"
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Cross-cutting — provenance
 # ---------------------------------------------------------------------------
 
@@ -802,6 +958,35 @@ def test_the_last_references_heading_wins_not_the_first():
     assert method == "strict-heading"
     assert "## Discussion" in body
     assert references.count("## References") == 1
+
+
+def test_an_acknowledgements_heading_does_not_split_the_body():
+    """An acknowledgements heading is not a references heading.
+
+    ``_REF_HEADING_RE``'s comment used to claim that ``Acknowledgements`` /
+    ``Acknowledgments`` were "deliberately accepted too"; the pattern never
+    listed them. Audit round 4g (Low 3) corrected the comment rather than
+    widening the pattern, and this pins the behaviour the comment now
+    describes.
+
+    The mutation this kills: adding an ``ACKNOWLEDG…`` alternative to
+    ``_REF_HEADING_RE``, which would cut the body at the acknowledgements
+    heading and file every section a journal places after it — author
+    contributions, data availability, appendices — under the bibliography.
+    """
+    markdown = (
+        _INVENTED_BODY
+        + "\n## Acknowledgements\n\nWe thank the invented funding body.\n"
+        + "\n## Appendix A. Invented recording forms\n\n"
+        "Three forms were used in the invented survey.\n"
+    )
+
+    body, references, method = extract_corpus.split_body_references(markdown)
+
+    assert method == "no-references-heading-found"
+    assert "We thank the invented funding body." in body
+    assert "Three forms were used in the invented survey." in body
+    assert references == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1109,17 +1294,60 @@ def test_few_sections_detected_fires_below_three_but_not_at_three():
 
 
 def test_an_unpromoted_abstract_is_flagged():
-    """"Abstract" in the opening text without an ``## Abstract`` heading.
+    """"Abstract" in the opening text with no promoted Abstract heading.
 
-    The mutation this kills: dropping the ``"## Abstract" not in body_md``
-    half of the test, which would flag every paper whose abstract WAS
-    promoted correctly.
+    The mutation this kills: dropping the heading half of the test
+    (``not _ABSTRACT_HEADING_RE.search(body_md)``), which would flag every
+    paper whose abstract WAS promoted correctly.
     """
     unpromoted = "Abstract\n\n" + _words(100)
     promoted = "## Abstract\n\n" + _words(100)
 
     assert "abstract_present_but_not_promoted" in _qa(unpromoted, _words(5))["flags"]
     assert "abstract_present_but_not_promoted" not in _qa(promoted, _words(5))["flags"]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["# Abstract", "## Abstract", "### Abstract", "#### ABSTRACT", "## abstract"],
+)
+def test_a_promoted_abstract_is_accepted_at_any_level_and_any_case(heading):
+    """A promoted abstract is promoted whatever its heading level or case.
+
+    The mutation this kills: reverting the heading test to the literal
+    ``"## Abstract" not in body_md``, which reports a paper whose abstract the
+    extractor promoted to ``# Abstract`` or ``#### ABSTRACT`` as unpromoted —
+    a QA flag on a paper with nothing wrong with it, in a sweep whose value is
+    that a flag means something.
+
+    The prose deliberately contains the word "Abstract" as well, so the flag's
+    second condition (the word appears in the opening text) fires for every
+    variant and the heading test is the only thing under examination.
+    """
+    body = f"{heading}\n\nWe reuse the Abstract Data Model here.\n\n" + _words(100)
+
+    assert "abstract_present_but_not_promoted" not in _qa(body, _words(5))["flags"]
+
+
+@pytest.mark.parametrize(
+    "opening",
+    [
+        "Abstract",                       # bare word on its own line
+        "**Abstract** The invented survey ran for three seasons.",
+        "Abstract: the invented survey ran for three seasons.",
+    ],
+)
+def test_an_abstract_that_was_never_promoted_is_still_flagged(opening):
+    """Accepting every heading level must not accept a heading at all.
+
+    The mutation this kills: dropping the ``#{1,6}`` requirement from
+    ``_ABSTRACT_HEADING_RE``, under which the word "Abstract" anywhere in the
+    body would count as a promoted heading and the flag could never fire —
+    hiding exactly the extraction failure it exists to report.
+    """
+    body = opening + "\n\n" + _words(100)
+
+    assert "abstract_present_but_not_promoted" in _qa(body, _words(5))["flags"]
 
 
 def test_needs_review_mirrors_the_flag_list():

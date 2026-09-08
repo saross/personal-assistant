@@ -136,10 +136,18 @@ def load_extractor() -> tuple[type, Callable[[str], str]]:
 
 # Match an opening markdown heading whose text is a references-section label.
 # The extractor's section detector ALL-CAPS headings get formatted as `## TEXT`
-# while Title-Case headings get `## Text` — both supported here. We deliberately
-# accept `Acknowledgements` / `Acknowledgments` too because in some journals the
-# acknowledgements block sits between the body and the references and contains
-# author-affiliation prose that should not enter the body metrics.
+# while Title-Case headings get `## Text` — both supported here.
+#
+# Audit round 4g: this comment used to claim that `Acknowledgements` /
+# `Acknowledgments` were "deliberately accepted too". They never were, and the
+# COMMENT has been corrected rather than the pattern widened. Cutting the body
+# at an acknowledgements heading would also amputate every section a journal
+# places after it — author contributions, data-availability statements,
+# appendices — none of which is bibliography. Acknowledgements is instead one
+# of the end-of-body markers in ``_END_OF_BODY_MARKERS_RE``, which cuts only
+# when a dense author-year run follows it. The accepted consequence:
+# acknowledgements prose counts towards the body metrics.
+# ``test_an_acknowledgements_heading_does_not_split_the_body`` pins this.
 _REF_HEADING_RE = re.compile(
     r"^\s{0,3}(#{1,4})\s+("
     r"REFERENCES?|References?|"
@@ -539,6 +547,16 @@ def split_body_references(markdown: str) -> tuple[str, str, str]:
 # QA flag computation
 # ---------------------------------------------------------------------------
 
+#: A promoted ``Abstract`` heading, at any heading level and in any case.
+#: The test used to be the literal ``"## Abstract" not in body_md``, so a
+#: correctly promoted ``# Abstract`` (the extractor's H1 for a short paper) or
+#: ``### ABSTRACT`` (an ALL-CAPS source heading) was reported as unpromoted —
+#: a QA flag on a paper with nothing wrong with it (audit round 4g, Low 2).
+_ABSTRACT_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+ABSTRACT\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
 # Unicode-aware word regex for the per-paper word counts. Matches a letter
 # token in any script (Latin with diacritics, Greek, Cyrillic) — important
 # for an archaeology corpus that routinely cites Müller, Sobotková,
@@ -586,7 +604,7 @@ def compute_qa_flags(
         flags.append("zero_body_words")
     if abs(delta_pct) > 25:
         flags.append(f"word_count_delta_{delta_pct:+.0f}pct")
-    if "## Abstract" not in body_md and "Abstract" in body_md[:2000]:
+    if not _ABSTRACT_HEADING_RE.search(body_md) and "Abstract" in body_md[:2000]:
         flags.append("abstract_present_but_not_promoted")
     if extractor_stats.get("sections_detected", 0) < 3:
         flags.append("few_sections_detected")
@@ -639,6 +657,8 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
       6. Try the body/refs split detector chain.
       7. Strip any author-affiliation tail block from the body.
       8. Clean reference-section formatting.
+      9. On success, clear any ``extraction-error.txt`` a previous, failed
+         run left in this paper's directory (a live run only).
     """
     manifest_entry = apply_manifest_overrides(manifest_entry)
     key = manifest_entry["key"]
@@ -697,6 +717,16 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
 
     body_md, n_affiliation_chars = strip_affiliation_tail(body_md)
     references_md = clean_reference_section(references_md) if references_md else ""
+
+    # A previous run may have failed on this paper and left an
+    # ``extraction-error.txt`` behind (see the two failure returns above).
+    # This run succeeded, so that file now describes a failure that no longer
+    # exists, and a QA sweep grepping the output tree for the filename would
+    # report it as current (audit round 4g, Low 1). Clear it — but never under
+    # ``--dry-run``, which must leave the tree byte-for-byte untouched, and so
+    # must not delete any more than it writes.
+    if not dry_run:
+        (paper_dir / "extraction-error.txt").unlink(missing_ok=True)
 
     # Paper outputs. Every write goes through the atomic helper: an
     # interrupted run used to leave a truncated body.md or metadata.json that
