@@ -23,6 +23,7 @@ import importlib
 import json
 import logging
 import sys
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -140,6 +141,37 @@ def pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pipeline:
     monkeypatch.setattr(bulk_archive, "MANIFEST_FILE", harness.manifest)
     monkeypatch.setattr(bulk_archive, "CHECKPOINT_FILE", harness.checkpoint)
     return harness
+
+
+
+def _stub_anthropic_batch(custom_id: str, payload: dict):
+    """An ``anthropic`` module whose batch results carry one scripted reply."""
+    block = types.SimpleNamespace(text=json.dumps(payload))
+    result = types.SimpleNamespace(
+        custom_id=custom_id,
+        result=types.SimpleNamespace(
+            type="succeeded",
+            message=types.SimpleNamespace(content=[block]),
+        ),
+    )
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            self.messages = types.SimpleNamespace(
+                batches=types.SimpleNamespace(
+                    retrieve=lambda batch_id: types.SimpleNamespace(
+                        processing_status="ended",
+                        request_counts=types.SimpleNamespace(
+                            succeeded=1, errored=0, processing=0
+                        ),
+                    ),
+                    results=lambda batch_id: iter([result]),
+                )
+            )
+
+    module = types.ModuleType("anthropic")
+    module.Anthropic = _Client
+    return module
 
 
 SID_A = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
@@ -612,54 +644,184 @@ class TestSubagentArchivesAreNotClobbered:
         assert list(dest.glob("*.tmp")) == []
 
 
-class TestEnrichApplyPreservesExistingMetadata:
-    """AR13 — a Haiku batch must not delete a Terra three-Ps block."""
+class TestEnrichmentWritersMerge:
+    """Neither enrichment path may drop metadata the other wrote.
 
-    def test_three_ps_survives_a_batch_apply(self, tmp_path: Path) -> None:
-        meta_path = tmp_path / "session.meta.json"
-        meta_path.write_text(json.dumps({
+    Both paths write session.meta.json and both must merge rather than
+    replace: the Terra path writes a three_ps block, the Haiku batch path
+    does not, and whichever runs second used to delete what the first left.
+
+    These tests execute the real writers. The versions they replace
+    re-implemented the merge inline (asserting the test's own arithmetic) and
+    grepped the source text for `**existing,` — neither of which can fail
+    when the production code changes shape (round 4c-2, findings 23, 24, 25).
+    """
+
+    THREE_PS = {
+        "prompt_summary": "Asked how the grid meets the terrace edge.",
+        "process_summary": "Compared contour-following and downslope grids.",
+        "provenance_summary": "Follows the 2026-02 reconnaissance visit.",
+    }
+
+    def _entry_with_three_ps(self, tmp_path: Path) -> Path:
+        """An archive entry already enriched by the Terra path."""
+        entry = tmp_path / "entry"
+        entry.mkdir()
+        (entry / "session.meta.json").write_text(json.dumps({
             "session": {"id": SID_A},
+            "project": {"name": "lantern-survey"},
             "auto_generated": {
                 "title": "Old title",
                 "purpose": "Old purpose",
                 "tags": ["old"],
+                "three_ps": dict(self.THREE_PS),
+            },
+            "three_ps": dict(self.THREE_PS),
+            "extractor_model_id": "gpt-5.6-terra",
+        }, indent=2), encoding="utf-8")
+        return entry
+
+    def _meta(self, entry: Path) -> dict:
+        return json.loads(
+            (entry / "session.meta.json").read_text(encoding="utf-8")
+        )
+
+    def test_the_haiku_batch_apply_keeps_the_terra_three_ps(
+        self, pipeline: Pipeline, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_enrich_apply, executed — not its source text."""
+        entry = self._entry_with_three_ps(tmp_path)
+        state_dir = tmp_path / "batch-state"
+        monkeypatch.setattr(bulk_archive, "BATCH_STATE_DIR", state_dir)
+        monkeypatch.setattr(
+            bulk_archive, "BATCH_STATE_FILE", tmp_path / "legacy.json"
+        )
+        bulk_archive.save_state(
+            {
+                "batch_id": "msgbatch_enrich",
+                "n_requests": 1,
+                "session_id_map": {f"session-{SID_A}": str(entry)},
+            },
+            state_dir, tmp_path / "legacy.json",
+        )
+        monkeypatch.setitem(
+            sys.modules, "anthropic",
+            _stub_anthropic_batch(f"session-{SID_A}", {
+                "title": "New title",
+                "purpose": "New purpose",
+                "tags": ["new"],
+            }),
+        )
+
+        bulk_archive._enrich_apply("msgbatch_enrich", LOGGER)
+
+        auto = self._meta(entry)["auto_generated"]
+        assert auto["title"] == "New title"
+        assert auto["tags"] == ["new"]
+        assert auto["three_ps"] == self.THREE_PS, (
+            "the Haiku batch apply deleted the Terra three-Ps summaries"
+        )
+
+    def test_the_terra_writer_keeps_fields_it_does_not_set(
+        self, tmp_path: Path
+    ) -> None:
+        """_write_enriched_meta, executed (finding 23).
+
+        Deleting `**existing,` from this function survived the whole suite:
+        the Terra in-place path would then replace auto_generated wholesale,
+        which is AR13 again on the sibling path.
+        """
+        entry = self._entry_with_three_ps(tmp_path)
+        meta = self._meta(entry)
+        meta["auto_generated"]["reviewed_by"] = "shawn"
+        meta["auto_generated"]["review_note"] = "checked against field notes"
+        (entry / "session.meta.json").write_text(
+            json.dumps(meta, indent=2), encoding="utf-8"
+        )
+
+        assert bulk_archive._write_enriched_meta(
+            entry,
+            {
+                "title": "Terra title",
+                "purpose": "Terra purpose",
+                "tags": ["terra"],
                 "three_ps": {
-                    "prompt_summary": "What was asked.",
-                    "process_summary": "What was done.",
-                    "provenance_summary": "Where it came from.",
+                    "prompt_summary": "New prompt summary.",
+                    "process_summary": "New process summary.",
+                    "provenance_summary": "New provenance summary.",
                 },
             },
-        }), encoding="utf-8")
+            LOGGER,
+        ) is True
 
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        existing = meta.get("auto_generated") or {}
-        meta["auto_generated"] = {
-            **existing,
-            "title": "New title",
-            "purpose": "New purpose",
-            "tags": ["new"],
-        }
-        tmp = meta_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        tmp.replace(meta_path)
+        auto = self._meta(entry)["auto_generated"]
+        assert auto["title"] == "Terra title"
+        assert auto["three_ps"]["prompt_summary"] == "New prompt summary."
+        assert auto["reviewed_by"] == "shawn", (
+            "_write_enriched_meta replaced auto_generated wholesale; every "
+            "field it does not itself set is gone"
+        )
+        assert auto["review_note"] == "checked against field notes"
 
-        after = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert after["auto_generated"]["title"] == "New title"
-        assert after["auto_generated"]["three_ps"]["provenance_summary"] == (
-            "Where it came from."
+    def test_the_terra_writer_stages_its_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash mid-write must leave the previous metadata readable."""
+        entry = self._entry_with_three_ps(tmp_path)
+        before = (entry / "session.meta.json").read_text(encoding="utf-8")
+
+        real_replace = Path.replace
+        monkeypatch.setattr(
+            Path, "replace",
+            lambda self, target: (_ for _ in ()).throw(OSError("interrupted")),
+        )
+        assert bulk_archive._write_enriched_meta(
+            entry, {"title": "T", "purpose": "P", "tags": []}, LOGGER
+        ) is False
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert (entry / "session.meta.json").read_text(
+            encoding="utf-8"
+        ) == before
+
+    def test_the_batch_apply_stages_its_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same guarantee on the batch path."""
+        entry = self._entry_with_three_ps(tmp_path)
+        before = (entry / "session.meta.json").read_text(encoding="utf-8")
+        state_dir = tmp_path / "batch-state"
+        monkeypatch.setattr(bulk_archive, "BATCH_STATE_DIR", state_dir)
+        monkeypatch.setattr(
+            bulk_archive, "BATCH_STATE_FILE", tmp_path / "legacy.json"
+        )
+        bulk_archive.save_state(
+            {
+                "batch_id": "msgbatch_enrich",
+                "n_requests": 1,
+                "session_id_map": {f"session-{SID_A}": str(entry)},
+            },
+            state_dir, tmp_path / "legacy.json",
+        )
+        monkeypatch.setitem(
+            sys.modules, "anthropic",
+            _stub_anthropic_batch(f"session-{SID_A}", {
+                "title": "New title", "purpose": "New", "tags": [],
+            }),
         )
 
-    def test_the_production_apply_path_merges(self, tmp_path: Path) -> None:
-        """The same assertion, through the code that actually runs."""
-        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
-        apply_body = source.split("def _enrich_apply(")[1].split("\ndef ")[0]
-        assert "**existing," in apply_body, (
-            "_enrich_apply replaces auto_generated wholesale again; the "
-            "Terra three_ps block is dropped by every Haiku batch apply"
+        real_replace = Path.replace
+        monkeypatch.setattr(
+            Path, "replace",
+            lambda self, target: (_ for _ in ()).throw(OSError("interrupted")),
         )
-        assert "tmp.replace(meta_path)" in apply_body, (
-            "_enrich_apply writes the metadata non-atomically again"
-        )
+        bulk_archive._enrich_apply("msgbatch_enrich", LOGGER)
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert (entry / "session.meta.json").read_text(
+            encoding="utf-8"
+        ) == before
 
 
 class TestCatalogueWrites:
