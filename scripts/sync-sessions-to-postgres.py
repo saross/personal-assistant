@@ -33,6 +33,12 @@ from _sync_cursor import (  # noqa: E402
     read_cursor_file,
     update_cursor_file,
 )
+# Row-level Postgres guards (audit round two, finding P1 / lens A-X1+A-X2).
+from _pg_row_guard import (  # noqa: E402
+    insert_rows_individually,
+    is_outage_error,
+    sanitise_nuls,
+)
 # Schema-version guard (audit IC5 / B-X1).
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 
@@ -168,12 +174,37 @@ def find_session_metadata(
 def metadata_to_row(
     meta_path: Path,
     metadata: dict[str, Any],
+    logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     """
     Extract a flat row dict from a session.meta.json structure.
 
     Maps nested metadata fields to the sessions table columns.
+
+    This is the ingest boundary for the sessions sync, so it is where NUL
+    characters are stripped (audit round two, finding P1 / lens A-X2).
+    LLM-generated narrative in ``statistics.subagents[].narrative`` has
+    carried a NUL, and PostgreSQL rejects ``\\u0000`` inside the ``jsonb``
+    ``raw_metadata`` column — which used to abort the whole batch and be
+    misreported as an outage. Sanitising the whole document here also
+    covers the derived TEXT columns (the three-Ps summaries), which draw
+    from the same generated text.
+
+    Args:
+        meta_path: Path to the session.meta.json file (its parent becomes
+            ``archive_path``).
+        metadata: The parsed metadata document.
+        logger: Optional logger; a warning is emitted when NULs were
+            removed, so silent repair of archive content stays visible.
     """
+    metadata, nuls_removed = sanitise_nuls(metadata)
+    if nuls_removed and logger is not None:
+        logger.warning(
+            "Removed %d NUL character(s) from %s before syncing — "
+            "PostgreSQL cannot store U+0000 in text or jsonb.",
+            nuls_removed, meta_path,
+        )
+
     # Use `or {}` instead of default arg — .get() returns None (not the
     # default) when the key exists with a null/None value.
     session = metadata.get("session") or {}
@@ -207,8 +238,14 @@ def metadata_to_row(
     )
 
     return {
-        "id": session.get("id", ""),
-        "project": project.get("name", "unknown"),
+        # ``or`` rather than a .get default on both of these: the keys
+        # exist with a null value in malformed metadata, and .get returns
+        # that None rather than the default (the hazard the comment above
+        # names). ``sessions.project`` is TEXT NOT NULL, so a None there
+        # is an IntegrityError that used to halt the cursor permanently
+        # (audit round two, finding P10 / lens A-M8).
+        "id": session.get("id") or "",
+        "project": project.get("name") or "unknown",
         "project_directory": project.get("directory"),
         "title": auto.get("title"),
         "purpose": auto.get("purpose"),
@@ -258,9 +295,15 @@ class InsertResult(NamedTuple):
         unexpected_drops: Ids in the input that did not appear in
             RETURNING. Under DO UPDATE these should never exist;
             anything here is a hard stop (#55).
-        db_available: False when we could not reach the database.
+        db_available: False when we could not *reach* the database. A row
+            the database refused is NOT an outage — see ``quarantined``.
         duplicates_within_batch: Input rows that shared an id with
             another row in the same batch; the last occurrence won.
+        quarantined: Ids PostgreSQL refused on content grounds (bad
+            timestamp, NUL, wrong type, NOT NULL violation). They have
+            been written to the quarantine file, so the caller may
+            advance the cursor past them: they are accounted for, not
+            lost (audit round two, finding P1 / lens A-X1).
     """
 
     input_count: int
@@ -269,6 +312,7 @@ class InsertResult(NamedTuple):
     unexpected_drops: list[str]
     db_available: bool
     duplicates_within_batch: int = 0
+    quarantined: tuple[str, ...] = ()
 
 
 @contextmanager
@@ -390,6 +434,54 @@ def _write_quarantine(
         )
 
 
+def _quarantine_refused_rows(
+    poison: list[tuple[str, str]],
+    rows_by_id: dict[str, dict[str, Any]],
+    logger: logging.Logger,
+) -> list[str]:
+    """
+    Write every row PostgreSQL refused on content grounds to quarantine.
+
+    Parameters
+    ----------
+    poison:
+        ``(session id, error message)`` pairs from the per-row replay.
+    rows_by_id:
+        The deduped input rows, so the full row can be quarantined for
+        replay after the metadata is repaired.
+    logger:
+        Logger for the quarantine event.
+
+    Returns
+    -------
+    list[str]
+        The ids successfully quarantined. Only these may be skipped by a
+        cursor advance — a quarantine write that failed leaves the row
+        unaccounted for, so it stays in ``unexpected_drops`` and halts
+        the cursor instead (audit IC2's contract).
+    """
+    quarantined: list[str] = []
+    for session_id, message in poison:
+        written = quarantine_record(
+            QUARANTINE_FILE,
+            {
+                "id": session_id,
+                "postgres_error": message,
+                "row": rows_by_id.get(session_id),
+            },
+            "postgres_refused_row",
+            logger=logger,
+        )
+        if written:
+            quarantined.append(session_id)
+        else:
+            logger.error(
+                "Could not quarantine refused session %s — holding the "
+                "cursor rather than skipping it.", session_id,
+            )
+    return quarantined
+
+
 def upsert_sessions(
     rows: list[dict[str, Any]],
     logger: logging.Logger,
@@ -401,6 +493,19 @@ def upsert_sessions(
     cc-session update) replaces the previous version. The RETURNING
     clause captures every id PG touched; anything missing from that set
     is an unexpected drop (#55).
+
+    Failure handling splits two cases that were previously conflated
+    (audit round two, finding P1 / lens A-X1):
+
+    * The database is unreachable — ``db_available=False``, the caller
+      holds the cursor, and the next cron tick retries.
+    * The database refused a row's *content* — the batch is replayed one
+      row at a time so the healthy rows still land, and the offending
+      rows are quarantined so the cursor can advance past them.
+
+    Reporting a content failure as an outage is what left the sessions
+    table three weeks stale in September 2026 with "PostgreSQL may be
+    down" in the log while PostgreSQL was up the whole time.
     """
     # Within-batch dedup: multiple metadata files for the same session
     # id would otherwise let only the last one "win" via ON CONFLICT DO
@@ -486,19 +591,69 @@ def upsert_sessions(
         conn.close()
         sys.exit(2)
 
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                returned = execute_values(
-                    cur,
-                    upsert_sql,
-                    values,
-                    page_size=50,
-                    fetch=True,
-                )
-                returned_ids = {row[0] for row in returned}
+    rows_by_id = {row["id"]: row for row in deduped_rows}
 
-        unexpected_drops = [mid for mid in input_ids if mid not in returned_ids]
+    try:
+        returned_ids: set[str] = set()
+        quarantined: list[str] = []
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    returned = execute_values(
+                        cur,
+                        upsert_sql,
+                        values,
+                        page_size=50,
+                        fetch=True,
+                    )
+                    returned_ids = {row[0] for row in returned}
+        except (psycopg2.Error, ValueError, TypeError) as exc:
+            if is_outage_error(exc, psycopg2):
+                logger.warning("Cannot reach PostgreSQL during upsert: %s", exc)
+                logger.info(
+                    "PostgreSQL may be stopped — session.meta.json files "
+                    "remain canonical; cursor held for the next run."
+                )
+                return InsertResult(
+                    input_count=input_count,
+                    inserted=0,
+                    expected_dupes=0,
+                    unexpected_drops=[],
+                    db_available=False,
+                    duplicates_within_batch=duplicates_within_batch,
+                )
+            # Content failure, not an outage. ``execute_values`` sends the
+            # whole page in one transaction, so a single refused row aborts
+            # every other row with it; replay individually to find out which.
+            logger.error(
+                "Batch upsert refused by PostgreSQL (%s) — replaying %d row(s) "
+                "individually to isolate the offending session(s).",
+                str(exc).strip(), len(values),
+            )
+            returned_ids, poison, reachable = insert_rows_individually(
+                conn,
+                upsert_sql,
+                values,
+                psycopg2_module=psycopg2,
+                execute_values=execute_values,
+                logger=logger,
+            )
+            if not reachable:
+                return InsertResult(
+                    input_count=input_count,
+                    inserted=len(returned_ids),
+                    expected_dupes=0,
+                    unexpected_drops=[],
+                    db_available=False,
+                    duplicates_within_batch=duplicates_within_batch,
+                )
+            quarantined = _quarantine_refused_rows(poison, rows_by_id, logger)
+
+        quarantined_set = set(quarantined)
+        unexpected_drops = [
+            mid for mid in input_ids
+            if mid not in returned_ids and mid not in quarantined_set
+        ]
 
         result = InsertResult(
             input_count=input_count,
@@ -507,19 +662,22 @@ def upsert_sessions(
             unexpected_drops=unexpected_drops,
             db_available=True,
             duplicates_within_batch=duplicates_within_batch,
+            quarantined=tuple(quarantined),
         )
 
         # DEBUG on the happy path (nothing to notice); INFO when something
         # actually landed or when an anomaly surfaced.
         accounting_msg = (
             "Upsert accounting: input=%d inserted=%d unexpected_drops=%d "
-            "dupes_in_batch=%d"
+            "dupes_in_batch=%d quarantined=%d"
         )
         accounting_args = (
             result.input_count, result.inserted,
             len(result.unexpected_drops), result.duplicates_within_batch,
+            len(result.quarantined),
         )
-        if unexpected_drops or duplicates_within_batch or result.inserted:
+        if (unexpected_drops or duplicates_within_batch
+                or result.inserted or quarantined):
             logger.info(accounting_msg, *accounting_args)
         else:
             logger.debug(accounting_msg, *accounting_args)
@@ -538,16 +696,6 @@ def upsert_sessions(
                 unexpected_drops[:10],
             )
         return result
-    except psycopg2.Error as exc:
-        logger.error("Database error during upsert: %s", exc)
-        return InsertResult(
-            input_count=input_count,
-            inserted=0,
-            expected_dupes=0,
-            unexpected_drops=[],
-            db_available=False,
-            duplicates_within_batch=duplicates_within_batch,
-        )
     finally:
         conn.close()
 
@@ -611,7 +759,7 @@ def _sync_locked(
             if normalised > latest_normalised:
                 latest_archived_at = archived_at
 
-        row = metadata_to_row(meta_path, metadata)
+        row = metadata_to_row(meta_path, metadata, logger)
         if not row["id"]:
             logger.warning("Session missing id in %s, quarantining", meta_path)
             quarantine_record(
@@ -647,12 +795,15 @@ def _sync_locked(
     # Upsert into PostgreSQL (returns InsertResult with full accounting).
     result = upsert_sessions(rows, logger)
 
-    # Cursor advance policy (#55): advance ONLY when DB was reachable AND
-    # every input id appeared in RETURNING.
+    # Cursor advance policy (#55, refined by audit round two finding P1):
+    # advance ONLY when the DB was reachable AND every input id is
+    # accounted for — either returned by the upsert or explicitly
+    # quarantined. A row the database *refused* is accounted for; a row
+    # that vanished without explanation is not.
     if not result.db_available:
         logger.warning(
-            "Upsert returned db_available=False — cursor NOT advanced "
-            "(PostgreSQL may be down)"
+            "Upsert could not reach PostgreSQL — cursor NOT advanced. "
+            "This is an outage, not a data problem; the next run retries."
         )
     elif result.unexpected_drops:
         rows_by_id = {row["id"]: row for row in rows}
@@ -670,6 +821,15 @@ def _sync_locked(
         )
         return
     else:
+        if result.quarantined:
+            logger.error(
+                "PostgreSQL refused %d session(s) on content grounds; they "
+                "are quarantined in %s and the cursor advances past them. "
+                "Repair the metadata and replay from the quarantine. "
+                "First 10: %s",
+                len(result.quarantined), QUARANTINE_FILE,
+                list(result.quarantined[:10]),
+            )
         save_cursor(latest_archived_at)
         logger.info("Cursor advanced to %s", latest_archived_at)
 

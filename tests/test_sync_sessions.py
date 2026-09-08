@@ -420,12 +420,52 @@ class _FakePsycopg2OperationalError(_FakePsycopg2Error):
     """Stand-in for ``psycopg2.OperationalError`` (subclass of Error)."""
 
 
+class _FakePsycopg2InterfaceError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.InterfaceError`` (connection already gone)."""
+
+
+class _FakePsycopg2DataError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.DataError`` — the row's content is wrong."""
+
+
+class _FakePsycopg2IntegrityError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.IntegrityError`` — e.g. a NOT NULL violation."""
+
+
+def _poisoning_execute_values(
+    poison_ids: set[str],
+    error_class: type[Exception] = _FakePsycopg2DataError,
+    message: str = (
+        "unsupported Unicode escape sequence\n"
+        "DETAIL:  \\u0000 cannot be converted to text."
+    ),
+):
+    """
+    Build an ``execute_values`` stand-in that refuses specific rows.
+
+    Reproduces the live September 2026 failure exactly: any statement
+    whose value list contains a poison id raises, which means the batch
+    fails (it contains the poison row alongside the healthy ones) and the
+    per-row replay then fails only on the poison row itself.
+    """
+
+    def _side_effect(cur, sql, values, page_size=None, fetch=False):
+        ids = [row[0] for row in values]
+        offending = [sid for sid in ids if sid in poison_ids]
+        if offending:
+            raise error_class(f"{message} (row {offending[0]})")
+        return [(sid,) for sid in ids]
+
+    return _side_effect
+
+
 def _install_fake_psycopg2(
     monkeypatch: pytest.MonkeyPatch,
     *,
     returned_ids: list[str],
     raise_on_connect: bool = False,
     advisory_lock_acquired: bool = True,
+    execute_values_side_effect=None,
 ) -> MagicMock:
     """
     Install a fake ``psycopg2`` package into ``sys.modules`` so the
@@ -436,12 +476,17 @@ def _install_fake_psycopg2(
     (simulating the ``RETURNING id`` clause). ``advisory_lock_acquired``
     controls what ``pg_try_advisory_lock`` reports back (for tests that
     want to exercise the contended-lock path).
+    ``execute_values_side_effect`` overrides the return value entirely,
+    for tests that need the call to raise.
     """
     fake_psycopg2 = types.ModuleType("psycopg2")
     fake_extras = types.ModuleType("psycopg2.extras")
 
     fake_psycopg2.Error = _FakePsycopg2Error
     fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
+    fake_psycopg2.InterfaceError = _FakePsycopg2InterfaceError
+    fake_psycopg2.DataError = _FakePsycopg2DataError
+    fake_psycopg2.IntegrityError = _FakePsycopg2IntegrityError
 
     cur = MagicMock()
     cur.__enter__ = MagicMock(return_value=cur)
@@ -477,9 +522,14 @@ def _install_fake_psycopg2(
     else:
         fake_psycopg2.connect = MagicMock(return_value=conn)
 
-    fake_extras.execute_values = MagicMock(
-        return_value=[(mid,) for mid in returned_ids]
-    )
+    if execute_values_side_effect is not None:
+        fake_extras.execute_values = MagicMock(
+            side_effect=execute_values_side_effect
+        )
+    else:
+        fake_extras.execute_values = MagicMock(
+            return_value=[(mid,) for mid in returned_ids]
+        )
 
     monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
     monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_extras)
@@ -745,3 +795,240 @@ class TestUpsertSessionsAccounting:
         assert len(entries) == 1
         assert entries[0]["reason"] == "missing_session_id"
         assert entries[0]["record"]["meta_path"].endswith("session.meta.json")
+
+
+# ============================================================================
+# Audit round two, finding P1 (lens A-C1/A-X1/A-X2) — a refused row is not
+# an outage, and a NUL must never reach PostgreSQL
+# ============================================================================
+
+
+class TestRowErrorsVersusOutages:
+    """
+    The live September 2026 failure and its fix.
+
+    Two ``session.meta.json`` files carried a NUL inside LLM-generated
+    narrative. PostgreSQL rejects ``\\u0000`` in ``jsonb``; the whole
+    48-session batch aborted; the error was reported as
+    ``db_available=False`` ("PostgreSQL may be down"); the cursor never
+    advanced; and the sessions table sat three weeks stale.
+    """
+
+    def test_nul_in_narrative_is_stripped_at_ingest(
+        self, tmp_path: Path, sample_metadata: dict,
+        test_logger: logging.Logger, caplog,
+    ) -> None:
+        """
+        The exact poison shape: a NUL inside a sub-agent narrative.
+
+        ``metadata_to_row`` is the ingest boundary, so no NUL may survive
+        into ``raw_metadata`` (jsonb) or the derived TEXT columns. The
+        mutation this kills: dropping the ``sanitise_nuls`` call.
+        """
+        meta = json.loads(json.dumps(sample_metadata))
+        meta["subagent_summaries"] = [
+            {"narrative": "Ran the sweep\x00 and reported back."},
+        ]
+        meta["auto_generated"]["three_ps"]["prompt_summary"] = "Bad\x00text"
+        meta_path = tmp_path / "session.meta.json"
+
+        with caplog.at_level(logging.WARNING):
+            row = sync_mod.metadata_to_row(meta_path, meta, test_logger)
+
+        assert "\x00" not in row["raw_metadata"]
+        assert "\x00" not in json.dumps(row)
+        assert row["prompt_summary"] == "Badtext"
+        assert "NUL" in caplog.text
+
+    def test_data_error_quarantines_the_row_and_advances(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        archive_tree: Path,
+        test_logger: logging.Logger,
+        caplog,
+    ) -> None:
+        """
+        One refused row must not hold 47 healthy ones hostage.
+
+        The batch fails, the per-row replay lands the healthy session,
+        the refused session is quarantined, and the cursor advances — so
+        the next run makes progress instead of re-failing identically.
+        The mutation this kills: classifying every ``psycopg2.Error`` as
+        ``db_available=False``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        poison_id = "def67890-1234-0000-aaaa-bbbbccccdddd"
+        healthy_id = "abc12345-6789-0000-aaaa-bbbbccccdddd"
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values({poison_id}),
+        )
+
+        with caplog.at_level(logging.INFO):
+            sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        # Cursor advanced past the poisoned slice.
+        assert cursor_file.exists(), "cursor was not written — the sync stalled"
+        cursor = json.loads(cursor_file.read_text(encoding="utf-8"))
+        assert cursor["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"
+
+        # The refused session is quarantined with the database's reason.
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [e["record"]["id"] for e in entries] == [poison_id]
+        assert entries[0]["reason"] == "postgres_refused_row"
+        assert "\\u0000" in entries[0]["record"]["postgres_error"]
+
+        # The healthy session still landed, and nobody was told the
+        # database was down.
+        assert healthy_id not in {e["record"]["id"] for e in entries}
+        assert "may be down" not in caplog.text
+        assert "may be stopped" not in caplog.text
+
+    def test_healthy_rows_land_when_one_row_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """Per-row replay accounting: 2 inserted, 1 quarantined, 0 drops."""
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values({"s2"}),
+        )
+        rows = [_minimal_row(sid) for sid in ("s1", "s2", "s3")]
+
+        result = sync_mod.upsert_sessions(rows, test_logger)
+
+        assert result.db_available is True
+        assert result.inserted == 2
+        assert result.quarantined == ("s2",)
+        assert result.unexpected_drops == []
+
+    def test_integrity_error_is_also_a_row_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """A NOT NULL violation is content, not an outage (finding P10)."""
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values(
+                {"s2"},
+                error_class=_FakePsycopg2IntegrityError,
+                message='null value in column "project" violates not-null',
+            ),
+        )
+        rows = [_minimal_row(sid) for sid in ("s1", "s2")]
+
+        result = sync_mod.upsert_sessions(rows, test_logger)
+
+        assert result.db_available is True
+        assert result.quarantined == ("s2",)
+
+    def test_operational_error_still_holds_the_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        archive_tree: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """
+        A genuine outage keeps the old behaviour: no quarantine, no
+        cursor advance, retry next run. The split must not turn a real
+        outage into 48 quarantined sessions.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        def _server_gone(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2OperationalError(
+                "server closed the connection unexpectedly"
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=_server_gone,
+        )
+
+        sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text(encoding="utf-8"))
+            assert "sessions_sync_timestamp" not in data
+        assert not quarantine.exists()
+
+    def test_outage_part_way_through_replay_holds_the_cursor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        test_logger: logging.Logger,
+    ) -> None:
+        """
+        If the database dies during the per-row replay, the rows not yet
+        attempted are neither stored nor quarantined — so the cursor must
+        stay put rather than skipping them.
+        """
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        calls = {"n": 0}
+
+        def _dies_on_replay(cur, sql, values, page_size=None, fetch=False):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _FakePsycopg2DataError("bad row somewhere")
+            raise _FakePsycopg2OperationalError("server closed the connection")
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=_dies_on_replay,
+        )
+        rows = [_minimal_row(sid) for sid in ("s1", "s2")]
+
+        result = sync_mod.upsert_sessions(rows, test_logger)
+
+        assert result.db_available is False
+        assert result.quarantined == ()
+
+
+class TestNotNullColumnDefaults:
+    """Finding P10 (lens A-M8) — ``.get(key, default)`` on a NOT NULL column."""
+
+    def test_null_project_name_becomes_unknown(
+        self, tmp_path: Path, sample_metadata: dict,
+    ) -> None:
+        """
+        ``{"project": {"name": null}}`` must not reach ``project TEXT NOT
+        NULL``. ``.get("name", "unknown")`` returns None when the key
+        exists with a null value — the exact hazard the comment four
+        lines above it warns about. The mutation this kills: restoring
+        ``project.get("name", "unknown")``.
+        """
+        meta = json.loads(json.dumps(sample_metadata))
+        meta["project"]["name"] = None
+        row = sync_mod.metadata_to_row(tmp_path / "session.meta.json", meta)
+        assert row["project"] == "unknown"
+
+    def test_null_session_id_becomes_empty_string(
+        self, tmp_path: Path, sample_metadata: dict,
+    ) -> None:
+        """A null session id must route to the id-less quarantine path."""
+        meta = json.loads(json.dumps(sample_metadata))
+        meta["session"]["id"] = None
+        row = sync_mod.metadata_to_row(tmp_path / "session.meta.json", meta)
+        assert row["id"] == ""
