@@ -60,6 +60,22 @@ EXTRACTION_MAX_TOKENS = 8000
 
 # Transcript parsing limits
 MIN_CONTENT_LENGTH = 500   # Skip short conversations
+
+# The most slash-command responses that may be owed a skip at one time
+# (re-audit M4, 2026-09-08). The count is otherwise unbounded and never
+# decays: ``[/cmd, /cmd, /cmd]`` with the responses never arriving — an
+# interrupt, a crash, a PreCompact between the commands and the answers —
+# leaves three owed for the rest of the session, and they are then spent on
+# the next three genuine assistant turns, which are lost for good.
+#
+# Two is the largest shape live traffic produces: back-to-back commands
+# (``/recall`` then ``/remember``, two ``/remember`` calls in a row). Beyond
+# that the cap deliberately prefers UNDER-skipping. The two failure modes are
+# not symmetric — a leaked command response is a duplicate record that dedup
+# can collapse and ``/forget`` can retire, whereas a swallowed genuine turn
+# is irrecoverable: the cursor has already moved past it and nothing re-reads
+# it. When the counter is wrong, be wrong in the recoverable direction.
+MAX_RESPONSES_OWED = 2
 MAX_EXCHANGES = 30         # Cap exchanges sent to Haiku
 MAX_MESSAGE_CHARS = 3000   # Truncate individual messages
 MAX_THINKING_CHARS = 1500  # Truncation for thinking blocks
@@ -405,12 +421,14 @@ def pending_count(raw: object) -> int:
     true in Python. Anything unrecognised reads as zero, the safe default:
     at worst one command response is extracted once, exactly as it would
     have been before the skip existed. Negative counts are clamped for the
-    same reason.
+    same reason, and the upper clamp is ``MAX_RESPONSES_OWED`` — the single
+    choke point for the cap, so neither a stored row nor a caller can carry
+    a larger debt back in.
     """
     if isinstance(raw, bool):
         return 1 if raw else 0
     if isinstance(raw, int):
-        return max(0, raw)
+        return max(0, min(raw, MAX_RESPONSES_OWED))
     return 0
 
 
@@ -770,7 +788,13 @@ def parse_transcript(
                     # deduplicated of. So an unpositionable command arms
                     # nothing, and says so.
                     if entry_uuid:
-                        responses_owed += 1
+                        # Capped: see ``MAX_RESPONSES_OWED``. An owed skip
+                        # that is never spent is a debt against future
+                        # genuine turns, so the counter refuses to grow past
+                        # the largest shape live traffic produces.
+                        responses_owed = min(
+                            responses_owed + 1, MAX_RESPONSES_OWED
+                        )
                     else:
                         logger.warning(
                             "Slash-command entry with no uuid in %s — cannot "

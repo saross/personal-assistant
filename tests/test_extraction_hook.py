@@ -2922,7 +2922,8 @@ class TestOwedResponsesAreCounted:
         assert eh.pending_count(False) == 0
         assert eh.pending_count(0) == 0
         assert eh.pending_count(1) == 1
-        assert eh.pending_count(3) == 3
+        assert eh.pending_count(2) == 2
+        assert eh.pending_count(3) == eh.MAX_RESPONSES_OWED  # clamped down
         assert eh.pending_count(-2) == 0  # clamped, never a negative debt
         assert eh.pending_count(None) == 0
         assert eh.pending_count("2") == 0  # unrecognised reads as none owed
@@ -3169,3 +3170,106 @@ class TestUnpositionableCommandEntries:
         assert window.skip_pending == 0
         assert "no uuid" in caplog.text
         assert str(transcript) in caplog.text
+
+
+class TestOwedResponsesAreCapped:
+    """M4: the owed count was unbounded and never decayed.
+
+    Three commands whose responses never arrive — an interrupt, a crash, a
+    PreCompact landing between them — left three owed for the rest of the
+    session, and the next three genuine assistant turns paid the debt.
+    Those turns are irrecoverable; a leaked command response is a duplicate
+    record that dedup collapses. The cap makes the counter wrong in the
+    recoverable direction.
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    _fire = staticmethod(TestOwedResponsesAreCounted._fire)
+
+    def test_the_cap_is_two_and_is_stated_once(self):
+        """Kills a cap invented at a call site instead of the constant."""
+        assert eh.MAX_RESPONSES_OWED == 2
+
+    def test_three_commands_owe_at_most_the_cap(self, tmp_path):
+        """Kills ``min(responses_owed + 1, MAX_RESPONSES_OWED)`` -> ``+= 1``.
+
+        Three back-to-back commands with no responses in the window: the
+        third increment is refused.
+        """
+        transcript = tmp_path / "t.jsonl"
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", marker + f"\nsave {i}", f"c{i}", is_meta=True
+                )
+                for i in range(3)
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert window.messages == []
+        assert window.skip_pending == 2
+
+    def test_a_stored_row_cannot_carry_a_larger_debt_back_in(self, tmp_path):
+        """Kills capping only at the increment and not in ``pending_count``.
+
+        A cursor row written before the cap — or hand-edited — must not
+        reintroduce the unbounded debt on the next firing.
+        """
+        assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": 9}}, "s") == (
+            "u1",
+            2,
+        )
+        cursor = {}
+        eh.set_cursor_entry(cursor, "s1", "u9", 9)
+        assert cursor["s1"]["skip_pending"] == 2
+
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("assistant", f"ANSWER {i}", f"a{i}")
+                for i in range(4)
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None, 9)
+        assert [m["content"] for m in window.messages] == ["ANSWER 2", "ANSWER 3"]
+
+    def test_four_genuine_turns_after_three_commands_lose_at_most_two(
+        self, tmp_path, monkeypatch
+    ):
+        """The consequence, through main() with the API mocked.
+
+        Uncapped, three of the four assistant turns are swallowed. Capped,
+        exactly two are — and the operator gets the rest of the session
+        back.
+        """
+        transcript, cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry(
+                "user", marker + f"\nsave {i}", f"c{i}", is_meta=True
+            )
+            for i in range(3)
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-M4", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-M4") == ("c2", 2)
+
+        entries += [
+            make_live_shape_entry(
+                "assistant", f"TURN {i} " + "t" * 400, f"a{i}"
+            )
+            for i in range(4)
+        ]
+        _write_transcript(transcript, entries)
+        sent = self._fire(monkeypatch, transcript, "sess-M4", expect_call=True)
+        consumed = [i for i in range(4) if f"TURN {i} " not in sent]
+        assert consumed == [0, 1], (
+            f"expected the cap to consume exactly two turns, lost {consumed}"
+        )
+        assert _cursor_state(cursor_file, "sess-M4") == ("a3", 0)
