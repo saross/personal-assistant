@@ -1688,3 +1688,300 @@ class TestMergeHoldsTheCorpusLock:
 
         assert finished.wait(10), "the merge must proceed once unlocked"
         worker.join(timeout=10)
+
+
+# -------------------------------------------------------------------------
+# The in-lock re-read (audit 2026-09-08, round 4a-2, finding M4)
+# -------------------------------------------------------------------------
+
+#: Takes LOCK_SH on the vocabulary the way the extraction hook does, waits
+#: for a go signal on stdin, appends a tag, then exits (releasing the lock).
+#: The signal makes the interleaving deterministic: the appending process is
+#: holding the lock before the rewrite starts waiting for it, and appends
+#: while the rewrite is blocked.
+_APPENDING_LOCK_HOLDER = """
+import fcntl, os, sys
+path = sys.argv[1]
+tag = sys.argv[2]
+fd = os.open(path, os.O_RDWR | os.O_APPEND)
+fcntl.flock(fd, fcntl.LOCK_SH)
+print("locked", flush=True)
+sys.stdin.readline()
+os.write(fd, (tag + "\\n").encode("utf-8"))
+os.fsync(fd)
+fcntl.flock(fd, fcntl.LOCK_UN)
+os.close(fd)
+print("appended", flush=True)
+"""
+
+
+class TestOrphansCleanRereadsInsideTheLock:
+    """The counts are taken without the lock; the rewrite must not use them."""
+
+    def test_a_tag_appended_while_the_lock_is_awaited_survives(
+        self, tmp_path: Path,
+    ) -> None:
+        """An extraction-hook append landing during the wait is not dropped.
+
+        Kills the mutation ``vocab_now = load_vocabulary()`` ->
+        ``vocab_now = vocab``: the pre-lock snapshot does not contain the
+        appended tag, so the rewrite would silently delete it -- the exact
+        lost-append this lock exists to prevent.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        vocab.write_text(STRUCTURED_VOCAB, encoding="utf-8")
+        appended_tag = "kiln-firing-log"
+        assert appended_tag not in vocab.read_text(encoding="utf-8")
+
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _APPENDING_LOCK_HOLDER,
+             str(vocab), appended_tag],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "locked"
+            finished = threading.Event()
+
+            def run_clean() -> None:
+                with (
+                    patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+                    patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+                    patch.object(
+                        tag_gardening, "ensure_safe_to_rewrite",
+                        lambda reason: None),
+                ):
+                    tag_gardening.cmd_orphans(
+                        argparse.Namespace(action="clean"))
+                finished.set()
+
+            worker = threading.Thread(target=run_clean, daemon=True)
+            worker.start()
+            # The rewrite is now blocked on LOCK_EX; let the holder append.
+            assert not finished.wait(0.5), "the rewrite did not wait"
+            holder.stdin.write("go\n")
+            holder.stdin.flush()
+            assert holder.stdout.readline().strip() == "appended"
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+            for stream in (holder.stdin, holder.stdout):
+                if stream is not None:
+                    stream.close()
+
+        assert finished.wait(10), "the rewrite never completed"
+        worker.join(timeout=10)
+
+        written = vocab.read_text(encoding="utf-8").split("\n")
+        assert appended_tag in written, (
+            "a tag appended while the rewrite waited for the lock was lost: "
+            "the rewrite used its pre-lock snapshot"
+        )
+
+
+# -------------------------------------------------------------------------
+# A missing vocabulary (audit 2026-09-08, round 4a-2, finding M6)
+# -------------------------------------------------------------------------
+
+
+class TestOrphansCleanWithNoVocabulary:
+    """An absent vocabulary is a refusal, not a traceback under the lock."""
+
+    def test_clean_refuses_before_taking_the_guard(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """No vocabulary means no rewrite, and no daily-sync lock taken.
+
+        Kills the mutation that removes the existence check: the run then
+        reaches lock_jsonl_for_rewrite, which opens the target without
+        O_CREAT by design, and dies with a bare FileNotFoundError -- with
+        the exclusive daily-sync flock already held.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        assert not vocab.exists()
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError(
+                "the guard was taken before the vocabulary was checked")
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "ensure_safe_to_rewrite", refuse),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="clean"))
+
+        assert excinfo.value.code == 1
+        assert not vocab.exists(), "the refusal must not create the file"
+        assert "does not exist" in capsys.readouterr().err
+
+    def test_list_with_no_vocabulary_still_reports(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """The read-only action is unaffected: everything reads as missing."""
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="list"))
+
+        out = capsys.readouterr().out
+        assert "Tags in vocabulary but unused in JSONL: 0" in out
+        assert not vocab.exists()
+
+
+class TestVocabularyRetirementIsCaseInsensitive:
+    """A12 moved the mismatch to the vocabulary; M7 closes it there too."""
+
+    def test_a_mixed_case_loser_leaves_the_vocabulary(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """The exact shape from the finding: a loser spelt "API-Integration".
+
+        Kills the mutation ``{tag for tag in vocab if tag.lower() not in
+        retired}`` -> ``vocab -= set(replacements.keys())``: the replacement
+        map is keyed lower-case while the vocabulary preserves case, so the
+        retired tag survived in the file while the JSONL was rewritten and
+        the run printed "Tags retired: 1".
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-501", "content": "Mixed-case tag.",
+             "research_tags": ["API-Integration", "kiln"]},
+        ])
+        vocab.write_text("API-Integration\napi\nkiln\n", encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "api", "losers": ["API-Integration"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
+        assert "API-Integration" not in tags, (
+            "the retired tag survived in the vocabulary while the JSONL was "
+            "rewritten and the run reported it retired"
+        )
+        assert tags == ["api", "kiln"]
+        # And the JSONL agrees with the file.
+        written = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert written["research_tags"] == ["api", "kiln"]
+
+    def test_a_winner_already_present_in_another_case_is_not_duplicated(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """"API" surviving in the file must not gain a second "api" entry.
+
+        Kills the mutation that unconditionally unions the winners back in:
+        the vocabulary would then carry two spellings of one tag, and every
+        later orphan report would list one of them as unused.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-502", "content": "Loser only.",
+             "research_tags": ["pipelines"]},
+        ])
+        vocab.write_text("API\npipelines\n", encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "api", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
+        assert tags == ["API"], f"the winner was duplicated: {tags}"
+
+
+class TestRewriteVocabularyEdgeCases:
+    """Round 4a-2 lows: de-duplication, line endings, and the empty file."""
+
+    def test_a_duplicated_tag_collapses_to_its_first_line(
+        self, tmp_path: Path,
+    ) -> None:
+        """A tag listed twice comes back once, in its first position.
+
+        Kills the mutation that drops ``tag not in seen``: the duplicate
+        would be written back, and every subsequent rewrite would keep it.
+        """
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text(
+            "# Infrastructure\napi\nkiln\napi\n\n# Fieldwork\nkiln\n",
+            encoding="utf-8",
+        )
+
+        n_tags = tag_gardening.rewrite_vocabulary(vocab, {"api", "kiln"})
+
+        assert vocab.read_text(encoding="utf-8") == (
+            "# Infrastructure\napi\nkiln\n\n# Fieldwork\n"
+        )
+        assert n_tags == 2
+
+    def test_line_endings_are_normalised_to_lf(self, tmp_path: Path) -> None:
+        """A CRLF vocabulary comes back LF, with its tags intact.
+
+        A decision, not an accident: the file is machine-owned, every writer
+        emits "\\n", and the read goes through universal newlines, so a CRLF
+        file cannot round-trip unchanged whatever this function does. Pinned
+        so the choice is visible rather than incidental.
+        """
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_bytes(b"# Infrastructure\r\napi\r\nkiln\r\n")
+
+        tag_gardening.rewrite_vocabulary(vocab, {"api", "kiln"})
+
+        assert vocab.read_bytes() == b"# Infrastructure\napi\nkiln\n"
+
+    def test_an_empty_result_writes_an_empty_file(self, tmp_path: Path) -> None:
+        """No tags and no structure means no bytes, not a blank line.
+
+        Kills the mutation that always appends "\\n": a bare newline reads
+        back as a blank line, which the next rewrite preserves in place, so
+        the file would accumulate one blank line and never lose it.
+        """
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text("api\nkiln\n", encoding="utf-8")
+
+        n_tags = tag_gardening.rewrite_vocabulary(vocab, set())
+
+        assert vocab.read_bytes() == b""
+        assert n_tags == 0
+        # And a second pass over the now-empty file stays empty.
+        assert tag_gardening.rewrite_vocabulary(vocab, set()) == 0
+        assert vocab.read_bytes() == b""
+
+    def test_a_missing_file_is_created_from_the_keep_set(
+        self, tmp_path: Path,
+    ) -> None:
+        """With no file to preserve, the tags are written sorted."""
+        vocab = tmp_path / "tag-vocabulary.txt"
+
+        tag_gardening.rewrite_vocabulary(vocab, {"kiln", "api"})
+
+        assert vocab.read_text(encoding="utf-8") == "api\nkiln\n"
