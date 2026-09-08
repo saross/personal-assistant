@@ -1538,3 +1538,77 @@ class TestFailureCountsOnlyCountFilesWritten:
         printed = capsys.readouterr().out
         assert "wrote 0 successes and 1 failures" in printed
         assert "kept" not in printed
+
+
+class TestEmptyContentBranchCounts:
+    """A succeeded result with no text blocks is one failure, counted once."""
+
+    @pytest.fixture
+    def apply_stub(self, monkeypatch):
+        """Fake ``anthropic`` returning whatever results a test appends."""
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return results
+
+    @staticmethod
+    def _empty_content(custom_id: str):
+        """A result the API reports as succeeded but with no content blocks."""
+        message = type("Message", (), {"content": []})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def _out_dir(self, tmp_path: Path) -> Path:
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_invented",
+                "custom_id_to_session": {"sess-empty": "empty-session"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir
+
+    def test_it_counts_exactly_one_failure(self, tmp_path, capsys, apply_stub):
+        """The finding: this branch incremented n_fail twice."""
+        out_dir = self._out_dir(tmp_path)
+        apply_stub.append(self._empty_content("sess-empty"))
+        bom.haiku_apply("batch_invented", out_dir)
+        printed = capsys.readouterr().out
+        assert "wrote 0 successes and 1 failures" in printed
+        assert "kept" not in printed
+        assert json.loads((out_dir / "empty-session.json").read_text()) == {
+            "error": "succeeded result had empty content list"
+        }
+
+    def test_a_kept_response_counts_as_kept_not_failed(
+        self, tmp_path, capsys, apply_stub
+    ):
+        """With an answer already on disk the branch must keep, not overwrite."""
+        out_dir = self._out_dir(tmp_path)
+        (out_dir / "empty-session.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        apply_stub.append(self._empty_content("sess-empty"))
+        # force=True so the earlier skip does not short-circuit the branch.
+        bom.haiku_apply("batch_invented", out_dir, force=True)
+        printed = capsys.readouterr().out
+        assert "wrote 0 successes and 0 failures" in printed
+        assert "kept 1 earlier complete response(s)" in printed
+        assert json.loads((out_dir / "empty-session.json").read_text()) == (
+            fx.RESPONSE_OBJECT
+        )

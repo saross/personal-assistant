@@ -889,7 +889,6 @@ def haiku_apply(
                 f"[haiku] succeeded result for {session_id} carried no "
                 "content blocks — recording empty-content error"
             )
-            n_fail += 1
             continue
         raw_text = result.result.message.content[0].text
         _atomic_write(out_dir / f"{session_id}.raw.txt", raw_text)
