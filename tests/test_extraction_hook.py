@@ -1763,11 +1763,19 @@ class TestTranscriptShapeFidelity:
     def test_main_does_not_write_a_cursor_when_nothing_is_new(
         self, tmp_path, monkeypatch
     ):
-        """Kills dropping the ``new_last_uuid != last_uuid`` half of the guard.
+        """Kills making the cursor write unconditional (``if True:``).
 
         A firing with nothing after the cursor must not rewrite the cursor
-        file; the hook fires three times at every session close, and a
-        pointless rewrite is three more chances to tear it.
+        file at all; the hook fires three times at every session close, and
+        an unconditional write stores a null uuid for the session.
+
+        Note the honest limit (audit round two L3): dropping the
+        ``new_last_uuid != last_uuid`` conjunct is a NEAR-EQUIVALENT
+        mutant, not a surviving one. ``parse_transcript`` skips past the
+        cursor entry with ``continue`` before ``last_seen_uuid`` is
+        assigned, so the returned uuid can never equal the one we started
+        from — the conjunct is unreachable, and no test can distinguish
+        its presence. It is kept as a statement of intent.
         """
         transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
         cursor_file.write_text(json.dumps({"sess-N": "uuid-A"}), encoding="utf-8")
