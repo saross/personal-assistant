@@ -487,3 +487,75 @@ class TestCustomIdUniqueness:
         mapping = {r.custom_id: r.session_id for r in requests}
         assert len(mapping) == len(session_ids)
         assert sorted(mapping.values()) == sorted(session_ids)
+
+
+class TestBlinding:
+    """Every arm gets a letter, and the permutation is stable but not binary."""
+
+    FIVE_ARMS = ["alpha", "beta", "delta", "epsilon", "gamma"]
+
+    def test_every_arm_is_labelled(self):
+        """The finding: zip against ("A","B","C","D") dropped a fifth arm."""
+        labelled = bom.blind_order("session-1", self.FIVE_ARMS)
+        assert len(labelled) == len(self.FIVE_ARMS)
+        assert sorted(arm for _letter, arm in labelled) == sorted(self.FIVE_ARMS)
+        assert [letter for letter, _arm in labelled] == list("ABCDE")
+
+    def test_permutation_is_stable_for_a_session(self):
+        assert bom.blind_order("session-1", self.FIVE_ARMS) == bom.blind_order(
+            "session-1", list(reversed(self.FIVE_ARMS))
+        )
+
+    def test_more_than_two_permutations_occur(self):
+        """A reverse-only flip yields exactly two orderings; this must not."""
+        seen = {
+            tuple(arm for _letter, arm in bom.blind_order(f"session-{n}", self.FIVE_ARMS))
+            for n in range(40)
+        }
+        assert len(seen) > 2
+
+    def test_too_many_arms_is_an_error_not_a_truncation(self):
+        with pytest.raises(ValueError):
+            bom.blind_order("session-1", [f"arm{n}" for n in range(30)])
+
+    def test_rubric_lists_five_arms_and_the_key_is_byte_identical(self, tmp_path):
+        """Five arms in, five blocks out, and a re-run reproduces the key."""
+        manifest, prompt, out_dir, rubric_in, rubric_out = _rubric_inputs(
+            tmp_path, RUBRIC_TEMPLATE, providers=tuple(self.FIVE_ARMS)
+        )
+        bom.build_rubric(manifest, prompt, out_dir, rubric_in, rubric_out)
+        first_key = rubric_out.with_name(rubric_out.stem + ".blind-key.json")
+        key_bytes = first_key.read_bytes()
+        rubric_text = rubric_out.read_text(encoding="utf-8")
+        for letter in "ABCDE":
+            assert f"#### Model {letter} output" in rubric_text
+        # The mapping must not leak into the body a scorer reads.
+        for arm in self.FIVE_ARMS:
+            assert arm not in rubric_text
+
+        second_out = tmp_path / "rubric-out-again.md"
+        bom.build_rubric(manifest, prompt, out_dir, rubric_in, second_out)
+        second_key = second_out.with_name(second_out.stem + ".blind-key.json")
+        assert second_key.read_bytes() == key_bytes
+        mapping = json.loads(key_bytes)["mapping"]
+        assert sorted(next(iter(mapping.values())).values()) == sorted(self.FIVE_ARMS)
+
+    def test_error_responses_are_redacted_in_the_rubric_and_kept_in_the_key(
+        self, tmp_path
+    ):
+        """A vendor error string unblinds an arm; the fact of failure does not."""
+        manifest, prompt, out_dir, rubric_in, rubric_out = _rubric_inputs(
+            tmp_path, RUBRIC_TEMPLATE, providers=("alpha", "beta")
+        )
+        session_id = "bbbb2222-3333-4444"
+        (out_dir / "beta" / f"{session_id}.json").write_text(
+            json.dumps(fx.RESPONSE_ERROR, indent=2) + "\n", encoding="utf-8"
+        )
+        bom.build_rubric(manifest, prompt, out_dir, rubric_in, rubric_out)
+        rubric_text = rubric_out.read_text(encoding="utf-8")
+        assert "200000 maximum" not in rubric_text
+        assert "redacted to preserve blinding" in rubric_text
+        key = json.loads(
+            rubric_out.with_name(rubric_out.stem + ".blind-key.json").read_text()
+        )
+        assert key["redacted_errors"]["beta"][session_id] == fx.RESPONSE_ERROR["error"]

@@ -1044,8 +1044,54 @@ SESSIONS_SPAN_RE = re.compile(
 )
 
 
+#: Fixed salt for the per-session blinding permutation: identical inputs must
+#: regenerate an identical rubric and an identical key, so a re-run stays
+#: comparable with the first run.
+BLIND_SALT = "bakeoff-blind-2026-07-28"
+
+#: Neutral labels for the arms. Twenty-six is far more than ``--provider``
+#: offers; the length is what stops a discovered arm falling off the end.
+BLIND_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
 class RubricTemplateError(RuntimeError):
     """The rubric template cannot be populated safely; nothing was written."""
+
+
+def blind_order(session_id: str, available: list[str]) -> list[tuple[str, str]]:
+    """Pair each available arm with a neutral letter, permuted per session.
+
+    Two things were wrong with the previous scheme. It zipped against the
+    literal tuple ``("A", "B", "C", "D")``, so a fifth arm was dropped from
+    the rubric *and* from the key without a word — while ``--provider``
+    offers six. And the "flip" was ``order.reverse()`` on an alphabetical
+    list, which is two permutations, not n!: with four arms, letter A was
+    always one of two providers, and a scorer who noticed could back-fill
+    every earlier score.
+
+    The permutation is drawn from a ``random.Random`` seeded with the salt
+    and the session id. Seeding from a string is stable across runs and
+    machines (CPython hashes the seed with SHA-512 rather than using the
+    randomised ``hash()``), so the key regenerates byte for byte.
+
+    Args:
+        session_id: the session being blinded; the per-session entropy.
+        available: arm names discovered on the filesystem, in any order.
+
+    Returns:
+        ``[(letter, arm), ...]`` covering every arm in ``available``.
+
+    Raises:
+        ValueError: more arms than there are letters to label them with.
+    """
+    if len(available) > len(BLIND_LETTERS):
+        raise ValueError(
+            f"{len(available)} arms exceed the {len(BLIND_LETTERS)} available "
+            "blinding letters"
+        )
+    order = sorted(available)
+    random.Random(f"{BLIND_SALT}:{session_id}").shuffle(order)
+    return list(zip(BLIND_LETTERS, order))
 
 
 def validate_rubric_template(template: str) -> None:
@@ -1131,20 +1177,12 @@ def build_rubric(
         )
         # BLINDING. Scoring is the whole point of the rubric, and a visible
         # provider label anchors the scorer before they have read a word of
-        # output. Assign each provider a neutral letter, with the assignment
-        # *flipped per session* so a scorer cannot learn "A is always the
-        # OpenAI one" halfway through and back-fill their earlier scores.
-        #
-        # The flip is derived by hashing the session id against a fixed salt
-        # rather than drawn at random: identical inputs regenerate an
-        # identical rubric, so a re-run is comparable with the first. The key
-        # is written to a sidecar file, NOT into the rubric.
-        order = list(available)
-        if int(
-            hashlib.sha256(f"bakeoff-blind-2026-07-28:{sid}".encode()).hexdigest(), 16
-        ) % 2:
-            order.reverse()
-        labelled = list(zip(("A", "B", "C", "D"), order))
+        # output. Each arm gets a neutral letter, permuted per session so a
+        # scorer cannot learn "A is always the OpenAI one" halfway through
+        # and back-fill their earlier scores. Deterministic (see
+        # ``blind_order``) so a re-run is comparable with the first; the
+        # mapping is written to a sidecar file, NOT into the rubric.
+        labelled = blind_order(sid, available)
         blind_key[sid] = {letter: prov for letter, prov in labelled}
         provider_blocks = []
         for letter, prov in labelled:
@@ -1240,12 +1278,13 @@ def build_rubric(
     key_path = rubric_out.with_name(rubric_out.stem + ".blind-key.json")
     key_path.write_text(json.dumps({
         "note": (
-            "Model-letter -> provider mapping for the blinded rubric. "
-            "Assignment is flipped per session (sha256 of session id against "
-            "a fixed salt), so it is deterministic and re-generable but not "
-            "guessable from the rubric itself. DO NOT read before scoring."
+            "Model-letter -> provider mapping for the blinded rubric. Each "
+            "session gets its own permutation of the arms, drawn from an RNG "
+            "seeded with the salt and the session id, so the mapping is "
+            "deterministic and re-generable but not guessable from the "
+            "rubric itself. DO NOT read before scoring."
         ),
-        "salt": "bakeoff-blind-2026-07-28",
+        "salt": BLIND_SALT,
         "redacted_errors": blind_key.pop("_redacted_errors", {}),
         "mapping": blind_key,
     }, indent=1) + "\n")
