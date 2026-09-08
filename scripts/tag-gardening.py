@@ -891,6 +891,23 @@ def cmd_orphans(args: argparse.Namespace) -> None:
             print(f"  ... and {len(missing) - 50} more")
 
     if args.action == "clean":
+        # Refuse BEFORE the guard takes the exclusive daily-sync flock.
+        # lock_jsonl_for_rewrite opens the target without O_CREAT on purpose
+        # ("a missing canonical is an operator error and should fail loudly"),
+        # so an absent vocabulary used to surface as a bare FileNotFoundError
+        # from inside the guard, with the daily-sync lock already held — a
+        # traceback where the design says the operator should see a refusal
+        # (audit round 4a-2, finding M6). Creating the file here instead would
+        # contradict that contract and hide a store that has lost a canonical.
+        if not VOCABULARY_FILE.exists():
+            print(
+                f"\nError: {VOCABULARY_FILE} does not exist — refusing to "
+                f"clean a vocabulary that is not there. The extraction hook "
+                f"recreates it on the next capture; re-run `orphans --action "
+                f"clean` after that.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if orphaned or missing:
             # `clean` rewrites a protected file, so it takes the same
             # protection as `merge` (audit 2026-09-08, finding A2): the

@@ -1778,3 +1778,61 @@ class TestOrphansCleanRereadsInsideTheLock:
             "a tag appended while the rewrite waited for the lock was lost: "
             "the rewrite used its pre-lock snapshot"
         )
+
+
+# -------------------------------------------------------------------------
+# A missing vocabulary (audit 2026-09-08, round 4a-2, finding M6)
+# -------------------------------------------------------------------------
+
+
+class TestOrphansCleanWithNoVocabulary:
+    """An absent vocabulary is a refusal, not a traceback under the lock."""
+
+    def test_clean_refuses_before_taking_the_guard(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """No vocabulary means no rewrite, and no daily-sync lock taken.
+
+        Kills the mutation that removes the existence check: the run then
+        reaches lock_jsonl_for_rewrite, which opens the target without
+        O_CREAT by design, and dies with a bare FileNotFoundError -- with
+        the exclusive daily-sync flock already held.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        assert not vocab.exists()
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError(
+                "the guard was taken before the vocabulary was checked")
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "ensure_safe_to_rewrite", refuse),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="clean"))
+
+        assert excinfo.value.code == 1
+        assert not vocab.exists(), "the refusal must not create the file"
+        assert "does not exist" in capsys.readouterr().err
+
+    def test_list_with_no_vocabulary_still_reports(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """The read-only action is unaffected: everything reads as missing."""
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+        ):
+            tag_gardening.cmd_orphans(argparse.Namespace(action="list"))
+
+        out = capsys.readouterr().out
+        assert "Tags in vocabulary but unused in JSONL: 0" in out
+        assert not vocab.exists()
