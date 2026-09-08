@@ -607,6 +607,11 @@ def retrieve_recent(
     for mem in memories:
         if is_disproved(mem):
             continue
+        # Soft-delete guard (audit R2, 2026-09-08): a record retired
+        # via /forget must never enter session context. The digest path
+        # filtered it; this legacy four-bucket path did not.
+        if not digest_selector.is_active(mem):
+            continue
         created = parse_created_at(mem)
         if not created or created < cutoff:
             continue
@@ -657,6 +662,11 @@ def retrieve_permanent(
 
     for mem in memories:
         if is_disproved(mem):
+            continue
+        # Soft-delete guard (audit R2, 2026-09-08): a record retired
+        # via /forget must never enter session context. The digest path
+        # filtered it; this legacy four-bucket path did not.
+        if not digest_selector.is_active(mem):
             continue
         if mem.get("category") not in PERMANENT_CATEGORIES:
             continue
@@ -715,6 +725,11 @@ def retrieve_middle_aged(
     other = []
     for mem in memories:
         if is_disproved(mem):
+            continue
+        # Soft-delete guard (audit R2, 2026-09-08): a record retired
+        # via /forget must never enter session context. The digest path
+        # filtered it; this legacy four-bucket path did not.
+        if not digest_selector.is_active(mem):
             continue
         if mem.get("category") not in MIDDLE_AGED_CATEGORIES:
             continue
@@ -793,6 +808,11 @@ def retrieve_constraints(
 
     for mem in memories:
         if is_disproved(mem):
+            continue
+        # Soft-delete guard (audit R2, 2026-09-08): a record retired
+        # via /forget must never enter session context. The digest path
+        # filtered it; this legacy four-bucket path did not.
+        if not digest_selector.is_active(mem):
             continue
         if mem.get("category") not in CONSTRAINT_CATEGORIES:
             continue

@@ -40,12 +40,22 @@ wrapper `scripts/search-archives-safe.sh`, never raw `zcat`/`tr`/`grep`.
 
 ## Behaviour
 
-1. Run the search script via Bash and present the ranked results:
+1. Run the search script via Bash, passing the user's text on **stdin**
+   through a quoted heredoc, and present the ranked results:
 
    ```bash
    ~/personal-assistant/venv/bin/python3 \
-     ~/personal-assistant/scripts/search-sessions.py "QUERY" [--project P] [--role R] [--limit N]
+     ~/personal-assistant/scripts/search-sessions.py --query-stdin \
+     [--project P] [--role R] [--limit N] <<'SESSION_QUERY'
+   <the user's query text, verbatim, on its own line>
+   SESSION_QUERY
    ```
+
+   Never interpolate the query into the command line: it is text somebody
+   else wrote, and an apostrophe, backtick, or `$( )` would be parsed by
+   the shell before the script runs (the same rule as `/recall`). If the
+   query itself contains a line reading `SESSION_QUERY`, pick another
+   delimiter word.
 
    - **Query syntax** is PostgreSQL `websearch`: bare words are AND-ed, `"quoted
      phrases"` match in order, `OR` and `-exclude` work. Both terms in

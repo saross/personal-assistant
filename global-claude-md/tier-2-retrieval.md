@@ -83,18 +83,26 @@ aggregator (`scripts/surfacing_stats.py`).
 
 ## Surfacing instrumentation (item 16)
 
-Three paths now write to `data/logs/surfaced.log` via
-`scripts/surfacing_log.py` (all added 2026-06-06):
+Four paths write to `data/logs/surfaced.log` via
+`scripts/surfacing_log.py` (three added 2026-06-06, the fourth 2026-09-08):
 
 | Path | Tagged as | Where wired |
 |------|-----------|-------------|
 | Session-start digest | `path=digest` | `session-start-retrieval.py` `build_session_digest()` |
 | Autonomous fetch | `path=fetch` | `fetch-memories.py` `_log_invocation()` |
 | `/recall` | `path=recall` | `commands/recall.md` mandatory step |
+| MCP tools | `path=mcp` | `memory_mcp.py` `_log_surfaced()` |
+
+The MCP row is audit finding R5: the server serves memories to Claude
+Desktop, claude.ai, and any other client, and until 2026-09-08 logged none
+of it, so the earned-utility counts under-reported by however much MCP
+retrieval was happening. `search_memories`, `semantic_search`, `get_memory`,
+and `list_recent` all log; `memory_statistics` and `search_sessions` return
+no memory records, so they have nothing to log.
 
 The aggregator `scripts/surfacing_stats.py` reads this log and computes
-per-memory `active_retrievals` (fetch + recall, weighted), `digest_exposures`
-(passive), and `last_active_at`. The `/weekly-review` health report surfaces
+per-memory `active_retrievals` (fetch + recall + mcp, weighted),
+`digest_exposures` (passive), and `last_active_at`. The `/weekly-review` health report surfaces
 these via `memory-health-report.py` section [G]. Stage 2 (an archival
 stay-of-execution based on earned utility) is deferred until sufficient data
 has accrued.

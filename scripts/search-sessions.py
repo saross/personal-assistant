@@ -18,6 +18,12 @@ It is the indexed rung of the escalation ladder:
 Usage:
     # Search (ranked full-text; websearch syntax: quotes, OR, -exclude):
     scripts/search-sessions.py "mixture model deconvolution"
+
+    # Query text somebody else wrote — never build a shell string from it:
+    scripts/search-sessions.py --query-stdin --limit 5 <<'QUERY'
+    whatever the user typed, verbatim
+    QUERY
+
     scripts/search-sessions.py "preregistration" --project inscriptions --role assistant
     scripts/search-sessions.py "Rome suggest" --limit 20          # both terms, ranked
     scripts/search-sessions.py "build_model_f1" --substring        # exact/identifier (trgm)
@@ -42,11 +48,35 @@ DB_NAME = "claude_memories"
 # Snippet markers chosen to read in a terminal and survive JSON round-trips.
 _HEADLINE_OPTS = "MaxFragments=2,MaxWords=18,MinWords=5,StartSel=«,StopSel=»"
 
+#: Seconds to wait for the connection itself. Without it a stalled server
+#: hangs the caller indefinitely -- and this script exists precisely because
+#: an unbounded archive search hard-locked the machine on 2026-06-21.
+CONNECT_TIMEOUT_SECONDS = 5
+
+#: Server-side ceiling on any single statement (milliseconds). A query that
+#: outruns it is cancelled by PostgreSQL rather than tying up a backend.
+STATEMENT_TIMEOUT_MS = 30_000
+
+#: pg_trgm indexes on trigrams, so an ILIKE pattern shorter than three
+#: characters cannot use idx_session_chunks_text_trgm: the planner falls back
+#: to a sequential scan over every chunk, materialising all matches before the
+#: ORDER BY ... LIMIT can bound them. Refuse rather than run it.
+MIN_SUBSTRING_LENGTH = 3
+
 
 def _connect():
-    """Open a psycopg2 connection to the memory DB (raises on failure)."""
+    """Open a bounded psycopg2 connection to the memory DB (raises on failure).
+
+    Both bounds matter: ``connect_timeout`` caps the wait for a server that
+    is up but not answering, and ``statement_timeout`` caps the query once
+    the connection exists. Neither was set before audit R9.
+    """
     import psycopg2
-    return psycopg2.connect(dbname=DB_NAME)
+    return psycopg2.connect(
+        dbname=DB_NAME,
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
+        options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+    )
 
 
 def search(
@@ -62,7 +92,19 @@ def search(
     FTS mode (default) uses websearch_to_tsquery + ts_rank + ts_headline.
     substring mode uses a trigram-backed ILIKE for exact/identifier matches that
     FTS stemming would mangle. Both stay server-side and bounded by LIMIT.
+
+    Raises ``ValueError`` for a substring pattern shorter than
+    ``MIN_SUBSTRING_LENGTH``; the CLI turns that into exit 2 and the MCP tool
+    into an error envelope.
     """
+    if substring and len(query.strip()) < MIN_SUBSTRING_LENGTH:
+        raise ValueError(
+            f"--substring needs at least {MIN_SUBSTRING_LENGTH} characters: "
+            "pg_trgm indexes trigrams, so a shorter pattern cannot use "
+            "idx_session_chunks_text_trgm and would sequentially scan every "
+            "archived chunk. Use full-text search instead, or lengthen the "
+            "pattern."
+        )
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -95,7 +137,11 @@ def search(
                     "WHERE c.tsv @@ q"
                 )
                 params.append(query)
-                order = " ORDER BY rank DESC, s.started_at DESC NULLS LAST LIMIT %s"
+                # c.id DESC is the final tiebreak: ts_rank ties are common
+                # (short chunks, one matching term), and without it two runs
+                # of the same query could return different rows (audit R11).
+                order = (" ORDER BY rank DESC, s.started_at DESC NULLS LAST, "
+                         "c.id DESC LIMIT %s")
 
             filters = ""
             if project:
@@ -198,11 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     """Command-line entry point."""
     parser = argparse.ArgumentParser(description="Search archived session content (indexed, safe).")
     parser.add_argument("query", nargs="?", help="Full-text query (websearch syntax).")
+    parser.add_argument("--query-stdin", action="store_true", dest="query_stdin",
+                        help="Read the query from standard input instead of the "
+                             "command line. Use this whenever the query is text "
+                             "somebody else wrote: it never passes through a "
+                             "shell, so quotes, backticks, and $( ) cannot be "
+                             "interpreted. Trailing newline is stripped; the "
+                             "text is otherwise used verbatim.")
     parser.add_argument("--project", help="Scope to one project (e.g. inscriptions).")
     parser.add_argument("--role", choices=["user", "assistant"], help="Filter by turn role.")
     parser.add_argument("--limit", type=int, default=10, help="Max results (default 10).")
     parser.add_argument("--substring", action="store_true",
-                        help="Exact/identifier match (trigram ILIKE) instead of FTS.")
+                        help="Exact/identifier match (trigram ILIKE) instead of "
+                             f"FTS. Needs at least {MIN_SUBSTRING_LENGTH} "
+                             "characters (pg_trgm indexes trigrams).")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text.")
     parser.add_argument("--show", metavar="ARCHIVE_DIR",
                         help="Retrieve verbatim turns from this session directory.")
@@ -213,6 +268,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="Disambiguate --show when a session dir holds multiple "
                              "transcripts (main + subagents); usually unnecessary.")
     args = parser.parse_args(argv)
+
+    # --query-stdin (audit M-2). The positional form requires the caller to
+    # quote correctly, and the caller here is often an LLM pasting a user's
+    # words into a Bash command: an apostrophe ends the quoting and a
+    # backtick or $( ) is executed by the shell before this script ever
+    # runs. Reading the query from stdin removes the shell from the path
+    # entirely -- there is no string for it to parse.
+    if args.query_stdin:
+        if args.query:
+            parser.error(
+                "--query-stdin takes the query from standard input; do not "
+                "also pass one on the command line"
+            )
+        # rstrip("\n") only: a query may legitimately end in a space, and
+        # a heredoc adds exactly one trailing newline.
+        args.query = sys.stdin.read().rstrip("\n")
+        if not args.query.strip():
+            parser.error("--query-stdin was given but standard input was empty")
 
     try:
         if args.show is not None:
@@ -233,6 +306,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if rows else 1
     except ImportError:
         print("psycopg2 is required; install it in the venv.", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        # A usage error (currently only the trigram floor): same exit code
+        # argparse uses, and no traceback.
+        print(f"search-sessions: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 — surface DB errors cleanly to the CLI
         print(f"search-sessions: {exc}", file=sys.stderr)

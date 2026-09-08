@@ -340,3 +340,63 @@ def test_main_malformed_record_no_content(tmp_path: Path) -> None:
     _write_jsonl(p, [{"id": "a"}])  # no 'content' key
     rc = sme.main(["--id", "a", "--memories", str(p)])
     assert rc == sme.EXIT_NOT_FOUND
+
+
+# ============================================================================
+# Audit M-1 — the BOOLEAN column sees a real bool, whatever the JSONL held
+# ============================================================================
+
+
+@pytest.mark.parametrize("stored,expected", [
+    (False, False), ("false", False), ("f", False), ("no", False),
+    ("n", False), ("off", False), ("0", False), (0, False), (0.0, False),
+    (True, True), ("true", True), ("yes", True), ("on", True), (1, True),
+    ("unrecognised", True),
+])
+def test_extract_values_normalises_is_active(stored: object, expected: bool) -> None:
+    """Kills: ``record.get("is_active", True)`` passing the raw value through.
+
+    ``is_active`` is a BOOLEAN column. psycopg2 adapts a Python bool and a
+    str (which the server then parses), but an int becomes an SQL integer
+    literal and PostgreSQL has no implicit int4 -> bool cast — so a
+    hand-edited ``0`` raised a type error and failed the reconcile outright
+    instead of retiring the memory. A string like ``"no"`` adapted fine but
+    disagreed with what every JSONL reader had already decided.
+    """
+    vals = sme.extract_values({"id": "a", "content": "x", "is_active": stored})
+    assert vals["is_active"] is expected
+
+
+def test_extract_values_is_active_absent_defaults_true() -> None:
+    """Mirrors the column default; the field postdates most of the corpus."""
+    assert sme.extract_values({"id": "a", "content": "x"})["is_active"] is True
+
+
+@pytest.mark.parametrize("stored", ["no", "off", "f", 0])
+def test_reconcile_sends_a_real_false_to_postgres(stored: object) -> None:
+    """The consequence at the driver boundary, not just the returned dict.
+
+    The first UPDATE parameter is ``is_active``; it must be the Python
+    singleton ``False``, not the string or int the record carried.
+    """
+    conn = _FakeConn(rowcount=1)
+    rec = {"id": "2026-06-05-abc", "content": "x", "is_active": stored}
+    sme.reconcile_pg(rec, connect=lambda: conn)
+    _, params = _update_call(conn)
+    assert params[0] is False
+
+
+def test_reconcile_agrees_with_the_jsonl_readers() -> None:
+    """The database and the readers must not disagree about one record.
+
+    Kills: normalising on one side only.
+    """
+    from _soft_delete import is_active
+
+    for stored in (False, "false", "f", "no", "n", "off", "0", 0,
+                   True, "true", "yes", 1, "unrecognised"):
+        conn = _FakeConn(rowcount=1)
+        rec = {"id": "a", "content": "x", "is_active": stored}
+        sme.reconcile_pg(rec, connect=lambda: conn)
+        _, params = _update_call(conn)
+        assert params[0] is is_active({"is_active": stored}), stored

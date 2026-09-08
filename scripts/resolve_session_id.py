@@ -36,18 +36,80 @@ from pathlib import Path
 DEFAULT_ROOT = Path.home() / "mnt" / "rpi-shares" / "cc-archives-consolidated"
 
 
+class CatalogueError(RuntimeError):
+    """``CATALOG.json`` parsed as JSON but is not the shape we expect.
+
+    Distinct from a *missing* or *unparseable* catalogue, both of which are
+    normal and degrade silently to the filesystem walk. This means the file
+    is there and readable but structurally wrong — a top-level list instead
+    of an object, a ``sessions`` value that is not a list, an entry that is
+    not an object, or a path field that is not a string. Before audit L5
+    each of those escaped as an ``AttributeError`` or ``TypeError``
+    traceback and exit 1, which a caller cannot tell from "no such
+    session".
+    """
+
+
 def resolve_via_catalogue(
     session_id: str, root: Path
 ) -> Path | None:
-    """Fast path: look up session_id in <root>/CATALOG.json."""
+    """Fast path: look up session_id in <root>/CATALOG.json.
+
+    Returns the archive directory, or ``None`` when the catalogue is
+    absent, unparseable, or simply does not list this session — all
+    recoverable, and the caller falls back to the filesystem walk. The
+    first two report themselves on stderr (audit L-5): the walk is
+    exhaustive enough to hide a missing or truncated catalogue
+    indefinitely, so without a line here a corrupt file on the rpi share
+    surfaces only as unexplained slowness. A plain miss stays silent —
+    the catalogue only indexes top-level sessions, so misses are routine.
+
+    Raises :class:`CatalogueError` when the file is present and valid JSON
+    but the wrong shape, which is a broken catalogue rather than a miss.
+    """
     catalogue = root / "CATALOG.json"
     if not catalogue.is_file():
+        # Not an error — ``_legacy`` trees and freshly-made archive roots
+        # have no catalogue — but say so (audit L-5). The filesystem walk
+        # that follows is exhaustive and will usually succeed, so a
+        # catalogue that has gone missing from the rpi share otherwise
+        # shows up only as "this got slow", months later.
+        print(
+            f"resolve-session-id: no catalogue at {catalogue}; "
+            "falling back to a full filesystem walk",
+            file=sys.stderr,
+        )
         return None
     try:
         data = json.loads(catalogue.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        # Same reasoning, more urgently: a truncated or half-written
+        # CATALOG.json on a network share is a real defect that the walk
+        # would otherwise paper over completely.
+        print(
+            f"resolve-session-id: cannot read {catalogue} ({exc}); "
+            "falling back to a full filesystem walk",
+            file=sys.stderr,
+        )
         return None
-    for entry in data.get("sessions", []) or []:
+
+    if not isinstance(data, dict):
+        raise CatalogueError(
+            f"{catalogue}: expected a JSON object, found {type(data).__name__}"
+        )
+    sessions = data.get("sessions") or []
+    if not isinstance(sessions, list):
+        raise CatalogueError(
+            f"{catalogue}: 'sessions' must be a list, "
+            f"found {type(sessions).__name__}"
+        )
+
+    for entry in sessions:
+        if not isinstance(entry, dict):
+            raise CatalogueError(
+                f"{catalogue}: session entries must be objects, "
+                f"found {type(entry).__name__}"
+            )
         if entry.get("id") != session_id:
             continue
         # Catalogue entries record a path relative to the archive root.
@@ -57,11 +119,46 @@ def resolve_via_catalogue(
             or entry.get("archive_relpath")
             or entry.get("relative_path")
         )
-        if rel:
-            candidate = root / rel
-            if candidate.exists():
-                return candidate
+        if not rel:
+            continue
+        if not isinstance(rel, str):
+            raise CatalogueError(
+                f"{catalogue}: path for session {session_id} must be a "
+                f"string, found {type(rel).__name__}"
+            )
+        if not _within_root(root, rel):
+            # Say so rather than falling through silently: a catalogue
+            # pointing outside its own archive is a defect somebody needs
+            # to fix, and the filesystem walk that follows will otherwise
+            # make the rejection look like an ordinary catalogue miss.
+            print(
+                f"resolve-session-id: ignoring catalogue path for "
+                f"{session_id}: {rel!r} escapes the archive root {root}",
+                file=sys.stderr,
+            )
+            continue
+        candidate = root / rel
+        if candidate.exists():
+            return candidate
     return None
+
+
+def _within_root(root: Path, rel: str) -> bool:
+    """True iff ``root / rel`` stays inside *root* (audit R13).
+
+    ``CATALOG.json`` is data, not code: an absolute ``rel`` silently
+    replaces the archive root (``Path("/a") / "/etc"`` is ``/etc``), and a
+    ``../`` chain walks out of it. Either way the resolver would hand a
+    caller -- tier-3 verification, a FAIR export -- a path from outside the
+    archive as though it were an archived session. Checked on the resolved
+    forms so a symlinked component cannot smuggle the escape past us.
+    """
+    try:
+        target = (root / rel).resolve()
+        base = root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return target == base or base in target.parents
 
 
 def resolve_via_filesystem(
@@ -98,12 +195,28 @@ def resolve(session_id: str, root: Path = DEFAULT_ROOT) -> Path | None:
 
 
 def main() -> int:
+    """CLI entry point. Exit 0 with the path, 1 for not found, 2 for errors."""
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
     session_id = sys.argv[1]
     root = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_ROOT
-    result = resolve(session_id, root)
+    try:
+        result = resolve(session_id, root)
+    except CatalogueError as exc:
+        # A structurally broken catalogue (audit L5). Exit 2, as the
+        # docstring promises for IO/usage errors, rather than a traceback
+        # that a caller cannot distinguish from "not found".
+        print(f"resolve-session-id: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # The default root is an NFS/SMB mount of the rpi share (audit
+        # R14). A stale or unmounted share makes is_dir() or rglob() raise
+        # mid-walk, and the docstring already promised exit 2 for an IO
+        # error -- what actually happened was a traceback and exit 1,
+        # indistinguishable to a caller from "no such session".
+        print(f"resolve-session-id: cannot read {root}: {exc}", file=sys.stderr)
+        return 2
     if result is not None:
         print(result)
         return 0

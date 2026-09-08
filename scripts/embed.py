@@ -36,9 +36,10 @@ from _http_retry import urlopen_with_retry  # noqa: E402
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 # ``or`` rather than a ``.get`` default (audit round two, finding P3 /
-# lens A-C3). ``scripts/ollama-endpoint.sh`` prints an empty string and
-# exits 1 when no candidate endpoint answers, and the documented cron
-# wrapper exports exactly that: ``OLLAMA_BASE_URL=$(ollama-endpoint.sh)``.
+# lens A-C3). ``scripts/ollama-endpoint.sh`` prints nothing and exits 1
+# when no candidate endpoint answers (it used to print an empty LINE —
+# audit round 4d, E20), and the documented cron wrapper exports exactly
+# that: ``OLLAMA_BASE_URL=$(ollama-endpoint.sh)``.
 # ``os.environ.get(name, default)`` returns the empty string in that case
 # — the key *exists* — so the request URL became the relative
 # ``/api/tags`` and ``urllib.request.Request`` raised
@@ -238,7 +239,12 @@ def generate_embeddings(
         # transient errors with exponential backoff plus jitter; final
         # failures still propagate to the existing except ladder below
         # so the graceful-degradation contract is preserved.
-        with urlopen_with_retry(req, timeout=timeout) as resp:
+        # idempotent=True: this POST is a pure computation — the same
+        # texts always yield the same vectors and Ollama keeps no
+        # state — so a retry cannot duplicate a side effect.
+        with urlopen_with_retry(
+            req, timeout=timeout, idempotent=True
+        ) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             embeddings = data.get("embeddings", [])
 

@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import unicodedata
 from collections import Counter
 from datetime import datetime, timedelta
 from itertools import combinations
@@ -117,23 +119,34 @@ WIKI_TAG_EXPANSIONS: dict[str, list[str]] = {
 
 
 def load_memories(path: Path) -> list[dict]:
-    """Load all JSONL memory records, skipping malformed lines."""
+    """Load all JSONL memory records, skipping malformed and non-object lines.
+
+    A JSONL line that parses to a list, a number, or a string is as unusable
+    here as one that does not parse at all, so both are skipped rather than
+    handed downstream to raise an AttributeError several functions later.
+    """
     out: list[dict] = []
-    with path.open() as fh:
-        for line in fh:
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
             line = line.strip()
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(record, dict):
+                out.append(record)
     return out
 
 
-def parse_date(created_at: str) -> datetime | None:
-    """Parse an ISO created_at to a naive datetime (date precision)."""
-    if not created_at:
+def parse_date(created_at: object) -> datetime | None:
+    """Parse an ISO ``created_at`` to a naive datetime (date precision).
+
+    Returns None for anything unparseable — including a non-string value,
+    which the corpus does occasionally carry.
+    """
+    if not isinstance(created_at, str) or not created_at:
         return None
     try:
         return datetime.fromisoformat(created_at[:10])
@@ -141,40 +154,83 @@ def parse_date(created_at: str) -> datetime | None:
         return None
 
 
+def normalise_tag(tag: object) -> str | None:
+    """Return the canonical form of a research tag, or None if unusable.
+
+    One normalisation, used everywhere: NFC first (so a composed and a
+    decomposed spelling of the same accented tag count as one tag rather
+    than two), then strip, then case-fold to lower. The three call sites
+    below previously disagreed — one stripped, one did not — so the same
+    tag could be counted under two keys.
+
+    A non-string entry (the corpus carries the occasional null or nested
+    object) yields None rather than an AttributeError.
+    """
+    if not isinstance(tag, str):
+        return None
+    cleaned = unicodedata.normalize("NFC", tag).strip().lower()
+    return cleaned or None
+
+
+def record_tags(record: dict) -> list[str]:
+    """Return one record's usable, normalised research tags."""
+    raw = record.get("research_tags") or []
+    if not isinstance(raw, list):
+        return []
+    return [tag for tag in (normalise_tag(item) for item in raw) if tag]
+
+
+def unusable_tag_count(records: list[dict]) -> int:
+    """Count research_tags entries that could not be normalised."""
+    total = 0
+    for record in records:
+        raw = record.get("research_tags") or []
+        if not isinstance(raw, list):
+            total += 1
+            continue
+        total += sum(1 for item in raw if normalise_tag(item) is None)
+    return total
+
+
 def tag_frequencies(records: list[dict]) -> Counter:
     """Count research_tags usages across all records."""
     counter: Counter = Counter()
-    for rec in records:
-        for tag in rec.get("research_tags", []) or []:
-            counter[tag.lower().strip()] += 1
+    for record in records:
+        for tag in record_tags(record):
+            counter[tag] += 1
     return counter
 
 
 def wiki_tag_support(records: list[dict]) -> dict[str, int]:
     """For each wiki tag, count memories whose joined tags match an expansion."""
     support = {wt: 0 for wt in WIKI_TAG_EXPANSIONS}
-    for rec in records:
-        joined = " ".join(t.lower() for t in (rec.get("research_tags", []) or []))
+    for record in records:
+        joined = " ".join(record_tags(record))
         if not joined:
             continue
-        for wt, expansions in WIKI_TAG_EXPANSIONS.items():
-            if any(exp in joined for exp in expansions):
-                support[wt] += 1
+        for wiki_tag, expansions in WIKI_TAG_EXPANSIONS.items():
+            if any(expansion in joined for expansion in expansions):
+                support[wiki_tag] += 1
     return support
 
 
 def cooccurrence(records: list[dict], head_tags: set[str]) -> Counter:
     """Count co-occurring pairs among a restricted set of head tags."""
     pairs: Counter = Counter()
-    for rec in records:
-        present = sorted({t.lower().strip() for t in (rec.get("research_tags", []) or [])}
-                         & head_tags)
-        for a, b in combinations(present, 2):
-            pairs[(a, b)] += 1
+    for record in records:
+        present = sorted(set(record_tags(record)) & head_tags)
+        for first, second in combinations(present, 2):
+            pairs[(first, second)] += 1
     return pairs
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
+    """Print the vocabulary report. Writes nothing; returns an exit code.
+
+    This script is read-only by design — ``/weekly-review`` step 5b runs it
+    against the live corpus — so every result goes to stdout and every
+    problem with the corpus is a diagnostic, not a traceback.
+    """
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--top", type=int, default=120, help="how many top tags to list")
@@ -182,20 +238,62 @@ def main() -> None:
                     help="recency window length in days")
     ap.add_argument("--as-of", type=str, default=None,
                     help="window end date YYYY-MM-DD (default: newest created_at)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    if not MEMORIES_JSONL.exists():
+        print(f"no memory corpus at {MEMORIES_JSONL} — nothing to analyse",
+              file=sys.stderr)
+        return 1
 
     records = load_memories(MEMORIES_JSONL)
+    if not records:
+        print(f"{MEMORIES_JSONL} holds no usable memory records "
+              "(empty, or every line malformed) — nothing to analyse",
+              file=sys.stderr)
+        return 1
+
     dated = [(parse_date(r.get("created_at", "")), r) for r in records]
     valid_dates = [d for d, _ in dated if d is not None]
-    as_of = (datetime.fromisoformat(args.as_of) if args.as_of
-             else max(valid_dates))
-    window_start = as_of - timedelta(days=args.window_days)
-    recent = [r for d, r in dated if d is not None and d >= window_start]
 
-    print(f"corpus: {len(records)} records | "
-          f"{min(valid_dates).date()} → {max(valid_dates).date()}")
-    print(f"recency window: {window_start.date()} → {as_of.date()} "
-          f"({args.window_days}d) → {len(recent)} records\n")
+    if args.as_of:
+        try:
+            as_of = datetime.fromisoformat(args.as_of)
+        except ValueError:
+            print(f"--as-of must be an ISO date, not {args.as_of!r}",
+                  file=sys.stderr)
+            return 2
+    elif valid_dates:
+        as_of = max(valid_dates)
+    else:
+        # An undated corpus is analysable in aggregate; only the recency
+        # window is impossible. Say so and carry on rather than raising
+        # ValueError out of max() and aborting the weekly review.
+        as_of = None
+
+    if as_of is None:
+        window_start = None
+        recent: list[dict] = []
+        print("note: no record carries a parseable created_at — the recency "
+              "window is skipped", file=sys.stderr)
+    else:
+        window_start = as_of - timedelta(days=args.window_days)
+        recent = [r for d, r in dated if d is not None and d >= window_start]
+
+    unusable = unusable_tag_count(records)
+    if unusable:
+        print(f"note: skipped {unusable} research_tags entries that were not "
+              "usable strings", file=sys.stderr)
+
+    if valid_dates:
+        print(f"corpus: {len(records)} records | "
+              f"{min(valid_dates).date()} → {max(valid_dates).date()}")
+    else:
+        print(f"corpus: {len(records)} records | no parseable created_at dates")
+    if as_of is None:
+        print(f"recency window: skipped ({args.window_days}d) → 0 records\n")
+    else:
+        print(f"recency window: {window_start.date()} → {as_of.date()} "
+              f"({args.window_days}d) → {len(recent)} records\n")
 
     all_freq = tag_frequencies(records)
     recent_freq = tag_frequencies(recent)
@@ -212,7 +310,9 @@ def main() -> None:
     print(f"{'wiki-tag':28s} {'all-time':>9s} {'%corpus':>8s} {'recent':>7s} {'%recent':>8s}")
     sup_all = wiki_tag_support(records)
     sup_recent = wiki_tag_support(recent)
-    n_all, n_recent = len(records), max(1, len(recent))
+    # Both denominators are floored at 1: an empty recent window was already
+    # guarded, an empty corpus was not, and neither may divide by zero.
+    n_all, n_recent = max(1, len(records)), max(1, len(recent))
     for wt in WIKI_TAG_EXPANSIONS:
         a, r = sup_all[wt], sup_recent[wt]
         print(f"{wt:28s} {a:9d} {100*a/n_all:7.1f}% {r:7d} {100*r/n_recent:7.1f}%")
@@ -222,6 +322,8 @@ def main() -> None:
     for (a, b), n in cooccurrence(records, head).most_common(30):
         print(f"{n:4d}  {a} + {b}")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

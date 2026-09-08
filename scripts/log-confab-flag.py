@@ -60,13 +60,46 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 # Repository root: this file is ``<root>/scripts/log-confab-flag.py``. The
 # ``logs`` symlink at the root resolves to ``data/logs``.
 PA_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_LOG_PATH = PA_DIR / "logs" / "confab-flags.log"
+
+#: Environment variable pinning the destination (audit R17).
+LOG_PATH_ENV = "PA_CONFAB_LOG"
+
+#: The shipped destination, derived from ``__file__`` rather than ``HOME``.
+SHIPPED_LOG_PATH = PA_DIR / "logs" / "confab-flags.log"
+
+def default_log_path() -> Path | None:
+    """Where an unpinned write goes, or ``None`` for "write nothing".
+
+    Resolved at CALL time, never bound as a default argument: nothing here
+    touches the filesystem until something actually logs. The rules, in
+    order (audit S22, extended to this script by audit R17):
+
+    1. ``PA_CONFAB_LOG`` wins whenever it is set to a non-empty value.
+    2. Under pytest there is NO destination — the caller gets ``None`` and
+       writes nothing at all.
+    3. Otherwise :data:`SHIPPED_LOG_PATH`.
+
+    Rule 2 matters because ``SHIPPED_LOG_PATH`` comes from ``__file__``,
+    not from ``HOME``: it points at the operator's own checkout wherever
+    the suite pins ``HOME``, and runs through the ``logs`` symlink into the
+    private data submodule. A test exercising this path would otherwise
+    append live-looking rows to the operator's real instrumentation.
+    """
+    override = os.environ.get(LOG_PATH_ENV)
+    if override:
+        return Path(override)
+    if "pytest" in sys.modules:
+        return None
+    return SHIPPED_LOG_PATH
+
 
 # A failing claim has this status; a confabulation failure has this
 # failure_type. Both strings are shared verbatim across all three
@@ -166,22 +199,27 @@ def log_confab_flag(
     kinds: list[str] | None = None,
     deliverable: str = "",
     detail: str = "",
-    log_path: Path = DEFAULT_LOG_PATH,
+    log_path: Path | None = None,
     now: datetime | None = None,
 ) -> bool:
     """Append one confab-flag record to the log (best-effort).
 
     Returns ``True`` on a successful write, ``False`` if anything went
-    wrong. Never raises — a logging failure must not break the verifier.
+    wrong or if there is no destination. Never raises — a logging failure
+    must not break the verifier. ``log_path`` resolves through
+    :func:`default_log_path` when ``None``, at call time.
     """
     try:
+        target = log_path if log_path is not None else default_log_path()
+        if target is None:
+            return False
         stamp = now or datetime.now(timezone.utc)
         line = format_line(
             source, deliverable, checked, flagged, confab, kinds or [],
             now=stamp, detail=detail,
         )
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as fh:
             fh.write(line)
         return True
     except Exception:  # noqa: BLE001 — instrumentation must never raise

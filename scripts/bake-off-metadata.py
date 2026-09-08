@@ -1,17 +1,34 @@
 #!/usr/bin/env python3
 """
-Bake-off runner: side-by-side quality comparison of Anthropic Claude Haiku 4.5
-(Batch API) vs Google Gemini 3.5 Flash (Flex tier) for auto-generating
-session metadata in Shawn Ross's personal-assistant system.
+Bake-off runner: side-by-side quality comparison of several Large Language
+Model (LLM) providers for auto-generating session metadata in Shawn Ross's
+personal-assistant system.
 
-Originally landed for the 2026-05-18 Haiku-vs-Gemini-3-Flash-Preview
-bake-off; updated 2026-05-23 to default to Gemini 3.5 Flash (the
-current production extractor per the 2026-05-22 toolkit migration).
+``--provider`` offers six arms, in three families:
 
-The runner has two provider adapters that share an identical user prompt (the
-contents of ``prompt.md``). The same N session transcripts are sent to each
-provider; outputs are persisted side-by-side under ``--out-dir`` for human
-review against ``review-rubric.md``.
+- ``haiku`` — Anthropic Claude Haiku 4.5 via the Message Batches API.
+- ``haiku-rt`` / ``sonnet-5`` — the same Anthropic models in real time via
+  the Messages API.
+- ``gemini`` — Google Gemini 3.6 Flash on the Flex tier.
+- ``luna`` / ``terra`` — OpenAI GPT-5.6 Luna and Terra via the Responses API.
+
+Originally landed for the 2026-05-18 Haiku-versus-Gemini-3-Flash-Preview
+bake-off; the Gemini arm moved to 3.5 Flash on 2026-05-23 and to 3.6 Flash
+on 2026-07-28, when the two OpenAI arms and the real-time Anthropic arms
+were added.
+
+Every arm shares an identical user prompt (the contents of ``prompt.md``).
+The same N session transcripts are sent to each provider; outputs are
+persisted side-by-side under ``--out-dir`` for human review against
+``review-rubric.md``.
+
+Interpreter
+-----------
+Run this under the repository virtual environment
+(``venv/bin/python3 scripts/bake-off-metadata.py …``). The system
+``python3`` the shebang resolves to has neither ``cc_session_toolkit`` —
+which the transcript extractor imports unconditionally — nor the provider
+SDKs.
 
 Modes
 -----
@@ -20,7 +37,13 @@ Modes
   -request summary plus the first 300 characters of one example request body.
   No network calls.
 - Live mode (run only after explicit Shawn approval): submit to the chosen
-  provider and persist responses.
+  provider and persist responses. Guarded by the API Call Review Gate — the
+  model id, batch versus real-time, the request count, and the estimated
+  cost are printed before the confirmation, and ``--yes`` prints them too.
+- ``--haiku-apply`` (retrieval): NOT gated, deliberately. Retrieving a
+  finished batch costs nothing — the submission was the billed step — so it
+  runs without a confirmation prompt. It does announce the batch id and the
+  destination directory before fetching.
 
 Provider adapters
 -----------------
@@ -52,7 +75,10 @@ import importlib.util
 import hashlib
 import json
 import os
+import random
+import re
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,14 +129,20 @@ TERRA_MODEL = "gpt-5.6-terra"
 TERRA_INPUT_PRICE_PER_MTOK = 2.50
 TERRA_OUTPUT_PRICE_PER_MTOK = 15.00
 
-# Anthropic Claude Sonnet 5, verified 2026-07-28 against the Anthropic model
-# reference. List price is 3.00/15.00, but INTRODUCTORY pricing of 2.00/10.00
-# runs through 2026-08-31 -- the rates below are the intro rates, so they go
-# STALE on 1 Sep 2026 and must be raised to 3.00/15.00 then. Batch is -50%;
-# this arm runs real-time like the Haiku arm, so the standard rate applies.
+# Anthropic Claude Sonnet 5, list price, from the Anthropic model reference.
+# The introductory 2.00/10.00 rate expired on 2026-08-31 exactly as the
+# previous comment here predicted; these are the post-introductory LIST rates
+# it instructed the next reader to install, applied 2026-09-08. Every
+# estimate this file produced between 1 and 8 September under-counted the
+# Sonnet arm by a third. Batch is -50%; this arm runs real-time like the
+# Haiku arm, so the standard rate applies.
+#
+# NEXT REVIEW: on the next Anthropic pricing announcement, or by 2027-03-08 —
+# whichever comes first. There is no further scheduled step, so a calendar
+# date is the only tripwire left.
 SONNET_MODEL = "claude-sonnet-5"
-SONNET_INPUT_PRICE_PER_MTOK = 2.00
-SONNET_OUTPUT_PRICE_PER_MTOK = 10.00
+SONNET_INPUT_PRICE_PER_MTOK = 3.00
+SONNET_OUTPUT_PRICE_PER_MTOK = 15.00
 
 # Provider -> (model id, input $/MTok, output $/MTok) at the discounted tier
 # each provider can actually reach for this workload. Haiku is listed at its
@@ -179,6 +211,11 @@ def _load_extractor():
     """Import ``scripts/extract-transcript-text.py`` as a module.
 
     The script name contains hyphens, so we cannot use a normal import.
+
+    The extractor re-exports ``cc_session_toolkit.transcript_text``, which is
+    installed in the repository virtual environment and nowhere else, so an
+    ImportError here almost always means the wrong interpreter. Say that,
+    rather than surfacing a bare "No module named cc_session_toolkit".
     """
     path = Path(__file__).with_name("extract-transcript-text.py")
     spec = importlib.util.spec_from_file_location(
@@ -187,7 +224,14 @@ def _load_extractor():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load extractor from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Cannot load the transcript extractor ({exc}). Re-run under the "
+            f"repository virtual environment: "
+            f"venv/bin/python3 scripts/{Path(__file__).name} …"
+        ) from exc
     return module
 
 
@@ -211,6 +255,38 @@ class SessionRequest:
     transcript_text: str
     user_message: str
     custom_id: str
+
+
+#: Anthropic's Message Batches API caps ``custom_id`` at 64 characters and
+#: allows only ASCII letters, digits, underscores, and hyphens.
+CUSTOM_ID_MAX_CHARS = 64
+CUSTOM_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def build_custom_id(session_id: str) -> str:
+    """Return a batch ``custom_id`` that maps one-to-one onto ``session_id``.
+
+    The previous form was ``f"sess-{session_id[:8]}"``, justified as "unique
+    enough across 10 sessions". It is not: the re-sampler sets
+    ``session_id = path.stem`` for sub-agent transcripts, and those stems
+    share long prefixes. ``haiku_submit`` then builds
+    ``{custom_id: session_id}``, the second entry silently overwrites the
+    first, and on retrieval one session's metadata is written to disk under
+    the other session's name — with no error anywhere.
+
+    A full id is used whenever it fits the API's 64-character, restricted
+    alphabet; otherwise a SHA-256 digest of the id stands in, which is
+    collision-free for any realistic corpus and still round-trips through
+    the batch-state map.
+    """
+    candidate = f"sess-{session_id}"
+    if (
+        len(candidate) <= CUSTOM_ID_MAX_CHARS
+        and CUSTOM_ID_SAFE_RE.match(candidate) is not None
+    ):
+        return candidate
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:40]
+    return f"sess-{digest}"
 
 
 def _build_user_message(
@@ -288,9 +364,7 @@ def assemble_requests(
             content_tokens=entry["content_tokens"],
             transcript_text=transcript_text,
         )
-        # custom_id must be <=64 chars for Anthropic Batch API; first 8 of
-        # the session ID is unique enough across 10 sessions.
-        custom_id = f"sess-{entry['session_id'][:8]}"
+        custom_id = build_custom_id(entry["session_id"])
         requests.append(
             SessionRequest(
                 session_id=entry["session_id"],
@@ -415,6 +489,124 @@ def parse_response_json(raw_text: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Response persistence (shared)
+#
+# Every response file used to be a bare ``write_text``. Three consequences,
+# all observed in the shapes below: a crash part-way through left a truncated
+# JSON file that ``--build-rubric`` would read as an answer; a re-run after a
+# provider outage replaced a COMPLETE response with ``{"error": ...}``; and
+# ``_usage.json`` was rewritten wholesale, so the billed totals from an
+# earlier partial run were lost. Each response costs money to produce, so the
+# default here is to keep what already exists.
+# ---------------------------------------------------------------------------
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` beside ``path`` and ``os.replace`` it into position.
+
+    On POSIX the rename is atomic, so a reader sees either the whole old file
+    or the whole new one — never a half-written response.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def write_json_atomic(path: Path, payload: Any) -> None:
+    """Persist ``payload`` as indented JSON, atomically."""
+    _atomic_write(path, json.dumps(payload, indent=2) + "\n")
+
+
+def response_is_complete(path: Path) -> bool:
+    """True when ``path`` holds a parsed response object carrying no error."""
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and "error" not in payload
+
+
+def record_failure(
+    out_dir: Path, session_id: str, error: dict[str, Any], *, tag: str
+) -> None:
+    """Persist an error record unless a complete response already exists.
+
+    Deliberately unconditional, even under ``--force``: a re-run that fails
+    must not destroy the answer an earlier run paid for. The refusal is
+    printed, so a silently kept response cannot be mistaken for a fresh one.
+    """
+    path = out_dir / f"{session_id}.json"
+    if response_is_complete(path):
+        print(
+            f"[{tag}]   a complete response for {session_id} is already on "
+            "disk; keeping it rather than replacing it with this error"
+        )
+        return
+    write_json_atomic(path, error)
+
+
+def pending_requests(
+    requests: list[SessionRequest], out_dir: Path, *, force: bool, tag: str
+) -> list[SessionRequest]:
+    """Drop requests whose complete response is already persisted.
+
+    Args:
+        requests: everything the manifest asked for.
+        out_dir: the provider subdirectory holding ``<session_id>.json``.
+        force: re-run even the sessions that already have a good response.
+        tag: the log prefix for this arm.
+    """
+    if force:
+        return list(requests)
+    pending = [
+        request
+        for request in requests
+        if not response_is_complete(out_dir / f"{request.session_id}.json")
+    ]
+    skipped = len(requests) - len(pending)
+    if skipped:
+        print(
+            f"[{tag}] skipping {skipped} session(s) that already have a "
+            "complete response (--force re-runs them)"
+        )
+    return pending
+
+
+def merge_usage_log(
+    out_dir: Path, entries: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge usage rows into ``_usage.json``, keyed by session id.
+
+    A resumed run only carries rows for the sessions it actually called, so
+    replacing the file would discard the billed figures for everything the
+    earlier run completed.
+    """
+    path = out_dir / "_usage.json"
+    merged: dict[str, dict[str, Any]] = {}
+    try:
+        existing = json.loads(path.read_text())
+    except (OSError, ValueError):
+        existing = []
+    if isinstance(existing, list):
+        for row in existing:
+            if isinstance(row, dict) and row.get("session_id"):
+                merged[row["session_id"]] = row
+    for row in entries:
+        merged[row["session_id"]] = row
+    ordered = [merged[session_id] for session_id in sorted(merged)]
+    write_json_atomic(path, ordered)
+    return ordered
+
+
+# ---------------------------------------------------------------------------
 # Haiku adapter (Anthropic Message Batches API)
 # ---------------------------------------------------------------------------
 
@@ -471,7 +663,7 @@ def haiku_submit(
         },
     }
     state_path = out_dir / "batch-state.json"
-    state_path.write_text(json.dumps(state, indent=2) + "\n")
+    write_json_atomic(state_path, state)
     print(f"[haiku] submitted batch {batch_job.id}")
     print(f"[haiku] state persisted to {state_path}")
     # ``out_dir`` here is the provider subdir (e.g. ``<root>/haiku``);
@@ -480,7 +672,7 @@ def haiku_submit(
     # the hint copy-pastes cleanly.
     print(
         f"[haiku] retrieve with: "
-        f"scripts/bake-off-metadata.py --provider haiku "
+        f"venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
         f"--haiku-apply {batch_job.id} --out-dir {out_dir.parent}"
     )
     return batch_job.id
@@ -489,8 +681,16 @@ def haiku_submit(
 def haiku_apply(
     batch_id: str,
     out_dir: Path,
+    *,
+    force: bool = False,
 ) -> None:
-    """Retrieve a completed Haiku batch and write per-session response files."""
+    """Retrieve a completed Haiku batch and write per-session response files.
+
+    Args:
+        batch_id: the batch to fetch.
+        out_dir: the provider subdirectory holding ``batch-state.json``.
+        force: overwrite responses that are already complete on disk.
+    """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
     client = Anthropic()
@@ -513,9 +713,12 @@ def haiku_apply(
         if not session_id:
             print(f"[haiku] unknown custom_id {result.custom_id} — skipping")
             continue
+        if not force and response_is_complete(out_dir / f"{session_id}.json"):
+            print(f"[haiku] {session_id} already complete — skipping")
+            continue
         if result.result.type != "succeeded":
-            (out_dir / f"{session_id}.json").write_text(
-                json.dumps({"error": result.result.type}, indent=2) + "\n"
+            record_failure(
+                out_dir, session_id, {"error": result.result.type}, tag="haiku"
             )
             n_fail += 1
             continue
@@ -524,12 +727,11 @@ def haiku_apply(
         # IndexError below. Persist a structured failure record and
         # continue rather than crashing the whole retrieval loop.
         if not result.result.message.content:
-            (out_dir / f"{session_id}.json").write_text(
-                json.dumps(
-                    {"error": "succeeded result had empty content list"},
-                    indent=2,
-                )
-                + "\n"
+            record_failure(
+                out_dir,
+                session_id,
+                {"error": "succeeded result had empty content list"},
+                tag="haiku",
             )
             print(
                 f"[haiku] succeeded result for {session_id} carried no "
@@ -538,17 +740,20 @@ def haiku_apply(
             n_fail += 1
             continue
         raw_text = result.result.message.content[0].text
-        (out_dir / f"{session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag="haiku",
+            )
             n_fail += 1
         else:
+            write_json_atomic(out_dir / f"{session_id}.json", parsed)
             n_ok += 1
-        (out_dir / f"{session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
     print(f"[haiku] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
 
 
@@ -642,10 +847,20 @@ def gemini_run(
     requests: list[SessionRequest],
     out_dir: Path,
     system_prompt: str,
+    *,
+    force: bool = False,
 ) -> None:
-    """Run all requests sequentially against Gemini Flex; persist responses."""
+    """Run all requests sequentially against Gemini Flex; persist responses.
+
+    Sessions whose complete response is already on disk are skipped unless
+    ``force`` is set — each one costs money to regenerate.
+    """
     from google import genai  # type: ignore[import-not-found]
 
+    requests = pending_requests(requests, out_dir, force=force, tag="gemini")
+    if not requests:
+        print("[gemini] nothing to do — every session already has a response")
+        return
     client = genai.Client()
     n_ok = 0
     n_fail = 0
@@ -659,22 +874,24 @@ def gemini_run(
                 client, r.user_message, system_prompt
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            (out_dir / f"{r.session_id}.json").write_text(
-                json.dumps({"error": str(exc)}, indent=2) + "\n"
-            )
+            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag="gemini")
             n_fail += 1
             print(f"[gemini]   failed: {exc}")
             continue
-        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
-            n_ok += 1
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                r.session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag="gemini",
+            )
             n_fail += 1
-        (out_dir / f"{r.session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
+        else:
+            write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
+            n_ok += 1
     print(f"[gemini] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
 
 
@@ -686,8 +903,14 @@ def gemini_run(
 def luna_call_once(
     user_message: str, system_prompt: str, *, service_tier: str = "flex",
     model: str = LUNA_MODEL,
-) -> tuple[str, dict[str, Any]]:
-    """Single Responses-API call. Returns ``(text, usage)``.
+) -> tuple[str, dict[str, Any], str]:
+    """Single Responses-API call. Returns ``(text, usage, service_tier)``.
+
+    The third element is the tier the request was actually served on —
+    ``payload["service_tier"]`` when the API reports one, otherwise the tier
+    that was asked for. It is recorded beside the usage figures because Flex
+    and the default tier are priced differently, so a silent fallback would
+    otherwise make the recorded cost wrong with nothing to show for it.
 
     Uses the **Responses API** (``POST /v1/responses``) rather than Chat
     Completions: OpenAI's guidance is that "Responses is recommended for all
@@ -700,7 +923,9 @@ def luna_call_once(
       server-side. Keeps the arm stateless and avoids leaving transcript
       content in OpenAI's storage.
     - ``reasoning.effort="none"`` — **symmetry with the Gemini arm**, which
-      sets ``thinking_budget=0``. Reasoning tokens bill at the *output* rate,
+      sets ``thinking_config.thinking_level="minimal"`` (``thinking_budget=0``
+      is rejected by gemini-3.6-flash; ``minimal`` is the closest available
+      equivalent). Reasoning tokens bill at the *output* rate,
       so leaving the default ``medium`` would both inflate cost and give Luna
       a capability the Gemini arm was denied. Fair comparison requires both
       reasoning modes off.
@@ -752,19 +977,20 @@ def luna_call_once(
                 if part.get("type") in ("output_text", "text") and part.get("text"):
                     chunks.append(part["text"])
         text = "".join(chunks)
-    return text, payload.get("usage", {})
+    return text, payload.get("usage", {}), payload.get("service_tier") or service_tier
 
 
 def luna_call_with_retry(
     user_message: str, system_prompt: str, *, model: str = LUNA_MODEL
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], str]:
     """Flex call with backoff on 429, falling back to the default tier.
 
     OpenAI documents Flex as returning ``429 Resource Unavailable`` under
     contention, explicitly *without* charging for the failed call. We retry on
     the same waits the Gemini arm uses, then degrade to the default tier so a
     busy Flex pool cannot stall the bake-off. The tier actually used is
-    reported so the cost estimate can be corrected afterwards.
+    returned, and ``luna_run`` records it in ``_usage.json``, so the cost
+    estimate can be corrected afterwards.
     """
     import urllib.error
 
@@ -794,6 +1020,7 @@ def luna_run(
     *,
     model: str = LUNA_MODEL,
     tag: str = "luna",
+    force: bool = False,
 ) -> None:
     """Run all requests sequentially against Luna; persist responses + usage.
 
@@ -804,6 +1031,10 @@ def luna_run(
     plan doc; Tier-1 batch queue limits are 5M tokens, so a large run needs
     splitting into waves.
     """
+    requests = pending_requests(requests, out_dir, force=force, tag=tag)
+    if not requests:
+        print(f"[{tag}] nothing to do — every session already has a response")
+        return
     n_ok = 0
     n_fail = 0
     usage_log: list[dict[str, Any]] = []
@@ -813,29 +1044,34 @@ def luna_run(
             f"({r.bin}, {r.content_tokens:,} tokens) …"
         )
         try:
-            raw_text, usage = luna_call_with_retry(
+            raw_text, usage, service_tier = luna_call_with_retry(
                 r.user_message, system_prompt, model=model
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            (out_dir / f"{r.session_id}.json").write_text(
-                json.dumps({"error": str(exc)}, indent=2) + "\n"
-            )
+            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
             n_fail += 1
             print(f"[{tag}]   failed: {exc}")
             continue
-        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
-        usage_log.append({"session_id": r.session_id, **usage})
+        _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
+        usage_log.append(
+            {"session_id": r.session_id, "service_tier": service_tier, **usage}
+        )
         try:
             parsed = parse_response_json(raw_text)
-            n_ok += 1
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                r.session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag=tag,
+            )
             n_fail += 1
-        (out_dir / f"{r.session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
-    # Real billed usage beats any estimate — record it for the cost comparison.
-    (out_dir / "_usage.json").write_text(json.dumps(usage_log, indent=2) + "\n")
+        else:
+            write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
+            n_ok += 1
+    # Real billed usage beats any estimate — record it for the cost
+    # comparison, merged so a resumed run keeps the earlier rows.
+    merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
     billed_in = sum(u.get("input_tokens", 0) for u in usage_log)
     billed_out = sum(u.get("output_tokens", 0) for u in usage_log)
@@ -862,6 +1098,7 @@ def haiku_rt_run(
     model: str = HAIKU_MODEL,
     tag: str = "haiku-rt",
     disable_thinking: bool = False,
+    force: bool = False,
 ) -> None:
     """Run all requests sequentially against Haiku 4.5 via the Messages API.
 
@@ -879,6 +1116,10 @@ def haiku_rt_run(
     """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
+    requests = pending_requests(requests, out_dir, force=force, tag=tag)
+    if not requests:
+        print(f"[{tag}] nothing to do — every session already has a response")
+        return
     client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     n_ok = n_fail = 0
     usage_log: list[dict[str, Any]] = []
@@ -913,23 +1154,25 @@ def haiku_rt_run(
                 "output_tokens": resp.usage.output_tokens,
             })
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            (out_dir / f"{r.session_id}.json").write_text(
-                json.dumps({"error": str(exc)}, indent=2) + "\n"
-            )
+            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
             n_fail += 1
             print(f"[{tag}]   failed: {exc}")
             continue
-        (out_dir / f"{r.session_id}.raw.txt").write_text(raw_text)
+        _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
-            n_ok += 1
         except ValueError as exc:
-            parsed = {"error": str(exc), "raw": raw_text[:500]}
+            record_failure(
+                out_dir,
+                r.session_id,
+                {"error": str(exc), "raw": raw_text[:500]},
+                tag=tag,
+            )
             n_fail += 1
-        (out_dir / f"{r.session_id}.json").write_text(
-            json.dumps(parsed, indent=2) + "\n"
-        )
-    (out_dir / "_usage.json").write_text(json.dumps(usage_log, indent=2) + "\n")
+        else:
+            write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
+            n_ok += 1
+    merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
     print(
         f"[{tag}] billed: {sum(u['input_tokens'] for u in usage_log):,} input, "
@@ -973,23 +1216,120 @@ def dry_run_report(
     )
     print(f"total ({provider}): ${cost['total_cost_usd']}")
 
-    print()
-    print("--- Example request body (first 400 chars of request 1) ---")
-    print(requests[0].user_message[:400])
-    print("…")
+    if requests:
+        print()
+        print("--- Example request body (first 400 chars of request 1) ---")
+        print(requests[0].user_message[:400])
+        print("…")
 
     # Write a dry-run-cost.json so the launch plan can include the figure
     # without re-running.
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "dry-run-cost.json").write_text(
-        json.dumps(cost, indent=2) + "\n"
-    )
+    write_json_atomic(out_dir / "dry-run-cost.json", cost)
     print(f"\nCost detail written to {out_dir / 'dry-run-cost.json'}")
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+#: Markers delimiting the generated session blocks in the rubric template.
+BEGIN_SESSIONS_MARKER = "<!--BEGIN-SESSIONS-->"
+END_SESSIONS_MARKER = "<!--END-SESSIONS-->"
+
+#: An **unpopulated** marker pair: the two markers with nothing between them
+#: but whitespace. ``\s*`` deliberately tolerates a blank line, a trailing
+#: space, and CRLF line endings — a template that differs from the canonical
+#: one only in whitespace should still populate. It does NOT tolerate
+#: content: see ``validate_rubric_template`` for why that must be a refusal.
+SESSIONS_SPAN_RE = re.compile(
+    re.escape(BEGIN_SESSIONS_MARKER) + r"\s*" + re.escape(END_SESSIONS_MARKER)
+)
+
+
+#: Fixed salt for the per-session blinding permutation: identical inputs must
+#: regenerate an identical rubric and an identical key, so a re-run stays
+#: comparable with the first run.
+BLIND_SALT = "bakeoff-blind-2026-07-28"
+
+#: Neutral labels for the arms. Twenty-six is far more than ``--provider``
+#: offers; the length is what stops a discovered arm falling off the end.
+BLIND_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+class RubricTemplateError(RuntimeError):
+    """The rubric template cannot be populated safely; nothing was written."""
+
+
+def blind_order(session_id: str, available: list[str]) -> list[tuple[str, str]]:
+    """Pair each available arm with a neutral letter, permuted per session.
+
+    Two things were wrong with the previous scheme. It zipped against the
+    literal tuple ``("A", "B", "C", "D")``, so a fifth arm was dropped from
+    the rubric *and* from the key without a word — while ``--provider``
+    offers six. And the "flip" was ``order.reverse()`` on an alphabetical
+    list, which is two permutations, not n!: with four arms, letter A was
+    always one of two providers, and a scorer who noticed could back-fill
+    every earlier score.
+
+    The permutation is drawn from a ``random.Random`` seeded with the salt
+    and the session id. Seeding from a string is stable across runs and
+    machines (CPython hashes the seed with SHA-512 rather than using the
+    randomised ``hash()``), so the key regenerates byte for byte.
+
+    Args:
+        session_id: the session being blinded; the per-session entropy.
+        available: arm names discovered on the filesystem, in any order.
+
+    Returns:
+        ``[(letter, arm), ...]`` covering every arm in ``available``.
+
+    Raises:
+        ValueError: more arms than there are letters to label them with.
+    """
+    if len(available) > len(BLIND_LETTERS):
+        raise ValueError(
+            f"{len(available)} arms exceed the {len(BLIND_LETTERS)} available "
+            "blinding letters"
+        )
+    order = sorted(available)
+    random.Random(f"{BLIND_SALT}:{session_id}").shuffle(order)
+    return list(zip(BLIND_LETTERS, order))
+
+
+def validate_rubric_template(template: str) -> None:
+    """Refuse a rubric template that ``build_rubric`` cannot populate safely.
+
+    The populate step is a *replacement* of the empty span between the two
+    session markers. When that span is not empty — because the rubric has
+    already been populated once — the replacement silently matches nothing
+    and the old session blocks survive, while the blinding key beside the
+    rubric is regenerated from the CURRENT filesystem. Add a provider arm,
+    re-run, and every blinded score then decodes to the wrong model with no
+    error and a cheerful "Wrote populated rubric" on stdout. So the only
+    safe response to an already-populated (or malformed) template is to
+    refuse before anything is written.
+
+    Raises:
+        RubricTemplateError: the markers are missing, duplicated, or already
+            carry session blocks between them.
+    """
+    n_begin = template.count(BEGIN_SESSIONS_MARKER)
+    n_end = template.count(END_SESSIONS_MARKER)
+    if n_begin != 1 or n_end != 1:
+        raise RubricTemplateError(
+            f"the template must carry exactly one {BEGIN_SESSIONS_MARKER} and "
+            f"one {END_SESSIONS_MARKER}; found {n_begin} and {n_end}"
+        )
+    if SESSIONS_SPAN_RE.search(template) is None:
+        raise RubricTemplateError(
+            "the session markers are not an empty pair — the template already "
+            "carries session blocks. Populating it would leave the OLD blocks "
+            "in place while writing a NEW blinding key, so every blinded score "
+            "would decode to the wrong model. Re-run --build-rubric against "
+            "the pristine template instead."
+        )
 
 
 def build_rubric(
@@ -1009,6 +1349,9 @@ def build_rubric(
     extractor = _load_extractor()
     manifest = json.loads(manifest_path.read_text())
     template = rubric_template.read_text()
+    # Validate BEFORE any work: a refusal must leave the rubric, the
+    # blinding key, and everything else on disk exactly as it found them.
+    validate_rubric_template(template)
 
     # Patch the summary table cells with real metadata.
     for i, entry in enumerate(manifest["sessions"], 1):
@@ -1038,20 +1381,12 @@ def build_rubric(
         )
         # BLINDING. Scoring is the whole point of the rubric, and a visible
         # provider label anchors the scorer before they have read a word of
-        # output. Assign each provider a neutral letter, with the assignment
-        # *flipped per session* so a scorer cannot learn "A is always the
-        # OpenAI one" halfway through and back-fill their earlier scores.
-        #
-        # The flip is derived by hashing the session id against a fixed salt
-        # rather than drawn at random: identical inputs regenerate an
-        # identical rubric, so a re-run is comparable with the first. The key
-        # is written to a sidecar file, NOT into the rubric.
-        order = list(available)
-        if int(
-            hashlib.sha256(f"bakeoff-blind-2026-07-28:{sid}".encode()).hexdigest(), 16
-        ) % 2:
-            order.reverse()
-        labelled = list(zip(("A", "B", "C", "D"), order))
+        # output. Each arm gets a neutral letter, permuted per session so a
+        # scorer cannot learn "A is always the OpenAI one" halfway through
+        # and back-fill their earlier scores. Deterministic (see
+        # ``blind_order``) so a re-run is comparable with the first; the
+        # mapping is written to a sidecar file, NOT into the rubric.
+        labelled = blind_order(sid, available)
         blind_key[sid] = {letter: prov for letter, prov in labelled}
         provider_blocks = []
         for letter, prov in labelled:
@@ -1123,11 +1458,21 @@ def build_rubric(
         blocks.append(block)
 
     sessions_block = "\n".join(blocks)
-    populated = template.replace(
-        "<!--BEGIN-SESSIONS-->\n<!--END-SESSIONS-->",
-        f"<!--BEGIN-SESSIONS-->\n{sessions_block}\n<!--END-SESSIONS-->",
+    # ``re.sub`` with a *function* replacement, not a string: the session
+    # blocks carry JSON, and backslash sequences in a string replacement
+    # would be interpreted as group references.
+    replacement = (
+        f"{BEGIN_SESSIONS_MARKER}\n{sessions_block}\n{END_SESSIONS_MARKER}"
     )
-    rubric_out.write_text(populated)
+    populated, n_replaced = SESSIONS_SPAN_RE.subn(
+        lambda _match: replacement, template, count=1
+    )
+    if n_replaced != 1:  # pragma: no cover — validate_rubric_template guards
+        raise RubricTemplateError(
+            "the session-marker span vanished between validation and "
+            "substitution; nothing was written"
+        )
+    _atomic_write(rubric_out, populated)
     print(f"Wrote populated rubric to {rubric_out}")
 
     # The blinding key goes in a SIDECAR, never in the rubric — a scorer who
@@ -1135,21 +1480,107 @@ def build_rubric(
     # trivially findable after scoring, and deliberately named so it is
     # obvious what not to open first.
     key_path = rubric_out.with_name(rubric_out.stem + ".blind-key.json")
-    key_path.write_text(json.dumps({
+    write_json_atomic(key_path, {
         "note": (
-            "Model-letter -> provider mapping for the blinded rubric. "
-            "Assignment is flipped per session (sha256 of session id against "
-            "a fixed salt), so it is deterministic and re-generable but not "
-            "guessable from the rubric itself. DO NOT read before scoring."
+            "Model-letter -> provider mapping for the blinded rubric. Each "
+            "session gets its own permutation of the arms, drawn from an RNG "
+            "seeded with the salt and the session id, so the mapping is "
+            "deterministic and re-generable but not guessable from the "
+            "rubric itself. DO NOT read before scoring."
         ),
-        "salt": "bakeoff-blind-2026-07-28",
+        "salt": BLIND_SALT,
         "redacted_errors": blind_key.pop("_redacted_errors", {}),
         "mapping": blind_key,
-    }, indent=1) + "\n")
+    })
     print(f"Wrote blinding key to {key_path} (do not open before scoring)")
 
 
-def main() -> int:
+def provider_model_id(provider: str) -> str:
+    """Return the model id a provider name actually dispatches to."""
+    if provider == "haiku":
+        # The Batch adapter is the one arm not in PROVIDER_SPECS: that table
+        # lists the real-time Haiku arm ("haiku-rt") at the standard rate.
+        return HAIKU_MODEL
+    if provider in PROVIDER_SPECS:
+        return PROVIDER_SPECS[provider][0]
+    raise ValueError(f"unknown provider: {provider}")
+
+
+def provider_mode(provider: str) -> str:
+    """Return "batch" or "real-time" — the second figure the gate must show."""
+    return "batch" if provider == "haiku" else "real-time"
+
+
+def gate_summary_lines(
+    requests: list[SessionRequest], provider: str
+) -> list[str]:
+    """Render the API Call Review Gate figures for ``provider``.
+
+    The gate (global CLAUDE.md) requires four things in front of the operator
+    *before* any billed call: the model being called, batch versus real-time,
+    the number of calls, and the estimated cost. These are the same numbers
+    ``--dry-run`` prints, computed the same way, so approving here and
+    approving after a dry run mean the same thing.
+    """
+    cost = estimate_cost_usd(requests, provider=provider)
+    mode = provider_mode(provider)
+    mode_detail = (
+        "Message Batches API — ~24h SLA, 50% discount"
+        if mode == "batch"
+        else "synchronous request per session"
+    )
+    return [
+        f"  model:          {provider_model_id(provider)}  (--provider {provider})",
+        f"  mode:           {mode} ({mode_detail})",
+        f"  requests:       {cost['n_requests']}",
+        (
+            f"  estimated cost: ${cost['total_cost_usd']} "
+            f"(input ${cost['input_cost_usd']} over "
+            f"{cost['input_tokens']:,} tokens @ "
+            f"${cost['input_rate_per_mtok']}/Mtok; output "
+            f"${cost['output_cost_usd']} assuming 350 tokens/call)"
+        ),
+    ]
+
+
+def confirm_live_run(
+    requests: list[SessionRequest], provider: str, *, assume_yes: bool
+) -> bool:
+    """Show the gate figures and return True only on an explicit approval.
+
+    ``assume_yes`` still prints the figures: a ``--yes`` run leaves the same
+    record in the terminal and the log as an interactive one, which is the
+    point of the gate.
+
+    A closed stdin (cron, a pipeline, a captured subprocess) raises
+    ``EOFError`` from ``input()``. That must read as "no one is here to
+    approve", not as an unhandled traceback.
+    """
+    print("\n--- API Call Review Gate — these calls are BILLED ---")
+    for line in gate_summary_lines(requests, provider):
+        print(line)
+    if assume_yes:
+        print(
+            "  approval:       --yes given; recorded out-of-band. Proceeding."
+        )
+        return True
+    try:
+        answer = input(f"Type 'yes' to proceed with {provider} live calls: ")
+    except EOFError:
+        print(
+            "Aborted: stdin is closed, so no approval can be given here. "
+            "Re-run interactively, or pass --yes once the API Call Review "
+            "Gate approval has been recorded."
+        )
+        return False
+    if answer.strip().lower() != "yes":
+        print("Aborted.")
+        return False
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse ``argv`` (default ``sys.argv[1:]``) and run the requested mode."""
     parser = argparse.ArgumentParser(
         description=(
             "Bake-off runner — Anthropic Haiku Batch vs Gemini Flash Flex "
@@ -1198,6 +1629,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Re-run sessions that already have a complete response on disk. "
+            "Without it a re-run resumes: completed sessions are skipped, "
+            "because each one cost money to produce."
+        ),
+    )
+    parser.add_argument(
         "--haiku-apply",
         metavar="BATCH_ID",
         help=(
@@ -1224,18 +1664,24 @@ def main() -> int:
         type=Path,
         help="Populated rubric markdown (output).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    load_env()
+    # ``load_env`` hydrates provider secrets from the repository .env. Only
+    # the paths that actually reach a provider call it, so a dry run or a
+    # rubric build never pulls credentials into this process's environment.
 
     if args.build_rubric:
         if not (args.rubric_in and args.rubric_out):
             print("--build-rubric requires --rubric-in and --rubric-out")
             return 2
-        build_rubric(
-            args.manifest, args.prompt, args.out_dir,
-            args.rubric_in, args.rubric_out,
-        )
+        try:
+            build_rubric(
+                args.manifest, args.prompt, args.out_dir,
+                args.rubric_in, args.rubric_out,
+            )
+        except RubricTemplateError as exc:
+            print(f"--build-rubric refused: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     if not args.provider:
@@ -1246,12 +1692,34 @@ def main() -> int:
         if args.provider != "haiku":
             print("--haiku-apply is only valid with --provider haiku")
             return 2
+        # Retrieval is FREE: the batch was billed when it was submitted, and
+        # `batches.retrieve` / `batches.results` cost nothing. So it is
+        # deliberately not behind the API Call Review Gate — but it still
+        # says what it is about to fetch and where the results will land,
+        # because "ungated" must not mean "silent".
+        target_dir = args.out_dir / "haiku"
+        print(
+            f"[haiku] retrieving batch {args.haiku_apply} into {target_dir} "
+            "— retrieval is free and therefore ungated (the submission was "
+            "the billed step)."
+        )
+        load_env()
         # submit persists batch-state.json under the provider subdir
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
-        haiku_apply(args.haiku_apply, args.out_dir / "haiku")
+        haiku_apply(args.haiku_apply, target_dir, force=args.force)
         return 0
 
     requests = assemble_requests(args.manifest, args.prompt)
+    if not requests:
+        # An empty manifest is a mistake upstream, not a run with nothing to
+        # do: say so and stop before creating a provider directory or a
+        # cost file that would later look like the record of a real run.
+        print(
+            f"{args.manifest} lists no sessions — nothing to do. "
+            "(Re-sample the manifest, or check --manifest points at the "
+            "right file.)"
+        )
+        return 0
     system_prompt = args.prompt.read_text()
     provider_dir = args.out_dir / args.provider
     provider_dir.mkdir(parents=True, exist_ok=True)
@@ -1260,43 +1728,56 @@ def main() -> int:
         dry_run_report(requests, args.provider, provider_dir)
         return 0
 
-    # Live mode — guarded by the API Call Review Gate. We do not invoke
-    # without an extra confirmation step; this branch exists for after
-    # Shawn approves the launch plan.
+    # Live mode — guarded by the API Call Review Gate. The gate prints the
+    # model, the mode, the request count, and the estimated cost before it
+    # asks anything, so an operator who has not run --dry-run still sees the
+    # four figures the gate requires.
+    #
+    # The figures describe what will ACTUALLY be sent: on a resumed run the
+    # sessions that already have a complete response are dropped first, so
+    # the count and the cost are the ones about to be incurred rather than
+    # the ones a first run would have incurred. The Batch arm is exempt —
+    # a batch is one job, and resume happens at --haiku-apply.
+    if args.provider != "haiku":
+        requests = pending_requests(
+            requests, provider_dir, force=args.force, tag=args.provider
+        )
+        if not requests:
+            print(
+                "Every session in the manifest already has a complete "
+                "response; nothing to send. Pass --force to re-run them."
+            )
+            return 0
     print(
         "Live mode requested. This will make billed API calls. "
-        "Re-run with --dry-run first if you have not yet reviewed the cost."
+        "Re-run with --dry-run first if you want the per-session breakdown."
     )
-    if args.yes:
-        print(
-            f"--yes flag set; proceeding with {args.provider} live calls "
-            "without interactive prompt."
-        )
-    else:
-        answer = input(
-            f"Type 'yes' to proceed with {args.provider} live calls: "
-        )
-        if answer.strip().lower() != "yes":
-            print("Aborted.")
-            return 0
+    if not confirm_live_run(requests, args.provider, assume_yes=args.yes):
+        return 0
+
+    # Credentials are hydrated only once the run is approved.
+    load_env()
 
     if args.provider == "haiku":
+        # Batch submission has no per-session resume: the whole batch is one
+        # job, so --force does not apply until --haiku-apply retrieves it.
         haiku_submit(requests, provider_dir, system_prompt)
     elif args.provider == "gemini":
-        gemini_run(requests, provider_dir, system_prompt)
+        gemini_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "luna":
-        luna_run(requests, provider_dir, system_prompt)
+        luna_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "terra":
         luna_run(
             requests, provider_dir, system_prompt,
-            model=TERRA_MODEL, tag="terra",
+            model=TERRA_MODEL, tag="terra", force=args.force,
         )
     elif args.provider == "haiku-rt":
-        haiku_rt_run(requests, provider_dir, system_prompt)
+        haiku_rt_run(requests, provider_dir, system_prompt, force=args.force)
     elif args.provider == "sonnet-5":
         haiku_rt_run(
             requests, provider_dir, system_prompt,
             model=SONNET_MODEL, tag="sonnet-5", disable_thinking=True,
+            force=args.force,
         )
     return 0
 
