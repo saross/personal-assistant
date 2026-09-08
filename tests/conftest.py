@@ -335,6 +335,41 @@ def _canonical_store_snapshot() -> dict[str, tuple[int, int] | None]:
     return snapshot
 
 
+def canonical_store_changes(
+    before: dict[str, tuple[int, int] | None],
+    after: dict[str, tuple[int, int] | None],
+) -> list[str]:
+    """Paths whose recorded state differs between two snapshots.
+
+    Covers creation, modification, and deletion in one comparison, because
+    ``None`` is a recorded state rather than an absent key.
+    """
+    return sorted(
+        path for path in set(after) | set(before)
+        if before.get(path) != after.get(path)
+    )
+
+
+def assert_canonical_store_untouched(
+    before: dict[str, tuple[int, int] | None],
+    after: dict[str, tuple[int, int] | None],
+) -> None:
+    """Raise if the suite created, modified, or deleted a canonical file.
+
+    A named function rather than an inline assert so its behaviour can be
+    exercised in-process by ``test_hermeticity_fixture.py`` — a guard whose
+    own failure path is never executed is a guard nobody has checked (audit
+    round 4a-2, finding M5).
+    """
+    touched = canonical_store_changes(before, after)
+    assert not touched, (
+        "the test suite wrote to the REAL canonical memory store or its "
+        "logs. A test that forgot to patch a module's path constant rewrote "
+        "the operator's data.\n"
+        f"  touched: {touched}"
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def no_real_cache_writes():
     """Fail the run if the suite touched a real pipeline file in ~/.cache.
@@ -383,13 +418,4 @@ def no_real_cache_writes():
 
     # The canonical store is the graver case: a stray write there corrupts
     # the memory system itself, not a cache the pipeline can rebuild.
-    touched = sorted(
-        path for path in set(store_after) | set(store_before)
-        if store_before.get(path) != store_after.get(path)
-    )
-    assert not touched, (
-        "the test suite wrote to the REAL canonical memory store or its "
-        "logs. A test that forgot to patch a module's path constant rewrote "
-        "the operator's data.\n"
-        f"  touched: {touched}"
-    )
+    assert_canonical_store_untouched(store_before, store_after)

@@ -616,3 +616,149 @@ def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
     before = conftest._canonical_store_snapshot()
     (logs / "tag-gardening.log").write_text("stray entry\n", encoding="utf-8")
     assert conftest._canonical_store_snapshot() != before
+
+
+# ===========================================================================
+# The store guard's own failure path (audit 2026-09-08, round 4a-2, M5)
+#
+# The snapshot function was covered; the ASSERTION was not. A guard whose
+# failure path never executes is a guard nobody has checked: neutering
+# `assert not touched`, emptying _CANONICAL_FILES, or dropping mtime from the
+# snapshot tuple all left the suite green. These run the guard's own logic
+# against a throwaway tree, in-process.
+# ===========================================================================
+
+
+def _throwaway_store(tmp_path, monkeypatch):
+    """A tree shaped like the repo: data/memories + logs, reached by symlink."""
+    real_dir = tmp_path / "data" / "memories"
+    real_dir.mkdir(parents=True)
+    logs_dir = tmp_path / "data" / "logs"
+    logs_dir.mkdir(parents=True)
+    corpus = real_dir / "memories.jsonl"
+    vocabulary = real_dir / "tag-vocabulary.txt"
+    corpus.write_text('{"id": "2031-01-01-aaaabbbbcccc"}\n', encoding="utf-8")
+    vocabulary.write_text("kiln\nrecording\n", encoding="utf-8")
+    (tmp_path / "memories").symlink_to(real_dir)
+    (tmp_path / "logs").symlink_to(logs_dir)
+
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (
+        tmp_path / "memories" / "memories.jsonl",
+        tmp_path / "memories" / "tag-vocabulary.txt",
+    ))
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", (tmp_path / "logs",))
+    return corpus, vocabulary, logs_dir
+
+
+def test_the_guard_raises_on_a_rewritten_canonical(tmp_path, monkeypatch):
+    """The assertion itself must fire, not merely the snapshot differ.
+
+    The mutation this kills: neutering ``assert not touched`` in
+    ``assert_canonical_store_untouched`` (to ``assert True``, or deleting
+    it), which would let every stray write through while the run stayed
+    green.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    conftest.assert_canonical_store_untouched(before, before)  # a no-op run
+
+    corpus.write_text('{"id": "rewritten-by-a-careless-test"}\n',
+                      encoding="utf-8")
+    after = conftest._canonical_store_snapshot()
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(before, after)
+    assert str(corpus.resolve()) in conftest.canonical_store_changes(
+        before, after)
+
+
+def test_the_guard_raises_on_a_created_or_deleted_canonical(tmp_path,
+                                                            monkeypatch):
+    """Creation and deletion are changes too, because absence is recorded."""
+    corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+    vocabulary.unlink()
+
+    before = conftest._canonical_store_snapshot()
+    vocabulary.write_text("kiln\n", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+    before = conftest._canonical_store_snapshot()
+    corpus.unlink()
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_the_guard_catches_a_same_size_rewrite(tmp_path, monkeypatch):
+    """A rewrite that keeps the byte count must still be caught.
+
+    The mutation this kills: dropping ``st_mtime_ns`` from the snapshot
+    tuple. Size alone cannot see a record swapped for another of the same
+    length — and a corrupting write is not obliged to change the length.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+    original = corpus.read_text(encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    replacement = '{"id": "2031-01-01-ZZZZYYYYXXXX"}\n'
+    assert len(replacement) == len(original), "the fixture must be same-size"
+    corpus.write_text(replacement, encoding="utf-8")
+    # Pin an explicitly different mtime so the test cannot pass by accident
+    # of clock resolution, nor fail by two writes landing in one tick.
+    stat = corpus.stat()
+    os.utime(corpus, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_the_watched_paths_name_the_canonical_files(tmp_path, monkeypatch):
+    """_CANONICAL_FILES must actually name the store, and be non-empty.
+
+    The mutation this kills: emptying ``_CANONICAL_FILES`` (or dropping
+    ``_CANONICAL_DIRS``), which leaves the guard watching nothing and
+    passing on every run.
+    """
+    names = {path.name for path in conftest._CANONICAL_FILES}
+    assert names == {"memories.jsonl", "tag-vocabulary.txt"}
+    assert all(
+        path.parent.name == "memories" for path in conftest._CANONICAL_FILES)
+    assert [path.name for path in conftest._CANONICAL_DIRS] == ["logs"]
+
+    # And the snapshot really visits each of them.
+    _corpus, _vocabulary, logs_dir = _throwaway_store(tmp_path, monkeypatch)
+    (logs_dir / "tag-gardening.log").write_text("entry\n", encoding="utf-8")
+    snapshot = conftest._canonical_store_snapshot()
+    assert str((tmp_path / "data" / "memories" / "memories.jsonl")) in snapshot
+    assert str(
+        (tmp_path / "data" / "memories" / "tag-vocabulary.txt")) in snapshot
+    assert str((logs_dir / "tag-gardening.log")) in snapshot
+
+
+def test_the_session_fixture_calls_the_store_assertion():
+    """The fixture must still USE the guard, not merely have one available.
+
+    Structural, like the live-resource scan above: extracting the assertion
+    into a function makes its behaviour testable, but a mutation could then
+    simply stop calling it from ``no_real_cache_writes``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fixture = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "no_real_cache_writes"
+    )
+    called = {
+        ast.unparse(node.func) for node in ast.walk(fixture)
+        if isinstance(node, ast.Call)
+    }
+    assert "assert_canonical_store_untouched" in called, (
+        "the session fixture no longer checks the canonical store")
+    assert "_canonical_store_snapshot" in called
