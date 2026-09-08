@@ -119,6 +119,13 @@ _ARCHIVER_STUB_BODY = '''
             check=True,
         )
 
+    # A place to hold the run still while a test signals it.
+    nap = os.environ.get("PA_TEST_ARCHIVER_SLEEP")
+    if nap:
+        import time
+
+        time.sleep(float(nap))
+
     marker = os.environ.get("PA_TEST_ARCHIVER_COMMIT")
     if marker:
         data = Path(__file__).resolve().parent.parent / "data"
@@ -428,6 +435,23 @@ class SyncWorld:
         for key in [k for k, v in env.items() if v == "__PA_TEST_UNSET__"]:
             del env[key]
         return env
+
+    def start_sync(
+        self,
+        machine: Machine,
+        *args: str,
+        hostname: str | None = None,
+        **extra: str,
+    ) -> subprocess.Popen[str]:
+        """Start a sync without waiting, so a test can signal it."""
+        return subprocess.Popen(
+            ["bash", str(machine.pa / "scripts" / "daily-sync.sh"), *args],
+            cwd=str(machine.pa),
+            env=self.env(hostname or machine.name, **extra),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
 
     def run_sync(
         self,

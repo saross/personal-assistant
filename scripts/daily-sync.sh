@@ -175,6 +175,9 @@ SYNC_GATE="$CACHE_DIR/daily-sync-gate"
 # had just recorded. The file now reflects the problems of the LATEST run
 # only, each exactly once; a clean run renders "0" and clears itself.
 sync_gate_details=()
+#: Set by on_signal. An interrupted run adds to the standing gate instead
+#: of replacing it: it never got far enough to judge what was already there.
+sync_interrupted=0
 
 add_sync_gate_detail() {
     # add_sync_gate_detail <detail>
@@ -194,17 +197,67 @@ render_sync_gate() {
     # problem. Never fatal — a gate that cannot be written must not turn a
     # working sync into a failing one, and every call site logs as well.
     #
-    # Never under --dry-run either: the usage banner promises no changes,
-    # and a dry run that left a gate behind would nag at every session
-    # start until a real run cleared it.
-    if [[ $DRY_RUN -eq 1 ]]; then
+    # Never under --dry-run: the usage banner promises no changes, and a
+    # dry run that left a gate behind would nag at every session start.
+    #
+    # audit C1 (sixth re-audit): and NEVER when this run has nothing to
+    # say. Writing an empty gate from the EXIT trap meant a run that did
+    # no work — lock contention, a SIGTERM, a Ctrl-C — cleared a wedge a
+    # previous run had raised, and the trigger reads the gate BEFORE
+    # starting the sync, so the next session start was silent while the
+    # tree was still wedged. Clearing is a separate act, and only the one
+    # place that knows the run finished everything may do it.
+    if [[ $DRY_RUN -eq 1 ]] || [[ ${#sync_gate_details[@]} -eq 0 ]]; then
         return 0
+    fi
+    # An INTERRUPTED run did not get far enough to know whether the
+    # problems a previous run recorded are still there, so it adds to them
+    # rather than replacing them. A run that reached its own conclusions
+    # replaces: its findings are current.
+    if [[ $sync_interrupted -eq 1 ]] && [[ -f "$SYNC_GATE" ]]; then
+        local -a _ours=("${sync_gate_details[@]}")
+        local _previous
+        sync_gate_details=()
+        while IFS= read -r _previous; do
+            [[ -n "$_previous" ]] && add_sync_gate_detail "$_previous"
+        done < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
+        for _previous in "${_ours[@]}"; do
+            add_sync_gate_detail "$_previous"
+        done
     fi
     mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
     printf '%s\n' "${#sync_gate_details[@]}" \
-        ${sync_gate_details[@]+"${sync_gate_details[@]}"} \
+        "${sync_gate_details[@]}" \
         > "$SYNC_GATE" 2>/dev/null || true
 }
+
+clear_sync_gate() {
+    # Called from ONE place: the end of the script, where the run is known
+    # to have completed every step. Not from the trap — an interrupted or
+    # contended run has not established that anything is fixed.
+    if [[ $DRY_RUN -eq 1 ]] || [[ ${#sync_gate_details[@]} -gt 0 ]]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
+    printf '0\n' > "$SYNC_GATE" 2>/dev/null || true
+}
+
+on_signal() {
+    # on_signal <name> <status>
+    # A killed run leaves the tree mid-operation; SessionStart's 90 s
+    # timeout makes that a routine event, not a hypothetical. Exit on a
+    # status the trigger will not mistake for benign lock contention (1),
+    # and leave a gate line saying what happened — the EXIT trap renders
+    # it on the way out.
+    local name="$1" status="$2"
+    sync_interrupted=1
+    log "INTERRUPTED by $name — exiting $status"
+    add_sync_gate_detail \
+        "daily-sync was INTERRUPTED by $name before it finished. The tree may be mid-operation and a stash it pushed may still be on the stack: check git -C $DATA_DIR status and git -C $DATA_DIR stash list before the next session."
+    exit "$status"
+}
+trap 'on_signal SIGINT 130' INT
+trap 'on_signal SIGTERM 143' TERM
 
 # Render on the way out, however the run ends. This early trap covers the
 # failures that happen before the stash machinery exists — an uninitialised
@@ -1684,5 +1737,10 @@ if [[ $DRY_RUN -eq 0 ]]; then
         fi
     fi
 fi
+
+# audit C1 (sixth re-audit): the single point at which this run is known
+# to have done all of its work. Anything that exits earlier — contention,
+# a signal, a failure — leaves whatever gate is already on disk alone.
+clear_sync_gate
 
 log "=== daily-sync complete on $HOST ==="

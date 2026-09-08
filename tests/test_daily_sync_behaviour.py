@@ -13,6 +13,9 @@ in the published repositories rather than log substrings.
 from __future__ import annotations
 
 import json
+import signal
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -471,16 +474,89 @@ class TestCrossMachineRebase:
         assert len(details) == len(set(details)), f"duplicated lines: {details}"
         assert len(details) <= 2, details
 
-    def test_a_clean_run_after_a_wedge_clears_the_gate(
+    def test_only_a_completed_run_clears_the_gate(
         self, world: SyncWorld
     ) -> None:
-        """And the render clears it when the run succeeds."""
+        """A run that finishes every step, and found nothing wrong,
+        clears the wedge a previous run recorded."""
         machine = world.add_machine("a")
         (world.home / ".cache" / "daily-sync-gate").write_text(
             "2\nstale one\nstale two\n", encoding="utf-8"
         )
-        assert world.run_sync(machine).returncode == 0
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
         assert world.gate("daily-sync-gate").splitlines() == ["0"]
+
+    def test_lock_contention_leaves_a_standing_gate(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C1 (sixth re-audit): a run that did no work must not
+        clear a wedge.
+
+        The gate was written from the EXIT trap unconditionally, so a run
+        that exited at the lock — having touched nothing — wrote "0" over
+        a wedge a previous run raised. The trigger reads the gate BEFORE
+        starting the sync, so the next session start was silent while the
+        tree was still wedged.
+        """
+        machine = world.add_machine("a")
+        wedge = "1\ndaily-sync STOPPED: something a previous run found\n"
+        (world.home / ".cache" / "daily-sync-gate").write_text(wedge, encoding="utf-8")
+
+        # Hold the lock, as a concurrent sync or commit-data would.
+        lock = machine.pa / "logs" / "daily-sync.lock"
+        lock.touch()
+        holder = subprocess.Popen(["flock", str(lock), "sleep", "5"])
+        try:
+            result = world.run_sync(machine)
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Another daily-sync is running" in result.stdout + result.stderr
+        assert world.gate("daily-sync-gate") == wedge, (
+            "a contended run cleared a standing wedge"
+        )
+
+    @pytest.mark.parametrize(
+        ("signal_number", "expected_rc", "name"),
+        [(signal.SIGTERM, 143, "SIGTERM"), (signal.SIGINT, 130, "SIGINT")],
+    )
+    def test_a_signal_leaves_a_standing_gate_and_a_distinct_status(
+        self, world: SyncWorld, signal_number: int, expected_rc: int, name: str
+    ) -> None:
+        """Audit C1: SessionStart's 90 s timeout makes a killed run routine.
+
+        It must not clear a standing wedge, must not exit 1 (which the
+        trigger reads as benign lock contention), and must say that it was
+        interrupted.
+        """
+        machine = world.add_machine("a")
+        wedge = "1\ndaily-sync STOPPED: something a previous run found\n"
+        (world.home / ".cache" / "daily-sync-gate").write_text(wedge, encoding="utf-8")
+        # The archiver runs early; hold the run there while we signal it.
+        process = world.start_sync(machine, PA_TEST_ARCHIVER_SLEEP="10")
+        try:
+            for _ in range(200):
+                if "agent-mail" in world.calls():
+                    break
+                time.sleep(0.05)
+            process.send_signal(signal_number)
+            stdout, stderr = process.communicate(timeout=30)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        combined = stdout + stderr
+        assert process.returncode == expected_rc, f"{process.returncode}\n{combined}"
+        assert f"INTERRUPTED by {name}" in combined, combined
+        gate = world.gate("daily-sync-gate")
+        assert "STOPPED: something a previous run found" in gate, (
+            "an interrupted run cleared a standing wedge: " + gate
+        )
+        assert "INTERRUPTED" in gate, gate
 
     def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
         """Kills DS-M6: routing an unknown path to the submodule branch
