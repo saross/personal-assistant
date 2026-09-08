@@ -102,7 +102,8 @@ def main() -> int:
     parser.add_argument(
         "--root", type=lambda value: Path(value).expanduser(),
         default=Path(os.environ.get("AGENT_MAIL_ROOT", "~/agent-mail")).expanduser())
-    parser.add_argument("--project", help="this session's project (default: cwd git root name)")
+    parser.add_argument("--project", help="this session's project (default: the repository "
+                        "name from the origin remote, else the git root)")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--once", action="store_true", help="scan once and exit")
     args = parser.parse_args()
