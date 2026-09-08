@@ -480,6 +480,43 @@ class _FakePsycopg2OperationalError(_FakePsycopg2Error):
     """Stand-in for ``psycopg2.OperationalError`` (subclass of Error)."""
 
 
+class _FakePsycopg2InterfaceError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.InterfaceError`` (connection already gone)."""
+
+
+class _FakePsycopg2DataError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.DataError`` — the record's content is wrong."""
+
+
+class _FakePsycopg2ProgrammingError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.ProgrammingError`` — e.g. can't adapt a dict."""
+
+
+def _poisoning_execute_values(
+    poison_ids: set[str],
+    error_class: type[Exception] = _FakePsycopg2DataError,
+    message: str = (
+        'invalid input syntax for type timestamp with time zone: "TBD"'
+    ),
+):
+    """
+    Build an ``execute_values`` stand-in that refuses specific ids.
+
+    The batch contains the poison record alongside the healthy ones, so it
+    raises; the per-row replay then raises only on the poison record —
+    exactly the shape of the live failure.
+    """
+
+    def _side_effect(cur, sql, values, page_size=None, fetch=False):
+        ids = [row[0] for row in values]
+        offending = [mid for mid in ids if mid in poison_ids]
+        if offending:
+            raise error_class(f"{message} (row {offending[0]})")
+        return [(mid,) for mid in ids]
+
+    return _side_effect
+
+
 def _install_fake_psycopg2(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -487,6 +524,7 @@ def _install_fake_psycopg2(
     returned_ids: list[str],
     raise_on_connect: bool = False,
     advisory_lock_acquired: bool = True,
+    execute_values_side_effect=None,
 ) -> MagicMock:
     """
     Install a fake ``psycopg2`` package into ``sys.modules`` that the
@@ -507,6 +545,9 @@ def _install_fake_psycopg2(
 
     fake_psycopg2.Error = _FakePsycopg2Error
     fake_psycopg2.OperationalError = _FakePsycopg2OperationalError
+    fake_psycopg2.InterfaceError = _FakePsycopg2InterfaceError
+    fake_psycopg2.DataError = _FakePsycopg2DataError
+    fake_psycopg2.ProgrammingError = _FakePsycopg2ProgrammingError
 
     # Fake Json wrapper for JSONB columns (v2 schema). record_to_tuple
     # imports Json lazily from psycopg2.extras to wrap anchors/links/
@@ -560,10 +601,16 @@ def _install_fake_psycopg2(
     else:
         fake_psycopg2.connect = MagicMock(return_value=conn)
 
-    # execute_values returns RETURNING rows when fetch=True.
-    fake_extras.execute_values = MagicMock(
-        return_value=[(mid,) for mid in returned_ids]
-    )
+    # execute_values returns RETURNING rows when fetch=True, unless the
+    # caller supplied a side effect (for the refused-row tests).
+    if execute_values_side_effect is not None:
+        fake_extras.execute_values = MagicMock(
+            side_effect=execute_values_side_effect
+        )
+    else:
+        fake_extras.execute_values = MagicMock(
+            return_value=[(mid,) for mid in returned_ids]
+        )
 
     monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
     monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_extras)
@@ -1037,3 +1084,220 @@ class TestShrinkResetItem22:
         sync_mod._sync_locked(logging.getLogger("item22-test"))
         insert.assert_not_called()
         assert sync_mod.load_cursor() == 3
+
+
+# ============================================================================
+# Audit round two, finding P2 (lens A-C2/A-X1/A-X2) — a refused record is
+# not an outage; created_at and NUL are guarded at ingest
+# ============================================================================
+
+
+class TestRefusedRecordsVersusOutages:
+    """
+    The memories path had the sessions path's defect plus two extra
+    exposures: an unguarded ``created_at`` (TIMESTAMPTZ NOT NULL) and a
+    NUL in ``content``, which raises ``ValueError`` — not a
+    ``psycopg2.Error`` — and so escaped every handler in the file.
+    """
+
+    def _record(self, mid: str, **overrides) -> dict:
+        """Build a minimal valid canonical record."""
+        record = {
+            "id": mid,
+            "category": "progress",
+            "content": f"content for {mid}",
+            "created_at": "2026-09-01T00:00:00+00:00",
+        }
+        record.update(overrides)
+        return record
+
+    def _write_canonical(self, path: Path, records: list[dict]) -> None:
+        """Write records to a canonical JSONL file."""
+        path.write_text(
+            "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8",
+        )
+
+    def test_nul_in_content_is_stripped_at_ingest(self, tmp_path):
+        """
+        A NUL in content used to raise ``ValueError: A string literal
+        cannot contain NUL`` from psycopg2 — outside the psycopg2.Error
+        ladder entirely, so main's bare except exited 1 with the cursor
+        untouched. The mutation this kills: dropping ``sanitise_nuls``
+        from ``classify_jsonl_line``.
+        """
+        logger = logging.getLogger("test-nul")
+        line = json.dumps(self._record("m1", content="before\x00after"))
+        record, reason = sync_mod.classify_jsonl_line(line, 1, logger)
+        assert reason is None
+        assert record["content"] == "beforeafter"
+        assert "\x00" not in json.dumps(record)
+
+    def test_unparseable_created_at_is_poison_not_a_stall(self, tmp_path):
+        """
+        ``created_at`` is TIMESTAMPTZ NOT NULL and has no NULL-coercion
+        escape, unlike ``deadline_at``. Free text there must be
+        quarantined at parse time rather than halting the cursor.
+        """
+        logger = logging.getLogger("test-created-at")
+        for bad in ("TBD", "2026-08-XX", "2026-Q4", "", None, 12345):
+            line = json.dumps(self._record("m1", created_at=bad))
+            record, reason = sync_mod.classify_jsonl_line(line, 1, logger)
+            assert record is None, f"{bad!r} should not have parsed"
+            assert reason is not None
+
+    def test_valid_created_at_shapes_still_parse(self):
+        """The guard must not reject the shapes the writers actually emit."""
+        logger = logging.getLogger("test-created-at-ok")
+        for good in (
+            "2026-09-01T00:00:00+00:00",
+            "2026-09-01T00:00:00.123456+00:00",
+            "2026-09-01T00:00:00Z",
+        ):
+            line = json.dumps(self._record("m1", created_at=good))
+            record, reason = sync_mod.classify_jsonl_line(line, 1, logger)
+            assert reason is None, f"{good!r} should have parsed"
+            assert record is not None
+
+    def test_free_text_created_at_advances_the_cursor(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        One hand-edited timestamp must not make every later memory
+        invisible to /recall. End-to-end: the bad record is quarantined,
+        the good one syncs, and the cursor moves.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._write_canonical(memories, [
+            self._record("m-good"),
+            self._record("m-bad", created_at="TBD"),
+        ])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m-good"],
+        )
+
+        sync_mod.sync(test_logger)
+
+        assert json.loads(cursor_file.read_text())["postgres_sync_line"] == 2
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [e["reason"] for e in entries] == ["unparseable_created_at"]
+
+    def test_refused_record_is_quarantined_and_cursor_advances(
+        self, monkeypatch, tmp_path, test_logger, caplog,
+    ):
+        """
+        The database refuses one record; the healthy record still lands,
+        the refused one is quarantined, and the cursor advances. The
+        mutation this kills: classifying every ``psycopg2.Error`` as
+        ``db_available=False``.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._write_canonical(memories, [
+            self._record("m-good"),
+            self._record("m-bad"),
+        ])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values({"m-bad"}),
+        )
+
+        with caplog.at_level(logging.INFO):
+            sync_mod.sync(test_logger)
+
+        assert json.loads(cursor_file.read_text())["postgres_sync_line"] == 2
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [e["record"]["id"] for e in entries] == ["m-bad"]
+        assert entries[0]["reason"] == "postgres_refused_row"
+        assert "may be down" not in caplog.text
+        assert "may be stopped" not in caplog.text
+
+    def test_cannot_adapt_dict_is_a_row_error(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        A JSON object where a scalar belongs raises ProgrammingError
+        ("can't adapt type 'dict'"). That is content, not an outage.
+        """
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values(
+                {"b"},
+                error_class=_FakePsycopg2ProgrammingError,
+                message="can't adapt type 'dict'",
+            ),
+        )
+        records = [
+            sync_mod.record_to_tuple({
+                "id": mid, "category": "progress", "content": "c",
+                "created_at": "2026-09-01T00:00:00+00:00",
+            })
+            for mid in ("a", "b", "c")
+        ]
+
+        result = sync_mod.insert_memories(records, test_logger)
+
+        assert result.db_available is True
+        assert result.inserted == 2
+        assert result.quarantined == ("b",)
+        assert result.unexpected_drops == []
+
+    def test_outage_still_holds_the_cursor(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        A genuine outage keeps the old behaviour: nothing quarantined,
+        cursor untouched, retry on the next tick. The split must not turn
+        a stopped PostgreSQL into a quarantined canonical.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._write_canonical(memories, [self._record("m-good")])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        def _server_gone(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2OperationalError(
+                "server closed the connection unexpectedly"
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=_server_gone,
+        )
+
+        sync_mod.sync(test_logger)
+
+        if cursor_file.exists():
+            assert json.loads(
+                cursor_file.read_text()
+            ).get("postgres_sync_line", 0) == 0
+        assert not quarantine.exists()

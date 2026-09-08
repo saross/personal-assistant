@@ -29,6 +29,12 @@ from _sync_cursor import (  # noqa: E402
 # Schema-version guard (audit IC5 / B-X1) — every PG-touching script
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
+# Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
+from _pg_row_guard import (  # noqa: E402
+    insert_rows_individually,
+    is_outage_error,
+    sanitise_nuls,
+)
 
 # Optional embedding support — gracefully degrades if unavailable
 try:
@@ -224,9 +230,16 @@ def classify_jsonl_line(
       * ``(record, None)`` — successfully parsed and valid.
       * ``(None, None)`` — blank/whitespace-only line (legitimate skip,
         no quarantine).
-      * ``(None, "<reason>")`` — poison record (malformed JSON or
-        missing required field). The caller should quarantine the raw
-        line before advancing the cursor (audit IC2 / B-C4).
+      * ``(None, "<reason>")`` — poison record (malformed JSON, missing
+        required field, or an unusable ``created_at``). The caller should
+        quarantine the raw line before advancing the cursor (audit IC2 /
+        B-C4).
+
+    This is also the ingest boundary for NUL sanitising (audit round two,
+    finding P2 / lens A-X2): the canonical JSONL can hold a NUL, but
+    PostgreSQL cannot store one in ``text`` — psycopg2 raises
+    ``ValueError`` before the statement is even sent, which is not a
+    ``psycopg2.Error`` and so escaped every handler in this file.
     """
     stripped = line.strip()
     if not stripped:
@@ -237,6 +250,14 @@ def classify_jsonl_line(
         logger.warning("Malformed JSON at line %d: %s", line_number, exc)
         return None, "parse_failure"
 
+    record, nuls_removed = sanitise_nuls(record)
+    if nuls_removed:
+        logger.warning(
+            "Removed %d NUL character(s) from line %d (id=%s) before "
+            "syncing — PostgreSQL cannot store U+0000 in a text column.",
+            nuls_removed, line_number, record.get("id", "unknown"),
+        )
+
     required = ["id", "category", "content", "created_at"]
     for field in required:
         if field not in record or not record[field]:
@@ -246,7 +267,39 @@ def classify_jsonl_line(
             )
             return None, f"missing_required_field:{field}"
 
+    # ``created_at`` is TIMESTAMPTZ NOT NULL (scripts/schema.sql), and
+    # unlike ``deadline_at`` it has no NULL-coercion escape: free text
+    # there aborts the insert. ``deadline_at`` has repeatedly carried
+    # values like 'TBD', '2026-08-XX' and '2026-Q4' — the same hands
+    # write both fields, so validate before the database has to
+    # (audit round two, finding P2 / lens A-C2).
+    if not _is_parseable_timestamp(record["created_at"]):
+        logger.warning(
+            "Unparseable created_at %r at line %d (id=%s) — quarantining; "
+            "the column is TIMESTAMPTZ NOT NULL and cannot take it.",
+            record["created_at"], line_number, record.get("id", "unknown"),
+        )
+        return None, "unparseable_created_at"
+
     return record, None
+
+
+def _is_parseable_timestamp(value: Any) -> bool:
+    """Return True when ``value`` is an ISO timestamp PostgreSQL will take.
+
+    Every writer of ``created_at`` goes through ``_timestamps.now_iso()``
+    (``datetime.now(timezone.utc).isoformat()``), so a value this rejects
+    was hand-edited or produced outside the pipeline — precisely the case
+    worth catching before it reaches a NOT NULL TIMESTAMPTZ column.
+    """
+    from datetime import datetime
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    return True
 
 
 def _deadline_or_none(value: Any) -> Any:
@@ -337,10 +390,16 @@ class InsertResult(NamedTuple):
             was expected to skip these, so they are not anomalies.
         unexpected_drops: Ids that were neither present pre-flight nor
             returned by INSERT. These indicate silent row loss (#55).
-        db_available: False when we could not reach the database.
+        db_available: False when we could not *reach* the database. A
+            record the database refused is not an outage — see
+            ``quarantined``.
         duplicates_within_batch: Input records that shared an id with
             another record in the same batch; the last occurrence won.
             Non-zero here usually indicates canonical corruption.
+        quarantined: Ids PostgreSQL refused on content grounds. They have
+            been written to the quarantine file, so the caller may
+            advance the cursor past them: they are accounted for, not
+            silently lost (audit round two, finding P2 / lens A-X1).
     """
 
     input_count: int
@@ -349,6 +408,7 @@ class InsertResult(NamedTuple):
     unexpected_drops: list[str]
     db_available: bool
     duplicates_within_batch: int = 0
+    quarantined: tuple[str, ...] = ()
 
 
 @contextmanager
@@ -483,6 +543,58 @@ def _write_quarantine(
         )
 
 
+def _quarantine_refused_records(
+    poison: list[tuple[str, str]],
+    records_by_id: dict[str, tuple],
+    logger: logging.Logger,
+) -> list[str]:
+    """
+    Write every record PostgreSQL refused on content grounds to quarantine.
+
+    Parameters
+    ----------
+    poison:
+        ``(memory id, error message)`` pairs from the per-row replay.
+    records_by_id:
+        The deduped INSERT tuples, so the offending values are preserved
+        for diagnosis. Values are stringified because the tuple carries
+        psycopg2 adapters (``Json``) that are not JSON-serialisable.
+    logger:
+        Logger for the quarantine event.
+
+    Returns
+    -------
+    list[str]
+        The ids successfully quarantined. Only these may be skipped by a
+        cursor advance — a quarantine write that failed leaves the record
+        unaccounted for, so it stays in ``unexpected_drops`` and halts the
+        cursor instead (audit IC2's contract).
+    """
+    quarantined: list[str] = []
+    for memory_id, message in poison:
+        record = records_by_id.get(memory_id)
+        written = quarantine_record(
+            QUARANTINE_FILE,
+            {
+                "id": memory_id,
+                "postgres_error": message,
+                "row_values": (
+                    [str(value) for value in record] if record else None
+                ),
+            },
+            "postgres_refused_row",
+            logger=logger,
+        )
+        if written:
+            quarantined.append(memory_id)
+        else:
+            logger.error(
+                "Could not quarantine refused record %s — holding the "
+                "cursor rather than skipping it.", memory_id,
+            )
+    return quarantined
+
+
 def insert_memories(
     records: list[tuple],
     logger: logging.Logger,
@@ -504,6 +616,18 @@ def insert_memories(
     advance the sync cursor. Callers MUST treat ``unexpected_drops``
     non-empty as a hard stop — those rows never landed and skipping
     them would cause silent loss (#55).
+
+    Failure handling splits two cases that were previously conflated
+    (audit round two, finding P2 / lens A-X1):
+
+    * The database is unreachable — ``db_available=False``, the caller
+      holds the cursor, and the next cron tick retries.
+    * The database refused a record's *content* (a free-text timestamp,
+      a dict where a scalar belongs, a NUL) — the batch is replayed one
+      record at a time so the healthy records still land, and the
+      offending ones are quarantined so the cursor can advance. Retrying
+      those forever cannot help: the failure is deterministic, and while
+      the cursor sits still every later memory is invisible to /recall.
     """
     # Within-batch dedup: if the same id appears twice in ``records``,
     # only the last occurrence would "win" in PG anyway (subsequent
@@ -573,35 +697,90 @@ def insert_memories(
         RETURNING id
     """
 
+    records_by_id = {rec[0]: rec for rec in deduped_records}
+
     try:
-        with conn:
-            with conn.cursor() as cur:
-                # Pre-flight: which of our input ids are already in PG?
-                # These are the rows ON CONFLICT is expected to skip.
-                # ANY(%s) sends the list as a single PG array parameter,
-                # so we are not limited by the ~32k per-statement parameter
-                # ceiling — batches of 100k ids would still fit.
-                cur.execute(
-                    "SELECT id FROM memories WHERE id = ANY(%s)",
-                    (input_ids,),
-                )
-                present_before = {row[0] for row in cur.fetchall()}
+        present_before: set[str] = set()
+        returned_ids: set[str] = set()
+        quarantined: list[str] = []
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    # Pre-flight: which of our input ids are already in PG?
+                    # These are the rows ON CONFLICT is expected to skip.
+                    # ANY(%s) sends the list as a single PG array parameter,
+                    # so we are not limited by the ~32k per-statement
+                    # parameter ceiling — batches of 100k ids would still fit.
+                    cur.execute(
+                        "SELECT id FROM memories WHERE id = ANY(%s)",
+                        (input_ids,),
+                    )
+                    present_before = {row[0] for row in cur.fetchall()}
 
-                # Insert with RETURNING to capture what PG actually took.
-                returned = execute_values(
-                    cur,
-                    insert_sql,
-                    deduped_records,
-                    page_size=100,
-                    fetch=True,
+                    # Insert with RETURNING to capture what PG actually took.
+                    returned = execute_values(
+                        cur,
+                        insert_sql,
+                        deduped_records,
+                        page_size=100,
+                        fetch=True,
+                    )
+                    returned_ids = {row[0] for row in returned}
+        except (psycopg2.Error, ValueError, TypeError) as exc:
+            if is_outage_error(exc, psycopg2):
+                logger.warning("Cannot reach PostgreSQL during insert: %s", exc)
+                logger.info(
+                    "PostgreSQL may be stopped — this is not critical. "
+                    "JSONL remains canonical; cursor held for the next tick."
                 )
-                returned_ids = {row[0] for row in returned}
+                return InsertResult(
+                    input_count=input_count,
+                    inserted=0,
+                    expected_dupes=0,
+                    unexpected_drops=[],
+                    db_available=False,
+                    duplicates_within_batch=duplicates_within_batch,
+                )
+            # The database refused a record's content (a bad timestamp, a
+            # dict where a scalar belongs, a NUL). ``execute_values`` sends
+            # the page in one transaction, so one bad record aborts the
+            # whole batch; replay individually to find out which one.
+            logger.error(
+                "Batch insert refused by PostgreSQL (%s) — replaying %d "
+                "record(s) individually to isolate the offending row(s).",
+                str(exc).strip(), len(deduped_records),
+            )
+            returned_ids, poison, reachable = insert_rows_individually(
+                conn,
+                insert_sql,
+                deduped_records,
+                psycopg2_module=psycopg2,
+                execute_values=execute_values,
+                logger=logger,
+            )
+            if not reachable:
+                return InsertResult(
+                    input_count=input_count,
+                    inserted=len(returned_ids),
+                    expected_dupes=len(present_before),
+                    unexpected_drops=[],
+                    db_available=False,
+                    duplicates_within_batch=duplicates_within_batch,
+                )
+            quarantined = _quarantine_refused_records(
+                poison, records_by_id, logger,
+            )
 
-        # Preserve input order when reporting unexpected drops.
+        # Preserve input order when reporting unexpected drops. A record
+        # the database explicitly refused is accounted for by its
+        # quarantine entry, so it is not a silent drop.
+        quarantined_set = set(quarantined)
         unexpected_drops = [
             mid
             for mid in input_ids
-            if mid not in present_before and mid not in returned_ids
+            if mid not in present_before
+            and mid not in returned_ids
+            and mid not in quarantined_set
         ]
 
         result = InsertResult(
@@ -611,6 +790,7 @@ def insert_memories(
             unexpected_drops=unexpected_drops,
             db_available=True,
             duplicates_within_batch=duplicates_within_batch,
+            quarantined=tuple(quarantined),
         )
 
         # Keep the happy path quiet; escalate only when there is
@@ -619,13 +799,15 @@ def insert_memories(
         # novel is logged at INFO.
         accounting_msg = (
             "Insert accounting: input=%d inserted=%d expected_dupes=%d "
-            "unexpected_drops=%d dupes_in_batch=%d"
+            "unexpected_drops=%d dupes_in_batch=%d quarantined=%d"
         )
         accounting_args = (
             result.input_count, result.inserted, result.expected_dupes,
             len(result.unexpected_drops), result.duplicates_within_batch,
+            len(result.quarantined),
         )
-        if unexpected_drops or duplicates_within_batch or result.inserted:
+        if (unexpected_drops or duplicates_within_batch
+                or result.inserted or quarantined):
             logger.info(accounting_msg, *accounting_args)
         else:
             logger.debug(accounting_msg, *accounting_args)
@@ -645,16 +827,6 @@ def insert_memories(
                 unexpected_drops[:10],
             )
         return result
-    except psycopg2.Error as exc:
-        logger.error("Database error during insert: %s", exc)
-        return InsertResult(
-            input_count=input_count,
-            inserted=0,
-            expected_dupes=0,
-            unexpected_drops=[],
-            db_available=False,
-            duplicates_within_batch=duplicates_within_batch,
-        )
     finally:
         conn.close()
 
@@ -935,14 +1107,17 @@ def _sync_locked(logger: logging.Logger) -> None:
     # Insert into PostgreSQL (returns InsertResult with full accounting).
     result = insert_memories(records, logger)
 
-    # Cursor advance policy (#55): advance ONLY when we have positive
-    # evidence every input row is accounted for. Specifically:
-    #   - DB was reachable, AND
-    #   - no ids fell through both pre-flight and RETURNING.
+    # Cursor advance policy (#55, refined by audit round two finding P2):
+    # advance ONLY when we have positive evidence every input row is
+    # accounted for. Specifically:
+    #   - the DB was reachable, AND
+    #   - no ids fell through pre-flight, RETURNING, *and* quarantine.
+    # A record the database explicitly refused is accounted for by its
+    # quarantine entry; one that vanished without explanation is not.
     if not result.db_available:
         logger.warning(
-            "Insert returned db_available=False — cursor NOT advanced "
-            "(PostgreSQL may be down)"
+            "Insert could not reach PostgreSQL — cursor NOT advanced. "
+            "This is an outage, not a data problem; the next tick retries."
         )
     elif result.unexpected_drops:
         dropped_records = [
@@ -959,6 +1134,15 @@ def _sync_locked(logger: logging.Logger) -> None:
         )
         return
     else:
+        if result.quarantined:
+            logger.error(
+                "PostgreSQL refused %d record(s) on content grounds; they "
+                "are quarantined in %s and the cursor advances past them. "
+                "Repair the canonical and replay from the quarantine. "
+                "First 10: %s",
+                len(result.quarantined), QUARANTINE_FILE,
+                list(result.quarantined[:10]),
+            )
         save_cursor(total_lines)
         save_sync_timestamp()
         logger.info("Cursor advanced to line %d", total_lines)
