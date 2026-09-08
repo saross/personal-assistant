@@ -37,7 +37,7 @@ def _ack_worker(gate_path: str) -> None:
     """Acknowledge the quarantine, as `--ack-quarantine` does."""
     _sync_gate.apply_gate(
         _sync_gate.GateEvent(
-            outcome=_sync_gate.CYCLE_IDLE, ack_quarantine=True,
+            outcome=_sync_gate.CYCLE_ACK, quarantine_entries=2,
             script="test",
         ),
         gate_path=Path(gate_path), logger=logging.getLogger("ack-worker"),
@@ -478,6 +478,147 @@ class TestEvidenceLowersAProblem:
             processed=1, quarantine_entries=10,
         )
         assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 3
+
+    def _sidecar(self, gate: Path) -> dict:
+        """The acked block AS PERSISTED, not as returned in memory.
+
+        The distinction is the whole of the ninth re-audit's C1: the
+        transition computed a new acknowledged position and then returned
+        the old one, so the correction survived exactly one render.
+        """
+        import json
+
+        state_file = gate.with_name(gate.name + ".state.json")
+        return json.loads(state_file.read_text(encoding="utf-8"))["acked"]
+
+    def test_a_reset_position_is_persisted_not_just_rendered(self, tmp_path):
+        """
+        Ninth re-audit, C1. After a reset the sidecar must say the
+        acknowledged position is zero. The mutation this kills: ending
+        ``next_state`` with ``acked = state.acked``, which keeps the old
+        position on disk — the next idle run then recomputes an
+        outstanding count of nothing and pops a problem it learnt nothing
+        about.
+        """
+        gate = tmp_path / "g"
+        self._seed(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=2,
+        )
+        self._apply(gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=2)
+        assert self._sidecar(gate)["acked_position"] == 2
+
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="exit 6",
+            reset_quarantine_ack=True, quarantine_entries=2,
+        )
+        assert self._sidecar(gate)["acked_position"] == 0, (
+            "the reset was rendered but never saved"
+        )
+
+        # And the run after it — an idle one, which may touch nothing —
+        # still sees the two rows.
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_IDLE, connected=True,
+            quarantine_entries=2,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2, (
+            "an idle run lowered a problem it learnt nothing about"
+        )
+
+    def test_a_clamped_position_is_persisted_not_just_rendered(
+        self, tmp_path,
+    ):
+        """
+        The quarantine file shrank — repaired and replayed by hand, or
+        rotated — below the acknowledged position. The clamp brings the
+        position back to the file's length, and that correction has to
+        survive to the next run. The mutation this kills: deleting the
+        ``min(acked_position, entries)`` clamp, or discarding it.
+        """
+        gate = tmp_path / "g"
+        self._seed(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=9,
+        )
+        self._apply(gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=9)
+        assert self._sidecar(gate)["acked_position"] == 9
+
+        # The file is rebuilt with three rows.
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=3,
+        )
+        assert self._sidecar(gate)["acked_position"] == 3, (
+            "the clamp was rendered but never saved"
+        )
+
+        # Two more rows land: two outstanding, not eleven and not zero.
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=5,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+
+    def test_a_nonsense_acked_position_is_ignored_and_corrected(
+        self, tmp_path,
+    ):
+        """
+        The sidecar is a file on disk that a person can edit. A negative
+        or non-integer position must be treated as zero AND written back
+        as zero, or every run re-derives from rubbish. The mutation this
+        kills: deleting the isinstance/negative guard.
+        """
+        import json
+
+        gate = tmp_path / "g"
+        self._seed(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=4,
+        )
+        state_file = gate.with_name(gate.name + ".state.json")
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+        raw["acked"]["acked_position"] = -17
+        state_file.write_text(json.dumps(raw), encoding="utf-8")
+
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=4,
+        )
+
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 4
+        assert self._sidecar(gate)["acked_position"] == 0
+
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+        raw["acked"]["acked_position"] = "seventeen"
+        state_file.write_text(json.dumps(raw), encoding="utf-8")
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=4,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 4
+
+    def test_the_ack_records_the_position_it_was_given(self, tmp_path):
+        """
+        The acknowledgement is the only thing that moves the position
+        forward, and it takes it from the event. The mutation this kills:
+        dropping ``quarantine_entries=entries`` from the ack event, which
+        leaves the position where it was and re-reports rows the operator
+        has just dismissed.
+        """
+        gate = tmp_path / "g"
+        self._seed(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=6,
+        )
+        self._apply(gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=6)
+
+        assert self._sidecar(gate)["acked_position"] == 6
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=6,
+        )
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
 
     def test_the_quarantine_text_names_the_acknowledgement_command(
         self, tmp_path,

@@ -192,9 +192,13 @@ class GateState:
 
     problems: dict[str, Problem] = field(default_factory=dict)
     outage_streak: int = 0
-    #: ``{"acked_at": ISO, "acked_count": N}`` from the last
-    #: ``--ack-quarantine``, so the record of who dismissed what survives
-    #: the problem itself.
+    #: ``{"acked_at": ISO, "acked_count": N, "acked_position": P}``.
+    #: ``acked_at``/``acked_count`` are the record of the last
+    #: ``--ack-quarantine``, kept so what was dismissed survives the
+    #: problem itself. ``acked_position`` is how far into the
+    #: append-only quarantine file the operator has read, and is
+    #: maintained by EVERY transition — clamped to the file's length and
+    #: reset when the cursor goes backwards.
     acked: dict[str, object] = field(default_factory=dict)
     #: The archive root the indexer's refusal memory was built against.
     #: Pruning against a *different* root would forget every entry
@@ -234,8 +238,6 @@ class GateEvent:
     correlated_detail: str | None = None
     #: Set to raise the ``degraded`` problem with this text.
     degraded_detail: str | None = None
-    #: The operator has looked at the quarantine and is clearing it.
-    ack_quarantine: bool = False
     #: Indexer only: outstanding refusals across the whole memory.
     refusals: int | None = None
     #: Indexer only: the archive root this run scanned, recorded so the
@@ -410,12 +412,14 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
         else:
             problems.pop(PROBLEM_REFUSALS, None)
 
-    acked = state.acked
-    if event.ack_quarantine:
-        acked = {
-            "acked_at": datetime.now(timezone.utc).isoformat(),
-            "acked_count": acked_count,
-        }
+    # PERSIST the position this transition computed. Returning
+    # ``state.acked`` unchanged threw away the exit-6 reset and the
+    # clamp above: both lasted exactly one render, and the next idle run
+    # recomputed a stale outstanding count from the old position — an
+    # idle run silently changing a gate, which is the one thing the state
+    # machine exists to forbid (ninth re-audit, finding C1).
+    acked = dict(state.acked)
+    acked["acked_position"] = acked_position
     # Set once and never flipped: a run against a different root must not
     # claim a memory built elsewhere, or the next prune would forget it
     # all (seventh re-audit, low).
