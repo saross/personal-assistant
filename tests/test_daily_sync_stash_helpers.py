@@ -2578,11 +2578,20 @@ class TestGuardsDoNotPipeIntoGrepQ:
 
     def test_the_rule_is_being_checked_against_real_greps(self) -> None:
         """The scan above passes trivially if the greps ever go away, so
-        say out loud that they are still there and still matter."""
-        source = DAILY_SYNC.read_text(encoding="utf-8")
-        assert source.count("grep -q") >= 4, (
+        say out loud that they are still there and still matter.
+
+        Counted the same way the scan counts -- CODE lines only. Counting
+        the whole file would include the prose about the rule, which is
+        exactly what makes the check vacuous while looking healthy.
+        """
+        greps = [
+            line.strip()
+            for line in DAILY_SYNC.read_text(encoding="utf-8").splitlines()
+            if "grep -q" in line and not line.strip().startswith("#")
+        ]
+        assert len(greps) >= 4, (
             "the guards this rule protects no longer grep; the scan above "
-            "is now checking nothing"
+            "is now checking nothing: " + str(greps)
         )
 
 
