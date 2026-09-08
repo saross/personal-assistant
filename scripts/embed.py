@@ -238,7 +238,12 @@ def generate_embeddings(
         # transient errors with exponential backoff plus jitter; final
         # failures still propagate to the existing except ladder below
         # so the graceful-degradation contract is preserved.
-        with urlopen_with_retry(req, timeout=timeout) as resp:
+        # idempotent=True: this POST is a pure computation — the same
+        # texts always yield the same vectors and Ollama keeps no
+        # state — so a retry cannot duplicate a side effect.
+        with urlopen_with_retry(
+            req, timeout=timeout, idempotent=True
+        ) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             embeddings = data.get("embeddings", [])
 
