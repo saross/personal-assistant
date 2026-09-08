@@ -539,9 +539,16 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     wrong command; the completion flag and the start-of-run guard are
     untested. Ninth round running: classify a conflicted restore; name
     every stash by SHA and only claim "in the tree" for a proven applied
-    one; check both repositories; per-operation commands. Both machines
-    at 16:15: corpora pass `--check`, no stash, no in-progress rebase or
-    merge, no unmerged path, no `merge.conflictStyle` set.
+    one; check both repositories; per-operation commands. Ninth round
+    done (43b08ea; suite 1,743): a failed restore is classified; a run
+    records what it did to its stashes in `~/.cache/daily-sync-stash-state`
+    so the next run names only a proven one and lists the rest without
+    condemning them; both repositories checked; `git am`, cherry-pick,
+    revert, and resolved-but-uncommitted operations get the right
+    command; the completion flag and the start-of-run guard pinned; a
+    missing tool reported as missing. Ninth pass running. Both machines
+    at 16:40: corpora pass `--check`, no stash, no in-progress operation
+    in either repository, `timeout` present, no `merge.conflictStyle`.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
