@@ -210,6 +210,73 @@ class TestMatchesFilters:
 
 
 # ============================================================================
+# TestParseDatetime — audit R1 (mixed naive/aware stamps must not crash)
+# ============================================================================
+
+
+class TestParseDatetime:
+    """``_parse_datetime`` must return an AWARE datetime for every input."""
+
+    @pytest.mark.parametrize("stamp", [
+        "2026-03-15",                        # legacy date-only record
+        "2026-03-15T10:00:00",               # naive ISO, no offset
+        "2026-03-15T10:00:00+10:00",         # non-UTC offset
+        "2026-03-15T10:00:00Z",              # Z suffix
+        "not a timestamp",                   # unparseable -> epoch sentinel
+        "",                                  # absent created_at
+    ])
+    def test_every_input_yields_an_aware_datetime(self, stamp: str) -> None:
+        """No parse path may return a naive datetime."""
+        assert fetch_memories._parse_datetime(stamp).tzinfo is not None
+
+    def test_unparseable_sorts_to_the_end(self) -> None:
+        """The sentinel stays the epoch, not ``now`` — junk sorts last."""
+        assert fetch_memories._parse_datetime("junk").year == 1970
+
+    def _mixed_corpus(self) -> list[dict[str, Any]]:
+        """Three records whose stamps mix date-only, naive, and +10:00."""
+        return [
+            _make_memory(mem_id="date-only", category="progress",
+                         created_at="2026-03-14"),
+            _make_memory(mem_id="naive", category="progress",
+                         created_at="2026-03-15T09:00:00"),
+            # 2026-03-16T08:00+10:00 == 2026-03-15T22:00Z, the newest.
+            _make_memory(mem_id="offset", category="progress",
+                         created_at="2026-03-16T08:00:00+10:00"),
+        ]
+
+    def test_fallback_sorts_mixed_stamps_newest_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The JSONL fallback ranks a mixed-stamp corpus without raising.
+
+        Kills: dropping the ``parsed.replace(tzinfo=timezone.utc)``
+        normalisation in ``_parse_datetime`` (TypeError comparing
+        offset-naive and offset-aware datetimes).
+        """
+        _write_jsonl(tmp_path / "memories.jsonl", self._mixed_corpus())
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress")
+        assert [m["id"] for m in results] == ["offset", "naive", "date-only"]
+
+    def test_search_archive_sorts_mixed_stamps_newest_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cold-archive search shares the fix (same sort key)."""
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "memories-archive-2026-03.jsonl").write_text(
+            "".join(json.dumps(m) + "\n" for m in self._mixed_corpus()),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        results = fetch_memories.search_archive(category="progress")
+        assert [m["id"] for m in results] == ["offset", "naive", "date-only"]
+
+
+# ============================================================================
 # TestFallbackJsonl
 # ============================================================================
 

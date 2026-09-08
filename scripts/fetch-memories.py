@@ -512,17 +512,33 @@ def matches_filters(
 
 def _parse_datetime(dt_str: str) -> datetime:
     """
-    Parse an ISO datetime string for sorting.
+    Parse an ISO datetime string for sorting, ALWAYS timezone-aware.
 
-    Returns epoch (1970-01-01) for unparseable values so they
+    Returns epoch (1970-01-01 UTC) for unparseable values so they
     sort to the end.
+
+    Every return is aware. A naive stamp — including the legacy date-only
+    ``YYYY-MM-DD`` form documented in ``scripts/_timestamps.py``, which
+    ``fromisoformat`` parses to a naive midnight — is assumed UTC, the same
+    receiver-side defence ``hooks/session-start-retrieval.py:parse_created_at``
+    applies. Without it a corpus mixing naive and offset-bearing stamps made
+    ``sorted`` raise ``TypeError`` ("can't compare offset-naive and
+    offset-aware datetimes"), so the JSONL fallback and the cold-archive
+    search died exactly when PostgreSQL was down (audit R1, 2026-09-08).
+
+    ``_timestamps.coerce_to_iso`` is deliberately NOT reused here: its
+    unparseable fallback is *now*, which would sort a corrupt stamp to the
+    TOP of a newest-first list. Sorting needs the opposite sentinel.
     """
     try:
         # Handle timezone-aware strings (with +00:00 or Z)
         cleaned = dt_str.replace("Z", "+00:00")
-        return datetime.fromisoformat(cleaned)
+        parsed = datetime.fromisoformat(cleaned)
     except (ValueError, TypeError, AttributeError):
         return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def fallback_jsonl(
