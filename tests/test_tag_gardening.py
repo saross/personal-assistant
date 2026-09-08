@@ -1688,3 +1688,93 @@ class TestMergeHoldsTheCorpusLock:
 
         assert finished.wait(10), "the merge must proceed once unlocked"
         worker.join(timeout=10)
+
+
+# -------------------------------------------------------------------------
+# The in-lock re-read (audit 2026-09-08, round 4a-2, finding M4)
+# -------------------------------------------------------------------------
+
+#: Takes LOCK_SH on the vocabulary the way the extraction hook does, waits
+#: for a go signal on stdin, appends a tag, then exits (releasing the lock).
+#: The signal makes the interleaving deterministic: the appending process is
+#: holding the lock before the rewrite starts waiting for it, and appends
+#: while the rewrite is blocked.
+_APPENDING_LOCK_HOLDER = """
+import fcntl, os, sys
+path = sys.argv[1]
+tag = sys.argv[2]
+fd = os.open(path, os.O_RDWR | os.O_APPEND)
+fcntl.flock(fd, fcntl.LOCK_SH)
+print("locked", flush=True)
+sys.stdin.readline()
+os.write(fd, (tag + "\\n").encode("utf-8"))
+os.fsync(fd)
+fcntl.flock(fd, fcntl.LOCK_UN)
+os.close(fd)
+print("appended", flush=True)
+"""
+
+
+class TestOrphansCleanRereadsInsideTheLock:
+    """The counts are taken without the lock; the rewrite must not use them."""
+
+    def test_a_tag_appended_while_the_lock_is_awaited_survives(
+        self, tmp_path: Path,
+    ) -> None:
+        """An extraction-hook append landing during the wait is not dropped.
+
+        Kills the mutation ``vocab_now = load_vocabulary()`` ->
+        ``vocab_now = vocab``: the pre-lock snapshot does not contain the
+        appended tag, so the rewrite would silently delete it -- the exact
+        lost-append this lock exists to prevent.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        vocab.write_text(STRUCTURED_VOCAB, encoding="utf-8")
+        appended_tag = "kiln-firing-log"
+        assert appended_tag not in vocab.read_text(encoding="utf-8")
+
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _APPENDING_LOCK_HOLDER,
+             str(vocab), appended_tag],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "locked"
+            finished = threading.Event()
+
+            def run_clean() -> None:
+                with (
+                    patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+                    patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+                    patch.object(
+                        tag_gardening, "ensure_safe_to_rewrite",
+                        lambda reason: None),
+                ):
+                    tag_gardening.cmd_orphans(
+                        argparse.Namespace(action="clean"))
+                finished.set()
+
+            worker = threading.Thread(target=run_clean, daemon=True)
+            worker.start()
+            # The rewrite is now blocked on LOCK_EX; let the holder append.
+            assert not finished.wait(0.5), "the rewrite did not wait"
+            holder.stdin.write("go\n")
+            holder.stdin.flush()
+            assert holder.stdout.readline().strip() == "appended"
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+            for stream in (holder.stdin, holder.stdout):
+                if stream is not None:
+                    stream.close()
+
+        assert finished.wait(10), "the rewrite never completed"
+        worker.join(timeout=10)
+
+        written = vocab.read_text(encoding="utf-8").split("\n")
+        assert appended_tag in written, (
+            "a tag appended while the rewrite waited for the lock was lost: "
+            "the rewrite used its pre-lock snapshot"
+        )
