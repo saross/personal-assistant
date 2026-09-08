@@ -120,6 +120,21 @@ def archive_tree(tmp_path, sample_metadata) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def pinned_gate_file(tmp_path, monkeypatch):
+    """Keep the session-start gate inside the test's tmp directory.
+
+    The gate is read by daily-sync-trigger.sh and printed to Shawn at
+    session start. A test that wrote the real one would put a fabricated
+    infrastructure problem in front of him — the same class as audit
+    finding S21, and it happened once while this was being written.
+    Autouse so no future test can forget.
+    """
+    gate = tmp_path / "gates" / "postgres-sync-gate"
+    monkeypatch.setattr(sync_mod, "GATE_FILE", gate)
+    return gate
+
+
 # ============================================================================
 # Cursor Management
 # ============================================================================
@@ -1488,3 +1503,91 @@ class TestSessionsCursorResetMidRun:
         assert json.loads(
             cursor_file.read_text(encoding="utf-8")
         )["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"
+
+
+class TestSessionStartGate:
+    """
+    Finding C2 — exit 4 and exit 6 must reach the session-start banner,
+    not just a log file.
+    """
+
+    def _revoke(self, cur, sql, values, page_size=None, fetch=False):
+        """execute_values stand-in modelling a REVOKE."""
+        raise _FakePsycopg2ProgrammingError(
+            "permission denied for table sessions", "42501",
+        )
+
+    def test_exit_four_raises_the_gate_naming_the_sqlstate(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """
+        The operator reading the banner is deciding whether to stop what
+        they are doing; "exited 4" alone does not tell them. The mutation
+        this kills: removing the write_gate call from the exit-4 path.
+        """
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._revoke,
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree), "--full-resync"],
+        )
+
+        try:
+            with pytest.raises(SystemExit):
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        lines = pinned_gate_file.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "1"
+        assert "42501" in lines[1]
+        assert "sync-sessions-to-postgres.py" in lines[1]
+
+    def test_a_clean_run_lowers_the_gate(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """
+        A fixed fault must stop reporting itself without anyone deleting a
+        file. The mutation this kills: removing the clear_gate call.
+        """
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text("1\nstale problem\n", encoding="utf-8")
+
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[
+                "abc12345-6789-0000-aaaa-bbbbccccdddd",
+                "def67890-1234-0000-aaaa-bbbbccccdddd",
+            ],
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree), "--full-resync"],
+        )
+
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"

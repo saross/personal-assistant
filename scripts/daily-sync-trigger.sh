@@ -44,11 +44,12 @@ mkdir -p "$(dirname "$LOCK_FILE")"
 # print to STDOUT under an explicit surface-this header, so the assistant
 # sees them in context and relays them to Shawn.
 #
-# Four gates, same format (first line = problem count, rest = detail):
+# Five gates, same format (first line = problem count, rest = detail):
 #   cc-archives-gate      metas whose transcript is absent locally (E4)
 #   syncthing-gate        mesh health (identity, binds, folder, peers)
 #   memory-drift-gate     memory records surviving in only one store
 #   cc-archive-drift-gate substantive raw sessions never archived
+#   postgres-sync-gate    a sync stopped and needs a human (exit 4 or 6)
 # ---------------------------------------------------------------------------
 GATE_LINES=()
 
@@ -92,6 +93,24 @@ if [[ -f "$ARCHIVE_DRIFT_GATE" ]]; then
     AD_COUNT="$(head -1 "$ARCHIVE_DRIFT_GATE" 2>/dev/null)"
     if [[ "$AD_COUNT" =~ ^[0-9]+$ ]] && [[ "$AD_COUNT" -gt 0 ]]; then
         GATE_LINES+=("[archive-drift gate] ${AD_COUNT} substantive raw session(s) not archived — run scripts/bulk-archive.py (${ARCHIVE_DRIFT_GATE} lists them)")
+    fi
+fi
+
+# PostgreSQL sync gate (added 2026-09-08, audit round two finding C2).
+# Written by sync-to-postgres.py / sync-sessions-to-postgres.py when they
+# exit 4 (environment fault: the database is reachable but not in the
+# expected state — permissions, a missing column, a full disk) or 6 (a
+# rebuild cleared the cursor mid-run). Both mean the sync is making no
+# progress and no amount of waiting will change that. Cleared to 0 by the
+# next clean run, so a fixed fault stops reporting itself.
+#
+# This is the gate the September 2026 incident argued for: the sessions
+# table sat three weeks stale behind an error in a log nobody reads.
+POSTGRES_SYNC_GATE="${HOME}/.cache/postgres-sync-gate"
+if [[ -f "$POSTGRES_SYNC_GATE" ]]; then
+    PG_COUNT="$(head -1 "$POSTGRES_SYNC_GATE" 2>/dev/null)"
+    if [[ "$PG_COUNT" =~ ^[0-9]+$ ]] && [[ "$PG_COUNT" -gt 0 ]]; then
+        GATE_LINES+=("[postgres-sync gate] $(tail -n +2 "$POSTGRES_SYNC_GATE" | head -1)")
     fi
 fi
 

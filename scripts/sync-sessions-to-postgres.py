@@ -46,6 +46,11 @@ from _sync_cursor import (  # noqa: E402
     update_cursor_file,
 )
 # Row-level Postgres guards (audit round two, finding P1 / lens A-X1+A-X2).
+from _sync_gate import (  # noqa: E402
+    GATE_FILE as _DEFAULT_GATE_FILE,
+    clear_gate,
+    write_gate,
+)
 from _pg_row_guard import (  # noqa: E402
     DEFAULT_QUARANTINE_CAP,
     ENVIRONMENT,
@@ -74,6 +79,11 @@ CURSOR_FILE = PA_DIR / "memories" / "sync-cursors.json"
 # as part of this fix (#55).
 QUARANTINE_FILE = PA_DIR / "data" / "sessions" / "quarantine-postgres-drops.jsonl"
 DB_NAME = "claude_memories"
+# Session-start gate raised on exit 4 / 6 (re-audit finding C2). A module
+# constant rather than the helper's default so tests can pin it to a tmp
+# directory: a test that writes the real gate would put a fabricated
+# problem in front of Shawn at his next session start.
+GATE_FILE = _DEFAULT_GATE_FILE
 
 CURSOR_KEY = "sessions_sync_timestamp"
 
@@ -677,8 +687,10 @@ def upsert_sessions(
                 # would discard good data and advance past it.
                 raise EnvironmentFault(
                     f"PostgreSQL refused the upsert for a reason that is "
-                    f"not about the data ({type(exc).__name__}: "
-                    f"{str(exc).strip()}). Cursor held; nothing quarantined."
+                    f"not about the data (SQLSTATE "
+                    f"{getattr(exc, 'pgcode', None) or 'none'}, "
+                    f"{type(exc).__name__}: {str(exc).strip()}). "
+                    f"Cursor held; nothing quarantined."
                 ) from exc
             # Content failure, not an outage. ``execute_values`` sends the
             # whole page in one transaction, so a single refused row aborts
@@ -710,9 +722,9 @@ def upsert_sessions(
                 )
             if status == ENVIRONMENT:
                 raise EnvironmentFault(
-                    "The per-row replay stopped: the refusals are not about "
-                    "the data (see the preceding log line). Cursor held; "
-                    "nothing quarantined."
+                    "The per-row replay stopped: the refusals are not "
+                    "about the data — the preceding log line names the "
+                    "SQLSTATE. Cursor held; nothing quarantined."
                 )
             quarantined = _quarantine_refused_rows(poison, rows_by_id, logger)
 
@@ -952,6 +964,15 @@ def main() -> None:
             "Fix the database (grants, schema, migration state) and re-run. "
             "No session was quarantined and the cursor did not move."
         )
+        # Raise the session-start gate: an exit code that reaches only a
+        # log file is a signal nobody sees (re-audit finding C2).
+        write_gate(
+            f"[sync-sessions-to-postgres.py] exit 4 — environment fault: {exc} "
+            f"Cursor held, nothing quarantined; the sync is making no "
+            f"progress until this is fixed.",
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
         sys.exit(4)
     except CursorKeyVanished as exc:
         # A rebuild cleared the cursors while this cycle was running.
@@ -963,10 +984,19 @@ def main() -> None:
             "rebuilt cursor and replays from the archive tree, which is "
             "what the rebuild intended."
         )
+        write_gate(
+            f"[sync-sessions-to-postgres.py] exit 6 — a rebuild cleared the sync cursor "
+            f"mid-run, so this run's position was deliberately not "
+            f"written back. Confirm the rebuild was intended, then let "
+            f"the next run replay from the canonical.",
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
         sys.exit(6)
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)
+    clear_gate(gate_path=GATE_FILE, logger=logger)
     logger.info("Session sync complete")
 
 

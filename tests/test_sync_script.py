@@ -23,6 +23,21 @@ sync_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync_mod)
 
 
+@pytest.fixture(autouse=True)
+def pinned_gate_file(tmp_path, monkeypatch):
+    """Keep the session-start gate inside the test's tmp directory.
+
+    The gate is read by daily-sync-trigger.sh and printed to Shawn at
+    session start. A test that wrote the real one would put a fabricated
+    infrastructure problem in front of him — the same class as audit
+    finding S21, and it happened once while this was being written.
+    Autouse so no future test can forget.
+    """
+    gate = tmp_path / "gates" / "postgres-sync-gate"
+    monkeypatch.setattr(sync_mod, "GATE_FILE", gate)
+    return gate
+
+
 # ============================================================================
 # Cursor Management
 # ============================================================================

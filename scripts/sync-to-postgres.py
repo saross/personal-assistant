@@ -32,6 +32,11 @@ from _sync_cursor import (  # noqa: E402
 # asserts the on-disk schema version before issuing queries.
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 # Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
+from _sync_gate import (  # noqa: E402
+    GATE_FILE as _DEFAULT_GATE_FILE,
+    clear_gate,
+    write_gate,
+)
 from _pg_row_guard import (  # noqa: E402
     DEFAULT_QUARANTINE_CAP,
     ENVIRONMENT,
@@ -70,6 +75,11 @@ LOG_FILE = LOG_DIR / "sync.log"
 # commit submodule pointer changes as part of this fix (#55).
 QUARANTINE_FILE = PA_DIR / "data" / "memories" / "quarantine-postgres-drops.jsonl"
 DB_NAME = "claude_memories"
+# Session-start gate raised on exit 4 / 6 (re-audit finding C2). A module
+# constant rather than the helper's default so tests can pin it to a tmp
+# directory: a test that writes the real gate would put a fabricated
+# problem in front of Shawn at his next session start.
+GATE_FILE = _DEFAULT_GATE_FILE
 # Advisory-lock key for serialising concurrent sync runs. PG hashes the
 # string to a 32-bit int; `pg_try_advisory_lock` is session-scoped and
 # auto-releases when the connection closes.
@@ -795,8 +805,10 @@ def insert_memories(
                 # good memories and advance the cursor past them.
                 raise EnvironmentFault(
                     f"PostgreSQL refused the insert for a reason that is "
-                    f"not about the data ({type(exc).__name__}: "
-                    f"{str(exc).strip()}). Cursor held; nothing quarantined."
+                    f"not about the data (SQLSTATE "
+                    f"{getattr(exc, 'pgcode', None) or 'none'}, "
+                    f"{type(exc).__name__}: {str(exc).strip()}). "
+                    f"Cursor held; nothing quarantined."
                 ) from exc
             # The database refused a record's content (a bad timestamp, a
             # dict where a scalar belongs, a NUL). ``execute_values`` sends
@@ -829,9 +841,9 @@ def insert_memories(
                 )
             if status == ENVIRONMENT:
                 raise EnvironmentFault(
-                    "The per-row replay stopped: the refusals are not about "
-                    "the data (see the preceding log line). Cursor held; "
-                    "nothing quarantined."
+                    "The per-row replay stopped: the refusals are not "
+                    "about the data — the preceding log line names the "
+                    "SQLSTATE. Cursor held; nothing quarantined."
                 )
             quarantined = _quarantine_refused_records(
                 poison, records_by_id, logger,
@@ -1278,6 +1290,15 @@ def main() -> None:
             "Fix the database (grants, schema, migration state) and re-run. "
             "No memory was quarantined and the cursor did not move."
         )
+        # Raise the session-start gate: an exit code that reaches only a
+        # log file is a signal nobody sees (re-audit finding C2).
+        write_gate(
+            f"[sync-to-postgres.py] exit 4 — environment fault: {exc} "
+            f"Cursor held, nothing quarantined; the sync is making no "
+            f"progress until this is fixed.",
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
         sys.exit(4)
     except CursorKeyVanished as exc:
         # A rebuild cleared the cursors while this cycle was running.
@@ -1289,10 +1310,21 @@ def main() -> None:
             "rebuilt cursor and replays from the canonical, which is what "
             "the rebuild intended."
         )
+        write_gate(
+            f"[sync-to-postgres.py] exit 6 — a rebuild cleared the sync cursor "
+            f"mid-run, so this run's position was deliberately not "
+            f"written back. Confirm the rebuild was intended, then let "
+            f"the next run replay from the canonical.",
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
         sys.exit(6)
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)
+    # Clean run: lower the gate so a fault that has been fixed stops
+    # being reported at every session start.
+    clear_gate(gate_path=GATE_FILE, logger=logger)
     logger.info("Sync complete")
 
 
