@@ -1,0 +1,261 @@
+"""
+Tests for ``scripts/resample-bake-off-manifest.py``.
+
+The re-sampler used to be un-runnable in a test: its manifest path was a
+module constant pointing straight at the canonical file in the private data
+submodule, and ``main()`` wrote it unconditionally. The tests below drive the
+real entry point against a synthetic candidate tree built under ``tmp_path``,
+with both pool roots redirected by the new ``--archive-root`` /
+``--live-root`` arguments — so the only file the suite can touch is the one
+it asked for.
+
+The script makes no network calls at all; the autouse socket guard is here so
+that stays true if an adapter is ever added.
+
+Every transcript, project name, and session id is invented — see
+``tests/fixtures``.
+"""
+
+from __future__ import annotations
+
+import datetime
+import importlib.util
+import json
+import socket
+import sys
+from pathlib import Path
+
+import pytest
+
+TESTS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = TESTS_DIR.parent
+SCRIPT = PROJECT_ROOT / "scripts" / "resample-bake-off-manifest.py"
+
+sys.path.insert(0, str(TESTS_DIR))
+from fixtures import bake_off as fx  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("resample_bake_off_manifest", SCRIPT)
+assert _spec is not None and _spec.loader is not None
+resample = importlib.util.module_from_spec(_spec)
+# Registered before execution: the module defines ``@dataclass`` types, and
+# ``dataclasses`` resolves the defining module out of ``sys.modules``.
+sys.modules[_spec.name] = resample
+_spec.loader.exec_module(resample)
+
+FROZEN_CLOCK = datetime.datetime(2026, 1, 6, 8, 30, tzinfo=datetime.timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def refuse_sockets(monkeypatch):
+    """Fail loudly if any test in this module opens a socket."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "a re-sampler test opened a network socket; this script has no "
+            "business talking to anything."
+        )
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic candidate tree
+# ---------------------------------------------------------------------------
+
+
+def write_archive_session(
+    root: Path,
+    project: str,
+    stamp: str,
+    *,
+    session_id: str,
+    three_ps_populated: bool = False,
+    n_records: int = 20,
+    repeats: int = 3,
+    started_at: str = "2026-01-04T08:00:00+00:00",
+) -> Path:
+    """Create ``<root>/cc-archives/<project>/<stamp>/`` with meta + transcript."""
+    session_dir = root / "cc-archives" / project / stamp
+    transcript = fx.write_session_transcript(
+        session_dir / "session.jsonl", n_records=n_records, repeats=repeats
+    )
+    meta = {
+        "session": {"id": session_id, "started_at": started_at},
+        "project": {"name": project},
+        "three_ps": {
+            "prompt_summary": "Recorded earlier." if three_ps_populated else ""
+        },
+    }
+    (session_dir / "session.meta.json").write_text(
+        json.dumps(meta, indent=2), encoding="utf-8"
+    )
+    return transcript
+
+
+def write_live_session(
+    root: Path,
+    project_dir: str,
+    session_id: str,
+    *,
+    n_records: int = 20,
+    repeats: int = 3,
+) -> Path:
+    """Create ``<root>/.claude/projects/<project_dir>/<session_id>.jsonl``."""
+    return fx.write_session_transcript(
+        root / ".claude" / "projects" / project_dir / f"{session_id}.jsonl",
+        n_records=n_records,
+        repeats=repeats,
+    )
+
+
+def write_subagent_session(
+    root: Path,
+    project_dir: str,
+    session_id: str,
+    agent_name: str,
+    *,
+    n_records: int = 20,
+    repeats: int = 3,
+) -> Path:
+    """Create a sub-agent transcript one level below a live session dir."""
+    return fx.write_session_transcript(
+        root / ".claude" / "projects" / project_dir / session_id / "subagents"
+        / f"{agent_name}.jsonl",
+        n_records=n_records,
+        repeats=repeats,
+    )
+
+
+def tree_snapshot(root: Path) -> dict[str, int]:
+    """Map every file under ``root`` to its size, for before/after comparison."""
+    return {
+        str(path.relative_to(root)): path.stat().st_size
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.fixture
+def pool(tmp_path):
+    """Build a small synthetic pool: two archived sessions and one live one."""
+    root = tmp_path / "home"
+    write_archive_session(
+        root, "thornhollow-survey", "2026-01-04T08-00-00",
+        session_id="11111111-aaaa-bbbb-cccc-000000000001",
+    )
+    write_archive_session(
+        root, "middle-vale-synthesis", "2026-01-05T09-00-00",
+        session_id="22222222-aaaa-bbbb-cccc-000000000002",
+        three_ps_populated=True,
+    )
+    write_live_session(
+        root, "-home-shawn-Code-thornhollow-survey",
+        "33333333-aaaa-bbbb-cccc-000000000003",
+    )
+    return root
+
+
+def run_main(pool_root: Path, *args: str) -> int:
+    """Invoke the entry point with both pool roots pinned to the tmp tree."""
+    return resample.main([
+        "--archive-root", str(pool_root),
+        "--live-root", str(pool_root),
+        *args,
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Paths and the write gate
+# ---------------------------------------------------------------------------
+
+
+class TestPathDefaults:
+    """Nothing resolves to the operator's checkout by hardcoded string."""
+
+    def test_pa_dir_is_file_derived(self):
+        """The finding: PA_DIR was a hardcoded absolute path."""
+        assert resample.PA_DIR == PROJECT_ROOT
+
+    def test_globs_are_rooted_at_the_given_root(self, tmp_path):
+        """Both pools follow --archive-root / --live-root, not $HOME."""
+        for pattern in resample.archive_globs(tmp_path):
+            assert pattern.startswith(str(tmp_path))
+        for pattern in resample.live_globs(tmp_path):
+            assert pattern.startswith(str(tmp_path))
+
+    def test_no_module_constant_names_the_canonical_manifest(self):
+        """A module-level output path is what made every run destructive."""
+        assert not hasattr(resample, "MANIFEST_PATH")
+
+
+class TestEntryPointWriteGate:
+    """``--out`` is mandatory, refuses to clobber, and writes atomically."""
+
+    def test_missing_out_exits_2_and_writes_nothing(self, pool, tmp_path):
+        before = tree_snapshot(pool)
+        assert run_main(pool) == 2
+        assert tree_snapshot(pool) == before
+
+    def test_dry_run_writes_nothing_anywhere(self, pool, tmp_path):
+        """The plan is printed; not one byte lands on disk."""
+        out = tmp_path / "would-be-manifest.json"
+        before = tree_snapshot(pool)
+        assert run_main(pool, "--dry-run", "--out", str(out)) == 0
+        assert not out.exists()
+        assert tree_snapshot(pool) == before
+
+    def test_happy_path_writes_the_requested_file_only(self, pool, tmp_path):
+        out = tmp_path / "manifests" / "sample-manifest.json"
+        before = tree_snapshot(pool)
+        assert run_main(pool, "--out", str(out)) == 0
+        assert out.exists()
+        assert tree_snapshot(pool) == before  # the pool itself is untouched
+        manifest = json.loads(out.read_text(encoding="utf-8"))
+        assert manifest["sessions"]
+        assert manifest["rng_seed"] == 42
+
+    def test_seed_is_recorded_from_the_flag(self, pool, tmp_path):
+        out = tmp_path / "manifest.json"
+        assert run_main(pool, "--out", str(out), "--seed", "7") == 0
+        manifest = json.loads(out.read_text(encoding="utf-8"))
+        assert manifest["rng_seed"] == 7
+        assert "random.seed(7)" in manifest["notes"]
+
+    def test_existing_manifest_is_not_overwritten(self, pool, tmp_path):
+        """The finding: any invocation replaced the canonical manifest."""
+        out = tmp_path / "manifest.json"
+        out.write_text('{"sessions": ["do not lose me"]}\n', encoding="utf-8")
+        assert run_main(pool, "--out", str(out)) == 2
+        assert json.loads(out.read_text(encoding="utf-8")) == {
+            "sessions": ["do not lose me"]
+        }
+
+    def test_force_replaces_an_existing_manifest(self, pool, tmp_path):
+        out = tmp_path / "manifest.json"
+        out.write_text('{"sessions": ["stale"]}\n', encoding="utf-8")
+        assert run_main(pool, "--out", str(out), "--force") == 0
+        manifest = json.loads(out.read_text(encoding="utf-8"))
+        assert manifest["sessions"] != ["stale"]
+
+    def test_writer_leaves_no_temp_file_behind(self, pool, tmp_path):
+        out_dir = tmp_path / "manifests"
+        assert run_main(pool, "--out", str(out_dir / "manifest.json")) == 0
+        assert [p.name for p in out_dir.iterdir()] == ["manifest.json"]
+
+
+class TestWriteJsonAtomic:
+    """The replacement is a rename, so a reader never sees a half-file."""
+
+    def test_failure_leaves_the_previous_file_intact(self, tmp_path):
+        target = tmp_path / "manifest.json"
+        target.write_text('{"keep": true}\n', encoding="utf-8")
+
+        class Unserialisable:
+            """json.dumps raises on this, part-way through the write."""
+
+        with pytest.raises(TypeError):
+            resample.write_json_atomic(target, {"boom": Unserialisable()})
+        assert json.loads(target.read_text(encoding="utf-8")) == {"keep": True}
+        assert list(tmp_path.iterdir()) == [target]
