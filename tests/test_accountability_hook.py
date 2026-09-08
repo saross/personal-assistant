@@ -119,7 +119,7 @@ class TestCountWaitingItems:
         waiting.write_text(
             "| Item | Waiting On | Since | Last Poked | Next Action |\n"
             "|------|------------|-------|------------|-------------|\n"
-            "| ~~Flinders profile info~~ | ~~Talia Barnes~~ "
+            "| ~~Trainee profile info~~ | ~~Pat Example~~ "
             "| ~~2026-03-17~~ | — | "
             "**Received 2026-03-19.** Processing today. |\n"
             "| Europe trip dates | Vivi's mother | 2026-04-28 "
