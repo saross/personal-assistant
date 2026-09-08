@@ -634,6 +634,22 @@ def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
 
 
 
+
+@pytest.fixture
+def isolated_report(monkeypatch):
+    """Give the test its own ``_DEFERRED_REPORT``, not the session's.
+
+    ``report_source_tree_changes`` QUEUES into that module-level dict, so a
+    test driving it directly leaves its throwaway paths in the queue and the
+    real run's terminal summary then reports them as if the suite had
+    touched the checkout. Caught when this file's own new test made the
+    outer run print a warning about a path under pytest's basetemp — the
+    exact class of defect this round is about, in a test rather than in the
+    guard.
+    """
+    monkeypatch.setattr(conftest, "_DEFERRED_REPORT", {})
+    return conftest._DEFERRED_REPORT
+
 @pytest.fixture
 def strict_hermeticity(monkeypatch):
     """Run the source-tree half of the guard in fail-fast mode.
@@ -1568,7 +1584,8 @@ def test_a_truncated_log_is_still_a_violation(tmp_path, monkeypatch):
 
 
 def test_a_source_edit_is_queued_for_the_terminal_summary(tmp_path,
-                                                          monkeypatch):
+                                                          monkeypatch,
+                                                          isolated_report):
     """A concurrent session's edit is reported, not fatal.
 
     Asserts the QUEUE, not a captured print: the operator-visible half is
@@ -1579,7 +1596,6 @@ def test_a_source_edit_is_queued_for_the_terminal_summary(tmp_path,
     its test stayed green (round 4a-4, finding M1).
     """
     monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
-    monkeypatch.setitem(conftest._DEFERRED_REPORT, "source_changes", [])
     root = _throwaway_checkout(tmp_path, monkeypatch)
 
     before = conftest._canonical_store_snapshot()
@@ -1591,7 +1607,7 @@ def test_a_source_edit_is_queued_for_the_terminal_summary(tmp_path,
 
     expected = str((root / "wiki" / "someone-elses-note.md").resolve())
     assert changed == [expected]
-    assert conftest._DEFERRED_REPORT["source_changes"] == [expected], (
+    assert isolated_report["source_changes"] == [expected], (
         "the advisory was not queued for the terminal summary")
 
 
@@ -1743,7 +1759,7 @@ def test_the_same_change_fails_the_nested_run_under_strict(tmp_path):
 
 
 def test_the_session_pair_leaves_source_changes_to_the_advisory_half(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, isolated_report,
 ):
     """A source-tree edit must not make the STORE assertion raise.
 
@@ -1756,7 +1772,6 @@ def test_the_session_pair_leaves_source_changes_to_the_advisory_half(
     """
     monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
     root = _throwaway_checkout(tmp_path, monkeypatch)
-    monkeypatch.setitem(conftest._DEFERRED_REPORT, "source_changes", [])
 
     before = conftest._canonical_store_snapshot()
     (root / "wiki" / "concurrent-edit.md").write_text("theirs\n",
@@ -2294,7 +2309,8 @@ def test_the_tolerated_noise_note_reaches_the_terminal(tmp_path):
 # ===========================================================================
 
 
-def test_the_session_teardown_classifies_once(tmp_path, monkeypatch):
+def test_the_session_teardown_classifies_once(tmp_path, monkeypatch,
+                                              isolated_report):
     """Both halves share one answer instead of recomputing it.
 
     Each changed file is hashed and content-checked inside
@@ -2329,7 +2345,8 @@ def test_the_session_teardown_classifies_once(tmp_path, monkeypatch):
 # ===========================================================================
 
 
-def test_a_source_edit_does_not_mask_a_store_violation(tmp_path, monkeypatch):
+def test_a_source_edit_does_not_mask_a_store_violation(tmp_path, monkeypatch,
+                                                      isolated_report):
     """Under STRICT, a simultaneous source edit used to raise first.
 
     ``report_source_tree_changes`` raising before the store half ran meant
