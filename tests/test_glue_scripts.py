@@ -1318,6 +1318,37 @@ class TestR2PushSafety:
             in env_text
         )
 
+    def test_an_unquoted_hash_survives_but_a_comment_does_not(
+        self, sandbox
+    ) -> None:
+        """The strip must key on the SPACE before the '#', not the '#'.
+
+        `${value%%#*}` passes every quoted-secret test — those take the
+        quote branch and never reach here — while silently truncating an
+        unquoted credential at its first '#' (round 4c-3, finding L-3).
+        """
+        (sandbox.pa_dir / ".env").write_text(
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2#id#invented   "
+            "# rotated 2026-03-02\n"
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2#secret#invented\n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2#id#invented\n"
+            in env_text
+        ), (
+            "an unquoted credential was truncated at its first '#'; the "
+            "comment strip must require whitespace before the marker"
+        )
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2#secret#invented\n"
+            in env_text
+        )
+
     def test_a_hash_inside_a_quoted_secret_survives(self, sandbox) -> None:
         """The comment strip must not eat a '#' that is part of the key."""
         (sandbox.pa_dir / ".env").write_text(
