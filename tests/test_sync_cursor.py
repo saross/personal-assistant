@@ -1027,3 +1027,88 @@ class TestTheGateTextForABadCursor:
         assert "/data/sync-cursors.json" in detail
         assert "acknowledged quarantine position has been reset" in detail
         assert "Repair the cursor file" in detail
+
+
+# ===========================================================================
+# Unsynced-backlog gate (audit 2026-09-08, round 4a, finding A9)
+# ===========================================================================
+
+
+class TestCountJsonlLines:
+    """Line counting must agree with every other reader of the canonical."""
+
+    def test_counts_by_newline_not_unicode_boundaries(self, tmp_path):
+        """A U+2028 inside a record is not a line break.
+
+        Kills the mutation ``data.count(b"\\n")`` -> ``text.splitlines()``:
+        the latter would report a phantom extra line and fabricate a backlog
+        on every call.
+        """
+        path = tmp_path / "memories.jsonl"
+        path.write_text(
+            json.dumps({"id": "a", "content": "one two"},
+                       ensure_ascii=False) + "\n"
+            + json.dumps({"id": "b"}) + "\n",
+            encoding="utf-8",
+        )
+        assert _sync_cursor.count_jsonl_lines(path) == 2
+
+    def test_a_final_line_without_a_newline_still_counts(self, tmp_path):
+        path = tmp_path / "memories.jsonl"
+        path.write_text('{"id": "a"}\n{"id": "b"}', encoding="utf-8")
+        assert _sync_cursor.count_jsonl_lines(path) == 2
+
+    def test_missing_and_empty_files_are_zero(self, tmp_path):
+        assert _sync_cursor.count_jsonl_lines(tmp_path / "absent.jsonl") == 0
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        assert _sync_cursor.count_jsonl_lines(empty) == 0
+
+
+class TestUnsyncedLineBacklog:
+    """What counts as PostgreSQL being behind the canonical."""
+
+    def _corpus(self, tmp_path, n):
+        path = tmp_path / "memories.jsonl"
+        path.write_text(
+            "".join(json.dumps({"id": str(i)}) + "\n" for i in range(n)),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_cursor_behind_reports_the_shortfall(self, tmp_path):
+        corpus = self._corpus(tmp_path, 5)
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(json.dumps({"postgres_sync_line": 2}),
+                          encoding="utf-8")
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 3
+
+    def test_cursor_level_or_ahead_reports_zero(self, tmp_path):
+        corpus = self._corpus(tmp_path, 5)
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(json.dumps({"postgres_sync_line": 5}),
+                          encoding="utf-8")
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+        cursor.write_text(json.dumps({"postgres_sync_line": 9}),
+                          encoding="utf-8")
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+
+    def test_absent_cursor_key_is_not_a_backlog(self, tmp_path):
+        """A machine with no PostgreSQL never writes one; do not block it.
+
+        Kills a mutation that treats a missing key as position zero, which
+        would refuse every archival sweep on a host without the mirror.
+        """
+        corpus = self._corpus(tmp_path, 5)
+        cursor = tmp_path / "sync-cursors.json"
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+        cursor.write_text(json.dumps({"zotero_sync_line": 2}),
+                          encoding="utf-8")
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+
+    def test_refusal_text_names_the_remedy(self, tmp_path):
+        text = _sync_cursor.postgres_backlog_refusal(
+            "archive-memories", 7, tmp_path / "sync-cursors.json")
+        assert "7 record(s)" in text
+        assert "sync-to-postgres.py first" in text
+        assert "Nothing was written." in text

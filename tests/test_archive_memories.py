@@ -583,3 +583,80 @@ class TestGitCommitPathspec:
             ["git", "-C", str(data_dir), "diff", "--cached", "--name-only"],
             capture_output=True, text=True, check=True).stdout.split()
         assert staged == ["memories/archive1/archive-runs.jsonl"]
+
+
+# ===========================================================================
+# Unsynced-backlog gate (audit 2026-09-08, round 4a, finding A9)
+#
+# The corpus rewrite DELETES lines, and sync-to-postgres tracks its position
+# by line number, rewinding only when the cursor sits beyond EOF. Removing K
+# lines from the middle while B >= K records are still unsynced leaves K of
+# them below the cursor forever. monthly-archive.py syncs PG before it calls
+# this tool; a standalone --apply is the exposed path.
+# ===========================================================================
+
+
+@pytest.fixture()
+def main_env(tmp_path, monkeypatch):
+    """Point main() at a throwaway corpus, cursor file, and apply stub."""
+    corpus = tmp_path / "memories" / "memories.jsonl"
+    cursor = tmp_path / "memories" / "sync-cursors.json"
+    _write_corpus(corpus, [
+        _production_record("progress", 400),
+        _production_record("progress", 401),
+        _production_record("decision", 2),
+    ])
+    applied: list[tuple] = []
+    monkeypatch.setattr(am, "CORPUS", corpus)
+    monkeypatch.setattr(am, "CURSOR_FILE", cursor)
+    monkeypatch.setattr(am, "resolve_windows",
+                        lambda: ({"progress": 30}, "test policy"))
+    monkeypatch.setattr(am, "apply_archive",
+                        lambda *a, **k: applied.append((a, k)))
+    return corpus, cursor, applied
+
+
+def test_apply_refuses_while_postgres_is_behind(main_env, capsys):
+    """A cursor behind the corpus blocks the sweep and archives nothing.
+
+    Kills the mutation that deletes the backlog gate from main().
+    """
+    corpus, cursor, applied = main_env
+    before = corpus.read_bytes()
+    cursor.write_text(json.dumps({"postgres_sync_line": 1}), encoding="utf-8")
+
+    assert am.main(["--apply"]) == 1
+
+    assert applied == [], "apply_archive ran despite the backlog"
+    assert corpus.read_bytes() == before
+    assert "sync-to-postgres.py first" in capsys.readouterr().err
+
+
+def test_apply_proceeds_when_the_cursor_is_caught_up(main_env):
+    """A cursor level with the corpus lets the sweep run."""
+    corpus, cursor, applied = main_env
+    cursor.write_text(json.dumps({"postgres_sync_line": 3}), encoding="utf-8")
+
+    assert am.main(["--apply"]) == 0
+    assert len(applied) == 1
+
+
+def test_absent_cursor_is_not_treated_as_a_backlog(main_env):
+    """A machine with no PostgreSQL never writes a cursor; do not block it."""
+    corpus, cursor, applied = main_env
+    assert not cursor.exists()
+
+    assert am.main(["--apply"]) == 0
+    assert len(applied) == 1
+
+
+def test_dry_run_is_not_gated_by_the_backlog(main_env):
+    """A read-only report must run whatever PostgreSQL's position is.
+
+    Kills a mutation that puts the gate above the ``--apply`` check.
+    """
+    corpus, cursor, applied = main_env
+    cursor.write_text(json.dumps({"postgres_sync_line": 0}), encoding="utf-8")
+
+    assert am.main([]) == 0
+    assert applied == []

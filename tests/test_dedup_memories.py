@@ -56,6 +56,10 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     corpus = tmp_path / "memories.jsonl"
     log_dir = tmp_path / "logs"
     monkeypatch.setattr(dedup, "MEMORIES_FILE", corpus)
+    # CURSOR_FILE is derived from MEMORIES_FILE at import time, so patching
+    # the corpus alone would leave the backlog gate reading the real store's
+    # sync-cursors.json.
+    monkeypatch.setattr(dedup, "CURSOR_FILE", tmp_path / "sync-cursors.json")
     monkeypatch.setattr(dedup, "LOG_DIR", log_dir)
     monkeypatch.setattr(dedup, "LOG_FILE", log_dir / "dedup-test.log")
     logger = logging.getLogger("dedup-memories")
@@ -521,3 +525,68 @@ class TestInvariants:
         with pytest.raises(SystemExit) as excinfo:
             run_main(monkeypatch)
         assert excinfo.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Unsynced-backlog gate (audit 2026-09-08, finding A9)
+# ---------------------------------------------------------------------------
+
+
+class TestPostgresBacklogGate:
+    """A line-deleting rewrite must not run ahead of the PostgreSQL sync."""
+
+    def _corpus_with_a_duplicate(self, store: Path) -> None:
+        write_corpus(store, [
+            record(id="2031-04-02-aaaabbbbcccc", summary="Short."),
+            record(id="2031-04-02-aaaabbbbcccc", summary="Longer summary here."),
+            record(id="2031-04-03-ddddeeeeffff"),
+        ])
+
+    def test_backlog_refuses_and_writes_nothing(
+        self, store: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cursor behind the file blocks the rewrite before the guard.
+
+        Kills the mutation that deletes the gate: without it the sweep
+        removes a line, the still-unsynced record drops below the
+        line-position cursor, and PostgreSQL never sees it.
+        """
+        self._corpus_with_a_duplicate(store)
+        before = store.read_bytes()
+        dedup.CURSOR_FILE.write_text(
+            json.dumps({"postgres_sync_line": 1}), encoding="utf-8")
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the guard ran despite the backlog")
+
+        monkeypatch.setattr(dedup, "ensure_safe_to_rewrite", refuse)
+
+        with pytest.raises(SystemExit) as excinfo:
+            run_main(monkeypatch)
+
+        assert excinfo.value.code == 1
+        assert store.read_bytes() == before
+        assert not dedup.removal_journal_path().exists()
+
+    def test_caught_up_cursor_proceeds(
+        self, store: Path, guard: Recorder, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cursor level with the file lets the rewrite run."""
+        self._corpus_with_a_duplicate(store)
+        dedup.CURSOR_FILE.write_text(
+            json.dumps({"postgres_sync_line": 3}), encoding="utf-8")
+
+        run_main(monkeypatch)
+
+        assert len(store.read_text(encoding="utf-8").split("\n")[:-1]) == 2
+
+    def test_absent_cursor_is_not_a_backlog(
+        self, store: Path, guard: Recorder, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A machine with no PostgreSQL has no cursor and must not be blocked."""
+        self._corpus_with_a_duplicate(store)
+        assert not dedup.CURSOR_FILE.exists()
+
+        run_main(monkeypatch)
+
+        assert len(store.read_text(encoding="utf-8").split("\n")[:-1]) == 2

@@ -43,6 +43,10 @@ from _bulk_rewrite_guard import (  # noqa: E402
     lock_jsonl_for_rewrite,
     release_lock,
 )
+from _sync_cursor import (  # noqa: E402
+    postgres_backlog_refusal,
+    unsynced_line_backlog,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -56,6 +60,7 @@ LOG_DIR = PA_ROOT / "data" / "logs"
 if not LOG_DIR.exists():
     LOG_DIR = PA_ROOT / "logs"
 LOG_FILE = LOG_DIR / "dedup-2026-04-14.log"
+CURSOR_FILE = MEMORIES_FILE.parent / "sync-cursors.json"
 
 
 def removal_journal_path(now: datetime | None = None) -> Path:
@@ -433,6 +438,14 @@ def main() -> None:
     # Guard against racing with extraction-hook appends or scheduled
     # sync. Dry-run skips — it does not write.
     if not args.dry_run:
+        # Refuse a line-deleting rewrite while PostgreSQL is behind: those
+        # records would end up below the line-position cursor and never sync
+        # (audit 2026-09-08, finding A9).
+        backlog = unsynced_line_backlog(MEMORIES_FILE, CURSOR_FILE, logger=logger)
+        if backlog:
+            logger.error("%s", postgres_backlog_refusal(
+                "dedup-memories", backlog, CURSOR_FILE))
+            sys.exit(1)
         ensure_safe_to_rewrite(reason="dedup-memories: collapse duplicate memory records")
         atexit.register(release_lock)
         logger.info(
