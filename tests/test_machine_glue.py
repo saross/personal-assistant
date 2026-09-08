@@ -2407,6 +2407,34 @@ class TestFolderMembershipIsAWholeLineMatch:
 
         assert "is MISSING from the running config" in gate, gate
 
+    def test_a_missing_folder_stops_the_remaining_checks(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """L6 — the early `return` after a MISSING folder was unpinned.
+
+        Every check after D queries that folder by id. Without the return
+        they run anyway against a folder the daemon does not have, and the
+        gate fills with derived complaints — "0 bytes behind", a
+        peer-absence line — that describe nothing real and bury the one
+        problem that matters.
+        """
+        result, gate = _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="pa-data",
+            folder_list="some-other-folder",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "is MISSING from the running config" in gate, gate
+        # The peer-absence check (H) lives past the return, and its input
+        # is available — so if it appears, the return did not happen.
+        assert "peer(s) absent beyond" not in gate, gate
+        # And no db/status query was issued for a folder that is not there.
+        assert health_sandbox["url_log"].read_text(encoding="utf-8") == "", (
+            "the folder-status query ran for a folder the daemon lacks"
+        )
+
     def test_an_exact_id_among_several_is_membership(
         self, health_sandbox: dict[str, Any]
     ) -> None:
