@@ -72,7 +72,10 @@ def build_item(doi: str, msg: dict, m, collection_key: str, tags: list[str]) -> 
     item_type = m.CROSSREF_TO_ZOTERO_TYPE.get(cr_type) or m.EXTRA_TYPE_TO_ZOTERO_TYPE.get(
         cr_type, "journalArticle"
     )
-    title = (msg.get("title") or [""])[0]
+    # HTML-stripped like the abstract below: CrossRef returns markup and
+    # entities in titles, and this script writes the value straight into
+    # Zotero (audit round 4d, E5 — the same defect as the importer's).
+    title = m._strip_html((msg.get("title") or [""])[0] or "")
     creators = m._creators_from_record(msg.get("author") or [])
 
     date_str = ""
@@ -80,9 +83,18 @@ def build_item(doi: str, msg: dict, m, collection_key: str, tags: list[str]) -> 
         dobj = msg.get(fld)
         if isinstance(dobj, dict):
             parts = dobj.get("date-parts", [[]])
-            if parts and parts[0]:
+            # `[[null]]` is CrossRef's "no usable date"; `[None]` is truthy,
+            # so the old test wrote the literal string "None" as the item's
+            # date (audit round 4d, E4 — again, as in the importer).
+            if parts and parts[0] and parts[0][0] is not None:
+                components = []
+                for part in parts[0]:
+                    if part is None:
+                        break
+                    components.append(part)
                 date_str = "-".join(
-                    f"{p:02d}" if i > 0 else str(p) for i, p in enumerate(parts[0])
+                    f"{p:02d}" if i > 0 else str(p)
+                    for i, p in enumerate(components)
                 )
                 break
 

@@ -275,5 +275,54 @@ class TestCredentialPrecedence:
         assert RecordingZotero.instances == []
 
 
+class TestItemFieldsMatchTheImporter:
+    """The same two registry defects the importer had (E4 and E5).
+
+    ``build_item`` here is a parallel implementation of the importer's
+    ``build_zotero_item``, and it carried the same two bugs: a CrossRef
+    ``"date-parts": [[null]]`` became the literal string "None", and the
+    title was written with its HTML intact while the abstract beside it
+    was stripped.
+    """
+
+    @staticmethod
+    def _build(module: Any, msg: dict) -> dict:
+        """Invoke ``build_item`` with the shared importer module."""
+        return module.build_item(
+            "10.7777/brand-new",
+            msg,
+            module.load_importer(),
+            "SUBCOLL1",
+            [],
+        )
+
+    def test_null_date_parts_yield_an_empty_date(
+        self, script_env: dict[str, Any]
+    ) -> None:
+        """``[[None]]`` must not become the string "None"."""
+        item = self._build(
+            script_env["module"],
+            {
+                "type": "journal-article",
+                "title": ["Undated Registry Record"],
+                "issued": {"date-parts": [[None]]},
+            },
+        )
+        assert item["date"] == ""
+
+    def test_html_in_the_title_is_stripped(
+        self, script_env: dict[str, Any]
+    ) -> None:
+        """Markup and entities must not reach Zotero's title field."""
+        item = self._build(
+            script_env["module"],
+            {
+                "type": "journal-article",
+                "title": ["Terraces <i>in situ</i> &amp; abandoned"],
+            },
+        )
+        assert item["title"] == "Terraces in situ & abandoned"
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience entry point
     raise SystemExit(pytest.main([__file__, "-v"]))
