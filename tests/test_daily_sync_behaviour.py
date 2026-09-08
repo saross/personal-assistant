@@ -324,6 +324,69 @@ class TestCrossMachineRebase:
         assert "rebase" in gate or "unsupported" in gate, gate
         assert "daily-sync FAILED" in gate or "STOPPED" in gate, gate
 
+    def test_a_resolver_that_does_not_clean_stops_the_pull_rebase(
+        self, world: SyncWorld
+    ) -> None:
+        """The rebase path must check the files after the resolver ran.
+
+        "The resolver exited 0 and left the markers there" is the case
+        these guards exist for — a diff3 corpus before this branch, a
+        future bug after it. Without the check, `git add` stages the
+        markers and `git rebase --continue` commits them.
+        """
+        machine = world.add_machine("a")
+        machine.stub_resolver()
+        world.publish_memory_append("2026-09-08-theirs")
+        machine.append_memory("2026-09-08-ours")
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "conflict markers" in combined
+        assert world.published_data_head() == published_before
+        assert "<<<<<<<" not in world.published_data_file("memories/memories.jsonl")
+        # The refusal must not have left a rebase half-done.
+        assert not (machine.data_git_dir / "rebase-merge").exists()
+
+    def test_a_resolver_that_does_not_clean_stops_the_push_retry(
+        self, world: SyncWorld
+    ) -> None:
+        """The same guard on push_with_retry's own rebase resolver, which
+        runs when our push is rejected mid-flight."""
+        machine = world.add_machine("a")
+        machine.stub_resolver()
+        machine.append_memory("2026-09-08-ours")
+
+        # Prepare, but do not publish, a conflicting append from elsewhere.
+        rival = world.root / "rival-data"
+        git("clone", "-q", str(world.data_remote), str(rival), cwd=world.root)
+        with (rival / "memories" / "memories.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write('{"id": "2026-09-08-rival"}\n')
+        git("commit", "-q", "-am", "rival append", cwd=rival)
+
+        # Publish it exactly when our push starts, so the push is rejected
+        # and the retry has to rebase.
+        marker = world.root / "race-done"
+        hook = machine.data_git_dir / "hooks" / "pre-push"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            "cat >/dev/null\n"
+            f'[[ -f "{marker}" ]] && exit 0\n'
+            f'touch "{marker}"\n'
+            "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX \\\n"
+            f'    git -C "{rival}" push -q origin main\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "conflict markers" in combined
+        assert "<<<<<<<" not in world.published_data_file("memories/memories.jsonl")
+
     def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
         """Kills DS-M6: routing an unknown path to the submodule branch
         would resolve a conflicted prose file trust-ours instead."""
@@ -746,6 +809,45 @@ class TestStashPopConflictPartitioning:
         assert "resolve-merge-conflicts.py" in gate
         assert "Do NOT 'git add'" in gate
 
+    def test_markers_without_an_opening_line_are_still_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """Every marker form counts, not just `<<<<<<< `.
+
+        A half-repaired conflict — somebody deleted the opening line and
+        stopped — still leaves unparseable JSONL.
+        """
+        machine = world.add_machine("a")
+        machine.memories.write_text(
+            '{"id": "ours"}\n=======\n{"id": "theirs"}\n>>>>>>> stash\n',
+            encoding="utf-8",
+        )
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "conflict markers" in combined
+        assert world.published_data_head() == published_before
+
+    def test_markers_in_the_tag_vocabulary_are_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """Every entry of MEMORY_APPEND_FILES is scanned, not just the
+        corpus — the vocabulary is append-only and cross-machine too."""
+        machine = world.add_machine("a")
+        (machine.data / "memories" / "tag-vocabulary.txt").write_text(
+            "seed-tag\n<<<<<<< HEAD\nours-tag\n=======\ntheirs-tag\n>>>>>>> x\n",
+            encoding="utf-8",
+        )
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "tag-vocabulary.txt" in combined
+        assert world.published_data_head() == published_before
+
     def test_markers_pulled_from_origin_stop_the_auto_sync_commit(
         self, world: SyncWorld
     ) -> None:
@@ -954,6 +1056,35 @@ class TestOrphanStashesAreResolvedByIdentity:
         # The run carried on and did its work.
         assert "2026-09-08-orphan" in world.published_data_file(
             "memories/memories.jsonl"
+        )
+
+    def test_the_orphan_is_popped_even_with_a_foreign_stash_above_it(
+        self, world: SyncWorld
+    ) -> None:
+        """Recovery must take the entry the detector named, not the top of
+        the stack — a concurrent session's stash sits above it here."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-orphaned")
+        git("stash", "push", "-q", "-m", "orphaned by a killed run", cwd=machine.data)
+        (machine.data / "tasks" / "foreign.md").write_text(
+            "their unfinished note\n", encoding="utf-8"
+        )
+        git("stash", "push", "-u", "-q", "-m", "a concurrent session", "--",
+            "tasks/foreign.md", cwd=machine.data)
+        # The detector reported the orphan when it was on top; a concurrent
+        # push has since put another entry above it.
+        result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{1}")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        assert "2026-09-08-orphaned" in world.published_data_file(
+            "memories/memories.jsonl"
+        ), "the orphaned records were not recovered"
+        leftovers = git("stash", "list", cwd=machine.data).stdout.strip().splitlines()
+        assert len(leftovers) == 1, leftovers
+        assert "a concurrent session" in leftovers[0]
+        assert not (machine.data / "tasks" / "foreign.md").exists(), (
+            "a concurrent session's stash was applied into our tree"
         )
 
     def test_a_real_orphan_is_recovered_and_published(

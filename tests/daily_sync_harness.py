@@ -232,6 +232,29 @@ class Machine:
         where = self.data if repo == "data" else self.pa
         return git("rev-parse", "--abbrev-ref", "HEAD", cwd=where).stdout.strip()
 
+    def stub_resolver(self) -> None:
+        """
+        Replace this machine's conflict resolver with a no-op.
+
+        "The resolver ran and did not clean the file" is exactly what the
+        marker guards on the rebase paths defend against, and it cannot be
+        staged with the real resolver in place. Committed, so the parent
+        tree stays clean.
+        """
+        target = self.pa / "scripts" / "resolve-merge-conflicts.py"
+        target.unlink()
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""Test stub: claims success without touching the files."""\n'
+            "import sys\n\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        target.chmod(0o755)
+        git("add", "--", "scripts/resolve-merge-conflicts.py", cwd=self.pa)
+        git("commit", "-q", "-m", "stub resolver", "--",
+            "scripts/resolve-merge-conflicts.py", cwd=self.pa)
+
     def append_memory(self, record_id: str, content: str = "note") -> str:
         """Append one record to ``memories.jsonl``, as the hook does."""
         record = {

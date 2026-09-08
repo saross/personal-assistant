@@ -250,10 +250,13 @@ push_with_retry() {
                 "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
                     "${jsonl_paths[@]}" >>"$LOG_FILE" 2>&1 \
                     || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: resolver failed during rebase" 3; }
-                # audit C2: the same invariant on the rebase path.
-                if [[ -n "$(memory_files_with_markers)" ]]; then
+                # audit C2: the same invariant on the rebase path. The
+                # list is captured BEFORE the abort restores the tree
+                # (audit M2), because after it there is nothing to find.
+                _marked="$(memory_files_with_markers)"
+                if [[ -n "$_marked" ]]; then
                     git rebase --abort >>"$LOG_FILE" 2>&1 || true
-                    refuse_if_memory_markers "$context rebase"
+                    refuse_memory_markers "$context rebase" "$_marked"
                 fi
                 git add "${jsonl_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                     || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: git add after resolver failed"; }
@@ -353,23 +356,42 @@ memory_files_with_markers() {
     done
 }
 
-refuse_if_memory_markers() {
-    # refuse_if_memory_markers <what-was-about-to-happen>
+refuse_memory_markers() {
+    # refuse_memory_markers <what-was-about-to-happen> <newline-separated paths>
     # The invariant: no append-only memory file whose content holds a
     # conflict marker is ever staged or committed, by any block. Every
     # consumer of memories.jsonl parses it as JSONL, so a published marker
     # breaks extraction, recall, and the drift check on both machines at
     # once — and the corpus is append-only, so nothing later repairs it.
-    local context="$1" marked=() f
+    #
+    # The paths are passed in rather than re-scanned (audit M2, third
+    # re-audit): the rebase call sites have to `git rebase --abort` first,
+    # which restores the working tree and takes the markers with it. A
+    # refusal that re-scanned after the abort found nothing, returned 0,
+    # and let control fall through to `git add` and `git rebase
+    # --continue` with no rebase in progress.
+    local context="$1" listing="$2" marked=() f
     while IFS= read -r f; do
         [[ -n "$f" ]] && marked+=("$f")
-    done < <(memory_files_with_markers)
+    done <<<"$listing"
     if [[ ${#marked[@]} -eq 0 ]]; then
         return 0
     fi
     write_sync_gate 1 \
         "daily-sync STOPPED: ${marked[*]} contain git conflict markers and must not be committed. Resolve with: $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py ${marked[*]/#/$DATA_DIR/} — then just run the sync again. Do NOT 'git add' them by hand: staging markers is how they reach origin."
     fail "$context: ${marked[*]} contain conflict markers; refusing to stage or commit them"
+}
+
+refuse_if_memory_markers() {
+    # refuse_if_memory_markers <what-was-about-to-happen>
+    # Scan now and refuse if anything is marked. Only for call sites that
+    # do not disturb the working tree first.
+    local context="$1" listing
+    listing="$(memory_files_with_markers)"
+    if [[ -n "$listing" ]]; then
+        refuse_memory_markers "$context" "$listing"
+    fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -420,10 +442,13 @@ resolve_rebase_conflicts() {
             log "$context: resolver failed during rebase — aborted"
             return 1
         fi
-        # audit C2: never stage a marker, on any path.
-        if [[ -n "$(memory_files_with_markers)" ]]; then
+        # audit C2: never stage a marker, on any path. Captured before
+        # the abort restores the tree (audit M2).
+        local marked_before_abort
+        marked_before_abort="$(memory_files_with_markers)"
+        if [[ -n "$marked_before_abort" ]]; then
             git rebase --abort >>"$LOG_FILE" 2>&1 || true
-            refuse_if_memory_markers "$context rebase"
+            refuse_memory_markers "$context rebase" "$marked_before_abort"
         fi
         git add "${jsonl[@]}" >>"$LOG_FILE" 2>&1 || {
             git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }
