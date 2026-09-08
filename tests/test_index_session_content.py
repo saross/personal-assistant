@@ -858,16 +858,284 @@ class TestRefusalDoesNotFailEveryLaterRun:
         A deleted or moved archive would otherwise be reported as
         unindexed for ever, and the count would only ever grow.
         """
-        archive = self._archive(tmp_path)
+        # Two projects, so removing one leaves the root populated — an
+        # empty root is refused outright and must not look like "every
+        # archive was deleted" (finding C3).
+        archive = self._archive(tmp_path, "aaa-poison", "bbb-poison")
         self._wire(indexer, monkeypatch)
         sys.modules["psycopg2.extras"].execute_values.side_effect = self._refuse
         indexer.main(["--archive-root", str(archive), "--force"])
-        assert indexer.load_refusals(pinned_refusal_file)
+        assert len(indexer.load_refusals(pinned_refusal_file)) == 2
 
-        # The archive is moved away; discovery no longer yields it.
+        # One archive is moved away; discovery no longer yields it.
         shutil.rmtree(archive / "alpha")
         sys.modules["psycopg2.extras"].execute_values.side_effect = None
         code = indexer.main(["--archive-root", str(archive)])
 
+        assert code == 0, "a remembered refusal must not fail a later run"
+        # alpha's entry is pruned because its directory is gone; beta's
+        # survives because beta is still there and still refused.
+        assert list(indexer.load_refusals(pinned_refusal_file)) == [
+            "beta/bbb-poison/session.jsonl",
+        ]
+
+
+class TestTheGateReflectsTheWholeMemory:
+    """
+    Fourth re-audit, finding C3 — the indexer's gate reflected only this
+    run's scope, so ``--project X`` cleared a gate raised by project Y's
+    refusal, and an empty root wiped the memory and the gate together.
+    """
+
+    def _archive(self, tmp_path: Path, *names: str) -> Path:
+        """Build an archive with one session per named project."""
+        for name in names:
+            project = "alpha" if name.startswith("a") else "beta"
+            session_dir = tmp_path / project / name
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.meta.json").write_text(
+                json.dumps({
+                    "session": {"id": name},
+                    "project": {"name": project},
+                }),
+                encoding="utf-8",
+            )
+            (session_dir / "session.jsonl").write_text(
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": f"hello {name}"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+        return tmp_path
+
+    def _refuse_beta(self, cur, sql, values, page_size=None, fetch=False):
+        """Refuse only beta's rows."""
+        if any("beta" in str(value) for value in values[0]):
+            raise _DataError("value too long", "22001")
+        return None
+
+    def _wire(self, indexer, monkeypatch):
+        """Install the fake database and neutralise os.nice."""
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+    def test_a_scoped_run_does_not_clear_another_projects_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        ``--project alpha`` has not looked at beta and knows nothing about
+        beta's standing refusal. The mutation this kills: clearing the
+        gate whenever this run's own counts are zero.
+        """
+        archive = self._archive(tmp_path, "aaa-ok", "bbb-poison")
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_beta
+        )
+        indexer.main(["--archive-root", str(archive), "--force"])
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1")
+
+        # Now index only alpha, which has nothing wrong with it.
+        indexer.main([
+            "--archive-root", str(archive), "--force", "--project", "alpha",
+        ])
+
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1"), (
+            "a run scoped to alpha cleared a gate raised by beta"
+        )
+
+    def test_a_full_run_that_fixes_everything_clears_the_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """Only a full-root run with an empty memory has the evidence."""
+        archive = self._archive(tmp_path, "aaa-ok", "bbb-poison")
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_beta
+        )
+        indexer.main(["--archive-root", str(archive), "--force"])
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1")
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"
+
+    def test_an_empty_root_refuses_to_run_and_touches_nothing(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        An unmounted disk must not read as "every archive was deleted",
+        wiping the memory and lowering the gate. The mutation this kills:
+        dropping the populated-root check.
+        """
+        archive = self._archive(tmp_path, "aaa-poison")
+        self._wire(indexer, monkeypatch)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_beta
+        )
+        # Record a standing refusal by hand, then take the archive away.
+        indexer.save_refusals(
+            {"alpha/aaa-poison/session.jsonl": 1.0}, pinned_refusal_file,
+        )
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text("1\nstanding\n", encoding="utf-8")
+        shutil.rmtree(archive / "alpha")
+
+        code = indexer.main(["--archive-root", str(archive)])
+
+        assert code == 2
+        assert indexer.load_refusals(pinned_refusal_file), (
+            "an empty root wiped the refusal memory"
+        )
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1"), (
+            "an empty root lowered the gate"
+        )
+
+    def test_a_swapped_transcript_form_is_not_pruned(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        Pruning keys on the session DIRECTORY, not the file: a transcript
+        gzipped since the refusal is still there, and forgetting it would
+        silently drop a standing problem.
+        """
+        archive = self._archive(tmp_path, "aaa-poison", "bbb-ok")
+        self._wire(indexer, monkeypatch)
+        indexer.save_refusals(
+            {"alpha/aaa-poison/session.jsonl": 1.0}, pinned_refusal_file,
+        )
+        # The raw form is replaced by a .gz — same directory, new name.
+        (archive / "alpha" / "aaa-poison" / "session.jsonl").unlink()
+        (archive / "alpha" / "aaa-poison" / "session.jsonl.gz").write_bytes(b"")
+
+        indexer.main(["--archive-root", str(archive)])
+
+        assert indexer.load_refusals(pinned_refusal_file), (
+            "a transcript that merely changed form was pruned"
+        )
+
+
+    def test_a_scoped_run_does_not_clear_an_abort_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        The narrow case the scope guard exists for: the gate was raised by
+        an outage abort, the refusal memory is empty, and a run scoped to
+        one project indexes it cleanly. It has still seen only part of the
+        archive, so it must not declare the problem over. The mutation
+        this kills: dropping the ``full_scope`` check.
+        """
+        archive = self._archive(tmp_path, "aaa-ok", "bbb-ok")
+        self._wire(indexer, monkeypatch)
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text(
+            "1\n[index-session-content.py] exit 3 — the indexer stopped\n",
+            encoding="utf-8",
+        )
+
+        code = indexer.main([
+            "--archive-root", str(archive), "--force", "--project", "alpha",
+        ])
+
         assert code == 0
-        assert indexer.load_refusals(pinned_refusal_file) == {}
+        assert pinned_gate_file.read_text(encoding="utf-8").startswith("1"), (
+            "a run scoped to one project lowered a gate about the whole "
+            "index"
+        )
+
+    def test_a_full_run_does_clear_an_abort_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """The counterpart: a full-root run that finds nothing wrong clears."""
+        archive = self._archive(tmp_path, "aaa-ok", "bbb-ok")
+        self._wire(indexer, monkeypatch)
+        pinned_gate_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_gate_file.write_text(
+            "1\n[index-session-content.py] exit 3 — the indexer stopped\n",
+            encoding="utf-8",
+        )
+
+        indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"
+
+
+class TestIndexerAbortsGate:
+    """Finding M1 — the indexer wrote no gate on exit 3 or 4."""
+
+    def _archive(self, tmp_path: Path) -> Path:
+        """One indexable session."""
+        session_dir = tmp_path / "alpha" / "sess"
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "sess"},
+                "project": {"name": "alpha"},
+            }),
+            encoding="utf-8",
+        )
+        (session_dir / "session.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "hello"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @pytest.mark.parametrize("exc,expected", [
+        (_OperationalError("server closed the connection"), 3),
+        (_ProgrammingError("permission denied", "42501"), 4),
+    ])
+    def test_an_abort_raises_the_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file, exc, expected,
+    ):
+        """
+        A stopped indexer means newly archived sessions are not
+        searchable, and nothing said so. The mutation this kills:
+        removing the write_gate call from the IndexerAbort handler.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        def _raise(cur, sql, values, page_size=None, fetch=False):
+            raise exc
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _raise
+
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == expected
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert f"exit {expected}" in gate
+        assert "not searchable" in gate
+
+    def test_an_empty_root_abort_does_not_gate(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        Exit 2 on an empty root is a "cannot tell" state: it must not
+        raise a gate claiming the index is broken, nor lower one.
+        """
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        code = indexer.main(["--archive-root", str(empty)])
+
+        assert code == 2
+        assert not pinned_gate_file.exists()
+

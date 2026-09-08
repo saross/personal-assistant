@@ -412,6 +412,24 @@ def index_archive(archive_root: Path, project: str | None,
     # Resolved at call time so the module constant stays monkeypatchable.
     refusal_file = REFUSAL_FILE if refusal_file is None else refusal_file
 
+    # An archive root that exists but holds nothing is an unmounted disk
+    # or the wrong path, not an empty history. Running on it would make
+    # the prune loop below declare every remembered archive gone, wiping
+    # the memory and lowering the gate on the strength of a missing mount
+    # (fourth re-audit, finding C3). Refuse, and touch nothing.
+    root_is_populated = (
+        next(archive_root.rglob("session.meta.json"), None) is not None
+    )
+    if not root_is_populated:
+        logger.error(
+            "Archive root %s contains no session.meta.json at all — that "
+            "is a missing mount or the wrong path, not an empty archive. "
+            "Refusing to run: a scan of an empty root would look like "
+            "every archive having been deleted.", archive_root)
+        raise IndexerAbort(
+            2, f"archive root {archive_root} is empty — refusing to run",
+        )
+
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
     except psycopg2.OperationalError as exc:
@@ -567,11 +585,15 @@ def index_archive(archive_root: Path, project: str | None,
         conn.close()
         # Prune entries whose archive has since been moved or deleted, so
         # the memory cannot accumulate for ever and report unindexed files
-        # that no longer exist (finding C2). Scoped by existence, not by
-        # this run's discovery, so --project is irrelevant here.
+        # that no longer exist (finding C2). Two guards, both from the
+        # fourth re-audit's finding C3: only ever on a populated root (an
+        # unmounted disk must not read as "everything was deleted"), and
+        # only when the session DIRECTORY is verifiably absent — a
+        # transcript swapped between its .gz and raw forms still has its
+        # directory, and is not gone.
         for stale in [
             key for key in known_refusals
-            if not (archive_root / key).exists()
+            if not (archive_root / key).parent.exists()
         ]:
             del known_refusals[stale]
             refusals_changed = True
@@ -640,6 +662,19 @@ def main(argv: list[str] | None = None) -> int:
     except IndexerAbort as exc:
         # Reported in full by index_archive; the code carries the reason.
         logger.error("Index run aborted (exit %d): %s", exc.exit_code, exc)
+        if exc.exit_code in (3, 4):
+            # An unreachable or misconfigured database stopped the run,
+            # and nothing said so at session start (fourth re-audit, M1).
+            # Exit 2 is deliberately NOT gated: an empty archive root is a
+            # "cannot tell" state, and a schema mismatch stops before any
+            # scan, so neither is evidence about the index's contents.
+            write_gate(
+                f"[index-session-content.py] exit {exc.exit_code} — the "
+                f"transcript indexer stopped: {exc} Newly archived "
+                f"sessions are not searchable until this is fixed.",
+                gate_path=GATE_FILE,
+                logger=logger,
+            )
         return exc.exit_code
     logger.info(
         "Done: %d file(s) indexed, %d skipped (unchanged), %d chunks, "
@@ -647,7 +682,15 @@ def main(argv: list[str] | None = None) -> int:
         result.files_indexed, result.files_skipped, result.chunks,
         result.refused_now, result.refused_remembered)
 
-    _apply_indexer_gate(result, logger)
+    # The gate is about the whole memory, not this run's slice: a run
+    # scoped to one project has seen only part of the picture.
+    outstanding = len(load_refusals())
+    _apply_indexer_gate(
+        outstanding, result.refused_now,
+        full_scope=args.project is None,
+        refusal_file=REFUSAL_FILE,
+        logger=logger,
+    )
 
     if result.refused_now:
         # Non-zero ONLY for a refusal that happened this run (finding C2).
@@ -662,24 +705,39 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _apply_indexer_gate(result: IndexResult, logger: logging.Logger) -> None:
+def _apply_indexer_gate(
+    outstanding: int,
+    refused_now: int,
+    full_scope: bool,
+    refusal_file: Path,
+    logger: logging.Logger,
+) -> None:
     """
     Raise or lower this script's session-start gate.
 
-    Cleared only by a run that completed with nothing outstanding — an
-    aborted run raises :class:`IndexerAbort` and never reaches here, so it
-    cannot erase a standing alarm (finding C1). Files refused on an
-    earlier run keep the gate up: they are still missing from the search
-    index, which is the thing worth knowing.
+    The gate reflects the WHOLE refusal memory, not this run's scope
+    (fourth re-audit, finding C3). ``--project X`` sees only X's
+    transcripts, so a run scoped to X knows nothing about a standing
+    refusal in project Y — and used to clear Y's alarm anyway. A scoped
+    run may therefore RAISE the gate (it has found something) but never
+    LOWER it; only a full-root run that ends with an empty memory has the
+    evidence to say the problem is gone.
+
+    An aborted run raises :class:`IndexerAbort` and never reaches here,
+    so it cannot erase a standing alarm either (finding C1).
     """
-    outstanding = result.refused_now + result.refused_remembered
     if not outstanding:
+        if not full_scope:
+            logger.info(
+                "Nothing outstanding in this project, but the run was "
+                "scoped — leaving any standing gate alone.")
+            return
         clear_gate(gate_path=GATE_FILE, logger=logger)
         return
     write_gate(
         f"[index-session-content.py] {outstanding} transcript(s) are NOT "
-        f"in the search index ({result.refused_now} refused this run). "
-        f"/search-sessions cannot find them. Listed in {REFUSAL_FILE}; "
+        f"in the search index ({refused_now} refused this run). "
+        f"/search-sessions cannot find them. Listed in {refusal_file}; "
         f"they are retried when the file changes, or with --force.",
         gate_path=GATE_FILE,
         count=outstanding,
