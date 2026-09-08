@@ -1379,20 +1379,47 @@ class TestEnvFingerprintAgreesWithItsConsumer:
     def test_an_invalid_byte_is_reported_not_papered_over(
         self, tmp_path: Path
     ) -> None:
-        """`errors="replace"` produced a clean report for an unreadable file."""
+        """`errors="replace"` produced a clean report for an unreadable file.
+
+        The reported offset is asserted exactly (round 4d-3): reporting
+        ``exc.end`` instead of ``exc.start`` points a byte past the
+        offending one, which is precisely the sort of off-by-one that
+        wastes an operator's afternoon in a file they cannot open safely.
+        """
         home = tmp_path / "home"
         home.mkdir()
         env_file = tmp_path / "invalid.env"
-        env_file.write_bytes(
-            b"SYNTHETIC_ONE=ab\xffcd\nSYNTHETIC_TWO=fine\n"
-        )
+        # The 0xff sits at offset 16, counting from zero.
+        payload = b"SYNTHETIC_ONE=ab\xffcd\nSYNTHETIC_TWO=fine\n"
+        assert payload.index(b"\xff") == 16
+        env_file.write_bytes(payload)
 
         result = _run_fingerprint(env_file, home)
 
         assert result.returncode == 3, result.stdout
         assert "INVALID UTF-8" in result.stdout
+        assert "byte 16 is not valid UTF-8" in result.stdout, result.stdout
         # And no per-key line was emitted, which would have read as healthy.
         assert "SYNTHETIC_ONE\t" not in result.stdout
+
+    def test_the_offset_points_at_the_offending_byte_not_past_it(
+        self, tmp_path: Path
+    ) -> None:
+        """A second file puts the bad byte somewhere else, so the number
+        cannot be a coincidence of one fixture."""
+        home = tmp_path / "home"
+        home.mkdir()
+        env_file = tmp_path / "invalid-later.env"
+        payload = b"SYNTHETIC_ONE=fine\nSYNTHETIC_TWO=ab\xffcd\n"
+        offset = payload.index(b"\xff")
+        env_file.write_bytes(payload)
+
+        result = _run_fingerprint(env_file, home)
+
+        assert result.returncode == 3
+        assert f"byte {offset} is not valid UTF-8" in result.stdout, (
+            result.stdout
+        )
 
     def test_the_loader_really_does_raise_on_that_file(
         self, tmp_path: Path
@@ -1423,6 +1450,12 @@ class TestEnvFingerprintAgreesWithItsConsumer:
 
         assert "FIRST assignment wins" in result.stdout
         assert "last wins" not in result.stdout
+        # The header must agree with the code it documents (round 4d-3,
+        # L1): it still said "the last assignment wins" while the warning
+        # it describes had already been corrected.
+        header = ENV_FINGERPRINT.read_text(encoding="utf-8")
+        assert "last assignment wins" not in header
+        assert "FIRST assignment wins" in header
 
     def test_the_loader_really_keeps_the_first_assignment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
