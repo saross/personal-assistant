@@ -44,6 +44,22 @@ PA_ROOT = Path(__file__).resolve().parent.parent
 MEMORIES_JSONL = PA_ROOT / "data" / "memories" / "memories.jsonl"
 VOCABULARY_FILE = PA_ROOT / "data" / "memories" / "tag-vocabulary.txt"
 LOG_DIR = PA_ROOT / "data" / "logs"
+DB_NAME = "claude_memories"  # scripts/sync-to-postgres.py:53
+
+#: The one PostgreSQL column that mirrors a memory's tags. schema.sql:46 —
+#: ``research_tags TEXT[]``; there is no ``tags`` column, so a record whose
+#: JSONL carries only a ``tags`` field has nothing to reconcile in PG.
+PG_TAGS_COLUMN = "research_tags"
+UPDATE_TAGS_SQL = f"UPDATE memories SET {PG_TAGS_COLUMN} = %s WHERE id = %s"
+
+#: What to tell the operator when the surgical UPDATE cannot be issued. The
+#: 5-minute cron is INSERT ... ON CONFLICT DO NOTHING, so it will never
+#: propagate an edit to an existing row (commands/tags.md, "Notes").
+PG_REMEDY = (
+    "PostgreSQL is now STALE for the merged tags. The regular sync is "
+    "insert-only and will not fix it. Run a full rebuild:\n"
+    "    venv/bin/python3 scripts/rebuild-postgres.py"
+)
 
 # Also check the symlink path as a fallback
 if not MEMORIES_JSONL.exists():
@@ -583,6 +599,7 @@ def cmd_merge(args: argparse.Namespace) -> None:
     memories_touched = 0
     tags_replaced = 0
     lines: list[str] = []
+    pg_updates: list[tuple[str, list[str]]] = []
 
     if args.dry_run:
         # Read-only path: load and report, do not rewrite.
@@ -691,6 +708,12 @@ def cmd_merge(args: argparse.Namespace) -> None:
                     new_tags = list(dict.fromkeys(new_tags))
                     mem[tag_field] = new_tags
                     memories_touched += 1
+                    # Remember what PostgreSQL has to be told. Only the
+                    # research_tags field has a mirror column (schema.sql:46);
+                    # a record carrying only ``tags`` was synced with an empty
+                    # array and has nothing to reconcile.
+                    if tag_field == PG_TAGS_COLUMN and mem.get("id"):
+                        pg_updates.append((str(mem["id"]), new_tags))
                     # ``ensure_ascii`` defaults to True, matching the
                     # extraction hook's serialisation. Writing with
                     # ensure_ascii False would UN-escape a U+2028/U+2029/
@@ -732,7 +755,80 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
     # Log
     _log_merge(plan, memories_touched, tags_replaced)
-    print("\nDone. Run sync-to-postgres.py to update PostgreSQL.")
+
+    # Reconcile PostgreSQL LAST, once the JSONL and the vocabulary are both
+    # safely on disk. Anything that goes wrong from here leaves the canonical
+    # correct and only the mirror stale, which is a rebuild away.
+    reconcile_postgres(pg_updates)
+
+
+def reconcile_postgres(
+    updates: list[tuple[str, list[str]]],
+    *,
+    dbname: str = DB_NAME,
+    connect: Any = None,
+) -> None:
+    """Push the merged tag lists into PostgreSQL, one surgical UPDATE per id.
+
+    The regular sync is ``INSERT ... ON CONFLICT (id) DO NOTHING``, so it
+    never propagates an edit to a row already in the mirror: before this, a
+    tag merge simply never reached PostgreSQL, and the printed remedy ("run
+    sync-to-postgres.py") was wrong (audit 2026-09-08, finding A8). All the
+    updates go in ONE transaction, so the mirror is either fully reconciled
+    or untouched.
+
+    ``connect`` is an injectable zero-argument callable returning a
+    psycopg2-style connection; it defaults to ``psycopg2.connect``.
+
+    On any PostgreSQL failure this prints the real remedy (a full rebuild)
+    and exits non-zero — after the JSONL is already safe on disk.
+    """
+    if not updates:
+        print("  PostgreSQL: no research_tags rows to reconcile.")
+        return
+
+    if connect is None:
+        try:
+            import psycopg2
+        except ImportError:
+            print(f"\nWARNING: psycopg2 unavailable.\n{PG_REMEDY}",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        def connect() -> Any:  # noqa: F811 — deliberate default binding
+            return psycopg2.connect(dbname=dbname)
+
+    from _schema_version import assert_schema_version, SchemaVersionError
+
+    try:
+        conn = connect()
+    except Exception as exc:  # noqa: BLE001 — every failure has one remedy
+        print(f"\nWARNING: PostgreSQL unreachable ({exc}).\n{PG_REMEDY}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        try:
+            assert_schema_version(conn)
+        except SchemaVersionError as exc:
+            print(f"\nWARNING: PostgreSQL schema mismatch ({exc}).\n"
+                  f"{PG_REMEDY}", file=sys.stderr)
+            sys.exit(1)
+        # ``with conn`` commits on a clean exit and rolls back on an
+        # exception, so a failure part-way leaves no half-merged mirror.
+        with conn, conn.cursor() as cur:
+            for memory_id, tags in updates:
+                cur.execute(UPDATE_TAGS_SQL, (tags, memory_id))
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nWARNING: PostgreSQL update failed ({exc}).\n{PG_REMEDY}",
+              file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+    print(f"\nDone. PostgreSQL reconciled for {len(updates)} record(s).")
 
 
 def _log_merge(

@@ -57,6 +57,23 @@ def _bypass_rewrite_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         raising=False,
     )
 
+@pytest.fixture
+def pg_recorder(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Capture the PostgreSQL reconciliation rather than opening a connection.
+
+    A merge now issues a surgical UPDATE per touched id (audit finding A8).
+    These tests are about the JSONL and the vocabulary, so they record the
+    call and assert nothing about it; ``TestReconcilePostgres`` below drives
+    the real SQL against a fake connection.
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        tag_gardening, "reconcile_postgres",
+        lambda updates, **kwargs: calls.append(updates),
+    )
+    return calls
+
+
 SAMPLE_MEMORIES = [
     {
         "id": "mem-001",
@@ -343,7 +360,9 @@ class TestPrefixPairs:
 class TestMerge:
     """Tests for the merge operation."""
 
-    def test_replaces_tags(self, tmp_path: Path) -> None:
+    def test_replaces_tags(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """Loser tags are replaced with winner tags."""
         jsonl = tmp_path / "memories.jsonl"
         vocab = tmp_path / "tag-vocabulary.txt"
@@ -383,7 +402,9 @@ class TestMerge:
             == len(set(mem_002["research_tags"]))
         )
 
-    def test_preserves_line_count(self, tmp_path: Path) -> None:
+    def test_preserves_line_count(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """JSONL line count is unchanged after merge."""
         jsonl = tmp_path / "memories.jsonl"
         vocab = tmp_path / "tag-vocabulary.txt"
@@ -409,7 +430,9 @@ class TestMerge:
         new_count = len(jsonl.read_text().splitlines())
         assert new_count == original_count
 
-    def test_valid_jsonl_after_merge(self, tmp_path: Path) -> None:
+    def test_valid_jsonl_after_merge(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """Every line in the merged file is valid JSON."""
         jsonl = tmp_path / "memories.jsonl"
         vocab = tmp_path / "tag-vocabulary.txt"
@@ -464,7 +487,9 @@ class TestMerge:
 
         assert jsonl.read_text() == original_content
 
-    def test_vocabulary_updated(self, tmp_path: Path) -> None:
+    def test_vocabulary_updated(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """Vocabulary file has losers removed and winners present."""
         jsonl = tmp_path / "memories.jsonl"
         vocab = tmp_path / "tag-vocabulary.txt"
@@ -594,7 +619,9 @@ class TestEdgeCases:
 class TestMultiMerge:
     """Tests for multi-entry and conflicting merge plans."""
 
-    def test_multi_entry_plan(self, tmp_path: Path) -> None:
+    def test_multi_entry_plan(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """Multiple merge groups in one plan are all applied."""
         jsonl = tmp_path / "memories.jsonl"
         vocab = tmp_path / "tag-vocabulary.txt"
@@ -792,7 +819,9 @@ LINE_SEPARATOR = "\u2028"
 class TestUnicodeLineSeparators:
     """A merge must not plant a raw line separator in the canonical."""
 
-    def test_merge_keeps_separator_escaped(self, tmp_path: Path) -> None:
+    def test_merge_keeps_separator_escaped(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """A rewritten record's U+2028 stays ``\\u2028`` on disk.
 
         Kills the mutation ``json.dumps(mem)`` ->
@@ -884,7 +913,9 @@ class TestGuardWiring:
 
         assert jsonl.read_bytes() == before
 
-    def test_real_run_invokes_the_guard(self, tmp_path: Path) -> None:
+    def test_real_run_invokes_the_guard(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
         """A mutating merge must take the guard before rewriting.
 
         Kills the mutation that deletes the ``ensure_safe_to_rewrite`` call
@@ -942,7 +973,7 @@ class TestVocabularyRewrite:
     """The vocabulary is a protected file; both writers must treat it so."""
 
     def test_merge_preserves_comments_and_blank_lines(
-        self, tmp_path: Path,
+        self, tmp_path: Path, pg_recorder: list,
     ) -> None:
         """Section headers and the blank line keep their positions.
 
@@ -1107,3 +1138,205 @@ class TestVocabularyRewrite:
 
         assert finished.wait(10), "the rewrite must proceed once unlocked"
         worker.join(timeout=10)
+
+
+# -------------------------------------------------------------------------
+# PostgreSQL reconciliation (audit 2026-09-08, finding A8; B1's class)
+# -------------------------------------------------------------------------
+
+
+#: The schema version the guard expects, read from the module it guards so a
+#: bump does not silently turn these tests into no-ops.
+SCHEMA_VERSION = importlib.import_module(
+    "_schema_version"
+).EXPECTED_SCHEMA_VERSION
+
+
+class FakeCursor:
+    """Records the SQL text and parameters it was actually handed."""
+
+    def __init__(self, ledger: list[tuple[str, tuple]]) -> None:
+        self.ledger = ledger
+        self.rowcount = 1
+
+    def __enter__(self) -> FakeCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: tuple | None = None) -> None:
+        self.ledger.append((sql, params))
+
+    def fetchone(self) -> tuple:
+        return (SCHEMA_VERSION,)
+
+
+class FakeConnection:
+    """A psycopg2-shaped connection that commits via the context manager."""
+
+    def __init__(self, ledger: list[tuple[str, tuple]]) -> None:
+        self.ledger = ledger
+        self.entered = 0
+        self.closed = False
+
+    def cursor(self) -> FakeCursor:
+        return FakeCursor(self.ledger)
+
+    def __enter__(self) -> FakeConnection:
+        self.entered += 1
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+
+
+class TestReconcilePostgres:
+    """The surgical UPDATE a merge must issue, and what it does on failure."""
+
+    def test_update_targets_one_id_with_the_merged_tags(self) -> None:
+        """The real SQL string is executed, keyed on id, in parameter order.
+
+        Kills the mutations ``WHERE id = %s`` -> ``WHERE id != %s`` and a
+        swapped parameter order: the fake cursor records what it was handed,
+        rather than the test comparing a constant with itself.
+        """
+        ledger: list[tuple[str, tuple]] = []
+        conn = FakeConnection(ledger)
+
+        tag_gardening.reconcile_postgres(
+            [("mem-001", ["pipeline", "api"]), ("mem-004", ["api"])],
+            connect=lambda: conn,
+        )
+
+        updates = [(sql, params) for sql, params in ledger
+                   if sql.startswith("UPDATE")]
+        assert len(updates) == 2
+        sql, params = updates[0]
+        assert sql == "UPDATE memories SET research_tags = %s WHERE id = %s"
+        assert params == (["pipeline", "api"], "mem-001")
+        assert updates[1][1] == (["api"], "mem-004")
+        assert conn.entered == 1, "the UPDATEs must run inside `with conn`"
+        assert conn.closed
+
+    def test_nothing_to_reconcile_opens_no_connection(self) -> None:
+        """An empty update list must not connect at all."""
+
+        def explode() -> None:
+            raise AssertionError("connected with nothing to do")
+
+        tag_gardening.reconcile_postgres([], connect=explode)
+
+    def test_unreachable_server_reports_the_rebuild_remedy(
+        self, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A connection failure exits non-zero naming a full rebuild.
+
+        Kills the mutation that restores the old "Run sync-to-postgres.py"
+        advice: that script is INSERT ... ON CONFLICT DO NOTHING and will
+        never propagate an edit to an existing row.
+        """
+
+        def refuse() -> None:
+            raise OSError("connection refused")
+
+        with pytest.raises(SystemExit) as excinfo:
+            tag_gardening.reconcile_postgres(
+                [("mem-001", ["api"])], connect=refuse,
+            )
+
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "rebuild-postgres.py" in err
+        assert "sync-to-postgres.py" not in err
+
+    def test_failed_update_reports_the_rebuild_remedy(
+        self, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A query failure is reported the same way, after the JSONL is safe."""
+
+        class ExplodingCursor(FakeCursor):
+            def execute(self, sql: str, params: tuple | None = None) -> None:
+                if sql.startswith("UPDATE"):
+                    raise RuntimeError("column research_tags does not exist")
+                super().execute(sql, params)
+
+        class ExplodingConnection(FakeConnection):
+            def cursor(self) -> FakeCursor:
+                return ExplodingCursor(self.ledger)
+
+        with pytest.raises(SystemExit) as excinfo:
+            tag_gardening.reconcile_postgres(
+                [("mem-001", ["api"])],
+                connect=lambda: ExplodingConnection([]),
+            )
+
+        assert excinfo.value.code == 1
+        assert "rebuild-postgres.py" in capsys.readouterr().err
+
+    def test_merge_passes_only_research_tags_rows_to_postgres(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
+        """A merge hands PG exactly the ids whose mirror column changed.
+
+        Kills the mutation that deletes the reconcile call from cmd_merge,
+        and the one that also queues records whose tags live in the ``tags``
+        field (schema.sql has no such column, so PG has nothing to update).
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-201", "content": "Research-tagged record.",
+             "research_tags": ["pipelines", "api"]},
+            {"id": "mem-202", "content": "Legacy tags field.",
+             "tags": ["pipelines"]},
+            {"id": "mem-203", "content": "Untouched.",
+             "research_tags": ["api"]},
+        ])
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        assert pg_recorder == [[("mem-201", ["pipeline", "api"])]]
+
+    def test_dry_run_reconciles_nothing(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
+        """A preview must not touch PostgreSQL either."""
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=True)
+            )
+
+        assert pg_recorder == []
