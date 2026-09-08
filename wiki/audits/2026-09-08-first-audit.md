@@ -565,6 +565,13 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     quarantine, degraded, outage streak, refusals), each with its own
     raise and lower evidence, a rendered gate derived from them, and a
     transition-matrix test.
+    Sixth round done (8b1abf7, 4026d9e; suite 1,618): the machine lives
+    once in `_sync_gate.py`; a quarantine carries a running count and
+    stands until `--ack-quarantine`; an outage lowers only itself; every
+    degraded return carries its reason; indexing either transcript form
+    forgets a refusal; thirty matrix rows are executable; the AST test
+    covers every reader and writer of a gate or its sidecar. Sixth pass
+    running.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
