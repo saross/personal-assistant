@@ -491,3 +491,62 @@ def test_main_applies_the_floor_from_the_log(tmp_path, monkeypatch) -> None:
 
     assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
     assert log.read_text(encoding="utf-8").count("\n") == 1
+
+
+# ============================================================================
+# A sweep that discovered nothing must not reach the log at all (M-a)
+# ============================================================================
+
+
+def test_a_degraded_machine_refuses_without_stubbing_discovery(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """No ~/Code, no ~/personal-assistant, but the checkout is a repository.
+
+    broad_repo_set_detail is NOT stubbed here: only project_id.repo_set and
+    PA_DIR are, which is the shape of the real degraded machine. Before the
+    fix the sweep ran against that one checkout and appended a fail_pct
+    100.0 row carrying ``repos: 0``.
+    """
+    worktree = _init_repo(tmp_path / "worktrees" / "pa-copy", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta.project_id, "repo_set", list)
+    monkeypatch.setattr(ds.ta, "PA_DIR", worktree)
+    log = tmp_path / "d.jsonl"
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/gone.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    rc = ds.main(["--memories", str(corpus), "--log-path", str(log)])
+    assert rc == 2
+    assert not log.exists(), "a degraded sweep must append nothing"
+    assert "sweep unreliable" in capsys.readouterr().err
+
+
+def test_a_zero_repo_result_is_never_logged(tmp_path, monkeypatch) -> None:
+    """The second guard, independent of discovery raising.
+
+    Kills the mutation removing the ``record["repos"] <= 0`` refusal: a
+    result carrying no repository count would otherwise be appended, and
+    last_repo_count skips such a row, so it imposes no floor on the next run
+    either.
+    """
+    _fixed_sweep(monkeypatch, dict(SAMPLE_RESULT, repo_count=0))
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log)]) == 2
+    assert not log.exists()
+
+
+def test_the_floor_skips_a_degraded_row_already_in_the_log(tmp_path) -> None:
+    """A ``repos: 0`` row must not mask a real floor recorded before it.
+
+    Kills the mutation ``count > 0`` -> ``count >= 0``: the scan then stops
+    on the newest row and reports "no floor at all".
+    """
+    log = tmp_path / "d.jsonl"
+    log.write_text(
+        json.dumps({"run_at": "2031-01-01T00:00:00+00:00", "repos": 7}) + "\n"
+        + json.dumps({"run_at": "2031-01-08T00:00:00+00:00", "repos": 0}) + "\n",
+        encoding="utf-8",
+    )
+    assert ds.last_repo_count(log) == 7

@@ -184,17 +184,25 @@ def broad_repo_set_detail() -> tuple[list[Path], int]:
     See :func:`broad_repo_set` for what the repository list itself contains.
     """
     discovered = list(project_id.repo_set())
+    if not discovered:
+        # The emptiness test must be on DISCOVERY, not on the augmented list.
+        # A running copy is itself a git repository, so testing the augmented
+        # list let a machine with no ~/Code and no ~/personal-assistant sweep
+        # against one repository and record ``repos: 0`` — a fabricated
+        # 100 % failure rate in an append-only log, with a count that imposes
+        # no floor on the next run either (round 4f-4, finding M-a). The
+        # augmentation adds the checkout we are running from; it never
+        # substitutes for discovery.
+        raise RepoSetUnavailable(
+            "no git repositories discovered — anchor resolution would report "
+            "every anchor as absent"
+        )
     repos = list(discovered)
     known = {str(r) for r in repos}
     for candidate in (PA_DIR, PA_DIR / "data"):
         if (candidate / ".git").exists() and str(candidate) not in known:
             repos.append(candidate)
             known.add(str(candidate))
-    if not repos:
-        raise RepoSetUnavailable(
-            "no git repositories discovered — anchor resolution would report "
-            "every anchor as absent"
-        )
     return repos, len(discovered)
 
 
@@ -212,9 +220,12 @@ def broad_repo_set() -> list[Path]:
     so a copy running out of ``~/worktrees/...`` would otherwise resolve its
     own anchors against a different checkout of the same repository.
 
-    Raises :class:`RepoSetUnavailable` when nothing is found: on a fresh
-    machine, an unmounted home, or a container, ``[]`` would silently condemn
-    every anchored memory instead of reporting that we could not look.
+    Raises :class:`RepoSetUnavailable` when DISCOVERY finds nothing: on a
+    fresh machine, an unmounted home, or a container, ``[]`` would silently
+    condemn every anchored memory instead of reporting that we could not
+    look. The ``PA_DIR`` augmentation does not rescue that case — it adds the
+    checkout we happen to be running from, which is not a corpus-wide
+    resolution set (finding M-a).
 
     A caller that needs the discovery-only count (rather than this augmented
     list) wants :func:`broad_repo_set_detail`.

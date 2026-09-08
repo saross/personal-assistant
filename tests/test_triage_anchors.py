@@ -281,3 +281,38 @@ class TestDiscoveryOnlyCount:
         monkeypatch.setattr(ta, "PA_DIR", tmp_path / "nowhere")
         with pytest.raises(ta.RepoSetUnavailable):
             ta.broad_repo_set_detail()
+
+
+class TestTheAugmentationNeverSubstitutesForDiscovery:
+    """The emptiness test belongs on discovery, not the augmented list (M-a)."""
+
+    def test_a_checkout_alone_is_not_a_repo_set(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """Kills the mutation testing ``if not repos:`` after augmentation.
+
+        A running copy is itself a git repository, so the augmented list is
+        never empty when the script lives in one. On a machine with no
+        ~/Code and no ~/personal-assistant that let the sweep resolve against
+        a single repository and record ``repos: 0`` — a fabricated 100 %
+        failure rate in an append-only log.
+        """
+        worktree = _init_repo(tmp_path / "worktrees" / "pa-copy")
+        monkeypatch.setattr(ta.project_id, "repo_set", list)
+        monkeypatch.setattr(ta, "PA_DIR", worktree)
+        with pytest.raises(ta.RepoSetUnavailable):
+            ta.broad_repo_set_detail()
+        with pytest.raises(ta.RepoSetUnavailable):
+            ta.broad_repo_set()
+
+    def test_one_discovered_repository_is_enough(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """The control: discovery found something, so the set is usable."""
+        found = _init_repo(tmp_path / "code" / "widget")
+        worktree = _init_repo(tmp_path / "worktrees" / "pa-copy")
+        monkeypatch.setattr(ta.project_id, "repo_set", lambda: [found])
+        monkeypatch.setattr(ta, "PA_DIR", worktree)
+        repos, discovered = ta.broad_repo_set_detail()
+        assert discovered == 1
+        assert set(repos) == {found, worktree}

@@ -107,7 +107,9 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     decision, not a law: ``--min-repos`` overrides it, and the refusal names
     the value to pass.
     """
-    repos, discovered = ta.broad_repo_set_detail()  # raises when empty
+    # Raises RepoSetUnavailable when DISCOVERY is empty — the augmented list
+    # being non-empty is not a substitute (finding M-a).
+    repos, discovered = ta.broad_repo_set_detail()
     if discovered < min_repos:
         raise ta.RepoSetShrunk(
             discovered, min_repos,
@@ -173,9 +175,14 @@ def last_repo_count(log_path: Path) -> int:
     """The repository count the most recent logged sweep recorded, else 0.
 
     Reads the append-only trend log backwards for the last line carrying a
-    non-zero ``repos``. A missing, unreadable, or pre-``repos`` log yields 0,
+    POSITIVE ``repos``. A missing, unreadable, or pre-``repos`` log yields 0,
     which imposes no floor — the guard can only tighten over time, never
     block a first run.
+
+    Zero is skipped rather than accepted, so a degraded row already in the
+    log (written before the guards in finding M-a) does not mask a real floor
+    recorded before it. Accepting zero would also make the newest such row
+    stop the scan and return "no floor at all".
     """
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -293,6 +300,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[drift-sweep] ERROR: sweep unreliable — {pending_pct}% of "
               f"{total} anchored records could not be checked (limit "
               f"{MAX_PENDING_PCT}%); no trend row written", file=sys.stderr)
+        print(json.dumps(record, indent=2) if args.json else _render(record))
+        return 2
+
+    # A row whose repository count is zero describes a sweep that resolved
+    # against nothing. It cannot be compared with anything, and
+    # last_repo_count deliberately skips it — so it would sit in the
+    # append-only log as a permanent 100 %-failure artefact imposing no floor
+    # (finding M-a). Belt to the discovery guard's braces: never write one.
+    if record["repos"] <= 0:
+        print("[drift-sweep] ERROR: sweep unreliable — resolved against no "
+              "discovered repositories; no trend row written", file=sys.stderr)
         print(json.dumps(record, indent=2) if args.json else _render(record))
         return 2
 
