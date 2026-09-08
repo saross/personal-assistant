@@ -52,11 +52,16 @@ class TriggerRig:
         return self.ran_marker.exists()
 
     def run(
-        self, sync_rc: int = 0, unset_home: bool = False
+        self,
+        sync_rc: int = 0,
+        unset_home: bool = False,
+        home: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run the trigger with the stub sync exiting ``sync_rc``."""
         env = os.environ.copy()
         env.update({"HOME": str(self.home), "PA_TEST_SYNC_RC": str(sync_rc)})
+        if home is not None:
+            env["HOME"] = str(home)
         if unset_home:
             del env["HOME"]
         return subprocess.run(
@@ -149,11 +154,30 @@ class TestAlwaysExitsZero:
         """Audit L4: under `set -u` a bare ${HOME} aborted with status 1 —
         the exact failure the always-exit-0 contract exists to prevent —
         in any environment that does not export HOME (a systemd unit, a
-        bare cron, `env -i`)."""
+        bare cron, `env -i`).
+
+        Audit M2: and it must say so on stdout, the only channel that
+        reaches the session, without running the sync."""
         result = rig.run(unset_home=True)
         assert result.returncode == 0, (
             f"trigger exited {result.returncode} with HOME unset\n{result.stderr}"
         )
+        assert "unset or not a directory" in result.stdout
+        assert not rig.sync_ran()
+
+    def test_a_nonexistent_home_is_not_created(
+        self, rig: TriggerRig, tmp_path: Path
+    ) -> None:
+        """Audit M2 (fourth re-audit): the trigger's `mkdir -p` ran before
+        anything checked HOME, so on the production path it conjured the
+        phantom home that daily-sync.sh's own guard exists to refuse —
+        which therefore never fired where it matters."""
+        absent = tmp_path / "not-mounted-yet"
+        result = rig.run(home=absent)
+        assert result.returncode == 0, result.stderr
+        assert not absent.exists(), "the trigger created a phantom HOME"
+        assert "unset or not a directory" in result.stdout
+        assert not rig.sync_ran(), "the sync ran against a home that is not there"
 
     def test_lock_contention_is_reported_as_such(self, rig: TriggerRig) -> None:
         """Exit 1 is benign contention, not a broken sync."""
@@ -161,10 +185,13 @@ class TestAlwaysExitsZero:
         assert "lock contention" in result.stderr
 
     def test_genuine_failure_names_the_exit_code(self, rig: TriggerRig) -> None:
-        """Exit 2/3/4 must be distinguishable from contention."""
+        """Exit 2/3/4 must be distinguishable from contention — and must
+        reach the session, which stderr never does (audit low, fourth
+        re-audit; this script's own channel note says as much)."""
         result = rig.run(sync_rc=3)
         assert "sync failed (exit 3)" in result.stderr
         assert "lock contention" not in result.stderr
+        assert "the sync just failed (exit 3)" in result.stdout
 
 
 # ============================================================================

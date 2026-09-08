@@ -32,7 +32,24 @@ set -uo pipefail
 # meant to protect it. Degrade instead: every read below tolerates a
 # missing file, and a lock that cannot be written just means the sync is
 # retried next session.
-CACHE_DIR="${HOME:-}/.cache"
+# audit M2 (fourth re-audit): check HOME BEFORE creating anything. The
+# `mkdir -p` below used to run first and silently conjured the whole path,
+# so on the production path — where the trigger is what actually starts
+# the sync — daily-sync.sh's own "refuse a HOME that does not exist" guard
+# never saw a missing HOME: the trigger had just created it. Gate files
+# would then accumulate in a phantom tree nothing reads, on a machine
+# whose home is (say) not yet mounted.
+#
+# Still exit 0, always: this script exists to keep the SessionStart hook
+# chain alive (see "Exit codes" above). Say so on STDOUT, which is the
+# only channel that reaches the session context, and touch nothing.
+if [[ -z "${HOME:-}" ]] || [[ ! -d "${HOME}" ]]; then
+    echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
+    echo "[daily-sync gate] HOME (${HOME:-<unset>}) is unset or not a directory, so the daily sync cannot run and no gate files can be read. Nothing has been created."
+    exit 0
+fi
+
+CACHE_DIR="${HOME}/.cache"
 
 LOCK_FILE="${CACHE_DIR}/daily-sync-last-run"
 TODAY="$(date +%Y-%m-%d)"
@@ -218,6 +235,14 @@ else
             ;;
         *)
             echo "[daily-sync-trigger] sync failed (exit $rc) — lock not updated; will retry next session" >&2
+            # audit (low, fourth re-audit): stderr never reaches the
+            # session context — this script's own channel note says so —
+            # and the sync's gate file explains WHY it failed but not that
+            # it just failed again this minute. Put the exit code where
+            # the session can see it. daily-sync.sh writes its reason into
+            # the gate above; this is the "and it happened just now" half.
+            echo "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
+            echo "[daily-sync gate] the sync just failed (exit $rc); it will retry next session. See the daily-sync gate lines above for why, or logs/daily-sync.log."
             ;;
     esac
 fi
