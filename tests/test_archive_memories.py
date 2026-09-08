@@ -263,11 +263,16 @@ def _production_record(category: str, created_days_ago: int, **extra) -> dict:
     """Build a memory record with the field set a REAL record carries.
 
     The field list is taken from the writer — ``hooks/extraction-hook.py``
-    (the ``record = {...}`` literal plus the optional fields appended after
-    it) — not from the older ``conftest.sample_memories`` fixture, which
+    (the ``record = {...}`` literal at :900, the optional fields appended
+    after it, and ``verified`` set from ``anchor_verify.verify_memory`` at
+    :1173) — not from the older ``conftest.sample_memories`` fixture, which
     carries only ten of them (audit finding M5). A partition round-trip that
     only ever sees ten-field records cannot catch a write path that drops the
     fields the corpus actually holds.
+
+    Every optional field is present, including the nested ``anchors`` list:
+    ``deadline_at`` mirrors ``created_at`` so a ``commitment`` record ages
+    identically whichever field the reference-time rule picks.
     """
     record = {
         "id": f"2026-06-01-{category}-{created_days_ago}",
@@ -286,6 +291,13 @@ def _production_record(category: str, created_days_ago: int, **extra) -> dict:
         "summary": f"{category} summary",
         "why": "Because the write path must preserve every field verbatim.",
         "how_to_apply": "Only relevant to guidance categories; harmless here.",
+        "zotero_key": "ABCD2345",
+        "deadline_at": _days_ago(created_days_ago),
+        "anchors": [
+            {"type": "file", "ref": "scripts/archive-memories.py", "line": 353},
+            {"type": "commit", "ref": "1a546ab"},
+        ],
+        "verified": "true",
     }
     record.update(extra)
     return record

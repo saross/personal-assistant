@@ -222,8 +222,12 @@ def _production_record(category: str, age_days: float, mem_id: str) -> dict:
     """A record carrying the field set the writer actually emits.
 
     Field list taken from ``hooks/extraction-hook.py`` (the ``record = {...}``
-    literal plus the optional fields appended after it), not from the older
-    ten-field conftest fixture — audit finding M5.
+    literal at :900, the optional fields appended after it, and ``verified``
+    set from ``anchor_verify.verify_memory`` at :1173), not from the older
+    ten-field conftest fixture — audit finding M5. Every optional field is
+    present, including the nested ``anchors`` list; ``deadline_at`` mirrors
+    ``created_at`` so a ``commitment`` record ages identically whichever
+    field the reference-time rule picks.
     """
     created = datetime.now(timezone.utc) - timedelta(days=age_days)
     return {
@@ -243,6 +247,13 @@ def _production_record(category: str, age_days: float, mem_id: str) -> dict:
         "summary": f"{category} summary",
         "why": "Because the halt gates must be exercised on realistic records.",
         "how_to_apply": "Only relevant to guidance categories; harmless here.",
+        "zotero_key": "ABCD2345",
+        "deadline_at": created.isoformat(),
+        "anchors": [
+            {"type": "file", "ref": "scripts/monthly-archive.py", "line": 497},
+            {"type": "commit", "ref": "1a546ab"},
+        ],
+        "verified": "true",
     }
 
 
