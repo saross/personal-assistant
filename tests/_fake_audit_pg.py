@@ -1,5 +1,15 @@
 """
-A fake psycopg2 connection that answers SQL from seeded rows.
+A fake psycopg2 connection that answers the AUDIT queries from seeded rows.
+
+Sibling module
+--------------
+``tests/_fake_pg.py`` (audit round 4b) does the same job for the RETRIEVAL
+queries: ``FakeMemoryDB`` models the filter/order/limit shapes
+``fetch-memories.py`` builds. The two were written in parallel rounds against
+different query bodies and have not been unified; a later round could fold
+this engine in behind that module's cursor, provided the read-only property
+below survives the merge — that module's connection neither refuses a write
+nor records ``set_session``, and both are asserted here.
 
 Why
 ---

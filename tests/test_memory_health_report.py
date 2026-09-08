@@ -364,7 +364,7 @@ class TestTheQuarantineCountAgreesWithTheGate:
 # ============================================================================
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _fake_pg import FakeDatabase, connect_factory  # noqa: E402
+from _fake_audit_pg import FakeDatabase, connect_factory  # noqa: E402
 
 
 def _anchored(**kw) -> dict:

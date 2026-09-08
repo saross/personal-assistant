@@ -254,7 +254,7 @@ class TestArchiveParityResult:
 # ============================================================================
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _fake_pg import (  # noqa: E402
+from _fake_audit_pg import (  # noqa: E402
     FakeDatabase, WriteAttempted, connect_factory,
 )
 
