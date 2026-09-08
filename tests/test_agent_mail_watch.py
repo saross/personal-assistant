@@ -144,3 +144,16 @@ def test_streaming_loop_emits_a_new_message_within_seconds(tmp_path):
     finally:
         process.kill()
         process.wait(timeout=5)
+
+
+def test_other_line_cannot_carry_a_forged_project_name(tmp_path):
+    """Kills: summarise() printing an unsanitised Project header (re-audit finding 3)."""
+    outbox, _ = mailbox(tmp_path)
+    (outbox / "there.md").write_text(ROUTED.replace("map-reader-llm", "other\x1b[31mevil"))
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(tmp_path),
+         "--project", "personal-assistant", "--once"],
+        capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.startswith("OTHER unread for other projects: invalid (1)")
+    assert "\x1b" not in result.stdout and "evil" not in result.stdout

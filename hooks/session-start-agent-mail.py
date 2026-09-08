@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -51,6 +52,12 @@ MAX_LISTED = 20             # cap surfaced lines per session
 RECEIVER = "claude"
 ROUTING_HEADERS = ("Project", "Lane", "Workstream")
 ANY = "any"
+# Routing values are slugs (repository names, model names, workstream tags)
+# and message names are ``<stamp>-<sender>-<slug>.md``. Anything outside
+# this charset is rejected outright rather than filtered: filtering left
+# ``fable; project: x`` able to forge a second field (re-audit, 2026-09-08).
+SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+MESSAGE_NAME = re.compile(r"[A-Za-z0-9._-]+\.md")
 
 
 def plain_directory(path: Path) -> bool:
@@ -142,6 +149,9 @@ def session_project(cwd: Path) -> str:
         common = Path(_git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         if common.name == ".git":
             return common.parent.name.casefold()
+    except (OSError, subprocess.SubprocessError):
+        pass          # older git lacks --path-format; fall through to the git root
+    try:
         top = _git(cwd, "rev-parse", "--show-toplevel")
         return (Path(top).name or cwd.name).casefold()
     except (OSError, subprocess.SubprocessError):
@@ -186,8 +196,8 @@ def unread_messages(root: Path) -> list[Path]:
         for message in sorted(outbox.iterdir()):
             if message.suffix != ".md" or not plain_file(message):
                 continue
-            if not message.name.isprintable():
-                continue          # a name with control characters could forge output lines
+            if not MESSAGE_NAME.fullmatch(message.name):
+                continue          # brackets, spaces, or control characters could forge a line
             try:
                 if message.stat(follow_symlinks=False).st_size > MAX_MESSAGE_BYTES:
                     continue
@@ -213,7 +223,8 @@ def route(unread: list[Path], project: str) -> Routed:
         if routes_here(headers, project):
             here.append((message, headers))
         else:
-            target = message_project(headers)
+            # Keyed by a safe value: the hook and the watcher both print these keys.
+            target = safe_value(message_project(headers)) or "invalid"
             elsewhere[target] = elsewhere.get(target, 0) + 1
     return here, elsewhere
 
@@ -222,9 +233,19 @@ MAX_HEADER_VALUE = 60
 
 
 def safe_value(value: str) -> str:
-    """A header value fit to print into context: printable, bounded, no brackets."""
-    cleaned = "".join(ch for ch in value if ch.isprintable() and ch not in "[]")
-    return cleaned.strip()[:MAX_HEADER_VALUE]
+    """A header value fit to print into context, or the word ``invalid``.
+
+    A routing value is a slug or it is nothing: any other character —
+    brackets, separators, spaces, control characters — makes the whole
+    value ``invalid``. An empty value stays empty so absent headers are
+    omitted from the annotation.
+    """
+    value = value.strip()
+    if not value:
+        return ""
+    if len(value) > MAX_HEADER_VALUE or any(ch not in SAFE_CHARS for ch in value):
+        return "invalid"
+    return value
 
 
 def annotate(headers: dict[str, str]) -> str:
@@ -265,6 +286,7 @@ def main() -> int:
     if len(here) > MAX_LISTED:
         print(f"- … and {len(here) - MAX_LISTED} more")
     if elsewhere:
+        # route() keys this dict by safe_value(), so the names are printable slugs.
         summary = ", ".join(f"{name} ({count})" for name, count in sorted(elsewhere.items()))
         print(f"Other projects, not listed here: {summary}. Start a session there to act on them.")
     if here:

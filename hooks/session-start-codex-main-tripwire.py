@@ -46,7 +46,7 @@ from pathlib import Path
 
 REPO = Path.home() / "personal-assistant"
 REFS = ("origin/main", "main")        # first that resolves wins
-SINCE = "2026-09-07T00:00:00"         # the ruling day from midnight (a bare date means "now")
+SINCE = "2026-09-07T00:00:00+10:00"   # the ruling day from local midnight; zone pinned (AEST)
 ACK_FILE = Path.home() / ".cache" / "pa-codex-main-tripwire.ack"
 WEB_FLOW_EMAIL = "noreply@github.com"
 CODEX_MARKERS = ("codex",)            # matched case-insensitively
