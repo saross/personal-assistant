@@ -397,3 +397,43 @@ def test_migrate_key_dry_run_moves_nothing(tmp_path):
     assert builder.migrate_key(judge_dir, key_dir, dry_run=True) == 0
     assert (judge_dir / "judge-mapping.json").exists()
     assert not key_dir.exists()
+
+
+def test_migrate_key_does_nothing_but_migrate(tmp_path):
+    """"and does nothing else" was documented but not enforced.
+
+    Deleting the ``return`` after the migrate branch lets the run fall through
+    into a full rebuild — which, with the passages present, would rmtree the
+    judge directory and rebuild every task under new pair ids, orphaning the
+    judgements already collected against the old ones. The mutation this
+    kills: removing that ``return``.
+    """
+    judge_dir = tmp_path / "judge-tasks"
+    key_dir = tmp_path / "private" / "judge-key"
+    judge_dir.mkdir()
+    (judge_dir / "judge-mapping.json").write_text('{"pairs": []}',
+                                                  encoding="utf-8")
+    (judge_dir / "pair00_A.md").write_text("An invented passage.\n",
+                                           encoding="utf-8")
+    (judge_dir / "judgments.jsonl").write_text(
+        '{"pair_id": "pair00", "choice": "A"}\n', encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in judge_dir.iterdir()
+              if p.name != "judge-mapping.json"}
+    # A passages directory exists, so the fall-through gets past the argument
+    # handling and into the build proper. (It then stops at the passage-file
+    # check, because the default plan names the real experiment's topics — so
+    # the mutation shows up as a non-zero exit here rather than as a rebuilt
+    # directory. Both are asserted below; whichever fires, it is caught.)
+    _passages(tmp_path)
+
+    code = builder.main([
+        "--migrate-key",
+        "--judge-dir", str(judge_dir), "--key-dir", str(key_dir),
+        "--passages-dir", str(tmp_path / "passages"),
+    ])
+
+    assert code == 0
+    after = {p.name: p.read_bytes() for p in judge_dir.iterdir()}
+    assert after == before, "the judge directory was rebuilt, not left alone"
+    assert not (judge_dir / "reference.md").exists()
+    assert (key_dir / "judge-mapping.json").exists()
