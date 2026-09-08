@@ -427,26 +427,90 @@ reconcile_orphaned_stashes
 # from extraction hooks). Stashing works on any ref including detached
 # HEAD, and leaves a clean tree so the subsequent checkout/pull cannot
 # trip over "local changes would be overwritten".
-has_local_changes=0
-stash_pending=0
-# If any step between `git stash push` and the explicit pop below aborts
+
+# ---------------------------------------------------------------------------
+# Stash bookkeeping (audit C1)
+#
+# A run can push MORE THAN ONE stash. The branch-switch guard below stashes
+# on a detached HEAD, and the pre-pull block stashes again if anything went
+# dirty in between — a concurrent session writing tasks/inbox.md, or the
+# agent-mail archiver leaving files behind. The previous single boolean plus
+# a single `git stash pop` popped only the newest and silently left the
+# older one on the stack, with the day's memory appends inside it, while the
+# run exited 0 and cleared the gate.
+#
+# Every stash a run pushes is now recorded BY COMMIT SHA:
+#   - nothing is popped that this run did not push (a plain `git stash pop`
+#     takes whatever is on top, which may be a concurrent session's);
+#   - the index is re-resolved before each pop, because indices shift;
+#   - they are popped oldest-first, so where two of them touch the same
+#     file the most recent state ends up on top.
+# ---------------------------------------------------------------------------
+data_stash_shas=()
+parent_stash_shas=()
+
+push_stash() {
+    # push_stash <repo> <message> [pathspec ...]
+    # Stash <repo>'s working tree (untracked files included) and print the
+    # new entry's commit SHA. Returns non-zero if the push failed, or if it
+    # claimed success without producing an entry — a run that believes it
+    # stashed when it did not would later pop somebody else's work.
+    local repo="$1" message="$2"
+    shift 2
+    git -C "$repo" stash push -u -m "$message" "$@" >>"$LOG_FILE" 2>&1 || return 1
+    local sha
+    sha="$(git -C "$repo" rev-parse --verify --quiet refs/stash || true)"
+    [[ -n "$sha" ]] || return 1
+    printf '%s' "$sha"
+}
+
+stash_ref_for() {
+    # stash_ref_for <repo> <sha>
+    # Print the `stash@{n}` selector that currently names <sha>, or return
+    # non-zero if that entry is no longer on the stack (already popped, or
+    # dropped by hand between our push and our pop).
+    local repo="$1" want="$2" line
+    while IFS= read -r line; do
+        if [[ "${line%% *}" == "$want" ]]; then
+            printf '%s' "${line#* }"
+            return 0
+        fi
+    done < <(git -C "$repo" stash list --format='%H %gd')
+    return 1
+}
+
+# If any step between a `git stash push` and its explicit pop below aborts
 # (e.g. pull fails in any non-interactive env without an SSH agent),
-# restore the stash so the user's working tree is not silently buried
-# in a stash stack that grows unbounded. Cleared once the explicit pop
-# completes.
-parent_stash_pending=0
+# restore every stash this run pushed, so the user's working tree is not
+# silently buried in a stash stack that grows unbounded. Each list is
+# cleared once its explicit pop completes.
 restore_stash_on_exit() {
-    if [[ "$stash_pending" -eq 1 ]]; then
-        log "WARNING: aborting before stash pop — restoring stashed local changes (data submodule)"
-        if ! git -C "$DATA_DIR" stash pop >>"$LOG_FILE" 2>&1; then
-            log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
-        fi
+    local _i _ref _sha
+    if [[ ${#data_stash_shas[@]} -gt 0 ]]; then
+        log "WARNING: aborting before stash pop — restoring ${#data_stash_shas[@]} stashed change set(s) (data submodule)"
+        for (( _i=0; _i<${#data_stash_shas[@]}; _i++ )); do
+            _sha="${data_stash_shas[_i]}"
+            if ! _ref="$(stash_ref_for "$DATA_DIR" "$_sha")"; then
+                log "ERROR: stash ${_sha:0:8} is no longer on the data stack; cannot restore it"
+                continue
+            fi
+            if ! git -C "$DATA_DIR" stash pop "$_ref" >>"$LOG_FILE" 2>&1; then
+                log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
+            fi
+        done
     fi
-    if [[ "$parent_stash_pending" -eq 1 ]]; then
-        log "WARNING: aborting before stash pop — restoring stashed local changes (parent repo)"
-        if ! git -C "$PA_DIR" stash pop >>"$LOG_FILE" 2>&1; then
-            log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
-        fi
+    if [[ ${#parent_stash_shas[@]} -gt 0 ]]; then
+        log "WARNING: aborting before stash pop — restoring ${#parent_stash_shas[@]} stashed change set(s) (parent repo)"
+        for (( _i=0; _i<${#parent_stash_shas[@]}; _i++ )); do
+            _sha="${parent_stash_shas[_i]}"
+            if ! _ref="$(stash_ref_for "$PA_DIR" "$_sha")"; then
+                log "ERROR: stash ${_sha:0:8} is no longer on the parent stack; cannot restore it"
+                continue
+            fi
+            if ! git -C "$PA_DIR" stash pop "$_ref" >>"$LOG_FILE" 2>&1; then
+                log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
+            fi
+        done
     fi
 }
 trap restore_stash_on_exit EXIT
@@ -477,10 +541,10 @@ if [[ "$current_branch" != "main" ]]; then
     if [[ $DRY_RUN -eq 0 ]]; then
         if [[ -n "$(git status --porcelain)" ]]; then
             log "data submodule: stashing local changes before the branch switch"
-            git stash push -u -m "daily-sync branch-switch on $HOST $(date +'%Y-%m-%d %H:%M')" \
-                >>"$LOG_FILE" 2>&1 || fail "stash push before branch switch failed"
-            stash_pending=1
-            has_local_changes=1
+            _sha="$(push_stash "$DATA_DIR" \
+                "daily-sync branch-switch on $HOST $(date +'%Y-%m-%d %H:%M')")" \
+                || fail "stash push before branch switch failed"
+            data_stash_shas+=("$_sha")
         fi
         git checkout main >>"$LOG_FILE" 2>&1 \
             || fail "failed to switch data submodule to main"
@@ -538,12 +602,11 @@ if [[ $DRY_RUN -eq 0 ]]; then
 fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
-    has_local_changes=1
     log "data submodule has local changes; stashing for pull"
     if [[ $DRY_RUN -eq 0 ]]; then
-        git stash push -u -m "daily-sync on $HOST $(date +'%Y-%m-%d %H:%M')" \
-            >>"$LOG_FILE" 2>&1 || fail "stash push failed"
-        stash_pending=1
+        _sha="$(push_stash "$DATA_DIR" "daily-sync on $HOST $(date +'%Y-%m-%d %H:%M')")" \
+            || fail "stash push failed"
+        data_stash_shas+=("$_sha")
     fi
 fi
 
@@ -563,16 +626,27 @@ if [[ $DRY_RUN -eq 0 ]]; then
     fi
 fi
 
-# Pop stash and resolve conflicts if they arise.
-if [[ $has_local_changes -eq 1 ]]; then
-    log "data submodule: popping stashed local changes"
-    if [[ $DRY_RUN -eq 0 ]]; then
-        if ! git stash pop >>"$LOG_FILE" 2>&1; then
+# Pop the stashes this run pushed and resolve conflicts if they arise.
+# audit C1: EVERY recorded stash, oldest first — not just whatever happens
+# to be on top of the stack.
+if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
+    log "data submodule: popping ${#data_stash_shas[@]} stashed change set(s)"
+    # Iterate a snapshot and clear the trap's list up front: from here on
+    # this block owns those entries, and an abort part-way through must
+    # leave the half-merged tree alone rather than re-pop into it.
+    _pending_stashes=("${data_stash_shas[@]}")
+    data_stash_shas=()
+    for (( _si=0; _si<${#_pending_stashes[@]}; _si++ )); do
+        _sha="${_pending_stashes[_si]}"
+        if ! _sref="$(stash_ref_for "$DATA_DIR" "$_sha")"; then
+            log "data submodule: stash ${_sha:0:8} is no longer on the stack — skipping"
+            continue
+        fi
+        if ! git stash pop "$_sref" >>"$LOG_FILE" 2>&1; then
             # `git stash pop` applied the stash to the working tree but
             # left it conflicted; the stash entry is preserved by git
-            # in this case. Clear the trap flag — re-popping in the
-            # restore handler would corrupt the half-merged tree.
-            stash_pending=0
+            # in this case. The trap's list is already empty, so it will
+            # not re-pop into the half-merged tree.
             log "stash pop raised conflicts — running resolver"
             conflicted_files=()
             while IFS= read -r line; do
@@ -631,13 +705,14 @@ if [[ $has_local_changes -eq 1 ]]; then
 
             git add "${resolvable_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "git add after resolver failed"
-            git stash drop >>"$LOG_FILE" 2>&1 || true
+            # audit C1: drop the entry we actually popped. A bare
+            # `git stash drop` takes stash@{0}, which after a conflicted
+            # pop of a lower entry is a DIFFERENT stash — this run's
+            # other one, or a concurrent session's.
+            git stash drop "$_sref" >>"$LOG_FILE" 2>&1 || true
             log "conflicts resolved: ${conflicted_files[*]}"
         fi
-        # Pop succeeded (or resolver applied + stash dropped); the trap
-        # no longer needs to restore anything.
-        stash_pending=0
-    fi
+    done
 fi
 
 # Commit + push if there's anything to commit.
@@ -762,14 +837,13 @@ fi
 # tree and the EXIT trap is what keeps the work safe. The submodule
 # pointer (`data`) is intentionally excluded from the stash via
 # pathspec so the bump-detection diff below still sees it.
-parent_has_local_changes=0
 if [[ -n "$(git status --porcelain -- ':!data')" ]]; then
-    parent_has_local_changes=1
     log "parent repo has local changes; stashing for pull"
     if [[ $DRY_RUN -eq 0 ]]; then
-        git stash push -u -m "daily-sync parent on $HOST $(date +'%Y-%m-%d %H:%M')" \
-            -- ':!data' >>"$LOG_FILE" 2>&1 || fail "parent stash push failed"
-        parent_stash_pending=1
+        _sha="$(push_stash "$PA_DIR" \
+            "daily-sync parent on $HOST $(date +'%Y-%m-%d %H:%M')" -- ':!data')" \
+            || fail "parent stash push failed"
+        parent_stash_shas+=("$_sha")
     fi
 fi
 
@@ -783,16 +857,31 @@ fi
 # modified files are back in the working tree. Conflicts here are
 # unexpected (parent-repo files are rarely touched by remotes) and
 # warrant manual intervention rather than the JSONL resolver.
-if [[ $parent_has_local_changes -eq 1 ]] && [[ $DRY_RUN -eq 0 ]]; then
-    log "parent repo: popping stashed local changes"
-    if ! git stash pop >>"$LOG_FILE" 2>&1; then
-        # Stash applied but conflicted; entry is preserved by git.
-        # Clear the flag so the EXIT trap does not re-pop and corrupt
-        # the half-merged tree.
-        parent_stash_pending=0
-        fail "parent repo: stash pop raised conflicts — manual resolution required"
-    fi
-    parent_stash_pending=0
+if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
+    log "parent repo: popping ${#parent_stash_shas[@]} stashed change set(s)"
+    # audit C1: same treatment as the data half — pop the entries this run
+    # pushed, by SHA, oldest first. The trap's list is cleared up front so
+    # an abort part-way through leaves the tree as git left it.
+    _pending_parent_stashes=("${parent_stash_shas[@]}")
+    parent_stash_shas=()
+    for (( _si=0; _si<${#_pending_parent_stashes[@]}; _si++ )); do
+        _sha="${_pending_parent_stashes[_si]}"
+        if ! _sref="$(stash_ref_for "$PA_DIR" "$_sha")"; then
+            log "parent repo: stash ${_sha:0:8} is no longer on the stack — skipping"
+            continue
+        fi
+        if ! git stash pop "$_sref" >>"$LOG_FILE" 2>&1; then
+            # Stash applied but conflicted; the entry is preserved by git.
+            #
+            # audit M3: this wedges every later run — the next
+            # `git stash push -u -- ':!data'` refuses while a path is
+            # unmerged — and, like the data half, nothing but the log said
+            # so. Gate it before failing.
+            write_sync_gate 1 \
+                "daily-sync STOPPED: parent-repo stash pop conflicted in $PA_DIR; conflict markers and the stash are preserved, and every session start will fail here until it is resolved by hand (git -C $PA_DIR status)"
+            fail "parent repo: stash pop raised conflicts — manual resolution required"
+        fi
+    done
 fi
 
 # Bump submodule pointer if the data submodule moved.

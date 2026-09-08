@@ -98,6 +98,15 @@ if __name__ == "__main__":
 #: when a test asks for it, so "its commit is pushed by the sync" can be
 #: asserted rather than assumed.
 _ARCHIVER_STUB_BODY = '''
+    # The archiver runs between the branch-switch stash and the pre-pull
+    # stash, which makes it the natural place to simulate anything that
+    # dirties the tree in that window — a concurrent session writing prose,
+    # or the archiver itself leaving files behind (audit C1).
+    dirties = os.environ.get("PA_TEST_ARCHIVER_DIRTIES")
+    if dirties:
+        data = Path(__file__).resolve().parent.parent / "data"
+        (data / "tasks" / "inbox.md").write_text(dirties, encoding="utf-8")
+
     marker = os.environ.get("PA_TEST_ARCHIVER_COMMIT")
     if marker:
         data = Path(__file__).resolve().parent.parent / "data"

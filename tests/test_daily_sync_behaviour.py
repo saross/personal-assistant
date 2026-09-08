@@ -292,6 +292,36 @@ class TestDetachedHeadGuard:
         )
         assert "2026-09-08-s5" in world.published_data_file("memories/memories.jsonl")
 
+    def test_two_stashes_in_one_run_are_both_popped(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C1 — a regression the S5 guard introduced.
+
+        On a detached HEAD the guard stashes; if anything dirties the tree
+        before the pre-pull block (here the archiver writes prose, as a
+        concurrent session would) a SECOND stash is pushed. Only one pop
+        ran, so the branch-switch stash — holding the day's memory append —
+        stayed on the stack while the run exited 0 and cleared the gate.
+        """
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-c1")
+
+        result = world.run_sync(
+            machine, PA_TEST_ARCHIVER_DIRTIES="# Inbox\n\n- written mid-run\n"
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        assert not git("stash", "list", cwd=machine.data).stdout.strip(), (
+            "a stash this run pushed was left on the stack"
+        )
+        assert "2026-09-08-c1" in machine.memories.read_text(encoding="utf-8")
+        assert "2026-09-08-c1" in world.published_data_file("memories/memories.jsonl")
+        assert "written mid-run" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8")
+
     def test_detached_head_with_prose_edits_keeps_them(
         self, world: SyncWorld
     ) -> None:
