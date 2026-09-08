@@ -1739,29 +1739,53 @@ apply_before_status=""
 #: And immediately after, so the two can be compared path by path.
 apply_after_status=""
 
-status_lines_for() {
-    # status_lines_for <porcelain text> <path>...
-    # The lines of <porcelain text> that describe one of <path>.
+status_records() {
+    # status_records <repo>
+    # One `XY<TAB><path>` record per PATH the tree has something to say
+    # about, newline-joined, with paths EXACTLY as git names them
+    # elsewhere.
     #
-    # Porcelain v1 puts two status characters and a space before the
-    # path, so the path starts at offset 3. git C-quotes anything exotic,
-    # which then fails the compare and reads as "not mentioned" — the
-    # conservative direction, because an entry whose paths cannot be
-    # matched is never called applied.
+    # audit L5 (fifth re-audit): `--porcelain` without `-z` C-QUOTES any
+    # path holding a space — `"new name.md"` — while the stash's own
+    # diff, read with `-z`, reports it raw. The two never compared equal,
+    # so a path with a space matched nothing here and the tracked half
+    # was silently unmeasurable. `--porcelain=v1 -z` quotes nothing.
+    #
+    # `-z` also gives a rename its two paths as separate FIELDS instead of
+    # an `<old> -> <new>` line, so each path gets its own record and
+    # nothing downstream has to parse an arrow (which is what the
+    # previous form did, on quoted text, for the same reason).
+    local repo="$1" record code path
+    while IFS= read -r -d '' record; do
+        [[ ${#record} -gt 3 ]] || continue
+        code="${record:0:2}"
+        path="${record:3}"
+        printf '%s\t%s\n' "$code" "$path"
+        # A rename or copy carries its ORIGINAL path in the next field.
+        if [[ "$code" == *[RC]* ]]; then
+            IFS= read -r -d '' path || break
+            printf '%s\t%s\n' "$code" "$path"
+        fi
+    done < <(git -C "$repo" status --porcelain=v1 -z 2>/dev/null || true)
+    return 0
+}
+
+status_lines_for() {
+    # status_lines_for <status records> <path>...
+    # The records that describe one of <path>.
+    #
+    # The records come from status_records, so the path is everything
+    # after the first TAB and is compared whole. A path that cannot be
+    # matched reads as "not mentioned" — the conservative direction,
+    # because an entry whose paths cannot be matched is never called
+    # applied.
     local text="$1" line entry path
     shift
     while IFS= read -r line; do
-        [[ ${#line} -gt 3 ]] || continue
-        entry="${line:3}"
+        [[ -n "$line" ]] || continue
+        entry="${line#*$'\t'}"
         for path in "$@"; do
-            # A rename is reported as `R  <old> -> <new>`, and the entry
-            # names BOTH of the paths the tracked half touches (audit
-            # L-d, fourth re-audit). Without this a rename-only stash
-            # matched neither of its own paths, so nothing about it could
-            # ever be called landed and its entry was kept for ever.
-            if [[ "$entry" == "$path" ]] \
-                    || [[ "$entry" == "$path -> "* ]] \
-                    || [[ "$entry" == *" -> $path" ]]; then
+            if [[ "$entry" == "$path" ]]; then
                 printf '%s\n' "$line"
                 break
             fi
@@ -1880,7 +1904,7 @@ snapshot_before_apply() {
     # Call immediately before every `git stash apply`; classify_apply_failure
     # reads what it records.
     apply_before_unmerged="$(unmerged_paths "$1")"
-    apply_before_status="$(git -C "$1" status --porcelain 2>/dev/null || true)"
+    apply_before_status="$(status_records "$1")"
     return 0
 }
 
@@ -1907,7 +1931,7 @@ classify_apply_failure() {
     # never emit one — the filter was dead from the day it was written.
     new_paths="$(comm -13 <(printf '%s\n' "$apply_before_unmerged") \
         <(printf '%s\n' "$after") || true)"
-    after_status="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
+    after_status="$(status_records "$repo")"
     apply_after_status="$after_status"
     apply_outcome_untracked="$(unrestored_untracked_paths "$repo" "$sha")"
     if [[ -n "$new_paths" ]]; then

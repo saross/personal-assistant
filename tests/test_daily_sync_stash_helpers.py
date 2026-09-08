@@ -588,6 +588,7 @@ class TestPreviouslyRecordedStashes:
 
 _CLASSIFY_FUNCTIONS = (
     "unmerged_paths",
+    "status_records",
     "snapshot_before_apply",
     "classify_apply_failure",
     "stash_tracked_half_landed",
@@ -651,7 +652,7 @@ class TestUnmergedPaths:
         result = _run_shell(
             f'PA_DIR="{repo}"\n'
             f'apply_before_unmerged="a.md"\n'
-            f'apply_before_status="$(git -C "{repo}" status --porcelain)"\n'
+            f'apply_before_status="$(status_records "{repo}")"\n'
             f'classify_apply_failure "{repo}" HEAD\n'
             'printf "%s\\n" "$apply_outcome_paths"\n',
             _CLASSIFY_FUNCTIONS,
@@ -1303,7 +1304,8 @@ class TestStashTrackedHalfLanded:
     then refused changes the tree without landing a byte of what it was
     asked to land."""
 
-    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
+                  "status_records")
 
     def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
         """Run the predicate over two recorded porcelain snapshots."""
@@ -1342,7 +1344,8 @@ class TestStashTrackedHalfLanded:
         what it said before because the merge was refused.
         """
         repo, sha = self._entry(tmp_path)
-        assert self._ask(repo, sha, " M t.txt", " M t.txt\n?? u.txt") == "NOT-LANDED"
+        assert self._ask(repo, sha, " M\tt.txt",
+                         " M\tt.txt\n??\tu.txt") == "NOT-LANDED"
 
     def test_an_unrelated_write_is_not_the_tracked_half(
         self, tmp_path: Path
@@ -1351,7 +1354,7 @@ class TestStashTrackedHalfLanded:
         between the snapshot and the classification."""
         repo, sha = self._entry(tmp_path)
         assert self._ask(
-            repo, sha, " M t.txt", " M t.txt\n?? somebody-elses-file.md"
+            repo, sha, " M\tt.txt", " M\tt.txt\n??\tsomebody-elses-file.md"
         ) == "NOT-LANDED"
 
     def test_the_tracked_path_changing_is_not_enough_on_its_own(
@@ -1366,7 +1369,7 @@ class TestStashTrackedHalfLanded:
         files, and here nothing put them there.
         """
         repo, sha = self._entry(tmp_path)
-        assert self._ask(repo, sha, "", " M t.txt") == "NOT-LANDED"
+        assert self._ask(repo, sha, "", " M\tt.txt") == "NOT-LANDED"
 
     def test_an_apply_that_really_landed_is_evidence(
         self, tmp_path: Path
@@ -1374,7 +1377,7 @@ class TestStashTrackedHalfLanded:
         """And the other direction, or nothing would ever be dropped."""
         repo, sha = self._entry(tmp_path)
         _git("stash", "apply", sha, cwd=repo)
-        assert self._ask(repo, sha, "", " M t.txt\n?? u.txt") == "LANDED"
+        assert self._ask(repo, sha, "", " M\tt.txt\n??\tu.txt") == "LANDED"
 
     def test_an_entry_with_no_tracked_half_lands_nothing(
         self, tmp_path: Path
@@ -1390,7 +1393,7 @@ class TestStashTrackedHalfLanded:
         (repo / "only.txt").write_text("only\n", encoding="utf-8")
         _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
         sha = _stash_shas(repo)[0]
-        assert self._ask(repo, sha, "", "?? only.txt") == "NOT-LANDED"
+        assert self._ask(repo, sha, "", "??\tonly.txt") == "NOT-LANDED"
 
 
 class TestAncestorBlocksCheckout:
@@ -1784,7 +1787,8 @@ class TestTrackedHalfEvidenceIsTheHunks:
     on the entry's OWN hunks being in the files on disk, not on something
     having changed."""
 
-    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
+                  "status_records")
 
     def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
         """Run the predicate over two recorded porcelain snapshots."""
@@ -1830,12 +1834,12 @@ class TestTrackedHalfEvidenceIsTheHunks:
         repo, sha = self._two_path_entry(tmp_path, "hookwrite")
         # The refusal: git wrote nothing.
         (repo / "t.txt").write_text("a local edit\n", encoding="utf-8")
-        before = " M t.txt"
+        before = " M\tt.txt"
         # …and the hook fired in the apply window.
         (repo / "memories.jsonl").write_text(
             '{"id": "seed"}\n{"id": "written-by-the-hook"}\n', encoding="utf-8"
         )
-        after = " M memories.jsonl\n M t.txt"
+        after = " M\tmemories.jsonl\n M\tt.txt"
 
         assert self._ask(repo, sha, before, after) == "NOT-LANDED"
         # And the record that would have been destroyed is still there.
@@ -1850,7 +1854,7 @@ class TestTrackedHalfEvidenceIsTheHunks:
         (repo / "memories.jsonl").write_text(
             '{"id": "seed"}\n{"id": "written-by-the-hook"}\n', encoding="utf-8"
         )
-        assert self._ask(repo, sha, "", " M memories.jsonl") == "NOT-LANDED"
+        assert self._ask(repo, sha, "", " M\tmemories.jsonl") == "NOT-LANDED"
 
     def test_a_clean_apply_into_a_tree_that_moved_on_is_evidence(
         self, tmp_path: Path
@@ -1880,7 +1884,7 @@ class TestTrackedHalfEvidenceIsTheHunks:
         # …and the entry applies cleanly on top of it.
         _git("stash", "apply", sha, cwd=repo)
 
-        assert self._ask(repo, sha, "", " M f.txt") == "LANDED"
+        assert self._ask(repo, sha, "", " M\tf.txt") == "LANDED"
 
     def test_hunks_already_there_before_the_apply_are_not_evidence(
         self, tmp_path: Path
@@ -1920,7 +1924,7 @@ class TestTrackedHalfEvidenceIsTheHunks:
         sha = _stash_shas(repo)[0]
         (repo / "blob.bin").write_bytes(b"\x00\x01\x02stashed\n")
 
-        assert self._ask(repo, sha, "", " M blob.bin") == "NOT-LANDED"
+        assert self._ask(repo, sha, "", " M\tblob.bin") == "NOT-LANDED"
 
 
 class TestCorpusLineCountIsBinarySafe:
@@ -2370,7 +2374,8 @@ class TestRenameOnlyStash:
     entry contributed one path and the pathspec-limited diff then dropped
     the source's deletion."""
 
-    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
+                  "status_records")
 
     def _renaming_entry(self, tmp_path: Path) -> tuple[Path, str]:
         """A repo whose stash is a pure rename."""
@@ -2411,14 +2416,15 @@ class TestRenameOnlyStash:
         (repo / "new.md").write_text("content that stays identical\n",
                                      encoding="utf-8")
         assert (repo / "old.md").exists(), "the fixture did not model a half-rename"
-        assert self._ask(repo, sha, "", " M old.md\n?? new.md") == "NOT-LANDED"
+        assert self._ask(repo, sha, "", " M\told.md\n??\tnew.md") == "NOT-LANDED"
 
     def test_a_completed_rename_is_landed(self, tmp_path: Path) -> None:
         """The other direction: a rename the apply really did complete."""
         repo, sha = self._renaming_entry(tmp_path)
         _git("stash", "apply", sha, cwd=repo)
         assert not (repo / "old.md").exists()
-        assert self._ask(repo, sha, "", "R  old.md -> new.md") == "LANDED"
+        # status_records gives a rename BOTH of its paths, one row each.
+        assert self._ask(repo, sha, "", "R \told.md\nR \tnew.md") == "LANDED"
 
 
 class TestBinaryStashIsNotCalledRefused:
@@ -2714,3 +2720,89 @@ class TestUnjudgeableMergeDoesNotStopTheScan:
         )
         assert "none of its parents holds the corpus" in written, written
         assert merge in written, written
+
+
+class TestStatusRecordsAreRaw:
+    """The snapshots this guard compares are matched against paths the
+    stash's own diff reports with `-z`, i.e. raw. `git status --porcelain`
+    without `-z` C-QUOTES anything holding a space, so the two never
+    compared equal and such a path was silently unmeasurable."""
+
+    _FUNCTIONS = ("status_records", "status_lines_for",
+                  "stash_tracked_half_landed")
+
+    def test_a_path_with_a_space_is_reported_unquoted(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L5: `git status --porcelain` without `-z`."""
+        repo = tmp_path / "spaced"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "field notes.md").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "field notes.md").write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == " M\tfield notes.md\n", repr(result.stdout)
+        assert '"' not in result.stdout, (
+            "the path is C-quoted, so it can never equal the raw path the "
+            "stash diff reports: " + repr(result.stdout)
+        )
+
+    def test_a_rename_with_a_space_is_measurable(self, tmp_path: Path) -> None:
+        """The shape the audit named: a rename whose paths hold spaces.
+
+        Both paths must appear, unquoted and one record each, or the
+        tracked half of any entry touching them can never be called
+        landed and its stash is kept for ever.
+        """
+        repo = tmp_path / "spaced-rename"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "old name.md").write_text("content that stays\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", "old name.md", "new name.md", cwd=repo)
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        _git("stash", "apply", sha, cwd=repo)
+
+        records = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert records.returncode == 0, records.stderr
+        paths = [line.split("\t", 1)[1] for line in records.stdout.splitlines()]
+        assert "new name.md" in paths, records.stdout
+        assert "old name.md" in paths, records.stdout
+        assert '"' not in records.stdout, records.stdout
+
+        landed = _run_shell(
+            'apply_before_status=""\n'
+            f'apply_after_status="$(status_records "{repo}")"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+        )
+        assert landed.returncode == 0, landed.stderr
+        assert landed.stdout.strip() == "LANDED", landed.stdout
+
+    def test_a_staged_rename_gives_each_path_its_own_record(
+        self, tmp_path: Path
+    ) -> None:
+        """`-z` gives a rename its two paths as separate FIELDS rather
+        than an `<old> -> <new>` line, so nothing downstream parses an
+        arrow -- which is what the previous form did, on quoted text."""
+        repo = tmp_path / "staged-rename"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "before.md").write_text("content that stays\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", "before.md", "after.md", cwd=repo)
+
+        result = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert result.returncode == 0, result.stderr
+        rows = result.stdout.splitlines()
+        assert [r.split("\t", 1)[1] for r in rows] == ["after.md", "before.md"], rows
+        assert all(r.startswith("R") for r in rows), rows
+        assert " -> " not in result.stdout, result.stdout
