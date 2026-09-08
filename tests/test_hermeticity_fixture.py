@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -728,7 +729,12 @@ def test_the_watched_paths_name_the_canonical_files(tmp_path, monkeypatch):
     assert names == {"memories.jsonl", "tag-vocabulary.txt"}
     assert all(
         path.parent.name == "memories" for path in conftest._CANONICAL_FILES)
-    assert [path.name for path in conftest._CANONICAL_DIRS] == ["logs"]
+    # Widened by the round 4a-2 addendum: instruction sources, task state,
+    # and executable code are all clobberable and were all unwatched.
+    assert {path.name for path in conftest._CANONICAL_DIRS} == {
+        "logs", "tasks", "global-claude-md", "global-agent-guidance",
+        "wiki", "commands", "hooks", "scripts",
+    }
 
     # And the snapshot really visits each of them.
     _corpus, _vocabulary, logs_dir = _throwaway_store(tmp_path, monkeypatch)
@@ -847,3 +853,196 @@ def test_the_stub_is_inherited_by_a_child_process():
     )
     assert result.stdout == "1"
     assert conftest.PSQL_STUB_MESSAGE in result.stderr
+
+
+# ===========================================================================
+# The network guard (audit round 4a-2 addendum)
+#
+# Nothing watched sockets: a probe test stood up a local TCP server, connected
+# to it, and passed with no complaint — which means an escaped httpx,
+# pyzotero, urllib, or Slack call from any test would have reached the real
+# internet. conftest now refuses by default, with a loopback-only opt-in.
+# ===========================================================================
+
+
+def test_an_unmarked_test_cannot_reach_a_listening_loopback_server():
+    """Loopback ALONE does not open the door, even to a live listener.
+
+    A server really is listening here, so the refusal cannot be an accident
+    of nothing being there. This is the policy under test: allowing loopback
+    unconditionally was rejected because this machine runs the operator's
+    PostgreSQL and Ollama on 127.0.0.1, and a stray connection to either is
+    exactly what the guard is for.
+
+    The mutations this kills: dropping the ``no_network`` fixture, and
+    relaxing the opt-in to "any loopback address" by removing the
+    ``_ACTIVE_TEST["local_socket"]`` half of the condition.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))   # bind and listen are not guarded
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        with pytest.raises(AssertionError, match="refused by the test suite"):
+            socket.create_connection(("127.0.0.1", port), timeout=1)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            with pytest.raises(AssertionError, match="no network"):
+                client.connect(("127.0.0.1", port))
+        finally:
+            client.close()
+    finally:
+        server.close()
+
+
+def test_a_routable_connection_is_refused():
+    """A real host is refused before any DNS or TCP work happens."""
+    with pytest.raises(AssertionError, match="no network"):
+        socket.create_connection(("api.zotero.org", 443), timeout=1)
+
+
+def test_the_refusal_names_the_test_and_the_address():
+    """A bare "no network" would not say where to look."""
+    with pytest.raises(AssertionError) as excinfo:
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(
+            ("example.invalid", 80))
+    message = str(excinfo.value)
+    assert "test_the_refusal_names_the_test_and_the_address" in message
+    assert "example.invalid" in message
+    assert conftest.LOCAL_SOCKET_MARKER in message
+
+
+def test_connect_ex_is_guarded_too():
+    """``connect_ex`` needs its own wrapper.
+
+    It returns an errno rather than raising, so an unguarded ``connect_ex``
+    would connect and report success while the guarded ``connect`` beside it
+    refused -- the kind of half-closed door that reads as covered.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        with pytest.raises(AssertionError, match="refused by the test suite"):
+            sock.connect_ex(("127.0.0.1", 9))
+    finally:
+        sock.close()
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_may_reach_a_server_it_owns():
+    """The opt-in works, and only for loopback.
+
+    A test that starts its own server must be able to talk to it; the marker
+    is how it says so. The routable address at the end shows the opt-in does
+    not become a blanket exemption.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        client = socket.create_connection(("127.0.0.1", port), timeout=5)
+        client.close()
+    finally:
+        server.close()
+
+    with pytest.raises(AssertionError, match="no network"):
+        socket.create_connection(("api.zotero.org", 443), timeout=1)
+
+
+def test_the_marker_is_registered():
+    """An unregistered marker is silently a no-op under --strict-markers."""
+    ini = (Path(conftest.__file__).resolve().parent.parent / "pytest.ini")
+    assert conftest.LOCAL_SOCKET_MARKER in ini.read_text(encoding="utf-8")
+
+
+def test_zotero_data_dir_is_not_inherited():
+    """A stray ZOTERO_DATA_DIR would point a test at the real library."""
+    assert "ZOTERO_DATA_DIR" not in os.environ
+
+
+# ===========================================================================
+# The widened store guard (audit round 4a-2 addendum)
+#
+# The snapshot watched only memories.jsonl, tag-vocabulary.txt, and logs/. A
+# probe test clobbered global-claude-md/claude.md — the source the composer
+# reads — plus data/tasks/FOCUS.md and wiki/continuity.md, and stayed green.
+# ===========================================================================
+
+
+def _throwaway_checkout(tmp_path, monkeypatch):
+    """A tree with the instruction, task, and code directories the guard watches."""
+    (tmp_path / "data" / "tasks").mkdir(parents=True)
+    (tmp_path / "tasks").symlink_to(tmp_path / "data" / "tasks")
+    for name in ("global-claude-md", "wiki", "commands", "hooks", "scripts"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "global-claude-md" / "claude.md").write_text(
+        "# composed source\n", encoding="utf-8")
+    (tmp_path / "data" / "tasks" / "FOCUS.md").write_text(
+        "# Current Focus\n", encoding="utf-8")
+    (tmp_path / "wiki" / "continuity.md").write_text(
+        "# Continuity\n", encoding="utf-8")
+    (tmp_path / "scripts" / "example.py").write_text(
+        "print('hello')\n", encoding="utf-8")
+
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", tuple(
+        tmp_path / name for name in (
+            "tasks", "global-claude-md", "wiki", "commands", "hooks", "scripts")
+    ))
+    return tmp_path
+
+
+@pytest.mark.parametrize("relative", [
+    "global-claude-md/claude.md",
+    "data/tasks/FOCUS.md",
+    "wiki/continuity.md",
+    "scripts/example.py",
+])
+def test_the_guard_catches_a_clobbered_checkout_file(tmp_path, monkeypatch,
+                                                     relative):
+    """Each of the probe's targets must now be caught.
+
+    The mutation this kills: narrowing ``_CANONICAL_DIRS`` back to ``logs``
+    alone. global-claude-md/claude.md is the source the composer reads, so a
+    stray write there reaches every future session.
+    """
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    target = root / relative
+
+    before = conftest._canonical_store_snapshot()
+    target.write_text("clobbered by a careless test\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="REAL checkout"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_the_guard_catches_a_file_created_in_a_watched_tree(tmp_path,
+                                                            monkeypatch):
+    """A NEW file in a watched directory is a change too."""
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "commands" / "invented.md").write_text("/invented\n",
+                                                   encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_generated_bytecode_is_not_mistaken_for_a_leak(tmp_path, monkeypatch):
+    """__pycache__ is written by the interpreter, not by a careless test.
+
+    Without the skip the guard would fail every run the moment a test
+    imported a script — a false alarm that would get the guard switched off.
+    """
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    cache = root / "scripts" / "__pycache__"
+    cache.mkdir()
+
+    before = conftest._canonical_store_snapshot()
+    (cache / "example.cpython-313.pyc").write_bytes(b"\x00\x01")
+
+    conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
