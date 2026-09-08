@@ -483,6 +483,71 @@ of filenames; `search-archives-safe.sh` honours the 2026-06-21 lesson;
 partial lines tolerated by every parser; normalisation verifies a round-trip
 before unlinking; the R2 push never deletes.
 
+## Tranche 5 — external services and machine glue (both lenses, 2026-09-08 night)
+
+Scope: `zotero.py`, `add-doi-to-zotero.py`, `lit-scout-zotero-import.py`,
+`lit-search.py`, `review-paper-prepass.py`, `_http_retry.py`,
+`_openai_key.py`, `llm-use-inventory.py`, `publish-dashboard.py`,
+`ollama-endpoint.sh`, `syncthing-health.sh`, `syncthing-bind-heal.sh`,
+`env-fingerprint.sh`, `sync-symlinks.sh`, `compose-global-claude-md.sh`, and
+their tests. Lens A: 1 critical, 10 medium, 13 low. Lens B: 26 mutations, 26
+survived (eleven applied at once still pass the full suite); 5 critical,
+10 medium. Fix round 4d on `claude/audit-round4d`.
+
+### Critical (external)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| E1 | `lit-scout-zotero-import.py:894` — the only duplicate guard on both Zotero write paths is an exact DOI match with no URL or scheme normalisation, while `zotero.py:328-372` normalises; an item stored as `https://doi.org/…` (the connector's form) is invisible, so `--live` imports and `add-doi-to-zotero.py` create duplicates and the latter's safety claim is false | CONFIRMED by repro | **next** (round 4d, `claude/audit-round4d`) |
+| ET1 | `lit-scout-zotero-import.py:1341-1560` — the whole write path is untested: always-create, publish-on-dry-run, wrong collection, no credential check, read-write SQLite, and no manifest idempotency each stay green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+| ET2 | `publish-dashboard.py:540` — `main()` is never invoked: publish without `--publish`, without a token or canvas id, a failed Slack call reporting success, an empty dashboard published, and a repointed API host all stay green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+| ET3 | `zotero.py:70` — the read-only (`immutable=1`) promise is untested because every test replaces `_connect`; a read-write open of the live Zotero database stays green | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+| ET4 | `lit-search.py:262,395` — per-host pacing and `Retry-After` handling are deletable (the suite pays the pacing cost without asserting it) | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+| ET5 | `sync-symlinks.sh:61-75` — `prune_stale_symlinks`, the only `rm` in the tranche, has zero coverage: `-L` to `-e` and `rm` to `rm -rf` stay green and would together delete real directories under `~/.claude` | CONFIRMED (mutation) | **next** (round 4d, `claude/audit-round4d`) |
+
+### Medium (external)
+
+| # | Finding | Disposition |
+|---|---|---|
+| E2 | `lit-scout-zotero-import.py:463-477` — `.env` loader keeps surrounding quotes and mis-parses `export` lines; `env-fingerprint.sh` reports the same file healthy | **next** (round 4d, `claude/audit-round4d`) |
+| E3 | `lit-search.py:203` — the Semantic Scholar key is set client-wide and sent to CrossRef, OpenAlex, and DataCite, against the rule the docstring above it states | **next** (round 4d, `claude/audit-round4d`) |
+| E4 | `lit-scout-zotero-import.py:1117` — CrossRef `date-parts: [[null]]` writes the literal string "None" as the Zotero date | **next** (round 4d, `claude/audit-round4d`) |
+| E5 | `lit-scout-zotero-import.py:1099` — the title is written with HTML intact while the abstract is stripped | **next** (round 4d, `claude/audit-round4d`) |
+| E6 | `add-doi-to-zotero.py:139` — reads only the retirement-candidate key; breaks when it is revoked (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
+| E7 | `publish-dashboard.py:479` — the bearer token follows redirects to any host (stdlib redirect handler) | **next** (round 4d, `claude/audit-round4d`) |
+| E8 | `lit-scout-zotero-import.py:1277` — `ensure_subcollection` reads one unpaginated page, so a same-named twin is created once the staging collection grows (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
+| E9 | `sync-symlinks.sh:243` — `pip install --upgrade -r requirements.txt` runs unattended at session start whenever one probe import is missing (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
+| E10 | `sync-symlinks.sh:133` — `git submodule update --init --recursive` at every session start detaches an initialised `data/` and can orphan a concurrent session's commits (SUSPECTED) | **next** (round 4d, `claude/audit-round4d`) |
+| E11 | `compose-global-claude-md.sh:25-30` — sources from the script's tree, target from `$HOME`: run from a worktree it overwrites the live global instructions with the branch's content | CONFIRMED in sandbox; **next** (round 4d, `claude/audit-round4d`) |
+| ET6-7 | `_http_retry.py:249,265` — the timeout kwarg and the exception tuple are mutable unnoticed | **next** (round 4d, `claude/audit-round4d`) |
+| ET8-10 | `compose-global-claude-md.sh:85,78,117` — `--dry-run` writing, layer order, and a write to a Sol-owned surface all stay green | **next** (round 4d, `claude/audit-round4d`) |
+| ET11 | `sync-symlinks.sh:120` — the "real file, leave it" branch untested | **next** (round 4d, `claude/audit-round4d`) |
+| ET12 | `zotero.py:397,406` — `_normalise_doi` and `find_by_doi` have no test anywhere (a prior silent-failure defect is recorded in `wiki/working-notes.md:577`) | **next** (round 4d, `claude/audit-round4d`) |
+| ET13 | `lit-scout-zotero-import.py:1271` — subcollection idempotency untested | **next** (round 4d, `claude/audit-round4d`) |
+| ET14 | `env-fingerprint.sh` — zero tests for the one script whose purpose is handling secrets safely | **next** (round 4d, `claude/audit-round4d`) |
+| ET15 | `syncthing-bind-heal.sh:43-46` — the precondition before `docker compose up --force-recreate` is untested | **next** (round 4d, `claude/audit-round4d`) |
+
+Lows recorded: E12 dead "n.d." default; E13 only the exact `--dry-run`
+spelling is safe; E14 POST retried without an idempotency rule; E15
+`--simulate-need` breaks "always exits 0"; E16 shell and Python
+interpolation in `syncthing-health.sh`; E17 guard anchors escape the repo;
+E18 BibTeX key collisions; E19 organisation authors dropped; E20 the Ollama
+endpoint producer's failure signal is discarded by its own idiom; E21
+`--project` escapes the root; E22 stderr comment; E23 the fingerprint salt
+is a public constant and the output includes the exact length, so a
+low-entropy value is recoverable by sweep (a value oracle); E24 URI slashes
+and encoding; ET16-19 Ollama, backoff, three untested scripts, and the
+Syncthing health script used only as a fixture. Cross-file: the fingerprint
+tool and the loader disagree on quoting; two DOI normalisers with the
+weaker on the write path; three `Retry-After` parsers; two HTML policies in
+one function. Verified correct: no key value reaches any message, log, or
+report; no script writes the Zotero database (every open is immutable);
+the dashboard never re-posts after a timeout; timeouts and bounded waits in
+the retry helper; the symlink pruner cannot follow a link into `data/`;
+the composer is atomic and never touches a Sol-owned surface; no host is
+rebooted, restarted, or unmounted except a local docker recreate behind
+three preconditions.
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
