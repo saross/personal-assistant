@@ -491,8 +491,14 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     call sites still truncate the gate. Sixth round running: the gate is
     rendered once at exit from an in-run list; guard and resolver share
     one marker predicate; an unbalanced block structure is refused.
-    Both machines at 14:30: no stash in either repository, no marker line
-    in either corpus, no `merge.conflictStyle` set.
+    Sixth round done (3530620–a2c84f5, merged with main as 4b451a2; suite
+    1,704): the gate is built in memory and rendered once from the EXIT
+    handler; the guard calls the resolver's new `--check` mode; unbalanced
+    structures exit 3 untouched; the separator is the last `=======`
+    before the closer; applied work is never called unrecovered; one relay
+    header; an unwritable lock surfaced. Sixth pass running. Both
+    machines' corpora pass `--check` at 15:20; no stash in either
+    repository; no `merge.conflictStyle` set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
@@ -591,8 +597,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     outages raise a fault an idle run cannot lower; idle runs never report
     connected; the quarantine count tallies attempts, not rows written;
     the matrix-coverage test cannot fail; the AST test is name-based.
-    Seventh round running: the ack is a state-only operation under a
-    per-gate flock; atomic writes; every non-zero exit raises a problem.
+    Seventh round done (b4e87fe; suite 1,642): the ack is state-only
+    (no sync, no lock, exit 9 if unwritable); every sidecar read-modify-
+    write runs under a per-gate flock with atomic writes; a contended run
+    touches no state; the indexer gates a schema mismatch and a missing
+    driver as faults and an absent root as degraded; a completed run
+    lowers a fault regardless of quarantines; indexer outages use the
+    streak; the count is rows written; the AST test rejects direct writes;
+    the refusal memory is read-only against a foreign root. Seventh pass
+    running.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
   on PR #118 (`claude/audit-round3`, suite 1,575). First pass: no critical;
   mergeable after two wording fixes in the digest (the new "nothing verified
