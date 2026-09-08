@@ -153,6 +153,8 @@ PG_HOOK_LAG_MINUTES="$(_pa_gate_minutes "${PA_HOOK_GATE_LAG_MINUTES:-}" 15)"
 # Where session archives land. A session.meta.json newer than a
 # hook-written gate is the evidence that the hook did not run.
 PG_ARCHIVE_ROOT="${PA_CC_ARCHIVES:-${HOME}/cc-archives}"
+#: Say the liveness check is off at most once, however many gates use it.
+_pg_archive_reported=0
 
 # Uptime, for the boot reference and the post-boot grace. Overridable so
 # the guard can be tested without a reboot.
@@ -202,25 +204,25 @@ for _pg_gate_name in postgres-sync-memories-gate \
     fi
 
     if [[ "$_pg_gate_name" == "postgres-sync-memories-gate" ]]; then
-        # Cron-written: silence itself is the signal.
-        if [[ -n "$PG_UPTIME_SECONDS" ]] \
-           && (( PG_UPTIME_SECONDS < PG_BOOT_GRACE_MINUTES * 60 )); then
-            : # Too soon after boot for cron to have had its turn.
-        else
-            _pg_reference="$_pg_newest"
-            _pg_since_boot=0
-            if [[ -n "$PG_BOOT_EPOCH" ]] \
-               && (( PG_BOOT_EPOCH > _pg_reference )); then
-                _pg_reference="$PG_BOOT_EPOCH"
-                _pg_since_boot=1
+        # Cron-written: silence itself is the signal, and the question is
+        # only which silence we are measuring.
+        #
+        #   Gate written since boot → its own age against the stale
+        #       window. Cron has been running and stopped.
+        #   Gate older than the boot → the UPTIME against the grace. Cron
+        #       has not run at all since the machine came up, and after a
+        #       few minutes that is the whole story; waiting out the full
+        #       stale window here only delays the news (tenth re-audit,
+        #       finding M2, which is why the grace was inert before).
+        if [[ -n "$PG_BOOT_EPOCH" ]] && (( PG_BOOT_EPOCH > _pg_newest )); then
+            _pg_age_minutes=$(( PG_UPTIME_SECONDS / 60 ))
+            if (( _pg_age_minutes > PG_BOOT_GRACE_MINUTES )); then
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written in the ${_pg_age_minutes}m since this machine booted — the sync runs every five minutes, so it is not running. Check the cron entry.")
             fi
-            _pg_age_minutes=$(( (PG_NOW - _pg_reference) / 60 ))
+        else
+            _pg_age_minutes=$(( (PG_NOW - _pg_newest) / 60 ))
             if (( _pg_age_minutes > PG_CRON_STALE_MINUTES )); then
-                if (( _pg_since_boot )); then
-                    GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written in the ${_pg_age_minutes}m since this machine booted — the sync runs every five minutes, so it is not running. Check the cron entry.")
-                else
-                    GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written for ${_pg_age_minutes}m — the sync runs every five minutes, so it is not running. Check the cron entry.")
-                fi
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written for ${_pg_age_minutes}m — the sync runs every five minutes, so it is not running. Check the cron entry.")
             fi
         fi
     else
@@ -228,12 +230,22 @@ for _pg_gate_name in postgres-sync-memories-gate \
         # running is evidence. Wall-clock age is not — a long session, or
         # a fortnight away, leaves these untouched and nothing is wrong.
         if [[ -d "$PG_ARCHIVE_ROOT" ]]; then
-            _pg_late="$(find "$PG_ARCHIVE_ROOT" -name session.meta.json \
+            # -H so a SYMLINKED archive root is followed. find's default
+            # is -P, which treats the root itself as a link, matches
+            # nothing under it, and reports every hook as healthy for
+            # ever (tenth re-audit, finding M3).
+            _pg_late="$(find -H "$PG_ARCHIVE_ROOT" -name session.meta.json \
                 -newermt "@$(( _pg_newest + PG_HOOK_LAG_MINUTES * 60 ))" \
                 -print -quit 2>/dev/null)"
             if [[ -n "$_pg_late" ]]; then
                 GATE_LINES+=("[${_pg_gate_name%-gate} gate] a session was archived more than ${PG_HOOK_LAG_MINUTES}m after this gate was last written (${_pg_late}) — the session hooks are not running. Check the PreCompact and SessionEnd hooks in ~/.claude/settings.json.")
             fi
+        elif (( _pg_archive_reported == 0 )); then
+            # A check that cannot run is not a clean bill of health, and
+            # saying nothing is how a mistyped path becomes permanent
+            # silence (tenth re-audit, finding M4).
+            _pg_archive_reported=1
+            GATE_LINES+=("[hook gates] liveness checking for the session sync and the content indexer is OFF: the archive root ${PG_ARCHIVE_ROOT} does not exist. A hook that stopped running would not be reported. Check the path, or set PA_CC_ARCHIVES.")
         fi
     fi
 
@@ -251,7 +263,7 @@ for _pg_gate_name in postgres-sync-memories-gate \
 done
 unset _pg_gate_name _pg_gate_file _pg_state_file _pg_count _pg_line
 unset _pg_witness _pg_mtime _pg_newest _pg_uptime_raw _pg_uptime_rest
-unset _pg_reference _pg_since_boot _pg_age_minutes _pg_late
+unset _pg_age_minutes _pg_late _pg_archive_reported
 
 # ---------------------------------------------------------------------------
 # Slack dashboard refresh (added 2026-08-22)

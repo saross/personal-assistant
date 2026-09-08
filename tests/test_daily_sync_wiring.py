@@ -213,13 +213,19 @@ ALL_GATES = (CRON_GATE,) + HOOK_GATES
 
 
 def _write_gates(tmp_path, age_minutes=0.0, names=ALL_GATES,
-                 sidecar_age=None):
+                 sidecar_age=None, archive_root=True):
     """Write pipeline gate files, optionally aged (in minutes).
 
     ``sidecar_age`` writes the ``.state.json`` sidecar beside each gate
     with its own age, so the "the run saved state but could not render"
     case can be described separately from the gate's own mtime.
+
+    ``archive_root`` creates an empty ``~/cc-archives``. Without one the
+    hook-gate liveness check cannot run and says so, which is right but
+    is not what most of these tests are about.
     """
+    if archive_root:
+        (tmp_path / "cc-archives").mkdir(exist_ok=True)
     cache = tmp_path / ".cache"
     cache.mkdir(exist_ok=True)
     for name in names:
@@ -301,10 +307,9 @@ class TestTheCronWrittenGate:
         six hours after every boot: exactly the window in which someone
         is sitting at the machine and could fix it.
 
-        Forty minutes up, against a ten-minute grace and a thirty-minute
-        window: the reference is the boot, the age is forty minutes, and
-        it is reported. The mutation this kills: skipping staleness
-        whenever uptime is below the window.
+        Forty minutes up, well past the grace: reported. The mutation
+        this kills: skipping staleness whenever uptime is below the
+        window.
         """
         _write_gates(tmp_path, age_minutes=21 * 24 * 60)
 
@@ -312,17 +317,6 @@ class TestTheCronWrittenGate:
 
         assert "since this machine booted" in result.stdout
         assert "postgres-sync-memories" in result.stdout
-
-    def test_the_first_minutes_after_boot_are_silent(self, tmp_path):
-        """
-        Cron has not had its turn yet, and reporting a dead sync on every
-        boot is how a gate becomes something people scroll past.
-        """
-        _write_gates(tmp_path, age_minutes=21 * 24 * 60)
-
-        result = _run_gate_block(tmp_path, uptime_seconds=4 * 60)
-
-        assert "postgres-sync-memories" not in result.stdout
 
     def test_a_gate_written_since_boot_is_measured_from_itself(
         self, tmp_path,
@@ -334,6 +328,35 @@ class TestTheCronWrittenGate:
         _write_gates(tmp_path, age_minutes=5)
 
         result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+        assert result.stdout.strip() == ""
+
+    def test_a_gate_older_than_the_boot_waits_only_for_the_grace(
+        self, tmp_path,
+    ):
+        """
+        Tenth re-audit, M2 — the grace was inert: a gate older than the
+        boot was judged by its age SINCE BOOT against the thirty-minute
+        window, which is the same test as the uptime one it followed. A
+        gate that predates the boot means cron has not run at all since
+        the machine came up, and after the grace that is the whole story.
+
+        Twelve minutes up against a ten-minute grace: reported. The
+        mutation this kills: measuring a pre-boot gate against the stale
+        window.
+        """
+        _write_gates(tmp_path, age_minutes=21 * 24 * 60)
+
+        result = _run_gate_block(tmp_path, uptime_seconds=12 * 60)
+
+        assert "since this machine booted" in result.stdout
+        assert "12m" in result.stdout
+
+    def test_five_minutes_after_boot_is_still_silent(self, tmp_path):
+        """Inside the grace, cron has not had its turn."""
+        _write_gates(tmp_path, age_minutes=21 * 24 * 60)
+
+        result = _run_gate_block(tmp_path, uptime_seconds=5 * 60)
 
         assert result.stdout.strip() == ""
 
@@ -443,19 +466,65 @@ class TestTheHookWrittenGates:
 
         assert "the session hooks are not running" in result.stdout
 
-    def test_a_missing_archive_root_is_not_an_accusation(self, tmp_path):
+    def test_a_missing_archive_root_says_the_check_is_off(self, tmp_path):
         """
-        A machine with no archive tree yet has no evidence either way.
-        The mutation this kills: reporting when the root is absent.
+        Tenth re-audit, M4 — with no archive tree the liveness check
+        cannot run, and it used to print nothing at all. A check that
+        cannot run is not a clean bill of health: a mistyped
+        PA_CC_ARCHIVES turned into permanent silence about two of the
+        three gates.
+
+        The mutation this kills: dropping the else-branch that says so.
         """
-        _write_gates(tmp_path, age_minutes=30 * 24 * 60, names=HOOK_GATES)
-        # The cron gate is deliberately absent here, so the only thing
-        # that could speak is the hook rule.
+        _write_gates(
+            tmp_path, age_minutes=30 * 24 * 60, names=HOOK_GATES,
+            archive_root=False,
+        )
         (tmp_path / ".cache" / CRON_GATE).write_text("0\n", encoding="utf-8")
 
         result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
 
-        assert result.stdout.strip() == ""
+        assert "liveness checking" in result.stdout
+        assert "is OFF" in result.stdout
+        assert str(tmp_path / "cc-archives") in result.stdout
+        # Said once, not once per gate that would have used it.
+        assert result.stdout.count("liveness checking") == 1
+        # And it is not an accusation against the hooks themselves.
+        assert "the session hooks are not running" not in result.stdout
+
+    def test_a_mistyped_root_says_the_check_is_off(self, tmp_path):
+        """The same for a path that was set and is wrong."""
+        _write_gates(tmp_path, age_minutes=60, archive_root=False)
+
+        result = _run_gate_block(
+            tmp_path, uptime_seconds=48 * 3600,
+            PA_CC_ARCHIVES=str(tmp_path / "cc-archves"),
+        )
+
+        assert "liveness checking" in result.stdout
+        assert "cc-archves" in result.stdout
+
+    def test_a_symlinked_archive_root_is_followed(self, tmp_path):
+        """
+        Tenth re-audit, M3 — ``find`` defaults to -P, which does not
+        follow a symlink named on the command line: it matches nothing
+        under a symlinked root and reports every hook healthy for ever.
+        The mutation this kills: dropping ``-H``.
+        """
+        _write_gates(tmp_path, age_minutes=120, archive_root=False)
+        real = tmp_path / "archives-elsewhere"
+        session = real / "proj" / "2026-09-01T10-00_abc"
+        session.mkdir(parents=True)
+        meta = session / "session.meta.json"
+        meta.write_text("{}", encoding="utf-8")
+        stamp = time.time() - 30 * 60
+        os.utime(meta, (stamp, stamp))
+        (tmp_path / "cc-archives").symlink_to(real, target_is_directory=True)
+
+        result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+        assert "the session hooks are not running" in result.stdout
+        assert "liveness checking" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -514,37 +583,88 @@ class TestTheStalenessKnobsAreValidated:
         ), f"{knob}={value!r} changed the shipped behaviour"
 
 
+def test_the_stale_window_is_exactly_thirty_minutes(tmp_path):
+    """
+    Pinned at the boundary, so a default that drifts in either direction
+    fails. The mutation this kills: 30 → anything else.
+    """
+    _write_gates(tmp_path, age_minutes=30)
+    silent = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+    assert "has not been written" not in silent.stdout, (
+        "a gate exactly at the window was called late"
+    )
+
+    _write_gates(tmp_path, age_minutes=31)
+    loud = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+    assert "has not been written for 31m" in loud.stdout
+
+
+def test_the_boot_grace_is_exactly_ten_minutes(tmp_path):
+    """
+    A gate older than the boot waits out the grace and no longer. The
+    mutation this kills: 10 → anything else.
+    """
+    _write_gates(tmp_path, age_minutes=21 * 24 * 60)
+
+    silent = _run_gate_block(tmp_path, uptime_seconds=10 * 60)
+    assert silent.stdout.strip() == "", (
+        "reported before the grace had elapsed"
+    )
+
+    loud = _run_gate_block(tmp_path, uptime_seconds=11 * 60)
+    assert "in the 11m since this machine booted" in loud.stdout
+
+
+def test_the_hook_lag_allowance_is_exactly_fifteen_minutes(tmp_path):
+    """
+    A session archived within the allowance of the gate is the ordinary
+    sequence. The mutation this kills: 15 → anything else.
+    """
+    _write_gates(tmp_path, age_minutes=60)
+
+    _archive_session(tmp_path, age_minutes=46)   # 14m newer than the gate
+    silent = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+    assert "the session hooks are not running" not in silent.stdout
+
+    _archive_session(tmp_path, age_minutes=44)   # 16m newer
+    loud = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+    assert "the session hooks are not running" in loud.stdout
+    assert "more than 15m after this gate" in loud.stdout
+
+
 def test_the_shipped_defaults_apply_with_nothing_set(tmp_path):
     """
-    The thirty-minute window, the ten-minute grace, and the
-    fifteen-minute lag are the behaviour on every machine that has never
-    heard of the knobs, and every other test here sets at least one. The
-    mutation this kills: changing any shipped default.
+    The three windows are the behaviour on every machine that has never
+    heard of the knobs, and the tests above set none of them — this one
+    states that plainly, in one place, so the trio is visible together.
     """
-    # Twenty-five minutes is inside the window; thirty-five is not.
     _write_gates(tmp_path, age_minutes=25)
-    quiet = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
-    assert quiet.stdout.strip() == ""
+    assert _run_gate_block(
+        tmp_path, uptime_seconds=48 * 3600,
+    ).stdout.strip() == ""
 
     _write_gates(tmp_path, age_minutes=35)
-    loud = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
-    assert "postgres-sync-memories gate] has not been written" in loud.stdout
+    assert "has not been written for 35m" in _run_gate_block(
+        tmp_path, uptime_seconds=48 * 3600,
+    ).stdout
 
-    # Eight minutes of uptime is inside the grace; twelve is not.
     _write_gates(tmp_path, age_minutes=21 * 24 * 60)
-    early = _run_gate_block(tmp_path, uptime_seconds=8 * 60)
-    assert early.stdout.strip() == ""
+    assert _run_gate_block(
+        tmp_path, uptime_seconds=8 * 60,
+    ).stdout.strip() == ""
 
-    # A session archived ten minutes after the gate is inside the lag;
-    # twenty is not.
     _write_gates(tmp_path, age_minutes=60)
     _archive_session(tmp_path, age_minutes=50)
-    inside = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
-    assert "the session hooks are not running" not in inside.stdout
+    assert "the session hooks are not running" not in _run_gate_block(
+        tmp_path, uptime_seconds=48 * 3600,
+    ).stdout
 
     _archive_session(tmp_path, age_minutes=40)
-    outside = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
-    assert "the session hooks are not running" in outside.stdout
+    assert "the session hooks are not running" in _run_gate_block(
+        tmp_path, uptime_seconds=48 * 3600,
+    ).stdout
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -582,37 +702,3 @@ def test_a_missing_gate_beside_a_live_sidecar_is_reported(tmp_path):
     assert "its gate file is missing" in result.stdout
     assert "has NEVER been written" not in result.stdout
     assert result.stdout.count("its gate file is missing") == 3
-
-
-def test_the_two_guards_that_no_behaviour_can_distinguish():
-    """
-    Two guards in the staleness block are, on this design, equivalent to
-    their absence — and are kept anyway, so they are pinned here rather
-    than left to rot.
-
-    The post-boot grace is compared against its OWN threshold, not the
-    staleness window. With the reference taken as the later of the boot
-    and the gate's mtime, the age of a boot-referenced gate IS the
-    uptime, so a grace below the window can never change a verdict; it
-    bites only if the two are ever set the other way round, or if a clock
-    jump makes the boot look older than it is. Swapping the threshold is
-    therefore invisible to any test that runs, and that is exactly the
-    kind of change worth catching before it becomes load-bearing.
-
-    The archive-root existence check is the same shape: ``find`` on a
-    path that is not there prints nothing and its complaint is already
-    discarded, so removing the check changes no output — it just runs a
-    walk of nothing on every session start and leaves the intent
-    unstated.
-    """
-    source = TRIGGER.read_text(encoding="utf-8")
-    block = _gate_block(source)
-
-    assert "PG_UPTIME_SECONDS < PG_BOOT_GRACE_MINUTES * 60" in block, (
-        "the post-boot grace is measured against the wrong threshold"
-    )
-    root_check = block.index('if [[ -d "$PG_ARCHIVE_ROOT" ]]; then')
-    find_call = block.index('find "$PG_ARCHIVE_ROOT"')
-    assert root_check < find_call, (
-        "the archive tree is walked without checking it is there"
-    )

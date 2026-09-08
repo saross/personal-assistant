@@ -364,19 +364,22 @@ Beyond that, the two kinds of gate are judged differently, because they
 fail differently:
 
 - **`postgres-sync-memories-gate` is written by cron every five
-  minutes**, so silence itself is the signal. It is late when more than
-  30 minutes (`PA_GATE_STALE_MINUTES`) have passed since the *later* of
-  the gate's own mtime and the machine's boot — a gate cannot be
-  refreshed while the machine is off — with a 10-minute grace after boot
-  (`PA_GATE_BOOT_GRACE_MINUTES`) so the first session back does not
-  report a job that has not had its turn.
+  minutes**, so silence itself is the signal, and only the *kind* of
+  silence differs. A gate written since boot is late when its own age
+  passes 30 minutes (`PA_GATE_STALE_MINUTES`): cron was running and
+  stopped. A gate *older than the boot* means cron has not run at all
+  since the machine came up, and that is reported once the uptime passes
+  a 10-minute grace (`PA_GATE_BOOT_GRACE_MINUTES`) — waiting out the
+  full window there would only delay the news.
 - **`postgres-sync-sessions-gate` and `index-session-content-gate` are
   written by session hooks**, and wall-clock age says nothing about
   them: a fortnight away, or one very long session, leaves them
   untouched and nothing is wrong. They are late only when a session has
   *ended* and the hook did not run — that is, when a `session.meta.json`
   under `~/cc-archives` (`PA_CC_ARCHIVES`) is more than 15 minutes
-  (`PA_HOOK_GATE_LAG_MINUTES`) newer than the gate.
+  (`PA_HOOK_GATE_LAG_MINUTES`) newer than the gate. If that root does
+  not exist, the trigger says the liveness check is **off** rather than
+  saying nothing: a check that cannot run is not a clean bill of health.
 
 The freshness test looks at the newest of the gate file and its
 `.state.json` sidecar, so a run that saved its state but could not render
@@ -413,7 +416,7 @@ To clear a quarantine problem once the rows have been dealt with:
   machine's uptime. Overridable so the boot rules can be tested without a
   reboot.
 
-  Each of the four numeric values must be a positive integer; anything
+  Each of the three numeric values must be a positive integer; anything
   else falls back to the default, because they are expanded inside
   `$(( ))` where bash would otherwise evaluate them as arithmetic
   expressions. `PA_GATE_STALE_HOURS` is retired — a single wall-clock age
