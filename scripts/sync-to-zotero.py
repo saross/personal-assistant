@@ -43,6 +43,7 @@ from typing import Any
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
+    QUARANTINE_FAILED,
     detect_jsonl_shrink,
     quarantine_record,
     read_cursor_file,
@@ -533,12 +534,21 @@ def run_sync(
         outcome = sync_memory(zot, mem, logger, dry_run=False)
         summary[outcome] = summary.get(outcome, 0) + 1
         if outcome == "skipped_not_found":
-            quarantine_record(
+            status = quarantine_record(
                 QUARANTINE_FILE,
                 mem,
                 "zotero_item_missing",
                 logger=logger,
             )
+            if status == QUARANTINE_FAILED:
+                # The record is NOT on disk, so advancing past it would
+                # lose it silently — the whole point of the quarantine
+                # (seventh re-audit, low).
+                logger.error(
+                    "Could not quarantine the skipped item; holding the "
+                    "cursor rather than advancing past it."
+                )
+                break
         # Only sleep after actions that touched the API for writes
         if outcome in ("created", "failed", "skipped_not_found"):
             time.sleep(API_SLEEP_SECONDS)

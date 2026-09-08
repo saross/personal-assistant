@@ -55,11 +55,13 @@ from _sync_gate import (  # noqa: E402
     CYCLE_CONTENDED,
     CYCLE_DEGRADED,
     CYCLE_IDLE,
+    CYCLE_ACK,
     CYCLE_OUTAGE,
     PROBLEM_QUARANTINE,
     SESSIONS_GATE as _DEFAULT_GATE_FILE,
     GateEvent,
     apply_gate,
+    read_state_safely,
 )
 from _pg_row_guard import (  # noqa: E402
     CAP_EXCEEDED,
@@ -405,6 +407,7 @@ class InsertResult(NamedTuple):
     db_available: bool
     duplicates_within_batch: int = 0
     quarantined: tuple[str, ...] = ()
+    newly_quarantined: int = 0
 
 
 @contextmanager
@@ -447,6 +450,16 @@ def _sync_advisory_lock(
     except SchemaVersionError:
         conn.close()
         sys.exit(2)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+        # The connection died between connect and the version query.
+        # That is an outage, not an unexpected fault: raising here made
+        # it exit 1 with a fault only a completed run could lower —
+        # which cannot happen while the database is down (seventh
+        # re-audit, finding M2).
+        logger.warning("Lost the connection during the schema check: %s", exc)
+        conn.close()
+        yield True, False
+        return
 
     try:
         with conn.cursor() as cur:
@@ -465,6 +478,13 @@ def _sync_advisory_lock(
             yield False, True
             return
         yield True, True
+    except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+        # Same reasoning: an outage during the lock query is an outage
+        # (finding M2).
+        logger.warning(
+            "Lost the connection while taking the advisory lock: %s", exc,
+        )
+        yield True, False
     finally:
         conn.close()
 
@@ -575,6 +595,7 @@ def _quarantine_refused_rows(
         the cursor instead (audit IC2's contract).
     """
     quarantined: list[str] = []
+    newly_written: list[str] = []
     for session_id, message in poison:
         status = quarantine_record(
             QUARANTINE_FILE,
@@ -586,6 +607,13 @@ def _quarantine_refused_rows(
             "postgres_refused_row",
             logger=logger,
         )
+        if status == QUARANTINE_WRITTEN:
+            # Only a line that actually reached the file counts towards
+            # the gate. A duplicate is still "accounted for" — the cursor
+            # may advance past it — but counting it inflated the gate by
+            # the whole batch on every tick while the cursor was held
+            # (seventh re-audit, finding C2).
+            newly_written.append(session_id)
         if status != QUARANTINE_FAILED:
             quarantined.append(session_id)
         else:
@@ -593,7 +621,7 @@ def _quarantine_refused_rows(
                 "Could not quarantine refused session %s — holding the "
                 "cursor rather than skipping it.", session_id,
             )
-    return quarantined
+    return quarantined, newly_written
 
 
 def upsert_sessions(
@@ -712,6 +740,7 @@ def upsert_sessions(
     try:
         returned_ids: set[str] = set()
         quarantined: list[str] = []
+        newly: list[str] = []
         try:
             with conn:
                 with conn.cursor() as cur:
@@ -806,7 +835,9 @@ def upsert_sessions(
                     f"errors are a symptom of. Cursor held; nothing "
                     f"quarantined."
                 )
-            quarantined = _quarantine_refused_rows(poison, rows_by_id, logger)
+            quarantined, newly = _quarantine_refused_rows(
+                poison, rows_by_id, logger,
+            )
 
         quarantined_set = set(quarantined)
         unexpected_drops = [
@@ -822,6 +853,7 @@ def upsert_sessions(
             db_available=True,
             duplicates_within_batch=duplicates_within_batch,
             quarantined=tuple(quarantined),
+            newly_quarantined=len(newly),
         )
 
         # DEBUG on the happy path (nothing to notice); INFO when something
@@ -1054,7 +1086,7 @@ def _sync_locked(
         )
         return CycleResult(
             CYCLE_DEGRADED,
-            quarantined=len(result.quarantined),
+            quarantined=result.newly_quarantined,
             connected=True,
             degraded_detail=(
                 f"[sync-sessions-to-postgres.py] "
@@ -1079,7 +1111,7 @@ def _sync_locked(
 
     return CycleResult(
         outcome,
-        quarantined=len(result.quarantined),
+        quarantined=result.newly_quarantined,
         processed=result.inserted,
         connected=result.db_available,
     )
@@ -1091,41 +1123,44 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
 
     A STATE-ONLY operation (sixth re-audit, finding C1). It runs no sync,
     takes no advisory lock, and touches no database — so a contended cron
-    tick cannot stop a human dismissing something they have read, which is
-    exactly what used to happen: the ack ran a full cycle, returned at the
-    contended branch before the acknowledgement was applied, and main
-    logged "cleared by hand" over a problem that still stood.
+    tick cannot stop a human dismissing something they have read.
 
-    Reports failure plainly instead of claiming success.
+    The verdict comes from what is ON DISK after the write, not from the
+    transition we intended (seventh re-audit, finding C1): this used to
+    report "cleared" and exit 0 over a failed write, leaving the problem
+    standing and the operator believing otherwise.
     """
-    state = apply_gate(
-        GateEvent(
-            outcome=CYCLE_IDLE,
-            ack_quarantine=True,
-            script=SCRIPT_NAME,
-        ),
+    before = read_state_safely(GATE_FILE, logger)
+    if PROBLEM_QUARANTINE not in before.problems:
+        logger.info(
+            "--ack-quarantine: there is no standing quarantine problem to "
+            "clear. Nothing to do."
+        )
+        return 0
+
+    standing = before.problems[PROBLEM_QUARANTINE].count
+    after = apply_gate(
+        GateEvent(outcome=CYCLE_ACK, script=SCRIPT_NAME),
         gate_path=GATE_FILE,
         logger=logger,
     )
-    if PROBLEM_QUARANTINE in state.problems:
+    if PROBLEM_QUARANTINE in after.problems:
         logger.error(
-            "--ack-quarantine did NOT clear the quarantine problem — the "
-            "gate state could not be written. Nothing has changed; see the "
-            "errors above."
+            "--ack-quarantine did NOT clear the quarantine problem: the "
+            "gate state on disk still carries it. Nothing has changed; "
+            "see the errors above."
         )
         return 9
-    acked = state.acked.get("acked_count", 0)
     logger.warning(
-        "--ack-quarantine: cleared a quarantine problem covering %s row(s). "
+        "--ack-quarantine: cleared a quarantine problem covering %d row(s). "
         "The rows themselves are still in %s and still absent from "
         "PostgreSQL; this only dismisses the session-start warning.",
-        acked, QUARANTINE_FILE,
+        standing, QUARANTINE_FILE,
     )
     return 0
 
 
 def _gate_fault(
-    args: argparse.Namespace,
     logger: logging.Logger,
     detail: str,
     *,
@@ -1208,7 +1243,7 @@ def main() -> None:
         # too many refusals to skip without someone looking.
         logger.error("QUARANTINE CAP EXCEEDED — %s", exc)
         _gate_fault(
-            args, logger,
+            logger,
             f"[sync-sessions-to-postgres.py] exit 7 — {exc} Raise the ceiling with "
             f"$PA_PG_QUARANTINE_CAP or --quarantine-cap once you have "
             f"looked at why so many sessions are being refused.",
@@ -1220,7 +1255,7 @@ def main() -> None:
         # ambiguous and the escape hatch is spelt out.
         logger.error("CORRELATED REFUSAL — %s", exc)
         _gate_fault(
-            args, logger,
+            logger,
             f"[sync-sessions-to-postgres.py] exit 4 — {exc} Either correlated poison or a "
             f"schema fault (a migration adding a NOT NULL column, a "
             f"unique index the upsert does not name). Check the schema; "
@@ -1239,7 +1274,7 @@ def main() -> None:
             "No session was quarantined and the cursor did not move."
         )
         _gate_fault(
-            args, logger,
+            logger,
             f"[sync-sessions-to-postgres.py] exit 4 — environment fault: {exc} Cursor held, "
             f"nothing quarantined; the sync is making no progress until "
             f"this is fixed.",
@@ -1250,7 +1285,7 @@ def main() -> None:
         # A rebuild cleared the cursors while this cycle was running.
         logger.error("CURSOR RESET MID-RUN — %s", exc)
         _gate_fault(
-            args, logger,
+            logger,
             f"[sync-sessions-to-postgres.py] exit 6 — a rebuild cleared the sync cursor "
             f"mid-run, so this run's position was deliberately not "
             f"written back. Confirm the rebuild was intended, then let "
@@ -1264,7 +1299,7 @@ def main() -> None:
         # below unless it is caught here.
         if exc.code not in (0, None):
             _gate_fault(
-                args, logger,
+                logger,
                 f"[sync-sessions-to-postgres.py] exit {exc.code} — the sync stopped before "
                 f"doing any work. Exit 2 is a schema-version mismatch: "
                 f"the script and the database disagree about the shape of "
@@ -1277,7 +1312,7 @@ def main() -> None:
         # sync is dead in a way nobody anticipated and will stay dead
         # every five minutes until someone looks.
         _gate_fault(
-            args, logger,
+            logger,
             f"[sync-sessions-to-postgres.py] exit 1 — UNEXPECTED ERROR: "
             f"{type(exc).__name__}: {exc} The sync is not running at "
             f"all; see the traceback in the log.",
@@ -1294,7 +1329,7 @@ def main() -> None:
             "was not applied. Re-run it."
         )
         _gate_fault(
-            args, logger,
+            logger,
             "[sync-sessions-to-postgres.py] exit 8 — --quarantine-anyway did not run: another "
             "instance held the advisory lock. The batch is still held; "
             "re-run the override.",

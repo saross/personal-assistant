@@ -191,7 +191,7 @@ def quarantine_record(
     *,
     logger: logging.Logger | None = None,
     dedup: bool = True,
-) -> bool:
+) -> str:
     """
     Append a single quarantine entry to ``quarantine_path``.
 

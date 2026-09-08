@@ -20,6 +20,7 @@ import logging
 import multiprocessing
 import os
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -142,7 +143,7 @@ class TestGateFormat:
         script, which runs the daily sync.
         """
         source = TRIGGER.read_text(encoding="utf-8")
-        start = source.index("for _pg_gate_name in")
+        start = source.index("PG_GATE_STALE_HOURS=")
         end = source.index("unset _pg_gate_name", start)
         block = source[start:end]
 
@@ -152,9 +153,12 @@ class TestGateFormat:
             "2\nexactly one problem\nand a second, independent one\n",
             encoding="utf-8",
         )
-        (cache / "postgres-sync-memories-gate").write_text(
-            "0\n", encoding="utf-8",
-        )
+        # Every gate must exist, or the never-written check fires and
+        # drowns out what this test is actually about.
+        for name in (
+            "postgres-sync-memories-gate", "index-session-content-gate",
+        ):
+            (cache / name).write_text("0\n", encoding="utf-8")
 
         script = tmp_path / "gate-block.sh"
         script.write_text(
@@ -173,8 +177,9 @@ class TestGateFormat:
         # EVERY problem line, not just the first (fifth re-audit): these
         # gates carry one line per independent problem now.
         assert "and a second, independent one" in result.stdout
-        # The count-0 gate must stay silent.
+        # The count-0 gates must stay silent.
         assert "postgres-sync-memories" not in result.stdout
+        assert "index-session-content" not in result.stdout
 
 
 #: Every function that writes a gate file or its sidecar state. A new one
@@ -908,6 +913,37 @@ GATE_TARGET_HINTS = (
 )
 
 
+def _gate_flavoured_names(tree: ast.AST) -> set[str]:
+    """Names bound to something that smells like a gate path.
+
+    One level of aliasing, which is all it takes to defeat a check that
+    only looks at the write's own target: ``sneaky = Path.home() /
+    ".cache" / "x"`` followed by ``sneaky.write_text(...)`` (seventh
+    re-audit, finding M5). Resolved transitively, so a chain of aliases
+    is caught too.
+    """
+    aliases: set[str] = set()
+    for _ in range(4):  # a fixed point, reached in one or two passes
+        grew = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            rendered = ast.unparse(node.value)
+            if not (
+                any(hint in rendered for hint in GATE_TARGET_HINTS)
+                or any(name in rendered.split() for name in aliases)
+                or any(f"{name}." in rendered for name in aliases)
+            ):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    grew = True
+        if not grew:
+            break
+    return aliases
+
+
 @pytest.mark.parametrize("script_name", GATED_SCRIPTS)
 def test_no_script_writes_a_gate_path_directly(script_name):
     """
@@ -916,13 +952,25 @@ def test_no_script_writes_a_gate_path_directly(script_name):
     ``some_gate_path.write_text(...)`` and the call-name test would not
     see it, because the call is named ``write_text``.
 
-    So: no ``.write_text``, ``.open``, ``open(...)`` or ``os.replace``
-    anywhere in these scripts whose target expression so much as mentions
-    a gate or the cache directory. Only ``_sync_gate.py`` writes those
-    files, and it does it atomically under a lock.
+    Nor is checking only the write's own target text (seventh re-audit,
+    finding M5): one intermediate variable hid it. Simple aliases are
+    resolved first, then no ``write_text``, ``write_bytes``, ``open`` or
+    ``os.replace`` may name a gate, a sidecar, the cache directory, or
+    anything bound from one.
     """
     source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
     tree = ast.parse(source)
+    aliases = _gate_flavoured_names(tree)
+    # The indexer's refusal memory is the one other store under ~/.cache.
+    # It is not a gate, it has its own writer, and that writer is checked
+    # separately just below.
+    exempt: set[int] = set()
+    for func in ast.walk(tree):
+        if isinstance(func, ast.FunctionDef) and func.name == "save_refusals":
+            exempt |= {
+                inner.lineno for inner in ast.walk(func)
+                if hasattr(inner, "lineno")
+            }
     offenders = []
 
     for node in ast.walk(tree):
@@ -934,9 +982,15 @@ def test_no_script_writes_a_gate_path_directly(script_name):
         )
         if name not in ("write_text", "write_bytes", "open", "replace"):
             continue
-        # The whole call, as written, including what it is called on.
         rendered = ast.unparse(node)
-        if any(hint in rendered for hint in GATE_TARGET_HINTS):
+        mentions_gate = any(hint in rendered for hint in GATE_TARGET_HINTS)
+        mentions_alias = any(
+            alias in {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            for alias in aliases
+        )
+        if node.lineno in exempt:
+            continue
+        if mentions_gate or mentions_alias:
             offenders.append(f"{script_name}:{node.lineno}: {rendered[:90]}")
 
     assert not offenders, (
@@ -954,14 +1008,31 @@ def test_only_the_gate_module_writes_gate_files():
     assert "_atomic_write" in source
     # And every write inside it goes through that one helper.
     tree = ast.parse(source)
+    # ``open`` and ``os.replace`` too, not just the Path helpers: a
+    # ``gate_path.open("w")`` bypasses the atomic write just as neatly
+    # (seventh re-audit, finding M5). The two inside ``_atomic_write``
+    # itself are how it does its job, so they are named and excused.
+    allowed_lines = {
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_atomic_write"
+        for node in ast.walk(node)
+        if isinstance(node, ast.Call)
+    }
     direct = [
         node.lineno for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in ("write_text", "write_bytes")
+        and (
+            (isinstance(node.func, ast.Attribute)
+             and node.func.attr in ("write_text", "write_bytes", "open",
+                                    "replace"))
+            or (isinstance(node.func, ast.Name) and node.func.id == "open")
+        )
+        and node.lineno not in allowed_lines
+        # The lock file is opened, never written through.
+        and "lock_file" not in ast.unparse(node)
     ]
     assert not direct, (
-        f"_sync_gate.py writes without _atomic_write at lines {direct}"
+        f"_sync_gate.py writes outside _atomic_write at lines {direct}"
     )
 
 
@@ -1007,3 +1078,313 @@ def test_the_gate_lock_is_held_across_the_read_modify_write(tmp_path):
     assert observed["held"] is True, (
         "the gate state was read and written without holding the lock"
     )
+
+
+def _hold_shared_lock(lock_path: str, seconds: float) -> None:
+    """Hold a SHARED lock on the gate lock file (module level, for fork)."""
+    with open(lock_path, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        time.sleep(seconds)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class TestTheLockIsExclusive:
+    """
+    ``LOCK_EX`` → ``LOCK_SH`` survived every earlier test, because a
+    shared lock still *looks* taken to a non-blocking exclusive probe.
+    The difference only shows when a second holder must be excluded.
+    """
+
+    def test_an_exclusive_taker_waits_for_another_holder(self, tmp_path):
+        """
+        A second process holds the lock shared; the exclusive taker must
+        BLOCK until it lets go. Under ``LOCK_SH`` it would sail straight
+        through, which is the whole bug: two cycles reading and writing
+        the same state at once. The mutation this kills: LOCK_EX →
+        LOCK_SH.
+        """
+        gate = tmp_path / "g"
+        lock_file = _sync_gate.lock_path_for(gate)
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.touch()
+
+        ctx = multiprocessing.get_context("fork")
+        holder = ctx.Process(
+            target=_hold_shared_lock, args=(str(lock_file), 1.0),
+        )
+        holder.start()
+        time.sleep(0.25)  # let the child take it
+
+        started = time.monotonic()
+        with _sync_gate.gate_lock(gate):
+            waited = time.monotonic() - started
+        holder.join(timeout=30)
+
+        assert waited > 0.4, (
+            f"the exclusive lock was taken in {waited:.3f}s while another "
+            f"process held it — it is not exclusive"
+        )
+
+    def test_a_wedged_holder_is_reported_not_waited_on_for_ever(
+        self, tmp_path, monkeypatch,
+    ):
+        """
+        Low: a bare blocking LOCK_EX would hang a session hook for ever.
+        The wait is bounded and says so.
+        """
+        gate = tmp_path / "g"
+        lock_file = _sync_gate.lock_path_for(gate)
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.touch()
+        monkeypatch.setattr(_sync_gate, "LOCK_WAIT_SECONDS", 0.3)
+
+        ctx = multiprocessing.get_context("fork")
+        holder = ctx.Process(
+            target=_hold_shared_lock, args=(str(lock_file), 2.0),
+        )
+        holder.start()
+        time.sleep(0.25)
+        try:
+            with pytest.raises(TimeoutError, match="has held"):
+                with _sync_gate.gate_lock(gate):
+                    pass
+        finally:
+            holder.join(timeout=30)
+
+
+class TestWritesHappenInsideTheLock:
+    """
+    ``render_gate`` outside the lock survived: the state was serialised
+    but the file everyone reads was not.
+    """
+
+    def test_the_gate_is_rendered_inside_the_lock(self, tmp_path):
+        """
+        Observed from inside ``render_gate``. The mutation this kills:
+        moving the render out of the ``with gate_lock(...)`` block.
+        """
+        gate = tmp_path / "g"
+        lock_file = _sync_gate.lock_path_for(gate)
+        observed = {"held": None}
+        real_render = _sync_gate.render_gate
+
+        def _probe(path, state, logger=None):
+            with open(lock_file, "a", encoding="utf-8") as handle:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    observed["held"] = True
+                else:
+                    observed["held"] = False
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return real_render(path, state, logger)
+
+        _sync_gate.render_gate = _probe
+        try:
+            _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="x",
+                    script="test",
+                ),
+                gate_path=gate, logger=logging.getLogger("test-render"),
+            )
+        finally:
+            _sync_gate.render_gate = real_render
+
+        assert observed["held"] is True, (
+            "the gate file was rendered outside the lock"
+        )
+
+
+class TestTheRenameIsMadeDurable:
+    """The directory fsync after os.replace survived every earlier test."""
+
+    def test_the_parent_directory_is_fsynced(self, tmp_path, monkeypatch):
+        """
+        Without it a power failure can lose the rename even though the
+        file's contents were durable — the gate silently reverts. The
+        mutation this kills: removing the directory fsync.
+        """
+        gate = tmp_path / "g"
+        fsynced_dirs = []
+        real_fsync = os.fsync
+
+        def _record(fd):
+            try:
+                if os.path.isdir(f"/proc/self/fd/{fd}"):
+                    fsynced_dirs.append(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:  # pragma: no cover — platform variation
+                pass
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", _record)
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="x",
+                script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-fsync"),
+        )
+        monkeypatch.undo()
+
+        assert str(tmp_path) in fsynced_dirs, (
+            f"the gate's directory was never fsynced: {fsynced_dirs}"
+        )
+
+
+class TestTheAcknowledgementEventIsItsOwnKind:
+    """
+    Finding M4 — the ack rode on ``CYCLE_IDLE``, and idle lowers
+    ``degraded``. So acknowledging a quarantine also declared a missing
+    archive root resolved.
+    """
+
+    def test_an_ack_does_not_lower_degraded(self, tmp_path):
+        """The mutation this kills: sending CYCLE_IDLE for an ack."""
+        gate = tmp_path / "g"
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                processed=1, quarantined=3, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-ack-kind"),
+        )
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED,
+                degraded_detail="the archive root is missing", script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-ack-kind"),
+        )
+
+        state = _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_ACK, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-ack-kind"),
+        )
+
+        assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
+        assert _sync_gate.PROBLEM_DEGRADED in state.problems, (
+            "acknowledging a quarantine also lowered a degraded problem"
+        )
+
+    def test_an_ack_does_not_touch_the_outage_streak(self, tmp_path):
+        """
+        The mutation this kills: ``connected=True`` on the ack event,
+        which would clear an outage nobody had recovered from.
+        """
+        gate = tmp_path / "g"
+        for _ in range(_sync_gate.OUTAGE_STREAK_THRESHOLD):
+            _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_OUTAGE, connected=False,
+                    script="test",
+                ),
+                gate_path=gate, logger=logging.getLogger("test-ack-kind"),
+            )
+        state = _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_ACK, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-ack-kind"),
+        )
+        assert _sync_gate.PROBLEM_OUTAGE in state.problems
+        assert state.outage_streak == _sync_gate.OUTAGE_STREAK_THRESHOLD
+
+
+class TestApplyGateReportsWhatIsOnDisk:
+    """
+    Finding C1 — ``apply_gate`` returned the state it *meant* to write,
+    so a caller could not tell a successful write from a failed one.
+    """
+
+    def test_a_failed_write_returns_the_old_state(self, tmp_path, monkeypatch):
+        """
+        The mutation this kills: returning the in-memory transition
+        result instead of re-reading.
+        """
+        gate = tmp_path / "g"
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                processed=1, quarantined=4, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-ondisk"),
+        )
+
+        def _fail(path, text):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(_sync_gate, "_atomic_write", _fail)
+        state = _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_ACK, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-ondisk"),
+        )
+        monkeypatch.undo()
+
+        assert _sync_gate.PROBLEM_QUARANTINE in state.problems, (
+            "apply_gate reported a state that was never written"
+        )
+
+    def test_a_failed_write_never_says_the_gate_is_clear(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        """A log line claiming success over a failure is the whole bug."""
+        gate = tmp_path / "g"
+
+        def _fail(path, text):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(_sync_gate, "_atomic_write", _fail)
+        with caplog.at_level(logging.ERROR):
+            _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                    processed=1, script="test",
+                ),
+                gate_path=gate, logger=logging.getLogger("test-ondisk"),
+            )
+        monkeypatch.undo()
+
+        assert "COULD NOT BE PERSISTED" in caplog.text
+        assert "Gate: clear" not in caplog.text
+
+    def test_an_unwritable_cache_does_not_raise(self, tmp_path, monkeypatch):
+        """
+        Finding M1: ``gate_lock``'s open had no error handling, so an
+        unwritable ~/.cache raised PermissionError through every caller —
+        turning a schema mismatch's exit 2 into an exit 1 traceback.
+        """
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        state = _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="x",
+                script="test",
+            ),
+            gate_path=blocker / "g", logger=logging.getLogger("test-ondisk"),
+        )
+        assert state.problems == {}
+
+
+def test_the_refusal_memory_is_also_written_atomically():
+    """
+    The one store under ``~/.cache`` that is not a gate. It is exempt
+    from the direct-write check above, so its own atomicity is asserted
+    here rather than assumed: a half-written refusal memory reads as
+    "nothing refused" and sends the next run back into the same wall.
+    """
+    source = (SCRIPTS_DIR / "index-session-content.py").read_text(
+        encoding="utf-8",
+    )
+    tree = ast.parse(source)
+    saver = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "save_refusals"
+    )
+    body = ast.unparse(saver)
+    assert ".tmp" in body, "save_refusals does not write to a temp file"
+    assert "os.replace" in body, "save_refusals does not rename into place"

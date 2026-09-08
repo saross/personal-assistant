@@ -9,6 +9,7 @@ the 2026-09-08 audit (Lens B, finding M3).
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -166,3 +167,87 @@ def test_a_clean_run_exits_zero(tmp_path):
         result = _run_chain(command, run_dir)
         assert result.returncode == 0
         assert (run_dir / "index.ran").exists()
+
+
+def _gate_block(source: str) -> str:
+    """Extract the trigger's postgres-gate loop for execution in a test."""
+    start = source.index("PG_GATE_STALE_HOURS=")
+    end = source.index("unset _pg_gate_name", start)
+    return source[start:end]
+
+
+def _run_gate_block(tmp_path, stale_hours="6"):
+    """Run the extracted block with HOME pinned; return its stdout."""
+    script = tmp_path / "gate-block.sh"
+    script.write_text(
+        "GATE_LINES=()\n" + _gate_block(TRIGGER.read_text(encoding="utf-8"))
+        + '\nprintf "%s\\n" "${GATE_LINES[@]}"\n',
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        ["bash", str(script)],
+        capture_output=True, text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": os.environ["PATH"],
+            "PA_GATE_STALE_HOURS": stale_hours,
+        },
+    )
+
+
+def test_a_gate_that_was_never_written_is_reported(tmp_path):
+    """
+    Seventh re-audit, M6: a script that never runs writes no gate, and a
+    gate that is absent used to be skipped silently — the one failure a
+    gate cannot report about itself. The mutation this kills: restoring
+    the `[[ -f ... ]] || continue` skip.
+    """
+    (tmp_path / ".cache").mkdir()
+    result = _run_gate_block(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "has NEVER been written" in result.stdout
+    assert "postgres-sync-memories" in result.stdout
+    assert "postgres-sync-sessions" in result.stdout
+    assert "index-session-content" in result.stdout
+
+
+def test_a_stale_gate_is_reported(tmp_path):
+    """
+    A clean gate that stopped being refreshed means a dead cron entry or
+    a broken hook chain. The mutation this kills: dropping the mtime
+    check.
+    """
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    for name in (
+        "postgres-sync-memories-gate",
+        "postgres-sync-sessions-gate",
+        "index-session-content-gate",
+    ):
+        gate = cache / name
+        gate.write_text("0\n", encoding="utf-8")
+        # Seven hours old, against a six-hour threshold.
+        old = time.time() - 7 * 3600
+        os.utime(gate, (old, old))
+
+    result = _run_gate_block(tmp_path)
+
+    assert "has not been updated for over 6h" in result.stdout
+    assert result.stdout.count("has not been updated") == 3
+
+
+def test_a_fresh_clean_gate_says_nothing(tmp_path):
+    """The quiet path must stay quiet, or the banner becomes noise."""
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    for name in (
+        "postgres-sync-memories-gate",
+        "postgres-sync-sessions-gate",
+        "index-session-content-gate",
+    ):
+        (cache / name).write_text("0\n", encoding="utf-8")
+
+    result = _run_gate_block(tmp_path)
+
+    assert result.stdout.strip() == ""

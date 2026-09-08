@@ -92,6 +92,7 @@ import fcntl
 import json
 import logging
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -112,11 +113,22 @@ CYCLE_CONTENDED = "contended"
 CYCLE_OUTAGE = "outage"
 #: Could not complete safely: missing inputs, or rows unaccounted for.
 CYCLE_DEGRADED = "degraded"
+#: Not a cycle at all: a human dismissing the quarantine problem. Its own
+#: kind because it must touch that problem and nothing else — riding on
+#: CYCLE_IDLE meant it also lowered ``degraded``, so acknowledging a
+#: quarantine quietly declared a missing archive root resolved too
+#: (seventh re-audit, finding M4).
+CYCLE_ACK = "ack"
 
 #: Consecutive unreachable runs before the outage problem stands. At a
 #: five-minute tick this is roughly fifteen minutes: long enough not to
 #: nag over a restart, short enough to matter.
 OUTAGE_STREAK_THRESHOLD = 3
+
+#: How long to wait for another process's gate lock before giving up and
+#: saying so. Long enough for any honest cycle, short enough that a wedged
+#: holder cannot hang a session hook.
+LOCK_WAIT_SECONDS = 10.0
 
 # ============================================================================
 # Problems
@@ -284,6 +296,21 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
     if event.outcome == CYCLE_CONTENDED:
         return GateState(problems, streak, state.acked, state.archive_root)
 
+    if event.outcome == CYCLE_ACK:
+        # Touches the quarantine problem and nothing else: not the
+        # streak, not degraded, not a fault. A human has read something;
+        # that is evidence about exactly one thing (finding M4).
+        standing = problems.pop(PROBLEM_QUARANTINE, None)
+        return GateState(
+            problems,
+            streak,
+            {
+                "acked_at": datetime.now(timezone.utc).isoformat(),
+                "acked_count": standing.count if standing else 0,
+            },
+            state.archive_root,
+        )
+
     # -- outage: connectivity is its own evidence, and touches nothing else
     if event.connected is True:
         streak = 0
@@ -358,7 +385,10 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
             "acked_at": datetime.now(timezone.utc).isoformat(),
             "acked_count": acked_count,
         }
-    root = event.archive_root or state.archive_root
+    # Set once and never flipped: a run against a different root must not
+    # claim a memory built elsewhere, or the next prune would forget it
+    # all (seventh re-audit, low).
+    root = state.archive_root or event.archive_root
     return GateState(problems, streak, acked, root)
 
 
@@ -395,7 +425,21 @@ def gate_lock(gate_path: Path) -> Iterator[None]:
     lock_file = lock_path_for(gate_path)
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_file, "a", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        # Bounded and non-blocking rather than a bare LOCK_EX: a wedged
+        # holder would otherwise hang a cron tick, or a session hook,
+        # for ever with nothing said (seventh re-audit, low).
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"another process has held {lock_file} for more "
+                        f"than {LOCK_WAIT_SECONDS}s"
+                    )
+                time.sleep(0.05)
         try:
             yield
         finally:
@@ -567,23 +611,64 @@ def apply_gate(
     logger: logging.Logger,
 ) -> GateState:
     """
-    Read, transition, persist, render. The one entry point for a script.
+    Read, transition, persist, render — then return WHAT IS ON DISK.
 
-    Returns the new state so a caller can log or assert on it.
+    The returned state is re-read after the write, not the in-memory
+    result of the transition (seventh re-audit, finding C1). Returning
+    the intended state meant a caller could not tell a successful write
+    from a failed one: ``--ack-quarantine`` reported "cleared" and exited
+    0 over an EACCES, while the sidecar still carried the problem. Now
+    the caller sees what a future run will see, which is the only thing
+    that matters.
+
+    Never raises. A gate that cannot be written must not change what the
+    script does about the condition the gate was describing (finding M1):
+    a schema mismatch still exits 2, an absent archive root still exits
+    2, and the failure is reported at ERROR in its own right. The one
+    caller that treats it as an error in itself is the acknowledgement,
+    which has nothing else to do.
 
     The whole read-modify-write happens under :func:`gate_lock`, so a
     cron tick cannot interleave with an acknowledgement and resurrect a
-    problem a human has just dismissed (finding C2).
+    problem a human has just dismissed (finding C2 of the sixth round).
     """
-    with gate_lock(gate_path):
-        state = next_state(read_state(gate_path, logger), event)
-        write_state(gate_path, state, logger)
-        render_gate(gate_path, state, logger)
-    if state.problems:
+    try:
+        with gate_lock(gate_path):
+            state = next_state(read_state(gate_path, logger), event)
+            persisted = write_state(gate_path, state, logger)
+            rendered = render_gate(gate_path, state, logger)
+            # Re-read inside the lock: what the next run will see.
+            on_disk = read_state(gate_path, logger)
+    except (OSError, TimeoutError) as exc:
+        logger.error(
+            "THE GATE COULD NOT BE PERSISTED (%s: %s). This run's "
+            "problems will not reach session start, and any standing "
+            "problem is unchanged. The condition itself is unaffected — "
+            "see the exit code.", type(exc).__name__, exc,
+        )
+        return read_state_safely(gate_path, logger)
+
+    if not (persisted and rendered):
+        logger.error(
+            "THE GATE COULD NOT BE PERSISTED. This run's problems will "
+            "not reach session start; the errors above say why."
+        )
+    elif on_disk.problems:
         logger.info(
             "Gate: %d standing problem(s) — %s",
-            len(state.problems), ", ".join(sorted(state.problems)),
+            len(on_disk.problems), ", ".join(sorted(on_disk.problems)),
         )
     else:
         logger.info("Gate: clear.")
-    return state
+    return on_disk
+
+
+def read_state_safely(
+    gate_path: Path,
+    logger: logging.Logger | None = None,
+) -> GateState:
+    """Read the state, returning an empty one if even that fails."""
+    try:
+        return read_state(gate_path, logger)
+    except OSError:
+        return GateState()

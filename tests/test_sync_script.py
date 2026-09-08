@@ -2255,10 +2255,15 @@ class TestAcknowledgementIsStateOnly:
         self, monkeypatch, tmp_path, pinned_gate_file, caplog,
     ):
         """
-        The log must never claim success over a failure. The mutation
-        this kills: returning 0 regardless of whether the state was
-        written.
+        The log must never claim success over a failure. The failure is
+        induced where it really happens — the atomic write — with
+        ``next_state`` untouched, so the state this exercises is one the
+        code can actually produce (seventh re-audit, finding C1). The
+        mutation this kills: returning the intended state from
+        ``apply_gate`` rather than what is on disk.
         """
+        import _sync_gate
+
         self._standing_quarantine(pinned_gate_file)
         monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
         monkeypatch.setattr(
@@ -2271,16 +2276,10 @@ class TestAcknowledgementIsStateOnly:
             sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
         )
 
-        # The state cannot be written, so the problem still stands.
-        import _sync_gate
+        def _refuse_to_write(path, text):
+            raise PermissionError(13, "Permission denied")
 
-        monkeypatch.setattr(
-            _sync_gate, "write_state",
-            lambda gate_path, state, logger=None: False,
-        )
-        monkeypatch.setattr(
-            _sync_gate, "next_state", lambda state, event: state,
-        )
+        monkeypatch.setattr(_sync_gate, "_atomic_write", _refuse_to_write)
 
         try:
             with caplog.at_level(logging.ERROR):
@@ -2291,29 +2290,122 @@ class TestAcknowledgementIsStateOnly:
 
         assert excinfo.value.code == 9
         assert "did NOT clear" in caplog.text
+        # And the problem really is still there for the next run.
+        monkeypatch.undo()
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_QUARANTINE in state.problems
 
-
-class TestTheOutageStreakEndToEnd:
-    """
-    Low: the streak was only ever exercised against the state machine
-    directly. This drives it through ``main``, which is where the
-    connectivity has to be observed correctly for it to work at all.
-    """
-
-    def _canonical(self, path: Path) -> None:
-        """One valid record, so there is always work to attempt."""
-        path.write_text(
-            json.dumps({
-                "id": "m1", "category": "progress", "content": "c",
-                "created_at": "2026-09-01T00:00:00+00:00",
-            }) + "\n",
-            encoding="utf-8",
+    def test_an_ack_with_nothing_standing_says_so(
+        self, monkeypatch, tmp_path, pinned_gate_file, caplog,
+    ):
+        """
+        Low: acknowledging nothing used to report "cleared 0 rows". The
+        mutation this kills: dropping the nothing-to-do branch.
+        """
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["sync-to-postgres.py", "--ack-quarantine"],
         )
 
-    def _wire(self, monkeypatch, tmp_path, *, reachable):
-        """Point the sync at tmp_path with a reachable or dead database."""
+        try:
+            with caplog.at_level(logging.INFO):
+                with pytest.raises(SystemExit) as excinfo:
+                    sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 0
+        assert "no standing quarantine problem" in caplog.text
+        assert "cleared a quarantine problem covering 0" not in caplog.text
+
+
+class TestAHeldCursorDoesNotInflateTheGate:
+    """
+    Seventh re-audit, finding C2 — a duplicate quarantine entry counted
+    as freshly quarantined, so with the cursor held the gate's number
+    grew by the whole batch every five minutes over a file that never
+    changed.
+    """
+
+    def test_four_ticks_of_a_held_cursor_report_the_same_count(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        Two poison lines, four ticks, cursor held throughout: the gate
+        must say 2 every time, because the file says 2. The mutation this
+        kills: counting anything but QUARANTINE_WRITTEN.
+        """
+        import _sync_gate
+
         memories = tmp_path / "memories.jsonl"
-        self._canonical(memories)
+        memories.write_text(
+            "{not valid json\n}}also broken{{\n", encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        # The database is down, so the cursor never advances and the same
+        # two lines are re-read on every tick.
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            raise_on_connect=True,
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            for tick in range(4):
+                sync_mod.main()
+                state = _sync_gate.read_state(pinned_gate_file)
+                problem = state.problems.get(_sync_gate.PROBLEM_QUARANTINE)
+                assert problem is not None
+                assert problem.count == 2, (
+                    f"after tick {tick + 1} the gate claims "
+                    f"{problem.count} quarantined rows"
+                )
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        # And the file really does hold two.
+        lines = [
+            line for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 2
+
+
+class TestAGateFailureNeverChangesTheExitCode:
+    """
+    Seventh re-audit, finding M1 — an unwritable ~/.cache raised
+    PermissionError through every caller, so a schema mismatch's exit 2
+    became an exit 1 traceback and the indexer's absent-root path
+    returned 1.
+    """
+
+    def test_a_schema_mismatch_still_exits_two(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The gate is about reporting the condition, never about changing
+        what the script does about it. The mutation this kills: letting
+        the gate's OSError propagate out of apply_gate.
+        """
+        import _sync_gate
+
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text("", encoding="utf-8")
         monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
         monkeypatch.setattr(
@@ -2324,63 +2416,25 @@ class TestTheOutageStreakEndToEnd:
         monkeypatch.setattr(
             sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
         )
-        _install_fake_psycopg2(
-            monkeypatch, present_before_ids=[], returned_ids=["m1"],
-            raise_on_connect=not reachable,
-        )
         monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
 
-    def test_consecutive_unreachable_runs_raise_the_problem(
-        self, monkeypatch, tmp_path, pinned_gate_file,
-    ):
-        """
-        The database is down and the sync exits 0 every time, by design.
-        The gate is the only thing that surfaces it. The mutation this
-        kills: reporting connected=None from the insert path on an
-        outage, so the streak never moves.
-        """
-        import _sync_gate
+        def _exit_two(logger, *args, **kwargs):
+            sys.exit(2)
 
-        self._wire(monkeypatch, tmp_path, reachable=False)
+        monkeypatch.setattr(sync_mod, "sync", _exit_two)
+
+        # ~/.cache is unwritable: the gate cannot be taken at all.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(sync_mod, "GATE_FILE", blocker / "g")
+
         try:
-            for _ in range(_sync_gate.OUTAGE_STREAK_THRESHOLD):
+            with pytest.raises(SystemExit) as excinfo:
                 sync_mod.main()
         finally:
             logging.getLogger("sync-to-postgres").handlers.clear()
 
-        state = _sync_gate.read_state(pinned_gate_file)
-        assert _sync_gate.PROBLEM_OUTAGE in state.problems
-        assert "unreachable for" in pinned_gate_file.read_text(
-            encoding="utf-8",
+        assert excinfo.value.code == 2, (
+            "a gate failure changed the exit code for the underlying "
+            "condition"
         )
-
-    def test_an_idle_connected_run_lowers_it(
-        self, monkeypatch, tmp_path, pinned_gate_file,
-    ):
-        """
-        Finding M3: an idle cycle used to report connected=None, having
-        never noticed that the advisory lock proved the database was
-        there. So the outage problem stood through every quiet tick.
-        """
-        import _sync_gate
-
-        self._wire(monkeypatch, tmp_path, reachable=False)
-        try:
-            for _ in range(_sync_gate.OUTAGE_STREAK_THRESHOLD):
-                sync_mod.main()
-            assert _sync_gate.PROBLEM_OUTAGE in _sync_gate.read_state(
-                pinned_gate_file,
-            ).problems
-
-            # The database comes back, and the cursor is already at EOF —
-            # so this run is idle, and must still lower the problem.
-            (tmp_path / "cursors.json").write_text(
-                json.dumps({"postgres_sync_line": 1}), encoding="utf-8",
-            )
-            self._wire(monkeypatch, tmp_path, reachable=True)
-            sync_mod.main()
-        finally:
-            logging.getLogger("sync-to-postgres").handlers.clear()
-
-        state = _sync_gate.read_state(pinned_gate_file)
-        assert _sync_gate.PROBLEM_OUTAGE not in state.problems

@@ -114,11 +114,24 @@ fi
 #
 # These are the gates the September 2026 incident argued for: the sessions
 # table sat three weeks stale behind an error in a log nobody reads.
+# How old a gate may be before its absence or staleness is itself the
+# problem. The syncs run every five minutes and the indexer on every
+# session close, so six hours means the pipeline has been dead for a
+# while and nobody noticed — the failure mode a gate cannot report,
+# because a dead script writes no gate at all (seventh re-audit, M6).
+PG_GATE_STALE_HOURS="${PA_GATE_STALE_HOURS:-6}"
+
 for _pg_gate_name in postgres-sync-memories-gate \
                      postgres-sync-sessions-gate \
                      index-session-content-gate; do
     _pg_gate_file="${HOME}/.cache/${_pg_gate_name}"
-    [[ -f "$_pg_gate_file" ]] || continue
+    if [[ ! -f "$_pg_gate_file" ]]; then
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] has NEVER been written — that script has not completed a run on this machine. Check the cron entry and the session hooks.")
+        continue
+    fi
+    if [[ -n "$(find "$_pg_gate_file" -mmin "+$((PG_GATE_STALE_HOURS * 60))" 2>/dev/null)" ]]; then
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated for over ${PG_GATE_STALE_HOURS}h — the script is not running. Check the cron entry and the session hooks.")
+    fi
     _pg_count="$(head -1 "$_pg_gate_file" 2>/dev/null)"
     if [[ "$_pg_count" =~ ^[0-9]+$ ]] && [[ "$_pg_count" -gt 0 ]]; then
         # EVERY detail line, not just the first: since the fifth re-audit

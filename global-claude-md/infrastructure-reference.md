@@ -340,10 +340,26 @@ surfaces it, after about fifteen minutes.
 `--ack-quarantine` is a **state-only** operation: it runs no sync, takes
 no advisory lock, and opens no database connection, so a busy cron tick
 can never stop you dismissing something you have read. It records
-`{acked_at, acked_count}` in the sidecar and exits non-zero if it could
-not write. Every read-modify-write of a gate — including that one — is
-serialised by `<gate>.lock` and written atomically, so a tick and an
-acknowledgement cannot interleave to resurrect a dismissed problem.
+`{acked_at, acked_count}` in the sidecar, reports "nothing to do" when
+no problem stands, and exits **9** if the state on disk still carries the
+problem afterwards — its verdict comes from re-reading the file, not from
+what it meant to write.
+
+Every read-modify-write of a gate — including that one — is serialised by
+an exclusive `<gate>.lock` (bounded at ten seconds, then reported) and
+written atomically, so a tick and an acknowledgement cannot interleave to
+resurrect a dismissed problem.
+
+**A gate that cannot be written never changes what a script does.** If
+`~/.cache` is unwritable, a schema mismatch still exits 2 and an absent
+archive root still exits 2; the failure to persist is logged at ERROR in
+its own right. The acknowledgement is the one command for which a
+persistence failure *is* the error, and it exits 9.
+
+The trigger also reports a gate that has **never been written** or has
+not been updated for six hours (`PA_GATE_STALE_HOURS`): a script that is
+not running writes no gate at all, which is the one failure a gate cannot
+report about itself.
 
 To clear a quarantine problem once the rows have been dealt with:
 

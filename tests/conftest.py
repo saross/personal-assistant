@@ -145,3 +145,55 @@ Last updated: 2026-02-08
 """
 
 
+
+
+# ---------------------------------------------------------------------------
+# Hermeticity: the suite must not write the operator's real ~/.cache
+#
+# Three separate times during the September 2026 audit a test wrote a real
+# gate, sidecar, or refusal-memory file, putting a fabricated
+# infrastructure problem in front of Shawn at his next session start. Each
+# time the fix was another fixture, and each time the next new test forgot
+# it. This asserts the property itself, once, for the whole run.
+# ---------------------------------------------------------------------------
+
+#: Files under ~/.cache that belong to the PostgreSQL pipeline. A test that
+#: creates or modifies one of these has escaped its tmp directory.
+_PIPELINE_CACHE_GLOBS = (
+    "postgres-sync-*",
+    "index-session-content-*",
+)
+
+
+def _pipeline_cache_snapshot() -> dict[str, float]:
+    """Map every pipeline cache file to its mtime, for before/after comparison."""
+    cache = Path.home() / ".cache"
+    snapshot: dict[str, float] = {}
+    if not cache.is_dir():
+        return snapshot
+    for pattern in _PIPELINE_CACHE_GLOBS:
+        for path in cache.glob(pattern):
+            try:
+                snapshot[str(path)] = path.stat().st_mtime_ns
+            except OSError:
+                continue
+    return snapshot
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_real_cache_writes():
+    """Fail the run if the suite touched a real pipeline file in ~/.cache."""
+    before = _pipeline_cache_snapshot()
+    yield
+    after = _pipeline_cache_snapshot()
+
+    created = sorted(set(after) - set(before))
+    modified = sorted(
+        path for path in set(after) & set(before)
+        if after[path] != before[path]
+    )
+    assert not created and not modified, (
+        "the test suite wrote to the operator's real ~/.cache — a "
+        "fabricated infrastructure problem would appear at their next "
+        f"session start.\n  created: {created}\n  modified: {modified}"
+    )

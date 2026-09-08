@@ -79,6 +79,7 @@ from _sync_gate import (  # noqa: E402
     INDEXER_GATE as _DEFAULT_GATE_FILE,
     GateEvent,
     apply_gate,
+    gate_lock,
     read_state,
 )
 from _schema_version import (  # noqa: E402
@@ -504,8 +505,16 @@ def index_archive(archive_root: Path, project: str | None,
     # Against a root the memory was not built for, it is read-only — no
     # consulting, no forgetting, no recording, no pruning (sixth
     # re-audit, low).
-    recorded_root = read_state(GATE_FILE, logger).archive_root
-    memory_is_ours = recorded_root in (None, str(archive_root))
+    # Read under the gate lock, like every other consumer of this state
+    # (seventh re-audit, low), and compare RESOLVED paths so a symlink or
+    # a trailing slash cannot make our own root look foreign.
+    with gate_lock(GATE_FILE):
+        recorded_root = read_state(GATE_FILE, logger).archive_root
+    resolved_root = str(Path(archive_root).resolve())
+    memory_is_ours = (
+        recorded_root is None
+        or str(Path(recorded_root).resolve()) == resolved_root
+    )
     if not memory_is_ours:
         logger.warning(
             "The refusal memory was built against %s and this run scans "
@@ -826,7 +835,7 @@ def _apply_indexer_gate(
             connected=True,
             processed=indexed,
             refusals=outstanding,
-            archive_root=str(archive_root),
+            archive_root=str(Path(archive_root).resolve()),
             script=SCRIPT_NAME,
         ),
         gate_path=GATE_FILE,
