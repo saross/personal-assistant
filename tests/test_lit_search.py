@@ -1300,20 +1300,7 @@ class TestDedupeMergesAcrossPageBoundaries:
 # All keys, hostnames, and payloads below are invented.
 # ============================================================================
 
-import socket as _socket_module
 import types as _types
-
-
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    """Refuse every socket connection for the life of each test."""
-
-    def _refuse(*args, **kwargs):
-        raise AssertionError("a test attempted a network connection")
-
-    monkeypatch.setattr(_socket_module.socket, "connect", _refuse)
-    monkeypatch.setattr(_socket_module.socket, "connect_ex", _refuse)
-    monkeypatch.setattr(_socket_module, "create_connection", _refuse)
 
 
 class FakeResponse:

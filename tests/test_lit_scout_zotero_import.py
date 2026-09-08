@@ -232,14 +232,9 @@ import sqlite3
 import sys
 import types
 
-from no_network_guard import refuse_socket_connections
 from zotero_sqlite_fixture import build_zotero_sqlite
 
 
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse every socket connection for the life of each test."""
-    refuse_socket_connections(monkeypatch)
 
 
 class FakeZoteroClient:

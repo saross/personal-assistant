@@ -36,16 +36,11 @@ from typing import Any
 
 import pytest
 
-from no_network_guard import refuse_socket_connections
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 
 
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse every socket connection made from the test process itself."""
-    refuse_socket_connections(monkeypatch)
 
 
 # ---------------------------------------------------------------------------

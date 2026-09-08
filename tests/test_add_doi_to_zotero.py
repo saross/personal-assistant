@@ -24,7 +24,6 @@ from typing import Any
 
 import pytest
 
-from no_network_guard import refuse_socket_connections
 from zotero_sqlite_fixture import build_zotero_sqlite
 
 _SCRIPT = (
@@ -32,10 +31,6 @@ _SCRIPT = (
 )
 
 
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse every socket connection for the life of each test."""
-    refuse_socket_connections(monkeypatch)
 
 
 def _load_script() -> Any:

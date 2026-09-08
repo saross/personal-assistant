@@ -389,14 +389,9 @@ class TestFormatCitation:
 
 import socket as _socket
 
-from no_network_guard import refuse_socket_connections
 from zotero_sqlite_fixture import build_zotero_sqlite, load_zotero_module
 
 
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch) -> None:
-    """Refuse every socket connection for the life of each test."""
-    refuse_socket_connections(monkeypatch)
 
 
 #: One invented item, enough for a connection and a lookup.

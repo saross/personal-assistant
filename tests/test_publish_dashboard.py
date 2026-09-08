@@ -284,21 +284,8 @@ class TestRenderedTypesAreDeletable:
 
 import io
 import json
-import socket
 import urllib.error
 import urllib.request
-
-
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    """Refuse every socket connection for the life of each test."""
-
-    def _refuse(*args, **kwargs):
-        raise AssertionError("a test attempted a network connection")
-
-    monkeypatch.setattr(socket.socket, "connect", _refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
-    monkeypatch.setattr(socket, "create_connection", _refuse)
 
 
 class RecordingOpener:

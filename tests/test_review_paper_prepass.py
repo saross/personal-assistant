@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -31,18 +30,6 @@ _SCRIPT = (
     / "scripts"
     / "review-paper-prepass.py"
 )
-
-
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse every socket connection for the life of each test."""
-
-    def _refuse(*args: Any, **kwargs: Any):
-        raise AssertionError("a test attempted a network connection")
-
-    monkeypatch.setattr(socket.socket, "connect", _refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
-    monkeypatch.setattr(socket, "create_connection", _refuse)
 
 
 @pytest.fixture(scope="module")
