@@ -1012,13 +1012,27 @@ class TestBatchSubmitIsNotRepeatable:
 
     @pytest.fixture
     def submit_stub(self, monkeypatch):
-        """Fake ``anthropic`` whose batches.create records and returns an id."""
-        created: list[list[dict]] = []
+        """Fake ``anthropic`` that records submissions and replays results.
+
+        ``.created`` is one entry per ``batches.create`` call; ``.results``
+        is what the next ``--haiku-apply`` will retrieve, so a test can run
+        the real submit -> partial apply -> top-up sequence rather than
+        hand-building a state the code could never have produced.
+        """
+        stub = type("SubmitStub", (), {})()
+        stub.created = []
+        stub.results = []
 
         class FakeBatches:
             def create(self, requests):
-                created.append(requests)
-                return type("Batch", (), {"id": f"batch_{len(created):03d}"})()
+                stub.created.append(requests)
+                return type("Batch", (), {"id": f"batch_{len(stub.created):03d}"})()
+
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(stub.results)
 
         class FakeAnthropic:
             def __init__(self, *args, **kwargs):
@@ -1027,7 +1041,7 @@ class TestBatchSubmitIsNotRepeatable:
         fake_module = type(sys)("anthropic")
         fake_module.Anthropic = FakeAnthropic
         monkeypatch.setitem(sys.modules, "anthropic", fake_module)
-        return created
+        return stub
 
     def _argv(self, manifest, prompt, out_dir, *extra):
         return [
@@ -1047,11 +1061,11 @@ class TestBatchSubmitIsNotRepeatable:
         prompt = _prompt_file(tmp_path)
         out_dir = tmp_path / "out"
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
-        assert len(submit_stub) == 1
+        assert len(submit_stub.created) == 1
         capsys.readouterr()
 
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
-        assert len(submit_stub) == 1  # nothing was created the second time
+        assert len(submit_stub.created) == 1  # nothing created the second time
         message = capsys.readouterr().err
         assert "batch_001" in message
         assert "--haiku-apply batch_001" in message
@@ -1088,28 +1102,129 @@ class TestBatchSubmitIsNotRepeatable:
         assert state["batch_id"] == "batch_002"
         assert state["superseded_batches"] == ["batch_001"]
 
-    def test_resumed_submit_tops_up_only_the_missing_sessions(
-        self, tmp_path, capsys, submit_stub
-    ):
-        """A top-up must not pay for sessions already retrieved."""
+    @staticmethod
+    def _succeeded(custom_id: str, text: str):
+        """One batch result object shaped like the SDK's."""
+        block = type("Block", (), {"type": "text", "text": text})()
+        message = type("Message", (), {"content": [block]})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def _three_session_manifest(self, tmp_path):
         rows = []
-        for session_id in ("batch-eeee-1111", "batch-ffff-2222"):
+        for index in range(3):
+            session_id = f"topup-{index}-aaaa-bbbb"
             transcript = fx.write_session_transcript(
                 tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=8
             )
             rows.append(fx.manifest_row(session_id, transcript))
-        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        return fx.write_manifest(tmp_path / "manifest.json", rows)
+
+    def test_resubmit_tops_up_only_the_missing_sessions(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """The reachable sequence: submit, partial apply, top up.
+
+        The previous version of this test hand-built a response file with no
+        batch-state.json beside it — a state a real run cannot produce,
+        because a submit always writes the state first. That hid the fact
+        that the only way past the state check (--force) also re-sent
+        everything, making the advertised top-up unreachable.
+        """
+        manifest = self._three_session_manifest(tmp_path)
         prompt = _prompt_file(tmp_path)
         out_dir = tmp_path / "out"
-        provider_dir = out_dir / "haiku"
-        provider_dir.mkdir(parents=True)
-        (provider_dir / "batch-eeee-1111.json").write_text(
-            fx.RESPONSE_BARE + "\n", encoding="utf-8"
-        )
+
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
-        assert len(submit_stub[0]) == 1
-        assert submit_stub[0][0]["custom_id"] == bom.build_custom_id("batch-ffff-2222")
+        assert len(submit_stub.created[0]) == 3
+
+        # A partial retrieval: the batch came back with two of the three.
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in (0, 1)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--manifest", str(manifest), "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ]) == 0
+        provider_dir = out_dir / "haiku"
+        assert (provider_dir / "topup-0-aaaa-bbbb.json").exists()
+        assert not (provider_dir / "topup-2-aaaa-bbbb.json").exists()
+        capsys.readouterr()
+
+        # The top-up: permitted to submit again, still filtered to the gap.
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--resubmit")) == 0
+        assert len(submit_stub.created) == 2
+        assert len(submit_stub.created[1]) == 1
+        assert submit_stub.created[1][0]["custom_id"] == bom.build_custom_id(
+            "topup-2-aaaa-bbbb"
+        )
         assert "requests:       1" in capsys.readouterr().out
+        state = json.loads((provider_dir / "batch-state.json").read_text())
+        assert state["batch_id"] == "batch_002"
+        assert state["superseded_batches"] == ["batch_001"]
+
+    def test_force_sends_the_whole_manifest_again(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """--force keeps its meaning: everything, not just the gap."""
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in (0, 1)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--manifest", str(manifest), "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ]) == 0
+        capsys.readouterr()
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--force")) == 0
+        assert len(submit_stub.created[1]) == 3
+
+    def test_resubmit_is_rejected_off_the_batch_arm(self, tmp_path, capsys):
+        """The other arms have no batch state, so the flag would be a no-op."""
+        manifest = self._three_session_manifest(tmp_path)
+        code = bom.main([
+            "--provider", "gemini",
+            "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+            "--resubmit", "--yes",
+        ])
+        assert code == 2
+        assert "--resubmit is only valid with --provider haiku" in (
+            capsys.readouterr().err
+        )
+
+    def test_resubmit_still_refuses_when_nothing_is_missing(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A top-up with no gap must not create an empty second batch."""
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in range(3)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--manifest", str(manifest), "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ]) == 0
+        capsys.readouterr()
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--resubmit")) == 0
+        assert len(submit_stub.created) == 1
+        assert "nothing to send" in capsys.readouterr().out
 
     def test_state_records_the_manifest_fingerprint(self, tmp_path, submit_stub):
         manifest = _one_session_manifest(tmp_path, "batch-gggg-1111")
@@ -1138,7 +1253,7 @@ class TestBatchSubmitIsNotRepeatable:
             bom.haiku_submit(
                 requests, out_dir, "system prompt", manifest_path=manifest
             )
-        assert submit_stub == []
+        assert submit_stub.created == []
         assert not (out_dir / "batch-state.json").exists()
 
 

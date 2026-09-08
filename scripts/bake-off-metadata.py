@@ -733,8 +733,9 @@ def batch_state_conflict(out_dir: Path, manifest_path: Path) -> str | None:
         "stored id, leaving the first job unretrievable. Retrieve the "
         "existing batch with:\n"
         f"  {haiku_retrieve_command(batch_id, out_dir)}\n"
-        "Pass --force to submit anyway; the stored id is then kept under "
-        "superseded_batches."
+        "Pass --resubmit to send only the sessions still missing (the "
+        "top-up), or --force to send the whole manifest again. Either way "
+        "the stored id is kept under superseded_batches."
     )
 
 
@@ -744,7 +745,7 @@ def haiku_submit(
     system_prompt: str,
     *,
     manifest_path: Path,
-    force: bool = False,
+    allow_resubmit: bool = False,
 ) -> str:
     """Submit a single Batch API job; persist state; return the batch ID.
 
@@ -756,18 +757,21 @@ def haiku_submit(
         system_prompt: the shared system layer.
         manifest_path: hashed into the state so a later submit can say
             whether the stored batch came from the same manifest.
-        force: submit even though a batch state already exists.
+        allow_resubmit: create a new batch even though a batch state
+            already exists. It does NOT decide which sessions are sent —
+            the caller has already filtered those — so a top-up and a full
+            re-send both arrive here with this flag set.
 
     Raises:
-        BatchStateExistsError: a batch is already recorded here and ``force``
-            is not set. Nothing is sent and nothing is written.
+        BatchStateExistsError: a batch is already recorded here and
+            ``allow_resubmit`` is not set. Nothing is sent, nothing written.
         ValueError: two requests share a custom_id, which would silently
             collapse two sessions into one batch entry.
     """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
     previous = read_batch_state(out_dir)
-    if previous is not None and not force:
+    if previous is not None and not allow_resubmit:
         raise BatchStateExistsError(
             batch_state_conflict(out_dir, manifest_path) or "batch already submitted"
         )
@@ -1814,6 +1818,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--resubmit",
+        action="store_true",
+        help=(
+            "Batch arm only: permit a NEW submission into a directory that "
+            "already holds batch-state.json, while still skipping sessions "
+            "with a complete response. This is the top-up: after a partial "
+            "--haiku-apply it sends only what is still missing. Use --force "
+            "instead to send the whole manifest again."
+        ),
+    )
+    parser.add_argument(
         "--haiku-apply",
         metavar="BATCH_ID",
         help=(
@@ -1864,6 +1879,16 @@ def main(argv: list[str] | None = None) -> int:
         print("--provider is required unless --build-rubric is set")
         return 2
 
+    if args.resubmit and args.provider != "haiku":
+        # Silently ignoring it would let an operator believe they had asked
+        # for a top-up on an arm that has no batch state to top up.
+        print(
+            "--resubmit is only valid with --provider haiku (the other arms "
+            "resume per session by default; --force re-runs them)",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.haiku_apply:
         if args.provider != "haiku":
             print("--haiku-apply is only valid with --provider haiku")
@@ -1909,12 +1934,19 @@ def main(argv: list[str] | None = None) -> int:
     # asks anything, so an operator who has not run --dry-run still sees the
     # four figures the gate requires.
     #
-    # The figures describe what will ACTUALLY be sent: on a resumed run the
-    # sessions that already have a complete response are dropped first, so
-    # the count and the cost are the ones about to be incurred rather than
-    # the ones a first run would have incurred. This includes the Batch arm:
-    # a re-submit after a partial --haiku-apply should top up the sessions
-    # that are still missing, not pay for the whole manifest again.
+    # The figures describe what will ACTUALLY be sent: sessions that
+    # already have a complete response are dropped first, so the count and
+    # the cost are the ones about to be incurred rather than the ones a
+    # first run would have incurred. Only --force disables this filter, and
+    # it means "send the whole manifest again".
+    #
+    # The Batch arm has a second gate on top (batch-state.json, below).
+    # Permission to submit again and the choice of what to send are
+    # deliberately separate flags: --resubmit unlocks the second submit and
+    # keeps the filter, so a top-up after a partial --haiku-apply sends only
+    # the missing sessions. Folding both into --force made the advertised
+    # top-up unreachable -- the only way past the state check also re-sent
+    # everything.
     requests = pending_requests(
         requests, provider_dir, force=args.force, tag=args.provider
     )
@@ -1929,7 +1961,7 @@ def main(argv: list[str] | None = None) -> int:
     # batch-state.json, so a second submit into the same directory pays
     # twice AND orphans the first job. Refused before the gate: there is
     # nothing to approve.
-    if args.provider == "haiku" and not args.force:
+    if args.provider == "haiku" and not (args.force or args.resubmit):
         conflict = batch_state_conflict(provider_dir, args.manifest)
         if conflict:
             print(conflict, file=sys.stderr)
@@ -1948,7 +1980,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             haiku_submit(
                 requests, provider_dir, system_prompt,
-                manifest_path=args.manifest, force=args.force,
+                manifest_path=args.manifest,
+                allow_resubmit=args.force or args.resubmit,
             )
         except BatchStateExistsError as exc:
             # Unreachable via main (the check above fires first); kept so the
