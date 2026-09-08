@@ -10,7 +10,7 @@ description: >
   text, and (d) a versioned, dated output. v2 adds: reference-list
   stripping pre-pass, six new measurement-layer metrics (MATTR, hapax,
   passive ratio, nominalisation rate, dependency depth, POS bigrams),
-  paragraph statistics, fifth status `attested-concentrated`, and Biber
+  paragraph statistics, a sixth status `attested-concentrated`, and Biber
   (1988) multidimensional analysis (D1–D6) as the §§1–6 section
   organisation with hybrid §§7–10 and aspirational §11 (activated in
   v2.2, 2026-05-24). Designed to be re-run across newer Claude versions
@@ -470,7 +470,7 @@ register) must still appear as a numbered section with the
    the generated guide's Appendix E.
 ```
 
-Within each numbered section (1–8), structure each claim as:
+Within each numbered section (1–10), structure each claim as:
 
 ```markdown
 ### {N.N} {Claim title}
@@ -509,11 +509,20 @@ you found instead.
 
 For Aspirational items: omit Status and Attestations, replace with
 `Source: aspirational — derived from {convention/genre/role}` and the
-note that it awaits reconciliation with the user's prior guide.
+note that it has been reconciled against the *live empirical assessment*
+(§§1–10). Do **not** write that it "awaits reconciliation with the prior
+guide": per Phase 4 the prior conscious style guides are superseded and
+are not to be cited. Reconciliation is against the corpus findings, and
+it happens inside Phase 4 rather than being deferred.
 
 ## Pipeline — how to compute the metrics
 
-Five scripts live in `~/personal-assistant/scripts/style-analyser/`:
+Five scripts drive the pipeline below. They are not the only files in
+`~/personal-assistant/scripts/style-analyser/`, which also holds
+`phase4_exemplar_scorer.py` (the Appendix F exemplar scorer, see the
+changelog), the `efficacy_*.py` downstream-evaluation helpers, and the
+`validate_*.py` one-off diagnostics — fourteen `.py` files in all as at
+2026-09-08. The five below are the ones this agent invokes:
 
 1. `extract_corpus.py` — clean-corpus extractor (PyMuPDF + pdfplumber
    via llm-reproducibility). Produces the `extracted/<key>/` bundles.
@@ -563,7 +572,33 @@ Per plan D2 the original intent was to inline the measurement pipeline
 in this agent. The five scripts together exceed the 400-line threshold
 (D2's escape clause), so they are kept in `scripts/style-analyser/`
 and called via Bash. The agent remains self-recreatable with five
-known dependencies (the script paths above).
+known dependencies (the five script paths above).
+
+**The input manifest, and how to get it back.** Steps 1 and 2 both take a
+`--manifest`: a *flat list* of Zotero-derived entries (`key`, `pdf_path`,
+`n_words`, `has_references`, `extraction_notes`, …). The 2026-05-24 run
+built it at `/tmp/style-corpus-extract/manifest.json`, which is tmpfs and is
+wiped on reboot — do not assume it is still there, and do not write a new one
+back to `/tmp`.
+
+The durable record of the corpus is
+`~/personal-assistant/data/style-corpus/corpus-manifest.json`, the extraction
+*output*: `results[].key` enumerates every extracted paper, `source_manifest`
+records where the input manifest lived, and each
+`extracted/<key>/metadata.json` carries that paper's Zotero fields. So:
+
+- **Step 2 only needs `key` and `extraction_notes`** (`phase1_pipeline.py`
+  reads the manifest solely through `included_keys`), so a manifest for it
+  can be rebuilt from `corpus-manifest.json["results"]` without touching
+  Zotero.
+- **Step 1 additionally needs `pdf_path`**, which only the Zotero export
+  carries; re-export it if the PDFs must be re-extracted.
+
+Write the rebuilt manifest to
+`~/personal-assistant/data/style-corpus/extract-input-manifest.json` and
+commit it, so the next run has no tmpfs dependency. The commands below use
+that path; substitute the freshly exported file when re-running Step 1 from
+Zotero.
 
 **Canonical invocation (clean corpus — use this from 2026-05-24):**
 
@@ -571,14 +606,14 @@ known dependencies (the script paths above).
 # Step 1 (run once per corpus version): clean extraction
 ~/Code/write-like-me/.venv/bin/python \
     ~/personal-assistant/scripts/style-analyser/extract_corpus.py \
-    --manifest /tmp/style-corpus-extract/manifest.json \
+    --manifest ~/personal-assistant/data/style-corpus/extract-input-manifest.json \
     --output-dir ~/personal-assistant/data/style-corpus/extracted/
 
 # Step 2: Phase 1 measurement against the clean corpus
 ~/Code/write-like-me/.venv/bin/python \
     ~/personal-assistant/scripts/style-analyser/phase1_pipeline.py \
     --corpus-dir ~/personal-assistant/data/style-corpus/extracted/ \
-    --manifest  /tmp/style-corpus-extract/manifest.json \
+    --manifest  ~/personal-assistant/data/style-corpus/extract-input-manifest.json \
     --clean-corpus \
     --output    ~/personal-assistant/data/style-corpus/phase1-results-clean.json
 
@@ -636,7 +671,7 @@ The extractor additionally requires `pymupdf>=1.27`, `pdfplumber>=0.11`,
 `python-slugify>=8.0`, `pyyaml>=6.0`.
 
 Read the JSON's `per_paper` array for the Appendix C ledger tables and
-the `aggregate` object for the §§1–8 main-body claims.
+the `aggregate` object for the §§1–10 main-body claims.
 
 ## Anti-confabulation safeguards (HARD RULES)
 
@@ -654,13 +689,14 @@ same rigour as factual claims.
 4. **Never smooth over PDF extraction problems.** If you can't trust
    the text, you can't trust the claim. Down-weight or exclude.
 5. **Never let aspirational items leak into empirical sections.**
-   Aspirational lives in §9 only. If an empirical search yields no
-   support but the item still seems important, move it to §9 with the
-   appropriate flag.
+   Aspirational lives in §11 only — §9 is the voice-tic cross-reference
+   under the v2.2 layout. If an empirical search yields no support but
+   the item still seems important, move it to §11 with the appropriate
+   flag.
 6. **Anchor every checkable specific.** Counts, keys, locators —
    re-verifiable at the source. A memory of a pattern is not the
    pattern.
-7. **NEW in v2 — never aggregate-only.** Every metric in §§1–8 must
+7. **NEW in v2 — never aggregate-only.** Every metric in §§1–10 must
    carry a per-paper distribution in Appendix C. The promotion rules
    above are computed from per-paper rates; an aggregate-only summary
    forfeits the ability to assign a status.
@@ -762,13 +798,20 @@ on conversation history.
   132,148 vs run-1: 139,105). The lost tokens are author affiliations,
   journal mastheads, page headers, and reference fragments — not body
   prose. Verified empirically (2026-05-24 audit §4).
-- Mean sentence length drops from 23.9 (run-1) to **21.16**. Caused by
+- Mean sentence length drops from 23.9 (run-1) to **21.45**. Caused by
   PyMuPDF preserving paragraph boundaries that pdftotext dissolved.
-  21.16 is the correct value for the v2 style guide.
+  21.45 is the correct value for the v2 style guide: it is
+  `aggregate.sentence_stats.mean` in
+  `data/style-corpus/phase1-results-clean.json`, and it is the figure
+  Appendix E above carries. (This entry read 21.16 until 2026-09-08 —
+  a value that appears in neither the JSON nor Appendix E.)
 - Paragraph statistics become usable: count 815 → 4,213; median 43 → 17
   words; mean 162 → 30 words.
-- Announcement colons per 1k drops 31 % (1.884 → 1.295) — page-header
-  artefacts removed. Diagnostic 4's outlier-noise hypothesis confirmed.
+- Announcement colons per 1k drops ≈15 % (1.884 → **1.605**) —
+  page-header artefacts removed. Diagnostic 4's outlier-noise hypothesis
+  confirmed. 1.605 is the clean-corpus value in
+  `data/style-corpus/phase1-results-clean.json` and in Appendix E above.
+  (This entry read "31 % (1.884 → 1.295)" until 2026-09-08.)
 - Passive ratio rises slightly (0.28 → 0.31). Probably cleaner parses
   find more real passives, but pending a fresh diagnostic-3 sample on
   the clean corpus before any passive-related claim is published.
