@@ -11,6 +11,8 @@ deferred until Phase 0b.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -66,14 +68,14 @@ class TestWellformedAnchor:
     """Pure, I/O-free shape gate applied before persisting anchors."""
 
     def test_valid_commit_hash_ok(self):
-        ok, reason = av.wellformed_anchor({"type": "commit", "ref": "7078d39"})
+        ok, reason = av.wellformed_anchor({"type": "commit", "ref": "abc1234"})
         assert ok is True and reason == "ok"
 
     @pytest.mark.parametrize("ref", [
-        "rome-verification-script",            # descriptive slug
-        "audit-corrections-applied",           # descriptive slug
+        "example-verification-script",         # descriptive slug
+        "corrections-applied-note",            # descriptive slug
         "bb5r1pr54",                           # non-hex chars
-        "feat(hooks): SessionStart sidecar",   # a commit *message*, not a ref
+        "feat(scope): a subject line",         # a commit *message*, not a ref
     ])
     def test_malformed_commit_refs_rejected(self, ref):
         ok, reason = av.wellformed_anchor({"type": "commit", "ref": ref})
@@ -114,7 +116,7 @@ class TestWellformedAnchor:
     def test_tightened_file_gate_rejects_prose(self):
         # item 21a: prose mis-typed as a file anchor now fails the gate.
         ok, reason = av.wellformed_anchor(
-            {"type": "file", "ref": "scoring table (7 sessions, 42 cells)"})
+            {"type": "file", "ref": "results table (3 rounds, 12 cells)"})
         assert ok is False and reason == "malformed-file-ref"
 
     def test_tightened_file_gate_passes_real_path(self):
@@ -144,8 +146,8 @@ class TestLooksLikeFileRef:
         "decision-log.md",
         "session.meta.json",
         "~/.bash_aliases",
-        "~/Zotero/storage/FGM4PVSX/Hanson - 2016 - urban geography.pdf",  # space+sep
-        "/home/shawn/personal-assistant/scripts/x.py",  # multi-segment absolute
+        "~/Zotero/storage/AAAA1111/Author - 1999 - a paper title.pdf",  # space+sep
+        "/home/someone/a-project/scripts/x.py",  # multi-segment absolute
         "responses-round-1/",                  # directory ref
         "LICENSE",                             # extensionless real file
         "Makefile",
@@ -155,19 +157,19 @@ class TestLooksLikeFileRef:
 
     @pytest.mark.parametrize("ref", [
         # prose
-        "scoring table (7 sessions, 42 cells)",
-        "preregistration draft",
-        "Round 4 tally table: H=7 (17%), G=17 (40%), T=18 (43%)",
-        "Run-sheet Block B2",
+        "results table (3 rounds, 12 cells)",
+        "draft outline",
+        "Round 1 tally table: A=2 (20%), B=3 (30%), C=5 (50%)",
+        "Work sheet Block Z9",
         # slash-command names (single-segment absolute, prose tolerated)
         "/weekly-review",
         "/reflect",
-        "/lit-scout-iterate — Iteration policy (settled 2026-05-22)",
+        "/example-command — a policy note (settled 2031-01-02)",
         # bare object ids mis-typed as files
-        "3825319a",
-        "932f8ad0",
-        "a6ba54fa",
-        "msgbatch_016RZjdHMfWAtKcW2uBxkbgJ",
+        "1a2b3c4d",
+        "5e6f7a8b",
+        "9c0d1e2f",
+        "msgbatch_00AAAAAAAAAAAAAAAAAAAAAA",
         # control chars / over-length
         "a\nb",
         "a\tb",
@@ -499,8 +501,10 @@ class TestUniqueSuffixMatch:
     ]
 
     def test_unique_basename_recovers(self):
-        assert av.unique_suffix_match("continuity.md", self.TRACKED) == \
-            "wiki/continuity.md"
+        match = av.unique_suffix_match("continuity.md", self.TRACKED)
+        assert match.path == "wiki/continuity.md"
+        # Unattributed candidates can never be proved same-project.
+        assert match.scope == "cross-repo"
 
     def test_ambiguous_basename_returns_none(self):
         # Two tracked extraction.py → can't safely pick one.
@@ -510,14 +514,15 @@ class TestUniqueSuffixMatch:
         # The directory context narrows the ambiguous basename to one file.
         assert av.unique_suffix_match(
             "cc_session_toolkit/extraction.py", self.TRACKED
-        ) == "src/cc_session_toolkit/extraction.py"
+        ).path == "src/cc_session_toolkit/extraction.py"
 
     def test_absent_basename_returns_none(self):
         assert av.unique_suffix_match("ghost.md", self.TRACKED) is None
 
     def test_exact_path_matches(self):
-        assert av.unique_suffix_match("scripts/anchor_verify.py", self.TRACKED) == \
-            "scripts/anchor_verify.py"
+        assert av.unique_suffix_match(
+            "scripts/anchor_verify.py", self.TRACKED
+        ).path == "scripts/anchor_verify.py"
 
     def test_partial_name_does_not_match_across_boundary(self):
         # "tion.py" must NOT match "extraction.py" — only whole path segments.
@@ -529,3 +534,514 @@ class TestUniqueSuffixMatch:
 
     def test_empty_ref_returns_none(self):
         assert av.unique_suffix_match("", self.TRACKED) is None
+
+
+# ============================================================================
+# Pathspec magic — a glob must never verify as a file (finding AN1/AN11/AN12)
+# ============================================================================
+
+
+def _throwaway_repo(root: Path) -> Path:
+    """Create a throwaway git repository with one committed file.
+
+    The repository lives entirely under pytest's ``tmp_path``; nothing here
+    touches a real checkout. It carries ``scripts/real.py`` at HEAD, which is
+    what the glob refs below would match if git were allowed to read them as
+    patterns.
+    """
+    repo = root / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    # The marker keeps two repositories seeded in the same second from
+    # producing byte-identical trees, and so identical commit hashes.
+    (repo / "scripts" / "real.py").write_text(
+        f"x = 1\n# {root.name}\n", encoding="utf-8",
+    )
+    env = {
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "PATH": os.environ.get("PATH", ""), "HOME": str(root),
+    }
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "seed"], check=True, env=env,
+    )
+    return repo
+
+
+class TestPathspecMagicNeverVerifies:
+    """A ref git would read as a pattern must not resolve to "true".
+
+    Against the real git binary in a throwaway repository. The mutation each
+    test kills: dropping ``--literal-pathspecs`` from the ``git log`` probe in
+    :func:`anchor_verify._git_knows_path` (every glob below then matches
+    ``scripts/real.py`` in history and returns "true").
+    """
+
+    @pytest.mark.parametrize("ref", [
+        "scripts/*.py",
+        "*.py",
+        "scripts/?eal.py",
+        "scripts/[r]eal.py",
+        ":(glob)**/real.py",
+        ":(exclude)zzz",
+    ])
+    def test_glob_refs_resolve_false(self, tmp_path, ref):
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_file(ref, [repo]) == "false"
+
+    def test_the_real_file_still_resolves_true(self, tmp_path):
+        """The control: literal pathspecs must not break honest anchors."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_file("scripts/real.py", [repo]) == "true"
+
+    def test_a_deleted_file_still_resolves_through_history(self, tmp_path):
+        """The history probe survives literalisation (its whole purpose)."""
+        repo = _throwaway_repo(tmp_path)
+        (repo / "scripts" / "real.py").unlink()
+        env = {
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path),
+        }
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "drop"], check=True, env=env,
+        )
+        assert av.verify_file("scripts/real.py", [repo]) == "true"
+
+    def test_a_ref_that_escapes_the_repo_is_false(self, tmp_path):
+        """``../outside`` must not stat a file that lives in no repository.
+
+        Kills the AN11 mutation: ``(repo / expanded).exists()`` without
+        normalisation, which returned "true" for the file below.
+        """
+        repo = _throwaway_repo(tmp_path)
+        (tmp_path / "outside.txt").write_text("secret\n", encoding="utf-8")
+        assert av.verify_file("../outside.txt", [repo]) == "false"
+
+    def test_the_shape_gate_rejects_pathspec_magic(self):
+        """The write-side half: such a ref never reaches the resolver."""
+        for ref in ("scripts/*.py", "scripts/?eal.py", "scripts/[r]eal.py",
+                    ":(glob)**/real.py", ":(exclude)zzz"):
+            assert av._looks_like_file_ref(ref) is False
+            assert av.wellformed_anchor({"type": "file", "ref": ref}) == (
+                False, "malformed-file-ref")
+
+
+class TestCommitRefHexFloor:
+    """A short hex ref is not trusted, and not condemned either.
+
+    Seven characters is what every tool here records, and one hit on a
+    shorter prefix across ~36 repositories is not proof (finding AN12). But
+    eight live anchors predate that convention, and a ref the SHAPE gate
+    rejects is stripped from the corpus as malformed — so the judgement moved
+    into the resolver (finding L8).
+    """
+
+    @pytest.mark.parametrize("ref", ["cafe", "beef", "face", "d0d0", "abcdef"])
+    def test_a_short_hex_ref_is_shape_valid(self, ref):
+        """Kills the mutation restoring ``_MIN_COMMIT_HEX = 7``.
+
+        recover_anchors strips anything wellformed_anchor rejects, so a
+        rejected short ref costs the memory its only anchor.
+        """
+        assert av._looks_like_hash(ref) is True
+        assert av.wellformed_anchor({"type": "commit", "ref": ref})[0] is True
+
+    @pytest.mark.parametrize("ref", ["abc", "", "zzzz", "g" * 8])
+    def test_a_ref_that_is_not_hex_or_too_short_is_rejected(self, ref):
+        assert av._looks_like_hash(ref) is False
+
+    def test_seven_hex_is_still_a_commit_ref(self):
+        """The floor is seven, not eight: git's own abbreviation length."""
+        assert av._looks_like_hash("abc1234") is True
+
+    def test_a_short_word_is_still_a_plausible_filename(self):
+        """The file gate keeps its looser six-character id floor."""
+        assert av._looks_like_file_ref("cafe") is True
+
+
+class TestShortCommitRefsNeedAUniqueHit:
+    """4-6 hex: true on exactly one repository, pending otherwise (L8)."""
+
+    def _head(self, repo: Path) -> str:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return out.stdout.strip()
+
+    def test_a_unique_short_hit_is_true(self, tmp_path):
+        repo = _throwaway_repo(tmp_path / "one")
+        other = _throwaway_repo(tmp_path / "two")
+        short = self._head(repo)[:6]
+        assert av.verify_commit(short, [repo, other]) == "true"
+
+    def test_a_short_ref_nobody_knows_is_pending_not_false(self, tmp_path):
+        """Never "false": a false verdict feeds it to recover_anchors."""
+        repo = _throwaway_repo(tmp_path / "one")
+        assert av.verify_commit("cafe", [repo]) == "pending"
+
+    def test_a_short_ref_matching_two_repositories_is_pending(self, tmp_path):
+        """A collision across repositories is not proof of anything.
+
+        Kills the mutation returning "true" on the first hit for a short ref.
+        """
+        repo = _throwaway_repo(tmp_path / "one")
+        head = self._head(repo)
+        # A second repository whose tip shares the same short prefix, forced
+        # by committing until one matches would be slow; instead point the
+        # same repository at itself twice, which is the collision's shape.
+        assert av.verify_commit(head[:6], [repo, repo]) == "pending"
+
+    def test_a_full_length_ref_still_short_circuits(self, tmp_path):
+        """The control: seven or more characters trusts the first hit."""
+        repo = _throwaway_repo(tmp_path / "one")
+        assert av.verify_commit(self._head(repo), [repo, repo]) == "true"
+
+
+# ============================================================================
+# "pending" vs "false" — a check that could not run is not an absent file
+# (finding AN3)
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _clear_repo_exclusions():
+    """Empty anchor_verify's unusable-repository registry around every test.
+
+    The registry is process-wide by design — a repository that cannot be
+    consulted stays excluded for the rest of a sweep — so without this a test
+    that breaks ``/repo`` silently excludes it from every later test.
+    """
+    av.reset_unusable_repos()
+    yield
+    av.reset_unusable_repos()
+
+
+class TestTransientFailureIsPending:
+    """Every way a check can fail to complete must read "pending".
+
+    ``"false"`` is committal: it demotes the memory's confidence, feeds the
+    drift sweep's append-only trend log, and makes ``recover_anchors`` rewrite
+    the anchor. It must mean "we looked everywhere and it was not there".
+
+    The mutation each test kills: restoring ``except (FileNotFoundError,
+    OSError): return "false"`` in ``_git_knows_path`` / ``verify_commit``, or
+    the unconditional trailing ``return "false"`` in the history probe.
+    """
+
+    def test_missing_git_binary_excludes_the_repository(self):
+        """A repository-level failure is not a ref-level one (finding M6)."""
+        with patch("subprocess.run", side_effect=FileNotFoundError("git")):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+        assert av.repo_is_unusable(Path("/repo"))
+
+    def test_unreadable_repository_is_excluded(self):
+        with patch("subprocess.run", side_effect=PermissionError("denied")):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+
+    def test_oserror_mid_history_probe_excludes_the_repository(self):
+        results = [MagicMock(returncode=1), OSError("mount went away")]
+
+        def run(*_a, **_kw):
+            item = results.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("subprocess.run", side_effect=run):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+
+    def test_unrecognised_git_exit_code_excludes_the_repository(self):
+        """rc 128 without the "did not match" text: a broken repository."""
+        results = [
+            MagicMock(returncode=1),
+            MagicMock(returncode=128, stdout="",
+                      stderr="fatal: not a git repository"),
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+
+    def test_a_timeout_is_still_ref_level_pending(self):
+        """A live repository that was slow tells us nothing about this ref."""
+        import subprocess as _sp
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+        assert not av.repo_is_unusable(Path("/repo"))
+
+    def test_unmatched_pathspec_is_a_completed_check(self):
+        """rc 128 WITH the marker means "checked, and absent"."""
+        results = [
+            MagicMock(returncode=1),
+            MagicMock(returncode=128, stdout="",
+                      stderr="fatal: ghost.py: did not match any file(s) "
+                             "known to git"),
+        ]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "ghost.py") == "false"
+
+    def test_verify_file_is_pending_when_every_repo_failed(self, tmp_path):
+        """The aggregate: no repository could answer, so neither can we."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        with patch("subprocess.run", side_effect=OSError("unmounted")):
+            assert av.verify_file("scripts/gone.py", [repo]) == "pending"
+
+    def test_verify_file_is_pending_when_a_live_repo_times_out(self, tmp_path):
+        """A timeout on a usable repository still withholds the verdict."""
+        import subprocess as _sp
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
+            assert av.verify_file("scripts/gone.py", [repo]) == "pending"
+
+    def test_verify_file_relative_with_no_repos_is_pending(self):
+        """An empty repo set checks nothing — it must not condemn the anchor.
+
+        Kills the mutation that returns "false" when discovery yields [].
+        """
+        assert av.verify_file("scripts/gone.py", []) == "pending"
+
+    def test_verify_file_is_false_only_when_every_repo_answered(self, tmp_path):
+        """The control: a completed check that found nothing is still false."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_file("scripts/ghost.py", [repo]) == "false"
+
+    def test_verify_commit_transient_failure_is_pending(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError("git")):
+            assert av.verify_commit("abc1234", [Path("/repo")]) == "pending"
+
+    def test_verify_commit_broken_repo_is_pending(self):
+        with patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=128)
+            assert av.verify_commit("abc1234", [Path("/repo")]) == "pending"
+
+    def test_verify_commit_with_no_repos_is_pending(self):
+        assert av.verify_commit("abc1234", []) == "pending"
+
+    def test_verify_commit_absent_everywhere_is_false(self, tmp_path):
+        """The control, against a real repository that lacks the object."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_commit("abc1234def", [repo]) == "false"
+
+    def test_a_pending_memory_verdict_does_not_demote_confidence(self):
+        """bind_confidence must not lower a record on an incomplete check.
+
+        Kills the mutation ``return "medium"`` for the pending branch: a
+        record that reads "high" today would be written back "medium" by the
+        next recovery pass simply because a mount was missing.
+        """
+        assert av.bind_confidence("pending", current="high") == "high"
+        # ... and must not RAISE one either: failing to look is not evidence
+        # for the memory (round 4f-3, finding L2).
+        assert av.bind_confidence("pending", current="low") == "low"
+        # Case-folded: the corpus carries "High" as well as "high".
+        assert av.bind_confidence("pending", current="High") == "high"
+        assert av.bind_confidence("pending", current="  LOW ") == "low"
+        # No prior rating (a fresh record) keeps the documented default.
+        assert av.bind_confidence("pending") == "medium"
+        assert av.bind_confidence("pending", current="nonsense") == "medium"
+        # "false" is committal and still demotes, whatever the record says.
+        assert av.bind_confidence("false", current="high") == "low"
+
+
+# ============================================================================
+# verify_commit across a real repo set, and the zero-valid-anchor guard
+# (findings ANT-L1 / ANT-Mh)
+# ============================================================================
+
+
+class TestVerifyCommitAcrossARepoSet:
+    """The repo set is searched, not just its first member."""
+
+    def _head(self, repo: Path) -> str:
+        """The full hash of *repo*'s tip commit."""
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return out.stdout.strip()
+
+    def test_a_hash_in_the_second_repository_resolves(self, tmp_path):
+        """Kills the mutation checking only ``repo_set[0]``."""
+        first = _throwaway_repo(tmp_path / "one")
+        second = _throwaway_repo(tmp_path / "two")
+        target = self._head(second)
+        assert av.verify_commit(target, [first, second]) == "true"
+
+    def test_the_repo_set_is_not_ignored(self, tmp_path):
+        """Kills the mutation that drops the repo_set argument entirely."""
+        first = _throwaway_repo(tmp_path / "one")
+        second = _throwaway_repo(tmp_path / "two")
+        target = self._head(second)
+        assert av.verify_commit(target, [first]) == "false"
+
+    def test_a_short_prefix_of_a_real_commit_resolves(self, tmp_path):
+        """Seven characters is a genuine abbreviation git can disambiguate."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_commit(self._head(repo)[:7], [repo]) == "true"
+
+
+class TestZeroValidAnchorsIsNotVerified:
+    """An anchors list with nothing checkable is None, never "true"."""
+
+    def test_only_unknown_types_returns_none(self):
+        """Kills the mutation removing the saw_any_valid_anchor guard.
+
+        Without it the loop checks nothing, falls through to the trailing
+        branch, and reports "true" — a memory verified on the strength of
+        anchors no verifier ever looked at (finding ANT-Mh).
+        """
+        record = {
+            "id": "x",
+            "anchors": [
+                {"type": "telepathy", "ref": "alpha-centauri"},
+                {"type": "vibes", "ref": "a good feeling"},
+            ],
+        }
+        assert av.verify_memory(record, []) is None
+
+    def test_only_malformed_entries_returns_none(self):
+        record = {"id": "x", "anchors": ["not a dict", {"type": "file"}]}
+        assert av.verify_memory(record, []) is None
+
+
+# ============================================================================
+# One broken repository must not condemn the whole corpus (finding M6)
+# ============================================================================
+
+
+class TestABrokenRepositoryIsExcludedNotContagious:
+    """A repository that fails for every ref is excluded, with a warning.
+
+    Before this, ``pending_seen`` was set by any repository-level failure, so
+    a single unmounted checkout out of thirty-six made EVERY absent ref read
+    "pending": the drift sweep's pending rate went to 100 %, tripped the 10 %
+    reliability floor, and refused every sweep from then on.
+    """
+
+    def test_an_absent_ref_is_still_false_beside_a_broken_repo(
+        self, tmp_path, capsys,
+    ):
+        """The verdict comes from the repositories that could answer.
+
+        Kills the mutation that treats "unusable" as "pending" in
+        verify_file: the ref below then reads pending for ever.
+        """
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"      # a directory, not a repository
+        broken.mkdir()
+        assert av.verify_file("scripts/ghost.py", [broken, good]) == "false"
+        assert av.repo_is_unusable(broken)
+        assert "excluding" in capsys.readouterr().err
+
+    def test_a_present_ref_is_still_true_beside_a_broken_repo(self, tmp_path):
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        assert av.verify_file("scripts/real.py", [broken, good]) == "true"
+
+    def test_the_warning_is_printed_once_per_process(self, tmp_path, capsys):
+        """A per-ref warning would drown the sweep's own output."""
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        for ref in ("scripts/a.py", "scripts/b.py", "scripts/c.py"):
+            av.verify_file(ref, [broken, good])
+        assert capsys.readouterr().err.count("excluding") == 1
+
+    def test_commit_refs_are_not_poisoned_either(self, tmp_path, capsys):
+        """verify_commit had the same short-circuit."""
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        assert av.verify_commit("abc1234def", [broken, good]) == "false"
+        assert av.repo_is_unusable(broken)
+
+    def test_every_repository_broken_is_still_pending(self, tmp_path):
+        """The control: with nothing left to ask, we do not answer."""
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        assert av.verify_file("scripts/ghost.py", [broken]) == "pending"
+        assert av.verify_commit("abc1234def", [broken]) == "pending"
+
+    def test_the_registry_is_reportable(self, tmp_path):
+        """A sweep can say which repositories it left out."""
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        av.verify_file("scripts/ghost.py", [broken])
+        assert str(broken) in av.unusable_repos()
+
+
+class TestASymlinkCannotSmuggleAPathIntoTheRepo:
+    """The lexical guard needs a resolve on the hit path (finding L1)."""
+
+    def test_a_symlink_pointing_outside_does_not_verify(self, tmp_path):
+        """Kills the mutation dropping ``_resolves_inside`` from verify_file.
+
+        ``<repo>/link/secret.txt`` passes the lexical prefix test while the
+        bytes live outside every repository — the AN11 escape wearing a
+        different hat.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not in the repo\n", encoding="utf-8")
+        (repo / "link").symlink_to(outside, target_is_directory=True)
+        assert av.verify_file("link/secret.txt", [repo]) == "false"
+
+    def test_a_symlink_inside_the_repo_still_verifies(self, tmp_path):
+        """The control: an internal symlink is a legitimate repo path.
+
+        The personal-assistant checkout is built on exactly this shape —
+        ``memories`` is a symlink to ``data/memories`` — so the guard must
+        not reject it.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        (repo / "inner").mkdir()
+        (repo / "inner" / "note.md").write_text("here\n", encoding="utf-8")
+        (repo / "alias").symlink_to(repo / "inner", target_is_directory=True)
+        assert av.verify_file("alias/note.md", [repo]) == "true"
+
+    def test_a_real_file_is_unaffected(self, tmp_path):
+        repo = _throwaway_repo(tmp_path / "repo")
+        assert av.verify_file("scripts/real.py", [repo]) == "true"
+
+
+class TestTheAbsoluteBranchWithholdsToo:
+    """The absolute path's aggregate has the same contract as the relative.
+
+    Both branches end in ``"false" if checked_any and not pending_seen else
+    "pending"``, and only the relative one was tested — a bare ``return
+    "false"`` in the absolute branch survived the suite.
+    """
+
+    def test_a_timed_out_history_probe_is_pending(self, tmp_path):
+        """Kills the mutation ``return "false"`` at the end of the branch."""
+        import subprocess as _sp
+        repo = _throwaway_repo(tmp_path / "repo")
+        abspath = str(repo / "scripts" / "ghost.py")   # never created
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
+            assert av.verify_file(abspath, [repo]) == "pending"
+
+    def test_an_absent_absolute_path_is_still_false(self, tmp_path):
+        """The control: git answered, so the verdict is committal."""
+        repo = _throwaway_repo(tmp_path / "repo")
+        assert av.verify_file(str(repo / "scripts" / "ghost.py"), [repo]) == \
+            "false"
+
+    def test_a_stat_that_raises_withholds_the_verdict(self, tmp_path):
+        """Kills the mutation dropping ``pending_seen`` on an OSError stat.
+
+        An unmounted volume makes the working-tree probe raise. git may still
+        answer "absent" for the repositories it CAN read, but we did not
+        finish looking, so the verdict must not be committal.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        with patch("pathlib.Path.exists", side_effect=PermissionError("denied")):
+            assert av.verify_file("scripts/ghost.py", [repo]) == "pending"
