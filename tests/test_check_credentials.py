@@ -1520,3 +1520,84 @@ class TestParseEnvQuotingBoundaries:
         """
         cc.parse_env(_env_file(tmp_path, 'TOKEN="abcfake"$(whoami)\n'))
         assert any("command substitution" in f for f in cc.findings)
+
+
+class TestParseEnvLowsRoundThree:
+    """Audit round three L1, L2, L3."""
+
+    def test_an_ampersand_inside_a_trailing_comment_is_not_flagged(
+        self, tmp_path
+    ):
+        """Kills scanning the whole value for operators (L1).
+
+        Verified against bash 5.2.37: ``A=abc # comment with & in it``
+        assigns "abc" and runs nothing — bash stops reading at the unquoted
+        " #". Reporting the '&' was a false positive, and the comment
+        already has its own finding.
+        """
+        cc.parse_env(
+            _env_file(tmp_path, "TOKEN=abcfake # comment with & in it\n")
+        )
+        assert len(cc.findings) == 1
+        assert "has a '#' in its value" in cc.findings[0]
+
+    def test_an_operator_before_a_comment_is_still_flagged(self, tmp_path):
+        """Kills truncating the scan too eagerly.
+
+        Only the comment is excluded, not the value before it — an '&'
+        ahead of the '#' still backgrounds the assignment.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=abc&fake # a comment\n"))
+        assert any("contains & and is not quoted" in f for f in cc.findings)
+
+    @pytest.mark.parametrize("char", ["<", ">"])
+    def test_a_redirection_is_flagged(self, tmp_path, char):
+        """Kills leaving '<' and '>' out of the operator set (L2).
+
+        Verified against bash 5.2.37: ``A=a>b`` assigns 'a' and TRUNCATES a
+        file named b in the working directory. Every other finding here
+        costs a wrong credential; this one destroys a file.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake{char}target\n"))
+        assert len(cc.findings) == 1
+        assert f"contains {char} and is not quoted" in cc.findings[0]
+
+    def test_a_quoted_redirection_is_not_flagged(self, tmp_path):
+        """Kills applying the redirection check to quoted values."""
+        env = cc.parse_env(_env_file(tmp_path, 'TOKEN="a>b"\n'))
+        assert cc.findings == []
+        assert env["TOKEN"] == "a>b"
+
+    def test_a_byte_order_mark_does_not_become_part_of_the_name(self, tmp_path):
+        """Kills reading with plain ``utf-8`` instead of ``utf-8-sig`` (L3).
+
+        With a BOM the first key parsed as ``\\ufeffZOTERO_API_KEY``, so
+        every later check — the name pattern, the GitHub-variable
+        convention, the grant cross-check — was looking at a name that does
+        not exist.
+        """
+        path = tmp_path / "bom.env"
+        path.write_bytes(b"\xef\xbb\xbfZOTERO_API_KEY=abcfake\n")
+        env = cc.parse_env(path)
+        assert list(env) == ["ZOTERO_API_KEY"]
+
+    def test_a_byte_order_mark_is_still_a_finding(self, tmp_path):
+        """Kills dropping the BOM finding once utf-8-sig hides it.
+
+        bash does NOT skip the mark: verified against bash 5.2.37, sourcing
+        a BOM'd file reports "command not found" for the first line and
+        leaves the variable unset. Parsing it cleanly here without saying
+        so would hide a file that does not work.
+        """
+        path = tmp_path / "bom.env"
+        path.write_bytes(b"\xef\xbb\xbfZOTERO_API_KEY=abcfake\n")
+        cc.parse_env(path)
+        assert len(cc.findings) == 1
+        assert "byte-order mark" in cc.findings[0]
+
+    def test_a_file_without_a_bom_is_not_flagged(self, tmp_path):
+        """Kills reporting the mark on every file."""
+        path = tmp_path / "plain.env"
+        path.write_bytes(b"ZOTERO_API_KEY=abcfake\n")
+        cc.parse_env(path)
+        assert cc.findings == []

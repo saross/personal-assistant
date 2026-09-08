@@ -35,10 +35,13 @@ Three passes, cheapest first:
    unset.
 
    Pass 1 finally reports the shell metacharacters, because a credential
-   file is sourced by every session hook: an unquoted ``&``, ``;`` or ``|``
-   ends the assignment and runs the rest as a command (``A=https://x?a=1&b=2``
-   leaves A UNSET), and a backtick or ``$(`` outside single quotes EXECUTES
-   when the file is sourced — double quotes do not stop that one.
+   file is sourced by every session hook: an unquoted ``&``, ``;``, ``|``,
+   ``<`` or ``>`` ends the assignment and runs or redirects the rest
+   (``A=https://x?a=1&b=2`` leaves A UNSET; ``A=a>b`` truncates a file named
+   ``b``), and a backtick or ``$(`` anywhere outside a fully single-quoted
+   value EXECUTES when the file is sourced — double quotes do not stop that
+   one, and neither does a single-quoted prefix. A leading byte-order mark
+   is reported too: bash keeps it as part of the first variable's name.
 
 2. **Shell-source test.** Sources the file in a subshell; any output at all
    is a finding.
@@ -87,6 +90,8 @@ VALID_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # One line plus its terminator. Group 2 is "" only for a final line with no
 # terminator at all, so the three endings stay distinguishable (audit L1).
 _LINE_SPLIT = re.compile(r"([^\r\n]*)(\r\n|\r|\n|$)")
+# A leading UTF-8 byte-order mark. bash keeps it; ``utf-8-sig`` drops it.
+_UTF8_BOM = b"\xef\xbb\xbf"
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
 GITHUB_API = "https://api.github.com"
@@ -116,8 +121,21 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
     # parsing line by line — splitting on ``\n`` collapsed it into one "line"
     # and reported the wrong names (audit round two L1) — while ``term`` still
     # says which ending each line actually had.
+    #
+    # ``utf-8-sig`` drops a leading byte-order mark so it does not become part
+    # of the first variable's NAME (audit round three L3) — but the mark is
+    # still a finding, because bash does NOT drop it: verified against bash
+    # 5.2.37, sourcing a BOM'd file reports "\ufeffA=1: command not found" and
+    # leaves A unset.
     data = path.read_bytes()
-    text = data.decode("utf-8")
+    has_bom = data.startswith(_UTF8_BOM)
+    text = data.decode("utf-8-sig")
+    if has_bom:
+        note(
+            f"{path.name} begins with a UTF-8 byte-order mark — bash keeps it as "
+            "part of the first variable's name, so that line is run as a command "
+            "and the variable is never set. Save the file without a BOM."
+        )
     for lineno, match in enumerate(_LINE_SPLIT.finditer(text), start=1):
         raw, term = match.group(1), match.group(2)
         line = raw.strip()
@@ -213,19 +231,29 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 "value, or remove it."
             )
         if not quoted:
-            # Control operators terminate the assignment. Either quote form
-            # protects them. Verified against bash 5.2.37:
+            # Control operators and redirections terminate the assignment.
+            # Either quote form protects them. Verified against bash 5.2.37:
             # ``A=https://x/y?z=1&w=2`` leaves A UNSET because '&' backgrounds
             # the assignment; ``A=a;b`` assigns 'a' and runs 'b'; ``A=a|b``
-            # leaves A unset and runs 'b'. The URL is the form most likely to
-            # appear in a real credential file.
-            operators = sorted({char for char in "&;|" if char in raw_value})
+            # leaves A unset and runs 'b'; ``A=a>b`` assigns 'a' and TRUNCATES
+            # a file named b in the working directory (audit round three L2).
+            # The URL is the form most likely to appear in a real credential
+            # file; the redirection is the one that destroys something.
+            #
+            # Scan the value with any trailing comment removed: bash stops
+            # reading at an unquoted " #", so an '&' after that cannot run and
+            # reporting it was a false positive (audit round three L1). The
+            # comment itself already has its own finding below.
+            comment_at = raw_value.find(" #")
+            code = raw_value if comment_at == -1 else raw_value[:comment_at]
+            operators = sorted({char for char in "&;|<>" if char in code})
             if operators:
                 note(
                     f"line {lineno}: {name}'s value contains {', '.join(operators)} "
-                    "and is not quoted — bash ends the assignment there and runs the "
-                    f"rest as a command, often leaving {name} unset entirely. Quote "
-                    "the whole value."
+                    "and is not quoted — bash ends the assignment there and runs or "
+                    f"redirects the rest, often leaving {name} unset entirely (and "
+                    "'>' truncates a file named after the next word). Quote the "
+                    "whole value."
                 )
         if not literal and "$" in value and not substitution:
             # bash expands ``$`` unless the value is single-quoted; this parser
