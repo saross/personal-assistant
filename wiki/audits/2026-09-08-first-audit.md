@@ -675,7 +675,17 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     indexer's direct lock read is guarded; the ack names which half of a
     partial write failed; the stale-hours override is validated; the
     hermeticity guard covers all eight gate globs and deletions; nine
-    mutations killed. Ninth pass running. First session after merge will
+    mutations killed. Ninth pass: **block** — the acked position is
+    computed but never persisted (one line undoes the round's fix); an
+    ordinary rebuild without a sync in flight never resets it; a missing
+    quarantine file counts as zero and lowers the alarm; the ack on a
+    healthy pipeline exits 9 calling an empty sidecar corrupt; the uptime
+    amnesty runs before the boot-epoch check; the hermeticity guard blames
+    the suite for other processes' writes and would fail at random after
+    merge. Tenth round running: persist the acked block; detect a cursor
+    reset from the stored last position; per-gate-kind staleness (cron
+    gate by age since boot, hook gates by a newer session archive); the
+    whole suite runs under a tmp `HOME`. First session after merge will
     report all three gates as never written until each script has run
     once.
 - Round 3: hook-side items H25, H26, H29, H30 and the guard half of S22 are
