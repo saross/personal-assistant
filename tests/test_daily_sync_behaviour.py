@@ -830,6 +830,28 @@ class TestStashPopConflictPartitioning:
         assert "conflict markers" in combined
         assert world.published_data_head() == published_before
 
+    def test_a_pipe_run_that_is_not_a_marker_syncs_normally(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C1 (fourth re-audit): guard and resolver must agree.
+
+        git never emits a bare ``|||||||``, so treating one as a marker
+        refused a file the resolver would then decline to touch — the
+        operator circling between a gate telling them to run the resolver
+        and a resolver saying there is nothing to do. A vocabulary line
+        that happens to be a run of pipes is content.
+        """
+        machine = world.add_machine("a")
+        (machine.data / "memories" / "tag-vocabulary.txt").write_text(
+            "seed-tag\n|||||||\nanother-tag\n", encoding="utf-8"
+        )
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        published = world.published_data_file("memories/tag-vocabulary.txt")
+        assert "|||||||" in published
+        assert "another-tag" in published, "the file's tail was swallowed"
+
     def test_markers_in_the_tag_vocabulary_are_refused(
         self, world: SyncWorld
     ) -> None:

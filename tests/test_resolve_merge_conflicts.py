@@ -183,16 +183,100 @@ class TestDiff3ConflictStyle:
         assert "from-amd-tower" in text
         assert "from-zbook" in text
 
-    def test_a_bare_base_marker_is_recognised(self) -> None:
-        """git writes `|||||||` alone when the base section is empty."""
-        assert rmc.is_conflict_marker("|||||||")
-        assert rmc.has_conflict_markers(["|||||||"])
+    def test_the_base_marker_is_always_labelled(self) -> None:
+        """git never emits a bare `|||||||`.
+
+        Measured against git across a plain merge, both diff3 styles, and
+        a stash pop: an add/add conflict, where neither side had the file
+        at all, still gets `||||||| <sha>`, and a stash pop gets
+        `||||||| Stash base`. There is no bare form to match, and matching
+        one anyway is what let a stray pipe run swallow a file's tail
+        (audit C1, fourth re-audit).
+        """
         assert rmc.is_conflict_marker("||||||| parent of 1a2b3c4 (seed)")
+        assert rmc.is_conflict_marker("||||||| Stash base")
+        assert not rmc.is_conflict_marker("|||||||")
 
     def test_base_marker_lookalikes_in_content_are_safe(self) -> None:
         """Exact-line matching, as for the other three markers."""
         embedded = json.dumps({"id": "x", "content": "a ||||||| pipe run"})
         assert not rmc.has_conflict_markers([embedded])
+
+
+# ============================================================================
+# Lines outside a conflict block are never touched (audit C1, fourth re-audit)
+# ============================================================================
+
+
+class TestStrayMarkersOutsideBlocks:
+    """A marker-shaped line with no ``<<<<<<< `` above it is not a
+    conflict. It is content that happens to look like one, or a file a
+    human is part-way through repairing — and this script cannot tell
+    which side of a boundary that is not there each line belongs to.
+
+    The bug: any ``|||||||`` line opened a "base section" that swallowed
+    everything after it to the next marker or to end of file. A
+    conflict-free tag vocabulary lost its tail, and the script reported
+    "resolved 0 conflict block(s)" and exit 0 while doing it — under a
+    gate that had told the operator to run exactly this resolver.
+    """
+
+    @pytest.mark.parametrize("name", ["memories.jsonl", "tag-vocabulary.txt"])
+    @pytest.mark.parametrize("stray", ["|||||||", "||||||| looks like a base", "======="])
+    def test_a_stray_marker_leaves_the_file_byte_identical(
+        self, tmp_path: Path, name: str, stray: str
+    ) -> None:
+        """Kept verbatim, with everything after it, and not even the
+        trailing newline changed — the file is written without one."""
+        target = tmp_path / name
+        original = (
+            "first line\n"
+            + stray + "\n"
+            + "line after the stray marker\n"
+            + "last line with no trailing newline"
+        )
+        target.write_bytes(original.encode("utf-8"))
+
+        result = _run_resolver(str(target))
+        assert result.returncode == 0, result.stderr
+        assert target.read_bytes() == original.encode("utf-8"), (
+            "the resolver rewrote a file that holds no conflict block"
+        )
+
+    def test_a_stray_marker_is_reported_to_the_operator(
+        self, tmp_path: Path
+    ) -> None:
+        """Silence would leave them circling: the sync's gate points here."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(
+            '{"id": "a"}\n||||||| looks like a base\n{"id": "b"}\n', encoding="utf-8"
+        )
+        result = _run_resolver("--quiet-if-clean", str(target))
+        assert result.returncode == 0
+        assert "outside any conflict block" in result.stderr
+        assert "needs a human" in result.stderr
+
+    def test_a_stray_marker_below_a_real_block_survives_the_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """The block is resolved; the line beneath it is not the block's."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(
+            "<<<<<<< HEAD\n"
+            + _record("ours") + "\n"
+            + "=======\n"
+            + _record("theirs") + "\n"
+            + ">>>>>>> other\n"
+            + "|||||||\n"
+            + _record("after") + "\n",
+            encoding="utf-8",
+        )
+        assert _run_resolver(str(target)).returncode == 0
+        lines = target.read_text(encoding="utf-8").splitlines()
+        assert "|||||||" in lines, "a line outside the block was dropped"
+        assert any('"after"' in ln for ln in lines), "the file's tail was swallowed"
+        assert any('"ours"' in ln for ln in lines)
+        assert any('"theirs"' in ln for ln in lines)
 
 
 # ============================================================================

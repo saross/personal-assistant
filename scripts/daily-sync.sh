@@ -354,11 +354,17 @@ memory_files_with_markers() {
     local f
     for f in "${MEMORY_APPEND_FILES[@]}"; do
         [[ -f "$f" ]] || continue
-        # audit C1 (third re-audit): `|||||||` too — under
+        # audit C1 (third re-audit): `||||||| <ref>` too — under
         # merge.conflictStyle=diff3/zdiff3 git emits it and a whole
         # merge-base section, and a corpus carrying `||||||| parent of
         # <sha>` reached the bare remote with exit 0 and a clean gate.
-        if grep -qE '^(<<<<<<< |>>>>>>> |\|\|\|\|\|\|\| )|^(=======|\|\|\|\|\|\|\|)$' -- "$f"; then
+        #
+        # audit C1 (fourth re-audit): the LABELLED form only. git never
+        # emits a bare `|||||||` (measured across merge, both diff3
+        # styles, and stash pop), so matching one refused a file the
+        # resolver would then decline to touch — leaving the operator
+        # circling between a gate and a no-op.
+        if grep -qE '^(<<<<<<< |>>>>>>> |\|\|\|\|\|\|\| )|^=======$' -- "$f"; then
             printf '%s\n' "$f"
         fi
     done

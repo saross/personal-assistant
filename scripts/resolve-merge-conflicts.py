@@ -46,70 +46,107 @@ from pathlib import Path
 CONFLICT_START_PREFIX = "<<<<<<< "
 CONFLICT_END_PREFIX = ">>>>>>> "
 CONFLICT_SEPARATOR = "======="  # Git emits exactly this with nothing after
-# audit C1 (third re-audit): under `merge.conflictStyle = diff3` or
-# `zdiff3` git emits a fourth marker and a whole extra section — the
-# merge BASE — between `|||||||` and `=======`. Recognising only the
-# three classic markers left `||||||| parent of <sha>` in the file as a
-# "malformed but non-empty" line, and unioned the base section back in:
-# records deleted on both sides would be resurrected, and the marker line
-# itself reached the remote as unparseable JSONL.
+# Under `merge.conflictStyle = diff3` or `zdiff3` git emits a fourth marker
+# and a whole extra section — the merge BASE — between `|||||||` and
+# `=======`. The label is never empty: an add/add conflict, where neither
+# side had the file, still gets `||||||| <sha>`, and a stash pop gets
+# `||||||| Stash base` (verified against git across merge, both diff3
+# styles, and stash pop). So there is no bare-marker form to match.
 CONFLICT_BASE_PREFIX = "||||||| "
-CONFLICT_BASE_BARE = "|||||||"  # git emits this alone when the base is empty
 
 
 def is_conflict_marker(line: str) -> bool:
     """
-    Is this line a git conflict marker?
+    Does this line have the exact shape of a git conflict marker?
 
-    Markers are matched against their exact line forms, not substring, so
-    memory content that happens to contain `=======` or `<<<<<<<` within
-    a larger JSON string does not trigger a false positive.
+    Shape only: whether it is ACTING as a marker depends on where it sits,
+    which is what `strip_conflict_markers` decides. Matching is against
+    whole-line forms, not substrings, so memory content that happens to
+    contain `=======` or `<<<<<<<` inside a larger JSON string does not
+    trigger a false positive.
     """
     return (
         line.startswith(CONFLICT_START_PREFIX)
         or line.startswith(CONFLICT_END_PREFIX)
         or line.startswith(CONFLICT_BASE_PREFIX)
         or line == CONFLICT_SEPARATOR
-        or line == CONFLICT_BASE_BARE
     )
 
 
-def is_base_marker(line: str) -> bool:
-    """Does this line open a diff3/zdiff3 merge-base section?"""
-    return line.startswith(CONFLICT_BASE_PREFIX) or line == CONFLICT_BASE_BARE
-
-
 def has_conflict_markers(lines: list[str]) -> bool:
-    """True iff any line matches a git conflict marker on its own."""
-    return any(is_conflict_marker(ln) for ln in lines)
+    """
+    True iff the file holds a conflict block, i.e. an opening marker.
+
+    audit C1 (fourth re-audit): a `=======` or `||||||| ...` line with no
+    `<<<<<<< ` above it is not a conflict — it is content that happens to
+    look like a marker, or a half-repaired file a human is part-way
+    through. Either way this script must not touch the file: it has no
+    way to tell which side of a boundary that is not there each line
+    belongs to. `resolve` reports such lines and leaves the file alone.
+    """
+    return any(ln.startswith(CONFLICT_START_PREFIX) for ln in lines)
+
+
+def marker_lines_outside_blocks(lines: list[str]) -> list[str]:
+    """
+    Return marker-shaped lines that sit outside any conflict block.
+
+    Used only to tell a human that a file needs their eye: they are kept
+    verbatim, never rewritten.
+    """
+    stray: list[str] = []
+    in_block = False
+    for ln in lines:
+        if ln.startswith(CONFLICT_START_PREFIX):
+            in_block = True
+            continue
+        if in_block:
+            if ln.startswith(CONFLICT_END_PREFIX):
+                in_block = False
+            continue
+        if is_conflict_marker(ln):
+            stray.append(ln)
+    return stray
 
 
 def strip_conflict_markers(lines: list[str]) -> list[str]:
     """
-    Remove conflict-marker lines, keeping everything between them —
-    EXCEPT a diff3/zdiff3 merge-base section, which is dropped entirely.
+    Remove conflict markers, and any diff3/zdiff3 merge-base section,
+    from INSIDE conflict blocks — and nothing else.
 
+    The invariant (audit C1, fourth re-audit): a line outside an open
+    block — one where `<<<<<<< ` has been seen and `>>>>>>> ` has not — is
+    never removed. Keying on the marker shape alone meant a stray
+    `|||||||` line anywhere in a conflict-free file opened a "base
+    section" that swallowed everything after it to the next marker or to
+    end of file: a tag vocabulary lost its tail, and the script reported
+    "resolved 0 conflict block(s)" and exit 0 while doing it.
+
+    Inside a block the base section is dropped whole rather than unioned.
     The correct resolution of an append-only conflict is `ours` ∪
-    `theirs`. The base section is neither: it is what both sides started
-    from, so anything in it that survived is already in one of the two
-    sides, and anything that did not survive was deleted deliberately.
-    Unioning it back in resurrects deleted records (audit C1).
+    `theirs`; the base is neither. Anything in it that survived is already
+    in one of the two sides, and anything that did not was deleted
+    deliberately — unioning it back in resurrects deleted records.
     """
     out: list[str] = []
+    in_block = False
     in_base = False
     for ln in lines:
-        if is_base_marker(ln):
-            in_base = True
+        if ln.startswith(CONFLICT_START_PREFIX):
+            in_block, in_base = True, False
             continue
-        if ln == CONFLICT_SEPARATOR:
-            in_base = False
-            continue
-        if is_conflict_marker(ln):
-            # `<<<<<<< ` or `>>>>>>> `: a new block, or the end of one.
-            in_base = False
-            continue
-        if in_base:
-            continue
+        if in_block:
+            if ln.startswith(CONFLICT_END_PREFIX):
+                in_block, in_base = False, False
+                continue
+            if ln.startswith(CONFLICT_BASE_PREFIX):
+                in_base = True
+                continue
+            if ln == CONFLICT_SEPARATOR:
+                in_base = False
+                continue
+            if in_base:
+                continue
         out.append(ln)
     return out
 
@@ -179,6 +216,18 @@ def resolve(path: Path, quiet_if_clean: bool) -> int:
         return -1
 
     lines = path.read_text(encoding="utf-8").splitlines()
+    stray = marker_lines_outside_blocks(lines)
+    if stray:
+        # Not something this script may fix: without an opening marker
+        # there is no way to tell which side each line belongs to. Say so
+        # loudly — daily-sync.sh's gate points the operator here, and a
+        # silent no-op would leave them going in circles.
+        print(
+            f"WARNING: {path}: {len(stray)} marker-shaped line(s) outside any "
+            "conflict block, left untouched — this file needs a human: "
+            + ", ".join(repr(ln) for ln in stray[:3]),
+            file=sys.stderr,
+        )
     if not has_conflict_markers(lines):
         if not quiet_if_clean:
             print(f"{path}: no conflict markers — skipping")
