@@ -546,9 +546,20 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     condemning them; both repositories checked; `git am`, cherry-pick,
     revert, and resolved-but-uncommitted operations get the right
     command; the completion flag and the start-of-run guard pinned; a
-    missing tool reported as missing. Ninth pass running. Both machines
-    at 16:40: corpora pass `--check`, no stash, no in-progress operation
-    in either repository, `timeout` present, no `merge.conflictStyle`.
+    missing tool reported as missing. Ninth pass: **do not merge** — the
+    exit handler classifies a restore by scanning the whole repository,
+    so after the first conflict every later stash is branded conflicted
+    and condemned (the only-copy harm the round removed elsewhere), and
+    the new sidecar carries that misattribution to the next run and never
+    expires; a bisect is derailed by the branch guard; the parent check
+    now blocks the data half; a backtick in the new gate text executes
+    `timeout`; the sidecar's write side and the conflicted-versus-refused
+    discrimination are untested. Tenth round running: per-apply
+    classification from an unmerged-path snapshot before and after each
+    apply (with a third "blocked" outcome); sidecar rows carry the paths
+    a stash produced and expire with the entry. Both machines at 16:40:
+    corpora pass `--check`, no stash, no in-progress operation in either
+    repository, `timeout` present, no `merge.conflictStyle`.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
