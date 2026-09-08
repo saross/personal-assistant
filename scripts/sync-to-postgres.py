@@ -695,9 +695,10 @@ def _quarantine_refused_records(
         advance past it. The second is only what THIS call appended, and
         is a diagnostic: the gate derives its number from the file.
 
-        Only ids in ``accounted_for`` may be skipped by a cursor advance — a quarantine write that failed leaves the record
-        unaccounted for, so it stays in ``unexpected_drops`` and halts the
-        cursor instead (audit IC2's contract).
+        Only ids in ``accounted_for`` may be skipped by a cursor
+        advance: a quarantine write that failed leaves the record
+        unaccounted for, so it stays in ``unexpected_drops`` and
+        halts the cursor instead (audit IC2's contract).
     """
     quarantined: list[str] = []
     newly_written: list[str] = []

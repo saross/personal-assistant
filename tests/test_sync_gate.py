@@ -1719,3 +1719,76 @@ class TestTheAliasResolverFollowsAChain:
             f"the resolver stopped short of the chain: {sorted(names)}"
         )
         assert "unrelated" not in names
+
+
+#: The modules this audit tranche owns. House style is 100 columns, and a
+#: docstring that ran to 123 got through review twice.
+TRANCHE_MODULES = (
+    "_sync_gate.py",
+    "_sync_cursor.py",
+    "_pg_row_guard.py",
+    "sync-to-postgres.py",
+    "sync-sessions-to-postgres.py",
+    "index-session-content.py",
+)
+
+
+@pytest.mark.parametrize("module_name", TRANCHE_MODULES)
+def test_the_tranche_stays_within_a_hundred_columns(module_name):
+    """The mutation this kills: a re-wrapped docstring drifting back."""
+    source = (SCRIPTS_DIR / module_name).read_text(encoding="utf-8")
+    long_lines = [
+        f"{module_name}:{number}: {len(line)} columns"
+        for number, line in enumerate(source.splitlines(), 1)
+        if len(line) > 100
+    ]
+    assert not long_lines, "\n".join(long_lines)
+
+
+class TestARenderFailureLeavesTheStateIntact:
+    """
+    The sidecar is the source of truth and the gate file mirrors it, so a
+    failed render must leave the problem recorded rather than lost. This
+    is the behaviour the write-then-render order exists to protect, in
+    the raising direction (eighth re-audit, M3's tie to the ordering).
+    """
+
+    def test_the_sidecar_still_holds_the_problem(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        """
+        The mutation this kills: letting a render failure abandon the
+        state write, so the problem is neither shown nor remembered.
+        """
+        gate = tmp_path / "gates" / "g"
+        logger = logging.getLogger("test-render-fail")
+        real_write = _sync_gate._atomic_write
+
+        def _fail_only_the_render(path, text):
+            if path.name.endswith(".state.json"):
+                return real_write(path, text)
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(_sync_gate, "_atomic_write", _fail_only_the_render)
+
+        with caplog.at_level(logging.ERROR):
+            state = _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_DEGRADED,
+                    fault_detail="the schema is wrong",
+                    script="test",
+                ),
+                gate_path=gate, logger=logger,
+            )
+
+        assert "COULD NOT BE PERSISTED" in caplog.text
+        assert _sync_gate.PROBLEM_FAULT in state.problems, (
+            "a failed render lost the problem the run had found"
+        )
+
+        # And the next run's render repairs the mirror from the sidecar.
+        monkeypatch.setattr(_sync_gate, "_atomic_write", real_write)
+        _sync_gate.render_gate(
+            gate, _sync_gate.read_state(gate, logger), logger,
+        )
+        assert "the schema is wrong" in gate.read_text(encoding="utf-8")
