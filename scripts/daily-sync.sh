@@ -220,6 +220,11 @@ push_with_retry() {
                 "$PA_DIR/venv/bin/python3" "$RESOLVER" --quiet-if-clean \
                     "${jsonl_paths[@]}" >>"$LOG_FILE" 2>&1 \
                     || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: resolver failed during rebase" 3; }
+                # audit C2: the same invariant on the rebase path.
+                if [[ -n "$(memory_files_with_markers)" ]]; then
+                    git rebase --abort >>"$LOG_FILE" 2>&1 || true
+                    refuse_if_memory_markers "$context rebase"
+                fi
                 git add "${jsonl_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                     || { git rebase --abort >>"$LOG_FILE" 2>&1 || true; fail "$context: git add after resolver failed"; }
             fi
@@ -296,6 +301,43 @@ is_memory_append_file() {
     return 1
 }
 
+memory_files_with_markers() {
+    # Print each MEMORY_APPEND_FILES path whose CONTENT holds a git
+    # conflict-marker line. Must be called from inside the data submodule.
+    #
+    # Content, not index state (audit C2, second re-audit): the previous
+    # check read the porcelain code, so a marker-laden memories.jsonl that
+    # somebody had `git add`ed read as a plain modification and was
+    # committed and pushed — and the advice this script printed told them
+    # to run exactly that `git add`.
+    local f
+    for f in "${MEMORY_APPEND_FILES[@]}"; do
+        [[ -f "$f" ]] || continue
+        if grep -qE '^(<<<<<<< |>>>>>>> )|^=======$' -- "$f"; then
+            printf '%s\n' "$f"
+        fi
+    done
+}
+
+refuse_if_memory_markers() {
+    # refuse_if_memory_markers <what-was-about-to-happen>
+    # The invariant: no append-only memory file whose content holds a
+    # conflict marker is ever staged or committed, by any block. Every
+    # consumer of memories.jsonl parses it as JSONL, so a published marker
+    # breaks extraction, recall, and the drift check on both machines at
+    # once — and the corpus is append-only, so nothing later repairs it.
+    local context="$1" marked=() f
+    while IFS= read -r f; do
+        [[ -n "$f" ]] && marked+=("$f")
+    done < <(memory_files_with_markers)
+    if [[ ${#marked[@]} -eq 0 ]]; then
+        return 0
+    fi
+    write_sync_gate 1 \
+        "daily-sync STOPPED: ${marked[*]} contain git conflict markers and must not be committed. Resolve with: $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py ${marked[*]/#/$DATA_DIR/} — then just run the sync again. Do NOT 'git add' them by hand: staging markers is how they reach origin."
+    fail "$context: ${marked[*]} contain conflict markers; refusing to stage or commit them"
+}
+
 # ---------------------------------------------------------------------------
 # resolve_rebase_conflicts — shared conflict partitioning for rebase paths.
 #
@@ -343,6 +385,11 @@ resolve_rebase_conflicts() {
             git rebase --abort >>"$LOG_FILE" 2>&1 || true
             log "$context: resolver failed during rebase — aborted"
             return 1
+        fi
+        # audit C2: never stage a marker, on any path.
+        if [[ -n "$(memory_files_with_markers)" ]]; then
+            git rebase --abort >>"$LOG_FILE" 2>&1 || true
+            refuse_if_memory_markers "$context rebase"
         fi
         git add "${jsonl[@]}" >>"$LOG_FILE" 2>&1 || {
             git rebase --abort >>"$LOG_FILE" 2>&1 || true; return 1; }
@@ -657,21 +704,20 @@ fi
 # other file are untouched.
 committed_memory_appends=0
 if [[ $DRY_RUN -eq 0 ]]; then
+    # audit C2: before anything is staged. Unconditional, because a
+    # marker-laden corpus need not be dirty — an earlier run may already
+    # have committed one.
+    refuse_if_memory_markers "append-only commit"
     memory_dirty=()
     for _mf in "${MEMORY_APPEND_FILES[@]}"; do
         _mf_status="$(git status --porcelain -- "$_mf")"
         [[ -n "$_mf_status" ]] || continue
-        # audit C2: an UNMERGED path is "dirty" too. A previous run that
-        # bailed on a conflicted stash pop (audit S3) leaves markers in the
-        # tree, and staging one here commits git's `<<<<<<<` lines into the
-        # append-only corpus. Once the human resolves the prose file that
-        # stopped that run, the push publishes the markers and BOTH
-        # machines pull a memories.jsonl that no longer parses. Refuse, and
-        # say so where session start will show it.
+        # An UNMERGED path is "dirty" too, and add/add or delete/delete
+        # conflicts leave no markers for the content check above to find.
         if [[ "$_mf_status" =~ ^(UU|AA|DD|AU|UA|DU|UD)\  ]]; then
             write_sync_gate 1 \
-                "daily-sync STOPPED: $_mf is unmerged in $DATA_DIR (conflict markers in the corpus). Resolve it by hand — scripts/resolve-merge-conflicts.py $DATA_DIR/$_mf, then git -C $DATA_DIR add $_mf — before the next sync."
-            fail "$_mf is unmerged (conflict markers present); refusing to commit it"
+                "daily-sync STOPPED: $_mf is unmerged in $DATA_DIR. Resolve it — $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py $DATA_DIR/$_mf for a text conflict, otherwise by hand — then run the sync again. Do NOT 'git add' it while markers remain."
+            fail "$_mf is unmerged; refusing to stage or commit it"
         fi
         memory_dirty+=("$_mf")
     done
@@ -796,6 +842,9 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 "${resolver_paths[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "resolve-merge-conflicts.py failed" 3
 
+            # audit C2: the resolver is supposed to have removed every
+            # marker from these files; stage them only once that is true.
+            refuse_if_memory_markers "post-resolver stage"
             git add "${resolvable_conflicts[@]}" >>"$LOG_FILE" 2>&1 \
                 || fail "git add after resolver failed"
             # audit C1: drop the entry we actually popped. A bare
@@ -811,6 +860,9 @@ fi
 # Commit + push if there's anything to commit.
 if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
     log "data submodule: committing merged local changes"
+    # audit C2: `git add -A` sweeps whatever is dirty, so this is the last
+    # place a marker-laden corpus could slip into a commit and be pushed.
+    refuse_if_memory_markers "auto-sync commit"
     git add -A >>"$LOG_FILE" 2>&1
     git commit -m "chore(auto-sync): daily sync from $HOST $(date +'%Y-%m-%d')" \
         >>"$LOG_FILE" 2>&1 || fail "data commit failed"

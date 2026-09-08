@@ -521,6 +521,67 @@ class TestStashPopConflictPartitioning:
         assert "remote-tag" in published
         assert "<<<<<<<" not in published
 
+    def test_staged_markers_are_refused_by_the_append_only_block(
+        self, world: SyncWorld
+    ) -> None:
+        """Second re-audit C2: the check must read CONTENT, not the index.
+
+        The previous check read the porcelain code, so a marker-laden
+        memories.jsonl that had been `git add`ed read as a plain `M ` and
+        was committed and pushed — and the gate this script printed told
+        the operator to run exactly that `git add`.
+        """
+        machine = world.add_machine("a")
+        machine.memories.write_text(
+            '{"id": "ours"}\n'
+            "<<<<<<< Updated upstream\n"
+            '{"id": "theirs"}\n'
+            "=======\n"
+            '{"id": "mine"}\n'
+            ">>>>>>> Stashed changes\n",
+            encoding="utf-8",
+        )
+        git("add", "--", "memories/memories.jsonl", cwd=machine.data)
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "conflict markers" in combined
+        assert world.published_data_head() == published_before
+        committed = git("show", "HEAD:memories/memories.jsonl", cwd=machine.data).stdout
+        assert "<<<<<<<" not in committed, "markers were committed"
+        # And the advice must not be the very command that caused this.
+        gate = world.gate("daily-sync-gate")
+        assert "resolve-merge-conflicts.py" in gate
+        assert "Do NOT 'git add'" in gate
+
+    def test_markers_pulled_from_origin_stop_the_auto_sync_commit(
+        self, world: SyncWorld
+    ) -> None:
+        """The other machine published a marker-laden corpus (the C2
+        disaster). After the pull, this machine must refuse to build a
+        commit on top of it — the auto-sync block is the last gate before
+        `git add -A` sweeps the corpus into a commit."""
+        machine = world.add_machine("a")
+        world.publish_data_change(
+            "memories/memories.jsonl",
+            '{"id": "seed"}\n<<<<<<< HEAD\n{"id": "a"}\n=======\n{"id": "b"}\n>>>>>>> x\n',
+        )
+        # Something else dirty, so the auto-sync block would commit.
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- local note\n", encoding="utf-8"
+        )
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "auto-sync commit" in combined
+        assert world.published_data_head() == published_before, (
+            "committed on top of a corpus full of conflict markers"
+        )
+
     def test_next_run_refuses_to_commit_the_conflicted_corpus(
         self, world: SyncWorld
     ) -> None:
@@ -552,7 +613,9 @@ class TestStashPopConflictPartitioning:
         second = world.run_sync(machine)
         combined = second.stdout + second.stderr
         assert second.returncode == 2, combined
-        assert "unmerged" in combined
+        # Refused by the content check (which now runs first) or by the
+        # unmerged-index check behind it; either way, refused.
+        assert "conflict markers" in combined or "unmerged" in combined, combined
         # The direct harm: markers must never enter a commit. (They reach
         # origin one step later, when the human resolves the prose file
         # that stopped the run and the S1 push finds HEAD ahead.)
