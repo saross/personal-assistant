@@ -44,23 +44,60 @@ DEPS_FAILED=0
 #               Added by audit round 4d (E5): the script's riskiest steps
 #               (pruning symlinks, installing packages, initialising a
 #               submodule) had no way to be inspected before they ran.
+#   --allow-worktree
+#               proceed even though this checkout is not the live
+#               $HOME/personal-assistant. Round 4d-2: without the guard
+#               below, a worktree run repointed every live ~/.claude
+#               symlink at the worktree in steps 2-6 and then died in
+#               step 7 when the composer refused, leaving the operator's
+#               configuration half-migrated to a branch.
 QUIET=0
 DRY_RUN=0
+ALLOW_WORKTREE=0
+USAGE="Usage: sync-symlinks.sh [--quiet] [--dry-run] [--allow-worktree]"
 for arg in "$@"; do
     case "$arg" in
-        --quiet)   QUIET=1 ;;
-        --dry-run) DRY_RUN=1 ;;
+        --quiet)          QUIET=1 ;;
+        --dry-run)        DRY_RUN=1 ;;
+        --allow-worktree) ALLOW_WORKTREE=1 ;;
         -h|--help)
-            echo "Usage: sync-symlinks.sh [--quiet] [--dry-run]"
+            echo "$USAGE"
             exit 0
             ;;
         *)
             echo "ERROR: unknown argument: $arg" >&2
-            echo "Usage: sync-symlinks.sh [--quiet] [--dry-run]" >&2
+            echo "$USAGE" >&2
             exit 2
             ;;
     esac
 done
+
+# ---------------------------------------------------------------------------
+# Live-checkout guard (round 4d-2)
+#
+# Every step below writes into the LIVE $HOME/.claude: symlinks in steps
+# 2-6, then the global CLAUDE.md in step 7. Run from a git worktree, the
+# link steps silently repointed the operator's whole configuration at that
+# worktree and step 7 then exited non-zero (the composer has its own
+# guard), leaving the machine half-migrated to a branch with no message
+# saying so. Refuse before step 1 instead, so nothing is half-done.
+#
+# --dry-run is exempt: inspecting what a worktree run WOULD do is exactly
+# what the flag is for, and it changes nothing.
+# ---------------------------------------------------------------------------
+LIVE_ROOT="${HOME}/personal-assistant"
+if [[ $ALLOW_WORKTREE -eq 0 && $DRY_RUN -eq 0 && -d "$LIVE_ROOT" ]]; then
+    live_real="$(cd "$LIVE_ROOT" && pwd -P)"
+    pa_real="$(cd "$PA_DIR" && pwd -P)"
+    if [[ "$live_real" != "$pa_real" ]]; then
+        echo "ERROR: refusing to relink $CLAUDE_DIR from $pa_real" >&2
+        echo "  (the live checkout is $live_real). A worktree run would" >&2
+        echo "  repoint every ~/.claude symlink at this branch. Re-run" >&2
+        echo "  from the live checkout, or pass --dry-run to inspect," >&2
+        echo "  or --allow-worktree if you really mean it." >&2
+        exit 2
+    fi
+fi
 
 say() {
     # Print unconditionally (used for headings, changes, errors).
@@ -178,13 +215,24 @@ cd "$PA_DIR"
 # gitlink SHA recorded in the superproject, which detaches data/ from its
 # branch; commits a concurrent session has made inside data/ but not yet
 # pointed at from the superproject become unreferenced. This step exists
-# solely to populate an empty data/, so an empty data/ is the only case
-# in which it should run. `ls -A` also covers "data/ does not exist".
-if [ -n "$(ls -A "$PA_DIR/data" 2>/dev/null || true)" ]; then
-    say_verbose "  Submodule already initialised — leaving it alone."
-else
+# solely to populate an empty data/, so an uninitialised data/ is the only
+# case in which it should run.
+#
+# Round 4d-2: ask git, not the directory listing. "Is data/ non-empty?"
+# answered yes for a fresh clone whose data/ happened to hold one stray
+# file, and the submodule was then never initialised — the opposite
+# failure. `git submodule status` prefixes an UNINITIALISED submodule with
+# "-"; anything else (" ", "+", "U") means it has a checkout. A worktree
+# whose data/ holds empty stub directories is still uninitialised by that
+# test, so it still skips.
+submodule_state="$(git submodule status -- data 2>/dev/null || true)"
+if [ -z "$submodule_state" ]; then
+    say_verbose "  No data submodule declared — nothing to initialise."
+elif [ "${submodule_state#-}" != "$submodule_state" ]; then
     run_action git submodule update --init --recursive --quiet
     say_verbose "  Submodule ready."
+else
+    say_verbose "  Submodule already initialised — leaving it alone."
 fi
 
 # ---------------------------------------------------------------------------
@@ -196,7 +244,12 @@ say "[2/8] Linking settings.json..."
 # but nothing created $CLAUDE_DIR itself, so on a machine without a
 # ~/.claude (a genuinely fresh bootstrap through setup.sh) `ln -s` failed
 # here and set -e aborted before any link was made.
-run_action mkdir -p "$CLAUDE_DIR"
+#
+# Mode 0700 explicitly (round 4d-2): ~/.claude holds settings.json and the
+# composed global instructions, and under a permissive umask a bare
+# `mkdir -p` would create it world-readable. -m applies only when the
+# directory is created, so an existing ~/.claude keeps its own mode.
+run_action mkdir -m 700 -p "$CLAUDE_DIR"
 ensure_symlink "$PA_DIR/settings.json" "$CLAUDE_DIR/settings.json" "settings.json"
 
 # ---------------------------------------------------------------------------
@@ -259,13 +312,20 @@ done
 # ---------------------------------------------------------------------------
 
 say "[7/8] Composing global CLAUDE.md..."
+# The composer has its own live-checkout guard, so --allow-worktree has to
+# reach it too (round 4d-2): otherwise the override left steps 2-6 done and
+# step 7 refusing — the half-migrated state the guard above exists to stop.
+compose_args=()
+[[ $ALLOW_WORKTREE -eq 1 ]] && compose_args+=(--allow-foreign-root)
 if [[ $DRY_RUN -eq 1 ]]; then
     # The composer has its own --dry-run, so pass the flag through rather
     # than skipping the step: the operator still sees what would be written.
-    bash "$PA_DIR/scripts/compose-global-claude-md.sh" --dry-run >/dev/null
+    bash "$PA_DIR/scripts/compose-global-claude-md.sh" --dry-run \
+        "${compose_args[@]}" >/dev/null
     say "  would compose $CLAUDE_DIR/CLAUDE.md"
 else
-    bash "$PA_DIR/scripts/compose-global-claude-md.sh" >/dev/null
+    bash "$PA_DIR/scripts/compose-global-claude-md.sh" \
+        "${compose_args[@]}" >/dev/null
     say_verbose "  Composed."
 fi
 

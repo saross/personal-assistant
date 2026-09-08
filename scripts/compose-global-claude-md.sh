@@ -38,10 +38,15 @@ LOCAL="$PA_DIR/data/global-claude-md/local.md"
 TARGET="${HOME}/.claude/CLAUDE.md"
 
 usage() {
-    echo "Usage: compose-global-claude-md.sh [--dry-run] [--target <path>]" >&2
+    echo "Usage: compose-global-claude-md.sh [--dry-run]" \
+         "[--target <path>] [--allow-foreign-root]" >&2
 }
 
 DRY_RUN=false
+# Deliberate, named bypass of the live-checkout provenance guard below.
+# sync-symlinks.sh passes it through from its own --allow-worktree, so a
+# migration the operator actually asked for does not die half-done.
+ALLOW_FOREIGN_ROOT=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -58,6 +63,10 @@ while [[ $# -gt 0 ]]; do
             fi
             TARGET="$2"
             shift 2
+            ;;
+        --allow-foreign-root)
+            ALLOW_FOREIGN_ROOT=true
+            shift
             ;;
         -h|--help)
             usage
@@ -103,7 +112,10 @@ resolve_path() {
 
 LIVE_ROOT="${HOME}/personal-assistant"
 LIVE_TARGET="$(resolve_path "${HOME}/.claude/CLAUDE.md")"
-if [[ "$(resolve_path "$TARGET")" == "$LIVE_TARGET" ]]; then
+# --dry-run writes nothing, so there is nothing for the guard to protect;
+# inspecting what a foreign checkout WOULD compose is the flag's purpose.
+if [[ "$DRY_RUN" == false && "$ALLOW_FOREIGN_ROOT" == false \
+      && "$(resolve_path "$TARGET")" == "$LIVE_TARGET" ]]; then
     if [[ -e "$LIVE_ROOT" || -L "$LIVE_ROOT" ]]; then
         # An unusable live root — a plain file, or a symlink that does not
         # resolve — means provenance cannot be established at all. Refuse

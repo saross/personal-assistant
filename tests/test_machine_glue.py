@@ -75,6 +75,36 @@ def write_stub(bin_dir: Path, name: str, log: Path, exit_code: int = 0) -> None:
     stub.chmod(0o755)
 
 
+def write_git_stub(bin_dir: Path, log: Path) -> None:
+    """
+    Write a ``git`` stub that records argv and answers ``submodule status``.
+
+    ``sync-symlinks.sh`` decides whether to initialise the data submodule
+    from what git reports, so the stub has to answer that one query. The
+    answer comes from ``STUB_SUBMODULE_STATUS`` so each test states the
+    repository shape it is describing; everything else is recorded and
+    exits 0.
+
+    Args:
+        bin_dir: Directory placed first on ``PATH``.
+        log: File each invocation appends one ``git arg arg`` line to.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "git"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "git" >> {shlex.quote(str(log))}\n'
+        f'for a in "$@"; do printf " %s" "$a" >> {shlex.quote(str(log))}; done\n'
+        f'printf "\\n" >> {shlex.quote(str(log))}\n'
+        'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
+        '    printf "%s\\n" "${STUB_SUBMODULE_STATUS:-}"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+
 def run_script(
     script: Path,
     *args: str,
@@ -181,7 +211,7 @@ def sync_sandbox(tmp_path: Path) -> dict[str, Path]:
     bin_dir = tmp_path / "stubbin"
     log = tmp_path / "argv.log"
     log.write_text("", encoding="utf-8")
-    write_stub(bin_dir, "git", log)
+    write_git_stub(bin_dir, log)
     return {
         "pa_dir": pa_dir,
         "home": home,
@@ -192,15 +222,23 @@ def sync_sandbox(tmp_path: Path) -> dict[str, Path]:
 
 
 def _run_sync(
-    sandbox: dict[str, Path], *args: str
+    sandbox: dict[str, Path],
+    *args: str,
+    submodule_status: str = " 1234abcd data (heads/main)",
 ) -> subprocess.CompletedProcess[str]:
-    """Run the sandboxed ``sync-symlinks.sh`` with stubs on PATH."""
+    """Run the sandboxed ``sync-symlinks.sh`` with stubs on PATH.
+
+    ``submodule_status`` is what the stub ``git`` reports for
+    ``submodule status -- data``; the default describes an initialised
+    submodule, which is the ordinary case.
+    """
     return run_script(
         sandbox["script"],
         *args,
         home=sandbox["home"],
         path_prefix=sandbox["bin"],
         cwd=sandbox["pa_dir"],
+        extra_env={"STUB_SUBMODULE_STATUS": submodule_status},
     )
 
 
@@ -341,40 +379,156 @@ class TestSubmoduleUpdateIsGated:
 
     On an initialised submodule it checks out the recorded gitlink SHA,
     detaching ``data/`` from its branch and orphaning commits a concurrent
-    session made there. This step exists only to populate an empty
-    ``data/``.
+    session made there. This step exists only to populate an
+    UNINITIALISED ``data/``.
+
+    Round 4d-2 replaced the original "is data/ non-empty?" test: a fresh
+    clone whose ``data/`` held one stray file answered yes and the
+    submodule was then never initialised — the opposite failure. The gate
+    now asks git, whose ``submodule status`` prefixes an uninitialised
+    submodule with ``-``.
     """
 
     def test_initialised_submodule_is_left_alone(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """A non-empty data/ means no git invocation at all."""
-        result = _run_sync(sync_sandbox, "--quiet")
+        """A checked-out submodule means no `submodule update` at all."""
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status=" 1234abcd data (main)"
+        )
 
         assert result.returncode == 0, result.stderr
         recorded = sync_sandbox["log"].read_text(encoding="utf-8")
-        assert "submodule" not in recorded, recorded
+        assert "submodule update" not in recorded, recorded
+
+    def test_a_locally_modified_submodule_is_left_alone(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """"+" means checked out at a different commit — still hands off."""
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="+1234abcd data (main)"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
 
     def test_uninitialised_submodule_is_initialised(
-        self, sync_sandbox: dict[str, Path], tmp_path: Path
+        self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """An empty data/ still gets `git submodule update --init`."""
-        # Strip data/ back to an empty directory, the uninitialised shape,
-        # and give the composer its local source from elsewhere so the
-        # later steps still run.
-        local = sync_sandbox["pa_dir"] / "data" / "global-claude-md"
-        (local / "local.md").unlink()
-        local.rmdir()
-        (sync_sandbox["pa_dir"] / "data" / "global-claude-md").mkdir()
-        (sync_sandbox["pa_dir"] / "data" / "global-claude-md").rmdir()
-
-        result = _run_sync(sync_sandbox, "--quiet")
+        """"-" means no checkout: this is the case the step exists for."""
+        _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
 
         recorded = sync_sandbox["log"].read_text(encoding="utf-8")
         assert "git submodule update --init --recursive --quiet" in recorded
-        # The composer then fails on the missing local source, which is the
-        # correct outcome for a genuinely uninitialised submodule.
-        assert result.returncode != 0
+
+    def test_a_stray_file_in_data_does_not_suppress_the_init(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The bug the emptiness test had: one stray file blocked bootstrap."""
+        (sync_sandbox["pa_dir"] / "data" / "README-left-behind.md").write_text(
+            "a stray file in an uninitialised submodule\\n", encoding="utf-8"
+        )
+
+        _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
+        recorded = sync_sandbox["log"].read_text(encoding="utf-8")
+        assert "git submodule update --init --recursive --quiet" in recorded
+
+    def test_no_submodule_declared_is_a_no_op(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """A repository without the submodule must not be "initialised"."""
+        result = _run_sync(sync_sandbox, "--quiet", submodule_status="")
+
+        assert result.returncode == 0, result.stderr
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+
+class TestSyncSymlinksRefusesFromAWorktree:
+    """Round 4d-2 — steps 2-6 relink the LIVE ~/.claude before step 7 dies.
+
+    From a worktree the link steps repointed every ~/.claude symlink at
+    the branch, and only then did the composer refuse and `set -e` abort —
+    leaving the operator's configuration half-migrated, with no message
+    saying which half.
+    """
+
+    def test_a_foreign_root_is_refused_before_step_one(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """Nothing is linked, and no git command runs at all."""
+        (sync_sandbox["home"] / "personal-assistant").mkdir()
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(sync_sandbox, "--quiet")
+
+        assert result.returncode == 2, result.stdout
+        assert "refusing to relink" in result.stderr
+        assert snapshot(sync_sandbox["home"]) == before
+        assert sync_sandbox["log"].read_text(encoding="utf-8") == ""
+
+    def test_dry_run_is_exempt(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """Inspecting what a worktree run would do is the flag's purpose."""
+        (sync_sandbox["home"] / "personal-assistant").mkdir()
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(sync_sandbox, "--dry-run")
+
+        assert result.returncode == 0, result.stderr
+        assert "would run:" in result.stdout
+        assert snapshot(sync_sandbox["home"]) == before
+
+    def test_allow_worktree_proceeds(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The explicit override still works, for a deliberate migration."""
+        (sync_sandbox["home"] / "personal-assistant").mkdir()
+
+        result = _run_sync(sync_sandbox, "--quiet", "--allow-worktree")
+
+        assert result.returncode == 0, result.stderr
+        assert (
+            sync_sandbox["home"] / ".claude" / "commands" / "fossick.md"
+        ).is_symlink()
+
+
+class TestClaudeDirectoryMode:
+    """Round 4d-2 — ~/.claude holds settings.json and the global rules."""
+
+    def test_it_is_created_private_under_a_permissive_umask(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """umask 000 must not produce a world-readable ~/.claude."""
+        script = sync_sandbox["pa_dir"] / "run-with-umask.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\numask 000\nexec bash "
+            + shlex.quote(str(sync_sandbox["script"]))
+            + " --quiet\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+
+        result = run_script(
+            script,
+            home=sync_sandbox["home"],
+            path_prefix=sync_sandbox["bin"],
+            cwd=sync_sandbox["pa_dir"],
+            extra_env={"STUB_SUBMODULE_STATUS": " 1234abcd data (main)"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        mode = (sync_sandbox["home"] / ".claude").stat().st_mode & 0o777
+        assert mode == 0o700, oct(mode)
 
 
 class TestDependencyInstall:
