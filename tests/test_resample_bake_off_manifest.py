@@ -409,3 +409,101 @@ class TestShortfallReporting:
             )
         assert run_main(root, "--out", str(tmp_path / "manifest.json")) == 0
         assert "SHORTFALL: bin short" not in capsys.readouterr().out
+
+
+class TestBinning:
+    """The bin boundaries decide which sessions the bake-off ever sees."""
+
+    @pytest.mark.parametrize(
+        "tokens,expected",
+        [
+            (999, None),
+            (1_000, "short"),
+            (49_999, "short"),
+            (50_000, "medium"),
+            (119_999, "medium"),
+            (120_000, "long"),
+            (190_000, "long"),
+            (190_001, None),
+        ],
+    )
+    def test_boundaries(self, tokens, expected):
+        assert resample.classify_bin(tokens) == expected
+
+
+class TestCandidateFiltering:
+    """Two kinds of file must never reach the sample."""
+
+    def test_lfs_pointer_stub_is_skipped(self, tmp_path):
+        """A pointer stub distils to nonsense; it is not a transcript."""
+        root = tmp_path / "home"
+        session_dir = root / "cc-archives" / "thornhollow-survey" / "2026-01-08T08-00-00"
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.jsonl").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
+            b"size 12345\n"
+        )
+        candidates = resample.enumerate_archive_candidates(
+            resample.archive_globs(root)
+        )
+        assert candidates == []
+
+    def test_transcript_below_the_token_floor_is_dropped(self, tmp_path):
+        """MIN_TOKENS keeps tiny sub-agent prompts out of the short bin."""
+        root = tmp_path / "home"
+        write_archive_session(
+            root, "thornhollow-survey", "2026-01-09T08-00-00",
+            session_id="99999999-0000-0000-0000-000000000009",
+            n_records=2, repeats=1,
+        )
+        extractor = resample._load_extractor()
+        candidates = resample.enumerate_archive_candidates(
+            resample.archive_globs(root)
+        )
+        assert len(candidates) == 1
+        assert resample.extract_and_score(candidates, extractor) == []
+
+
+class TestEnumerationOrder:
+    """A seeded sample is only reproducible if its input list is."""
+
+    def test_archive_enumeration_is_sorted_whatever_glob_returns(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "home"
+        for index in range(3):
+            write_archive_session(
+                root, "thornhollow-survey", f"2026-01-3{index}T08-00-00",
+                session_id=f"bbbbbbbb-0000-0000-0000-00000000000{index}",
+            )
+        real_glob = resample.glob.glob
+
+        def reversed_glob(pattern):
+            """Filesystem order differs across machines; simulate the worst."""
+            return list(reversed(sorted(real_glob(pattern))))
+
+        monkeypatch.setattr(resample.glob, "glob", reversed_glob)
+        paths = [
+            c.transcript_path
+            for c in resample.enumerate_archive_candidates(
+                resample.archive_globs(root)
+            )
+        ]
+        assert paths == sorted(paths)
+
+    def test_live_enumeration_labels_subagents(self, tmp_path):
+        root = tmp_path / "home"
+        write_live_session(
+            root, "-home-shawn-Code-thornhollow-survey",
+            "cccccccc-0000-0000-0000-000000000001",
+        )
+        write_subagent_session(
+            root, "-home-shawn-Code-thornhollow-survey",
+            "cccccccc-0000-0000-0000-000000000002", "explore",
+        )
+        sources = sorted(
+            c.source
+            for c in resample.enumerate_live_candidates(resample.live_globs(root))
+        )
+        assert sources == ["live", "subagent"]

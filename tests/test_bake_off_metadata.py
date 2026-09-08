@@ -803,3 +803,140 @@ class TestInterpreterHint:
         monkeypatch.setattr(importlib.util, "module_from_spec", boom)
         with pytest.raises(RuntimeError, match="venv/bin/python3"):
             bom._load_extractor()
+
+
+class TestParseResponseJson:
+    """Models wrap JSON in fences intermittently; prose is a real failure."""
+
+    def test_bare_json_round_trips(self):
+        assert bom.parse_response_json(fx.RESPONSE_BARE) == fx.RESPONSE_OBJECT
+
+    def test_fenced_json_round_trips(self):
+        assert bom.parse_response_json(fx.RESPONSE_FENCED) == fx.RESPONSE_OBJECT
+
+    def test_leading_and_trailing_whitespace_is_tolerated(self):
+        padded = f"\n\n  {fx.RESPONSE_BARE}  \n"
+        assert bom.parse_response_json(padded) == fx.RESPONSE_OBJECT
+
+    def test_fence_with_trailing_prose_is_a_value_error(self):
+        """Only a single enclosing fence is stripped; prose after it is not."""
+        with pytest.raises(ValueError):
+            bom.parse_response_json(fx.RESPONSE_FENCED_WITH_PROSE)
+
+    def test_prose_only_is_a_value_error(self):
+        with pytest.raises(ValueError):
+            bom.parse_response_json(fx.RESPONSE_PROSE_ONLY)
+
+
+class TestCostEstimate:
+    """The system prompt is billed on every call and must be counted once."""
+
+    def test_system_prompt_tokens_appear_once_per_request(self, tmp_path):
+        rows = []
+        for index in range(3):
+            session_id = f"cost{index}-1111-2222"
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=6
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        cost = bom.estimate_cost_usd(requests, provider="gemini")
+        user_tokens = sum(max(1, len(r.user_message) // 4) for r in requests)
+        assert cost["input_tokens"] == (
+            user_tokens + 3 * bom.SYSTEM_PROMPT_TOKENS_APPROX
+        )
+
+    def test_per_session_rows_match_the_aggregate(self, tmp_path):
+        manifest = _one_session_manifest(tmp_path, "cost-single-1111")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        cost = bom.estimate_cost_usd(requests, provider="gemini")
+        rows = cost["per_session_cost_usd"]
+        assert sum(row["input_tokens"] for row in rows) == cost["input_tokens"]
+        assert rows[0]["input_tokens"] > bom.SYSTEM_PROMPT_TOKENS_APPROX
+
+    def test_unknown_provider_is_an_error(self, tmp_path):
+        manifest = _one_session_manifest(tmp_path, "cost-unknown-1111")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        with pytest.raises(ValueError):
+            bom.estimate_cost_usd(requests, provider="not-a-provider")
+
+
+class TestDryRunFootprint:
+    """A dry run writes one file and constructs nothing."""
+
+    def test_only_the_cost_file_is_written(self, tmp_path, gemini_boundary):
+        manifest = _one_session_manifest(tmp_path, "dry-run-1111-2222")
+        out_dir = tmp_path / "out"
+        assert bom.main(_live_argv(
+            manifest, _prompt_file(tmp_path), out_dir, "--dry-run"
+        )) == 0
+        written = sorted(p.relative_to(out_dir) for p in out_dir.rglob("*") if p.is_file())
+        assert written == [Path("gemini") / "dry-run-cost.json"]
+        assert gemini_boundary == []
+
+
+class TestHaikuApplyBoundary:
+    """Retrieval maps custom ids back to sessions; an unknown id writes nothing."""
+
+    @pytest.fixture
+    def anthropic_stub(self, monkeypatch):
+        """Install a fake ``anthropic`` module returning canned batch results."""
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return results
+
+    @staticmethod
+    def _result(custom_id: str, text: str):
+        """Build one batch result object shaped like the SDK's."""
+        block = type("Block", (), {"type": "text", "text": text})()
+        message = type("Message", (), {"content": [block]})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def test_unknown_custom_id_writes_nothing(self, tmp_path, anthropic_stub, capsys):
+        """The negative: an id absent from batch-state.json is not a session."""
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_invented",
+                "custom_id_to_session": {"sess-known": "known-session"},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(self._result("sess-stranger", fx.RESPONSE_BARE))
+        bom.haiku_apply("batch_invented", out_dir)
+        written = sorted(p.name for p in out_dir.iterdir())
+        assert written == ["batch-state.json"]
+        assert "unknown custom_id" in capsys.readouterr().out
+
+    def test_known_custom_id_writes_its_session(self, tmp_path, anthropic_stub):
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_invented",
+                "custom_id_to_session": {"sess-known": "known-session"},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(self._result("sess-known", fx.RESPONSE_BARE))
+        bom.haiku_apply("batch_invented", out_dir)
+        written = json.loads((out_dir / "known-session.json").read_text())
+        assert written == fx.RESPONSE_OBJECT
+        assert (out_dir / "known-session.raw.txt").exists()
