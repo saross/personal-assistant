@@ -461,19 +461,39 @@ def _request_with_retry(
 # ----------------------------------------------------------------------------
 
 
+#: One assignment line in a .env file: an optional ``export`` prefix, then
+#: KEY=VALUE. Deliberately the same shape ``env-fingerprint.sh`` matches
+#: (its embedded Python, ASSIGNMENT), because that tool is what certifies
+#: two machines' .env files agree — audit round 4d (E2) found it happily
+#: certifying a file this loader could not read.
+_ENV_ASSIGNMENT = re.compile(
+    r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$"
+)
+
+
 def load_env(path: Path = ENV_PATH) -> None:
-    """Source key=value pairs from .env into os.environ if not already set."""
+    """
+    Source key=value pairs from .env into os.environ if not already set.
+
+    Accepts an optional ``export `` prefix and strips ONE layer of
+    matching quotes, so ``ZOTERO_LIBRARY_ID="1234567"``,
+    ``export ZOTERO_LIBRARY_ID=1234567``, and the bare form all load the
+    same value. Without that, a quoted key loaded with its quotes attached
+    (and every Zotero request 404ed), while ``export X=...`` defined a
+    variable literally named ``export X``.
+    """
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if "=" not in line:
+        match = _ENV_ASSIGNMENT.match(line)
+        if not match:
             continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
+        key, value = match.group(1), match.group(2).strip()
+        # Strip one layer of matching quotes so 'abc', "abc", and abc agree.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
         if key and key not in os.environ:
             os.environ[key] = value
 
@@ -897,6 +917,11 @@ def _load_zotero_client() -> Any:
 #: The read-only Zotero client module, loaded once for its DOI normaliser.
 _ZOTERO_CLIENT = _load_zotero_client()
 
+#: Strip HTML tags, decode entities, and collapse whitespace. Reused from
+#: the same client module rather than reimplemented, so registry markup is
+#: cleaned identically wherever it is written.
+_strip_html = _ZOTERO_CLIENT._strip_html
+
 
 def find_existing_by_doi(doi: str, conn: sqlite3.Connection) -> list[dict]:
     """
@@ -1135,7 +1160,11 @@ def build_zotero_item(
     # sources: an empty *registry* title must NOT clobber a usable claims
     # title (hence the truthiness test on `registry_title`), whereas an
     # empty *claims* title is a legitimate (if rare) correction and is kept.
-    registry_title = (crossref_msg.get("title") or [""])[0]
+    # The registry title is HTML-stripped exactly as the abstract is
+    # (audit round 4d, E5): CrossRef returns markup in titles
+    # (``<i>Homo naledi</i>``, ``&amp;``) and the abstract path stripped it
+    # while the title path wrote it into Zotero verbatim.
+    registry_title = _strip_html((crossref_msg.get("title") or [""])[0] or "")
     title_claim = (claims_for_doi.get("title") or {}).get("value")
     if registry_title:
         title = registry_title
@@ -1152,9 +1181,19 @@ def build_zotero_item(
         dobj = crossref_msg.get(fld)
         if isinstance(dobj, dict):
             parts = dobj.get("date-parts", [[]])
-            if parts and parts[0]:
+            # CrossRef emits `"date-parts": [[null]]` for a record with no
+            # usable date. `[None]` is truthy, so the old test let it
+            # through and the literal string "None" was written to Zotero
+            # as the item's date (audit round 4d, E4). Require at least one
+            # non-null component, and drop any null tail.
+            if parts and parts[0] and parts[0][0] is not None:
+                components = []
+                for p in parts[0]:
+                    if p is None:
+                        break
+                    components.append(p)
                 date_str = "-".join(f"{p:02d}" if i > 0 else str(p)
-                                    for i, p in enumerate(parts[0]))
+                                    for i, p in enumerate(components))
                 break
     if not date_str and year:
         date_str = str(year)
@@ -1312,8 +1351,12 @@ def ensure_subcollection(zot, parent_key: str, name: str) -> str:
     Return the key of a subcollection named `name` under `parent_key`,
     creating it if absent. Idempotent.
     """
-    # List children of the staging collection
-    children = zot.collections_sub(parent_key)
+    # List children of the staging collection. `collections_sub` returns a
+    # single page (pyzotero 1.11.1); past one page an existing
+    # subcollection went unseen and a same-named twin was created, which is
+    # the opposite of idempotent (audit round 4d, E8). `everything` follows
+    # the Link headers to the end.
+    children = zot.everything(zot.collections_sub(parent_key))
     for c in children:
         if c["data"]["name"] == name:
             return c["key"]

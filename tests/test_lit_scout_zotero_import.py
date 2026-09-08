@@ -227,6 +227,7 @@ def test_authors_fall_back_to_claims_when_registry_has_none() -> None:
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import types
@@ -547,6 +548,120 @@ class TestRunImportLive:
         assert import_env["opened"] == [], (
             "the library was opened before the credential check"
         )
+
+
+# ===========================================================================
+# E2 / E4 / E5 / E8 — the four medium defects on the importer's write path
+# ===========================================================================
+
+
+class TestLoadEnv:
+    """E2 — the loader must read what env-fingerprint.sh certifies."""
+
+    def test_quotes_are_stripped(self, tmp_path, monkeypatch) -> None:
+        """A quoted value loads without its quotes."""
+        env = tmp_path / "synthetic.env"
+        env.write_text(
+            '# a synthetic env file\n'
+            'ZOTERO_LIBRARY_ID="9990001"\n'
+            "ZOTERO_STAGING_COLLECTION='STAGINGK'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("ZOTERO_LIBRARY_ID", raising=False)
+        monkeypatch.delenv("ZOTERO_STAGING_COLLECTION", raising=False)
+
+        _importer.load_env(env)
+
+        assert os.environ["ZOTERO_LIBRARY_ID"] == "9990001"
+        assert os.environ["ZOTERO_STAGING_COLLECTION"] == "STAGINGK"
+
+    def test_export_prefix_is_accepted(self, tmp_path, monkeypatch) -> None:
+        """``export KEY=value`` defines KEY, not a variable called "export KEY"."""
+        env = tmp_path / "synthetic.env"
+        env.write_text(
+            "export ZOTERO_API_KEY_ALL=synthetic-key-not-a-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("ZOTERO_API_KEY_ALL", raising=False)
+
+        _importer.load_env(env)
+
+        assert os.environ["ZOTERO_API_KEY_ALL"] == (
+            "synthetic-key-not-a-secret"
+        )
+        assert not any(k.startswith("export") for k in os.environ)
+
+    def test_an_existing_value_is_not_overwritten(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The ambient environment still wins over the file."""
+        env = tmp_path / "synthetic.env"
+        env.write_text('ZOTERO_LIBRARY_ID="from-file"\n', encoding="utf-8")
+        monkeypatch.setenv("ZOTERO_LIBRARY_ID", "from-environment")
+
+        _importer.load_env(env)
+
+        assert os.environ["ZOTERO_LIBRARY_ID"] == "from-environment"
+
+
+class TestRegistryDateAndTitle:
+    """E4 and E5 — what actually reaches the Zotero item."""
+
+    def test_null_date_parts_yield_an_empty_date(self) -> None:
+        """``[[None]]`` must not become the literal string "None"."""
+        crossref = _crossref()
+        crossref["issued"] = {"date-parts": [[None]]}
+        item = _build(_claims(), crossref)
+        assert item["date"] != "None"
+        assert item["date"] == "2022", (
+            "with no usable registry date the claims year should stand"
+        )
+
+    def test_a_null_tail_is_truncated(self) -> None:
+        """``[[2031, None]]`` yields the year alone, not "2031-None"."""
+        crossref = _crossref()
+        crossref["issued"] = {"date-parts": [[2031, None]]}
+        item = _build(_claims(), crossref)
+        assert item["date"] == "2031"
+
+    def test_html_in_the_registry_title_is_stripped(self) -> None:
+        """Markup and entities must not land in Zotero's title field."""
+        item = _build(
+            _claims(),
+            _crossref(title="Terraces <i>in situ</i> &amp; abandoned"),
+        )
+        assert item["title"] == "Terraces in situ & abandoned"
+
+
+class TestEnsureSubcollectionPaginates:
+    """E8 — an existing subcollection past page one must still be found."""
+
+    def test_a_second_page_match_is_reused_not_duplicated(self) -> None:
+        """No create call is made when the name exists on page two."""
+        client = FakeZoteroClient("9990001", "user", "key")
+        client.subcollection_pages = [
+            [{"key": "PAGE1AAA", "data": {"name": "2031-02-04-other"}}],
+            [{"key": "PAGE2BBB", "data": {"name": "2031-02-04-wanted"}}],
+        ]
+
+        key = _importer.ensure_subcollection(
+            client, "STAGINGK", "2031-02-04-wanted"
+        )
+
+        assert key == "PAGE2BBB"
+        assert not [c for c in client.calls if c[0] == "create_collections"]
+
+    def test_an_absent_name_is_still_created(self) -> None:
+        """The create path is unchanged when nothing matches."""
+        client = FakeZoteroClient("9990001", "user", "key")
+        client.subcollection_pages = [[], []]
+
+        key = _importer.ensure_subcollection(
+            client, "STAGINGK", "2031-02-04-new"
+        )
+
+        assert key == "NEWCOLL1"
+        assert [c[0] for c in client.calls if c[0] == "create_collections"]
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entry point

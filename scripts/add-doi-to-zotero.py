@@ -25,7 +25,8 @@ Requirements
 ------------
 Run with the personal-assistant venv (has pyzotero + httpx). Credentials are
 read from ``~/personal-assistant/.env`` by the importer's ``load_env``:
-``ZOTERO_LIBRARY_ID``, ``ZOTERO_API_KEY_PERSONAL``, ``ZOTERO_STAGING_COLLECTION``.
+``ZOTERO_LIBRARY_ID``, ``ZOTERO_API_KEY_ALL`` (falling back to the
+retiring ``ZOTERO_API_KEY_PERSONAL``), ``ZOTERO_STAGING_COLLECTION``.
 The ``.env`` is per-machine (git-ignored) — each machine must have its own.
 
 Usage
@@ -136,13 +137,19 @@ def main() -> int:
     m = load_importer()
     m.load_env()
     lib = os.environ.get("ZOTERO_LIBRARY_ID")
-    key = os.environ.get("ZOTERO_API_KEY_PERSONAL")
+    # ZOTERO_API_KEY_ALL is the Tier-1 broad key (2026-08-24); the retired
+    # ZOTERO_API_KEY_PERSONAL remains a fallback until revoked. Audit round
+    # 4d (E6): this script read only the retirement candidate, so revoking
+    # it would have broken the tool while the importer beside it kept
+    # working. Same precedence as lit-scout-zotero-import.py's run_import.
+    key = (os.environ.get("ZOTERO_API_KEY_ALL")
+           or os.environ.get("ZOTERO_API_KEY_PERSONAL"))
     staging = os.environ.get("ZOTERO_STAGING_COLLECTION")
     missing = [
         n
         for n, v in [
             ("ZOTERO_LIBRARY_ID", lib),
-            ("ZOTERO_API_KEY_PERSONAL", key),
+            ("ZOTERO_API_KEY_ALL", key),
             ("ZOTERO_STAGING_COLLECTION", staging),
         ]
         if not v
