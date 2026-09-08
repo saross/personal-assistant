@@ -348,6 +348,7 @@ gate_line_class() {
     local line="$1"
     case "$line" in
         *"cannot identify"*)                        printf 'unattributed' ;;
+        *"BINARY content"*)                         printf 'binary' ;;
         *"these markers ARE that stash's content"*) printf 'attribution' ;;
         *"only PARTLY"*|*"restored only part"*)     printf 'partial' ;;
         *"UNRECOVERED"*)                            printf 'unrecovered' ;;
@@ -502,13 +503,21 @@ sweep_orphaned_stash_state_temps() {
     # mktemp and its rename. A marker file dated NOW makes that explicit
     # anyway: only files older than this sweep are touched, so a
     # concurrent writer this reasoning has not anticipated still cannot
-    # lose its half-built sidecar. The marker's own name is longer than
-    # the six characters mktemp appends, so it never matches the glob.
+    # lose its half-built sidecar.
+    #
+    # audit L-a (fourth re-audit): the marker used to be named
+    # `<sidecar>.sweepmark.XXXXXX`, which the glob below cannot match —
+    # so a run killed between creating it and removing it left a file no
+    # sweep could ever remove, which is the very litter this function
+    # exists for. It now takes the same six-character shape as the
+    # sidecar temporaries, so a later run collects it. This sweep may
+    # collect its own marker (it is not NEWER than itself), which costs
+    # nothing: it is removed immediately afterwards either way.
     local dir base marker
     dir="$(dirname "$STASH_STATE_FILE")"
     base="$(basename "$STASH_STATE_FILE")"
     [[ -d "$dir" ]] || return 0
-    marker="$(mktemp "${STASH_STATE_FILE}.sweepmark.XXXXXX" 2>/dev/null)" || return 0
+    marker="$(mktemp "${STASH_STATE_FILE}.XXXXXX" 2>/dev/null)" || return 0
     find "$dir" -maxdepth 1 -type f -name "${base}.??????" \
         ! -newer "$marker" -delete 2>/dev/null || true
     rm -f "$marker" 2>/dev/null || true
@@ -1745,7 +1754,14 @@ status_lines_for() {
         [[ ${#line} -gt 3 ]] || continue
         entry="${line:3}"
         for path in "$@"; do
-            if [[ "$entry" == "$path" ]]; then
+            # A rename is reported as `R  <old> -> <new>`, and the entry
+            # names BOTH of the paths the tracked half touches (audit
+            # L-d, fourth re-audit). Without this a rename-only stash
+            # matched neither of its own paths, so nothing about it could
+            # ever be called landed and its entry was kept for ever.
+            if [[ "$entry" == "$path" ]] \
+                    || [[ "$entry" == "$path -> "* ]] \
+                    || [[ "$entry" == *" -> $path" ]]; then
                 printf '%s\n' "$line"
                 break
             fi
@@ -1808,11 +1824,22 @@ stash_tracked_half_landed() {
     # other machine had independently made the same edit — which loses
     # nothing, but a clean apply reports rc 0 and never reaches here, so
     # the stricter conjunction costs only a kept entry.
+    #
+    # audit L-d (fourth re-audit): `--no-renames`, on BOTH the path list
+    # and the diff. Git detects a rename and reports only its
+    # DESTINATION, so a rename-only entry contributed one path, the
+    # pathspec-limited diff below then dropped the source's deletion, and
+    # what remained — "create new.md" — reverse-applied cleanly while
+    # old.md was still sitting there. The entry was called landed and
+    # dropped though the rename had never completed. Measured on git
+    # 2.48.1: with `--no-renames` the same state reports both paths and
+    # the check correctly says no.
     local repo="$1" sha="$2" path
     local -a paths=()
     while IFS= read -r -d '' path; do
         [[ -n "$path" ]] && paths+=("$path")
-    done < <(git -C "$repo" diff --name-only -z "${sha}^1" "$sha" 2>/dev/null || true)
+    done < <(git -C "$repo" diff --name-only -z --no-renames "${sha}^1" "$sha" \
+        2>/dev/null || true)
     # An entry with no tracked half has nothing to land, so nothing can
     # be concluded from the tree having changed.
     [[ ${#paths[@]} -gt 0 ]] || return 1
@@ -1822,8 +1849,30 @@ stash_tracked_half_landed() {
         [[ "$(status_lines_for "$apply_before_status" "$path")" \
             != "$(status_lines_for "$apply_after_status" "$path")" ]] || return 1
     done
-    git -C "$repo" diff "${sha}^1" "$sha" -- "${paths[@]}" 2>/dev/null \
+    git -C "$repo" diff --no-renames "${sha}^1" "$sha" -- "${paths[@]}" 2>/dev/null \
         | git -C "$repo" apply --check --reverse >/dev/null 2>&1
+}
+
+stash_tracked_half_is_binary() {
+    # stash_tracked_half_is_binary <repo> <sha>
+    # True when any path the entry's tracked half touches is binary to
+    # git, which `--numstat` reports as `-<TAB>-<TAB><path>`.
+    #
+    # audit L-c (fourth re-audit): this is why `refused` cannot be worded
+    # as "git declined the merge". A binary diff is one `git apply` will
+    # not take, so stash_tracked_half_landed says "not landed" about an
+    # entry that may have landed perfectly well — keeping it is right,
+    # but telling the operator git refused it is not true.
+    #
+    # Read into a variable rather than piping into `grep -q`: `grep -q`
+    # exits the moment it matches, the upstream `git` then dies of
+    # SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED —
+    # so the match would read as "no binary paths". Every `grep -q` on
+    # the far side of a pipe in this script has that hazard.
+    local repo="$1" sha="$2" numstat
+    numstat="$(git -C "$repo" diff --numstat --no-renames "${sha}^1" "$sha" \
+        2>/dev/null || true)"
+    [[ "$numstat" == *"-"$'\t'"-"$'\t'* ]]
 }
 
 snapshot_before_apply() {
@@ -2244,7 +2293,11 @@ restore_stash_on_exit() {
                             log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was blocked by an earlier conflict; the entry is intact"
                             ;;
                         *)
-                            log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was refused; git declined the merge and the stash is preserved"
+                            if stash_tracked_half_is_binary "$_repo" "$_sha"; then
+                                log "ERROR: restoring $(describe_stash "$_repo" "$_sha") holds BINARY content this run cannot check either way; the entry is kept"
+                            else
+                                log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was refused; git declined the merge and the stash is preserved"
+                            fi
                             ;;
                     esac
                 fi
@@ -2449,7 +2502,7 @@ abort_on_jsonl_shrink() {
     lines_after="$corpus_lines"
     [[ "$lines_after" -lt "$lines_before" ]] || return 0
     head_msg="$(git log -1 --format=%B)"
-    if echo "$head_msg" | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then
+    if has_bulk_rewrite_trailer "$head_msg"; then
         return 0
     fi
     # audit low (eleventh re-audit): a `.log` name, because the private
@@ -2483,6 +2536,20 @@ abort_on_jsonl_shrink() {
         log "WARNING: failed to reset HEAD~1 after shrink detection; manual recovery may be needed"
     fi
     fail "data submodule: unexpected shrink detected at the $context (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
+}
+
+has_bulk_rewrite_trailer() {
+    # has_bulk_rewrite_trailer <commit message>
+    # True when the message declares a deliberate bulk rewrite. Anchored
+    # at both ends, so a message merely QUOTING the phrase is not one.
+    #
+    # The message is passed in rather than piped: `grep -q` exits on its
+    # first match, the upstream `git log` then dies of SIGPIPE, and
+    # `set -o pipefail` reports that pipeline as failed — which would
+    # silently turn a real trailer into "no trailer" and refuse a
+    # legitimate archive run. It is a race on message length, which is
+    # the worst kind to leave in a guard.
+    grep -qE '^Rewrite-Class: bulk[[:space:]]*$' <<<"$1"
 }
 
 corpus_line_count() {
@@ -2533,6 +2600,11 @@ corpus_line_count() {
 #: exits nothing but the subshell (the trap this script has fallen into
 #: twice before — see memory_files_with_markers).
 corpus_lines=""
+#: 1 when that tree HELD the corpus, 0 when it did not. "Zero records"
+#: and "no corpus here" are the same number and different facts, and the
+#: per-commit loop below has to tell them apart (audit M1, fourth
+#: re-audit).
+corpus_lines_present=0
 
 corpus_lines_at() {
     # corpus_lines_at <rev>:<path>
@@ -2545,8 +2617,10 @@ corpus_lines_at() {
     local spec="$1"
     if ! git rev-parse --verify --quiet "$spec" >/dev/null 2>&1; then
         corpus_lines=0
+        corpus_lines_present=0
         return 0
     fi
+    corpus_lines_present=1
     if ! corpus_lines="$(git show "$spec" 2>/dev/null | corpus_line_count)"; then
         add_sync_gate_detail \
             "daily-sync STOPPED: the records in $spec could not be counted, so this run cannot tell whether the corpus shrank. Nothing was pushed. Check that $DATA_DIR is readable and that memories.jsonl is not corrupt."
@@ -2578,7 +2652,8 @@ abort_on_published_shrink() {
     # Must be called from inside the data submodule, immediately before a
     # push.
     local context="$1" lines_before lines_after shrink_report
-    local commit parent before after offender=""
+    local commit parent before after offender="" offender_reason=""
+    local parents parents_with_corpus shortening=0
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
@@ -2614,31 +2689,63 @@ abort_on_published_shrink() {
         # truncates below both sides, which skipping merges entirely
         # (`--no-merges`) would miss.
         #
-        # A root commit has no parent, and a commit that added the file
-        # has no version of it in its parent: both are zero records, not
-        # errors.
+        # A root commit has no parent, and a commit that ADDED the file
+        # has no version of it in its parent: neither can have shortened
+        # anything, so both start from zero.
+        #
+        # audit M1 (fourth re-audit): but a parent that does not hold the
+        # corpus is UNKNOWN, not zero, and taking it into the minimum
+        # made every merge with such a parent unjudgeable — min = 0, so
+        # `after < before` is false however little the merge kept. An
+        # orphan or unrelated-history parent is all it takes. Those
+        # parents are excluded; a merge none of whose parents holds the
+        # corpus cannot be judged at all, and is refused rather than
+        # waved through.
         before=""
+        parents=0
+        parents_with_corpus=0
         while IFS= read -r parent; do
             [[ -n "$parent" ]] || continue
+            parents=$((parents + 1))
             corpus_lines_at "${parent}:$target"
+            [[ $corpus_lines_present -eq 1 ]] || continue
+            parents_with_corpus=$((parents_with_corpus + 1))
             if [[ -z "$before" ]] || [[ "$corpus_lines" -lt "$before" ]]; then
                 before="$corpus_lines"
             fi
         done < <(git rev-parse "${commit}^@" 2>/dev/null || true)
+        if [[ $parents -gt 1 ]] && [[ $parents_with_corpus -eq 0 ]]; then
+            offender="$commit"
+            offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
+            break
+        fi
+        # One parent and no corpus in it is the commit that added the
+        # file: nothing existed to shorten.
         [[ -n "$before" ]] || before=0
         corpus_lines_at "${commit}:$target"
         after="$corpus_lines"
         [[ "$after" -lt "$before" ]] || continue
-        if git log -1 --format=%B "$commit" 2>/dev/null \
-                | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then
+        shortening=$((shortening + 1))
+        if has_bulk_rewrite_trailer \
+                "$(git log -1 --format=%B "$commit" 2>/dev/null || true)"; then
             continue
         fi
         offender="$commit"
+        offender_reason="shortened it without a 'Rewrite-Class: bulk' trailer"
         break
     done < <(git rev-list --reverse origin/main..HEAD 2>/dev/null || true)
-    if [[ -z "$offender" ]]; then
+    if [[ -z "$offender" ]] && [[ $shortening -gt 0 ]]; then
         log "corpus is shorter than origin/main, but every commit that shortened it carries a Rewrite-Class: bulk trailer — allowed"
         return 0
+    fi
+    if [[ -z "$offender" ]]; then
+        # audit M1 (fourth re-audit): FAIL CLOSED. The outer comparison
+        # saw the corpus shrink against origin and this loop could not
+        # say which commit did it — a history this guard does not
+        # understand, which is the last state in which to assume the
+        # best. There is no trailer to appeal to, because no commit has
+        # been identified to carry one.
+        offender_reason="the shrink could not be attributed to any commit in the range"
     fi
     shrink_report="$LOG_DIR/daily-sync-shrink-$(date +'%Y-%m-%d-%H%M%S').log"
     {
@@ -2648,8 +2755,11 @@ abort_on_published_shrink() {
         echo "HEAD:                 $lines_after lines"
         echo "Delta:                $((lines_after - lines_before))"
         echo ""
-        echo "First offending commit (shortened it, no trailer):"
-        git log -1 --format='%H %s' "$offender"
+        echo "Why this is refused:  $offender_reason"
+        if [[ -n "$offender" ]]; then
+            echo "Commit:"
+            git log -1 --format='%H %s' "$offender"
+        fi
         echo ""
         echo "Unpushed commits (git log --oneline origin/main..HEAD):"
         git log --oneline origin/main..HEAD
@@ -2659,7 +2769,7 @@ abort_on_published_shrink() {
     } > "$shrink_report" 2>&1
     log "SHRINK DETECTED against origin ($context): $lines_before -> $lines_after lines. Report: $shrink_report"
     add_sync_gate_detail \
-        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines), and ${offender:0:8} shortened it without a 'Rewrite-Class: bulk' trailer. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
+        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines) — ${offender:0:8}${offender:+ }$offender_reason. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
     fail "data submodule: refusing to publish a corpus shorter than origin's (see $shrink_report)" 4
 }
 
@@ -3051,6 +3161,16 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 add_sync_gate_detail \
                     "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") was BLOCKED by an earlier unresolved conflict in $PA_DIR. Its entry is intact. Resolve that conflict first, then pop this one."
                 fail "parent repo: applying stash ${_sha:0:8} was blocked by an earlier conflict"
+            fi
+            if stash_tracked_half_is_binary "$PA_DIR" "$_sha"; then
+                # audit L-c (fourth re-audit): say what is true. The
+                # entry holds BINARY content, `git apply` will not take a
+                # binary diff, and so this run cannot tell whether the
+                # tracked half landed. Keeping the entry is right; saying
+                # git declined the merge is not.
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR holds BINARY content, so this run could NOT tell whether its tracked changes reached the tree — it has kept the entry rather than guess. Compare them by hand (git -C $PA_DIR stash show -p <ref>), then either pop it or delete it."
+                fail "parent repo: stash ${_sha:0:8} holds binary content that cannot be checked — the entry is kept for a human"
             fi
             add_sync_gate_detail \
                 "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR was REFUSED — git declined the merge and preserved the entry, so its tracked work is still only in the stash. Clear whatever collides (git -C $PA_DIR status), then pop it: git -C $PA_DIR stash pop <ref>."
