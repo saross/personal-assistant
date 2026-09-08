@@ -382,18 +382,6 @@ reconcile_orphaned_stashes() {
 }
 
 # ---------------------------------------------------------------------------
-# Agent-mail archive (2026-09-08). Copies every message and receipt from
-# ~/agent-mail into data/agent-mail/ (append-only) and rebuilds its JSONL
-# index, committing with an explicit pathspec so nothing else pending in
-# the submodule is swept. Runs BEFORE the submodule sync so the commit is
-# pushed by it. Failure is logged, never fatal: mail is still on disk.
-# ---------------------------------------------------------------------------
-if ! "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/archive-agent-mail.py" --commit --quiet \
-        >>"$LOG_FILE" 2>&1; then
-    log "WARNING: agent-mail archive failed (see log); continuing"
-fi
-
-# ---------------------------------------------------------------------------
 # Data submodule sync
 # ---------------------------------------------------------------------------
 
@@ -429,6 +417,67 @@ restore_stash_on_exit() {
     fi
 }
 trap restore_stash_on_exit EXIT
+
+# ---------------------------------------------------------------------------
+# Ensure we are on main BEFORE anything commits (audit S5).
+#
+# The submodule sometimes ends up in detached HEAD after certain git
+# operations — `sync-symlinks.sh` runs `git submodule update`, which checks
+# the recorded SHA out detached whenever the parent pointer and the
+# submodule HEAD disagree, and `setup.sh` does the same. This guard used to
+# sit BELOW the agent-mail archive and the append-only memory commit, so on
+# a detached HEAD those commits were made on an unreachable ref and the
+# `git checkout main` here then reverted memories.jsonl to main's content —
+# losing the just-appended records from the working tree as well. They
+# survived only in the reflog. That is the same record-loss class the
+# reconcile_orphaned_stashes block above was written for (41 records, two
+# incidents).
+#
+# The guard needs a clean-enough tree, which the stash below normally
+# provides. On the detached path only, stash first — the common path (on
+# main already) still commits before stashing, which is what usually empties
+# the tree and means no stash is taken at all.
+# ---------------------------------------------------------------------------
+current_branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$current_branch" != "main" ]]; then
+    log "data submodule on '$current_branch' — switching to main"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        if [[ -n "$(git status --porcelain)" ]]; then
+            log "data submodule: stashing local changes before the branch switch"
+            git stash push -u -m "daily-sync branch-switch on $HOST $(date +'%Y-%m-%d %H:%M')" \
+                >>"$LOG_FILE" 2>&1 || fail "stash push before branch switch failed"
+            stash_pending=1
+            has_local_changes=1
+        fi
+        git checkout main >>"$LOG_FILE" 2>&1 \
+            || fail "failed to switch data submodule to main"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Agent-mail archive (2026-09-08). Copies every message and receipt from
+# ~/agent-mail into data/agent-mail/ (append-only) and rebuilds its JSONL
+# index, committing with an explicit pathspec so nothing else pending in
+# the submodule is swept. Runs BEFORE the rest of the submodule sync so its
+# commit is pushed by it. Failure is logged, never fatal: mail is still on
+# disk.
+#
+# audit S5: placed after the branch guard above, because it commits into
+# the data submodule and a commit made on a detached HEAD is orphaned by
+# the checkout.
+# audit S9: `--dry-run` promises "show what would happen, no changes"
+# (usage banner), but this call had no guard, so a dry run copied files
+# into data/agent-mail/ and made a commit.
+# ---------------------------------------------------------------------------
+if [[ $DRY_RUN -eq 0 ]]; then
+    if ! "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/archive-agent-mail.py" --commit --quiet \
+            >>"$LOG_FILE" 2>&1; then
+        log "WARNING: agent-mail archive failed (see log); continuing"
+    fi
+else
+    log "[dry-run] would archive agent-mail into the data submodule"
+fi
+
 # Commit the append-only memory files BEFORE considering a stash. They are
 # dirty on nearly every run, so this usually empties the tree and no stash
 # is taken at all — which removes the failure mode rather than handling it.
@@ -462,18 +511,6 @@ if [[ -n "$(git status --porcelain)" ]]; then
         git stash push -u -m "daily-sync on $HOST $(date +'%Y-%m-%d %H:%M')" \
             >>"$LOG_FILE" 2>&1 || fail "stash push failed"
         stash_pending=1
-    fi
-fi
-
-# Ensure we are on main (the submodule sometimes ends up in detached HEAD
-# after certain git operations, e.g. a commit-data.sh run before a pull).
-# Safe no-op if already on main; safe on a clean tree after the stash.
-current_branch="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$current_branch" != "main" ]]; then
-    log "data submodule on '$current_branch' — switching to main"
-    if [[ $DRY_RUN -eq 0 ]]; then
-        git checkout main >>"$LOG_FILE" 2>&1 \
-            || fail "failed to switch data submodule to main"
     fi
 fi
 

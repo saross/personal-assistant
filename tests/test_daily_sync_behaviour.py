@@ -140,6 +140,55 @@ class TestSubmoduleCommitsArePublished:
 
 
 # ============================================================================
+# Detached-HEAD ordering (audit S5)
+# ============================================================================
+
+
+class TestDetachedHeadGuard:
+    """Nothing may commit into the data submodule before the branch guard.
+
+    ``git submodule update`` — run by ``sync-symlinks.sh`` at the end of
+    every sync, and by ``setup.sh`` — checks the recorded SHA out
+    *detached* whenever the parent pointer and the submodule HEAD
+    disagree. The guard used to sit below the archiver and the
+    append-only memory commit, so on a detached HEAD those commits landed
+    on an unreachable ref and the guard's ``git checkout main`` then
+    reverted the working tree, removing the just-appended records.
+    """
+
+    def test_append_survives_a_detached_head(self, world: SyncWorld) -> None:
+        """The record reaches origin instead of the reflog."""
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-s5")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "switching to main" in combined
+        assert machine.branch("data") == "main"
+        assert "2026-09-08-s5" in machine.memories.read_text(encoding="utf-8"), (
+            "the branch switch reverted the working tree over the append"
+        )
+        assert "2026-09-08-s5" in world.published_data_file("memories/memories.jsonl")
+
+    def test_detached_head_with_prose_edits_keeps_them(
+        self, world: SyncWorld
+    ) -> None:
+        """A concurrent session's uncommitted prose survives the switch."""
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- work in progress\n", encoding="utf-8"
+        )
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "work in progress" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8")
+
+
+# ============================================================================
 # Conflict partitioning (audit S3)
 # ============================================================================
 

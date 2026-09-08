@@ -75,7 +75,9 @@ _PY_STUB_TEMPLATE = '''#!/usr/bin/env python3
 """Test stub for {name} — records the call, exits with a chosen code."""
 
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 
 def main() -> int:
@@ -90,6 +92,26 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+'''
+
+#: archive-agent-mail.py commits into the data submodule. Reproduce that
+#: when a test asks for it, so "its commit is pushed by the sync" can be
+#: asserted rather than assumed.
+_ARCHIVER_STUB_BODY = '''
+    marker = os.environ.get("PA_TEST_ARCHIVER_COMMIT")
+    if marker:
+        data = Path(__file__).resolve().parent.parent / "data"
+        relative = "agent-mail/index.jsonl"
+        target = data / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(marker + "\\n")
+        subprocess.run(["git", "-C", str(data), "add", "--", relative], check=True)
+        subprocess.run(
+            ["git", "-C", str(data), "commit", "-q", "-m",
+             "chore(agent-mail): archive", "--", relative],
+            check=True,
+        )
 '''
 
 #: check-memory-drift.py doubles as the orphan-stash oracle, so its stub
@@ -351,7 +373,7 @@ def _build_scripts_dir(scripts: Path) -> None:
     for name in LIVE_SCRIPTS:
         (scripts / name).symlink_to(REAL_SCRIPTS / name)
     for name, rc_var, extra in (
-        ("archive-agent-mail.py", "PA_TEST_ARCHIVER_RC", ""),
+        ("archive-agent-mail.py", "PA_TEST_ARCHIVER_RC", _ARCHIVER_STUB_BODY),
         ("check-memory-drift.py", "PA_TEST_DRIFT_RC", _DRIFT_STUB_BODY),
         ("check-archive-drift.py", "PA_TEST_ARCHIVE_DRIFT_RC", ""),
     ):
