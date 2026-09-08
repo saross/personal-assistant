@@ -127,6 +127,25 @@ where noted:
 | L | The Codex-side hook applies no v3 routing and no name rule, so the two agents can disagree on what is mail | with Astra (message of 2026-09-08T02:19Z) |
 | L | Every non-slug project collapses into one `invalid` bucket | accepted |
 
+### Round 1e — re-audit of round 1d (fresh agent, 2026-09-08)
+
+No critical; 3 medium, 5 low. Fixed in 940fb2d:
+
+| # | Finding | Disposition |
+|---|---|---|
+| M1 | Round 1d's bracket stripping removed parentheses from 89% of relayed subjects (`fix(scope):` became `fixscope:`), and a test pinned the damage (CONFIRMED) | fixed: NFKC then only bracket-like characters go; ASCII parentheses stay |
+| M2 | `Sm`-category bracket pieces (U+23A1, U+23A4) still forged the author group (CONFIRMED) | fixed: the author passes an allowlist; the subject drops anything named BRACKET |
+| M3 | A source that vanished between listing and read aborted the whole archive run before the index and the refusal report (CONFIRMED) | fixed: skipped, seen next run |
+| L1 | Hook and watcher docstrings still said "basename of the git root" | fixed |
+| L2 | The archiver's copy of the slug rule could drift from the hook's | fixed: a test pins the two |
+| L3 | `this session is invalid` undocumented | fixed: runbook |
+| L4 | Index `Date` kept free text after control stripping | fixed: ISO stamp or `invalid` |
+| L5 | The archive-side comparison read was unbounded | fixed |
+
+The re-audit also confirmed no real repository under the home directory
+(45 checked) resolves to `invalid` or `any`, and the archiver reproduces
+the live mailbox exactly (98 files, 50 messages, 48 receipts, 0 refused).
+
 ## Tranche 1 — session hooks
 
 Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
@@ -295,8 +314,8 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 
 ## Fix rounds
 
-- Round 1 (done, 0577648): tranche 0. Re-audited three times: rounds 1b
-  (06225a0, 5798dc9), 1c (0f94722), and 1d (122c9e3).
+- Round 1 (done, 0577648): tranche 0. Re-audited four times: rounds 1b
+  (06225a0, 5798dc9), 1c (0f94722), 1d (122c9e3), and 1e (940fb2d).
 - Round 2, hooks (done, 300ee10): H2–H4, H8–H13, H15–H18. Re-audit pending.
 - Round 2, remainder (four branches, each in its own worktree, reviewed and
   merged by PR after a fresh-agent re-audit): hook tests H5–H7, H20–H22 and
