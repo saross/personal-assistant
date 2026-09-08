@@ -18,6 +18,12 @@ It is the indexed rung of the escalation ladder:
 Usage:
     # Search (ranked full-text; websearch syntax: quotes, OR, -exclude):
     scripts/search-sessions.py "mixture model deconvolution"
+
+    # Query text somebody else wrote — never build a shell string from it:
+    scripts/search-sessions.py --query-stdin --limit 5 <<'QUERY'
+    whatever the user typed, verbatim
+    QUERY
+
     scripts/search-sessions.py "preregistration" --project inscriptions --role assistant
     scripts/search-sessions.py "Rome suggest" --limit 20          # both terms, ranked
     scripts/search-sessions.py "build_model_f1" --substring        # exact/identifier (trgm)
@@ -238,6 +244,13 @@ def main(argv: list[str] | None = None) -> int:
     """Command-line entry point."""
     parser = argparse.ArgumentParser(description="Search archived session content (indexed, safe).")
     parser.add_argument("query", nargs="?", help="Full-text query (websearch syntax).")
+    parser.add_argument("--query-stdin", action="store_true", dest="query_stdin",
+                        help="Read the query from standard input instead of the "
+                             "command line. Use this whenever the query is text "
+                             "somebody else wrote: it never passes through a "
+                             "shell, so quotes, backticks, and $( ) cannot be "
+                             "interpreted. Trailing newline is stripped; the "
+                             "text is otherwise used verbatim.")
     parser.add_argument("--project", help="Scope to one project (e.g. inscriptions).")
     parser.add_argument("--role", choices=["user", "assistant"], help="Filter by turn role.")
     parser.add_argument("--limit", type=int, default=10, help="Max results (default 10).")
@@ -255,6 +268,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="Disambiguate --show when a session dir holds multiple "
                              "transcripts (main + subagents); usually unnecessary.")
     args = parser.parse_args(argv)
+
+    # --query-stdin (audit M-2). The positional form requires the caller to
+    # quote correctly, and the caller here is often an LLM pasting a user's
+    # words into a Bash command: an apostrophe ends the quoting and a
+    # backtick or $( ) is executed by the shell before this script ever
+    # runs. Reading the query from stdin removes the shell from the path
+    # entirely -- there is no string for it to parse.
+    if args.query_stdin:
+        if args.query:
+            parser.error(
+                "--query-stdin takes the query from standard input; do not "
+                "also pass one on the command line"
+            )
+        # rstrip("\n") only: a query may legitimately end in a space, and
+        # a heredoc adds exactly one trailing newline.
+        args.query = sys.stdin.read().rstrip("\n")
+        if not args.query.strip():
+            parser.error("--query-stdin was given but standard input was empty")
 
     try:
         if args.show is not None:

@@ -341,3 +341,121 @@ class TestMain:
         search_sessions.main(["loader", "--json"])
         payload = json.loads(capsys.readouterr().out)
         assert payload[0]["turn_idx"] == 12
+
+
+# ---------------------------------------------------------------------------
+# Audit M-2 — the query never has to pass through a shell
+# ---------------------------------------------------------------------------
+
+
+class TestQueryStdin:
+    """``--query-stdin`` exists so user text is never interpolated anywhere.
+
+    R8 removed the query from a SQL string; this is the same hazard one
+    layer out, in the shell command that invokes this script.
+    """
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, text: str, argv: list[str]):
+        """Drive main() with *text* on stdin, returning (rc, sql, params)."""
+        import io
+
+        db, _ = _install(monkeypatch)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+        rc = search_sessions.main(argv)
+        return rc, db.calls[0] if db.calls else (None, None)
+
+    @pytest.mark.parametrize("text", [
+        "it's a wrap",                       # apostrophe ends shell quoting
+        "cost $(whoami) dollars",            # command substitution
+        "use `uname -a` here",               # backticks
+        'he said "quote" then left',         # double quotes
+        "semicolon; rm -rf /",               # command separator
+        "back\\slash and %percent",          # LIKE metacharacters
+    ])
+    def test_hostile_text_reaches_the_query_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, text: str,
+    ) -> None:
+        """Kills: removing --query-stdin (forcing shell interpolation back).
+
+        Whatever the user typed arrives as one parameter, unmodified. It is
+        a parameter, not SQL and not a shell word, so none of it can act.
+        """
+        rc, (_, params) = self._run(
+            monkeypatch, text + "\n", ["--query-stdin"],
+        )
+        assert rc == 0
+        assert params[0] == text
+
+    def test_only_one_trailing_newline_is_stripped(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A heredoc adds exactly one; internal newlines are the user's."""
+        _, (_, params) = self._run(
+            monkeypatch, "first line\nsecond line\n", ["--query-stdin"],
+        )
+        assert params[0] == "first line\nsecond line"
+
+    def test_trailing_space_is_preserved(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only the newline goes: a query may legitimately end in a space."""
+        _, (_, params) = self._run(
+            monkeypatch, "trailing space \n", ["--query-stdin"],
+        )
+        assert params[0] == "trailing space "
+
+    def test_other_flags_still_apply(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """--query-stdin composes with the filters, not replaces them."""
+        _, (sql, params) = self._run(
+            monkeypatch, "loader\n",
+            ["--query-stdin", "--project", "sherds", "--role", "user",
+             "--limit", "3"],
+        )
+        assert "AND c.project = %s" in sql
+        assert params == ["loader", "sherds", "user", 3]
+
+    def test_both_forms_together_is_a_usage_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ambiguity is refused rather than silently resolved."""
+        import io
+
+        _install(monkeypatch)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("from stdin\n"))
+        with pytest.raises(SystemExit) as exc:
+            search_sessions.main(["positional", "--query-stdin"])
+        assert exc.value.code == 2
+
+    def test_empty_stdin_is_a_usage_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty heredoc would otherwise search for nothing, quietly."""
+        import io
+
+        _install(monkeypatch)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("   \n"))
+        with pytest.raises(SystemExit) as exc:
+            search_sessions.main(["--query-stdin"])
+        assert exc.value.code == 2
+
+    def test_positional_form_still_works(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The flag is additive; existing callers are unaffected."""
+        db, _ = _install(monkeypatch)
+        assert search_sessions.main(["loader"]) == 0
+        assert db.calls[0][1][0] == "loader"
+
+    def test_substring_floor_still_applies_via_stdin(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The trigram guard is not bypassed by the new input path."""
+        import io
+
+        _install(monkeypatch)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("ab\n"))
+        assert search_sessions.main(["--query-stdin", "--substring"]) == 2
+        assert "trgm" in capsys.readouterr().err

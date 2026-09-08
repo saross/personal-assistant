@@ -296,3 +296,67 @@ class TestContainmentRejectionIsVisible:
         _catalogue(tmp_path, [{"id": OTHER_ID, "path": "other"}])
         assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) is None
         assert capsys.readouterr().err == ""
+
+
+class TestCorruptCatalogueIsVisible:
+    """Audit L-5 — the filesystem walk must not paper over a broken index."""
+
+    def test_missing_catalogue_is_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Kills: returning None silently when there is no CATALOG.json.
+
+        The walk is exhaustive, so a catalogue that vanished from the rpi
+        share otherwise shows up only as "this got slow", months later.
+        """
+        assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) is None
+        err = capsys.readouterr().err
+        assert "no catalogue at" in err
+        assert "filesystem walk" in err
+
+    def test_unparseable_catalogue_is_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Kills: swallowing the JSONDecodeError silently.
+
+        A truncated or half-written CATALOG.json on a network share is a
+        real defect, not a miss.
+        """
+        (tmp_path / "CATALOG.json").write_text('{"sessions": [', encoding="utf-8")
+        assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) is None
+        err = capsys.readouterr().err
+        assert "cannot read" in err
+        assert "filesystem walk" in err
+
+    def test_a_plain_miss_stays_silent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The catalogue only indexes top-level sessions, so misses are
+        routine and must not become noise."""
+        _catalogue(tmp_path, [{"id": OTHER_ID, "path": "other"}])
+        assert resolver.resolve_via_catalogue(SESSION_ID, tmp_path) is None
+        assert capsys.readouterr().err == ""
+
+    def test_resolve_still_finds_the_session_after_reporting(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The report is a warning, not a failure: the walk still runs."""
+        target = _archive(tmp_path, "deep/nested/session", SESSION_ID)
+        (tmp_path / "CATALOG.json").write_text("{ broken", encoding="utf-8")
+        assert resolver.resolve(SESSION_ID, tmp_path) == target
+        assert "cannot read" in capsys.readouterr().err
+
+    def test_reports_go_to_stderr_not_stdout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """stdout carries the resolved path and nothing else — callers
+        capture it."""
+        target = _archive(tmp_path, "session", SESSION_ID)
+        monkeypatch.setattr(
+            sys, "argv", ["resolve_session_id.py", SESSION_ID, str(tmp_path)],
+        )
+        assert resolver.main() == 0
+        captured = capsys.readouterr()
+        assert captured.out.strip() == str(target)
+        assert "no catalogue at" in captured.err
