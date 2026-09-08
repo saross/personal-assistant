@@ -511,6 +511,65 @@ def resolve_project_mapping(
 # ============================================================================
 
 
+def read_catalogue_ids(
+    catalogue_file: Path,
+    logger: logging.Logger,
+) -> set[str]:
+    """Return the session ids CATALOG.json lists, reporting a corrupt file.
+
+    The toolkit's ``get_archived_session_ids`` swallows ``JSONDecodeError``
+    and ``KeyError`` and returns an empty set, so delegating to it made a
+    corrupt catalogue indistinguishable from an empty one: the "unreadable"
+    warning AR16 promised could never fire, and an operator watching for it
+    would never learn the index needed rebuilding (audit round 4c-2,
+    finding 5).
+
+    So the parse happens here, where the failure is visible, and the toolkit
+    is called only once the file is known to be readable. A corrupt
+    catalogue is still not fatal — it is a derived index, and discovery
+    deduplicates against disk — but it is now said out loud, with the repair
+    named.
+    """
+    try:
+        raw = catalogue_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "CATALOG.json cannot be read (%s) — treating it as empty; "
+            "rebuild it with `verify --fix-catalogue`", exc,
+        )
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "CATALOG.json is corrupt (%s) — treating it as empty; rebuild "
+            "it with `verify --fix-catalogue`", exc,
+        )
+        return set()
+    sessions = parsed.get("sessions") if isinstance(parsed, dict) else None
+    if not isinstance(sessions, list):
+        logger.warning(
+            "CATALOG.json has no 'sessions' list (found %s) — treating it "
+            "as empty; rebuild it with `verify --fix-catalogue`",
+            type(sessions).__name__,
+        )
+        return set()
+    ids = {
+        entry["id"] for entry in sessions
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    }
+    malformed = len(sessions) - len(
+        [e for e in sessions if isinstance(e, dict) and isinstance(e.get("id"), str)]
+    )
+    if malformed:
+        logger.warning(
+            "CATALOG.json holds %d entr%s with no usable session id — "
+            "rebuild it with `verify --fix-catalogue`",
+            malformed, "y" if malformed == 1 else "ies",
+        )
+    return ids
+
+
 def discover_sessions(
     project_mapping: dict[str, tuple[Path | None, str]],
     min_turns: int,
@@ -558,7 +617,6 @@ def discover_sessions(
 
     from cc_session_toolkit.archive import (
         extract_session_stats,
-        get_archived_session_ids,
         get_session_id,
         is_trivial_session,
     )
@@ -579,17 +637,7 @@ def discover_sessions(
         DEFAULT_ARCHIVE_ROOT, logger
     )
     if CATALOGUE_FILE.exists():
-        try:
-            catalogued = get_archived_session_ids(CATALOGUE_FILE)
-        except Exception as exc:
-            # The catalogue is a derived index; a corrupt one costs us a
-            # ghost count and nothing else. Taking discovery down over it
-            # would stop archiving entirely until someone noticed (AR16).
-            logger.warning(
-                "CATALOG.json is unreadable (%s) — treating it as empty; "
-                "rebuild it with `verify --fix-catalogue`", exc,
-            )
-            catalogued = set()
+        catalogued = read_catalogue_ids(CATALOGUE_FILE, logger)
         ghosts = catalogued - archived_ids
         if ghosts:
             logger.warning(

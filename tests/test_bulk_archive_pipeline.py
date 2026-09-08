@@ -1399,3 +1399,189 @@ class TestVerifyExitStatus:
         monkeypatch.setattr(bulk_archive, "setup_logging", lambda: LOGGER)
 
         assert bulk_archive.main() == 0
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-2 finding 3 — the before/after comparison around the copy
+# ---------------------------------------------------------------------------
+
+
+class TestDuringCopyComparison:
+    """The last guard: the source must not move while it is being read.
+
+    The grace window catches a session that is obviously live; this catches
+    the narrow case where a session resumes in the seconds the copy takes.
+    It could be deleted with 63 tests green (round 4c-2, finding 3).
+    """
+
+    def _grow_during_copy(self, pipeline: Pipeline, monkeypatch, source: Path):
+        """Make archive_session append to the source as it runs."""
+        from cc_session_toolkit import archive as toolkit_archive
+        real_archive = toolkit_archive.archive_session
+
+        def growing(*, session_path, **kwargs):
+            metadata = real_archive(session_path=session_path, **kwargs)
+            with source.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"type": "user", "late": True}) + "\n")
+            return metadata
+
+        monkeypatch.setattr(toolkit_archive, "archive_session", growing)
+
+    def test_a_source_that_changes_during_the_copy_is_not_counted_archived(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._grow_during_copy(pipeline, monkeypatch, source)
+
+        pipeline.archive()
+
+        state = pipeline.checkpoint_state()
+        assert state["archived_ids"] == [], (
+            "a session whose transcript moved during the copy was recorded "
+            "as archived; the entry may hold only a prefix"
+        )
+        assert SID_A in state["failed_ids"]
+        assert "DURING the copy" in state["failed_ids"][SID_A]["reason"]
+
+    def test_the_suspect_entry_is_named_so_verify_can_find_it(
+        self, pipeline: Pipeline, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Left in place deliberately — but never silently."""
+        source = pipeline.add_session(SID_A)
+        pipeline.discover()
+        self._grow_during_copy(pipeline, monkeypatch, source)
+
+        with caplog.at_level(logging.ERROR, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert any(
+            "may be truncated" in record.message for record in caplog.records
+        )
+
+    def test_a_stable_source_is_counted_archived(
+        self, pipeline: Pipeline
+    ) -> None:
+        """The positive control for the same comparison."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        pipeline.archive()
+
+        assert pipeline.checkpoint_state()["archived_ids"] == [SID_A]
+        assert pipeline.checkpoint_state()["failed_ids"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-2 findings 5 and 6 — the catalogue's corruption report and its lock
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogueCorruptionIsReported:
+    """A corrupt index must be distinguishable from an empty one.
+
+    The toolkit's get_archived_session_ids swallows JSONDecodeError and
+    KeyError and returns an empty set, so delegating to it made the
+    "unreadable" warning AR16 promised unreachable: an operator watching for
+    it would never learn the index needed rebuilding.
+    """
+
+    @pytest.mark.parametrize("corruption,expected", [
+        ('{"sessions": [', "corrupt"),
+        ("not json at all", "corrupt"),
+        ('{"sessions": "not-a-list"}', "no 'sessions' list"),
+        ('[1, 2, 3]', "no 'sessions' list"),
+    ])
+    def test_a_corrupt_catalogue_is_named_in_the_log(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture,
+        corruption: str, expected: str,
+    ) -> None:
+        pipeline.catalogue.write_text(corruption, encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            ids = bulk_archive.read_catalogue_ids(pipeline.catalogue, LOGGER)
+
+        assert ids == set()
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert expected in messages, messages
+        assert "verify --fix-catalogue" in messages
+
+    def test_entries_without_an_id_are_counted_and_reported(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": [{"id": SID_A}, {"title": "no id"}, 7]}),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            ids = bulk_archive.read_catalogue_ids(pipeline.catalogue, LOGGER)
+
+        assert ids == {SID_A}
+        assert any(
+            "no usable session id" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_a_good_catalogue_produces_no_warning(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The positive control: a healthy index must be quiet."""
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": [{"id": SID_A}, {"id": SID_B}]}),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            ids = bulk_archive.read_catalogue_ids(pipeline.catalogue, LOGGER)
+
+        assert ids == {SID_A, SID_B}
+        assert caplog.records == []
+
+
+class TestCatalogueLockIsHeld:
+    """Two `verify --fix-catalogue` runs must not interleave.
+
+    Temp-and-rename was pinned; the lock was not, so replacing the flock with
+    `pass` left the suite green (round 4c-2, finding 6). The rename makes
+    each write atomic, but without the lock two rebuilds race and the loser's
+    scan silently wins.
+    """
+
+    def test_a_second_writer_waits_for_the_lock(
+        self, pipeline: Pipeline
+    ) -> None:
+        """A held lock must block the write until it is released."""
+        import fcntl as _fcntl
+        import threading
+
+        lock_path = pipeline.catalogue.with_name(
+            pipeline.catalogue.name + ".lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        released = threading.Event()
+        wrote = threading.Event()
+
+        with open(lock_path, "w", encoding="utf-8") as holder:
+            _fcntl.flock(holder.fileno(), _fcntl.LOCK_EX)
+
+            def writer() -> None:
+                bulk_archive.write_catalogue({"sessions": [{"id": SID_A}]}, LOGGER)
+                wrote.set()
+
+            thread = threading.Thread(target=writer, daemon=True)
+            thread.start()
+            # While the lock is held the writer must make no progress.
+            assert not wrote.wait(timeout=0.5), (
+                "the catalogue was written while another process held the "
+                "lock; two rebuilds can interleave"
+            )
+            released.set()
+            _fcntl.flock(holder.fileno(), _fcntl.LOCK_UN)
+
+        thread.join(timeout=5)
+        assert wrote.is_set(), "the writer never completed after release"
+        assert released.is_set()
+        catalogue = json.loads(pipeline.catalogue.read_text(encoding="utf-8"))
+        assert [entry["id"] for entry in catalogue["sessions"]] == [SID_A]
