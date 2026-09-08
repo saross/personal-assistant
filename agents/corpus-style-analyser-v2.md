@@ -794,8 +794,10 @@ on conversation history.
 - Extraction tool changed from `pdftotext -layout` to PyMuPDF + pdfplumber
   via `extract_corpus.py`. Body/refs split is now structural (markdown
   heading) not regex on raw text.
-- Expect `n_words` to drop a further ≈5 % (clean: 125,853 vs legacy:
-  132,148 vs run-1: 139,105). The lost tokens are author affiliations,
+- Expect `n_words` to drop (clean: **127,720**, which is
+  `aggregate.n_words` in `data/style-corpus/phase1-results-clean.json`;
+  the legacy 132,148 and run-1 139,105 comparators are historical and
+  not re-verified). The lost tokens are author affiliations,
   journal mastheads, page headers, and reference fragments — not body
   prose. Verified empirically (2026-05-24 audit §4).
 - Mean sentence length drops from 23.9 (run-1) to **21.45**. Caused by
@@ -805,8 +807,10 @@ on conversation history.
   `data/style-corpus/phase1-results-clean.json`, and it is the figure
   Appendix E above carries. (This entry read 21.16 until 2026-09-08 —
   a value that appears in neither the JSON nor Appendix E.)
-- Paragraph statistics become usable: count 815 → 4,213; median 43 → 17
-  words; mean 162 → 30 words.
+- Paragraph statistics become usable: count **2,968**; median **27.0**
+  words; mean **41.31** words (`aggregate.paragraph_stats` in
+  `phase1-results-clean.json`; this entry carried 4,213 / 17 / 30 until
+  2026-09-09, figures that appear nowhere in the JSON).
 - Announcement colons per 1k drops ≈15 % (1.884 → **1.605**) —
   page-header artefacts removed. Diagnostic 4's outlier-noise hypothesis
   confirmed. 1.605 is the clean-corpus value in
