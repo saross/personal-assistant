@@ -34,13 +34,49 @@ from _http_retry import urlopen_with_retry  # noqa: E402
 # Configuration
 # ============================================================================
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+# ``or`` rather than a ``.get`` default (audit round two, finding P3 /
+# lens A-C3). ``scripts/ollama-endpoint.sh`` prints an empty string and
+# exits 1 when no candidate endpoint answers, and the documented cron
+# wrapper exports exactly that: ``OLLAMA_BASE_URL=$(ollama-endpoint.sh)``.
+# ``os.environ.get(name, default)`` returns the empty string in that case
+# — the key *exists* — so the request URL became the relative
+# ``/api/tags`` and ``urllib.request.Request`` raised
+# ``ValueError: unknown url type``, which falls outside this module's
+# degradation ladder and tracebacks out of the caller. The wrapper's own
+# header comment already promises this fallback; now it is true.
+# ``.strip()`` also covers a stray newline from command substitution.
+OLLAMA_BASE_URL = (
+    os.environ.get("OLLAMA_BASE_URL", "").strip() or DEFAULT_OLLAMA_BASE_URL
+)
 DEFAULT_MODEL = "nomic-embed-text"
 # Timeout scales with batch size: base + per_item * count
 TIMEOUT_BASE_S = 10
 TIMEOUT_PER_ITEM_S = 0.5
 
+# The width the whole pipeline is built around: ``vector(768)`` in
+# scripts/schema.sql, and therefore the shape of every embedding already
+# in the canonical embedding space. Audit round two, finding P12 (lens
+# A-M10): nothing validated this. A remote endpoint serving a different
+# nomic-embed-text build makes PostgreSQL reject the UPDATE, the broad
+# handler in sync-to-postgres.py turns that into a warning, and the same
+# rows are re-fetched and re-embedded on every cron tick indefinitely —
+# no quarantine, no escalation, and cosine distances that would be
+# meaningless if they ever did land.
+EXPECTED_EMBEDDING_DIM = 768
+
 logger = logging.getLogger("embed")
+
+
+class EmbeddingDimensionError(RuntimeError):
+    """
+    The endpoint returned vectors of the wrong width.
+
+    Raised rather than returned because this is a configuration fault,
+    not a transient failure: retrying reproduces it exactly, and every
+    retry costs a full batch of inference. The caller is expected to stop
+    and tell the operator which model is actually being served.
+    """
 
 
 # ============================================================================
@@ -113,9 +149,53 @@ def is_ollama_available(model: str = DEFAULT_MODEL) -> bool:
                 installed == model or installed.startswith(model + ":")
                 for installed in models
             )
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError, OSError, json.JSONDecodeError, ValueError,
+    ) as exc:
+        # ValueError covers a malformed OLLAMA_BASE_URL ("unknown url
+        # type") — a configuration mistake must degrade like an outage,
+        # not traceback out of a caller that has no handler (finding P3).
         logger.debug("Ollama availability check failed: %s", exc)
         return False
+
+
+def _assert_embedding_dimension(
+    embeddings: list[list[float] | None],
+    model: str,
+) -> None:
+    """
+    Fail loudly when the endpoint returns vectors of an unexpected width.
+
+    Checked once per batch, on the first non-None vector: within a single
+    response every vector comes from the same model, so a second check
+    would cost time without adding information.
+
+    ``is_ollama_available``'s docstring names dimension mismatch as the
+    risk it guards against, but it can only compare the model *name* —
+    the endpoint may be a different machine serving a different build
+    under the same name. This is the check that actually holds
+    (audit round two, finding P12 / lens A-M10).
+
+    Args:
+        embeddings: The vectors returned for one batch (may contain None).
+        model: The model name requested, for the error message.
+
+    Raises:
+        EmbeddingDimensionError: If a vector's width is not
+            :data:`EXPECTED_EMBEDDING_DIM`.
+    """
+    for vector in embeddings:
+        if vector is None:
+            continue
+        if len(vector) != EXPECTED_EMBEDDING_DIM:
+            raise EmbeddingDimensionError(
+                f"{model} at {OLLAMA_BASE_URL} returned {len(vector)}-"
+                f"dimensional vectors; this pipeline stores "
+                f"vector({EXPECTED_EMBEDDING_DIM}) and every existing "
+                f"embedding is that width. Refusing to embed: check which "
+                f"model the endpoint is actually serving."
+            )
+        return
 
 
 def generate_embeddings(
@@ -173,8 +253,14 @@ def generate_embeddings(
                 while len(embeddings) < len(texts):
                     embeddings.append(None)
 
+            _assert_embedding_dimension(embeddings, model)
             return embeddings
 
+    except EmbeddingDimensionError:
+        # Configuration fault, not a transient one: re-raise past the
+        # degradation handlers below so the caller stops instead of
+        # silently re-queueing the same rows forever (finding P12).
+        raise
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         logger.warning("Embedding generation failed: %s", exc)
         return [None] * len(texts)

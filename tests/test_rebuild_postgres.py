@@ -25,8 +25,11 @@ the operator who runs the rebuild.
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -57,6 +60,23 @@ def rebuild_mod():
     sys.modules["rebuild_postgres"] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def pinned_log_dir(rebuild_mod, tmp_path, monkeypatch):
+    """Keep every ``rebuild.log`` write inside this test's tmp directory.
+
+    These tests call ``setup_logging()`` directly, and the log path used
+    to be hard-coded to ``<repo>/logs``. Running the suite therefore
+    appended fabricated operator lines — including an "[ERROR] … PARTIAL
+    REBUILD" — to the real audit trail, where nothing distinguishes them
+    from a genuine failed rebuild. Autouse so no future test can forget.
+    """
+    log_dir = tmp_path / "pinned-logs"
+    monkeypatch.setattr(rebuild_mod, "LOG_DIR", log_dir)
+    yield log_dir
+    # Release the file handle so the tmp directory can be torn down.
+    logging.getLogger("rebuild-postgres").handlers.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +147,11 @@ class TestDryRunGating:
             "RESET_TARGETS must cover all three kinds"
         )
 
-        # Tables: memories + sessions
+        # Tables: every table holding data derived from a canonical
+        # source. session_chunks joined the schema on 2026-06-21 and was
+        # missed until audit round two, finding P4.
         table_names = {t.name for t in targets if t.kind == "table"}
-        assert table_names == {"memories", "sessions"}
+        assert table_names == {"memories", "sessions", "session_chunks"}
 
         # Sync state rows: all three from schema.sql
         ss_names = {t.name for t in targets if t.kind == "sync_state_row"}
@@ -265,6 +287,19 @@ class TestTruncateTable:
         logger = rebuild_mod.setup_logging()
         rebuild_mod.truncate_table(conn, "memories", logger)
         cur.execute.assert_called_with("TRUNCATE TABLE memories")
+
+    def test_truncate_for_session_chunks(self, rebuild_mod):
+        """
+        Audit round two, finding P4 (lens A-M1): session_chunks is
+        derived from the archive tree and nothing else truncates it, so
+        the docstring's "same shape as a freshly applied schema.sql"
+        guarantee was false. The mutation this kills: dropping
+        "session_chunks" from DERIVED_TABLES.
+        """
+        conn, cur = _build_fake_conn()
+        logger = rebuild_mod.setup_logging()
+        rebuild_mod.truncate_table(conn, "session_chunks", logger)
+        cur.execute.assert_called_with("TRUNCATE TABLE session_chunks")
 
     def test_truncate_for_sessions(self, rebuild_mod):
         conn, cur = _build_fake_conn()
@@ -552,3 +587,246 @@ def test_cursor_keys_match_live_sync_scripts(rebuild_mod):
         f"{sorted(missing)}. Either add them to the catalogue or "
         f"document why they should not be reset on rebuild."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test hygiene — the suite must not write to the repository's real logs
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingStaysInsideTmp:
+    """
+    A test that reaches real state is a defect in the test, not a
+    detail. ``setup_logging`` wrote to ``<repo>/logs/rebuild.log``
+    unconditionally, so every suite run appended lines an operator
+    reading the audit trail would take for a real rebuild — including a
+    "PARTIAL REBUILD" error from the stop-on-first-error test.
+    """
+
+    def test_log_file_lands_in_the_pinned_directory(
+        self, rebuild_mod, pinned_log_dir,
+    ):
+        """The handler writes where the fixture points it, not at the repo."""
+        logger = rebuild_mod.setup_logging()
+        logger.info("a line that must not reach the real log")
+
+        written = pinned_log_dir / "rebuild.log"
+        assert written.exists()
+        assert "must not reach the real log" in written.read_text(
+            encoding="utf-8",
+        )
+
+    def test_nothing_is_written_to_the_repository_log(
+        self, rebuild_mod, pinned_log_dir,
+    ):
+        """
+        The consequence, asserted directly: running a rebuild through
+        the same path the other tests use leaves the repository's own
+        ``logs/rebuild.log`` byte-for-byte unchanged. The mutation this
+        kills: hard-coding ``LOG_DIR / "rebuild.log"`` in
+        ``setup_logging`` again.
+        """
+        real_log = rebuild_mod.PA_DIR / "logs" / "rebuild.log"
+        before = real_log.read_bytes() if real_log.exists() else None
+
+        logger = rebuild_mod.setup_logging()
+        conn, _cur = _build_fake_conn()
+        rebuild_mod.perform_rebuild(
+            rebuild_mod.build_reset_targets(),
+            logger,
+            cursor_file=pinned_log_dir / "sync-cursors.json",
+            open_conn=lambda _logger: conn,
+        )
+
+        after = real_log.read_bytes() if real_log.exists() else None
+        assert after == before, (
+            "the test suite wrote to the repository's real rebuild.log"
+        )
+        assert (pinned_log_dir / "rebuild.log").exists()
+
+    def test_explicit_log_dir_argument_is_honoured(
+        self, rebuild_mod, tmp_path,
+    ):
+        """``setup_logging(log_dir=...)`` overrides the module default."""
+        elsewhere = tmp_path / "elsewhere"
+        logger = rebuild_mod.setup_logging(log_dir=elsewhere)
+        logger.info("explicit directory")
+        assert (elsewhere / "rebuild.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# Re-audit findings M2 and M3 — the rebuild and the cron sync must not race
+# ---------------------------------------------------------------------------
+
+
+class TestRebuildHoldsTheCursorLock:
+    """
+    The five-minute cron sync reads the cursor at the start of its cycle
+    and writes it back at the end. Without a lock, a sync that read a
+    position before the TRUNCATE could write it back after the keys were
+    cleared, and the next run would treat rows the rebuild had just
+    destroyed as already synced. They would never be replayed.
+    """
+
+    def test_lock_is_held_while_truncating(
+        self, rebuild_mod, tmp_path, monkeypatch, pinned_log_dir,
+    ):
+        """
+        Asserted from inside ``truncate_table``: a second, independent
+        open of the lock file must fail to take it. ``flock`` is per open
+        file description, so this conflicts even within one process. The
+        mutation this kills: dropping the ``with cursor_file_lock(...)``
+        from ``perform_rebuild``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 10}), encoding="utf-8",
+        )
+        lock_path = cursor_file.with_name(cursor_file.name + ".lock")
+        observed = {"locked_during_truncate": None}
+
+        def _spy_truncate(conn, table, logger):
+            with open(lock_path, "a", encoding="utf-8") as probe:
+                try:
+                    fcntl.flock(
+                        probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                except BlockingIOError:
+                    observed["locked_during_truncate"] = True
+                else:
+                    observed["locked_during_truncate"] = False
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+
+        monkeypatch.setattr(rebuild_mod, "truncate_table", _spy_truncate)
+        conn, _cur = _build_fake_conn()
+        logger = rebuild_mod.setup_logging()
+
+        exit_code = rebuild_mod.perform_rebuild(
+            rebuild_mod.build_reset_targets(),
+            logger,
+            cursor_file=cursor_file,
+            open_conn=lambda _logger: conn,
+        )
+
+        assert exit_code == 0
+        assert observed["locked_during_truncate"] is True, (
+            "the cursor lock was not held while tables were truncated"
+        )
+
+    def test_cursor_keys_are_removed_and_others_kept(
+        self, rebuild_mod, tmp_path, pinned_log_dir,
+    ):
+        """The reset still does its job through the shared helper (M2)."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({
+                "postgres_sync_line": 10,
+                "sessions_sync_timestamp": "2026-09-01T00:00:00",
+                "zotero_sync_line": 3,
+                "postgres_last_sync_ts": "2026-09-01T00:00:00+00:00",
+                "unrelated": "kept",
+            }),
+            encoding="utf-8",
+        )
+        conn, _cur = _build_fake_conn()
+        logger = rebuild_mod.setup_logging()
+
+        rebuild_mod.perform_rebuild(
+            rebuild_mod.build_reset_targets(),
+            logger,
+            cursor_file=cursor_file,
+            open_conn=lambda _logger: conn,
+        )
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == {
+            "unrelated": "kept",
+        }
+
+    def test_cursor_reset_is_atomic(
+        self, rebuild_mod, tmp_path, monkeypatch, pinned_log_dir,
+    ):
+        """
+        Finding M2: the rebuild used a plain ``write_text``, so a kill
+        part-way through the key removal truncated the file and lost every
+        cursor at once. Routed through the shared helper it is a temp file
+        plus a rename. The mutation this kills: restoring
+        ``cursor_file.write_text(...)`` in ``reset_cursor_key``.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        original = {"postgres_sync_line": 10, "unrelated": "kept"}
+        cursor_file.write_text(json.dumps(original), encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            rebuild_mod.reset_cursor_key(
+                cursor_file, "postgres_sync_line", logger,
+            )
+
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == original
+
+
+class TestCursorFileDiagnosis:
+    """
+    Low finding L2 — an empty-but-valid cursor file was reported as
+    corrupt, and the check had a time-of-check/time-of-use gap.
+    """
+
+    def test_an_empty_object_is_not_corrupt(
+        self, rebuild_mod, tmp_path, caplog, pinned_log_dir,
+    ):
+        """
+        ``{}`` is exactly what a freshly reset cursor file looks like, so
+        the old "empty dict but non-zero size" heuristic reported every
+        one of them to the operator as corrupt. The mutation this kills:
+        restoring the ``not data and cursor_file.stat().st_size`` test.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text("{}\n", encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+
+        with caplog.at_level(logging.WARNING):
+            rebuild_mod.reset_cursor_key(
+                cursor_file, "postgres_sync_line", logger,
+            )
+
+        assert "corrupt" not in caplog.text.lower()
+        assert cursor_file.read_text(encoding="utf-8").strip() == "{}"
+
+    def test_genuinely_corrupt_is_still_repaired(
+        self, rebuild_mod, tmp_path, caplog, pinned_log_dir,
+    ):
+        """Unparseable content is still rewritten as an empty object."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text('{"postgres_sync_line": ', encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+
+        with caplog.at_level(logging.WARNING):
+            rebuild_mod.reset_cursor_key(
+                cursor_file, "postgres_sync_line", logger,
+            )
+
+        assert "corrupt" in caplog.text.lower()
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == {}
+
+    def test_a_json_array_is_repaired(
+        self, rebuild_mod, tmp_path, pinned_log_dir,
+    ):
+        """A JSON array is not a cursor object."""
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text("[1, 2, 3]", encoding="utf-8")
+        logger = rebuild_mod.setup_logging()
+        rebuild_mod.reset_cursor_key(cursor_file, "postgres_sync_line", logger)
+        assert json.loads(cursor_file.read_text(encoding="utf-8")) == {}
+
+    def test_a_missing_file_is_a_no_op(
+        self, rebuild_mod, tmp_path, pinned_log_dir,
+    ):
+        """No file, no work — and no exception from the removed stat()."""
+        cursor_file = tmp_path / "absent.json"
+        logger = rebuild_mod.setup_logging()
+        rebuild_mod.reset_cursor_key(cursor_file, "postgres_sync_line", logger)
+        assert not cursor_file.exists()

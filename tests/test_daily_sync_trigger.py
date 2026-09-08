@@ -59,7 +59,8 @@ class TriggerRig:
     ) -> subprocess.CompletedProcess[str]:
         """Run the trigger with the stub sync exiting ``sync_rc``."""
         env = os.environ.copy()
-        env.update({"HOME": str(self.home), "PA_TEST_SYNC_RC": str(sync_rc)})
+        env.update({"HOME": str(self.home), "PA_TEST_SYNC_RC": str(sync_rc),
+                    "PA_CC_ARCHIVES": str(self.home / "cc-archives")})
         if home is not None:
             env["HOME"] = str(home)
         if unset_home:
@@ -78,6 +79,16 @@ def rig(tmp_path: Path) -> TriggerRig:
     """Build the sandboxed trigger rig."""
     home = tmp_path / "home"
     (home / ".cache").mkdir(parents=True)
+    # The merged trigger (PR #117) also relays the three PostgreSQL gates and
+    # reports a gate that was never written, and it judges the hook gates
+    # against the session archive root. A sandbox that says nothing must
+    # therefore hold a quiet PostgreSQL state: three fresh zero gates with
+    # empty sidecars, and an archive root that exists.
+    for name in ("postgres-sync-memories-gate", "postgres-sync-sessions-gate",
+                 "index-session-content-gate"):
+        (home / ".cache" / name).write_text("0\n", encoding="utf-8")
+        (home / ".cache" / f"{name}.state.json").write_text("{}\n", encoding="utf-8")
+    (home / "cc-archives").mkdir()
     pa = tmp_path / "pa"
     scripts = pa / "scripts"
     scripts.mkdir(parents=True)
