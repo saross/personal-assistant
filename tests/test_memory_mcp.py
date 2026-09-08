@@ -414,7 +414,9 @@ class TestListRecent:
         data = json.loads(out)
         assert data["count"] == 0
         assert "error" in data
-        # Connection failure reason propagates to client
+        # Whatever _pg_connect reports reaches the envelope. In production
+        # that message is deliberately generic (audit R18); what is pinned
+        # here is that the tool does not swallow it.
         assert "connection refused" in data["error"]
 
     def test_query_uses_make_interval(self) -> None:
@@ -477,6 +479,7 @@ class TestListRecent:
                 "content-text",
                 "summary-text",
                 "high",
+                "true",
                 ["tag1", "tag2"],
                 "context-text",
                 "2026-04-12T10:00:00",
@@ -501,6 +504,7 @@ class TestListRecent:
         assert r["content"] == "content-text"
         assert r["summary"] == "summary-text"
         assert r["confidence"] == "high"
+        assert r["verified"] == "true"   # RT18: same shape as search_memories
         assert r["research_tags"] == ["tag1", "tag2"]
         assert r["source_context"] == "context-text"
         assert r["created_at"] == "2026-04-12T10:00:00"
@@ -598,8 +602,14 @@ class TestMemoryStatistics:
 class TestErrorHandling:
     """Tests that errors don't crash the MCP subprocess."""
 
-    def test_search_survives_jsonl_load_failure(self) -> None:
-        """A JSONL load exception is caught and returns an error envelope."""
+    def test_search_survives_jsonl_load_failure(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A JSONL load exception is caught and returns an error envelope.
+
+        The detail belongs in the server log, not in the envelope crossing
+        to the client (audit R18).
+        """
         with (
             patch.object(
                 memory_mcp.fetch_memories,
@@ -616,7 +626,8 @@ class TestErrorHandling:
 
         data = json.loads(out)
         assert "error" in data
-        assert "disk error" in data["error"]
+        assert "disk error" not in data["error"]
+        assert "disk error" in caplog.text
 
     def test_list_recent_survives_query_failure(self) -> None:
         """A DB query exception is caught and returns an error envelope."""
@@ -1028,10 +1039,10 @@ class TestSurfacingInstrumentation:
 
     def test_list_recent_logs_its_rows(self) -> None:
         columns = [
-            "id", "category", "content", "summary", "confidence",
+            "id", "category", "content", "summary", "confidence", "verified",
             "research_tags", "source_context", "created_at", "project",
         ]
-        row = tuple(SAMPLE_RESULTS[0][c] for c in columns)
+        row = tuple(SAMPLE_RESULTS[0].get(c, "true") for c in columns)
         cursor = MagicMock()
         cursor.fetchall.return_value = [row]
         conn = MagicMock()
@@ -1191,3 +1202,125 @@ class TestMcpConnectionBounds:
         assert recorded["options"] == (
             f"-c statement_timeout={memory_mcp.STATEMENT_TIMEOUT_MS}"
         )
+
+
+# -------------------------------------------------------------------------
+# Audit R18 (2026-09-08): driver detail stays server-side
+# -------------------------------------------------------------------------
+
+class TestErrorEnvelopesAreGeneric:
+    """psycopg2's text names sockets, hosts, and databases. Log it, don't ship it."""
+
+    _SECRET = "could not connect to server: /var/run/postgresql/.s.PGSQL.5432"
+
+    def test_connection_failure_detail_is_logged_not_returned(
+        self, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Kills: interpolating the exception into the (None, message) tuple."""
+        import psycopg2
+
+        def _refuse(**kwargs):
+            raise psycopg2.OperationalError(self._SECRET)
+
+        monkeypatch.setattr(psycopg2, "connect", _refuse)
+        with caplog.at_level("WARNING"):
+            conn, err = memory_mcp._pg_connect()
+        assert conn is None
+        assert self._SECRET not in err
+        assert self._SECRET in caplog.text
+
+    @pytest.mark.parametrize("tool", ["list_recent", "memory_statistics"])
+    def test_connection_failure_envelope_carries_no_detail(
+        self, monkeypatch: pytest.MonkeyPatch, tool: str,
+    ) -> None:
+        """Both database-only tools report the generic message."""
+        monkeypatch.setattr(
+            memory_mcp, "_pg_connect",
+            lambda: (None, memory_mcp.GENERIC_DB_ERROR),
+        )
+        data = json.loads(_run(getattr(memory_mcp, tool)()))
+        assert "/var/run/postgresql" not in data["error"]
+        assert "PostgreSQL unavailable" in data["error"]
+
+    def test_query_failure_envelope_carries_no_detail(
+        self, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Kills: interpolating the query exception into the envelope."""
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.execute.side_effect = RuntimeError(
+            'relation "active_memories" does not exist'
+        )
+        conn.cursor.return_value.__enter__.return_value = cursor
+        monkeypatch.setattr(memory_mcp, "_pg_connect", lambda: (conn, None))
+        with caplog.at_level("ERROR"):
+            data = json.loads(_run(memory_mcp.list_recent(days=7)))
+        assert "active_memories" not in data["error"]
+        assert "active_memories" in caplog.text
+
+    def test_schema_mismatch_message_is_still_actionable(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Our own message has no host detail and tells the operator what to run.
+
+        Kills: sweeping the schema-version text into the generic branch.
+        """
+        import psycopg2
+
+        def _connect(**kwargs):
+            conn = MagicMock()
+            cur = MagicMock()
+            cur.fetchone.return_value = ("0",)
+            conn.cursor.return_value.__enter__.return_value = cur
+            return conn
+
+        monkeypatch.setattr(psycopg2, "connect", _connect)
+        conn, err = memory_mcp._pg_connect()
+        assert conn is None
+        assert "schema_version" in err
+
+
+# -------------------------------------------------------------------------
+# Lens B RT13 and RT18: exact id match, and one memory shape across tools
+# -------------------------------------------------------------------------
+
+class TestResultShapeAndMatching:
+    """Two contracts the tools share."""
+
+    def test_get_memory_jsonl_fallback_matches_the_id_exactly(self) -> None:
+        """Kills: ``==`` -> ``startswith`` in the fallback scan."""
+        corpus = [{**SAMPLE_RESULTS[0], "id": "2026-04-12-abcdef123456"}]
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=corpus),
+        ):
+            data = json.loads(_run(memory_mcp.get_memory(
+                memory_id="2026-04-12-abc")))
+        assert data["count"] == 0
+
+    def test_list_recent_and_search_memories_agree_on_the_columns(self) -> None:
+        """Kills: letting the two column lists drift apart.
+
+        A client that fetches a memory through one tool and then the other
+        should not find a field has vanished; ``verified`` was missing from
+        list_recent's list (lens B, RT18).
+        """
+        columns = [
+            "id", "category", "content", "summary", "confidence", "verified",
+            "research_tags", "source_context", "created_at", "project",
+        ]
+        row = tuple(SAMPLE_RESULTS[0].get(c, "true") for c in columns)
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [row]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        with patch.object(memory_mcp, "_pg_connect", return_value=(conn, None)):
+            recent = json.loads(_run(memory_mcp.list_recent(days=7)))
+        with patch.object(memory_mcp.fetch_memories, "try_postgres",
+                          return_value=[{c: "x" for c in columns}]):
+            searched = json.loads(_run(memory_mcp.search_memories(query="x")))
+        assert set(recent["results"][0]) == set(searched["results"][0])

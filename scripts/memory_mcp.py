@@ -114,13 +114,26 @@ def _log_surfaced(results: list[dict[str, Any]] | None) -> None:
 # PostgreSQL helpers (only needed for tools not covered by fetch-memories)
 # -------------------------------------------------------------------------
 
+#: What a client is told when the database is unreachable. The driver's own
+#: message names the socket path, the host, and the database (audit R18):
+#: detail an MCP client -- which may be another machine's Claude -- has no
+#: use for and no business seeing. The full text goes to the server log on
+#: stderr, where the operator reads it.
+GENERIC_DB_ERROR = "PostgreSQL unavailable (see the MCP server log for detail)"
+
+#: The same posture for a query that fails once connected.
+GENERIC_QUERY_ERROR = "Query failed (see the MCP server log for detail)"
+
+
 def _pg_connect() -> tuple[Any | None, str | None]:
     """
     Open a fresh PostgreSQL connection.
 
-    Returns (connection, None) on success, (None, error_message) on
-    failure. The error message is propagated to the MCP client so the
-    caller can see *why* the connection failed (not just that it did).
+    Returns (connection, None) on success, (None, message) on failure. The
+    message is deliberately generic: the driver's text crosses a process
+    boundary to an arbitrary client, so it is logged here and summarised
+    there. A schema-version mismatch is the exception -- that message is
+    ours, carries no host detail, and tells the operator what to run.
     """
     try:
         import psycopg2
@@ -135,9 +148,8 @@ def _pg_connect() -> tuple[Any | None, str | None]:
             options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
         )
     except Exception as exc:  # noqa: BLE001 — graceful degradation
-        msg = f"PostgreSQL unavailable: {exc}"
-        logger.warning(msg)
-        return None, msg
+        logger.warning("PostgreSQL connection failed: %s", exc)
+        return None, GENERIC_DB_ERROR
 
     # Schema-version guard (audit IC5). Surface the mismatch through
     # the same (None, error) channel the connection failure path uses
@@ -333,7 +345,7 @@ async def search_memories(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"JSONL fallback failed: {exc}")
-        return _error_envelope(f"Memory lookup failed: {exc}")
+        return _error_envelope("Memory lookup failed (see the MCP server log)")
 
 
 # -------------------------------------------------------------------------
@@ -473,7 +485,8 @@ async def search_sessions(
         # caller, so it passes through verbatim.
         return _error_envelope(str(exc))
     except Exception as exc:  # noqa: BLE001 — graceful degradation to the client
-        return _error_envelope(f"Session search failed: {exc}")
+        logger.error(f"Session search failed: {exc}")
+        return _error_envelope("Session search failed (see the MCP server log)")
 
     if not results:
         return _envelope([], source="none",
@@ -532,7 +545,8 @@ async def get_memory(
                 )
         return _error_envelope(f"Memory {memory_id} not found")
     except Exception as exc:  # noqa: BLE001
-        return _error_envelope(f"Memory lookup failed: {exc}")
+        logger.error(f"get_memory JSONL fallback failed: {exc}")
+        return _error_envelope("Memory lookup failed (see the MCP server log)")
 
 
 # -------------------------------------------------------------------------
@@ -567,8 +581,13 @@ async def list_recent(
         )
 
     try:
+        # Must stay identical to fetch-memories.try_postgres's column list:
+        # a client that fetches a memory through search_memories and then
+        # through this tool should not find a field has vanished.
+        # ``verified`` was missing here (lens B, RT18) -- the one field the
+        # display layer turns into a verification label.
         columns = [
-            "id", "category", "content", "summary", "confidence",
+            "id", "category", "content", "summary", "confidence", "verified",
             "research_tags", "source_context", "created_at", "project",
         ]
         # Use make_interval to avoid quoting a %s inside a string literal;
@@ -596,7 +615,7 @@ async def list_recent(
         return _envelope(results, source="postgres")
     except Exception as exc:  # noqa: BLE001
         logger.error(f"list_recent query failed: {exc}")
-        return _error_envelope(f"Query failed: {exc}")
+        return _error_envelope(GENERIC_QUERY_ERROR)
     finally:
         conn.close()
 
@@ -677,7 +696,7 @@ async def memory_statistics() -> str:
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"Statistics query failed: {exc}")
-        return _error_envelope(f"Query failed: {exc}")
+        return _error_envelope(GENERIC_QUERY_ERROR)
     finally:
         conn.close()
 
