@@ -399,6 +399,12 @@ def _write_cursor_file(cursor_path: Path, data: dict[str, Any]) -> None:
     one; a kill mid-write can never leave a truncated cursor file behind.
     The temp name carries the pid so two processes cannot collide on it
     even if one of them skipped :func:`cursor_file_lock`.
+
+    The parent directory is fsynced after the rename too (re-audit, low
+    finding). Without it the rename itself can be lost to a power failure
+    even though the file's own contents were durable, leaving the cursor
+    at its pre-write value — the atomicity holds, but the durability the
+    fsync above was for does not.
     """
     cursor_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cursor_path.with_name(f"{cursor_path.name}.{os.getpid()}.tmp")
@@ -408,6 +414,12 @@ def _write_cursor_file(cursor_path: Path, data: dict[str, Any]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_path, cursor_path)
+        # Make the rename itself durable, not just the file's contents.
+        dir_fd = os.open(str(cursor_path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except BaseException:
         # Never leave a stray temp file behind on failure (including a
         # KeyboardInterrupt part-way through the write).

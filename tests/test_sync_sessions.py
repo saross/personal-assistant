@@ -1161,3 +1161,35 @@ class TestEnvironmentFaults:
                 [_minimal_row("s1"), _minimal_row("s2")], test_logger,
             )
         assert not (tmp_path / "quarantine.jsonl").exists()
+
+
+class TestQuarantineDedupSeesBothShapes:
+    """
+    Re-audit, low finding: the sessions quarantine file also holds two
+    shapes — the bare row from ``_write_quarantine`` and the wrapped entry
+    from ``_sync_cursor.quarantine_record`` — and the dedup read only one.
+    """
+
+    def test_wrapped_entries_are_seen_by_the_dedup(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """The mutation this kills: reading only ``rec.get("id")``."""
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        sync_mod.quarantine_record(
+            quarantine,
+            {"id": "s-x", "postgres_error": "refused"},
+            "postgres_refused_row",
+            logger=test_logger,
+        )
+        assert sync_mod._load_quarantined_ids() == {"s-x"}
+
+        sync_mod._write_quarantine([{"id": "s-x", "title": "t"}], test_logger)
+
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1

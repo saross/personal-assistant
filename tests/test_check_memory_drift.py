@@ -276,3 +276,119 @@ class TestRecoveryTakesTheLock:
 
         assert count == 1
         assert canonical.read_text(encoding="utf-8").strip() == raw
+
+
+# ---------------------------------------------------------------------------
+# Re-audit lows — short writes, an unbounded retry, and a dropped field
+# ---------------------------------------------------------------------------
+
+
+class TestRecoveryWriteRobustness:
+    """The recovery append is the last surviving copy of these records."""
+
+    def test_short_writes_do_not_truncate_a_record(
+        self, drift_mod, monkeypatch, tmp_path, quiet_log,
+    ):
+        """
+        ``os.write`` may write fewer bytes than it was given. Ignoring the
+        return silently truncated the payload — half a JSON line in the
+        canonical, unparseable, and the data gone. The mutation this
+        kills: replacing ``_write_all`` with a bare ``os.write``.
+        """
+        canonical = tmp_path / "memories.jsonl"
+        canonical.write_text("", encoding="utf-8")
+        monkeypatch.setattr(drift_mod, "MEMORIES_FILE", canonical)
+        _stub_psql(monkeypatch, drift_mod, [
+            _pg_row("m-one"), _pg_row("m-two"),
+        ])
+
+        real_write = os.write
+
+        def _stingy_write(fd, data):
+            """Write at most 7 bytes per call, as a slow pipe might."""
+            return real_write(fd, bytes(data[:7]))
+
+        monkeypatch.setattr(os, "write", _stingy_write)
+        drift_mod.recover(
+            drift_mod.DriftResult(pg_only=["m-one", "m-two"]), quiet_log,
+        )
+        monkeypatch.undo()
+
+        lines = [
+            line for line in
+            canonical.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+        assert len(lines) == 2
+        ids = sorted(json.loads(line)["id"] for line in lines)
+        assert ids == ["m-one", "m-two"]
+
+    def test_lock_retry_is_bounded(
+        self, drift_mod, monkeypatch, tmp_path,
+    ):
+        """
+        A rewriter renaming in a tight loop would spin the inode-identity
+        retry forever. It now gives up loudly. The mutation this kills:
+        restoring ``while True``.
+        """
+        canonical = tmp_path / "memories.jsonl"
+        canonical.write_text("", encoding="utf-8")
+        real_stat = os.stat
+
+        class _ShiftedInode:
+            """A stat result whose inode never matches the open fd's."""
+
+            def __init__(self, real) -> None:
+                self.st_ino = real.st_ino + 1
+
+        calls = {"n": 0}
+        # Stop faking a little past the retry budget so an unbounded loop
+        # ends the test cleanly ("DID NOT RAISE") instead of hanging.
+        give_up_after = drift_mod.MAX_LOCK_ATTEMPTS + 5
+
+        def _always_different(path, *args, **kwargs):
+            """Fake the inode for the canonical only; delegate otherwise.
+
+            Narrow on purpose: a blanket ``os.stat`` patch also catches
+            pytest's own tmp-directory cleanup, which asks for st_mode.
+            """
+            result = real_stat(path, *args, **kwargs)
+            if str(path) == str(canonical) and calls["n"] < give_up_after:
+                calls["n"] += 1
+                return _ShiftedInode(result)
+            return result
+
+        monkeypatch.setattr(os, "stat", _always_different)
+        try:
+            with pytest.raises(RuntimeError, match="stable handle"):
+                with drift_mod._shared_locked_append_fd(canonical):
+                    pass
+        finally:
+            monkeypatch.undo()
+
+        assert calls["n"] == drift_mod.MAX_LOCK_ATTEMPTS, (
+            "the retry budget was not honoured exactly"
+        )
+
+    def test_decayed_at_is_carried_into_the_recovered_record(
+        self, drift_mod, monkeypatch,
+    ):
+        """
+        The decay timestamp is the only surviving evidence of *when* a
+        record was retired once PostgreSQL is rebuilt from the canonical.
+        The mutation this kills: dropping the ``decayed_at`` assignment.
+        """
+        _stub_psql(monkeypatch, drift_mod, [
+            _pg_row(
+                "m-decayed", is_active=False,
+                decayed_at="2026-08-01T00:00:00+00:00",
+            ),
+        ])
+        record = json.loads(drift_mod._pg_records(["m-decayed"])[0][0])
+        assert record["decayed_at"] == "2026-08-01T00:00:00+00:00"
+        assert record["is_active"] is False
+
+    def test_active_record_gains_no_decayed_at(self, drift_mod, monkeypatch):
+        """An ordinary record keeps the shape the extraction hook writes."""
+        _stub_psql(monkeypatch, drift_mod, [_pg_row("m-active")])
+        record = json.loads(drift_mod._pg_records(["m-active"])[0][0])
+        assert "decayed_at" not in record

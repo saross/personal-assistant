@@ -352,3 +352,36 @@ class TestCompareAndSet:
         with _sync_cursor.cursor_file_lock(cursor):
             _sync_cursor.apply_cursor_update(cursor, {"b": 2})
         assert json.loads(cursor.read_text(encoding="utf-8")) == {"a": 1, "b": 2}
+
+
+class TestDurability:
+    """Re-audit, low finding: the rename must be durable, not just the data."""
+
+    def test_parent_directory_is_fsynced_after_the_rename(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        Without an fsync on the directory, a power failure can lose the
+        rename even though the new file's contents reached the disk — the
+        cursor silently reverts to its pre-write value. The mutation this
+        kills: removing the directory fsync after ``os.replace``.
+        """
+        cursor = tmp_path / "sync-cursors.json"
+        fsynced_dirs: list[str] = []
+        real_fsync = os.fsync
+
+        def _record_fsync(fd: int) -> None:
+            try:
+                if os.path.isdir(f"/proc/self/fd/{fd}"):
+                    fsynced_dirs.append(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:  # pragma: no cover — platform variation
+                pass
+            real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", _record_fsync)
+        _sync_cursor.update_cursor_file(cursor, {"postgres_sync_line": 1})
+        monkeypatch.undo()
+
+        assert str(tmp_path) in fsynced_dirs, (
+            f"the cursor file's directory was never fsynced: {fsynced_dirs}"
+        )

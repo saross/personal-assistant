@@ -75,6 +75,9 @@ DATA_DIR = PA_DIR / "data"
 MEMORIES_FILE = DATA_DIR / "memories" / "memories.jsonl"
 ARCHIVE_DIR = DATA_DIR / "memories" / "archive"
 ARCHIVE_GLOB = "memories-archive-*.jsonl"
+#: How many times to retry taking a stable locked handle on the canonical
+#: before giving up. See :func:`_shared_locked_append_fd`.
+MAX_LOCK_ATTEMPTS = 10
 LOG_FILE = PA_DIR / "logs" / "memory-drift.log"
 DB_NAME = "claude_memories"
 
@@ -322,6 +325,12 @@ def _pg_records(ids: list[str]) -> tuple[list[str], list[str]]:
         # keeps the exact shape the extraction hook writes.
         if row.get("is_active") is False or row.get("decayed_at") is not None:
             record["is_active"] = False
+            # Carry the decay timestamp too (re-audit, low finding).
+            # Dropping it kept *when* the record was retired out of the
+            # canonical, and it is the only surviving evidence of that
+            # once the PostgreSQL row is rebuilt from this file.
+            if row.get("decayed_at") is not None:
+                record["decayed_at"] = row["decayed_at"]
             soft_deleted.append(row["id"])
         lines.append(json.dumps(record, ensure_ascii=False))
     lines.sort(key=lambda line: (json.loads(line)["created_at"], json.loads(line)["id"]))
@@ -350,7 +359,7 @@ def _shared_locked_append_fd(target_path: Path) -> Iterator[int]:
     here is unrecoverable rather than merely inconvenient.
     """
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    while True:
+    for _attempt in range(MAX_LOCK_ATTEMPTS):
         fd = os.open(
             str(target_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644,
         )
@@ -368,11 +377,38 @@ def _shared_locked_append_fd(target_path: Path) -> Iterator[int]:
             _release(fd)
             continue
         break
+    else:
+        # Bounded rather than ``while True`` (re-audit, low finding): a
+        # rewriter renaming in a tight loop, or a path that keeps
+        # vanishing, would otherwise spin here forever holding nothing.
+        # Failing loudly is right — the caller is about to write the last
+        # surviving copy of these records.
+        raise RuntimeError(
+            f"could not obtain a stable handle on {target_path} after "
+            f"{MAX_LOCK_ATTEMPTS} attempts — a rewriter appears to be "
+            f"renaming it repeatedly; re-run once it settles"
+        )
     try:
         os.lseek(fd, 0, os.SEEK_END)
         yield fd
     finally:
         _release(fd)
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    """Write every byte of ``payload`` to ``fd``, looping on short writes.
+
+    ``os.write`` may write fewer bytes than it was given and returns the
+    count; ignoring that return silently truncates a record (re-audit,
+    low finding). Called once per record, so a failure part-way through a
+    recovery loses at most the tail of one line rather than the middle of
+    the batch — and each iteration writes at least one byte or raises, so
+    the loop terminates.
+    """
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
 
 
 def _release(fd: int) -> None:
@@ -399,9 +435,9 @@ def recover(result: DriftResult, log: logging.Logger) -> int:
         lines.extend(stash_lines)
     if not lines:
         return 0
-    payload = "".join(line + "\n" for line in lines).encode("utf-8")
     with _shared_locked_append_fd(MEMORIES_FILE) as fd:
-        os.write(fd, payload)
+        for line in lines:
+            _write_all(fd, (line + "\n").encode("utf-8"))
     log.warning("RECOVERED %d records into %s", len(lines), MEMORIES_FILE)
     if soft_deleted:
         log.warning(

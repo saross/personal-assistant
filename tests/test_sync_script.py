@@ -1725,3 +1725,53 @@ class TestCursorResetMidRun:
         assert json.loads(
             cursor_file.read_text(encoding="utf-8")
         )["postgres_sync_line"] == 1
+
+
+class TestQuarantineDedupSeesBothShapes:
+    """
+    Re-audit, low finding: two record shapes live in one quarantine file.
+    ``_write_quarantine`` appends the bare row (id at the top level);
+    ``_sync_cursor.quarantine_record`` wraps it as
+    ``{"reason", "quarantined_at", "record"}`` (id one level down).
+    ``_load_quarantined_ids`` read only the first, so the drop-path dedup
+    could not see entries the refused-row path had written.
+    """
+
+    def test_wrapped_entries_are_seen_by_the_dedup(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        A record quarantined by the refused-row path must not be appended
+        a second time by the drop path. The mutation this kills: reading
+        only ``rec.get("id")``.
+        """
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+
+        # Shape 2: written by quarantine_record (id nested under "record").
+        sync_mod.quarantine_record(
+            quarantine,
+            {"id": "m-x", "postgres_error": "refused"},
+            "postgres_refused_row",
+            logger=test_logger,
+        )
+        assert sync_mod._load_quarantined_ids() == {"m-x"}
+
+        # The drop path must now treat it as already present.
+        sync_mod._write_quarantine([{"id": "m-x", "content": "c"}], test_logger)
+
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1
+
+    def test_bare_entries_are_still_seen(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """The original shape must keep working — this reads both."""
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        sync_mod._write_quarantine([{"id": "m-y", "content": "c"}], test_logger)
+        assert sync_mod._load_quarantined_ids() == {"m-y"}

@@ -415,11 +415,22 @@ def _load_quarantined_ids() -> set[str]:
                 continue
             try:
                 rec = json.loads(line)
-                sid = rec.get("id")
-                if isinstance(sid, str):
-                    ids.add(sid)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(rec, dict):
+                continue
+            # Two shapes live in this one file. ``_write_quarantine``
+            # appends the bare row, so the id is at the top level;
+            # ``_sync_cursor.quarantine_record`` wraps it as
+            # ``{"reason", "quarantined_at", "record"}``, so the id is
+            # one level down. Reading only the first shape meant the
+            # dedup could not see entries written by the second
+            # (re-audit, low finding).
+            for candidate in (rec, rec.get("record")):
+                if isinstance(candidate, dict):
+                    sid = candidate.get("id")
+                    if isinstance(sid, str):
+                        ids.add(sid)
     return ids
 
 
