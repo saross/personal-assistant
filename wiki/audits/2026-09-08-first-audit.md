@@ -394,7 +394,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     (221acd4–ca10efa): every stash is tracked by SHA and popped
     oldest-first (the boolean flags are gone); an unmerged memory file is
     refused with a gate; the bump is withheld when `origin/main` is absent;
-    the trigger survives an unset `HOME`. Second pass running.
+    the trigger survives an unset `HOME`. Second pass: **two more
+    criticals in the round-two fixes** — a stash pop that is refused (two
+    stashes touching one file) rather than conflicted orphans the remainder
+    with no gate and the next run exits 0; the marker check reads the index,
+    so a marker-laden memory file that has been `git add`ed (which the gate
+    text itself advises) is committed and published. Plus: `push_stash` can
+    return a foreign stash's SHA; `daily-sync.sh` itself still dies on an
+    unset `HOME`; seven mutations of the round's own stash logic survive
+    the suite (the SHA resolution is untested). Third round running, briefed
+    as invariants: a run never exits with its own stash on the stack
+    ungated; no file containing a marker line is ever staged; only a
+    run's own stashes are popped or dropped.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
