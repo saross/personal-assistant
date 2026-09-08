@@ -106,7 +106,10 @@ def main(argv: list[str] | None = None) -> int:
         for rec in manifest.get("records", []):
             stratum_by_topic[rec["topic_id"]] = rec["stratum"]
 
-    for candidate in (args.phase1, args.reference_phase1):
+    # --phase3 with them: it defines the feature space (which metrics are
+    # bimodal, and so excluded from the distance), and a promotion file built
+    # from superseded measurements answers that about different metrics.
+    for candidate in (args.phase1, args.phase3, args.reference_phase1):
         if candidate is None or not candidate.exists():
             continue
         stale = style_support.metric_schema_error(

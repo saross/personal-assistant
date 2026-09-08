@@ -877,3 +877,39 @@ def test_the_provenance_section_names_the_code_and_the_inputs():
     assert "cafe1234" in section
     assert "DIRTY" in section
     assert "phase1.json" in section and "abc" in section
+
+
+def _schema_checked_arguments(main_fn: ast.FunctionDef) -> set[str]:
+    """Return the ``args.<name>`` attributes fed to a metric_schema check.
+
+    Read from the source rather than by running ``main``: this module imports
+    numpy, scipy and scikit-learn at module scope and none is installed here,
+    so the only stdlib-reachable way to assert what ``main`` checks is to read
+    what it does.
+    """
+    checked: set[str] = set()
+    for node in ast.walk(main_fn):
+        if not isinstance(node, ast.For):
+            continue
+        if not _attribute_calls(node, "metric_schema_error"):
+            continue
+        for element in ast.walk(node.iter):
+            if (isinstance(element, ast.Attribute)
+                    and isinstance(element.value, ast.Name)
+                    and element.value.id == "args"):
+                checked.add(element.attr)
+    return checked
+
+
+def test_both_phase_inputs_have_their_stamp_checked():
+    """Phase 3 defines the feature space, so a stale one is as bad as phase 1.
+
+    Which metrics are bimodal — and therefore excluded from the Mahalanobis
+    distance — is read from the promotion file. A promotion file computed
+    from superseded measurements answers that question about different
+    metrics than the ones being scored. The mutation this kills: checking
+    only ``args.phase1``, which is what this script did.
+    """
+    main_fn = _function_def(_module_ast(), "main")
+
+    assert {"phase1", "phase3"} <= _schema_checked_arguments(main_fn)

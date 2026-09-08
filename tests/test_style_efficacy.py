@@ -377,3 +377,42 @@ def test_scoring_no_passage_at_all_exits_two(tmp_path):
     (tmp_path / "passages").mkdir()
 
     assert score.main(["--experiment-dir", str(tmp_path)]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-3 item 4 — efficacy_score must check phase 3's stamp too
+# ---------------------------------------------------------------------------
+
+def test_the_scorer_checks_every_phase_input_it_reads():
+    """--phase3 was the one input whose stamp went unchecked.
+
+    ``efficacy_score`` imports the Phase 5 evaluator, and so numpy, at module
+    scope; the stdlib-reachable way to assert what its ``main`` checks is to
+    read the source. The mutation this kills: dropping ``args.phase3`` from
+    the candidates loop, which lets a feature space built from superseded
+    measurements decide which metrics are scored.
+    """
+    import ast
+
+    from style_test_helpers import SCRIPTS_DIR
+
+    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
+    main_fn = next(node for node in ast.parse(source).body
+                   if isinstance(node, ast.FunctionDef) and node.name == "main")
+
+    checked: set[str] = set()
+    for node in ast.walk(main_fn):
+        if not isinstance(node, ast.For):
+            continue
+        calls = [c for c in ast.walk(node)
+                 if isinstance(c, ast.Call)
+                 and isinstance(c.func, ast.Attribute)
+                 and c.func.attr == "metric_schema_error"]
+        if not calls:
+            continue
+        checked |= {element.attr for element in ast.walk(node.iter)
+                    if isinstance(element, ast.Attribute)
+                    and isinstance(element.value, ast.Name)
+                    and element.value.id == "args"}
+
+    assert {"phase1", "phase3", "reference_phase1"} <= checked

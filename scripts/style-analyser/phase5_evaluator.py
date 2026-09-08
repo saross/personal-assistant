@@ -1331,11 +1331,16 @@ def main() -> int:
     phase3 = load_json(args.phase3)
     # The input below is measured with today's phase 1 code; the corpus it is
     # scored against must have been measured the same way, or the distance is
-    # between two different measurements (re-audit item 4).
-    stale = style_support.metric_schema_error(phase1, args.phase1)
-    if stale:
-        print(stale, file=sys.stderr)
-        return 2
+    # between two different measurements (re-audit item 4). Phase 3 is checked
+    # with it: the feature space itself — which metrics are bimodal, and so
+    # which are excluded from the Mahalanobis distance — is read from phase 3,
+    # and a promotion file computed from superseded measurements answers that
+    # question about different metrics than the ones being scored.
+    for payload, source in ((phase1, args.phase1), (phase3, args.phase3)):
+        stale = style_support.metric_schema_error(payload, source)
+        if stale:
+            print(stale, file=sys.stderr)
+            return 2
 
     import spacy
     nlp = spacy.load(args.spacy_model)
