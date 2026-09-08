@@ -545,6 +545,32 @@ def parse_transcript(
                     skip_next_assistant = False
                 continue
 
+            # Harness-injected and subagent turns are not conversation
+            # (audit H22, 2026-09-08). ``isMeta`` marks an entry the harness
+            # itself wrote into the transcript — system-reminder injections,
+            # slash-command expansions — and records it with
+            # ``"role": "user"``; ``isSidechain`` marks a subagent's turns,
+            # which belong to that agent's own transcript. Neither is
+            # something Shawn or this session's assistant said, so feeding
+            # either to the extractor invents memories out of the harness's
+            # own prose.
+            #
+            # The check sits AFTER the slash-command branch above, and that
+            # ordering is load-bearing: slash commands ARE delivered as
+            # ``isMeta`` user entries (measured 2026-09-08 across
+            # ~/.claude/projects/-home-shawn-personal-assistant: all 364
+            # marker-bearing user entries were isMeta, and no non-meta user
+            # entry carried a marker). Dropping meta entries any earlier
+            # would stop the command markers ever setting
+            # ``skip_next_assistant``, letting every /remember, /forget, and
+            # /update response back into extraction.
+            #
+            # ``last_seen_uuid`` is assigned above this point, so a skipped
+            # entry still advances the cursor — a window of nothing but
+            # harness injections must not be reprocessed forever.
+            if entry.get("isMeta") or entry.get("isSidechain"):
+                continue
+
             if content and content.strip():
                 messages.append(
                     {
