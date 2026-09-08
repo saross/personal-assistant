@@ -979,16 +979,34 @@ def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
 #: overwhelmingly environmental (a full disk, an unmounted store, a session
 #: that was live at the time); keeping one forever turns a transient problem
 #: into a permanently unarchivable session (audit round 4c-2, finding 1).
+#:
+#: **There is deliberately no attempt cap.** A session that fails for its own
+#: reasons — a transcript the toolkit cannot parse, say — is retried once
+#: every FAILED_RETRY_AFTER_DAYS, for ever. That is a bounded cost (one
+#: attempt a week, logged each time) and the alternative is worse: a
+#: permanent-failure state would silence the drift gate's only remaining
+#: complaint about a session that is genuinely not archived, which is the
+#: never-clearable-gate shape this pipeline has now been bitten by three
+#: times. A poisoned session should keep asking (audit round 4c-3, L-9).
 FAILED_RETRY_AFTER_DAYS = 7
 
 #: Substrings of a recorded failure reason that mean "try again next run".
 #: These describe the state of the SOURCE at one moment, not a defect in the
 #: session, so the next run is entitled to a different answer.
+#:
+#: Only reasons that can actually reach ``failed_ids`` belong here. The
+#: completeness guard's refusals do NOT: they are collected in
+#: ``skipped_incomplete`` and never recorded as failures, so listing them
+#: here described a path that does not exist (audit round 4c-3, finding
+#: L-7). "size changed since discovery" was pruned for a second reason —
+#: round 4c-2 replaced that refusal with a warning, and round 4c-3 replaced
+#: the shrink half with a differently-worded refusal that is likewise a
+#: skip, not a failure.
 _TRANSIENT_FAILURE_MARKERS = (
-    "size changed since discovery",
+    # Written at the post-copy comparison: the source moved while it was
+    # being read, so the entry may hold a prefix. Next run, the session is
+    # usually quiescent and the copy succeeds.
     "source changed DURING the copy",
-    "grace window",
-    "source transcript unreadable",
 )
 
 
@@ -1046,7 +1064,18 @@ def _partition_failed_ids(
             retried[session_id] = "--retry-failed"
             continue
         if session_id in on_disk:
-            retried[session_id] = "already archived on this machine"
+            # An entry exists — but if the failure was the during-copy
+            # comparison, that entry is the SUSPECT one this run wrote, not
+            # evidence the session is safely archived. Saying "already
+            # archived on this machine" over it reads as reassurance for
+            # exactly the case that needs a second look (round 4c-3, L-8).
+            if "DURING the copy" in reason:
+                retried[session_id] = (
+                    "an entry is on disk, but it is the possibly-truncated "
+                    "one this failure describes — re-archiving over it"
+                )
+            else:
+                retried[session_id] = "already archived on this machine"
             continue
         if any(marker in reason for marker in _TRANSIENT_FAILURE_MARKERS):
             retried[session_id] = f"transient failure ({reason[:60]})"
@@ -1453,7 +1482,12 @@ def refuse_incomplete_source(
     resumed and finished between the two commands. Refusing on that made the
     mismatch permanent, because the manifest kept the old size and every
     later run refused for the same reason. So growth is a warning and the
-    current content is archived.
+    current content is archived. The manifest itself is NOT rewritten — it
+    is only ever written by ``cmd_discover`` and by ``cmd_archive``'s
+    discovery fallback — so the same warning repeats on every run until
+    ``discover`` is next run. That is harmless and cheap, but an earlier
+    version of this docstring claimed the caller refreshed the recorded
+    size, which it does not (audit round 4c-3, finding L-4).
 
     **Smaller** is never a stale manifest. Transcripts are append-only: a
     source that has lost bytes was truncated by something — an interrupted

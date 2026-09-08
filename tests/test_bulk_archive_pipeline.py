@@ -2031,3 +2031,110 @@ class TestMixedRootIsRefused:
         (root / SID_A).mkdir(parents=True)
 
         assert bulk_archive.detect_source_layout(root, LOGGER, "live") == "live"
+
+
+class TestFailureBookkeepingSaysWhatHappened:
+    """Round 4c-3 findings L-7, L-8, L-9 — the record must describe reality."""
+
+    def _checkpoint(self, pipeline: Pipeline, failed: dict) -> None:
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [], "skipped_trivial_ids": [],
+            "failed_ids": failed,
+            "stats": {"total_archived": 0, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+
+    def test_every_transient_marker_can_actually_be_recorded(self) -> None:
+        """L-7: a marker matching no reachable reason is decoration.
+
+        Completeness-guard refusals go to skipped_incomplete and are never
+        written to failed_ids, so listing their wording here described a
+        path that does not exist.
+        """
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+        recorded = source.split("def cmd_archive(")[1]
+
+        for marker in bulk_archive._TRANSIENT_FAILURE_MARKERS:
+            assert marker in recorded, (
+                f"{marker!r} is listed as a transient failure but no "
+                "_record_failure call in cmd_archive can produce it"
+            )
+
+    def test_a_during_copy_failure_is_not_called_already_archived(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L-8: the entry on disk IS the suspect one, not reassurance."""
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": (
+                "source changed DURING the copy (10 -> 20 bytes); archived "
+                "entry may be truncated — re-archive"
+            ),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive()
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "possibly-truncated" in messages, messages
+        assert "already archived on this machine" not in messages
+
+    def test_an_unrelated_failure_on_disk_still_says_already_archived(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: the ordinary wording must survive for its own case."""
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "no space left on device",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive()
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "already archived on this machine" in messages
+
+    def test_a_poisoned_session_is_retried_again_after_the_window(
+        self, pipeline: Pipeline
+    ) -> None:
+        """L-9: no attempt cap, deliberately — it keeps asking.
+
+        A permanent-failure state would silence the drift gate's only
+        remaining complaint about a session that is genuinely not archived.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        aged = datetime.now(timezone.utc) - timedelta(
+            days=bulk_archive.FAILED_RETRY_AFTER_DAYS + 1
+        )
+        # A tenth consecutive failure, long past any plausible attempt cap.
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "cannot parse transcript (attempt 10)",
+            "recorded_at": aged.isoformat(),
+        }})
+
+        binding, retried = bulk_archive._partition_failed_ids(
+            {SID_A: {
+                "reason": "cannot parse transcript (attempt 10)",
+                "recorded_at": aged.isoformat(),
+            }},
+            on_disk=set(),
+        )
+
+        assert SID_A in retried
+        assert binding == {}
+
+    def test_the_no_cap_policy_is_documented_where_it_is_set(self) -> None:
+        """A policy nobody can find is a policy nobody can review."""
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+        constant_block = source.split("FAILED_RETRY_AFTER_DAYS = ")[0]
+        assert "no attempt cap" in constant_block.lower(), (
+            "the unbounded-retry decision is not stated beside the constant "
+            "that implements it"
+        )
