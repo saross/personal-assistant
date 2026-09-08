@@ -143,6 +143,14 @@ shq() {
     printf '%q' "$1"
 }
 
+# urlencode <value> — percent-encode a value for a URL query string. The
+# folder id is operator-supplied and lands in a `?folder=` parameter; a
+# `&` or a space there would silently change the request (round 4d-2).
+urlencode() {
+    python3 -c "import sys, urllib.parse; \
+print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+}
+
 # check_host <label> <ssh_host|""> <container> <config_dir> <expected_id> <always_on>
 check_host() {
     local label="$1" host="$2" container="$3" config_dir="$4" expected_id="$5" always_on="$6"
@@ -200,7 +208,8 @@ check_host() {
     # One CLI call each; parsed together so a partial failure still reports.
     local folders conns status
     folders="$(run_on "$host" "docker exec $q_container syncthing cli --home /config config folders list 2>/dev/null")"
-    if ! grep -q "^${FOLDER_ID}$" <<<"$folders"; then
+    # -F -x: the folder id is data, not a regular expression (round 4d-2).
+    if ! grep -qxF -- "$FOLDER_ID" <<<"$folders"; then
         note_problem "$prefix folder '$FOLDER_ID' is MISSING from the running config"
         return
     fi
@@ -210,10 +219,16 @@ check_host() {
     # which would make this check silently vacuous). Go via the REST API
     # from inside the container instead: -k because the GUI serves a
     # self-signed cert, https because plain HTTP answers "CSRF Error".
+    # The folder id reaches the inner `sh -c` as a positional argument
+    # ($1), not as part of its program text, and is shell-quoted for the
+    # outer layer that `run_on` builds (round 4d-2, C1). It also goes into
+    # a URL query string, so it is percent-encoded first.
+    local q_folder_id
+    q_folder_id="$(shq "$(urlencode "$FOLDER_ID")")"
     status="$(run_on "$host" "docker exec $q_container sh -c '
         KEY=\$(sed -n \"s|.*<apikey>\\(.*\\)</apikey>.*|\\1|p\" /config/config.xml)
-        curl -sk -H \"X-API-Key: \$KEY\" \"https://localhost:8384/rest/db/status?folder=$FOLDER_ID\"
-    ' 2>/dev/null")"
+        curl -sk -H \"X-API-Key: \$KEY\" \"https://localhost:8384/rest/db/status?folder=\$1\"
+    ' sh $q_folder_id 2>/dev/null")"
     if [[ -n "$status" ]]; then
         local parsed
         parsed="$(python3 -c "
@@ -312,11 +327,17 @@ print(', '.join(bad))
         ' 2>/dev/null")"
         if [[ -n "$stats" && -n "$threshold_h" ]]; then
             local absent
+            # Audit round 4d-2 (C1): argv[1..3] MUST be supplied at the
+            # invocation below. When the E16 rewrite moved these off the
+            # program text and nothing was passed, argv was ['-c'], line 3
+            # raised IndexError, `2>/dev/null` swallowed it, `absent` was
+            # always empty — and this alert could never fire again.
             absent="$(python3 -c "
 import sys, json, datetime
 exp = json.load(open(sys.argv[1]))
 names = exp['devices']
 me = sys.argv[2]
+threshold_hours = float(sys.argv[3])
 # Only devices that have their own hosts entry, excluding this machine.
 tracked = {h['expected_device_id'] for h in exp['hosts'].values()
            if h.get('expected_device_id') and h['expected_device_id'] != me}
@@ -338,10 +359,10 @@ for dev, s in d.items():
     except ValueError:
         continue
     hours = (now - ts).total_seconds() / 3600
-    if hours >= $threshold_h:
+    if hours >= threshold_hours:
         out.append('%s (%dh ago)' % (names.get(dev, dev[:7]), int(hours)))
 print(', '.join(out))
-" <<<"$stats" 2>/dev/null)"
+" "$EXPECTED_FILE" "$expected_id" "$threshold_h" <<<"$stats" 2>/dev/null)"
             if [[ -n "$absent" ]]; then
                 note_problem "$prefix peer(s) absent beyond ${threshold_h}h: $absent — away, or quietly broken"
             fi

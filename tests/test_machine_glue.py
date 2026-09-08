@@ -23,11 +23,14 @@ All fixture content is invented.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shlex
+import socket
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1105,23 +1108,270 @@ class TestSyncthingHealthQuoting:
         assert "SyntaxError" not in result.stderr, result.stderr
         assert "Traceback" not in result.stderr, result.stderr
 
-    def test_the_container_name_is_shell_quoted(self) -> None:
-        """Values from the JSON are quoted before reaching bash -c / ssh.
+    def test_no_json_value_is_interpolated_into_a_command_string(
+        self,
+    ) -> None:
+        """Every operator-supplied value is quoted before reaching a shell.
 
         A source-level assertion: the command strings ``run_on`` builds are
-        executed by a shell, and every interpolation of an
-        operator-supplied value must go through ``shq`` first. Proving this
-        by execution would mean letting a crafted value run a command.
+        executed by ``bash -c`` or by ``ssh``, and every interpolation of a
+        value out of the expectations JSON must go through ``shq`` (or be
+        passed as a positional argument) first. Proving this by execution
+        would mean letting a crafted value run a command.
+
+        Round 4d-2 widened this beyond ``$container``/``$config_dir``:
+        ``$FOLDER_ID`` was still being pasted into the remote URL.
         """
         source = HEALTH.read_text(encoding="utf-8")
         assert "shq()" in source
-        assert 'q_container="$(shq "$container")"' in source
-        assert 'q_config_dir="$(shq "$config_dir")"' in source
-        # No bare interpolation survives inside a run_on command string.
+        for quoted in (
+            'q_container="$(shq "$container")"',
+            'q_config_dir="$(shq "$config_dir")"',
+            'q_folder_id="$(shq "$(urlencode "$FOLDER_ID")")"',
+        ):
+            assert quoted in source, quoted
+        # No bare interpolation of a JSON-sourced value survives inside a
+        # command string handed to a shell.
         for line in source.splitlines():
-            if "run_on " in line or "docker exec" in line:
-                assert "$container " not in line, line
-                assert "$config_dir " not in line, line
+            if "run_on " not in line and "docker exec" not in line:
+                continue
+            for name in ("$container", "$config_dir", "$FOLDER_ID"):
+                assert name + " " not in line, f"{name} interpolated: {line}"
+                assert name + '"' not in line, f"{name} interpolated: {line}"
+
+    def test_the_threshold_is_not_spliced_into_python(self) -> None:
+        """Values reach the embedded Python as argv, never as program text.
+
+        Round 4d-2 (C1) found ``$threshold_h`` still spliced into a
+        comparison inside a ``python3 -c`` program. A non-numeric value
+        there would be a syntax error, and the surrounding ``2>/dev/null``
+        would have hidden it.
+        """
+        source = HEALTH.read_text(encoding="utf-8")
+        assert "if hours >= threshold_hours:" in source
+        assert "if hours >= $threshold_h:" not in source
+        assert "threshold_hours = float(sys.argv[3])" in source
+
+
+# ---------------------------------------------------------------------------
+# syncthing-health.sh check H — the peer-absence alert (round 4d-2, C1)
+#
+# The E16 rewrite left the peer-absence heredoc reading sys.argv[1..2] while
+# the invocation passed nothing, so argv was ['-c'], the third line raised
+# IndexError, stderr went to /dev/null, and the alert could never fire
+# again. These tests drive the whole check through a stub `docker`.
+# ---------------------------------------------------------------------------
+
+#: A dispatching docker stand-in. Every branch answers from the
+#: environment, so a test decides what the "mesh" looks like.
+_DOCKER_STUB = '''#!/usr/bin/env python3
+"""Synthetic docker: answers the queries syncthing-health.sh makes."""
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+
+
+def emit(payload):
+    """Print a JSON payload and exit cleanly."""
+    print(json.dumps(payload))
+    raise SystemExit(0)
+
+
+if args and args[0] == "inspect":
+    fmt = args[args.index("-f") + 1] if "-f" in args else ""
+    print("true" if "Running" in fmt else "2031-01-01T00:00:00Z")
+    raise SystemExit(0)
+
+if args and args[0] == "exec":
+    rest = args[2:]
+    if rest[:3] == ["stat", "-c", "%i"]:
+        # Match the host inode so the bind-liveness check passes.
+        print(os.stat(os.environ["STUB_CONFIG_DIR"]).st_ino)
+        raise SystemExit(0)
+    if rest and rest[0] == "syncthing":
+        if "system" in rest:
+            emit({"myID": os.environ["STUB_DEVICE_ID"]})
+        if "folders" in rest:
+            print(os.environ["STUB_FOLDER_ID"])
+            raise SystemExit(0)
+        if "connections" in rest:
+            emit({"connections": {}})
+        raise SystemExit(0)
+    if rest and rest[0] == "sh":
+        script = rest[2] if len(rest) > 2 else ""
+        if "db/status" in script:
+            # Record what the inner shell was given positionally, so a test
+            # can assert the folder id was PASSED rather than pasted.
+            with open(os.environ["STUB_URL_LOG"], "a") as handle:
+                handle.write(" ".join(rest[3:]) + "\\n")
+            emit({"state": "idle", "errors": 0, "pullErrors": 0,
+                  "needBytes": 0})
+        if "system/status" in script:
+            emit({"discoveryStatus": {}})
+        if "stats/device" in script:
+            emit(json.loads(os.environ["STUB_DEVICE_STATS"]))
+    raise SystemExit(0)
+
+raise SystemExit(0)
+'''
+
+#: Invented device identifiers for the synthetic mesh.
+_THIS_NODE = "SYNTHET-ICNODE-AAAAAAA"
+_PEER_NODE = "SYNTHET-ICPEER-BBBBBBB"
+
+
+@pytest.fixture
+def health_sandbox(tmp_path: Path) -> dict[str, Any]:
+    """A pinned HOME, a dispatching stub docker, and a config directory."""
+    home = tmp_path / "home"
+    (home / ".cache").mkdir(parents=True)
+    config_dir = tmp_path / "syncthing-config"
+    config_dir.mkdir()
+    bin_dir = tmp_path / "stubbin"
+    bin_dir.mkdir()
+    stub = bin_dir / "docker"
+    stub.write_text(_DOCKER_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    url_log = tmp_path / "url.log"
+    url_log.write_text("", encoding="utf-8")
+    return {
+        "home": home,
+        "bin": bin_dir,
+        "config_dir": config_dir,
+        "url_log": url_log,
+        "tmp": tmp_path,
+    }
+
+
+def _mesh_expectations(
+    path: Path,
+    this_label: str,
+    config_dir: Path,
+    folder_id: str,
+) -> Path:
+    """Write an expectations file for this machine plus one roaming peer."""
+    path.write_text(
+        json.dumps(
+            {
+                "folder_id": folder_id,
+                "devices": {
+                    _THIS_NODE: "this-node",
+                    _PEER_NODE: "the-absent-peer",
+                },
+                "thresholds": {
+                    "peer_offline_hours": 48,
+                    "stuck_sync_hours": 12,
+                },
+                "hosts": {
+                    this_label: {
+                        "expected_device_id": _THIS_NODE,
+                        "container": "syncthing",
+                        "config_dir": str(config_dir),
+                        "ssh_host": "",
+                        "always_on": False,
+                    },
+                    "the-peer": {
+                        "expected_device_id": _PEER_NODE,
+                        "container": "syncthing",
+                        "config_dir": "/synthetic/peer",
+                        "ssh_host": "",
+                        "always_on": False,
+                    },
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _run_health(
+    sandbox: dict[str, Any],
+    device_stats: dict,
+    folder_id: str = "synthetic-folder",
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run the monitor against the synthetic mesh; return result and gate."""
+    expectations = _mesh_expectations(
+        sandbox["tmp"] / "expected.json",
+        socket.gethostname(),
+        sandbox["config_dir"],
+        folder_id,
+    )
+    result = run_script(
+        HEALTH,
+        "--quiet",
+        "--local-only",
+        home=sandbox["home"],
+        path_prefix=sandbox["bin"],
+        extra_env={
+            "SYNCTHING_EXPECTED_FILE": str(expectations),
+            "STUB_CONFIG_DIR": str(sandbox["config_dir"]),
+            "STUB_DEVICE_ID": _THIS_NODE,
+            "STUB_FOLDER_ID": folder_id,
+            "STUB_DEVICE_STATS": json.dumps(device_stats),
+            "STUB_URL_LOG": str(sandbox["url_log"]),
+        },
+    )
+    gate = (sandbox["home"] / ".cache" / "syncthing-gate").read_text(
+        encoding="utf-8"
+    )
+    return result, gate
+
+
+class TestPeerAbsenceAlertActuallyFires:
+    """C1 — the alert a silent IndexError had disabled entirely."""
+
+    def test_a_long_absent_peer_is_reported(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """A peer last seen years ago must reach the gate file."""
+        result, gate = _run_health(
+            health_sandbox, {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}}
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "peer(s) absent beyond" in gate, gate
+        assert "the-absent-peer" in gate, gate
+
+    def test_a_never_seen_peer_is_reported(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The epoch sentinel Syncthing uses for "never" is caught too."""
+        _, gate = _run_health(
+            health_sandbox, {_PEER_NODE: {"lastSeen": "1970-01-01T00:00:00Z"}}
+        )
+
+        assert "the-absent-peer (never)" in gate, gate
+
+    def test_a_recently_seen_peer_is_not_reported(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The negative half: a healthy mesh must stay quiet."""
+        recent = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=1)
+        ).isoformat()
+        _, gate = _run_health(
+            health_sandbox, {_PEER_NODE: {"lastSeen": recent}}
+        )
+
+        assert "peer(s) absent" not in gate, gate
+
+    def test_the_folder_id_reaches_the_url_as_an_argument(
+        self, health_sandbox: dict[str, Any]
+    ) -> None:
+        """The id is passed to the inner shell, not pasted into its text."""
+        _run_health(
+            health_sandbox,
+            {_PEER_NODE: {"lastSeen": "2020-01-01T00:00:00Z"}},
+            folder_id="synthetic-folder",
+        )
+
+        recorded = health_sandbox["url_log"].read_text(encoding="utf-8")
+        assert "synthetic-folder" in recorded, recorded
 
 
 # ---------------------------------------------------------------------------
