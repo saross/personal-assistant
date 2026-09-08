@@ -228,14 +228,66 @@ class TestImportSideEffects:
         )
 
 
-class TestFreshCloneBehaviour:
-    """What the guard does when ``logs`` resolves to nothing.
+class TestLoggingThroughTheEntryPoint:
+    """The fix has to hold for the call an operator actually makes.
 
-    Driven through ``ensure_safe_to_rewrite`` — the call an operator
-    actually makes. The child runs offline: ``data/`` is a plain directory,
-    so each ``git`` call fails locally with "not a git repository" and no
-    remote is ever contacted.
+    The import-side-effect tests above prove the handler is not attached at
+    import; these prove it IS attached, in the right place, when
+    ``ensure_safe_to_rewrite`` runs — and that the pytest branch survives
+    that route too. A guard whose log only works when the private helper is
+    invoked by hand has no audit trail at all.
+
+    Every child runs offline: ``data/`` is a plain directory, so each ``git``
+    call fails locally with "not a git repository" and no remote is ever
+    contacted.
     """
+
+    def test_a_real_invocation_writes_its_audit_line(self, tmp_path):
+        """Kills deleting the ``_configure_logging()`` call from the entry
+        point, and deleting the file handler from the branch it selects.
+
+        The guard's log is the audit trail for every bulk rewrite of the
+        canonical store: which rewrite ran, when, and what the checks said.
+        Nothing asserted a byte of it reached disk by the route that matters.
+        """
+        scripts, _data, log_dir, log_file = _staged_copy(
+            tmp_path, warning_only=True
+        )
+        _run_child(_ENSURE_PROGRAM, scripts, tmp_path / "home")
+
+        assert log_dir.is_dir()
+        assert log_file.exists(), "the guard ran but wrote no audit line"
+        written = log_file.read_text(encoding="utf-8")
+        assert "bulk-rewrite guard invoked" in written
+        assert "a synthetic bulk rewrite" in written, (
+            "the audit line does not name the rewrite it guarded"
+        )
+        # The verdict too, not merely the invocation.
+        assert "enforcement disabled" in written
+
+    def test_the_same_invocation_under_pytest_opens_no_log(self, tmp_path):
+        """Kills narrowing the pytest branch to import time.
+
+        This is the shape that reached live state: a test imports a
+        bulk-rewrite script, the script calls the guard, and the guard opens
+        the operator's real log. Same entry point as the test above, same
+        config, only ``pytest`` in ``sys.modules`` differs.
+        """
+        scripts, _data, log_dir, log_file = _staged_copy(
+            tmp_path, warning_only=True
+        )
+        result = _run_child(_ENSURE_UNDER_PYTEST, scripts, tmp_path / "home")
+
+        assert not log_file.exists(), (
+            "running the guard under pytest wrote to its log file"
+        )
+        # The guard still ran and still reported — to stderr, where pytest
+        # captures it. Silence here would mean the fix disabled the guard.
+        assert "enforcement disabled" in result.stderr
+        if log_dir.exists():
+            # ``_acquire_lock`` creates the directory for the lock file; the
+            # log file itself must still be absent.
+            assert not log_file.exists()
 
     def test_a_dangling_logs_symlink_aborts_instead_of_crashing(self, tmp_path):
         """Kills removing either OSError guard (re-audit, 2026-09-08).
