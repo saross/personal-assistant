@@ -111,8 +111,10 @@ machine-readable rules:
   consequences, or commits Shawn. High-stakes traffic stays on PRs, planning
   documents, and direct conversation. **Tag every message** with
   `Project: <repository name>` (or `any`) and, when it matters, `Lane:` and
-  `Workstream:`; a session acts on and receipts only mail for its own
-  project and lane (proposal v3, 2026-09-08).
+  `Workstream:`. A session acts on and receipts only mail whose project and
+  lane match; absent routing headers and `any` match all sessions. The
+  project is the repository's name from its remote, the same across linked
+  worktrees and clones (proposal v3, 2026-09-08).
 - **Shared instruction source.** `common.md` (this guidance) is a shared
   editing surface — either agent may propose changes from an isolated worktree.
   Overlays are not shared: only Claude edits `global-claude-md/` and generated
