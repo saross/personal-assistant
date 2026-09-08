@@ -285,6 +285,74 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 `splitlines()`; id-less stash lines; U+2028 latent; stale comments; docstring
 "bounded memory" claim.
 
+## Tranche 3b — memory-store writers (both lenses, 2026-09-08 evening)
+
+Scope: `dedup-memories.py`, `tag-gardening.py`, `recover_anchors.py`,
+`sync_memory_edit.py`, `archive-memories.py`, `apply-decay.py`
+(PostgreSQL-only), `monthly-archive.py`, `_timestamps.py`,
+`_schema_version.py`, and their tests. Lens A: 3 critical, 10 medium, 8 low.
+Lens B: 63 mutations over 170 tests; 4 critical, 11 medium. Fix round 4a on
+`claude/audit-round4a`.
+
+### Critical (writers)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| W1 | `scripts/dedup-memories.py:293` writes `ensure_ascii=False` and `:98` reads with `splitlines()`: a record holding U+2028/U+2029/U+0085 (escaped by the hook's `json.dumps`) is split into two malformed lines on the second run; same write at `tag-gardening.py:591,647`; the Postgres cursor is a `splitlines()` count, so it drifts from every file-iteration reader | CONFIRMED by repro | **next** (round 4a, `claude/audit-round4a`) |
+| W2 | `scripts/tag-gardening.py:744` — `orphans --action clean` rewrites the protected `tag-vocabulary.txt` with a bare `write_text`: no guard, no lock, no temp-and-rename; the hook appends under a shared lock, `/tags` step 7 runs it routinely | CONFIRMED by repro | **next** (round 4a, `claude/audit-round4a`) |
+| W3 | `scripts/recover_anchors.py:434,302-352` — the plan is built outside the rewrite lock and whole stale records are written back, reverting a `/forget` or `/update` that landed in between (the docstring claims parity with `archive-memories`, which re-reads inside the lock) | CONFIRMED by repro | **next** (round 4a, `claude/audit-round4a`) |
+| WT1 | `scripts/sync_memory_edit.py:107-110` — the UPDATE's WHERE clause is untested (`id != %s` stays green; the test compares the constant with itself); a `/forget` would blank every other Postgres row | CONFIRMED (mutation) | **next** (round 4a, `claude/audit-round4a`) |
+| WT2 | `scripts/recover_anchors.py:333` — the write path is untested: deleting the verbatim `else: out.write(line)` (corpus reduced to the modified records), the guard (:317), the lock (:319), the atomic rename (:320), and the `--apply` gate (:441) all stay green | CONFIRMED (mutation) | **next** (round 4a, `claude/audit-round4a`) |
+| WT3 | `scripts/dedup-memories.py` has no test file; its module constants resolve to the real store from `__file__` | CONFIRMED | **next** (round 4a, `claude/audit-round4a`) |
+| WT4 | A test in `tests/test_tag_gardening.py` that forgets to patch the store path rewrites the REAL canonical store and the suite stays green: the autouse `_bypass_rewrite_guard` (:31-56) noops the one refusing check and the conftest hermeticity guard (`tests/conftest.py:220-260`) watches only `~/.cache` | CONFIRMED by repro in a copy | **next** (round 4a, `claude/audit-round4a`) |
+
+### Medium (writers)
+
+| # | Finding | Disposition |
+|---|---|---|
+| W4 | `tag-gardening.py:676-687,744` — both vocabulary rewrites drop every `#` comment line (eight section headers live) | **next** (round 4a, `claude/audit-round4a`) |
+| W5 | `tag-gardening.py:501` — the bulk guard runs before the `--dry-run` branch: a dry run takes the exclusive daily-sync lock and exits 2 on a dirty tree | **next** (round 4a, `claude/audit-round4a`) |
+| W6 | `dedup-memories.py:383` logs a backup file that nothing creates; the script's only deletion-safety claim is false | **next** (round 4a, `claude/audit-round4a`) |
+| W7 | `recover_anchors.py:233,328` — `json.loads` with no `try`: one malformed line aborts both modes with a traceback and orphans `memories.jsonl.tmp` | **next** (round 4a, `claude/audit-round4a`) |
+| W8 | `tag-gardening.py:692` — a tag merge never reaches Postgres and the printed remedy (`sync-to-postgres.py`, which is insert-only past the cursor) is wrong; `commands/tags.md:167` says a full rebuild | **next** (round 4a, `claude/audit-round4a`) |
+| W9 | Line-position cursor plus mid-file deletion: `archive-memories --apply` or `dedup-memories` run with an unsynced backlog leaves the deleted count of never-synced records below the cursor forever (`sync-to-postgres.py:1354-1382` resets only when the cursor passes the end); `monthly-archive` syncs first (SUSPECTED, no Postgres) | **next** (round 4a, `claude/audit-round4a`) (refuse while a backlog exists) |
+| W10 | `dedup-memories.py:160,292` — the re-id path records no old-to-new mapping; `surfaced.log`, `superseded_by`, and the Postgres row and embedding under the old id are orphaned | **next** (round 4a, `claude/audit-round4a`) |
+| W11 | `sync_memory_edit.py:55,107` — `/update` replaces content but keeps the embedding; refill is `WHERE embedding IS NULL`, so semantic recall matches the old text (SUSPECTED) | **next** (round 4a, `claude/audit-round4a`) (`embedding = NULL` on content change) |
+| W12 | `tag-gardening.py:541,581,634` — plan keys stored raw, matched lower-cased: a loser with any uppercase replaces nothing while reporting "Tags retired: 1" | **next** (round 4a, `claude/audit-round4a`) |
+| W13 | `dedup-memories.py:244,402` — one unclassified group aborts the whole run (invariant exit) though the comment says such groups are kept verbatim | **next** (round 4a, `claude/audit-round4a`) |
+| WT5 | `tag-gardening.py:613` — a malformed line is dropped on decode error and no test notices (`archive-memories` has the equivalent test) | **next** (round 4a, `claude/audit-round4a`) |
+| WT6 | `tag-gardening.py:501-505,603,673,662-664` — guard, both flocks, and the atomic rename unpinned | **next** (round 4a, `claude/audit-round4a`) |
+| WT7 | `apply-decay.py:107,111-112,102` — the decay predicate is asserted by substring: `NOW() + interval`, `<` to `>`, `AND` to `OR` all green | **next** (round 4a, `claude/audit-round4a`) |
+| WT8 | `apply-decay.py:88-93` — the schema-version call is deletable | **next** (round 4a, `claude/audit-round4a`) |
+| WT9 | `archive-memories.py:337,372,534` — JSONL flock, atomic rename, and `--apply` gate unpinned (a dry run that archives, rewrites, and commits stays green) | **next** (round 4a, `claude/audit-round4a`) |
+| WT10 | `archive-memories.py:427-430` — the `Rewrite-Class: bulk` trailer (what stops the daily sync's shrink detector resetting the commit) is droppable | **next** (round 4a, `claude/audit-round4a`) |
+| WT11 | `archive-memories.py:441-442` — `git add --literal-pathspecs -- <paths>` to `add -A` stays green (sweeps unstaged work) | **next** (round 4a, `claude/audit-round4a`) |
+| WT12 | `recover_anchors.py:155,185` — stale `verified` kept in the written record; `revisions` overwritten instead of appended | **next** (round 4a, `claude/audit-round4a`) |
+| WT13 | `recover_anchors.py:133,100,234` — "already resolves" gate, absolute refs, and `build_plans` selecting `verified == "true"` all green; `build_plans` untested | **next** (round 4a, `claude/audit-round4a`) |
+| WT14 | `sync_memory_edit.py:128` — dropping the `with conn` transaction stays green: the UPDATE is discarded on close while "PostgreSQL reconciled" prints | **next** (round 4a, `claude/audit-round4a`) |
+| WT15 | `monthly-archive.py:112,491-494,484-485` — the sanity cap is asserted as `CAP + 1` (never pinned), the post-apply re-check is deletable, the partition HALT can become `return 0` | **next** (round 4a, `claude/audit-round4a`) |
+
+Lows recorded: W14 parent directories not fsynced; W15 `tag-gardening`
+rewrites without flush or fsync and builds the corpus in memory; W16 merge
+log stamped naive local time; W17 `sync_memory_edit` skips
+`assert_schema_version`; W18 `apply-decay` has no `PERMANENT_OVERRIDES` net
+and the schema seed cannot repair a legacy 180-day row; W19 partition month
+is UTC (10-11 h out of step with the local month — decision D7); W20
+`recover_anchors` commits after releasing the lock (the S15 window); W21
+`archive-memories` and `recover_anchors` pin the corpus to `Path.home()`, so
+an `--apply` from a copy targets the live store (deliberate; decision D8);
+WT16-19 case-folding, field precedence, a vacuous `Z` test on Python 3.13,
+fsync and the merge log unobserved. Cross-file: `_timestamps.py` is imported
+by no writer; serialisation differs between the hook and two writers (W1);
+Postgres change detection is line position only, so every in-place edit needs
+its own surgical UPDATE (`tag-gardening` has none); adjacent,
+`hooks/extraction-hook.py:1375` ignores the return value of `os.write`.
+Verified correct: decay boundaries and edge cases, CRLF round-trip,
+blank-line preservation in three writers, partition append fsynced before the
+corpus rename, idempotent retry, locks held across read-modify-rename (except
+W3), temp files beside their targets, no injection, no import-time writes,
+UK spelling.
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
@@ -333,6 +401,20 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    `wiki/`, or the data submodule (added to the shared brief). Whatever is
    decided, PR #115 should be squash-merged so the six commits carrying
    the rows never enter `main`'s history.
+
+7. **W19 — the archive partition month is UTC.** `archive-memories.py:328`
+   names the partition from `datetime.now(timezone.utc)`, so a run in the
+   first 10-11 hours of a local (AEST/AEDT) month files into the previous
+   month. Deterministic and idempotent, so nothing is lost; the question is
+   which calendar the partitions should follow. Recommendation: leave UTC
+   and say so in the partition README, because every other stamp in the
+   system is UTC.
+8. **W21 — two writers pin the corpus to the home directory.**
+   `archive-memories.CORPUS` and `recover_anchors.CORPUS` are
+   `Path.home()`-derived, so an `--apply` from a copy or worktree still
+   targets the live store. Deliberate (a worktree must not archive its own
+   stub), but it means cwd never sandboxes them. Recommendation: keep, and
+   require `--corpus` to be explicit when `PA_DIR` is not the home checkout.
 
 ## Fix rounds
 
