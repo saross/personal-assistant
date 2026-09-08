@@ -49,7 +49,7 @@ def _tick_worker(gate_path: str) -> None:
     _sync_gate.apply_gate(
         _sync_gate.GateEvent(
             outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=2, script="test",
+            processed=1, quarantine_entries=2, script="test",
         ),
         gate_path=Path(gate_path), logger=logging.getLogger("tick-worker"),
     )
@@ -365,7 +365,7 @@ class TestEvidenceLowersAProblem:
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=2, quarantined=7,
+            processed=2, quarantine_entries=7,
             quarantine_file=tmp_path / "q.jsonl",
         )
         for _ in range(5):
@@ -376,18 +376,76 @@ class TestEvidenceLowersAProblem:
         assert _sync_gate.PROBLEM_QUARANTINE in state.problems
         assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 7
 
-    def test_the_quarantine_count_accumulates(self, tmp_path):
-        """Each refusal adds to a running total, never replaces it."""
+    def test_the_count_follows_the_file(self, tmp_path):
+        """
+        The count is the file's length beyond the acknowledged position,
+        recomputed every run — not a running total anyone has to keep
+        (eighth re-audit, finding C1). The mutation this kills:
+        accumulating a per-run delta again.
+        """
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=3,
+            processed=1, quarantine_entries=3,
         )
         state = self._apply(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=4,
+            processed=1, quarantine_entries=7,
         )
         assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 7
+
+    def test_an_unreadable_quarantine_file_leaves_the_problem_alone(
+        self, tmp_path,
+    ):
+        """
+        ``None`` is not zero: a file we could not read is no evidence
+        that the rows were repaired.
+        """
+        gate = tmp_path / "g"
+        self._seed(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=4,
+        )
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=None,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 4
+
+    def test_a_lost_tick_is_repaired_by_the_next(self, tmp_path):
+        """
+        Finding M5, dissolved by the same change: a run whose gate write
+        failed loses nothing, because the next run recomputes from the
+        file rather than adding to a total that was never stored.
+        """
+        gate = tmp_path / "g"
+        # The tick that quarantined two rows never reached the gate.
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=2,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+
+    def test_an_ack_then_a_reset_counts_the_rows_again(self, tmp_path):
+        """
+        Finding M4, likewise: after an acknowledgement, a rebuild
+        re-offers the same rows and they are refused again. The
+        acknowledged position is forgotten, so they are reported.
+        """
+        gate = tmp_path / "g"
+        self._seed(
+            gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantine_entries=2,
+        )
+        self._apply(
+            gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=2,
+        )
+        # A rebuild clears the cursor; the rows are re-offered.
+        state = self._apply(
+            gate, outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="exit 6",
+            reset_quarantine_ack=True, quarantine_entries=2,
+        )
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
 
     def test_only_an_acknowledgement_lowers_a_quarantine(self, tmp_path):
         """
@@ -397,30 +455,29 @@ class TestEvidenceLowersAProblem:
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=7,
+            processed=1, quarantine_entries=7,
         )
         state = self._apply(
-            gate, outcome=_sync_gate.CYCLE_IDLE, ack_quarantine=True,
+            gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=7,
         )
         assert _sync_gate.PROBLEM_QUARANTINE not in state.problems
 
-    def test_an_acknowledgement_does_not_swallow_this_runs_refusals(
-        self, tmp_path,
-    ):
+    def test_rows_quarantined_after_an_ack_are_reported(self, tmp_path):
         """
-        Acking clears what a human read, not what this very run refused
-        while they were reading it.
+        Acknowledging records a position, not a count: three more rows
+        after it are three new problems, not a cleared slate.
         """
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=7,
+            processed=1, quarantine_entries=7,
         )
+        self._apply(gate, outcome=_sync_gate.CYCLE_ACK, quarantine_entries=7)
         state = self._apply(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=2, ack_quarantine=True,
+            processed=1, quarantine_entries=10,
         )
-        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 2
+        assert state.problems[_sync_gate.PROBLEM_QUARANTINE].count == 3
 
     def test_the_quarantine_text_names_the_acknowledgement_command(
         self, tmp_path,
@@ -429,7 +486,7 @@ class TestEvidenceLowersAProblem:
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-            processed=1, quarantined=1,
+            processed=1, quarantine_entries=1,
             quarantine_file=Path("/data/q.jsonl"),
         )
         detail = gate.read_text(encoding="utf-8")
@@ -446,7 +503,7 @@ class TestEvidenceLowersAProblem:
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_DEGRADED,
-            fault_detail="a fault", quarantined=4,
+            fault_detail="a fault", quarantine_entries=4,
         )
         for _ in range(3):
             state = self._apply(
@@ -467,7 +524,7 @@ class TestEvidenceLowersAProblem:
         gate = tmp_path / "g"
         self._seed(
             gate, outcome=_sync_gate.CYCLE_DEGRADED,
-            fault_detail="a fault", quarantined=4,
+            fault_detail="a fault", quarantine_entries=4,
         )
         for _ in range(3):
             self._apply(
@@ -580,7 +637,7 @@ class TestTheTransitionMatrix:
             ),
             "quarantine": dict(
                 outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                processed=1, quarantined=5,
+                processed=1, quarantine_entries=5,
             ),
             "degraded": dict(
                 outcome=_sync_gate.CYCLE_DEGRADED, degraded_detail="d",
@@ -618,6 +675,9 @@ class TestTheTransitionMatrix:
         state = _sync_gate.apply_gate(
             _sync_gate.GateEvent(
                 outcome=outcome, connected=connected, processed=processed,
+                # The quarantine file has not changed between the two
+                # runs, so a standing quarantine problem must persist.
+                quarantine_entries=5 if problem == "quarantine" else None,
                 script="test",
             ),
             gate_path=gate, logger=logging.getLogger("test-matrix"),
@@ -758,7 +818,7 @@ class TestQuarantinesDoNotBlockAFaultLowering:
         state = _sync_gate.apply_gate(
             _sync_gate.GateEvent(
                 outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                processed=50, quarantined=1, script="test",
+                processed=50, quarantine_entries=1, script="test",
             ),
             gate_path=gate, logger=logging.getLogger("test-m1"),
         )
@@ -841,7 +901,7 @@ class TestConcurrencyAroundTheAcknowledgement:
         _sync_gate.apply_gate(
             _sync_gate.GateEvent(
                 outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                processed=1, quarantined=5, script="test",
+                processed=1, quarantine_entries=5, script="test",
             ),
             gate_path=gate, logger=logging.getLogger("test-race"),
         )
@@ -851,7 +911,7 @@ class TestConcurrencyAroundTheAcknowledgement:
             _sync_gate.apply_gate(
                 _sync_gate.GateEvent(
                     outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                    processed=1, quarantined=5, script="test",
+                    processed=1, quarantine_entries=5, script="test",
                 ),
                 gate_path=gate, logger=logging.getLogger("test-race"),
             )
@@ -1245,7 +1305,7 @@ class TestTheAcknowledgementEventIsItsOwnKind:
         _sync_gate.apply_gate(
             _sync_gate.GateEvent(
                 outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                processed=1, quarantined=3, script="test",
+                processed=1, quarantine_entries=3, script="test",
             ),
             gate_path=gate, logger=logging.getLogger("test-ack-kind"),
         )
@@ -1308,7 +1368,7 @@ class TestApplyGateReportsWhatIsOnDisk:
         _sync_gate.apply_gate(
             _sync_gate.GateEvent(
                 outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                processed=1, quarantined=4, script="test",
+                processed=1, quarantine_entries=4, script="test",
             ),
             gate_path=gate, logger=logging.getLogger("test-ondisk"),
         )

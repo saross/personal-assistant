@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
     QUARANTINE_FAILED,
     QUARANTINE_WRITTEN,
+    count_quarantine_entries,
     CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
@@ -62,6 +63,7 @@ from _sync_gate import (  # noqa: E402
     GateEvent,
     apply_gate,
     read_state_safely,
+    state_path_for,
 )
 from _pg_row_guard import (  # noqa: E402
     CAP_EXCEEDED,
@@ -153,7 +155,6 @@ class CycleResult:
     """
 
     outcome: str
-    quarantined: int = 0
     processed: int = 0
     connected: bool | None = None
     #: Why this cycle is degraded, if it is — the text the gate shows.
@@ -572,7 +573,7 @@ def _quarantine_refused_rows(
     poison: list[tuple[str, str]],
     rows_by_id: dict[str, dict[str, Any]],
     logger: logging.Logger,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """
     Write every row PostgreSQL refused on content grounds to quarantine.
 
@@ -588,9 +589,13 @@ def _quarantine_refused_rows(
 
     Returns
     -------
-    list[str]
-        The ids successfully quarantined. Only these may be skipped by a
-        cursor advance — a quarantine write that failed leaves the row
+    tuple[list[str], list[str]]
+        ``(accounted_for, newly_written)``. The first is every id whose
+        entry is on disk — a duplicate counts, because the cursor may
+        advance past it. The second is only what THIS call appended, and
+        is a diagnostic: the gate derives its number from the file.
+
+        Only ids in ``accounted_for`` may be skipped by a cursor advance — a quarantine write that failed leaves the row
         unaccounted for, so it stays in ``unexpected_drops`` and halts
         the cursor instead (audit IC2's contract).
     """
@@ -996,7 +1001,7 @@ def _sync_locked(
     rows = []
     latest_archived_at = since or "2000-01-01T00:00:00Z"
     skipped_no_id = 0
-    skipped_written = 0
+    skipped_written = 0  # for the log line below; the gate re-derives its own
     for meta_path, metadata in sessions:
         # Capture archived_at *before* the id check so the cursor can
         # still advance past id-less sessions once they are quarantined.
@@ -1021,7 +1026,8 @@ def _sync_locked(
             )
             skipped_no_id += 1
             if status == QUARANTINE_WRITTEN:
-                # Only what actually reached the file (finding M4).
+                # Diagnostic only: the gate derives its number from the
+                # file itself now (finding C1).
                 skipped_written += 1
             continue
         rows.append(row)
@@ -1045,10 +1051,7 @@ def _sync_locked(
         else:
             logger.info("No valid sessions to upsert")
         # Id-less metadata was quarantined before any database contact.
-        return CycleResult(
-            CYCLE_IDLE, quarantined=skipped_written,
-            connected=lock_connected,
-        )
+        return CycleResult(CYCLE_IDLE, connected=lock_connected)
 
     # Upsert into PostgreSQL (returns InsertResult with full accounting).
     result = upsert_sessions(
@@ -1086,7 +1089,6 @@ def _sync_locked(
         )
         return CycleResult(
             CYCLE_DEGRADED,
-            quarantined=result.newly_quarantined,
             connected=True,
             degraded_detail=(
                 f"[sync-sessions-to-postgres.py] "
@@ -1111,7 +1113,6 @@ def _sync_locked(
 
     return CycleResult(
         outcome,
-        quarantined=result.newly_quarantined,
         processed=result.inserted,
         connected=result.db_available,
     )
@@ -1122,15 +1123,30 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
     Lower the quarantine problem, and do nothing else. Returns an exit code.
 
     A STATE-ONLY operation (sixth re-audit, finding C1). It runs no sync,
-    takes no advisory lock, and touches no database — so a contended cron
-    tick cannot stop a human dismissing something they have read.
+    takes no advisory lock, and touches no database.
 
-    The verdict comes from what is ON DISK after the write, not from the
-    transition we intended (seventh re-audit, finding C1): this used to
-    report "cleared" and exit 0 over a failed write, leaving the problem
-    standing and the operator believing otherwise.
+    Records the POSITION in the append-only quarantine file rather than a
+    count, so rows quarantined after this moment are still reported
+    (eighth re-audit, finding C1).
+
+    The verdict comes from BOTH artefacts on disk afterwards — the
+    sidecar and the rendered gate (eighth re-audit, finding M3). A write
+    that half-succeeded used to report success or "nothing changed",
+    while the other half still said the opposite.
     """
+    entries = count_quarantine_entries(QUARANTINE_FILE)
+    state_file = state_path_for(GATE_FILE)
     before = read_state_safely(GATE_FILE, logger)
+    if state_file.exists() and not (before.problems or before.acked):
+        # An unreadable or corrupt sidecar reads as "no problems", which
+        # is indistinguishable from a clean one — say which it is rather
+        # than reporting nothing to do (eighth re-audit, low).
+        logger.error(
+            "The gate state %s exists but could not be read. Refusing to "
+            "report on a quarantine problem whose state is unknown; fix "
+            "or delete the file and re-run.", state_file,
+        )
+        return 9
     if PROBLEM_QUARANTINE not in before.problems:
         logger.info(
             "--ack-quarantine: there is no standing quarantine problem to "
@@ -1139,16 +1155,39 @@ def _acknowledge_quarantine(logger: logging.Logger) -> int:
         return 0
 
     standing = before.problems[PROBLEM_QUARANTINE].count
-    after = apply_gate(
-        GateEvent(outcome=CYCLE_ACK, script=SCRIPT_NAME),
+    apply_gate(
+        GateEvent(
+            outcome=CYCLE_ACK,
+            quarantine_entries=entries,
+            script=SCRIPT_NAME,
+        ),
         gate_path=GATE_FILE,
         logger=logger,
     )
-    if PROBLEM_QUARANTINE in after.problems:
+
+    after = read_state_safely(GATE_FILE, logger)
+    sidecar_cleared = PROBLEM_QUARANTINE not in after.problems
+    try:
+        rendered = GATE_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.error("Could not read back the gate file %s: %s", GATE_FILE, exc)
+        rendered = ""
+    gate_cleared = "REFUSED" not in rendered
+
+    if not sidecar_cleared:
         logger.error(
             "--ack-quarantine did NOT clear the quarantine problem: the "
             "gate state on disk still carries it. Nothing has changed; "
             "see the errors above."
+        )
+        return 9
+    if not gate_cleared:
+        logger.error(
+            "--ack-quarantine updated the gate state but could NOT "
+            "re-render %s, which still reports the problem. The state is "
+            "correct, so the next run of this script repairs the gate "
+            "file; until then session start shows a problem that is "
+            "already dismissed.", GATE_FILE,
         )
         return 9
     logger.warning(
@@ -1166,6 +1205,7 @@ def _gate_fault(
     *,
     connected: bool | None = None,
     correlated: bool = False,
+    reset_quarantine_ack: bool = False,
 ) -> None:
     """Raise this script's fault (or correlated) problem and render the gate.
 
@@ -1178,6 +1218,9 @@ def _gate_fault(
             connected=connected,
             correlated_detail=detail if correlated else None,
             fault_detail=None if correlated else detail,
+            reset_quarantine_ack=reset_quarantine_ack,
+            quarantine_entries=count_quarantine_entries(QUARANTINE_FILE),
+            quarantine_file=QUARANTINE_FILE,
             script=SCRIPT_NAME,
         ),
         gate_path=GATE_FILE,
@@ -1291,6 +1334,11 @@ def main() -> None:
             f"written back. Confirm the rebuild was intended, then let "
             f"the next run replay from the canonical.",
             connected=True,
+            # A rebuild will re-offer every row, so any refusal of them
+            # is new: forget what was acknowledged, or the second refusal
+            # of the same rows falls silently below the mark (eighth
+            # re-audit, finding C1).
+            reset_quarantine_ack=True,
         )
         sys.exit(6)
     except SystemExit as exc:
@@ -1348,7 +1396,9 @@ def main() -> None:
             outcome=cycle.outcome,
             connected=cycle.connected,
             processed=cycle.processed,
-            quarantined=cycle.quarantined,
+            # Observed, not accumulated: the gate derives the standing
+            # problem from the file every run (finding C1).
+            quarantine_entries=count_quarantine_entries(QUARANTINE_FILE),
             quarantine_file=QUARANTINE_FILE,
             degraded_detail=cycle.degraded_detail,
             script="sync-sessions-to-postgres.py",

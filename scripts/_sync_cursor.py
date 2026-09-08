@@ -114,6 +114,30 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def count_quarantine_entries(quarantine_path: Path) -> int | None:
+    """
+    Return how many entries the quarantine file holds, or None if unknown.
+
+    The file is append-only, so its length is a running total of every
+    row that has ever been quarantined — which is what lets the gate
+    DERIVE the standing problem from the file rather than accumulating a
+    delta per run (eighth re-audit, finding C1). A delta is lost whenever
+    a run cannot write its gate, counts a deduplicated re-offer twice, or
+    misses a path that never reported at all; a re-derived count repairs
+    itself on the next tick.
+
+    ``None`` (unreadable) is not zero: the caller must leave the standing
+    problem alone rather than declare it resolved.
+    """
+    if not quarantine_path.exists():
+        return 0
+    try:
+        with quarantine_path.open("r", encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
+        return None
+
+
 def _entry_fingerprint(reason: str, record: Any) -> str:
     """
     Return a stable hash identifying one quarantine entry.

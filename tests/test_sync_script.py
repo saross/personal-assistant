@@ -2168,14 +2168,25 @@ class TestAcknowledgementIsStateOnly:
     a problem that still stood.
     """
 
-    def _standing_quarantine(self, gate: Path) -> None:
-        """Raise a quarantine problem through the state machine."""
+    def _standing_quarantine(self, gate: Path, quarantine: Path) -> None:
+        """Raise a quarantine problem, backed by a real file of four rows.
+
+        The problem is derived from the file now, so a test that raises
+        it without one is describing a state the code cannot reach
+        (eighth re-audit, finding C1).
+        """
         import _sync_gate
 
+        quarantine.parent.mkdir(parents=True, exist_ok=True)
+        quarantine.write_text(
+            "".join(json.dumps({"n": n}) + "\n" for n in range(4)),
+            encoding="utf-8",
+        )
         _sync_gate.apply_gate(
             _sync_gate.GateEvent(
                 outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
-                processed=1, quarantined=4, script="test",
+                processed=1, quarantine_entries=4,
+                quarantine_file=quarantine, script="test",
             ),
             gate_path=gate, logger=logging.getLogger("test-ack"),
         )
@@ -2190,7 +2201,9 @@ class TestAcknowledgementIsStateOnly:
         """
         import _sync_gate
 
-        self._standing_quarantine(pinned_gate_file)
+        self._standing_quarantine(
+            pinned_gate_file, tmp_path / "quarantine.jsonl",
+        )
         monkeypatch.setattr(sync_mod, "MEMORIES_FILE", tmp_path / "m.jsonl")
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
         monkeypatch.setattr(
@@ -2225,7 +2238,9 @@ class TestAcknowledgementIsStateOnly:
         self, monkeypatch, tmp_path, pinned_gate_file,
     ):
         """A state-only operation opens no connection at all."""
-        self._standing_quarantine(pinned_gate_file)
+        self._standing_quarantine(
+            pinned_gate_file, tmp_path / "quarantine.jsonl",
+        )
         monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
         monkeypatch.setattr(
             sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
@@ -2264,7 +2279,9 @@ class TestAcknowledgementIsStateOnly:
         """
         import _sync_gate
 
-        self._standing_quarantine(pinned_gate_file)
+        self._standing_quarantine(
+            pinned_gate_file, tmp_path / "quarantine.jsonl",
+        )
         monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
         monkeypatch.setattr(
             sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
@@ -2438,3 +2455,94 @@ class TestAGateFailureNeverChangesTheExitCode:
             "a gate failure changed the exit code for the underlying "
             "condition"
         )
+
+
+# ============================================================================
+# Eighth re-audit, finding C1 — the gate's quarantine count is re-derived
+# from the file on every run, so a mixed slice reports what is really there
+# ============================================================================
+
+
+class TestAMixedSliceReportsOnlyWhatWasRefused:
+    """
+    One good row and one refused row in the same slice. The good row
+    lands, the refused one is quarantined, the cursor advances past both,
+    and the gate says exactly 1 — not 0 (the count never reached the gate
+    because the run did not take the ``if not records:`` return) and not
+    2 (the whole slice blamed for one row).
+    """
+
+    def _record(self, mid: str) -> dict:
+        """Build a minimal valid canonical record."""
+        return {
+            "id": mid,
+            "category": "progress",
+            "content": f"content for {mid}",
+            "created_at": "2026-09-01T00:00:00+00:00",
+        }
+
+    def test_one_refusal_in_a_good_slice_is_reported_as_one(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: passing the per-run counter instead of
+        ``count_quarantine_entries(QUARANTINE_FILE)`` on the path that
+        actually processed rows.
+        """
+        import _sync_gate
+
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            "".join(
+                json.dumps(self._record(mid)) + "\n"
+                for mid in ("m-good", "m-bad")
+            ),
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            present_before_ids=[],
+            returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values({"m-bad"}),
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        try:
+            # A single refused row is not a failure: main returns rather
+            # than exiting non-zero.
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        # The good row landed and the cursor moved past the whole slice.
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["postgres_sync_line"] == 2
+        entries = [
+            line for line in
+            quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 1, "exactly one row should have been refused"
+
+        state = _sync_gate.read_state(pinned_gate_file)
+        problem = state.problems.get(_sync_gate.PROBLEM_QUARANTINE)
+        assert problem is not None, (
+            "a refused row in an otherwise healthy slice was never "
+            "reported to Shawn"
+        )
+        assert problem.count == 1, (
+            f"the gate claims {problem.count} quarantined rows; the file "
+            f"holds {len(entries)}"
+        )
+        assert "1" in pinned_gate_file.read_text(encoding="utf-8")

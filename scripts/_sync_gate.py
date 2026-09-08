@@ -216,8 +216,18 @@ class GateEvent:
     outcome: str
     connected: bool | None = None
     processed: int = 0
-    quarantined: int = 0
+    #: How many entries the quarantine file holds right now. The gate
+    #: DERIVES the standing problem from this and the acknowledged
+    #: position, rather than accumulating a per-run delta — a delta is
+    #: lost whenever a run cannot write its gate, or counts a
+    #: deduplicated re-offer twice (eighth re-audit, finding C1).
+    #: ``None`` means "could not read it", which is not zero.
+    quarantine_entries: int | None = None
     quarantine_file: Path | None = None
+    #: A rebuild cleared the cursor, so the rows will be re-offered and
+    #: re-refused: forget the acknowledged position, or the second
+    #: refusal of the same rows would be silently below it.
+    reset_quarantine_ack: bool = False
     #: Set to raise the ``fault`` problem with this text.
     fault_detail: str | None = None
     #: Set to raise the ``correlated`` problem with this text.
@@ -299,17 +309,25 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
     if event.outcome == CYCLE_ACK:
         # Touches the quarantine problem and nothing else: not the
         # streak, not degraded, not a fault. A human has read something;
-        # that is evidence about exactly one thing (finding M4).
+        # that is evidence about exactly one thing (seventh re-audit,
+        # finding M4).
+        #
+        # Acknowledging records the POSITION in the append-only
+        # quarantine file, not a count: rows quarantined after this point
+        # are new and must be reported, and a re-derived count is what
+        # makes that work (eighth re-audit, finding C1).
         standing = problems.pop(PROBLEM_QUARANTINE, None)
-        return GateState(
-            problems,
-            streak,
-            {
-                "acked_at": datetime.now(timezone.utc).isoformat(),
-                "acked_count": standing.count if standing else 0,
-            },
-            state.archive_root,
-        )
+        acked = dict(state.acked)
+        acked.update({
+            "acked_at": datetime.now(timezone.utc).isoformat(),
+            "acked_count": standing.count if standing else 0,
+            "acked_position": (
+                event.quarantine_entries
+                if event.quarantine_entries is not None
+                else acked.get("acked_position", 0)
+            ),
+        })
+        return GateState(problems, streak, acked, state.archive_root)
 
     # -- outage: connectivity is its own evidence, and touches nothing else
     if event.connected is True:
@@ -324,17 +342,30 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
 
     # -- quarantine: acknowledged first, so this run's own refusals are
     #    not silently acked along with the ones a human actually read.
-    acked_count = 0
-    if event.ack_quarantine:
-        standing = problems.pop(PROBLEM_QUARANTINE, None)
-        acked_count = standing.count if standing else 0
-    if event.quarantined:
-        standing = problems.get(PROBLEM_QUARANTINE)
-        running = (standing.count if standing else 0) + event.quarantined
-        problems[PROBLEM_QUARANTINE] = Problem(
-            quarantine_detail(event.script, running, event.quarantine_file),
-            running,
-        )
+    # -- quarantine: DERIVED from the file, never accumulated ------------
+    # The count is "entries in the append-only quarantine file, beyond the
+    # position a human acknowledged". Every run recomputes it, so a tick
+    # that could not write its gate, a path that forgot to report, and a
+    # re-offer that deduplicated on disk all repair themselves next time
+    # (finding C1).
+    acked_position = state.acked.get("acked_position", 0)
+    if not isinstance(acked_position, int) or acked_position < 0:
+        acked_position = 0
+    if event.reset_quarantine_ack:
+        acked_position = 0
+    if event.quarantine_entries is not None:
+        entries = max(0, event.quarantine_entries)
+        acked_position = min(acked_position, entries)
+        outstanding = entries - acked_position
+        if outstanding > 0:
+            problems[PROBLEM_QUARANTINE] = Problem(
+                quarantine_detail(
+                    event.script, outstanding, event.quarantine_file,
+                ),
+                outstanding,
+            )
+        else:
+            problems.pop(PROBLEM_QUARANTINE, None)
 
     # -- degraded: raised by a reason, lowered by finding the inputs again
     if _has_text(event.degraded_detail):

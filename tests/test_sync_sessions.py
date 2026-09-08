@@ -1696,11 +1696,15 @@ class TestCorrelatedRefusalAtTheSyncLevel:
             execute_values_side_effect=self._all_alike,
         )
 
-        cycle = sync_mod.sync(
-            archive_tree, full_resync=True, logger=test_logger,
-        )
+        sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
 
-        assert cycle.quarantined == 2
+        # The gate derives its number from the file, so the file is what
+        # this asserts (eighth re-audit, finding C1).
+        entries = [
+            line for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 2
         assert json.loads(
             cursor_file.read_text(encoding="utf-8")
         )["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"
@@ -1765,12 +1769,19 @@ class TestCorrelatedRefusalAtTheSyncLevel:
             execute_values_side_effect=self._all_alike,
         )
 
-        cycle = sync_mod.sync(
+        sync_mod.sync(
             archive_root, full_resync=True, logger=test_logger,
             quarantine_anyway=True,
         )
 
-        assert cycle.quarantined == 5
+        entries = [
+            line for line in
+            (tmp_path / "quarantine.jsonl").read_text(
+                encoding="utf-8",
+            ).splitlines()
+            if line.strip()
+        ]
+        assert len(entries) == 5
         assert "sessions_sync_timestamp" in json.loads(
             cursor_file.read_text(encoding="utf-8")
         )
@@ -1884,7 +1895,6 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
                 outcome=cycle.outcome,
                 connected=cycle.connected,
                 processed=cycle.processed,
-                quarantined=cycle.quarantined,
                 degraded_detail=cycle.degraded_detail,
                 script="sync-sessions-to-postgres.py",
             ),
@@ -1920,7 +1930,6 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
                 outcome=cycle.outcome,
                 connected=cycle.connected,
                 processed=cycle.processed,
-                quarantined=cycle.quarantined,
                 degraded_detail=cycle.degraded_detail,
                 script="sync-sessions-to-postgres.py",
             ),
@@ -1959,7 +1968,6 @@ class TestAnAbsentOrEmptyArchiveRootIsDegraded:
                 outcome=cycle.outcome,
                 connected=cycle.connected,
                 processed=cycle.processed,
-                quarantined=cycle.quarantined,
                 degraded_detail=cycle.degraded_detail,
                 script="sync-sessions-to-postgres.py",
             ),
