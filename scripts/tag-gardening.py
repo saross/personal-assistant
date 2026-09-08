@@ -577,14 +577,19 @@ def cmd_merge(args: argparse.Namespace) -> None:
             sys.exit(1)
         winner = entry["winner"]
         for loser in entry["losers"]:
-            if loser in replacements:
+            # Key the map by the LOWER-CASED loser: the rewrite loop matches
+            # `tag.lower()` against it (as build_tag_counts does), so a plan
+            # naming "API-Integration" used to replace nothing at all while
+            # still reporting "Tags retired: 1" (audit 2026-09-08, A12).
+            key = loser.lower()
+            if key in replacements:
                 print(
                     f"Warning: {loser} appears in multiple merge "
-                    f"entries — using first winner ({replacements[loser]})",
+                    f"entries — using first winner ({replacements[key]})",
                     file=sys.stderr,
                 )
                 continue
-            replacements[loser] = winner
+            replacements[key] = winner
 
     print(
         f"Merge plan: {len(replacements)} tags to retire "

@@ -1340,3 +1340,119 @@ class TestReconcilePostgres:
             )
 
         assert pg_recorder == []
+
+
+# -------------------------------------------------------------------------
+# Case handling (audit 2026-09-08, findings A12, B16 and B17)
+# -------------------------------------------------------------------------
+
+
+class TestCaseHandling:
+    """Tags are compared case-insensitively; the plan must be too."""
+
+    def test_mixed_case_loser_is_actually_retired(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
+        """A plan naming "API-Integration" retires "api-integration".
+
+        Kills the mutation ``replacements[loser.lower()]`` ->
+        ``replacements[loser]``: the rewrite loop matches on ``tag.lower()``,
+        so an upper-cased loser replaced nothing while the run still
+        reported "Tags retired: 1".
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-301", "content": "Mixed-case tag in the record.",
+             "research_tags": ["API-Integration", "kiln"]},
+        ])
+        write_sample_vocab(vocab, ["api", "api-integration", "kiln"])
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "api", "losers": ["API-Integration"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        written = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert written["research_tags"] == ["api", "kiln"]
+        assert pg_recorder == [[("mem-301", ["api", "kiln"])]]
+
+    def test_mixed_case_record_tag_matches_a_lower_case_plan(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
+        """A record's "Pipelines" is retired by a plan naming "pipelines".
+
+        Kills the mutation that removes ``tag.lower()`` from the rewrite
+        loop's comparison.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-302", "content": "Upper-cased tag in the record.",
+             "research_tags": ["Pipelines"]},
+        ])
+        write_sample_vocab(vocab, ["pipeline", "pipelines"])
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        written = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert written["research_tags"] == ["pipeline"]
+
+    def test_research_tags_wins_over_tags_when_both_are_present(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
+        """``research_tags`` is authoritative even when empty.
+
+        Kills the mutation that inverts ``_get_tags``'s field precedence:
+        no fixture carried both fields before, so the inversion was silent.
+        """
+        both = {"id": "mem-303", "content": "Carries both tag fields.",
+                "research_tags": ["pipelines"], "tags": ["kiln"]}
+        assert tag_gardening._get_tags(both) == ["pipelines"]
+        empty_research = {"id": "mem-304", "content": "Empty research_tags.",
+                          "research_tags": [], "tags": ["kiln"]}
+        assert tag_gardening._get_tags(empty_research) == []
+
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [both])
+        write_sample_vocab(vocab, ["pipeline", "pipelines", "kiln"])
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        written = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert written["research_tags"] == ["pipeline"]
+        assert written["tags"] == ["kiln"], "the legacy field is untouched"
