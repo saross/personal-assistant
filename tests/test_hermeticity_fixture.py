@@ -816,6 +816,13 @@ def test_the_pg_environment_points_nowhere():
     assert "PGHOSTADDR" not in os.environ, (
         "PGHOSTADDR would take precedence over PGHOST")
     assert os.environ["PGPORT"] == "1"
+    # A service file names a host, port, and database of its own, so an
+    # inherited PGSERVICE would route straight past the dead end above
+    # (round 4a-3, finding M6: deleting either pop stayed green).
+    assert "PGSERVICE" not in os.environ, (
+        "an inherited PGSERVICE would name a real host")
+    assert "PGSERVICEFILE" not in os.environ, (
+        "an inherited PGSERVICEFILE would name a real host")
     assert str(conftest._SUITE_HOME.name) in os.environ["PGHOST"], (
         "the dead end must live inside the suite's own home")
 
@@ -1174,3 +1181,89 @@ def test_the_opt_in_is_dropped_before_finalisers_run():
         "test_a_marked_test_runs_with_the_opt_in must run first")
     assert _OPT_IN_AT_TEARDOWN[-1] is False, (
         "the opt-in was still in force during the marked test's teardown")
+
+
+# ===========================================================================
+# The PG* environment survives every test (audit round 4a-3, findings M5, M6)
+#
+# psycopg2 opens its socket in C, below the network guard, so the PGHOST
+# repoint is the only thing keeping an import-bound `from psycopg2 import
+# connect` away from the operator's database. A fixture that repointed
+# PGHOST and forgot to restore it re-opened that door for every following
+# test -- reproduced in a copy, with server_version coming back.
+# ===========================================================================
+
+
+@pytest.mark.pg_env
+def test_the_pg_snapshot_covers_the_whole_prefix(monkeypatch):
+    """Every PG* variable is watched, not a hand-listed few.
+
+    Marked ``pg_env`` even though ``monkeypatch`` restores the variable:
+    pytest is free to tear the two fixtures down in either order, and when
+    the guard runs first it sees the mutation. The marker is the sanctioned
+    way to say "this test varies PG* on purpose"; the restore happens either
+    way.
+    """
+    monkeypatch.setenv("PGPASSFILE", "/tmp/nowhere")
+    snapshot = conftest.pg_env_snapshot()
+    assert snapshot["PGPASSFILE"] == "/tmp/nowhere"
+    assert snapshot["PGHOST"] == os.environ["PGHOST"]
+    assert all(key.startswith("PG") for key in snapshot)
+
+
+def test_the_assertion_flags_a_changed_variable():
+    """Set, changed, and removed are all flagged.
+
+    Kills the mutation that neuters ``assert not changed``.
+    """
+    base = {"PGHOST": "/dead/end", "PGPORT": "1"}
+    for after in (
+        {"PGHOST": "/var/run/postgresql", "PGPORT": "1"},   # repointed
+        {"PGPORT": "1"},                                    # removed
+        {"PGHOST": "/dead/end", "PGPORT": "1", "PGUSER": "x"},  # added
+    ):
+        with pytest.raises(AssertionError, match="PG\\* environment"):
+            conftest.assert_pg_env_unchanged(base, after, "some::test")
+
+    conftest.assert_pg_env_unchanged(base, dict(base), "some::test")
+
+
+@pytest.mark.pg_env
+def test_a_marked_test_may_vary_the_pg_environment():
+    """The exemption exists for tests that must vary these deliberately."""
+    os.environ["PGHOST"] = "/tmp/somewhere-else"
+    os.environ["PGSERVICE"] = "invented"
+    assert os.environ["PGHOST"] == "/tmp/somewhere-else"
+
+
+def test_the_environment_is_restored_after_a_marked_test():
+    """The restore is unconditional, so one test cannot poison the rest.
+
+    Kills the mutation that drops the restore loop from ``pg_env_unchanged``:
+    the marked test above leaves PGHOST pointing elsewhere and PGSERVICE set,
+    and every test after it would inherit both.
+    """
+    assert os.environ["PGHOST"] == str(conftest._NO_PG_SOCKET_DIR)
+    assert "PGSERVICE" not in os.environ
+
+
+def test_the_autouse_fixture_uses_the_assertion():
+    """Structural: the fixture must still CALL the guard it defines.
+
+    Kills the mutation that leaves the function in place but stops calling
+    it from ``pg_env_unchanged``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fixture = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "pg_env_unchanged"
+    )
+    called = {
+        ast.unparse(node.func) for node in ast.walk(fixture)
+        if isinstance(node, ast.Call)
+    }
+    assert "assert_pg_env_unchanged" in called
+    assert "pg_env_snapshot" in called

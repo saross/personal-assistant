@@ -258,6 +258,83 @@ Last updated: 2024-02-08
 
 
 # ---------------------------------------------------------------------------
+# Hermeticity: the PG* environment must survive every test
+#
+# The PGHOST repoint above is the only thing standing between an
+# import-bound ``from psycopg2 import connect`` and the operator's database,
+# because psycopg2 opens its socket in C where the network guard cannot see
+# it. A fixture that repoints PGHOST and forgets to restore it therefore
+# re-opens that door for every test that follows — reproduced in a copy, with
+# ``server_version`` coming back from the real server (audit round 4a-3,
+# finding M5).
+#
+# So the whole PG* environment is snapshotted around every test, RESTORED
+# unconditionally (one offending test must not poison the rest of the run),
+# and then compared. A test that genuinely needs to vary it declares
+# ``@pytest.mark.pg_env`` and is exempt from the comparison — never from the
+# restore. Note that ``monkeypatch.setenv`` is NOT sufficient on its own:
+# pytest may tear this fixture down before monkeypatch's undo runs, in which
+# case the guard sees the mutation. Mark such a test; the restore below
+# happens either way, so nothing leaks whichever order they run in.
+# ---------------------------------------------------------------------------
+
+#: The marker that exempts a test from the PG-environment comparison.
+PG_ENV_MARKER = "pg_env"
+
+
+def pg_env_snapshot() -> dict[str, str]:
+    """Every ``PG*`` variable currently in the environment.
+
+    The whole prefix rather than a hand-listed few: PGHOST, PGHOSTADDR,
+    PGPORT, PGSERVICE, and PGSERVICEFILE all steer a connection, and so do
+    PGDATABASE, PGUSER, and PGPASSFILE. A list would go stale; the prefix
+    cannot.
+    """
+    return {
+        key: value for key, value in os.environ.items() if key.startswith("PG")
+    }
+
+
+def assert_pg_env_unchanged(
+    before: dict[str, str], after: dict[str, str], nodeid: str,
+) -> None:
+    """Raise if a test changed where libpq would connect.
+
+    A named function rather than an inline assert so its behaviour can be
+    exercised in-process, the way the canonical-store guard's is.
+    """
+    changed = sorted(
+        key for key in set(before) | set(after)
+        if before.get(key) != after.get(key)
+    )
+    assert not changed, (
+        f"{nodeid} changed the PG* environment and did not restore it: "
+        f"{ {key: (before.get(key), after.get(key)) for key in changed} }. "
+        f"psycopg2 connects in C, below the network guard, so these "
+        f"variables are what keeps an import-bound connector away from the "
+        f"operator's database. Use monkeypatch (which restores), or mark the "
+        f"test @pytest.mark.{PG_ENV_MARKER} if it must vary them."
+    )
+
+
+@pytest.fixture(autouse=True)
+def pg_env_unchanged(request):
+    """Restore the PG* environment after every test, and flag the offender."""
+    before = pg_env_snapshot()
+    yield
+    after = pg_env_snapshot()
+    # Restore FIRST, unconditionally: whether or not this test is allowed to
+    # have changed things, the next one must start from the dead end.
+    for key in set(after) - set(before):
+        os.environ.pop(key, None)
+    for key, value in before.items():
+        os.environ[key] = value
+    if request.node.get_closest_marker(PG_ENV_MARKER) is not None:
+        return
+    assert_pg_env_unchanged(before, after, request.node.nodeid)
+
+
+# ---------------------------------------------------------------------------
 # Hermeticity: the suite must not open a network connection
 #
 # A probe test that stood up a local TCP server and connected to it passed
@@ -325,6 +402,11 @@ def pytest_configure(config):
         "markers",
         f"{LOCAL_SOCKET_MARKER}: test connects to a loopback server it "
         f"started itself",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{PG_ENV_MARKER}: test deliberately varies a PG* environment "
+        f"variable (it is restored either way)",
     )
 
 
