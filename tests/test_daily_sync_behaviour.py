@@ -657,6 +657,56 @@ class TestStashIsRestoredWhenTheRunAborts:
         assert "could not drop" in combined, combined
         assert "ALREADY in the working tree" in joined, joined
 
+    def test_a_second_stash_blocked_by_the_first_is_not_condemned(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C1 (ninth re-audit): classify by what THIS apply changed.
+
+        The ordinary two-stash SIGTERM shape. Stash 1's restore conflicts;
+        git then REFUSES stash 2 outright because the index is unmerged,
+        leaving its entry untouched — and the whole-repository scan called
+        that "conflicted" too, so the gate told the operator to delete the
+        only copy of its records.
+        """
+        machine = world.add_machine("a")
+        inbox = machine.data / "tasks" / "inbox.md"
+        base = machine.head("data")
+        inbox.write_text("# Inbox\n\n- the version on main\n", encoding="utf-8")
+        machine.commit_data("main version", "tasks/inbox.md")
+
+        # Stash 1 (branch-switch) will conflict on restore…
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        inbox.write_text("# Inbox\n\n- the version in the stash\n", encoding="utf-8")
+        # …and stash 2 carries a record that exists nowhere else.
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        result = world.run_sync(
+            machine, PA_TEST_ARCHIVER_DIRTIES="# Inbox\n\n- written mid-run\n"
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        joined = "\n".join(gate_details(world))
+        # Exactly one entry produced the markers, and it is named.
+        assert joined.count("WITH CONFLICTS") == 1, joined
+        assert "blocked" in combined.lower(), combined
+        # The second is BLOCKED: intact, its work nowhere else, and the
+        # advice is to pop it once the earlier conflict is cleared —
+        # never to delete it.
+        assert "ALREADY unmerged" in joined, joined
+        assert "Resolve the earlier conflict first, then pop these" in joined, joined
+        assert "do not delete them" in joined, joined
+        # And the blocked entry is not among those called conflicted.
+        conflicted_line = next(d for d in gate_details(world) if "WITH CONFLICTS" in d)
+        blocked_sha = git(
+            "rev-parse", "--short=8", "stash@{0}", cwd=machine.data
+        ).stdout.strip()
+        assert blocked_sha not in conflicted_line, (
+            "the blocked stash was condemned as the source of the markers: "
+            + conflicted_line
+        )
+
     def test_a_conflicted_restore_is_never_told_to_pop(
         self, world: SyncWorld
     ) -> None:
@@ -953,14 +1003,18 @@ class TestDetachedHeadGuard:
         assert "2026-09-08-m2-ours" in published
         assert "2026-09-08-m2-theirs" in published
 
-        joined = "\n".join(gate_details(world))
-        assert "could not drop" in joined, joined
-        assert "ALREADY in the working tree" in joined, joined
-        assert "UNRECOVERED" not in joined, (
+        # The resolver dropped the entry itself, so nothing is left on the
+        # stack: the failed drop belongs in the log, and there is nothing
+        # for the operator to act on. What must never happen is calling
+        # work that is in the tree and published "unrecovered".
+        assert "could not drop" in combined, combined
+        gate = world.gate("daily-sync-gate")
+        assert "UNRECOVERED" not in gate, (
             "applied work was reported as lost, and popping it would "
-            "duplicate every record: " + joined
+            "duplicate every record: " + gate
         )
-        assert "Do NOT pop" in joined, joined
+        assert not git("stash", "list", cwd=machine.data).stdout.strip()
+        assert "restore raised conflicts" not in combined, combined
 
     def test_an_undroppable_own_stash_is_classified_as_applied(
         self, world: SyncWorld
@@ -989,6 +1043,9 @@ class TestDetachedHeadGuard:
         assert "UNRECOVERED" not in joined, (
             "applied work was classified as lost: " + joined
         )
+        # The entry IS still on the stack — that is what makes the gate
+        # necessary, and what the operator has to delete.
+        assert git("stash", "list", cwd=machine.data).stdout.strip()
         # …and the restore path must not call a failed drop a conflict.
         assert "restore raised conflicts" not in combined, combined
 
@@ -1542,6 +1599,22 @@ class TestStashPopConflictPartitioning:
         assert "124" in joined, joined
         assert "Edit those LINES by hand" not in joined, joined
 
+    def test_the_missing_tool_gate_names_the_tool(self, world: SyncWorld) -> None:
+        """Audit L1 (ninth re-audit): a backtick pair inside a
+        double-quoted string ran `timeout` as a command, so the gate lost
+        the tool's name to its (empty) output."""
+        machine = world.add_machine("a")
+        missing = world.bin_dir / "timeout"
+        missing.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+        missing.chmod(0o755)
+
+        assert world.run_sync(machine).returncode == 2
+        joined = "\n".join(gate_details(world))
+        assert "timeout" in joined, (
+            "the gate does not name the tool it needs: " + joined
+        )
+        assert "'timeout' binary" in joined, joined
+
     def test_a_missing_tool_says_so_rather_than_blaming_the_checker(
         self, world: SyncWorld
     ) -> None:
@@ -1891,6 +1964,50 @@ class TestAnInterruptedPredecessor:
         assert " commit." in joined, joined
         assert "merge --continue" not in joined, joined
 
+    @pytest.mark.parametrize("repo", ["data", "parent"])
+    def test_a_bisect_is_named_and_head_is_left_alone(
+        self, world: SyncWorld, repo: str
+    ) -> None:
+        """Audit M2 (ninth re-audit): a bisect was invisible, and the
+        branch guard then checked out main in the middle of one —
+        destroying somebody's session, exit 0."""
+        machine = world.add_machine("a")
+        git_dir = machine.data_git_dir if repo == "data" else machine.pa / ".git"
+        head_before = machine.head(repo)
+        (git_dir / "BISECT_LOG").write_text("# bisect log\n", encoding="utf-8")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        joined = "\n".join(gate_details(world))
+        assert "bisect is in progress" in joined, joined
+        assert "bisect reset" in joined, joined
+        assert "will not move HEAD" in joined, joined
+        assert machine.head(repo) == head_before, "HEAD was moved mid-bisect"
+
+    def test_the_data_half_runs_despite_a_parent_mid_operation(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M3 (ninth re-audit): each check before ITS OWN half.
+
+        A human mid-rebase in the parent is no reason to stop memory sync
+        — that is the half that loses data when it does not run.
+        """
+        machine = world.add_machine("a")
+        (machine.pa / ".git" / "rebase-merge").mkdir()
+        machine.append_memory("2026-09-08-m3")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        # The parent is still named…
+        joined = "\n".join(gate_details(world))
+        assert "parent repo" in joined, joined
+        # …but the memory records reached origin first.
+        assert "2026-09-08-m3" in world.published_data_file(
+            "memories/memories.jsonl"
+        ), "the data half was blocked by a parent-repo operation"
+
     def test_the_parent_repository_is_checked_too(self, world: SyncWorld) -> None:
         """Audit M1 (eighth re-audit): a rebase left in the PARENT went
         entirely unnoticed — the run exited 0 and cleared the gate."""
@@ -1947,7 +2064,8 @@ class TestAnInterruptedPredecessor:
         machine.commit_data("diverge", "memories/memories.jsonl")
         git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
         (world.home / ".cache" / "daily-sync-stash-state").write_text(
-            f"{machine.data}\t{sha}\tconflicted\n", encoding="utf-8"
+            f"{machine.data}\t{sha}\tconflicted\tmemories/memories.jsonl\n",
+            encoding="utf-8",
         )
 
         result = world.run_sync(machine)
@@ -1958,6 +2076,177 @@ class TestAnInterruptedPredecessor:
         assert "recorded as conflicted" in joined, joined
         assert "delete that entry" in joined, joined
         assert "Do NOT pop" in joined, joined
+
+    def test_a_stale_row_is_not_blamed_for_an_unrelated_conflict(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C2 (ninth re-audit): attribution needs a path match.
+
+        A row about a stash that conflicted on one file says nothing about
+        a fresh conflict in another. Blaming it invites deleting work that
+        has nothing to do with the markers on screen.
+        """
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-unrelated")
+        git("stash", "push", "-q", "-m", "conflicted on something else",
+            cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        # The row claims it left markers in a file that is fine now.
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tconflicted\ttasks/inbox.md\n", encoding="utf-8"
+        )
+        # The actual conflict is somewhere else entirely.
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", sha, cwd=machine.data, check=False)
+        assert "<<<<<<<" in machine.memories.read_text(encoding="utf-8")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "cannot identify" in joined, joined
+        assert sha[:8] not in joined.split("on the stack right now")[0], (
+            "a stale row was blamed for an unrelated conflict: " + joined
+        )
+
+    def test_a_dropped_entry_is_not_named(self, world: SyncWorld) -> None:
+        """A row about an entry that is no longer on the stack names
+        nothing: the stash is gone, so it is the source of nothing — and
+        naming it sends the operator hunting for something that is not
+        there.
+
+        Staged as an abandoned stash apply (no MERGE_HEAD), so the
+        attribution branch is the one that runs.
+        """
+        machine = world.add_machine("a")
+        # A live stash, which will produce the actual conflict…
+        machine.append_memory("2026-09-08-live")
+        git("stash", "push", "-q", "-m", "the live one", cwd=machine.data)
+        # …and one that is dropped before the run, on top of it.
+        machine.append_memory("2026-09-08-gone")
+        git("stash", "push", "-q", "-m", "since dropped", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        git("stash", "drop", "-q", "stash@{0}", cwd=machine.data)
+        assert sha not in git(
+            "stash", "list", "--format=%H", cwd=machine.data
+        ).stdout.split()
+
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
+        assert "<<<<<<<" in machine.memories.read_text(encoding="utf-8")
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tconflicted\tmemories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert sha[:8] not in joined.split("on the stack right now")[0], (
+            "a stash that is no longer on the stack was named as the source "
+            "of these markers: " + joined
+        )
+
+    def test_an_applied_row_is_never_a_marker_source(
+        self, world: SyncWorld
+    ) -> None:
+        """Applied rows exist to say "already in your tree", never "these
+        markers are its content" — they carry no paths for that reason."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-applied-row")
+        git("stash", "push", "-q", "-m", "applied last run", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tapplied\tmemories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", sha, cwd=machine.data, check=False)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "cannot identify" in joined, (
+            "an applied row was treated as a marker source: " + joined
+        )
+
+    def test_a_real_conflict_writes_a_row_with_its_paths(
+        self, world: SyncWorld
+    ) -> None:
+        """The write side, driven by a run that actually conflicts."""
+        machine = world.add_machine("a")
+        inbox = machine.data / "tasks" / "inbox.md"
+        base = machine.head("data")
+        inbox.write_text("# Inbox\n\n- on main\n", encoding="utf-8")
+        machine.commit_data("main version", "tasks/inbox.md")
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        inbox.write_text("# Inbox\n\n- in the stash\n", encoding="utf-8")
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        assert world.run_sync(machine).returncode == 2
+        sidecar = (world.home / ".cache" / "daily-sync-stash-state").read_text(
+            encoding="utf-8"
+        )
+        rows = [r for r in sidecar.splitlines() if "conflicted" in r]
+        assert len(rows) == 1, sidecar
+        repo, sha, state, paths = rows[0].split("\t")
+        assert repo == str(machine.data)
+        assert state == "conflicted"
+        assert paths == "tasks/inbox.md", rows[0]
+        assert git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip() == sha
+
+    def test_a_completed_clean_run_clears_the_sidecar(
+        self, world: SyncWorld
+    ) -> None:
+        """Every non-dry run rewrites it, so nothing survives a clean one."""
+        sidecar = world.home / ".cache" / "daily-sync-stash-state"
+        sidecar.write_text(
+            "/somewhere\tdeadbeef\tconflicted\tmemories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+        machine = world.add_machine("a")
+        assert world.run_sync(machine).returncode == 0
+        assert sidecar.read_text(encoding="utf-8") == "", sidecar.read_text()
+
+    def test_a_later_word_about_a_stash_supersedes_the_earlier_one(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M1 (ninth re-audit): contradictory advice must not stand
+        side by side.
+
+        A failing run appends, so an earlier run's "pop it" and a later
+        run's "delete it" — about the same stash — were both on screen at
+        once. The later word wins.
+        """
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-supersede")
+        git("stash", "push", "-q", "-m", "recorded as conflicted", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
+        (world.home / ".cache" / "daily-sync-stash-state").write_text(
+            f"{machine.data}\t{sha}\tconflicted\tmemories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+        # An earlier run's advice about the very same stash.
+        (world.home / ".cache" / "daily-sync-gate").write_text(
+            f"1\nan earlier run said: {sha[:8]} holds unrecovered work — pop it\n",
+            encoding="utf-8",
+        )
+
+        result = world.run_sync(machine)
+        assert result.returncode == 2, result.stdout + result.stderr
+        joined = "\n".join(gate_details(world))
+        assert "an earlier run said" not in joined, (
+            "an earlier run's contradictory advice about the same stash "
+            "survived: " + joined
+        )
+        assert sha[:8] in joined, joined
+        assert "delete that entry" in joined, joined
 
     def test_a_failing_run_keeps_the_previous_interruption_line(
         self, world: SyncWorld
