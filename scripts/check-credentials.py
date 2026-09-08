@@ -34,6 +34,12 @@ Three passes, cheapest first:
    reads the whole file as one line and leaves every name after the first
    unset.
 
+   Pass 1 finally reports the shell metacharacters, because a credential
+   file is sourced by every session hook: an unquoted ``&``, ``;`` or ``|``
+   ends the assignment and runs the rest as a command (``A=https://x?a=1&b=2``
+   leaves A UNSET), and a backtick or ``$(`` outside single quotes EXECUTES
+   when the file is sourced — double quotes do not stop that one.
+
 2. **Shell-source test.** Sources the file in a subshell; any output at all
    is a finding.
 
@@ -187,7 +193,35 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 "value — bash ends the value at the closing quote while the Codex "
                 "launcher keeps everything after it. Quote the whole value or none."
             )
-        if quote_char != "'" and "$" in value:
+        # Command substitution runs BEFORE the assignment and double quotes do
+        # NOT stop it. Verified against bash 5.2.37: ``A=`id` `` and
+        # ``A=$(id)`` both EXECUTE id and assign its output, and so does
+        # ``A="`id`"``; only single quotes make them literal. A credential
+        # file is not a place for anything that executes.
+        substitution = "`" in value or "$(" in value
+        if quote_char != "'" and substitution:
+            note(
+                f"line {lineno}: {name}'s value contains a command substitution "
+                "(backtick or '$(') outside single quotes — bash EXECUTES it when "
+                "the file is sourced and assigns the output. Single-quote the "
+                "value, or remove it."
+            )
+        if not quoted:
+            # Control operators terminate the assignment. Either quote form
+            # protects them. Verified against bash 5.2.37:
+            # ``A=https://x/y?z=1&w=2`` leaves A UNSET because '&' backgrounds
+            # the assignment; ``A=a;b`` assigns 'a' and runs 'b'; ``A=a|b``
+            # leaves A unset and runs 'b'. The URL is the form most likely to
+            # appear in a real credential file.
+            operators = sorted({char for char in "&;|" if char in raw_value})
+            if operators:
+                note(
+                    f"line {lineno}: {name}'s value contains {', '.join(operators)} "
+                    "and is not quoted — bash ends the assignment there and runs the "
+                    f"rest as a command, often leaving {name} unset entirely. Quote "
+                    "the whole value."
+                )
+        if quote_char != "'" and "$" in value and not substitution:
             # bash expands ``$`` unless the value is single-quoted; this parser
             # and the Codex launcher keep it literal. Verified against bash 5.2:
             # ``A=$B`` and ``A="$B"`` both assign the EMPTY string for an unset

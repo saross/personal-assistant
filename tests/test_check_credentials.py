@@ -374,6 +374,123 @@ class TestParseEnvShellDivergence:
         assert cc.findings[0].startswith("line 1:") and "CRLF" in cc.findings[0]
         assert cc.findings[1].startswith("line 3:") and "lone CR" in cc.findings[1]
 
+    @pytest.mark.parametrize(
+        "line,char",
+        [
+            ("TOKEN=https://example.test/y?z=1&w=2", "&"),
+            ("TOKEN=abcfake;whoami", ";"),
+            ("TOKEN=abcfake|whoami", "|"),
+        ],
+    )
+    def test_an_unquoted_control_operator_is_flagged(self, tmp_path, line, char):
+        """Kills dropping the ``for char in "&;|"`` finding.
+
+        Verified against bash 5.2.37: ``A=https://x/y?z=1&w=2`` leaves A
+        UNSET because '&' backgrounds the assignment; ``A=a;b`` assigns 'a'
+        and runs 'b'; ``A=a|b`` leaves A unset and runs 'b'. The URL is the
+        form most likely to appear in a real credential file, and it fails
+        silently — the variable simply is not there.
+        """
+        cc.parse_env(_env_file(tmp_path, line + "\n"))
+        assert len(cc.findings) == 1
+        assert f"contains {char} and is not quoted" in cc.findings[0]
+
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_a_quoted_control_operator_is_not_flagged(self, tmp_path, quote):
+        """Kills applying the operator check to quoted values.
+
+        Either quote form protects '&', ';' and '|', verified against bash
+        5.2.37, and a query-string URL in quotes is a perfectly ordinary
+        credential-file entry.
+        """
+        url = "https://example.test/y?z=1&w=2"
+        env = cc.parse_env(
+            _env_file(tmp_path, f"TOKEN={quote}{url}{quote}\n")
+        )
+        assert cc.findings == []
+        assert env["TOKEN"] == url
+
+    @pytest.mark.parametrize("value", ["`whoami`", "$(whoami)"])
+    def test_a_command_substitution_is_flagged(self, tmp_path, value):
+        """Kills dropping the ``"`" in value or "$(" in value`` finding.
+
+        Verified against bash 5.2.37: both forms EXECUTE the command when
+        the file is sourced and assign its output. A credential file is
+        sourced by every session hook, so this is arbitrary execution on a
+        schedule, not a formatting problem.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN={value}\n"))
+        assert len(cc.findings) == 1
+        assert "command substitution" in cc.findings[0]
+        assert "EXECUTES" in cc.findings[0]
+
+    def test_a_double_quoted_command_substitution_is_still_flagged(self, tmp_path):
+        """Kills reusing the ``not quoted`` guard for command substitution.
+
+        Double quotes stop '&', ';' and '|' but NOT substitution: verified
+        against bash 5.2.37, ``A="`id`"`` still executes. The two classes
+        need different guards, and treating them alike lets the dangerous
+        one through.
+        """
+        cc.parse_env(_env_file(tmp_path, 'TOKEN="`whoami`"\n'))
+        assert len(cc.findings) == 1
+        assert "command substitution" in cc.findings[0]
+
+    def test_a_single_quoted_command_substitution_is_not_flagged(self, tmp_path):
+        """Kills flagging every backtick regardless of quoting.
+
+        Single quotes make it literal on both sides, so there is nothing to
+        report — and the finding's own advice is to single-quote the value.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN='`whoami`'\n"))
+        assert cc.findings == []
+        assert env["TOKEN"] == "`whoami`"
+
+    def test_a_command_substitution_is_reported_once_not_twice(self, tmp_path):
+        """Kills dropping the ``and not substitution`` guard on the '$' check.
+
+        ``$(`` matches the plain expansion rule too; two findings for one
+        character would bury the sharper message (it EXECUTES) under the
+        milder one (it expands).
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=$(whoami)\n"))
+        assert len(cc.findings) == 1
+        assert "command substitution" in cc.findings[0]
+
+    def test_whitespace_inside_an_unquoted_value_is_flagged(self, tmp_path):
+        """Kills dropping the ``len(words) > 1`` finding.
+
+        Verified: ``A=a b`` assigns NOTHING to A, runs ``b`` as a command,
+        and echoes "b: command not found" — the same leak class as
+        ``NAME= value``, and the parser meanwhile keeps ``a b``.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake {FAKE_SECRET}\n"))
+        assert len(cc.findings) == 1
+        assert "contains whitespace and is not quoted" in cc.findings[0]
+        assert FAKE_SECRET not in cc.findings[0]
+
+    def test_whitespace_inside_a_quoted_value_is_not_flagged(self, tmp_path):
+        """Kills applying the whitespace check to quoted values.
+
+        ``A="a b"`` assigns ``a b`` on both sides; a passphrase with spaces
+        is legitimate as long as it is quoted.
+        """
+        env = cc.parse_env(_env_file(tmp_path, 'TOKEN="two words"\n'))
+        assert cc.findings == []
+        assert env["TOKEN"] == "two words"
+
+    def test_a_trailing_comment_is_not_reported_as_a_command(self, tmp_path):
+        """Kills dropping ``not words[1].startswith("#")`` from the guard.
+
+        ``A=abc # c`` has whitespace in an unquoted value but bash runs no
+        command — the rest is a comment. Reporting it as an executed
+        command would be a false statement about what bash does, and the
+        line already has its own (correct) finding.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=abcfake # a comment\n"))
+        assert len(cc.findings) == 1
+        assert "has a '#' in its value" in cc.findings[0]
+
     def test_the_shell_source_message_does_not_promise_findings_above(
         self, tmp_path, capsys
     ):
