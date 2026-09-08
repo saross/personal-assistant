@@ -332,6 +332,62 @@ def enumerate_live_candidates(patterns: list[str]) -> list[Candidate]:
 
 
 # ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+#: Which copy of a dual-resident session wins. The archive tier is first
+#: because it is the only tier that ships a ``session.meta.json``, and that
+#: file is where ``started_at``, the authoritative project name, and the
+#: ``three_ps`` state come from. A sub-agent transcript is last: Shawn's spec
+#: flags those as "typically less substantive".
+SOURCE_PREFERENCE: dict[str, int] = {"archive": 0, "live": 1, "subagent": 2}
+
+
+def deduplicate_candidates(
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], int]:
+    """Keep one Candidate per session id, preferring the archived copy.
+
+    The previous sort key was ``(session_id, transcript_path)``, which put
+    ``/home/shawn/.claude/...`` before ``/home/shawn/cc-archives/...``
+    because ``'.' < 'c'``. Every session resident in both pools therefore
+    entered the sample as ``source="live"`` with ``meta_path=None`` and
+    ``three_ps_state="unknown"`` — the opposite of the documented intent,
+    and enough to drop it out of both the empty and the populated tier of
+    the stratified sampler.
+
+    Sorting by ``(session_id, source_rank, transcript_path)`` is also what
+    makes the downstream seeded shuffle reproducible: neither dict insertion
+    order nor filesystem traversal order can reach it.
+
+    Args:
+        candidates: the combined archive and live pools, in any order.
+
+    Returns:
+        ``(unique_candidates, n_removed)``.
+    """
+    ordered = sorted(
+        candidates,
+        key=lambda c: (
+            c.session_id or "",
+            SOURCE_PREFERENCE.get(c.source, len(SOURCE_PREFERENCE)),
+            c.transcript_path,
+        ),
+    )
+    seen_keys: set[str] = set()
+    unique: list[Candidate] = []
+    for candidate in ordered:
+        # A session_id of None or empty string falls back to a path-based
+        # key, so duplicate paths are still collapsed.
+        key = candidate.session_id or candidate.transcript_path
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique.append(candidate)
+    return unique, len(ordered) - len(unique)
+
+
+# ---------------------------------------------------------------------------
 # Extraction + classification
 # ---------------------------------------------------------------------------
 
@@ -720,31 +776,7 @@ def main(argv: list[str] | None = None) -> int:
     n_main = len(live) - n_subagent
     print(f"    main: {n_main}   sub-agent: {n_subagent}")
 
-    # Deduplicate by session_id. When the same session_id appears in both
-    # the archive and the live pool (or any other duplication), keep the
-    # archived copy first because it ships with a session.meta.json. Falling
-    # back to the live copy only if no archive copy exists.
-    #
-    # Sort the combined list by (session_id, transcript_path) before
-    # bucketing so the ``random.seed(42)`` shuffle downstream is
-    # reproducible regardless of dict-key insertion order or filesystem
-    # traversal order across machines.
-    raw_combined = sorted(
-        arch + live,
-        key=lambda c: (c.session_id or "", c.transcript_path),
-    )
-    n_before_dedup = len(raw_combined)
-    seen_ids: set[str] = set()
-    all_candidates: list[Candidate] = []
-    for c in raw_combined:
-        # session_id of None or empty string falls back to a path-based key
-        # so we still dedup duplicate paths.
-        key = c.session_id or c.transcript_path
-        if key in seen_ids:
-            continue
-        seen_ids.add(key)
-        all_candidates.append(c)
-    n_dedup_removed = n_before_dedup - len(all_candidates)
+    all_candidates, n_dedup_removed = deduplicate_candidates(arch + live)
     total_pool = len(all_candidates)
     print(f"  deduplicated by session_id (removed {n_dedup_removed} copies)")
     print(f"Total unique candidate pool: {total_pool}")

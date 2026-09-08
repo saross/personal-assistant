@@ -259,3 +259,66 @@ class TestWriteJsonAtomic:
             resample.write_json_atomic(target, {"boom": Unserialisable()})
         assert json.loads(target.read_text(encoding="utf-8")) == {"keep": True}
         assert list(tmp_path.iterdir()) == [target]
+
+
+class TestDeduplication:
+    """A session resident in both pools must enter as the archived copy."""
+
+    def test_archive_copy_wins_over_live_copy(self):
+        """The finding: the sort key ranked '.claude' before 'cc-archives'."""
+        session_id = "44444444-aaaa-bbbb-cccc-000000000004"
+        live = resample.Candidate(
+            source="live",
+            transcript_path=f"/home/invented/.claude/projects/p/{session_id}.jsonl",
+            meta_path=None,
+            project="p",
+            session_id=session_id,
+            started_at=None,
+        )
+        archived = resample.Candidate(
+            source="archive",
+            transcript_path="/home/invented/cc-archives/p/2026-01-04/session.jsonl",
+            meta_path="/home/invented/cc-archives/p/2026-01-04/session.meta.json",
+            project="thornhollow-survey",
+            session_id=session_id,
+            started_at="2026-01-04T08:00:00+00:00",
+        )
+        unique, removed = resample.deduplicate_candidates([live, archived])
+        assert removed == 1
+        assert [c.source for c in unique] == ["archive"]
+        assert unique[0].meta_path is not None
+
+    def test_dual_resident_session_keeps_its_three_ps_state(self, tmp_path):
+        """End to end: the surviving row carries meta, not 'unknown'."""
+        root = tmp_path / "home"
+        session_id = "55555555-aaaa-bbbb-cccc-000000000005"
+        write_archive_session(
+            root, "thornhollow-survey", "2026-01-07T10-00-00",
+            session_id=session_id, three_ps_populated=True,
+        )
+        write_live_session(
+            root, "-home-shawn-Code-thornhollow-survey", session_id,
+        )
+        out = tmp_path / "manifest.json"
+        assert run_main(root, "--out", str(out)) == 0
+        rows = json.loads(out.read_text(encoding="utf-8"))["sessions"]
+        row = next(r for r in rows if r["session_id"] == session_id)
+        assert row["source"] == "archive"
+        assert row["meta_path"] is not None
+        assert row["current_three_ps_state"] == "populated"
+        assert row["started_at"] == "2026-01-04T08:00:00+00:00"
+
+    def test_subagent_copy_loses_to_a_live_copy(self, tmp_path):
+        """Preference order is archive, then live, then sub-agent."""
+        session_id = "66666666-aaaa-bbbb-cccc-000000000006"
+        live = resample.Candidate(
+            source="live", transcript_path="/z/live.jsonl", meta_path=None,
+            project="p", session_id=session_id, started_at=None,
+        )
+        subagent = resample.Candidate(
+            source="subagent", transcript_path="/a/sub.jsonl", meta_path=None,
+            project="p", session_id=session_id, started_at=None,
+        )
+        unique, removed = resample.deduplicate_candidates([subagent, live])
+        assert removed == 1
+        assert [c.source for c in unique] == ["live"]
