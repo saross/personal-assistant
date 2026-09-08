@@ -3,7 +3,8 @@ title: "Agent mail — async cross-agent messaging proposal"
 tags: [planning, infrastructure, multi-agent, gpt-hub]
 created: 2026-08-25
 updated: 2026-08-25
-status: signed off by Shawn 2026-08-25 — Claude side implemented; Sol to author the ownership.toml PR
+status: signed off by Shawn 2026-08-25 — Claude side implemented; Sol to author the
+  ownership.toml PR
 ---
 
 # Agent mail — async cross-agent messaging proposal

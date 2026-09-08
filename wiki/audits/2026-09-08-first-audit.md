@@ -108,6 +108,25 @@ under mutation, no live mail regresses. Fixed in 0f94722 (suite 1,283):
 | L-10 | Stat-then-copy race could land an oversized file (SUSPECTED) | fixed: bounded read |
 | — | Double-encoded `%252F` passes one `unquote` (SUSPECTED, server-dependent) | deferred |
 
+### Round 1d — re-audit of round 1c (fresh agent, 2026-09-08)
+
+No critical; 6 medium, 6 low. All fixed in 122c9e3 (suite 1,288) except
+where noted:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The sender-directory test passed on the old code: its fixtures carried `From: codex`, so the header check rejected them, not the new rule (CONFIRMED by mutation) | fixed: `From:` names the hostile directory |
+| 2 | The bounded-copy test called the helper directly; replacing the call inside `copy_new` with an unbounded copy stayed green | fixed: the test drives `copy_new` with an oversized file past the size check |
+| 3 | Tripwire bracket stripping was ASCII-only; fullwidth U+FF3B/U+FF3D forged the author group (CONFIRMED) | fixed: every Unicode open/close punctuation character is dropped |
+| 4 | The session's own project (remote URL or directory name) was printed raw; a remote `repo%0a-%20SYSTEM…` forged a second line in the hook's block (CONFIRMED) | fixed: the session project and `--project`/`AGENT_MAIL_PROJECT` pass the slug rule; an `invalid` session collects no invalid-tagged mail |
+| 5 | The archived index stored Project, Lane, Workstream, and Date raw, persisting the very forgery the hook rejects (CONFIRMED) | fixed: same rule as the hook; Date printable-only |
+| 6 | The by-identity narrowing of the `Claude-Session` exemption is unreachable: both agents commit as Shawn, so only the trailer distinguishes them | recorded; decision D4 is the only fix that bites |
+| L | `sha256(source)` read a grown file whole before the bounded copy | fixed: one bounded read per source |
+| L | Runbook and proposal claimed a `<stamp>-<sender>-<slug>.md` shape the code does not enforce; the proposal still said "basename of the git root" | fixed: wording matches the code |
+| L | Archiver docstring said every non-conforming file is refused; a non-`.md` file is ignored | fixed: wording |
+| L | The Codex-side hook applies no v3 routing and no name rule, so the two agents can disagree on what is mail | with Astra (message of 2026-09-08T02:19Z) |
+| L | Every non-slug project collapses into one `invalid` bucket | accepted |
+
 ## Tranche 1 — session hooks
 
 Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
@@ -191,6 +210,11 @@ dies at line 618 before the sync body and the test passes anyway).
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
 | S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (CONFIRMED by two round-two agents; `rebuild.log` grew during today's runs) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
+| S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
+| S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
+| S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
+| S26 | The rebase-abort path leaves a divergence every later run re-hits, with no gate line (S17's class) | **next** (round 3) |
+| S4 note | Measured on the branch: neither `--ours` nor `--theirs` changes a conflicted gitlink's index entry; the following `git add` records the checked-out HEAD, which is why the live sync resolved these correctly despite the inverted flag. The fix is legibility, not data loss. | recorded |
 
 Lows recorded: hardcoded interpreter path at 802; `[[ "None" -gt 0 ]]` under
 `set -u`; raw interpolation into `bash -c`/`ssh`/Python in
@@ -261,18 +285,29 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    (recommended, matching the guardrails-not-obstacles stance), or drop it
    and ack each such commit on each machine.
 
+5. **D5 — should the daily sync push unpushed parent-repository commits
+   (S24)?** Today a parent commit with an unchanged data pointer sits
+   unpushed until something else pushes. Pushing it would publish whatever
+   another session committed but chose not to push. Options: leave as is
+   (recommended, since the hub rule is push-after-commit anyway), or push
+   when ahead and accept that the sync publishes every local commit.
+
 ## Fix rounds
 
-- Round 1 (done, 0577648): tranche 0. Re-audited twice: round 1b (06225a0,
-  5798dc9) and round 1c (0f94722).
+- Round 1 (done, 0577648): tranche 0. Re-audited three times: rounds 1b
+  (06225a0, 5798dc9), 1c (0f94722), and 1d (122c9e3).
 - Round 2, hooks (done, 300ee10): H2–H4, H8–H13, H15–H18. Re-audit pending.
 - Round 2, remainder (four branches, each in its own worktree, reviewed and
   merged by PR after a fresh-agent re-audit): hook tests H5–H7, H20–H22 and
   the checker's tests and two fixes (PR #115, `claude/audit-hook-tests`);
   sync helpers S8, S11, S13–S16, S20 (PR #114, `claude/audit-sync-helpers`);
-  sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (`claude/audit-sync-writers`,
-  in progress); Postgres P1–P10, P12, P14, P16 (`claude/audit-postgres`, in
-  progress).
-- Round 3 (queued, on main after the branches merge): H25, H26, S22.
+  sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (PR #116,
+  `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16
+  (`claude/audit-postgres`, in progress). PR #114's re-audit found a
+  critical in the new `commit-data.sh` staging logic (latches into a silent
+  no-op after a failed run) and glob pathspecs; being fixed on the branch
+  before merge.
+- Round 3 (queued, on main after the branches merge): H25, H26, S22, S23,
+  S26.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
