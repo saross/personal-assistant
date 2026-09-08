@@ -1292,10 +1292,16 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
   re-audit found nothing blocking and **PR #119 merged as 87db26b** (main
   suite 2,895 after the round-4 merges); M1 (a corpus-less merge parent
   counts as zero; an unattributable shrink fails open — unreachable today)
-  and four lows are round 3c-5, now **PR #132** (an unjudgeable merge refused,
-  the sweep marker, renames, and a real find: `| grep -q` under `pipefail`
-  could refuse a legitimate bulk-trailered archive run on a SIGPIPE race —
-  both push gates now read the text; re-audit running).
+  and four lows are round 3c-5, **PR #132, merged** (an unjudgeable merge
+  refused, the sweep marker, renames, and a real find: `| grep -q` under
+  `pipefail` returns 141 on a long message with the trailer at the top, so a
+  legitimate bulk-trailered archive run could be refused and, at the commit
+  site, reset — both push gates now read the text; the re-audit reproduced
+  all seven merge shapes and found nothing that can lose data; seven lows
+  (the source contract pins the helpers not the call sites; a gate-line
+  class arm and the sweep glob uncoupled from their writers; the loop stops
+  at the first corpus-less merge; quoted rename paths; four bounded
+  `| grep -q` remain; old markers not migrated) are round 3c-6).
 - Round 3b (`surfacing_log.py`, S22's third member, plus the eleventh
   re-audit's follow-ups L1 and L6 from PR #117) is **PR #120, merged
   69a7590**; main suite 2,372. Four fixes (bab4990 lazy log path, 01efef0
