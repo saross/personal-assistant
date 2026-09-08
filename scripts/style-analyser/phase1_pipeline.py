@@ -42,7 +42,11 @@ import json
 import re
 import statistics
 import sys
+import unicodedata
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import style_support  # noqa: E402  (after the sys.path insertion above)
 
 # ---------------------------------------------------------------------------
 # Constants — vocabulary inventories
@@ -71,8 +75,10 @@ CONCESSION_WORDS = frozenset({
 # First-person plural pronouns — matches run-1 §1.1 ledger definition.
 FIRST_PLURAL = frozenset({"we", "us", "our", "ourselves", "ours"})
 
-# Core UK / US orthography pairs — the 14 lemma pairs that make up the
+# Core UK / US orthography pairs — the 18 lemma pairs that make up the
 # run-1 §5.1 "core" total of 177:55. Listed as (uk_regex, us_regex) per pair.
+# (The comment said 14 while the list held 18: finding ST23. The list is the
+# authority; `regression_report` sums whatever is in it.)
 UK_US_CORE_PAIRS = [
     ("analyse", "analyze"),
     ("analysed", "analyzed"),
@@ -98,16 +104,29 @@ UK_US_CORE_PAIRS = [
 # Reference-list stripping pre-pass
 # ---------------------------------------------------------------------------
 
-# Match a references-section header at line start (case-insensitive). The
-# right-hand side is *not* anchored to end-of-line because pdftotext often
-# interleaves a second column on the same line as the header word in
-# two-column PDFs. The header-position guard below rejects mid-document
-# false positives like a "References | https://..." link in a metadata row.
-_REF_HEADER_RE = re.compile(
-    r"^\s*(REFERENCES\s+CITED|REFERENCES|BIBLIOGRAPHY|"
+# Match a references-section header at line start (case-insensitive).
+#
+# Finding ST15: this used to require only that a line BEGIN with one of these
+# words, anywhere in the document's last 35 %, with no end-of-line anchor and
+# no heading marker. A sentence such as "References to earlier work are given
+# throughout the report." therefore truncated the document at that sentence,
+# and every metric downstream was computed on the fragment.
+#
+# A real references header is one of two things, and both are matched here:
+#   1. a Markdown heading — `## References`, `### Works Cited`;
+#   2. a line that is JUST the header word(s), give or take a trailing colon
+#      and the second column pdftotext sometimes interleaves after a run of
+#      spaces — `REFERENCES`, `References:`, `Bibliography    Author, A.`.
+# A header word followed by ordinary running prose is no longer a header.
+_REF_LABEL = (
+    r"(?:REFERENCES\s+CITED|REFERENCES|BIBLIOGRAPHY|"
     r"WORKS\s+CITED|LITERATURE\s+CITED|"
     r"References\s+Cited|References|Bibliography|"
-    r"Works\s+Cited|Literature\s+Cited)\b",
+    r"Works\s+Cited|Literature\s+Cited)"
+)
+_REF_HEADER_RE = re.compile(
+    rf"^[ \t]*(?:\#{{1,6}}[ \t]*{_REF_LABEL}[ \t]*:?[ \t]*$"
+    rf"|{_REF_LABEL}[ \t]*:?[ \t]*(?:$|[ ]{{3,}}\S))",
     re.MULTILINE,
 )
 
@@ -289,10 +308,18 @@ def split_paragraphs(text: str) -> list[str]:
 # Lifted metrics — re-implemented under run-1 evidence discipline
 # ---------------------------------------------------------------------------
 
-def mattr_100(words: list[str], window: int = 100) -> float:
-    """Moving-window type-token ratio (Covington & McFall 2010)."""
+def mattr_100(words: list[str], window: int = 100) -> float | None:
+    """Moving-window type-token ratio (Covington & McFall 2010).
+
+    Returns ``None`` when the text is shorter than one window. Finding ST20:
+    it used to fall back to plain type-token ratio, which is a DIFFERENT and
+    strongly length-dependent statistic, and returned it under the same name
+    — so a short passage's number was silently incomparable with a corpus
+    paper's. Callers record the ``None`` (and the accompanying short-text
+    flag) rather than a number that means something else.
+    """
     if len(words) < window:
-        return round(len(set(words)) / len(words), 4) if words else 0.0
+        return None
     ttrs = [
         len(set(words[i : i + window])) / window
         for i in range(len(words) - window + 1)
@@ -301,11 +328,34 @@ def mattr_100(words: list[str], window: int = 100) -> float:
 
 
 def hapax_ratio(words: list[str]) -> float:
-    """Proportion of word types occurring exactly once in the document."""
+    """Proportion of word TYPES occurring exactly once in the document.
+
+    Finding ST5: the divisor used to be ``len(words)`` — the token count —
+    while this docstring, the plan, and `efficacy_build_reference.py` all
+    define the measure over types. On a 6-token/4-type text with 3 hapaxes
+    the old code returned 0.5 where the definition gives 0.75, and the
+    length artefact that the length-matched reference exists to correct was
+    correspondingly larger than assumed. `hapax_per_token` below keeps the
+    old quantity under an honest name.
+    """
     if not words:
         return 0.0
     counts = collections.Counter(words)
-    return round(sum(1 for c in counts.values() if c == 1) / len(words), 4)
+    hapaxes = sum(1 for c in counts.values() if c == 1)
+    return round(hapaxes / len(counts), 4)
+
+
+def hapax_per_token(words: list[str]) -> float:
+    """Hapax types per TOKEN — the quantity `hapax_ratio` used to return.
+
+    Kept, under a name that says what it is, so the pre-fix per-paper figures
+    remain reproducible and the two can be compared directly.
+    """
+    if not words:
+        return 0.0
+    counts = collections.Counter(words)
+    hapaxes = sum(1 for c in counts.values() if c == 1)
+    return round(hapaxes / len(words), 4)
 
 
 def paragraph_stats(paragraphs: list[str]) -> dict:
@@ -355,7 +405,8 @@ def spacy_features(text: str, nlp) -> dict:
     doc = nlp(text)
     pos_bigrams: collections.Counter = collections.Counter()
     depths: list[int] = []
-    passive_count = 0
+    passive_verb_count = 0
+    passive_sentences = 0
     nominalisation_count = 0
     sent_count = 0
     token_count = 0
@@ -380,21 +431,39 @@ def spacy_features(text: str, nlp) -> dict:
             sent_depths.append(d)
         depths.append(max(sent_depths) if sent_depths else 0)
 
-        # Passive: any VERB whose children include nsubjpass or auxpass.
+        # Passive. Two quantities, because they answer different questions
+        # and the old code conflated them (finding ST8): the guide's §5.1
+        # target is the FRACTION OF SENTENCES carrying a passive, which is
+        # bounded 0..1, while counting every qualifying VERB gives a ratio
+        # that can exceed 1 and is not a fraction of anything.
+        sentence_has_passive = False
         for tok in tokens:
             if tok.pos_ == "VERB":
                 child_deps = {c.dep_ for c in tok.children}
                 if "nsubjpass" in child_deps or "auxpass" in child_deps:
-                    passive_count += 1
+                    passive_verb_count += 1
+                    sentence_has_passive = True
+        if sentence_has_passive:
+            passive_sentences += 1
 
         # Nominalisation: NOUN with characteristic Latin-derived suffix.
         for tok in tokens:
             if tok.pos_ == "NOUN" and tok.lemma_.endswith(_NOMINAL_SUFFIXES):
                 nominalisation_count += 1
 
+    # Finding ST9: the nominalisation rate used to divide by spaCy's token
+    # count, which includes punctuation, while every other per-1 000-word rate
+    # in this file divides by the alphabetic `tokenize_words` count. The
+    # denominators differed by 15-20 %, so 38.6/1k was not comparable with
+    # 6.54/1k. Both rates now share one denominator.
+    n_alpha_words = len(tokenize_words(text))
     return {
-        "passive_ratio": round(passive_count / max(sent_count, 1), 4),
-        "nominalisation_per_1000w": round(nominalisation_count / max(token_count, 1) * 1000, 3),
+        "passive_ratio": round(passive_sentences / max(sent_count, 1), 4),
+        "passive_verbs_per_sentence": round(
+            passive_verb_count / max(sent_count, 1), 4),
+        "nominalisation_per_1000w": round(
+            nominalisation_count / max(n_alpha_words, 1) * 1000, 3),
+        "nominalisation_count": nominalisation_count,
         "mean_dep_depth": round(statistics.mean(depths) if depths else 0.0, 3),
         "pos_bigrams": pos_bigrams,  # raw Counter — aggregated and top-20 sliced later
     }
@@ -410,7 +479,15 @@ def spacy_features(text: str, nlp) -> dict:
 # `[^\n]` (not `\s`) so the X portion cannot span paragraph breaks — without
 # this constraint, the lazy `*?` could swallow entire sub-sections (verified
 # on 5INAFTVT/body.md: 5 of 10 sampled hits crossed paragraph breaks).
-_ANNOUNCE_COLON_RE = re.compile(r"(?<![:/\d])[A-Za-z][A-Za-z'\-]*[^\n:]*?:\s+[A-Z]")
+# Finding ST18: the leading lookbehind guards the START of the match, not the
+# colon, so "In 2019: The" was counted — exactly what
+# `validate_announce_colon.py` classifies as a URL/TIME/RATIO artefact. The
+# second lookbehind puts the guard where the decision is made. The optional
+# opening quotation mark (straight or curly) stops a quoted announcement
+# scoring zero.
+_ANNOUNCE_COLON_RE = re.compile(
+    r"(?<![:/\d])[A-Za-z][A-Za-z'\-]*[^\n:]*?(?<![0-9]):\s+[\"\u201c'\u2018]?[A-Z]"
+)
 
 
 def announcement_colons(text: str, words: list[str]) -> float:
@@ -514,8 +591,26 @@ def regression_counters(stripped_text: str, words: list[str]) -> dict:
 # Per-paper driver
 # ---------------------------------------------------------------------------
 
-def process_paper(key: str, raw_text: str, nlp) -> dict:
-    stripped, ref_method = strip_references(raw_text)
+def process_paper(key: str, raw_text: str, nlp, *,
+                  strip_refs: bool = True) -> dict:
+    """Measure one paper (or one excerpt) and return its record.
+
+    ``strip_refs=False`` for text that is already references-free — the clean
+    ``body.md`` archive, and the generated passages the efficacy experiment
+    scores. Finding ST15: the pre-pass was run over clean text too, where it
+    can only ever remove real prose.
+
+    The input is NFC-normalised first (finding ST19). Without it, a corpus
+    that mixes composed and decomposed accents — routine for an archaeology
+    corpus full of Sobotková, Çatalhöyük and Müller — counts the same word as
+    two types, which moves the type-token ratio, the hapax ratio, and every
+    word-boundary count.
+    """
+    normalised = unicodedata.normalize("NFC", raw_text)
+    if strip_refs:
+        stripped, ref_method = strip_references(normalised)
+    else:
+        stripped, ref_method = normalised, "not-attempted"
     lower = stripped.lower()
     words = tokenize_words(stripped)
     sentences = split_sentences(stripped)
@@ -533,8 +628,13 @@ def process_paper(key: str, raw_text: str, nlp) -> dict:
         "sentence_stats": sentence_stats(sentences),
         "paragraph_stats": paragraph_stats(paragraphs),
         "mattr_100": mattr_100(words),
+        # True when the text is shorter than one MATTR window, so a `null`
+        # above is "not measurable here", not "zero" (finding ST20).
+        "mattr_100_short_text": len(words) < 100,
         "hapax_ratio": hapax_ratio(words),
+        "hapax_per_token": hapax_per_token(words),
         "passive_ratio": sp_feats["passive_ratio"],
+        "passive_verbs_per_sentence": sp_feats["passive_verbs_per_sentence"],
         "nominalisation_per_1000w": sp_feats["nominalisation_per_1000w"],
         "mean_dep_depth": sp_feats["mean_dep_depth"],
         "announcement_colon_per_1k": announcement_colons(stripped, words),
@@ -552,12 +652,29 @@ def process_paper(key: str, raw_text: str, nlp) -> dict:
 # Aggregation across the 18-paper corpus
 # ---------------------------------------------------------------------------
 
+def _round_or_none(value: float | None, digits: int) -> float | None:
+    """Round ``value``, passing ``None`` (an empty corpus) straight through."""
+    return None if value is None else round(value, digits)
+
+
+def _mean_or_none(values: list[float]) -> float | None:
+    """Mean of ``values``, or ``None`` when there is nothing to average.
+
+    ``statistics.mean([])`` raises ``StatisticsError``. Every caller here is
+    summarising a corpus that may legitimately have come out empty (finding
+    STT5/C5), and an empty corpus is a diagnostic, not a crash.
+    """
+    return statistics.mean(values) if values else None
+
+
 def aggregate(per_paper: list[dict], full_text: str) -> dict:
     """Corpus-level summaries from per-paper records + the concatenated text.
 
     The concatenated ``full_text`` is the reference-stripped prose of every
     included paper joined by double newlines — it is the canonical input
     against which the regression anchors in plan §2.5 are checked.
+
+    Returns ``None`` for any mean over an empty corpus rather than raising.
     """
     words = tokenize_words(full_text)
     sentences = split_sentences(full_text)
@@ -579,14 +696,19 @@ def aggregate(per_paper: list[dict], full_text: str) -> dict:
         "paragraph_stats": paragraph_stats(paragraphs),
         "mattr_100": mattr_100(words),
         "hapax_ratio": hapax_ratio(words),
-        "passive_ratio_mean_of_papers": round(
-            statistics.mean(r["passive_ratio"] for r in per_paper), 4
+        "passive_ratio_mean_of_papers": _round_or_none(
+            _mean_or_none([r["passive_ratio"] for r in per_paper]), 4
         ),
-        "nominalisation_per_1000w_mean_of_papers": round(
-            statistics.mean(r["nominalisation_per_1000w"] for r in per_paper), 3
+        "passive_verbs_per_sentence_mean_of_papers": _round_or_none(
+            _mean_or_none([r["passive_verbs_per_sentence"]
+                           for r in per_paper]), 4
         ),
-        "mean_dep_depth_mean_of_papers": round(
-            statistics.mean(r["mean_dep_depth"] for r in per_paper), 3
+        "nominalisation_per_1000w_mean_of_papers": _round_or_none(
+            _mean_or_none([r["nominalisation_per_1000w"]
+                           for r in per_paper]), 3
+        ),
+        "mean_dep_depth_mean_of_papers": _round_or_none(
+            _mean_or_none([r["mean_dep_depth"] for r in per_paper]), 3
         ),
         "announcement_colon_per_1k": announcement_colons(full_text, words),
         "hedge_per_100w": hedge_density(words, full_text.lower()),
@@ -676,26 +798,44 @@ def load_manifest(manifest_path: Path) -> list[dict]:
         return json.load(f)
 
 
+#: "excluded" as a word of its own, and the negations that cancel it.
+_EXCLUDE_WORD_RE = re.compile(r"\bexcluded?\b", re.IGNORECASE)
+_NOT_EXCLUDED_RE = re.compile(r"\b(?:not|never|no longer)\s+excluded?\b",
+                              re.IGNORECASE)
+
+
 def included_keys(manifest: list[dict]) -> list[str]:
     """Return the list of paper keys to process.
 
-    A manifest entry is excluded if its ``extraction_notes`` field
-    case-insensitively contains "EXCLUDED" or "exclude". Entries that lack a
-    ``key`` field are silently skipped — they cannot be referenced by any
-    other part of the pipeline.
+    A manifest entry is excluded if its ``extraction_notes`` field carries
+    "exclude"/"excluded" AS A WHOLE WORD, or if the entry sets an explicit
+    ``excluded`` boolean. Finding ST21: the test was a bare substring match,
+    so a note reading "not excluded" or "excludes nothing" dropped the paper
+    from the corpus. Entries that lack a ``key`` field are silently skipped —
+    they cannot be referenced by any other part of the pipeline.
     """
     excluded = set()
     for entry in manifest:
         key = entry.get("key")
         if not key:
             continue
+        flag = entry.get("excluded")
+        if isinstance(flag, bool):
+            if flag:
+                excluded.add(key)
+            continue
         notes = (entry.get("extraction_notes") or "").lower()
-        if "exclude" in notes:
+        if _EXCLUDE_WORD_RE.search(notes) and not _NOT_EXCLUDED_RE.search(notes):
             excluded.add(key)
     return [e["key"] for e in manifest if e.get("key") and e["key"] not in excluded]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Measure the corpus and write the phase 1 results file.
+
+    Returns 0 when every regression anchor is within tolerance, 1 when one is
+    not, and 2 when no paper could be read at all.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--corpus-dir", required=True, type=Path,
@@ -717,7 +857,12 @@ def main() -> int:
         default="en_core_web_sm",
         help="spaCy model name; pin to en_core_web_sm 3.8.0 per plan D3",
     )
-    args = ap.parse_args()
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="measure and report, but write no results file",
+    )
+    args = ap.parse_args(argv)
 
     import spacy
 
@@ -750,13 +895,18 @@ def main() -> int:
             print(f"  MISSING: {txt_path}", file=sys.stderr)
             continue
         raw = txt_path.read_text(encoding="utf-8", errors="replace")
-        rec = process_paper(key, raw, nlp)
+        rec = process_paper(key, raw, nlp, strip_refs=not args.clean_corpus)
         per_paper.append(rec)
-        # With --clean-corpus, the body.md is already references-free so
-        # strip_references is a no-op. We still run it to keep the
-        # aggregate-stream construction identical between the two modes.
-        stripped, _method = strip_references(raw)
-        stripped_streams.append(stripped)
+        # The aggregate stream must be exactly the text the per-paper records
+        # were measured on. With --clean-corpus the body.md is already
+        # references-free, so the pre-pass is skipped here too: running it
+        # over clean text could only remove real prose (finding ST15).
+        normalised = unicodedata.normalize("NFC", raw)
+        if args.clean_corpus:
+            stripped_streams.append(normalised)
+        else:
+            stripped, _method = strip_references(normalised)
+            stripped_streams.append(stripped)
         print(
             f"  {key}: ref_strip={rec['ref_strip_method']} "
             f"n_words={rec['n_words']} "
@@ -765,6 +915,18 @@ def main() -> int:
             f"nom/1k={rec['nominalisation_per_1000w']}",
             file=sys.stderr,
         )
+
+    if not per_paper:
+        # Finding STT5/C5: `aggregate([])` used to raise StatisticsError deep
+        # inside a mean, which reads like a bug in the pipeline rather than
+        # what it is — a corpus directory with nothing readable in it.
+        print(
+            f"\nNo papers could be read from {args.corpus_dir} "
+            f"({len(keys)} key(s) in the manifest). Nothing was measured; "
+            "check --corpus-dir and --clean-corpus.",
+            file=sys.stderr,
+        )
+        return 2
 
     full_text = "\n\n".join(stripped_streams)
     agg = aggregate(per_paper, full_text)
@@ -783,11 +945,20 @@ def main() -> int:
             "hedge_per_100w": agg["hedge_per_100w"],
             "concession_rate": agg["concession_rate"],
         },
+        # Which code, which manifest, and which model produced these numbers.
+        "provenance": style_support.provenance_block(
+            Path(__file__).name, [args.manifest],
+            spacy_model=args.spacy_model,
+            extra={"spacy_model_version": nlp.meta.get("version"),
+                   "clean_corpus": bool(args.clean_corpus)},
+        ),
     }
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(output, indent=2))
-    print(f"\nWrote {args.output}", file=sys.stderr)
+    wrote = style_support.atomic_write_json(args.output, output,
+                                            dry_run=args.dry_run)
+    print(f"\nWrote {args.output}" if wrote
+          else f"\n--dry-run: nothing written to {args.output}",
+          file=sys.stderr)
 
     fails = [r for r in regression if not r["pass"]]
     if fails:
