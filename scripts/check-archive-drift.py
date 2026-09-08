@@ -21,10 +21,15 @@ What it compares, per machine:
 
 Design constraints, learned from the 2026-07-28 diagnosis (§7b/§9.5):
 
-  * Substantive sessions only. Sessions below a distilled-content floor
-    (~1,000 tokens of conversational prose) are skipped by design — 71
-    such sessions were deliberately left un-archived on 2026-07-28, and a
-    check that re-flags them forever trains the reader to ignore it.
+  * Substantive sessions only, on ONE definition. Sessions below the
+    conversational-prose floor (~1,000 tokens, 4,000 characters) are
+    skipped by design — 71 such sessions were deliberately left
+    un-archived on 2026-07-28, and a check that re-flags them forever
+    trains the reader to ignore it. The predicate lives in
+    ``scripts/_archive_substance.py`` and is shared with
+    ``bulk-archive.py``, so the remediation command printed below archives
+    exactly what this check reports; before 2026-09-08 the two disagreed
+    and the gate could never be cleared (audit finding AR1).
   * Union of machines. This check reads only the LOCAL raw store; the
     archive mirror is corpus-wide. Running it on every machine (it rides
     daily-sync.sh) covers the union — on 2026-07-28 a single-machine check
@@ -51,64 +56,37 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+# The substantive-session predicate is shared with bulk-archive.py so that the
+# remediation command below archives exactly what this gate reports. See
+# scripts/_archive_substance.py for why that has to be one definition.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _archive_substance import (  # noqa: E402
+    GRACE_HOURS,
+    MIN_CONTENT_CHARS,
+    is_substantive,
+    within_grace,
+)
 
 RAW_ROOT = Path.home() / ".claude" / "projects"
 ARCHIVE_ROOT = Path.home() / "cc-archives"
 GATE_FILE = Path.home() / ".cache" / "cc-archive-drift-gate"
 
-# ~1,000 tokens of conversational prose, approximated as chars/4. Matches
-# the --min-content-tokens floor bulk-archive.py adopted on 2026-07-28
-# (turn count is NOT a substance proxy — a 205k-token session can be two
-# turns).
-MIN_CONTENT_CHARS = 4_000
-GRACE_HOURS = 48
+#: The exact command whose DEFAULTS archive the sessions this gate reports.
+#: Naming a command with different defaults is what made the gate permanent
+#: before 2026-09-08 (audit finding AR1).
+REMEDIATION_COMMAND = (
+    "venv/bin/python3 scripts/bulk-archive.py discover && "
+    "venv/bin/python3 scripts/bulk-archive.py archive"
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("check-archive-drift")
-
-
-def raw_session_content_chars(path: Path, threshold: int) -> int:
-    """Approximate distilled conversational content, stopping at threshold.
-
-    Counts characters of user/assistant prose (string content and `text`
-    blocks), ignoring tool traffic, thinking, and machine-injected records
-    — the same notion of substance the archiver's floor uses. Streams the
-    file and returns early once the threshold is crossed, so the common
-    (clearly substantive) case costs almost nothing.
-    """
-    total = 0
-    try:
-        with open(path, "rt", errors="replace", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if record.get("type") not in ("user", "assistant"):
-                    continue
-                if record.get("isMeta") or record.get("isCompactSummary"):
-                    continue
-                message = record.get("message")
-                if not isinstance(message, dict):
-                    continue
-                content = message.get("content")
-                if isinstance(content, str):
-                    total += len(content)
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            total += len(block.get("text") or "")
-                if total >= threshold:
-                    return total
-    except OSError:
-        return 0
-    return total
 
 
 def is_agent_transcript(path: Path) -> bool:
@@ -127,10 +105,10 @@ def collect_raw_sessions() -> tuple[dict[str, Path], int, int]:
         for jsonl in project_dir.glob("*.jsonl"):
             if is_agent_transcript(jsonl):
                 continue
-            if now - jsonl.stat().st_mtime < GRACE_HOURS * 3600:
+            if within_grace(jsonl, now=now):
                 grace += 1
                 continue
-            if raw_session_content_chars(jsonl, MIN_CONTENT_CHARS) < MIN_CONTENT_CHARS:
+            if not is_substantive(jsonl, MIN_CONTENT_CHARS):
                 trivial += 1
                 continue
             sessions[jsonl.stem] = jsonl
@@ -153,6 +131,29 @@ def collect_archived_ids() -> tuple[set[str], int]:
             seen_twice += 1
         ids.add(sid)
     return ids, seen_twice
+
+
+def _write_gate_atomically(text: str) -> None:
+    """Write the gate file via a temporary file and an atomic rename.
+
+    ``daily-sync-trigger.sh`` reads this file at SessionStart, and a plain
+    ``write_text`` leaves a window in which the reader sees a truncated or
+    half-written gate — reporting a fabricated count, or none at all (audit
+    2026-09-08, finding AR23). ``os.replace`` within the same directory is
+    atomic, so a reader sees either the old gate or the new one.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(GATE_FILE.parent), prefix=GATE_FILE.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, GATE_FILE)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -178,15 +179,18 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(f"{sid}  ({path.parent.name})")
     if len(missing) > 20:
         lines.append(f"... +{len(missing) - 20} more")
-    GATE_FILE.write_text("\n".join(lines) + "\n")
+    _write_gate_atomically("\n".join(lines) + "\n")
 
     if missing:
         logger.warning("ARCHIVE DRIFT: %d substantive raw session(s) on this "
                        "machine have NO archive entry:", len(missing))
         for sid, path in sorted(missing.items()):
             logger.warning("  %s  (%s)", sid, path.parent.name)
-        logger.warning("Archive them with scripts/bulk-archive.py (raw-first; "
-                       "see transcript-archive-diagnosis-2026-07-28.md §9).")
+        logger.warning(
+            "Archive them (raw-first; see "
+            "transcript-archive-diagnosis-2026-07-28.md §9) with:\n    %s",
+            REMEDIATION_COMMAND,
+        )
         return 1
 
     if not args.quiet_if_clean:

@@ -40,6 +40,16 @@ from typing import Any
 # machine, so the variable name carries a host suffix.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _openai_key import resolve_openai_key  # noqa: E402
+# The ONE substantive-session predicate, shared with check-archive-drift.py so
+# that the drift gate's remediation command archives exactly what it reported
+# (audit 2026-09-08, finding AR1). See scripts/_archive_substance.py.
+from _archive_substance import (  # noqa: E402
+    GRACE_HOURS,
+    MIN_CONTENT_CHARS,
+    is_substantive,
+    session_content_chars,
+    within_grace,
+)
 
 # ============================================================================
 # Configuration
@@ -70,12 +80,14 @@ TERRA_INPUT_PRICE_PER_MTOK = 2.50
 TERRA_OUTPUT_PRICE_PER_MTOK = 15.00
 TERRA_FLEX_DISCOUNT = 0.50
 
-# Distilled-token floor below which a session carries no metadata worth
-# generating. Sessions under this are `/clear`- or `/exit`-only invocations,
-# aborted starts, or two-turn trivia: verified by inspection 2026-07-28, where
-# a recurring *exact* 64-token extract turned out to be the local-command
-# caveat boilerplate and nothing else. Mirrors `resample-bake-off-manifest.py`.
-MIN_CONTENT_TOKENS = 1_000
+# Substance floor below which a session carries no metadata worth generating.
+# Sessions under it are `/clear`- or `/exit`-only invocations, aborted starts,
+# or two-turn trivia: verified by inspection 2026-07-28, where a recurring
+# *exact* 64-token extract turned out to be the local-command caveat
+# boilerplate and nothing else. This is now the SAME floor discovery and the
+# drift gate use — `MIN_CONTENT_CHARS` from `_archive_substance`, quoted in
+# tokens here because the enrich help text and cost projections speak tokens.
+MIN_CONTENT_TOKENS = MIN_CONTENT_CHARS // 4
 
 # Estimated tokens per lightweight enrichment request.
 # Based on progressive-disclosure-plan.md: ~12M tokens total / 603 sessions.
@@ -428,6 +440,7 @@ def discover_sessions(
     logger: logging.Logger,
     source_pairs: list[tuple[str, Path]] | None = None,
     min_content_tokens: int = 0,
+    min_content_chars: int = MIN_CONTENT_CHARS,
 ) -> list[dict[str, Any]]:
     """
     Scan for unarchived sessions, filter trivials, build a manifest.
@@ -436,24 +449,35 @@ def discover_sessions(
     :func:`archived_session_ids_on_disk`) rather than from CATALOG.json, and
     against itself when the same session exists on more than one machine.
 
-    **Triviality test.** When ``min_content_tokens`` is positive, a session is
-    trivial if its *distilled transcript* falls below that many tokens;
-    otherwise the legacy turn-count test (``min_turns``) applies. Prefer the
-    token test. Measured on the 2026-07-28 backfill set, ``min_turns=5``
-    discarded 56 of 77 substantive sessions — including a 205,848-token
-    session that happened to have **two** turns, and 16 others above 50,000
-    tokens. Turn count is a poor proxy for substance because one long
-    analytical exchange is a single turn, so the turn test silently drops
-    exactly the sessions whose metadata is most worth having.
+    **Triviality test.** The default is the shared substance predicate
+    (``_archive_substance.is_substantive``: at least ``min_content_chars``
+    characters of user/assistant prose), which is the *same* rule
+    ``check-archive-drift.py`` reports on. That agreement is the whole point:
+    before 2026-09-08 discovery filtered on turn count while the gate filtered
+    on prose, so the gate reported sessions that the command it recommended
+    then refused to archive, and no run could ever clear it (audit AR1).
+
+    Two legacy filters remain available, both off unless asked for.
+    ``min_content_tokens`` measures the *distilled* transcript through the
+    toolkit's extractor; ``min_turns`` counts turns. Turn count is a poor
+    proxy for substance — measured on the 2026-07-28 backfill set,
+    ``min_turns=5`` discarded 56 of 77 substantive sessions, including a
+    205,848-token session that happened to have **two** turns — which is why
+    it is no longer the default.
 
     Returns:
         List of session manifest entries, sorted by project then session ID.
     """
-    distilled_tokens = _make_token_counter(logger) if min_content_tokens else None
-    # Add cc-session-toolkit to path for imports
+    # Add cc-session-toolkit to path BEFORE building the token counter: the
+    # counter importlib-loads extract-transcript-text.py, which imports
+    # cc_session_toolkit at module scope, so building it first made
+    # ``--min-content-tokens`` — the preferred floor — die with "No module
+    # named cc_session_toolkit" (audit 2026-09-08, finding AR15).
     toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
     if str(toolkit_src) not in sys.path:
         sys.path.insert(0, str(toolkit_src))
+
+    distilled_tokens = _make_token_counter(logger) if min_content_tokens else None
 
     from cc_session_toolkit.archive import (
         extract_session_stats,
@@ -526,13 +550,25 @@ def discover_sessions(
                 )
                 continue
 
+            # The shared substance predicate — the default filter, and the
+            # one the drift gate agrees with.
+            content_chars = 0
+            if min_content_chars > 0:
+                content_chars = session_content_chars(
+                    jsonl_file, threshold=min_content_chars
+                )
+                if content_chars < min_content_chars:
+                    total_skipped_trivial += 1
+                    continue
+
+            # Legacy filters, applied only when explicitly requested.
             content_tokens = 0
             if distilled_tokens is not None:
                 content_tokens = distilled_tokens(jsonl_file)
                 if content_tokens < min_content_tokens:
                     total_skipped_trivial += 1
                     continue
-            elif is_trivial_session(stats, min_turns=min_turns):
+            elif min_turns > 0 and is_trivial_session(stats, min_turns=min_turns):
                 total_skipped_trivial += 1
                 continue
 
@@ -568,6 +604,7 @@ def discover_sessions(
                 "subagent_dir": str(subagent_dir) if subagent_count > 0 else None,
                 "source_machine": _source_machine_of(jsonl_file),
                 "content_tokens": content_tokens,
+                "content_chars": content_chars,
             }
 
             # Same session on a second machine: keep the larger transcript.
@@ -608,6 +645,7 @@ def cmd_discover(args: argparse.Namespace, logger: logging.Logger) -> None:
     manifest = discover_sessions(
         project_mapping, args.min_turns, logger, source_pairs,
         min_content_tokens=getattr(args, "min_content_tokens", 0),
+        min_content_chars=getattr(args, "min_content_chars", MIN_CONTENT_CHARS),
     )
 
     # Save manifest
@@ -1016,7 +1054,11 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         source_pairs = iter_source_project_dirs(source_root, logger)
         project_mapping = resolve_project_mapping(logger, source_pairs)
         manifest = discover_sessions(
-            project_mapping, args.min_turns, logger, source_pairs
+            project_mapping, args.min_turns, logger, source_pairs,
+            min_content_tokens=getattr(args, "min_content_tokens", 0),
+            min_content_chars=getattr(
+                args, "min_content_chars", MIN_CONTENT_CHARS
+            ),
         )
         MANIFEST_FILE.write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
@@ -1534,18 +1576,23 @@ def _enrich_terra(
                 tmp_path.write_bytes(f_in.read())
             text = _distil_to_text(tmp_path, logger)
             tokens = distilled(tmp_path)
+            # The shared substance predicate, measured on the decompressed
+            # transcript — the SAME rule discovery and the drift gate use, so
+            # nothing can be archived that enrichment then declines to
+            # summarise for a different reason (audit AR1).
+            substantive = is_substantive(tmp_path, MIN_CONTENT_CHARS)
         finally:
             tmp_path.unlink(missing_ok=True)
 
-        if tokens < MIN_CONTENT_TOKENS:
+        if not substantive:
             skipped_thin += 1
             continue
         jobs.append((archive_dir, meta, text, tokens))
 
     if skipped_thin:
         logger.info(
-            "Skipped %d entries below the %d-token substance floor",
-            skipped_thin, MIN_CONTENT_TOKENS,
+            "Skipped %d entries below the %d-character substance floor",
+            skipped_thin, MIN_CONTENT_CHARS,
         )
     if args.limit and args.limit > 0:
         jobs = jobs[:args.limit]
@@ -2283,17 +2330,30 @@ def main() -> None:
         "discover", help="Scan for unarchived sessions"
     )
     p_discover.add_argument(
-        "--min-turns", type=int, default=5,
-        help="Minimum turns to keep (default: 5)",
+        "--min-content-chars", type=int, default=MIN_CONTENT_CHARS,
+        help=(
+            "Substance floor, in characters of user/assistant prose "
+            f"(default: {MIN_CONTENT_CHARS}; 0 disables). This is the DEFAULT "
+            "filter and the same rule check-archive-drift.py reports on, so "
+            "running this command with its defaults archives exactly what the "
+            "drift gate listed."
+        ),
+    )
+    p_discover.add_argument(
+        "--min-turns", type=int, default=0,
+        help=(
+            "Legacy turn-count filter (default: 0 = off). Turn count is a bad "
+            "substance proxy: at --min-turns 5 it discarded 56 of 77 "
+            "substantive sessions on 2026-07-28, including a 205,848-token "
+            "session with two turns."
+        ),
     )
     p_discover.add_argument(
         "--min-content-tokens", type=int, default=0,
         help=(
-            "Keep sessions whose DISTILLED transcript is at least N tokens, "
-            "instead of filtering on turn count. Strongly preferred: "
-            f"--min-content-tokens {MIN_CONTENT_TOKENS} is the vetted floor. "
-            "The turn-count default discards long single-exchange sessions "
-            "(measured: 56 of 77 substantive sessions lost at --min-turns 5)."
+            "Legacy filter on the DISTILLED transcript, in tokens "
+            "(default: 0 = off). Applied in addition to --min-content-chars. "
+            f"The vetted equivalent floor is {MIN_CONTENT_TOKENS} tokens."
         ),
     )
     p_discover.add_argument(
@@ -2317,8 +2377,12 @@ def main() -> None:
         help="Archive at most N sessions (0 = all)",
     )
     p_archive.add_argument(
-        "--min-turns", type=int, default=5,
-        help="Minimum turns for discovery fallback (default: 5)",
+        "--min-turns", type=int, default=0,
+        help="Legacy turn filter for the discovery fallback (0 = off).",
+    )
+    p_archive.add_argument(
+        "--min-content-chars", type=int, default=MIN_CONTENT_CHARS,
+        help="As for `discover` (used only by the discovery fallback).",
     )
     p_archive.add_argument(
         "--source-root", type=Path, default=CLAUDE_PROJECTS_DIR,
