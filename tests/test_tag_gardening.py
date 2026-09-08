@@ -1541,3 +1541,92 @@ class TestMergeDurabilityAndLog:
         assert parsed.tzinfo is not None
         assert parsed.utcoffset() == timedelta(0)
         assert rest.startswith("1 groups, 1 memories, 1 replacements")
+
+
+# -------------------------------------------------------------------------
+# Merge preservation (audit 2026-09-08, finding B5)
+# -------------------------------------------------------------------------
+
+
+class TestMergePreservesEverythingElse:
+    """What a merge must leave exactly as it found it."""
+
+    def test_malformed_and_blank_lines_survive_verbatim(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """A line the merge cannot parse is written back byte for byte.
+
+        Kills the mutation that drops ``lines.append(line)`` from the
+        ``JSONDecodeError`` branch: the malformed line would be deleted from
+        the canonical, shrinking the corpus behind the sync cursor.
+        archive-memories has the equivalent test; the merge had none.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        jsonl.write_text(
+            json.dumps({"id": "mem-401", "content": "Tagged.",
+                        "research_tags": ["pipelines"]}) + "\n"
+            + "\n"
+            + "{truncated record, no closing brace\n"
+            + json.dumps({"id": "mem-402", "content": "Untagged."}) + "\n",
+            encoding="utf-8",
+        )
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        lines = jsonl.read_text(encoding="utf-8").split("\n")[:-1]
+        assert len(lines) == 4, "the merge changed the corpus line count"
+        assert lines[1] == "", "the blank line was not preserved"
+        assert lines[2] == "{truncated record, no closing brace"
+
+    def test_untouched_records_are_byte_identical(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """A record with no retired tag is not re-serialised.
+
+        Kills a mutation that re-dumps every record: key order, spacing, and
+        any field the merge does not understand would silently change, and
+        the diff would name every line in the corpus.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        # Deliberately non-canonical spacing and key order: a re-dump would
+        # normalise both.
+        untouched = '{"content":"Left alone.",  "id":"mem-403", "research_tags":["api"]}'
+        jsonl.write_text(
+            json.dumps({"id": "mem-404", "content": "Rewritten.",
+                        "research_tags": ["pipelines"]}) + "\n"
+            + untouched + "\n",
+            encoding="utf-8",
+        )
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        lines = jsonl.read_text(encoding="utf-8").split("\n")[:-1]
+        assert lines[1] == untouched, "an untouched record was re-serialised"
