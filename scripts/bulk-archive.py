@@ -2589,6 +2589,18 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
 
         if transcript is None:
             issues.append(f"Missing JSONL: {archive_dir}")
+        elif transcript.name == "session.jsonl":
+            # `session.jsonl.gz` is the canonical storage form (decided
+            # 2026-08-22). An entry still holding raw JSONL is not searchable:
+            # `_scan_archives.py` — the engine behind search-archives-safe.sh
+            # — globs only `session.jsonl.gz`, so a raw-only entry is
+            # invisible to every ad-hoc search while verify called it fine
+            # (audit 2026-09-08, finding AR21). Report it; the repair is
+            # `scripts/normalise-archive-storage.py --apply`.
+            issues.append(
+                f"Non-canonical storage (raw session.jsonl, not searchable): "
+                f"{archive_dir}"
+            )
 
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))

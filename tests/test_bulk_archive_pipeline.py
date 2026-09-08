@@ -718,3 +718,44 @@ class TestTokenCounterOrdering:
             "the distilled-token counter was built before cc_session_toolkit "
             "was importable; --min-content-tokens cannot run"
         )
+
+
+# ---------------------------------------------------------------------------
+# AR21 — verify and the search engine must agree on what an archive is
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalStorageIsEnforcedByVerify:
+    """A raw-only entry is invisible to every ad-hoc search.
+
+    ``_scan_archives.py`` globs only ``session.jsonl.gz``, because gz is the
+    canonical storage form (decided 2026-08-22). verify accepted a raw
+    ``session.jsonl`` as equally fine, so an entry nobody could search
+    reported clean forever.
+    """
+
+    def test_a_raw_only_entry_is_reported(
+        self, pipeline: Pipeline, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        entry = make_archive_entry(
+            pipeline.archive_root, SID_A, with_transcript=False
+        )
+        (entry / "session.jsonl").write_text(
+            '{"type": "user", "message": {"role": "user", "content": "hi"}}\n',
+            encoding="utf-8",
+        )
+
+        pipeline.verify()
+
+        report = capsys.readouterr().out
+        assert "Non-canonical storage" in report
+        assert str(entry) in report
+
+    def test_a_gz_entry_is_not_reported(
+        self, pipeline: Pipeline, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        make_archive_entry(pipeline.archive_root, SID_A)
+
+        pipeline.verify()
+
+        assert "Non-canonical storage" not in capsys.readouterr().out
