@@ -332,7 +332,12 @@ def _pg_records(ids: list[str]) -> tuple[list[str], list[str]]:
             if row.get("decayed_at") is not None:
                 record["decayed_at"] = row["decayed_at"]
             soft_deleted.append(row["id"])
-        lines.append(json.dumps(record, ensure_ascii=False))
+        # ``ensure_ascii`` defaults to True, exactly as the extraction hook
+        # serialises (and as every bulk rewriter does since audit round 4a,
+        # finding A1). Writing with ensure_ascii=False would UN-escape a
+        # U+2028/U+2029/U+0085 inside the recovered content, planting a real
+        # line separator in the canonical for the next reader to split on.
+        lines.append(json.dumps(record))
     lines.sort(key=lambda line: (json.loads(line)["created_at"], json.loads(line)["id"]))
     return lines, soft_deleted
 
