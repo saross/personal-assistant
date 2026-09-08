@@ -146,7 +146,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  WARNING: no body.md for {key}", file=sys.stderr)
             continue
         text = body.read_text(encoding="utf-8", errors="replace")
-        stripped, _method = p1.strip_references(text)
+        # body.md is the references-free half of the clean extraction, so the
+        # pre-pass has nothing to remove here and can only take real prose
+        # (ST15, relocated: the same defect one directory along). The variable
+        # keeps its name because everything below reads "the text we measure".
+        stripped = text
         cite_free = strip_citations(stripped)
         semi_incl += stripped.count(";")
         words_incl += len(stripped.split())

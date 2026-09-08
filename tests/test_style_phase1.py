@@ -405,3 +405,52 @@ def test_the_aggregate_survives_a_corpus_of_no_papers():
 
     assert agg["n_papers"] == 0
     assert agg["passive_ratio_mean_of_papers"] is None
+
+
+# ---------------------------------------------------------------------------
+# Re-audit item 13 — the header match is genuinely case-insensitive, and
+# survives CRLF
+# ---------------------------------------------------------------------------
+
+def test_a_lower_case_references_heading_is_recognised():
+    """The comment claimed case-insensitivity the pattern did not have.
+
+    The mutation this kills: dropping ``re.IGNORECASE`` and listing the
+    spellings by hand again, which misses `references`, `ReFerences`, and the
+    small-caps renderings PDF extractors produce.
+    """
+    text = SAMPLE.replace("References\n", "references\n")
+
+    assert p1.strip_references(text)[1] == "header"
+
+
+def test_a_crlf_document_still_finds_its_references_heading():
+    """`$` matches before the newline but AFTER the carriage return.
+
+    A Windows-authored extraction therefore matched no header at all, and the
+    whole bibliography counted as prose. The mutation this kills: removing
+    ``\\r?`` from the two end-of-line anchors.
+    """
+    text = SAMPLE.replace("\n", "\r\n")
+
+    stripped, method = p1.strip_references(text)
+
+    assert method == "header"
+    assert "Journal of Nowhere" not in stripped
+
+
+def test_the_published_hapax_key_carries_the_type_based_value():
+    """`hapax_ratio` in the record must be the TYPES measure, not per token.
+
+    Both are emitted, so swapping which one lands under the published key is
+    invisible unless the values are pinned apart. The mutation this kills:
+    ``"hapax_ratio": hapax_per_token(words)`` in ``process_paper``.
+    """
+    record = p1.process_paper("AAAA1111", SAMPLE, _fake_nlp())
+    words = p1.tokenize_words(p1.strip_references(SAMPLE)[0])
+
+    assert record["hapax_ratio"] == p1.hapax_ratio(words)
+    assert record["hapax_per_token"] == p1.hapax_per_token(words)
+    # The two measures differ on this fixture, so the assertion above is not
+    # satisfied by an accidental equality.
+    assert record["hapax_ratio"] != record["hapax_per_token"]

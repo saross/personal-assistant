@@ -118,16 +118,25 @@ UK_US_CORE_PAIRS = [
 #      and the second column pdftotext sometimes interleaves after a run of
 #      spaces — `REFERENCES`, `References:`, `Bibliography    Author, A.`.
 # A header word followed by ordinary running prose is no longer a header.
+#
+# The comment above has said "case-insensitive" since the file was written,
+# but the pattern listed the ALL-CAPS and Title-Case spellings by hand and so
+# missed every other one — `references`, `ReFerences`, and the small-caps
+# renderings PDF extractors produce. It carries re.IGNORECASE now, and the
+# alternation is one list rather than two.
+#
+# `\r?$` rather than `$`: a CRLF file (a Windows-authored extraction, or one
+# round-tripped through a Windows editor) leaves a carriage return before the
+# newline, and `$` in MULTILINE mode matches before the \n but AFTER the \r —
+# so every header in such a file failed to match at all.
 _REF_LABEL = (
-    r"(?:REFERENCES\s+CITED|REFERENCES|BIBLIOGRAPHY|"
-    r"WORKS\s+CITED|LITERATURE\s+CITED|"
-    r"References\s+Cited|References|Bibliography|"
-    r"Works\s+Cited|Literature\s+Cited)"
+    r"(?:REFERENCES\s+CITED|WORKS\s+CITED|LITERATURE\s+CITED|"
+    r"REFERENCES|BIBLIOGRAPHY)"
 )
 _REF_HEADER_RE = re.compile(
-    rf"^[ \t]*(?:\#{{1,6}}[ \t]*{_REF_LABEL}[ \t]*:?[ \t]*$"
-    rf"|{_REF_LABEL}[ \t]*:?[ \t]*(?:$|[ ]{{3,}}\S))",
-    re.MULTILINE,
+    rf"^[ \t]*(?:\#{{1,6}}[ \t]*{_REF_LABEL}[ \t]*:?[ \t]*\r?$"
+    rf"|{_REF_LABEL}[ \t]*:?[ \t]*(?:\r?$|[ ]{{3,}}\S))",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 # Only accept a header positioned in the last `HEADER_TAIL_FRACTION` of the
