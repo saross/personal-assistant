@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -57,6 +58,23 @@ def rebuild_mod():
     sys.modules["rebuild_postgres"] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def pinned_log_dir(rebuild_mod, tmp_path, monkeypatch):
+    """Keep every ``rebuild.log`` write inside this test's tmp directory.
+
+    These tests call ``setup_logging()`` directly, and the log path used
+    to be hard-coded to ``<repo>/logs``. Running the suite therefore
+    appended fabricated operator lines — including an "[ERROR] … PARTIAL
+    REBUILD" — to the real audit trail, where nothing distinguishes them
+    from a genuine failed rebuild. Autouse so no future test can forget.
+    """
+    log_dir = tmp_path / "pinned-logs"
+    monkeypatch.setattr(rebuild_mod, "LOG_DIR", log_dir)
+    yield log_dir
+    # Release the file handle so the tmp directory can be torn down.
+    logging.getLogger("rebuild-postgres").handlers.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -567,3 +585,68 @@ def test_cursor_keys_match_live_sync_scripts(rebuild_mod):
         f"{sorted(missing)}. Either add them to the catalogue or "
         f"document why they should not be reset on rebuild."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test hygiene — the suite must not write to the repository's real logs
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingStaysInsideTmp:
+    """
+    A test that reaches real state is a defect in the test, not a
+    detail. ``setup_logging`` wrote to ``<repo>/logs/rebuild.log``
+    unconditionally, so every suite run appended lines an operator
+    reading the audit trail would take for a real rebuild — including a
+    "PARTIAL REBUILD" error from the stop-on-first-error test.
+    """
+
+    def test_log_file_lands_in_the_pinned_directory(
+        self, rebuild_mod, pinned_log_dir,
+    ):
+        """The handler writes where the fixture points it, not at the repo."""
+        logger = rebuild_mod.setup_logging()
+        logger.info("a line that must not reach the real log")
+
+        written = pinned_log_dir / "rebuild.log"
+        assert written.exists()
+        assert "must not reach the real log" in written.read_text(
+            encoding="utf-8",
+        )
+
+    def test_nothing_is_written_to_the_repository_log(
+        self, rebuild_mod, pinned_log_dir,
+    ):
+        """
+        The consequence, asserted directly: running a rebuild through
+        the same path the other tests use leaves the repository's own
+        ``logs/rebuild.log`` byte-for-byte unchanged. The mutation this
+        kills: hard-coding ``LOG_DIR / "rebuild.log"`` in
+        ``setup_logging`` again.
+        """
+        real_log = rebuild_mod.PA_DIR / "logs" / "rebuild.log"
+        before = real_log.read_bytes() if real_log.exists() else None
+
+        logger = rebuild_mod.setup_logging()
+        conn, _cur = _build_fake_conn()
+        rebuild_mod.perform_rebuild(
+            rebuild_mod.build_reset_targets(),
+            logger,
+            cursor_file=pinned_log_dir / "sync-cursors.json",
+            open_conn=lambda _logger: conn,
+        )
+
+        after = real_log.read_bytes() if real_log.exists() else None
+        assert after == before, (
+            "the test suite wrote to the repository's real rebuild.log"
+        )
+        assert (pinned_log_dir / "rebuild.log").exists()
+
+    def test_explicit_log_dir_argument_is_honoured(
+        self, rebuild_mod, tmp_path,
+    ):
+        """``setup_logging(log_dir=...)`` overrides the module default."""
+        elsewhere = tmp_path / "elsewhere"
+        logger = rebuild_mod.setup_logging(log_dir=elsewhere)
+        logger.info("explicit directory")
+        assert (elsewhere / "rebuild.log").exists()

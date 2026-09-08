@@ -201,20 +201,31 @@ def build_reset_targets() -> list[ResetTarget]:
 # ============================================================================
 
 
-def setup_logging() -> logging.Logger:
+def setup_logging(log_dir: Path | None = None) -> logging.Logger:
     """Configure logging to file and stderr.
 
     Stderr handler runs at INFO so operators see every step in their
     terminal; file handler at the same level for the audit trail.
+
+    Args:
+        log_dir: Directory to write ``rebuild.log`` into. Defaults to
+            :data:`LOG_DIR`. Injectable because the test suite calls this
+            function directly: with the path hard-coded, running the
+            suite from the main checkout appended fabricated operator
+            lines — including an "[ERROR] … PARTIAL REBUILD" — to the
+            real ``logs/rebuild.log``, where an operator reading the
+            audit trail would take them at face value. Same class as
+            audit finding S21: a test reaching real state.
     """
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_dir = LOG_DIR if log_dir is None else log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("rebuild-postgres")
     logger.setLevel(logging.INFO)
     # Idempotent setup so repeated imports (e.g. tests) do not stack
     # handlers.
     logger.handlers.clear()
 
-    log_file = LOG_DIR / "rebuild.log"
+    log_file = log_dir / "rebuild.log"
     fh = logging.FileHandler(log_file, encoding="utf-8")
     fh.setLevel(logging.INFO)
     fh.setFormatter(logging.Formatter(
