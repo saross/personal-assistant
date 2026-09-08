@@ -44,7 +44,7 @@ Total: [N] memories ([N] extraction, [N] manual)
 
 ### Most Recent (5)
 
-[category] (verified|pending|unanchored) — created_at
+[category] (verified|pending|unanchored) — created_at — id
 content (truncated to ~100 chars)
 ---
 [... 4 more ...]
@@ -71,7 +71,7 @@ content (truncated to ~100 chars)
 6. **Return** top 10 matches, formatted as:
 
 ```text
-[category] (verified|pending|unanchored) — created_at
+[category] (verified|pending|unanchored) — created_at — id
 content
 Tags: tag1, tag2, tag3
 Source: source_context
@@ -79,6 +79,10 @@ Source: source_context
 ```
 
 7. If more than 10 matches, note the total count and offer to show more
+
+Show the `id` verbatim. It is the handle `/forget` and `/update` take, and
+`commands/forget.md` names this command as where to get one; a recall that
+hides it leaves no way to retire a memory but grepping the JSONL by hand.
 
 **Verification token** (shown in parentheses, from the memory's `verified`
 field — present in the JSONL since v2): `verified` = anchors resolved;

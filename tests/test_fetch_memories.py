@@ -770,3 +770,28 @@ class TestEmptySemanticFallsBackToFts:
 
         monkeypatch.setattr(fetch_memories, "try_postgres", fail)
         fetch_memories.main()
+
+
+# ============================================================================
+# Audit R15 — the id is the /forget handle, so retrieval must print it
+# ============================================================================
+
+
+class TestFormatOutputShowsTheId:
+    """``/forget`` takes an id and names recall as where to get one."""
+
+    def test_id_appears_for_every_result(self) -> None:
+        """Kills: dropping the ``ID:`` line from format_output."""
+        memories = [
+            _make_memory(mem_id="2026-03-15-abc123"),
+            _make_memory(mem_id="2026-03-14-def456"),
+        ]
+        output = fetch_memories.format_output(memories)
+        assert "ID: 2026-03-15-abc123" in output
+        assert "ID: 2026-03-14-def456" in output
+
+    def test_missing_id_is_labelled_not_blank(self) -> None:
+        """An id-less record must not render an empty handle."""
+        mem = _make_memory()
+        del mem["id"]
+        assert "ID: (no id)" in fetch_memories.format_output([mem])

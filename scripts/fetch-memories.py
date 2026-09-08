@@ -800,9 +800,15 @@ def format_output(memories: list[dict[str, Any]]) -> str:
     """
     Format memory results as markdown for CC consumption.
 
-    Produces a structured output with full content, verification status,
-    tags, and source context for each result.  Returns a zero-results
-    message if the list is empty.
+    Produces a structured output with the memory ID, full content,
+    verification status, tags, and source context for each result.
+    Returns a zero-results message if the list is empty.
+
+    The ID is shown because it is the handle ``/forget`` and ``/update``
+    take, and ``commands/forget.md`` tells the operator to get IDs from
+    recall. Until audit R15 no retrieval path printed one, so the only way
+    to retire a memory was to grep the JSONL by hand -- while
+    ``surfaced.log`` was recording ids the operator had never seen.
     """
     count = len(memories)
 
@@ -828,7 +834,9 @@ def format_output(memories: list[dict[str, Any]]) -> str:
 
         source = mem.get("source_context") or "(no source)"
 
+        mem_id = mem.get("id") or "(no id)"
         lines.append(f"### [{i}] {category} — {created}")
+        lines.append(f"ID: {mem_id}")
         lines.append(content)
         similarity = mem.get("similarity")
         if similarity is not None:
