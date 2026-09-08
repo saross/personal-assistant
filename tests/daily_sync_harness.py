@@ -293,6 +293,10 @@ class SyncWorld:
             }
         )
         env.update(extra)
+        # A test may need to prove the script survives a hostile
+        # environment; an empty value here means "unset it".
+        for key in [k for k, v in env.items() if v == "__PA_TEST_UNSET__"]:
+            del env[key]
         return env
 
     def run_sync(

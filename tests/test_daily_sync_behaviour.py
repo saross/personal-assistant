@@ -767,6 +767,45 @@ class TestParentStashWedge:
         assert git("stash", "list", cwd=machine.pa).stdout.strip()
 
 
+class TestUnusableHomeIsNotLockContention:
+    """Every gate this script writes lives under ~/.cache, so an unset or
+    unwritable HOME must stop the run up front with exit 2 — not abort it
+    with "unbound variable" (status 1, which the trigger reports as lock
+    contention), and not kill it half-way through at a gate write, after
+    it has already committed and pushed. Second re-audit M4."""
+
+    def test_unset_home_fails_early_with_a_diagnosis(
+        self, world: SyncWorld
+    ) -> None:
+        """No commit, no push, and an exit code that means "broken"."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-m4")
+        before = world.published_data_head()
+
+        result = world.run_sync(machine, HOME="__PA_TEST_UNSET__")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "HOME is unset" in combined
+        assert world.published_data_head() == before
+
+    def test_unwritable_cache_fails_before_any_commit(
+        self, world: SyncWorld
+    ) -> None:
+        """A gate directory that cannot be written stops the run at the
+        start, not after the commits have gone out."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-m4b")
+        (world.home / ".cache").rmdir()
+        (world.home / ".cache").write_text("not a directory\n", encoding="utf-8")
+        before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "not writable" in combined
+        assert world.published_data_head() == before
+
+
 class TestBrokenCheckoutIsNotLockContention:
     """``daily-sync-trigger.sh`` maps exit 1 to "another sync is running".
     A broken checkout must therefore never exit 1 (audit S19)."""

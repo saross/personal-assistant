@@ -54,6 +54,23 @@ if ! mkdir -p "$LOG_DIR" 2>/dev/null || [[ ! -w "$LOG_DIR" ]]; then
     exit 2
 fi
 
+# audit M4: the L4 fix for an unset HOME was applied to the trigger only.
+# Here, `set -u` makes the first bare $HOME abort with "unbound variable"
+# and status 1 — which the trigger then reports as lock contention — and
+# an unwritable ~/.cache kills a HALF-COMPLETED run at a gate write, after
+# commits and pushes have already happened. Every gate this script writes
+# lives under ~/.cache, so check once, up front, and exit with the code
+# that means "something is broken" rather than "someone else is running".
+if [[ -z "${HOME:-}" ]]; then
+    echo "[daily-sync] ERROR: HOME is unset; the gate files this script writes have nowhere to go" >&2
+    exit 2
+fi
+CACHE_DIR="$HOME/.cache"
+if ! mkdir -p "$CACHE_DIR" 2>/dev/null || [[ ! -w "$CACHE_DIR" ]]; then
+    echo "[daily-sync] ERROR: $CACHE_DIR is missing or not writable; gate files cannot be written" >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # Config (data/config/sync.json) — read with safe defaults. Rollback
 # switches flip individual features without touching code.
@@ -125,7 +142,7 @@ fail() {
 # a problem count, remaining lines the detail — so it is surfaced at every
 # session start until the sync completes cleanly again.
 # ---------------------------------------------------------------------------
-SYNC_GATE="$HOME/.cache/daily-sync-gate"
+SYNC_GATE="$CACHE_DIR/daily-sync-gate"
 
 # Most gate writes are followed by `fail`, but not all: audit M1's withheld
 # pointer bump is a problem in a run that otherwise completes. Remember that
@@ -1207,7 +1224,7 @@ if [[ $DRY_RUN -eq 0 ]]; then
         # surfaces a warning at every session start while the count is
         # non-zero. This makes transcript-partial state explicit instead
         # of silent — the failure mode that hid the meta-only shells.
-        GATE_FILE="$HOME/.cache/cc-archives-gate"
+        GATE_FILE="$CACHE_DIR/cc-archives-gate"
         # audit L3: every other call in this script uses $PA_DIR; this one
         # hardcoded ~/personal-assistant, so a run from a worktree or a
         # relocated checkout would use another tree's interpreter (or none).
@@ -1301,25 +1318,31 @@ if [[ $DRY_RUN -eq 0 ]]; then
     # start — a detector that reports only into a log nobody reads is
     # indistinguishable from no detector (2026-08-20 incident; inbox row
     # "Surface drift at SESSION START").
-    MEMORY_DRIFT_GATE="$HOME/.cache/memory-drift-gate"
+    MEMORY_DRIFT_GATE="$CACHE_DIR/memory-drift-gate"
     if "$PA_DIR/venv/bin/python3" "$SCRIPT_DIR/check-memory-drift.py" \
             --quiet-if-clean >>"$LOG_FILE" 2>&1; then
         log "memory drift check: clean"
-        printf '0\n' > "$MEMORY_DRIFT_GATE"
+        # audit M4: guarded like write_sync_gate — a gate that cannot be
+        # written must not abort a run that has already committed and
+        # pushed. The log line beside it still records the state.
+        printf '0\n' > "$MEMORY_DRIFT_GATE" 2>/dev/null || \
+            log "WARNING: could not write $MEMORY_DRIFT_GATE"
     else
         rc=$?
         if [[ $rc -eq 2 ]]; then
             log "memory drift check: COULD NOT RUN (rc=2; see memory-drift.log)"
             # Unknown is not clean: surface it rather than staying silent.
             printf '1\nmemory drift check COULD NOT RUN (PostgreSQL down?) — state unknown; see logs/memory-drift.log\n' \
-                > "$MEMORY_DRIFT_GATE"
+                > "$MEMORY_DRIFT_GATE" 2>/dev/null || \
+                log "WARNING: could not write $MEMORY_DRIFT_GATE"
         else
             log "memory drift check: *** DRIFT DETECTED *** — canonical memory"
             log "  records survive in only one store. See logs/memory-drift.log."
             log "  Recover: venv/bin/python3 scripts/check-memory-drift.py --recover"
             log "  DO NOT run rebuild-postgres.py until this is clean."
             printf '1\nmemory records survive in only ONE store — run scripts/check-memory-drift.py (then --recover); do NOT rebuild-postgres until clean\n' \
-                > "$MEMORY_DRIFT_GATE"
+                > "$MEMORY_DRIFT_GATE" 2>/dev/null || \
+                log "WARNING: could not write $MEMORY_DRIFT_GATE"
         fi
     fi
 fi
