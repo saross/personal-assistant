@@ -185,6 +185,7 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H24 (B) | code-state sidecar contract pinned only by a hand-built fixture in another repo | tied to H2 |
 | H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
 | H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
+| H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -312,6 +313,20 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
    (recommended, since the hub rule is push-after-commit anyway), or push
    when ahead and accept that the sync publishes every local commit.
 
+6. **D6 — purge private names from public git history (H27).** The
+   branch tip no longer carries them, but six commits on
+   `claude/audit-hook-tests` do, and `main` has carried one third-party name
+   in a test fixture since 2026-05-02 (82f5035). Options: (a) rewrite the
+   branch (filter-branch or a fresh branch from `main` with the same
+   changes) and force-push, then ask GitHub support to drop the orphaned
+   commits from their cache — needed for the branch, cheap; (b) also rewrite
+   `main` back to May, which invalidates every clone and worktree on both
+   machines and needs GitHub support for cached views; or (c) leave `main`'s
+   history and replace the fixture in a normal commit (queued in round 3
+   either way). Recommendation: (a) now, (c) for `main`, and a standing
+   rule for fix agents: fixtures are synthetic, never read from `tasks/`,
+   `wiki/`, or the data submodule (added to the shared brief).
+
 ## Fix rounds
 
 - Round 1 (done, 0577648): tranche 0. Re-audited four times: rounds 1b
@@ -327,7 +342,7 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   critical in the new `commit-data.sh` staging logic (latches into a silent
   no-op after a failed run) and glob pathspecs; being fixed on the branch
   before merge.
-- Round 3 (queued, on main after the branches merge): H25, H26, S22 (the
-  guard's import-time handler), S23, S26, P17.
+- Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
+  fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
