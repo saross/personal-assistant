@@ -119,10 +119,39 @@ ENVIRONMENT_SQLSTATE_CLASSES_DOCUMENTED: tuple[str, ...] = (
     "0A", "25", "3D", "3F", "42", "53", "54", "55", "57", "58", "XX",
 )
 
-#: Outcome of :func:`classify_pg_error`.
+#: SQLSTATE classes that are environment faults but *transient* ones: a
+#: deadlock or serialisation failure (40), a cancelled query or an
+#: operator intervention (57). The cursor is still held and the gate still
+#: raised — something unexpected is happening to these tables — but the
+#: remedy is "wait for the next tick", not "fix your grants" (third
+#: re-audit, finding M4).
+TRANSIENT_SQLSTATE_CLASSES: frozenset[str] = frozenset({"40", "57"})
+
+#: Outcome of :func:`classify_pg_error` and of the per-row replay.
 OUTAGE = "outage"
 ENVIRONMENT = "environment"
 ROW = "row"
+#: The replay refused more rows than the cap allows. Its own outcome, not
+#: an environment fault: the database is fine and the rows may genuinely
+#: be poison — there are simply too many to skip silently (finding M2).
+CAP_EXCEEDED = "cap_exceeded"
+#: A whole batch refused with one SQLSTATE and not a single success.
+#: Correlated poison, or a schema fault the row errors are a symptom of
+#: (finding C3).
+CORRELATED = "correlated"
+
+#: How many rows must fail alike before the run stops rather than
+#: quarantining them. Below this, correlated poison is ordinary — two
+#: archived sessions from one LLM run both carrying a NUL — and must
+#: still be quarantined so the cursor can advance. At or above it, a
+#: migration that added a NOT NULL column looks exactly the same, and
+#: quarantining 200 rows a tick is round one's data loss through a
+#: different door.
+MIN_ROWS_FOR_CORRELATED = 5
+
+#: Environment variable forcing the per-row path for one run, overriding
+#: the correlated-refusal hold.
+QUARANTINE_ANYWAY_ENV_VAR = "PA_PG_QUARANTINE_ANYWAY"
 
 #: Most rows a single run may quarantine before it stops and reports
 #: instead. A handful of poison rows is a data problem; hundreds is a
@@ -145,6 +174,29 @@ class EnvironmentFault(RuntimeError):
     """
 
 
+class QuarantineCapExceeded(EnvironmentFault):
+    """
+    More rows were refused in one run than the cap allows.
+
+    A subclass so existing handlers still catch it, but a distinct type so
+    the caller can say something true: the database is not broken and the
+    rows may really be poison — there are just too many to skip without
+    someone looking (finding M2).
+    """
+
+
+class CorrelatedRefusal(EnvironmentFault):
+    """
+    A whole batch refused with one SQLSTATE and not one success.
+
+    Ambiguous by nature: either correlated poison (one buggy extraction
+    run) or a schema fault the row errors are a symptom of (a migration
+    adding a NOT NULL column, a unique index ``ON CONFLICT`` does not
+    name). Quarantining the batch would be right in the first case and
+    catastrophic in the second, so the run stops and asks (finding C3).
+    """
+
+
 #: The NUL code point. Legal in JSON (as the escape ``\u0000``) and in a
 #: Python string, but rejected by PostgreSQL in both ``text`` and ``jsonb``.
 NUL = "\x00"
@@ -160,15 +212,25 @@ def resolve_quarantine_cap(
 
     Precedence: an explicit value (the ``--quarantine-cap`` flag) beats
     the ``PA_PG_QUARANTINE_CAP`` environment variable, which beats
-    :data:`DEFAULT_QUARANTINE_CAP`. A non-numeric or negative environment
-    value is reported and ignored rather than silently disabling the cap.
+    :data:`DEFAULT_QUARANTINE_CAP`. A non-numeric or negative value is
+    reported and ignored rather than silently disabling the cap — from
+    either source, identically: ``max(0, explicit)`` quietly turned
+    ``--quarantine-cap -1`` into "stop at the first refusal", which is
+    not what anyone typing a negative number meant (third re-audit).
 
     Zero is accepted and means "quarantine nothing": every refused row
     becomes an environment fault. Useful for an operator who wants the
     run to stop at the first refusal.
     """
     if explicit is not None:
-        return max(0, explicit)
+        if explicit < 0:
+            if logger is not None:
+                logger.warning(
+                    "Ignoring --quarantine-cap=%d — negative; using the "
+                    "default of %d.", explicit, DEFAULT_QUARANTINE_CAP,
+                )
+            return DEFAULT_QUARANTINE_CAP
+        return explicit
 
     raw = os.environ.get(QUARANTINE_CAP_ENV_VAR)
     if raw is None or not raw.strip():
@@ -192,18 +254,86 @@ def resolve_quarantine_cap(
     return value
 
 
+#: Sentinel for a ``pgcode`` that is present but not a SQLSTATE — an
+#: empty string, a truncated one, bytes, an int. Distinct from ``None``
+#: (no SQLSTATE at all, i.e. client-side) because the two must be
+#: classified differently: unrecognisable metadata is not evidence that
+#: the row is at fault (third re-audit, finding M3).
+MALFORMED_SQLSTATE = "??"
+
+
+def resolve_quarantine_anyway(
+    explicit: bool = False,
+    *,
+    logger: logging.Logger | None = None,
+) -> bool:
+    """
+    Should a correlated batch refusal be quarantined rather than held?
+
+    The escape hatch for :class:`CorrelatedRefusal` (finding C3): when the
+    operator has looked and decided the batch really is poison, one run
+    with ``--quarantine-anyway`` or ``PA_PG_QUARANTINE_ANYWAY=1`` forces
+    the per-row path. Deliberately per-run and not persisted: a permanent
+    setting would restore exactly the silent behaviour the hold exists to
+    prevent.
+    """
+    if explicit:
+        return True
+    raw = os.environ.get(QUARANTINE_ANYWAY_ENV_VAR, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        if logger is not None:
+            logger.warning(
+                "%s is set — a correlated batch refusal will be "
+                "quarantined rather than held. This run only.",
+                QUARANTINE_ANYWAY_ENV_VAR,
+            )
+        return True
+    return False
+
+
 def sqlstate_class(exc: BaseException) -> str | None:
     """
-    Return the two-character SQLSTATE class of ``exc``, or None.
+    Return the two-character SQLSTATE class of ``exc``.
 
-    ``None`` means the exception carries no SQLSTATE at all, which is the
-    signature of a client-side failure: psycopg2 raised it without ever
-    reaching the server.
+    Returns
+    -------
+    str | None
+        * ``None`` — no ``pgcode`` at all. The signature of a client-side
+          failure: psycopg2 raised it without ever reaching the server.
+        * :data:`MALFORMED_SQLSTATE` — a ``pgcode`` that is not a
+          five-character string. SQLSTATE is defined as exactly five
+          characters; anything else is metadata this code does not
+          understand, and guessing from a prefix would be worse than
+          admitting so.
+        * Otherwise the upper-cased first two characters.
     """
     pgcode = getattr(exc, "pgcode", None)
-    if isinstance(pgcode, str) and len(pgcode) >= 2:
+    if pgcode is None:
+        return None
+    if isinstance(pgcode, str) and len(pgcode) == 5:
         return pgcode[:2].upper()
-    return None
+    return MALFORMED_SQLSTATE
+
+
+def environment_remedy(state_class: str | None) -> str:
+    """
+    Return the one-line remedy for an environment fault of this class.
+
+    A deadlock or a cancelled query is not fixed by adjusting grants, and
+    telling an operator to do that at 2 a.m. wastes the one thing the gate
+    was built to buy — attention (finding M4).
+    """
+    if state_class in TRANSIENT_SQLSTATE_CLASSES:
+        return (
+            "This looks transient (a deadlock, a serialisation failure, a "
+            "cancelled query, or an operator intervention): the next run "
+            "retries automatically and no action is needed unless it "
+            "persists. If it does, look for another writer to these "
+            "tables or an administrative action on the server."
+        )
+    return (
+        "Fix the database (grants, schema, migration state) and re-run."
+    )
 
 
 def _matches_any(exc: BaseException, psycopg2_module: Any,
@@ -266,7 +396,9 @@ def classify_pg_error(exc: BaseException, psycopg2_module: Any) -> str:
 
     if state_class is not None:
         # Server-reported: the SQLSTATE decides, with no appeal to the
-        # Python class.
+        # Python class. A pgcode we cannot parse falls through to
+        # ENVIRONMENT with everything else — the safe direction, since
+        # unrecognisable metadata is not evidence the row is at fault.
         if state_class in OUTAGE_SQLSTATE_CLASSES:
             return OUTAGE
         if state_class in ROW_SQLSTATE_CLASSES:
@@ -305,7 +437,8 @@ def insert_rows_individually(
     logger: logging.Logger,
     id_of: Callable[[tuple], str] = lambda row: str(row[0]),
     quarantine_cap: int = DEFAULT_QUARANTINE_CAP,
-) -> tuple[set[str], list[tuple[str, str]], str]:
+    quarantine_anyway: bool = False,
+) -> tuple[set[str], list[tuple[str, str]], str, str]:
     """
     Replay a failed batch one row at a time, isolating the poison rows.
 
@@ -347,35 +480,44 @@ def insert_rows_individually(
         Extracts the row's identifier for reporting. Defaults to the first
         column, which is ``id`` in both sync scripts.
     quarantine_cap:
-        Stop and report an environment fault once this many rows have been
-        refused. A handful of poison rows is a data problem; hundreds is a
-        symptom, and each quarantined row is one the cursor skips. Resolve
-        it with :func:`resolve_quarantine_cap` so ``PA_PG_QUARANTINE_CAP``
-        and ``--quarantine-cap`` are honoured.
+        Stop and report once this many rows have been refused. A handful
+        of poison rows is a data problem; hundreds is a symptom, and each
+        quarantined row is one the cursor skips. Resolve it with
+        :func:`resolve_quarantine_cap` so ``PA_PG_QUARANTINE_CAP`` and
+        ``--quarantine-cap`` are honoured.
+    quarantine_anyway:
+        Skip the correlated-refusal hold for this run, quarantining the
+        batch instead. The operator's escape hatch once they have looked —
+        see :func:`resolve_quarantine_anyway`.
 
     Returns
     -------
-    tuple[set[str], list[tuple[str, str]], str]
-        ``(returned_ids, poison, status)``:
+    tuple[set[str], list[tuple[str, str]], str, str]
+        ``(returned_ids, poison, status, detail)``:
 
         * ``returned_ids`` — ids PostgreSQL returned from ``RETURNING``.
-        * ``poison`` — ``(row_id, error message)`` for every row the database
-          refused on content grounds. Meaningful only when ``status`` is
-          :data:`ROW`; the caller quarantines these and advances past them.
-        * ``status`` — :data:`ROW` when the replay completed and any failures
-          were genuinely per-row; :data:`OUTAGE` when the database went away
-          part-way through; :data:`ENVIRONMENT` when the failures are not
-          about the data. In the latter two cases the caller must hold its
-          cursor and quarantine nothing: rows not yet attempted have neither
-          landed nor been quarantined.
+        * ``poison`` — ``(row_id, error message)`` for every row the
+          database refused on content grounds. Meaningful only when
+          ``status`` is :data:`ROW`; the caller quarantines these and
+          advances past them.
+        * ``status`` — :data:`ROW`, :data:`OUTAGE`, :data:`ENVIRONMENT`,
+          :data:`CAP_EXCEEDED`, or :data:`CORRELATED`. Only :data:`ROW`
+          lets the caller advance; every other outcome means hold the
+          cursor and quarantine nothing, because rows not yet attempted
+          have neither landed nor been quarantined.
+        * ``detail`` — a short machine-ish token for the caller's message
+          and gate text: the SQLSTATE for :data:`CORRELATED`, the cap for
+          :data:`CAP_EXCEEDED`, the SQLSTATE class otherwise.
 
-    Every refusal is judged on its own SQLSTATE, and nothing is inferred
-    from how many rows failed together. An earlier version of this branch
-    treated "every row failed identically" as evidence of an environment
-    fault; correlated poison is ordinary here — two archived sessions from
-    one LLM run both carrying a NUL, two memories from one buggy
-    extraction sharing 23502 — so that rule turned the exact case this
-    replay exists for into a permanent stall.
+    Each refusal is judged on its own SQLSTATE. Count matters in exactly
+    one way, and only above a threshold: when at least
+    :data:`MIN_ROWS_FOR_CORRELATED` rows all fail with the SAME SQLSTATE
+    and not one succeeds, the replay stops rather than quarantining, since
+    a migration that added a NOT NULL column is indistinguishable from
+    correlated poison at that point and quarantining would be data loss.
+    Below the threshold — two sessions from one LLM run both carrying a
+    NUL — the rows are quarantined and the cursor advances, which is the
+    case this replay exists for.
     """
     # M1: never replay from inside an aborted transaction. Harmless on a
     # healthy connection; on an aborted one it is the difference between
@@ -389,6 +531,7 @@ def insert_rows_individually(
     total_rows = len(rows)
     returned_ids: set[str] = set()
     poison: list[tuple[str, str]] = []
+    signatures: set[str] = set()
 
     for attempted, row in enumerate(rows, start=1):
         try:
@@ -406,7 +549,7 @@ def insert_rows_individually(
                     exc, attempted, total_rows,
                 )
                 _log_landed_rows(returned_ids, logger)
-                return returned_ids, [], OUTAGE
+                return returned_ids, [], OUTAGE, "08"
             if verdict == ENVIRONMENT:
                 logger.error(
                     "PostgreSQL refused row %s for a reason that is not "
@@ -416,10 +559,14 @@ def insert_rows_individually(
                     sqlstate_class(exc) or "none", str(exc).strip(),
                 )
                 _log_landed_rows(returned_ids, logger)
-                return returned_ids, [], ENVIRONMENT
+                return (
+                    returned_ids, [], ENVIRONMENT,
+                    sqlstate_class(exc) or "none",
+                )
 
             row_id = id_of(row)
             poison.append((row_id, str(exc).strip()))
+            signatures.add(getattr(exc, "pgcode", None) or type(exc).__name__)
             logger.error(
                 "PostgreSQL refused row %s — quarantining it and continuing: "
                 "%s", row_id, str(exc).strip(),
@@ -436,9 +583,33 @@ def insert_rows_individually(
                     quarantine_cap, QUARANTINE_CAP_ENV_VAR,
                 )
                 _log_landed_rows(returned_ids, logger)
-                return returned_ids, [], ENVIRONMENT
+                return returned_ids, [], CAP_EXCEEDED, str(quarantine_cap)
 
-    return returned_ids, poison, ROW
+    # Count matters here and nowhere else: a whole batch refused alike,
+    # with nothing landing, is as consistent with a schema fault as with
+    # poison, and the two want opposite responses (finding C3).
+    if (total_rows >= MIN_ROWS_FOR_CORRELATED
+            and not returned_ids
+            and len(poison) == total_rows
+            and len(signatures) == 1
+            and not quarantine_anyway):
+        signature = next(iter(signatures))
+        logger.error(
+            "All %d row(s) were refused with the same SQLSTATE (%s) and "
+            "not one landed. That is either correlated poison — one bad "
+            "extraction run, one LLM batch — or a schema fault the row "
+            "errors are a symptom of, such as a migration adding a NOT "
+            "NULL column or a unique index the upsert does not name. "
+            "Quarantining would be right for the first and would lose "
+            "%d rows for the second, so this run holds the cursor and "
+            "quarantines nothing. Check the schema; if the rows really "
+            "are poison, re-run once with %s=1 (or --quarantine-anyway).",
+            total_rows, signature, total_rows, QUARANTINE_ANYWAY_ENV_VAR,
+        )
+        _log_landed_rows(returned_ids, logger)
+        return returned_ids, [], CORRELATED, signature
+
+    return returned_ids, poison, ROW, ""
 
 
 def _log_landed_rows(

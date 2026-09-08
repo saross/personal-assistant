@@ -56,15 +56,23 @@ from _sync_gate import (  # noqa: E402
     write_gate,
 )
 from _pg_row_guard import (  # noqa: E402
+    CAP_EXCEEDED,
+    CORRELATED,
     DEFAULT_QUARANTINE_CAP,
     ENVIRONMENT,
     OUTAGE,
+    QUARANTINE_ANYWAY_ENV_VAR,
     QUARANTINE_CAP_ENV_VAR,
+    CorrelatedRefusal,
     EnvironmentFault,
+    QuarantineCapExceeded,
     classify_pg_error,
+    environment_remedy,
     insert_rows_individually,
+    resolve_quarantine_anyway,
     resolve_quarantine_cap,
     sanitise_nuls,
+    sqlstate_class,
 )
 # Schema-version guard (audit IC5 / B-X1).
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
@@ -546,6 +554,7 @@ def upsert_sessions(
     rows: list[dict[str, Any]],
     logger: logging.Logger,
     quarantine_cap: int | None = None,
+    quarantine_anyway: bool = False,
 ) -> InsertResult:
     """
     Upsert session rows into PostgreSQL with full accounting.
@@ -694,7 +703,8 @@ def upsert_sessions(
                     f"not about the data (SQLSTATE "
                     f"{getattr(exc, 'pgcode', None) or 'none'}, "
                     f"{type(exc).__name__}: {str(exc).strip()}). "
-                    f"Cursor held; nothing quarantined."
+                    f"Cursor held; nothing quarantined. "
+                    f"{environment_remedy(sqlstate_class(exc))}"
                 ) from exc
             # Content failure, not an outage. ``execute_values`` sends the
             # whole page in one transaction, so a single refused row aborts
@@ -704,7 +714,7 @@ def upsert_sessions(
                 "individually to isolate the offending session(s).",
                 str(exc).strip(), len(values),
             )
-            returned_ids, poison, status = insert_rows_individually(
+            returned_ids, poison, status, detail = insert_rows_individually(
                 conn,
                 upsert_sql,
                 values,
@@ -713,6 +723,9 @@ def upsert_sessions(
                 logger=logger,
                 quarantine_cap=resolve_quarantine_cap(
                     quarantine_cap, logger=logger,
+                ),
+                quarantine_anyway=resolve_quarantine_anyway(
+                    quarantine_anyway, logger=logger,
                 ),
             )
             if status == OUTAGE:
@@ -726,9 +739,26 @@ def upsert_sessions(
                 )
             if status == ENVIRONMENT:
                 raise EnvironmentFault(
-                    "The per-row replay stopped: the refusals are not "
-                    "about the data — the preceding log line names the "
-                    "SQLSTATE. Cursor held; nothing quarantined."
+                    f"The per-row replay stopped: the refusals are not "
+                    f"about the data (SQLSTATE class {detail}). Cursor "
+                    f"held; nothing quarantined. "
+                    f"{environment_remedy(detail)}"
+                )
+            if status == CAP_EXCEEDED:
+                raise QuarantineCapExceeded(
+                    f"more than {detail} session(s) were refused in one "
+                    f"run. The database is fine and they may genuinely be "
+                    f"poison, but quarantining that many would advance "
+                    f"the cursor past every one of them. Cursor held; "
+                    f"nothing quarantined."
+                )
+            if status == CORRELATED:
+                raise CorrelatedRefusal(
+                    f"every session in the batch was refused with the same "
+                    f"SQLSTATE ({detail}) and not one landed. That is "
+                    f"either correlated poison or a schema fault the row "
+                    f"errors are a symptom of. Cursor held; nothing "
+                    f"quarantined."
                 )
             quarantined = _quarantine_refused_rows(poison, rows_by_id, logger)
 
@@ -792,6 +822,7 @@ def sync(
     full_resync: bool,
     logger: logging.Logger,
     quarantine_cap: int | None = None,
+    quarantine_anyway: bool = False,
 ) -> tuple[str, int]:
     """
     Run one sync cycle: find new session.meta.json files, upsert into
@@ -808,7 +839,10 @@ def sync(
     with _sync_advisory_lock(logger) as acquired:
         if not acquired:
             return CYCLE_CONTENDED, 0
-        return _sync_locked(archive_root, full_resync, logger, quarantine_cap)
+        return _sync_locked(
+            archive_root, full_resync, logger, quarantine_cap,
+            quarantine_anyway,
+        )
 
 
 def _sync_locked(
@@ -816,6 +850,7 @@ def _sync_locked(
     full_resync: bool,
     logger: logging.Logger,
     quarantine_cap: int | None = None,
+    quarantine_anyway: bool = False,
 ) -> tuple[str, int]:
     """Core sync cycle, executed under the advisory lock.
 
@@ -896,7 +931,9 @@ def _sync_locked(
         return CYCLE_COMPLETED, skipped_no_id
 
     # Upsert into PostgreSQL (returns InsertResult with full accounting).
-    result = upsert_sessions(rows, logger, quarantine_cap)
+    result = upsert_sessions(
+        rows, logger, quarantine_cap, quarantine_anyway,
+    )
 
     # Cursor advance policy (#55, refined by audit round two finding P1):
     # advance ONLY when the DB was reachable AND every input id is
@@ -1008,14 +1045,48 @@ def main() -> None:
             "0 means stop at the first refusal."
         ),
     )
+    parser.add_argument(
+        "--quarantine-anyway", action="store_true",
+        help=(
+            "Quarantine a batch that was wholly refused with one SQLSTATE "
+            "instead of holding the cursor. Use once, after checking the "
+            "schema. Also settable as $PA_PG_QUARANTINE_ANYWAY=1."
+        ),
+    )
     args = parser.parse_args()
 
     logger = setup_logging()
     logger.info("Starting session sync (archive_root=%s)", args.archive_root)
     try:
         outcome, quarantined = sync(
-            args.archive_root, args.full_resync, logger, args.quarantine_cap,
+            args.archive_root, args.full_resync, logger,
+            args.quarantine_cap, args.quarantine_anyway,
         )
+    except QuarantineCapExceeded as exc:
+        # Not an environment fault: the database is fine (finding M2).
+        logger.error("QUARANTINE CAP EXCEEDED — %s", exc)
+        write_gate(
+            f"[sync-sessions-to-postgres.py] exit 7 — {exc} Raise the ceiling with "
+            f"$PA_PG_QUARANTINE_CAP or --quarantine-cap once you have "
+            f"looked at why so many sessions are being refused.",
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
+        sys.exit(7)
+    except CorrelatedRefusal as exc:
+        # Ambiguous between poison and a schema fault, so it is named as
+        # ambiguous and the escape hatch is spelt out (finding C3).
+        logger.error("CORRELATED REFUSAL — %s", exc)
+        write_gate(
+            f"[sync-sessions-to-postgres.py] exit 4 — {exc} Either correlated poison or a "
+            f"schema fault (a migration adding a NOT NULL column, a "
+            f"unique index the upsert does not name). Check the schema; "
+            f"if the sessions really are poison, re-run once with "
+            f"$PA_PG_QUARANTINE_ANYWAY=1 or --quarantine-anyway.",
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
+        sys.exit(4)
     except EnvironmentFault as exc:
         # Reachable database, wrong state: permissions, a missing table or
         # column, an aborted transaction. Retrying cannot help, so say so

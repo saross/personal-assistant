@@ -334,7 +334,7 @@ class TestInsertRowsIndividually:
     ) -> None:
         """Two good rows insert; the third is named as poison."""
         rows = [("a", 1), ("bad", 2), ("c", 3)]
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
             execute_values=self._execute_values(
@@ -354,7 +354,7 @@ class TestInsertRowsIndividually:
         there is no "all alike" evidence with a single row, so it must be
         quarantined rather than stalling the cursor forever.
         """
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", [("only", 1)],
             psycopg2_module=_fake_psycopg2(),
             execute_values=self._execute_values(
@@ -378,7 +378,7 @@ class TestInsertRowsIndividually:
         reinstating an "every row failed alike" rule.
         """
         rows = [("nul-a", 1), ("nul-b", 2)]
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
             execute_values=self._execute_values(
@@ -393,29 +393,123 @@ class TestInsertRowsIndividually:
         assert [pid for pid, _ in poison] == ["nul-a", "nul-b"]
         assert returned == set()
 
-    def test_a_whole_batch_of_correlated_poison_is_quarantined(
+    @pytest.mark.parametrize("n_rows,expected", [
+        # Below the threshold, correlated poison is ordinary and must
+        # still be quarantined so the cursor advances — two archived
+        # sessions from one LLM run both carrying a NUL is the live case.
+        (2, "row"),
+        (4, "row"),
+        # At and above it, a migration that added a NOT NULL column looks
+        # exactly the same, and quarantining would be data loss.
+        (5, "correlated"),
+        (200, "correlated"),
+    ])
+    def test_correlated_batches_hold_only_above_the_threshold(
+        self, conn: MagicMock, logger: logging.Logger, n_rows, expected,
+    ) -> None:
+        """
+        Finding C3: a whole batch refused under 21/22/23 — a migration
+        adding a NOT NULL column, a unique index ON CONFLICT does not
+        name — quarantined up to 200 rows a tick and advanced at exit 0.
+        The mutation this kills: removing the correlated check, or
+        dropping MIN_ROWS_FOR_CORRELATED to 1.
+        """
+        rows = [(f"r{i}", i) for i in range(n_rows)]
+        returned, poison, status, detail = (
+            _pg_row_guard.insert_rows_individually(
+                conn, "INSERT ... VALUES %s RETURNING id", rows,
+                psycopg2_module=_fake_psycopg2(),
+                execute_values=self._execute_values(
+                    {row[0] for row in rows},
+                    lambda rid: _IntegrityError(
+                        'null value in column "project"', "23502",
+                    ),
+                ),
+                logger=logger,
+                quarantine_cap=1000,
+            )
+        )
+        assert status == expected
+        if expected == "correlated":
+            assert poison == [], "nothing may be quarantined on a hold"
+            assert detail == "23502", "the gate text needs the SQLSTATE"
+        else:
+            assert len(poison) == n_rows
+
+    def test_the_escape_hatch_forces_the_per_row_path(
         self, conn: MagicMock, logger: logging.Logger,
     ) -> None:
         """
-        Same shape at batch scale: one buggy extraction run producing 20
-        records that all violate the same NOT NULL. Every one is
-        quarantined and the caller may advance — under the cap, which is
-        what bounds this.
+        Once the operator has checked the schema and concluded the rows
+        really are poison, one run quarantines them. The mutation this
+        kills: ignoring ``quarantine_anyway``.
         """
-        rows = [(f"r{i}", i) for i in range(20)]
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
-            conn, "INSERT ... VALUES %s RETURNING id", rows,
-            psycopg2_module=_fake_psycopg2(),
-            execute_values=self._execute_values(
-                {row[0] for row in rows},
-                lambda rid: _IntegrityError(
-                    'null value in column "project"', "23502",
+        rows = [(f"r{i}", i) for i in range(8)]
+        returned, poison, status, _detail = (
+            _pg_row_guard.insert_rows_individually(
+                conn, "INSERT ... VALUES %s RETURNING id", rows,
+                psycopg2_module=_fake_psycopg2(),
+                execute_values=self._execute_values(
+                    {row[0] for row in rows},
+                    lambda rid: _DataError("value too long", "22001"),
                 ),
-            ),
-            logger=logger,
+                logger=logger,
+                quarantine_cap=1000,
+                quarantine_anyway=True,
+            )
         )
         assert status == "row"
-        assert len(poison) == 20
+        assert len(poison) == 8
+
+    def test_one_success_defeats_the_correlated_hold(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        A row that landed proves the schema accepts this shape, so the
+        rest are poison by demonstration and are quarantined.
+        """
+        rows = [(f"r{i}", i) for i in range(8)]
+        returned, poison, status, _detail = (
+            _pg_row_guard.insert_rows_individually(
+                conn, "INSERT ... VALUES %s RETURNING id", rows,
+                psycopg2_module=_fake_psycopg2(),
+                execute_values=self._execute_values(
+                    {f"r{i}" for i in range(1, 8)},
+                    lambda rid: _DataError("value too long", "22001"),
+                ),
+                logger=logger,
+                quarantine_cap=1000,
+            )
+        )
+        assert status == "row"
+        assert returned == {"r0"}
+        assert len(poison) == 7
+
+    def test_mixed_sqlstates_are_not_correlated(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        Eight rows failing for eight reasons is poison, not a schema
+        fault: the hold requires ONE SQLSTATE across the batch.
+        """
+        rows = [(f"r{i}", i) for i in range(8)]
+
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            rid = values[0][0]
+            code = "22001" if int(rid[1:]) % 2 else "23502"
+            raise _DataError(f"refused {rid}", code)
+
+        returned, poison, status, _detail = (
+            _pg_row_guard.insert_rows_individually(
+                conn, "INSERT ... VALUES %s RETURNING id", rows,
+                psycopg2_module=_fake_psycopg2(),
+                execute_values=_call,
+                logger=logger,
+                quarantine_cap=1000,
+            )
+        )
+        assert status == "row"
+        assert len(poison) == 8
 
     def test_all_rows_refused_but_differently_is_still_row_poison(
         self, conn: MagicMock, logger: logging.Logger,
@@ -431,7 +525,7 @@ class TestInsertRowsIndividually:
             raise _DataError(f"refused {rid}", codes[rid])
 
 
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", [("a", 1), ("b", 2)],
             psycopg2_module=_fake_psycopg2(),
             execute_values=_call,
@@ -448,7 +542,7 @@ class TestInsertRowsIndividually:
         identical failures on the others are per-row by demonstration.
         """
         rows = [("good", 1), ("a", 2), ("b", 3)]
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
             execute_values=self._execute_values(
@@ -476,7 +570,7 @@ class TestInsertRowsIndividually:
                 "permission denied for table memories", "42501",
             )
 
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id",
             [("a", 1), ("b", 2), ("c", 3)],
             psycopg2_module=_fake_psycopg2(),
@@ -502,15 +596,18 @@ class TestInsertRowsIndividually:
             rid = values[0][0]
             raise _DataError(f"refused {rid}", "22001")
 
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
             execute_values=_call,
             logger=logger,
             quarantine_cap=5,
         )
-        assert status == "environment"
+        assert status == "cap_exceeded", (
+            "a cap overflow must not read as an environment fault"
+        )
         assert poison == []
+        assert detail == "5", "the gate text needs the cap that was hit"
 
     def test_under_the_cap_still_quarantines(
         self, conn: MagicMock, logger: logging.Logger,
@@ -524,7 +621,7 @@ class TestInsertRowsIndividually:
                 raise _DataError(f"refused {rid}", "22001")
             return [(rid,)]
 
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
             execute_values=_call,
@@ -549,7 +646,7 @@ class TestInsertRowsIndividually:
                 return [(values[0][0],)]
             raise _OperationalError("server closed the connection")
 
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id",
             [("a", 1), ("b", 2), ("c", 3)],
             psycopg2_module=_fake_psycopg2(),
@@ -609,7 +706,7 @@ class TestInsertRowsIndividually:
                 raise _DataError("genuinely bad row", "22P05")
             return [(rid,)]
 
-        returned, poison, status = _pg_row_guard.insert_rows_individually(
+        returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id",
             [("good", 1), ("bad", 2)],
             psycopg2_module=_fake_psycopg2(),
@@ -631,7 +728,7 @@ class TestInsertRowsIndividually:
         def _call(cur, sql, values, page_size=None, fetch=False):
             raise _OperationalError("server closed the connection")
 
-        _returned, poison, status = _pg_row_guard.insert_rows_individually(
+        _returned, poison, status, _detail = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", [("a", 1)],
             psycopg2_module=_fake_psycopg2(),
             execute_values=_call,
@@ -639,3 +736,118 @@ class TestInsertRowsIndividually:
         )
         assert status == "outage"
         assert poison == []
+
+
+class TestMalformedSqlstate:
+    """
+    Finding M3 — a ``pgcode`` that is not a five-character string is
+    metadata this code does not understand, and guessing from a prefix
+    would be worse than admitting so. It classifies as ENVIRONMENT: the
+    safe direction, since unrecognisable metadata is not evidence that
+    the row is at fault.
+    """
+
+    @pytest.mark.parametrize("pgcode", ["", "2", "22", "220011", 22001, b"22001"])
+    def test_a_malformed_pgcode_is_an_environment_fault(self, pgcode) -> None:
+        """
+        The mutation this kills: accepting any ``pgcode`` of length two or
+        more, which read "2" as class "2" and bytes as a string.
+        """
+        exc = _DataError("something", pgcode)
+        assert (
+            _pg_row_guard.classify_pg_error(exc, _fake_psycopg2())
+            == "environment"
+        )
+
+    def test_a_well_formed_pgcode_still_classifies(self) -> None:
+        """Exactly five characters is what SQLSTATE is defined as."""
+        exc = _DataError("value too long", "22001")
+        assert _pg_row_guard.sqlstate_class(exc) == "22"
+        assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "row"
+
+    def test_no_pgcode_at_all_is_still_client_side(self) -> None:
+        """``None`` and "malformed" must not be conflated."""
+        exc = _ProgrammingError("can't adapt type 'dict'")
+        assert _pg_row_guard.sqlstate_class(exc) is None
+        assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "row"
+
+
+class TestTransientRemedy:
+    """
+    Finding M4 — a deadlock is not fixed by adjusting grants, and telling
+    an operator to do that at 2 a.m. wastes the one thing the gate buys.
+    """
+
+    @pytest.mark.parametrize("state_class", ["40", "57"])
+    def test_transient_classes_say_so(self, state_class) -> None:
+        """The mutation this kills: one remedy string for every class."""
+        remedy = _pg_row_guard.environment_remedy(state_class)
+        assert "transient" in remedy.lower()
+        assert "retries automatically" in remedy
+        assert "grants" not in remedy
+
+    @pytest.mark.parametrize("state_class", ["42", "53", "3D", "XX"])
+    def test_persistent_classes_name_the_fix(self, state_class) -> None:
+        """These really do need grants, schema, or migration state."""
+        remedy = _pg_row_guard.environment_remedy(state_class)
+        assert "Fix the database" in remedy
+
+    def test_deadlock_is_still_held_not_quarantined(self) -> None:
+        """Transient is about the *remedy*, not about advancing anyway."""
+        exc = _OperationalError("deadlock detected", "40P01")
+        assert (
+            _pg_row_guard.classify_pg_error(exc, _fake_psycopg2())
+            == "environment"
+        )
+
+
+class TestNegativeCapHandling:
+    """
+    Low finding — ``max(0, explicit)`` quietly turned ``--quarantine-cap
+    -1`` into "stop at the first refusal", which is not what anyone
+    typing a negative number meant. Both sources behave identically now.
+    """
+
+    def test_a_negative_flag_falls_back_to_the_default(self, caplog) -> None:
+        """The mutation this kills: restoring ``max(0, explicit)``."""
+        logger = logging.getLogger("test-cap")
+        with caplog.at_level(logging.WARNING):
+            cap = _pg_row_guard.resolve_quarantine_cap(-1, logger=logger)
+        assert cap == _pg_row_guard.DEFAULT_QUARANTINE_CAP
+        assert "negative" in caplog.text
+
+    def test_a_negative_env_var_falls_back_to_the_default(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """Same handling from the environment."""
+        monkeypatch.setenv("PA_PG_QUARANTINE_CAP", "-5")
+        logger = logging.getLogger("test-cap")
+        with caplog.at_level(logging.WARNING):
+            cap = _pg_row_guard.resolve_quarantine_cap(logger=logger)
+        assert cap == _pg_row_guard.DEFAULT_QUARANTINE_CAP
+
+    def test_zero_is_honoured_from_both_sources(self, monkeypatch) -> None:
+        """Zero is a deliberate "stop at the first refusal", not a slip."""
+        assert _pg_row_guard.resolve_quarantine_cap(0) == 0
+        monkeypatch.setenv("PA_PG_QUARANTINE_CAP", "0")
+        assert _pg_row_guard.resolve_quarantine_cap() == 0
+
+
+class TestQuarantineAnywayResolution:
+    """The escape hatch is per-run, from either the flag or the variable."""
+
+    def test_the_flag_wins(self) -> None:
+        """An explicit flag needs no variable."""
+        assert _pg_row_guard.resolve_quarantine_anyway(True) is True
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "ON"])
+    def test_the_variable_is_honoured(self, monkeypatch, value) -> None:
+        """Several spellings, because operators type what they remember."""
+        monkeypatch.setenv("PA_PG_QUARANTINE_ANYWAY", value)
+        assert _pg_row_guard.resolve_quarantine_anyway() is True
+
+    @pytest.mark.parametrize("value", ["", "0", "no", "maybe"])
+    def test_anything_else_is_off(self, monkeypatch, value) -> None:
+        """The default must be the safe one."""
+        monkeypatch.setenv("PA_PG_QUARANTINE_ANYWAY", value)
+        assert _pg_row_guard.resolve_quarantine_anyway() is False

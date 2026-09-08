@@ -1671,10 +1671,10 @@ class TestCursorResetMidRun:
 
         original_insert = sync_mod.insert_memories
 
-        def _rebuild_runs_now(records, logger, quarantine_cap=None):
+        def _rebuild_runs_now(records, logger, quarantine_cap=None, quarantine_anyway=False):
             """Simulate rebuild-postgres.py clearing the cursors mid-cycle."""
             cursor_file.write_text(json.dumps({}), encoding="utf-8")
-            return original_insert(records, logger, quarantine_cap)
+            return original_insert(records, logger, quarantine_cap, quarantine_anyway)
 
         monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
 
@@ -1709,9 +1709,9 @@ class TestCursorResetMidRun:
 
         original_insert = sync_mod.insert_memories
 
-        def _rebuild_runs_now(records, logger, quarantine_cap=None):
+        def _rebuild_runs_now(records, logger, quarantine_cap=None, quarantine_anyway=False):
             cursor_file.write_text(json.dumps({}), encoding="utf-8")
-            return original_insert(records, logger, quarantine_cap)
+            return original_insert(records, logger, quarantine_cap, quarantine_anyway)
 
         monkeypatch.setattr(sync_mod, "insert_memories", _rebuild_runs_now)
 

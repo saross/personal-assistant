@@ -1424,9 +1424,9 @@ class TestSessionsCursorResetMidRun:
 
         original_upsert = sync_mod.upsert_sessions
 
-        def _rebuild_runs_now(rows, logger, quarantine_cap=None):
+        def _rebuild_runs_now(rows, logger, quarantine_cap=None, quarantine_anyway=False):
             cursor_file.write_text(json.dumps({}), encoding="utf-8")
-            return original_upsert(rows, logger, quarantine_cap)
+            return original_upsert(rows, logger, quarantine_cap, quarantine_anyway)
 
         monkeypatch.setattr(sync_mod, "upsert_sessions", _rebuild_runs_now)
 
@@ -1462,9 +1462,9 @@ class TestSessionsCursorResetMidRun:
 
         original_upsert = sync_mod.upsert_sessions
 
-        def _rebuild_runs_now(rows, logger, quarantine_cap=None):
+        def _rebuild_runs_now(rows, logger, quarantine_cap=None, quarantine_anyway=False):
             cursor_file.write_text(json.dumps({}), encoding="utf-8")
-            return original_upsert(rows, logger, quarantine_cap)
+            return original_upsert(rows, logger, quarantine_cap, quarantine_anyway)
 
         monkeypatch.setattr(sync_mod, "upsert_sessions", _rebuild_runs_now)
         monkeypatch.setattr(
@@ -1591,3 +1591,160 @@ class TestSessionStartGate:
             logging.getLogger("sync-sessions-to-postgres").handlers.clear()
 
         assert pinned_gate_file.read_text(encoding="utf-8").strip() == "0"
+
+
+class TestCorrelatedRefusalAtTheSyncLevel:
+    """
+    Finding C3 end to end: the cursor must not advance past a batch that
+    might be a schema fault, and the gate must say so.
+    """
+
+    def _all_alike(self, cur, sql, values, page_size=None, fetch=False):
+        """Every row refused with one SQLSTATE — a NOT NULL migration."""
+        raise _FakePsycopg2IntegrityError(
+            'null value in column "started_at" violates not-null', "23502",
+        )
+
+    def test_a_correlated_batch_holds_and_gates(
+        self, monkeypatch, tmp_path, sample_metadata, test_logger,
+        pinned_gate_file,
+    ):
+        """
+        Five sessions refused alike: cursor held, nothing quarantined,
+        exit 4, and the gate names the SQLSTATE and the escape hatch. The
+        mutation this kills: removing the correlated check.
+        """
+        archive_root = tmp_path / "archive"
+        for index in range(5):
+            meta = json.loads(json.dumps(sample_metadata))
+            meta["session"]["id"] = f"sess-{index}"
+            meta["archive"]["archived_at"] = f"2026-03-15T0{index}:00:00Z"
+            session_dir = archive_root / "proj" / f"2026-03-15T0{index}-00_s"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.meta.json").write_text(
+                json.dumps(meta), encoding="utf-8",
+            )
+
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._all_alike,
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_root), "--full-resync"],
+        )
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 4
+        assert not (tmp_path / "quarantine.jsonl").exists()
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "23502" in gate
+        assert "schema fault" in gate
+        assert "PA_PG_QUARANTINE_ANYWAY" in gate
+
+    def test_two_alike_still_quarantine_and_advance(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """
+        Below the threshold nothing changes: the live September incident
+        was two NUL-bearing sessions, and they must still get through.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._all_alike,
+        )
+
+        outcome, quarantined = sync_mod.sync(
+            archive_tree, full_resync=True, logger=test_logger,
+        )
+
+        assert quarantined == 2
+        assert json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )["sessions_sync_timestamp"] == "2026-03-15T06:00:00Z"
+
+    def test_a_quarantining_run_raises_the_warning_gate(
+        self, monkeypatch, tmp_path, archive_tree, pinned_gate_file,
+    ):
+        """
+        Finding C3's first invariant: quarantining is data leaving the
+        pipeline and used to happen at exit 0 with no gate at all.
+        """
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._all_alike,
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree), "--full-resync"],
+        )
+
+        try:
+            sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        lines = pinned_gate_file.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "2"
+        assert "REFUSED" in lines[1]
+
+    def test_the_escape_hatch_lets_the_batch_through(
+        self, monkeypatch, tmp_path, sample_metadata, test_logger,
+    ):
+        """``--quarantine-anyway`` is the operator's considered override."""
+        archive_root = tmp_path / "archive"
+        for index in range(5):
+            meta = json.loads(json.dumps(sample_metadata))
+            meta["session"]["id"] = f"sess-{index}"
+            meta["archive"]["archived_at"] = f"2026-03-15T0{index}:00:00Z"
+            session_dir = archive_root / "proj" / f"2026-03-15T0{index}-00_s"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.meta.json").write_text(
+                json.dumps(meta), encoding="utf-8",
+            )
+        cursor_file = tmp_path / "cursors.json"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._all_alike,
+        )
+
+        outcome, quarantined = sync_mod.sync(
+            archive_root, full_resync=True, logger=test_logger,
+            quarantine_anyway=True,
+        )
+
+        assert quarantined == 5
+        assert "sessions_sync_timestamp" in json.loads(
+            cursor_file.read_text(encoding="utf-8")
+        )
