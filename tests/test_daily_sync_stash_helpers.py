@@ -1034,3 +1034,60 @@ class TestDropAppliedStashGuard:
         )
         assert result.returncode == 0, result.stderr
         assert _stash_shas(repo) == [], "the entry was left on the stack"
+
+
+class TestCarryForwardPartialStashes:
+    """Re-reading the sidecar at the start of every run is what keeps a
+    partly-applied entry's warning alive. It must not cost one pass over
+    the entry's whole untracked tree per RECORDED PATH."""
+
+    def test_each_entry_is_examined_once_however_many_rows_it_has(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Audit low (eleventh re-audit): the sidecar holds one row per
+        path, and re-deriving an entry's state re-reads `<sha>^3` and
+        hashes every file in it. Three rows for one entry meant three
+        passes at every session start.
+
+        Kills: dropping the `done_shas` guard from
+        carry_forward_partial_stashes.
+        """
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(
+            "".join(
+                f"{repo}\t{sha}\tpartial\tnotes/{name}.md\n"
+                for name in ("one", "two", "three")
+            ),
+            encoding="utf-8",
+        )
+        calls = tmp_path / "calls"
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'STASH_STATE_FILE="{sidecar}"',
+                    f'DATA_DIR="{repo}"',
+                    f'PA_DIR="{repo}"',
+                    "partial_stash_shas=()",
+                    "partial_stash_records=()",
+                    # A stand-in for the real predicate that counts how
+                    # often the entry is examined.
+                    "unrestored_untracked_paths() {",
+                    f'    printf "call\\n" >> "{calls}"',
+                    "    printf 'missing\\tnotes/one.md\\n'",
+                    "}",
+                    "carry_forward_partial_stashes",
+                    'printf "%s\\n" "${#partial_stash_records[@]}"',
+                ]
+            ),
+            ("carry_forward_partial_stashes", "record_partial_stash"),
+        )
+        assert result.returncode == 0, result.stderr
+        assert calls.read_text(encoding="utf-8").count("call") == 1, (
+            "the entry was examined once per recorded row: "
+            + calls.read_text(encoding="utf-8")
+        )
+        assert result.stdout.strip() == "1", result.stdout

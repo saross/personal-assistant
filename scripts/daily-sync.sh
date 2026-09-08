@@ -1535,11 +1535,19 @@ carry_forward_partial_stashes() {
     # run's own bookkeeping, so the EXIT handler raises the same gate line
     # again, and keeps raising it until the files are recovered. It costs
     # one `ls-tree` per recorded row.
-    local repo sha state path unrestored
+    local repo sha state path unrestored seen
+    local -a done_shas=()
     [[ -f "$STASH_STATE_FILE" ]] || return 0
     while IFS=$'\t' read -r repo sha state path; do
         [[ "$state" == "partial" ]] || continue
         [[ "$repo" == "$DATA_DIR" ]] || [[ "$repo" == "$PA_DIR" ]] || continue
+        # audit low (eleventh re-audit): the sidecar holds one row per
+        # PATH, and re-deriving an entry's state re-reads its whole
+        # untracked tree. Once per entry, not once per row.
+        for seen in ${done_shas[@]+"${done_shas[@]}"}; do
+            [[ "$seen" == "$sha" ]] && continue 2
+        done
+        done_shas+=("$sha")
         stash_ref_for "$repo" "$sha" >/dev/null || continue
         unrestored="$(unrestored_untracked_paths "$repo" "$sha")"
         [[ -n "$unrestored" ]] || continue
@@ -1967,7 +1975,11 @@ abort_on_jsonl_shrink() {
     if echo "$head_msg" | grep -q "^Rewrite-Class: bulk"; then
         return 0
     fi
-    shrink_report="$LOG_DIR/daily-sync-SHRINK-$(date +'%Y-%m-%d-%H%M%S').txt"
+    # audit low (eleventh re-audit): a `.log` name, because the private
+    # data submodule's .gitignore covers `logs/*.log` and `logs/*.jsonl`
+    # and NOT `logs/*.txt` — so the auto-sync block's `git add -A` would
+    # have committed the shrink report itself into the corpus repo.
+    shrink_report="$LOG_DIR/daily-sync-shrink-$(date +'%Y-%m-%d-%H%M%S').log"
     {
         echo "Detected unexpected shrink in memories.jsonl during daily-sync."
         echo "Commit site:     $context"
@@ -1984,8 +1996,14 @@ abort_on_jsonl_shrink() {
     log "SHRINK DETECTED ($context): $lines_before -> $lines_after lines. Report: $shrink_report"
     # Undo the commit so origin is not polluted with a suspect shrink.
     # Files remain on disk for inspection.
-    if ! git reset --soft "HEAD~1" >>"$LOG_FILE" 2>&1; then
-        log "WARNING: failed to reset soft HEAD~1 after shrink detection; manual recovery may be needed"
+    #
+    # audit low (eleventh re-audit): --mixed, not --soft. A soft reset
+    # leaves the truncated corpus STAGED, so the very next block's
+    # `git add -A`/`git commit` re-commits it — and the operator, running
+    # `git status` to see what happened, is told the shrink is ready to
+    # commit. --mixed keeps the file on disk and unstages it.
+    if ! git reset --mixed "HEAD~1" >>"$LOG_FILE" 2>&1; then
+        log "WARNING: failed to reset HEAD~1 after shrink detection; manual recovery may be needed"
     fi
     fail "data submodule: unexpected shrink detected at the $context (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
 }

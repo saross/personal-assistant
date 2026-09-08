@@ -801,7 +801,7 @@ class TestShrinkDetector:
         combined = result.stdout + result.stderr
         assert result.returncode == 4, combined
         assert "SHRINK DETECTED" in combined
-        assert list((machine.pa / "logs").glob("daily-sync-SHRINK-*.txt"))
+        assert list((machine.pa / "logs").glob("daily-sync-shrink-*.log"))
         assert world.published_data_head() == published_before, (
             "a shrunk corpus reached origin"
         )
@@ -830,7 +830,7 @@ class TestShrinkDetector:
         combined = result.stdout + result.stderr
         assert result.returncode == 4, combined
         assert "SHRINK DETECTED" in combined, combined
-        reports = list((machine.pa / "logs").glob("daily-sync-SHRINK-*.txt"))
+        reports = list((machine.pa / "logs").glob("daily-sync-shrink-*.log"))
         assert reports, "no shrink report was written"
         assert "append-only commit" in reports[0].read_text(encoding="utf-8")
         assert world.published_data_head() == published_before, (
@@ -840,6 +840,27 @@ class TestShrinkDetector:
         assert machine.head("data") == published_before, (
             "the shrinking commit is still on the local branch"
         )
+
+    def test_the_undone_commit_leaves_nothing_staged(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit low (eleventh re-audit). `git reset --soft` left the
+        truncated corpus STAGED, so the next block's `git add -A` /
+        `git commit` re-committed it -- and the operator running
+        `git status` was told the shrink was ready to commit. `--mixed`
+        keeps the file on disk and unstages it.
+
+        Kills: `git reset --mixed "HEAD~1"` -> `--soft`.
+        """
+        machine = world.add_machine("a")
+        machine.memories.write_text("", encoding="utf-8")
+
+        assert world.run_sync(machine).returncode == 4
+        assert not git(
+            "diff", "--cached", "--name-only", cwd=machine.data
+        ).stdout.strip(), "the truncated corpus was left staged for the next commit"
+        # …and it is still on disk for the operator to look at.
+        assert machine.memories.read_text(encoding="utf-8") == ""
 
     def test_a_bulk_rewrite_trailer_still_lets_a_shrink_through(
         self, world: SyncWorld
