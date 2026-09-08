@@ -119,7 +119,7 @@ class TestCountWaitingItems:
         waiting.write_text(
             "| Item | Waiting On | Since | Last Poked | Next Action |\n"
             "|------|------------|-------|------------|-------------|\n"
-            "| ~~Flinders profile info~~ | ~~Talia Barnes~~ "
+            "| ~~Trainee profile info~~ | ~~Pat Example~~ "
             "| ~~2026-03-17~~ | — | "
             "**Received 2026-03-19.** Processing today. |\n"
             "| Europe trip dates | Vivi's mother | 2026-04-28 "
@@ -527,8 +527,8 @@ def _stage_task_files(
         monkeypatch.setattr(accountability, attr, path)
 
 
-# Live conventions, as they appear in ~/personal-assistant/tasks (read
-# 2026-09-08): bold field labels, a ``- **Rotated in:**`` date with prose
+# Live conventions (shape only — every name, item, and date below is
+# synthetic): bold field labels, a ``- **Rotated in:**`` date with prose
 # after it, ``---`` between slot blocks, and a waiting-for table whose
 # completed rows close the strikethrough mid-cell and append an un-struck
 # project tag.
@@ -536,18 +536,18 @@ _WAITING_LIVE = """# Waiting For
 
 | Item | Waiting On | Since | Last Poked | Next Action If No Response |
 |------|------------|-------|------------|---------------------------|
-| **Consent-orders filing date** (`personal`/move) | Sarah | 2026-09-08 | — | Call Wed. |
-| **Container quote** (`personal`/move) | Red Truck | 2026-08-27 | 2026-08-28 | Call Monday. |
-| **Logo artwork** (`efn`) | Jody | 2026-09-04 | 2026-09-04 | Chase Mon 8 Sept. |
-| ~~Car service — slot requested~~ (`personal`) | ~~Skoda~~ | 2026-08-18 | — | Resolved. |
-| ~~Flinders trainee profile info~~ | ~~Talia Barnes~~ | ~~2026-03-17~~ | — | Received. |
+| **Venue booking confirmation** (`personal`/move) | Alex | 2026-09-08 | — | Call Wed. |
+| **Removal quote** (`personal`/move) | Acme Removals | 2026-08-27 | 2026-08-28 | Call Monday. |
+| **Logo artwork** (`efn`) | Designer | 2026-09-04 | 2026-09-04 | Chase Mon 8 Sept. |
+| ~~Car service — slot requested~~ (`personal`) | ~~Garage~~ | 2026-08-18 | — | Resolved. |
+| ~~Trainee profile info~~ | ~~Pat Example~~ | ~~2026-03-17~~ | — | Received. |
 """
 
 _INBOX_LIVE = """# Inbox
 
-- [ ] Ring the conveyancer first thing
-- [x] File the RDA screenshot
-- [ ] Book the Salvos drop-off
+- [ ] Ring the plumber first thing
+- [x] File the receipt screenshot
+- [ ] Book the charity drop-off
 """
 
 
@@ -587,8 +587,8 @@ class TestBannerRendering:
             "## Slot 1: EFN — website content\n\n"
             "- **Project:** business/efn (slug `efn`)\n\n"
             "---\n\n"
-            "## Slot 3: RDA IG application\n\n"
-            "- **Project:** research/rda\n\n"
+            "## Slot 3: Grant application\n\n"
+            "- **Project:** research/grant\n\n"
             "---\n"
         )
         system = (
