@@ -1195,3 +1195,85 @@ class TestAtomicWriteStaysOnOneFilesystem:
         target = tmp_path / "responses" / "session.json"
         bom.write_json_atomic(target, {"ok": True})
         assert json.loads(target.read_text()) == {"ok": True}
+
+
+class TestHaikuApplyResume:
+    """A resumed retrieval must not overwrite what an earlier one wrote."""
+
+    @staticmethod
+    def _state(out_dir: Path, mapping: dict[str, str]) -> None:
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_invented", "custom_id_to_session": mapping}),
+            encoding="utf-8",
+        )
+
+    def test_complete_response_is_not_refetched(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """The finding: the resume branch was untested and could be deleted."""
+        stub = TestHaikuApplyBoundary()
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir(parents=True)
+        self._state(out_dir, {"sess-known": "known-session"})
+        target = out_dir / "known-session.json"
+        target.write_text(fx.RESPONSE_BARE + "\n", encoding="utf-8")
+        before = target.stat().st_mtime_ns, target.stat().st_size
+
+        replacement = json.dumps({"title": "a different, later answer"})
+        results.append(stub._result("sess-known", replacement))
+        bom.haiku_apply("batch_invented", out_dir)
+
+        assert (target.stat().st_mtime_ns, target.stat().st_size) == before
+        assert json.loads(target.read_text()) == fx.RESPONSE_OBJECT
+        assert not (out_dir / "known-session.raw.txt").exists()
+        assert "already complete — skipping" in capsys.readouterr().out
+
+    def test_force_refetches_the_same_session(self, tmp_path, monkeypatch):
+        """--force is the deliberate way to replace a stored answer."""
+        stub = TestHaikuApplyBoundary()
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir(parents=True)
+        self._state(out_dir, {"sess-known": "known-session"})
+        (out_dir / "known-session.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        replacement = json.dumps({"title": "a different, later answer"})
+        results.append(stub._result("sess-known", replacement))
+        bom.haiku_apply("batch_invented", out_dir, force=True)
+        assert json.loads((out_dir / "known-session.json").read_text()) == {
+            "title": "a different, later answer"
+        }
