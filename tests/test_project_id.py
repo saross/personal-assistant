@@ -3,9 +3,10 @@ Tests for the shared project-id encoder (audit IC3 / C-X3 fix).
 
 Pins two contracts:
 
-* The encoding (resolve absolute path then ``replace("/", "-")``) is
-  byte-identical to the previous inline implementation in
-  ``hooks/session-start-retrieval.py:178``.
+* The encoding (resolve to an absolute path, then replace every
+  non-alphanumeric character with ``-``) matches what Claude Code itself
+  writes under ``~/.claude/projects/`` — the live double-dash evidence in
+  ``scripts/project_id.py:encode_project_id`` (audit R4).
 * The retrieval hook's ``derive_project`` is now a thin wrapper over
   the shared encoder — both writers and readers MUST agree byte-for-byte
   on the encoded form.
@@ -14,6 +15,7 @@ Pins two contracts:
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -49,15 +51,27 @@ def retrieval_hook_module():
 # ---------------------------------------------------------------------------
 
 
-# Each pair is ``(cwd, expected_encoded_form)``. The expected forms are
-# computed against the exact pre-batch-4 inline implementation:
-# ``str(Path(cwd).resolve()).replace("/", "-")``.
+# Each pair is ``(cwd, expected_encoded_form)``. The first five are the
+# historical parity cases (alphanumeric components only, so the pre-audit-R4
+# ``/``-only rule and the corrected rule agree on them). The last two are the
+# R4 cases the old rule got wrong.
 PARITY_CASES = [
     ("/home/shawn/personal-assistant", "-home-shawn-personal-assistant"),
     ("/home/shawn/Code/llm-history-paper", "-home-shawn-Code-llm-history-paper"),
     ("/", "-"),
     ("/tmp/foo/bar", "-tmp-foo-bar"),
     ("/home/shawn/Code/map-reader-llm", "-home-shawn-Code-map-reader-llm"),
+    # Audit R4 — the live name observed under ~/.claude/projects/ on
+    # amd-tower (2026-09-08). The dot in ``.claude`` becomes its own dash,
+    # so the separator and the dot together read as a DOUBLE dash. The
+    # pre-fix encoder emitted ``…-.claude-worktrees-…`` and every worktree
+    # session therefore matched zero same-project memories.
+    (
+        "/home/shawn/personal-assistant/.claude/worktrees/workstream-g-efficacy",
+        "-home-shawn-personal-assistant--claude-worktrees-workstream-g-efficacy",
+    ),
+    # A dotted component anywhere, not just ``.claude``.
+    ("/home/shawn/Code/site.example/docs", "-home-shawn-Code-site-example-docs"),
 ]
 
 
@@ -87,7 +101,7 @@ def test_encode_resolves_relative(encode, tmp_path):
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     relative = str(nested / ".." / "b")
-    expected = str(nested.resolve()).replace("/", "-")
+    expected = re.sub(r"[^A-Za-z0-9]", "-", str(nested.resolve()))
     assert encode(relative) == expected
 
 
@@ -110,3 +124,31 @@ def test_derive_project_uses_shared_encoder(encode, retrieval_hook_module):
 def test_derive_project_empty_cwd(retrieval_hook_module):
     """Empty cwd → ``None`` — same contract as the shared encoder."""
     assert retrieval_hook_module.derive_project("") is None
+
+
+# ---------------------------------------------------------------------------
+# Audit R4 — every non-alphanumeric character encodes to a dash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cwd,expected", [
+    ("/a/b.c", "-a-b-c"),
+    ("/a/b_c", "-a-b-c"),
+    ("/a/b c", "-a-b-c"),
+    ("/a/b+c", "-a-b-c"),
+    ("/a/b@c", "-a-b-c"),
+])
+def test_encode_rewrites_every_non_alphanumeric(encode, cwd, expected):
+    """Kills: narrowing the character class back to ``/`` (or to ``[/.]``).
+
+    Only ``/`` and ``.`` are attested in the live projects directory; the
+    rest are the deliberate conservative inference documented on
+    ``encode_project_id``. Pinning them here means a future narrowing is a
+    decision someone makes on purpose, not a silent regression.
+    """
+    assert encode(cwd) == expected
+
+
+def test_encode_is_stable_for_alphanumeric_paths(encode):
+    """A path with no special characters is unchanged but for the separators."""
+    assert encode("/home/shawn/Code/inscriptions") == "-home-shawn-Code-inscriptions"

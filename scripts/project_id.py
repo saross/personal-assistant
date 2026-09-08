@@ -8,10 +8,9 @@ Why
 ``hooks/session-start-retrieval.py`` derives a project id from
 ``cwd`` to filter memories to the current project. The extraction hook
 uses ``Path(transcript_path).parent.name`` — a value Claude Code itself
-encodes from cwd by replacing ``/`` with ``-``. The two encodings need
-to match byte-for-byte; if they ever drift, ``is_same_project`` returns
-``False`` for every memory of the active project and project-aware
-retrieval silently breaks.
+encodes from cwd. The two encodings need to match byte-for-byte; if they
+ever drift, ``is_same_project`` returns ``False`` for every memory of the
+active project and project-aware retrieval silently breaks.
 
 Until this batch the encoding lived inline in
 ``session-start-retrieval.py`` (``str(Path(cwd).resolve()).replace("/", "-")``).
@@ -19,6 +18,11 @@ The audit (IC3, C-C4, C-X3) flagged the duplication as a future-proofing
 risk — Claude Code could change its encoding (URL-encode reserved
 characters, for example), and any consumer of the ``project`` field
 would silently disagree until someone noticed empty retrieval.
+
+That risk was not hypothetical: the ``/``-only rule was already wrong for
+any cwd containing a dot, and had been since before this module existed
+(audit R4, 2026-09-08 — see ``encode_project_id`` for the live evidence
+and the corrected rule).
 
 Both consumers now import ``encode_project_id`` from this module.
 
@@ -29,16 +33,56 @@ Audit refs
   C-X3 (cross-file).
 """
 
+import re
 from pathlib import Path
+
+#: Every character Claude Code replaces with ``-`` when it names a project
+#: directory. Written as "anything not alphanumeric" because that is the
+#: conservative reading of the live evidence in ``encode_project_id``: a
+#: narrower class (say ``[/.]``) would silently disagree with Claude Code
+#: again the first time a cwd contained an underscore or a space, which is
+#: precisely the drift this module exists to prevent.
+_NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
 
 def encode_project_id(cwd: str) -> str | None:
     """Encode *cwd* as the canonical project id used by memory writers.
 
-    Resolves *cwd* to an absolute path (matching the historical
-    behaviour of ``session-start-retrieval.py``), then replaces every
-    ``/`` with ``-`` — the same encoding Claude Code uses for the
-    project directory under ``~/.claude/projects/<encoded-cwd>/``.
+    Resolves *cwd* to an absolute path (matching the historical behaviour
+    of ``session-start-retrieval.py``), then replaces every character
+    outside ``[A-Za-z0-9]`` with ``-`` — the encoding Claude Code uses for
+    the project directory under ``~/.claude/projects/<encoded-cwd>/``.
+
+    Why not only ``/`` (audit R4, 2026-09-08)
+    -----------------------------------------
+    Until this fix the encoder replaced ``/`` alone. The live
+    ``~/.claude/projects/`` directory disproved that: it holds
+    ``-home-shawn-personal-assistant--claude-worktrees-workstream-g-efficacy``
+    for the cwd
+    ``/home/shawn/personal-assistant/.claude/worktrees/workstream-g-efficacy``
+    — a DOUBLE dash, one for the separator and one for the dot. The old
+    encoder produced ``…-.claude-worktrees-…`` instead, so any session whose
+    cwd had a dotted component (every ``.claude/worktrees/`` worktree) saw
+    zero same-project memories: project-scoped retrieval,
+    ``collect_project_tags``, and Vector-2c scoping all silently emptied.
+
+    Evidence base: all 20 names under ``~/.claude/projects/`` on amd-tower
+    (2026-09-08). Fifteen of them name a cwd that still exists on disk, and
+    this rule reproduces all fifteen byte-for-byte; the sixteenth is the
+    dotted worktree above, whose directory has since been removed but whose
+    cwd is known by construction. The remaining four name cwds that no
+    longer exist. Only ``/`` and ``.`` are attested there — no live name
+    contains an underscore or a space — so the wider character class is a
+    deliberate inference from "``.`` is not special either", not a measured
+    fact. If a cwd with an underscore or space ever appears, compare against
+    the directory Claude Code actually creates and narrow the class if it
+    disagrees.
+
+    ``resolve()`` is kept: Claude Code derives the id from the process
+    working directory, which the kernel reports in physical (symlink-free)
+    form, so resolving matches. No symlinked project existed on this machine
+    to confirm that empirically — it is a documented assumption, not a
+    measurement.
 
     Returns ``None`` for an empty *cwd* (callers treat ``None`` as
     "no current project known").
@@ -47,27 +91,38 @@ def encode_project_id(cwd: str) -> str | None:
     --------
     >>> encode_project_id("/home/shawn/personal-assistant")
     '-home-shawn-personal-assistant'
+    >>> encode_project_id("/personal-assistant/.claude/worktrees/wg")
+    '-personal-assistant--claude-worktrees-wg'
     >>> encode_project_id("")
     >>> encode_project_id("/")
     '-'
     """
     if not cwd:
         return None
-    return str(Path(cwd).resolve()).replace("/", "-")
+    return _NON_ALNUM.sub("-", str(Path(cwd).resolve()))
 
 
 def decode_project_id(project_id: str) -> Path | None:
-    """Inverse of ``encode_project_id``.
+    """Best-effort inverse of ``encode_project_id``.
 
-    Replaces every ``-`` with ``/`` to reconstruct the original cwd
-    path. Returns ``None`` for empty or whitespace-only input.
+    Replaces every ``-`` with ``/`` to reconstruct a *candidate* cwd path.
+    Returns ``None`` for empty or whitespace-only input.
 
-    Caveat: encoding is lossy when path components themselves contain
-    hyphens (e.g. ``~/Code/cc-session-toolkit``). The historical
-    encoding does not distinguish path separator hyphens from intrinsic
-    hyphens, so decode reconstructs a *candidate* path; callers that
-    need a verified path should resolve against the filesystem and
-    fall back gracefully if the candidate does not exist.
+    The encoding is many-to-one, so this is not a true inverse: it is exact
+    only when no path component contains a character the encoder rewrites.
+    The lossy cases, in full:
+
+    * **Intrinsic hyphens.** ``~/Code/cc-session-toolkit`` encodes exactly
+      as the (nonexistent) ``~/Code/cc/session/toolkit`` would.
+    * **Dots.** ``.claude`` encodes to ``-claude``, so a dotted component is
+      indistinguishable from one more level of nesting. This is what
+      produces the attested double dash.
+    * **Every other non-alphanumeric character** — underscore, space, ``+``,
+      ``@`` — collapses to ``-`` as well, and cannot be recovered either.
+
+    Callers needing a real path must treat the result as a candidate: check
+    it against the filesystem and degrade gracefully when it does not exist.
+    ``repo_set_for`` below does exactly that.
 
     Examples
     --------
