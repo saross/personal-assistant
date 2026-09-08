@@ -30,13 +30,20 @@ No LLM calls. Deterministic. Re-runs are cheap; tune CV threshold or
 n_occ floor by editing the constants below.
 """
 from __future__ import annotations
+import argparse
 import json
 import statistics
 import sys
 from pathlib import Path
 
-PHASE1 = Path("data/style-corpus/phase1-results-clean.json")
-OUT = Path("data/style-corpus/phase3-promotion-clean.json")
+# Paths are resolved against the repository root derived from ``__file__``,
+# not against the current working directory. The documented invocation gives
+# this script an absolute path and no ``cd``, so relative defaults meant the
+# run failed (or, worse, wrote into whatever tree the shell happened to be
+# sitting in). Both are overridable on the command line.
+PA_ROOT = Path(__file__).resolve().parents[2]
+PHASE1 = PA_ROOT / "data" / "style-corpus" / "phase1-results-clean.json"
+OUT = PA_ROOT / "data" / "style-corpus" / "phase3-promotion-clean.json"
 
 # Promotion thresholds (plan §4.2).
 CV_THRESHOLD = 1.5
@@ -219,12 +226,21 @@ def pp_count(per_paper: list[dict], path: str) -> int:
     return int(sum(v for v in pp_rate(per_paper, path)))
 
 
-def main() -> int:
-    if not PHASE1.exists():
-        print(f"Phase 1 input not found: {PHASE1}", file=sys.stderr)
+def main(argv: list[str] | None = None) -> int:
+    """Apply the promotion rules to the Phase 1 output and write the verdicts."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument("--phase1", type=Path, default=PHASE1,
+                        help=f"Phase 1 results JSON (default: {PHASE1})")
+    parser.add_argument("--out", type=Path, default=OUT,
+                        help=f"where to write the promotions (default: {OUT})")
+    args = parser.parse_args(argv)
+    phase1_path, out_path = args.phase1, args.out
+
+    if not phase1_path.exists():
+        print(f"Phase 1 input not found: {phase1_path}", file=sys.stderr)
         return 2
 
-    data = json.load(open(PHASE1))
+    data = json.load(open(phase1_path))
     per_paper = data["per_paper"]
     agg_reg = data["aggregate"]["regression"]
 
@@ -344,7 +360,7 @@ def main() -> int:
     sections_not_covered = [s for s in all_sections if s not in sections_covered]
 
     out = {
-        "phase1_input": str(PHASE1),
+        "phase1_input": str(phase1_path),
         "thresholds": {
             "cv_threshold": CV_THRESHOLD,
             "n_occ_floor": N_OCC_FLOOR,
@@ -367,8 +383,9 @@ def main() -> int:
             "n_uncovered": len(sections_not_covered),
         },
     }
-    OUT.write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    print(f"Wrote {OUT}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    print(f"Wrote {out_path}")
     print(f"\nMetrics promoted: {len(promotions)}")
     print(f"Sections covered:   {sections_covered}")
     print(f"\n{'§':5} {'metric':32} {'n_pres':>6} {'n_occ':>6} {'mean':>8} {'CV':>7}  promotion")
