@@ -27,22 +27,36 @@ existed at design time.
 from __future__ import annotations
 
 import fcntl
+import importlib
 import json
 import multiprocessing
 import os
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-# scripts/ is importable via the sys.path insertion used elsewhere in
-# the repo. Use the same pattern here.
+# scripts/ and hooks/ are importable via the sys.path insertion used
+# elsewhere in the repo. Use the same pattern here.
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+sys.path.insert(0, str(PROJECT_ROOT / "hooks"))
 
 from _bulk_rewrite_guard import lock_jsonl_for_rewrite  # noqa: E402
+
+# The production appender itself. Audit H5 (2026-09-08): the helper below
+# used to *replicate* the hook's LOCK_SH append path rather than import it,
+# on the stated rationale that a copy pins "the byte-for-byte contract the
+# hook is expected to satisfy". The rationale inverts — pinning a copy pins
+# nothing about the hook — and it showed: replacing the hook's locked append
+# with a truncating ``open(MEMORIES_FILE, "wb")`` left the whole suite green.
+# Every appender in this module now goes through the real function, so these
+# concurrency tests fail when the hook's append path is broken.
+_extraction_hook = importlib.import_module("extraction-hook")  # noqa: E402
+_shared_locked_append_fd = _extraction_hook._shared_locked_append_fd
 
 
 # ---------------------------------------------------------------------------
@@ -51,43 +65,16 @@ from _bulk_rewrite_guard import lock_jsonl_for_rewrite  # noqa: E402
 
 
 def _shared_locked_append(target: Path, lines: list[str]) -> None:
-    """Replicate the extraction-hook's LOCK_SH append path.
+    """Append *lines* to *target* through the extraction hook's own path.
 
-    Kept in-test (rather than importing from the hook module) so the
-    test pins the byte-for-byte contract the hook is expected to
-    satisfy, not whatever the hook happens to do today. Includes the
-    open-flock-fstat-vs-stat retry loop that closes the
-    rename-under-fd race; without it, a rewriter that renames between
-    our ``os.open`` and ``flock`` would leave us appending to an
-    orphan inode and silently losing the bytes.
+    Delegates to ``extraction-hook._shared_locked_append_fd`` — the real
+    context manager, with its open-flock-fstat-vs-stat retry loop closing
+    the rename-under-fd race — so a regression in the hook fails these
+    tests instead of hiding behind an in-test copy (audit H5).
     """
     payload = "".join(lines).encode("utf-8")
-    while True:
-        fd = os.open(
-            str(target),
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
-            0o644,
-        )
-        fcntl.flock(fd, fcntl.LOCK_SH)
-        try:
-            if os.fstat(fd).st_ino == os.stat(target).st_ino:
-                break
-        except FileNotFoundError:
-            pass
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        os.close(fd)
-    try:
-        os.lseek(fd, 0, os.SEEK_END)
+    with _shared_locked_append_fd(target) as fd:
         os.write(fd, payload)
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        os.close(fd)
 
 
 def _spawn_appender_subprocess(
@@ -95,15 +82,19 @@ def _spawn_appender_subprocess(
     n_lines: int,
     delay_before_first_write_s: float = 0.0,
 ) -> "multiprocessing.Process":
-    """Spawn a subprocess that runs an LOCK_SH appender.
+    """Spawn a subprocess that runs the hook's own LOCK_SH appender.
 
     Subprocess (rather than thread) so the flock is genuinely held by
-    a different OS-level locker, mirroring the cross-process race.
+    a different OS-level locker, mirroring the cross-process race. The
+    child imports ``extraction-hook`` and uses its real appender (audit
+    H5) — under the default fork start method the module is already in
+    ``sys.modules``, so the import costs nothing.
     """
     code = textwrap.dedent(
         f"""
-        import fcntl, os, time
-        target = {str(target_path)!r}
+        import importlib, os, pathlib, time
+        hook = importlib.import_module("extraction-hook")
+        target = pathlib.Path({str(target_path)!r})
         n = {n_lines}
         delay = {delay_before_first_write_s}
         if delay:
@@ -111,28 +102,8 @@ def _spawn_appender_subprocess(
         payload = ("".join(
             "APPEND-{{:03d}}\\n".format(i) for i in range(n)
         )).encode("utf-8")
-        while True:
-            fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_SH)
-            try:
-                if os.fstat(fd).st_ino == os.stat(target).st_ino:
-                    break
-            except FileNotFoundError:
-                pass
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            os.close(fd)
-        try:
-            os.lseek(fd, 0, os.SEEK_END)
+        with hook._shared_locked_append_fd(target) as fd:
             os.write(fd, payload)
-        finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            os.close(fd)
         """
     )
     proc = multiprocessing.Process(
@@ -185,24 +156,48 @@ class TestLockJsonlForRewrite:
 
 
 class TestSharedAppender:
-    """LOCK_SH appenders may run concurrently."""
+    """The hook's own appenders may run concurrently."""
 
-    def test_two_shared_holders_coexist(self, tmp_path: Path) -> None:
-        """Two LOCK_SH holders on the same file do not block each other."""
+    def test_a_second_appender_does_not_block_on_the_first(
+        self, tmp_path: Path,
+    ) -> None:
+        """The hook's appender takes a SHARED lock, not an exclusive one.
+
+        Kills ``fcntl.flock(fd, fcntl.LOCK_SH)`` -> ``LOCK_EX`` in
+        ``_shared_locked_append_fd``: every appender would then serialise
+        behind every other, and the Stop / PreCompact / SessionEnd triple
+        would queue on each other inside a hook budget.
+
+        Audit round two (Lows): this test used to open two file descriptors
+        and take the locks itself, so it held whatever the hook did — the
+        same replicate-instead-of-import defect as H5. Both appenders now
+        go through the production context manager, and the second runs in a
+        thread with a timeout so "it blocked" is an assertion rather than a
+        hang.
+        """
         target = tmp_path / "memories.jsonl"
         target.write_text("seed\n", encoding="utf-8")
 
-        fd_a = os.open(str(target), os.O_WRONLY | os.O_APPEND)
-        fd_b = os.open(str(target), os.O_WRONLY | os.O_APPEND)
-        try:
-            fcntl.flock(fd_a, fcntl.LOCK_SH)
-            # Non-blocking second acquire must succeed immediately.
-            fcntl.flock(fd_b, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            fcntl.flock(fd_a, fcntl.LOCK_UN)
-            fcntl.flock(fd_b, fcntl.LOCK_UN)
-        finally:
-            os.close(fd_a)
-            os.close(fd_b)
+        second_done = threading.Event()
+
+        with _shared_locked_append_fd(target) as fd_first:
+            def _second() -> None:
+                _shared_locked_append(target, ["second\n"])
+                second_done.set()
+
+            worker = threading.Thread(target=_second)
+            worker.start()
+            worker.join(timeout=5.0)
+            assert second_done.is_set(), (
+                "a second appender blocked while the first held its lock — "
+                "the append path is taking LOCK_EX, not LOCK_SH"
+            )
+            os.write(fd_first, b"first\n")
+
+        final = target.read_text(encoding="utf-8")
+        assert "seed" in final
+        assert "first" in final
+        assert "second" in final
 
 
 class TestRewriterBlocksAppender:

@@ -24,7 +24,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 # Shared helpers live under ``scripts/`` — both hooks and CLI scripts
 # import them by extending sys.path. Centralised so any drift across
@@ -99,11 +99,27 @@ def load_env() -> None:
 try:
     if __name__ == "__main__" or "pytest" not in sys.modules:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(LOG_FILE),
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+        logging.basicConfig(
+            filename=str(LOG_FILE),
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+        )
+    else:
+        # Under pytest the file handler is deliberately NOT opened (audit
+        # round two M7). The guard above covered only the mkdir, so importing
+        # this module from a test still handed ``basicConfig`` the live
+        # ``data/logs/extraction.log`` path. Nothing but luck stopped that
+        # from opening the operator's real log: pytest's logging plugin had
+        # already put a handler on the root logger, which makes
+        # ``basicConfig`` a no-op. Any run without that handler in place —
+        # importing the hook from a plain script, or a future pytest that
+        # configures logging differently — would have appended to it.
+        #
+        # (An earlier version of this comment cited ``-p no:logging`` as the
+        # way to see it. That is wrong and is corrected here per audit round
+        # four L-3: this branch is chosen on ``"pytest" in sys.modules``,
+        # which holds however the logging plugin is configured.)
+        logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 except OSError:
     # ``logs`` is a symlink into the data submodule; on a fresh clone it
     # dangles and mkdir raises FileExistsError. A hook must not die at
@@ -377,14 +393,63 @@ def update_vocabulary(new_tags: list[str]) -> None:
 # ============================================================================
 
 
+def cursor_entry(cursor: dict, session_id: str) -> tuple[str | None, bool]:
+    """Read a session's cursor record as ``(uuid, skip_pending)``.
+
+    A record is ``{"uuid": …, "skip_pending": …}``. A bare string is a
+    legacy row written before audit round four and reads as "no skip
+    pending", which is the safe default: at worst one command response is
+    extracted once, exactly as it would have been before.
+    """
+    record = cursor.get(session_id)
+    if isinstance(record, str):
+        return record, False
+    if isinstance(record, dict):
+        uuid = record.get("uuid")
+        if not isinstance(uuid, str):
+            # No position means no window to resume, so the flag has nothing
+            # to apply to. Returning it anyway seeded a skip from the top of
+            # the transcript and swallowed the first assistant turn, which
+            # belongs to no command (audit round six L-3).
+            return None, False
+        return uuid, bool(record.get("skip_pending"))
+    return None, False
+
+
+def set_cursor_entry(
+    cursor: dict, session_id: str, uuid: str, skip_pending: bool
+) -> None:
+    """Write a session's cursor record, position and pending skip together.
+
+    They are written as one unit deliberately: a position saved without its
+    flag is the bug audit round four C1 fixed.
+    """
+    cursor[session_id] = {"uuid": uuid, "skip_pending": skip_pending}
+
+
 def load_cursor() -> dict:
-    """Load cursor tracking last processed position per session."""
+    """Load cursor tracking last processed position per session.
+
+    Anything that is not a JSON object starts fresh. Only malformed JSON
+    was caught before (audit round five L-3), so a file holding ``[]``,
+    ``null``, ``3`` or ``"s"`` parsed cleanly and then raised
+    ``AttributeError`` on the first ``.get`` — inside a Stop / PreCompact /
+    SessionEnd hook, where the traceback surfaces as a broken session
+    close rather than as anything an operator would connect to the cursor.
+    """
     if CURSOR_FILE.exists():
         try:
-            return json.loads(CURSOR_FILE.read_text())
+            data = json.loads(CURSOR_FILE.read_text())
         except json.JSONDecodeError:
             logger.warning("Corrupt cursor file, starting fresh")
             return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "Cursor file holds %s, not an object — starting fresh",
+                type(data).__name__,
+            )
+            return {}
+        return data
     return {}
 
 
@@ -458,15 +523,90 @@ def cursor_file_lock() -> Iterator[None]:
 # ============================================================================
 
 
+class ParsedWindow(NamedTuple):
+    """What one pass over a transcript window yielded.
+
+    ``skip_pending`` is True when the window ended with a slash-command
+    exchange whose response has NOT yet been seen, so the skip must survive
+    into the next window to do its job.
+
+    It is PERSISTED in the cursor record rather than being worked around by
+    moving the cursor (audit round four C1). Two earlier attempts tried to
+    make one pointer carry both facts — hold the cursor (which re-extracted
+    the real messages before the command) and stop at a "safe" position
+    (which stalled on ``[real, /cmd, real]``, re-extracting the trailing
+    message on every firing). The cursor answers "how far have we read"; a
+    separate flag answers "is a response still owed". Splitting them lets
+    the cursor always move forward to the last entry actually read.
+    """
+
+    messages: list[dict]
+    last_uuid: str | None
+    skip_pending: bool
+
+
+def _entry_text(entry: dict) -> str:
+    """Flatten one transcript entry's message content to plain text.
+
+    Structured content arrives as a list of blocks; only ``text`` and
+    ``thinking`` carry prose. Shared by the cursor-position check and the
+    main parse so the two cannot disagree about what an entry says.
+
+    Every payload is checked, not just the outer shape (audit round six
+    M-C1): a block ``{"type": "text", "text": 99}`` used to raise TypeError
+    in the join, and ``{"type": "thinking", "thinking": 99}`` in the slice.
+    Both would surface as a Stop / PreCompact / SessionEnd hook dying on an
+    entry shape nobody had seen, so a non-string payload is skipped instead.
+    """
+    msg = entry.get("message", {})
+    content = msg.get("content", "") if isinstance(msg, dict) else ""
+    if isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+                elif block.get("type") == "thinking":
+                    # Include thinking for LLM research value
+                    thinking = block.get("thinking", "")
+                    if isinstance(thinking, str):
+                        if MAX_THINKING_CHARS:
+                            thinking = thinking[:MAX_THINKING_CHARS]
+                        text_parts.append(f"[THINKING]: {thinking}")
+            elif isinstance(block, str):
+                text_parts.append(block)
+        content = " ".join(text_parts)
+    if isinstance(content, str):
+        return content
+    # Truthy but unreadable: an unwrapped block, say
+    # ``{"content": {"type": "text", "text": "…"}}``. Returning "" silently
+    # would let the cursor advance past real prose with no trace, so name
+    # the entry (audit round six L-2). The uuid is the only handle an
+    # operator has for finding it in the transcript.
+    if content:
+        logger.warning(
+            "Entry %s: message.content is %s, not text — treated as empty",
+            entry.get("uuid"),
+            type(content).__name__,
+        )
+    return ""
+
+
 def parse_transcript(
     transcript_path: str,
     last_uuid: str | None,
-) -> tuple[list[dict], str | None]:
+    skip_pending: bool = False,
+) -> ParsedWindow:
     """
     Parse a Claude Code transcript JSONL file.
 
-    Returns new messages since last_uuid, plus the UUID of the last
-    entry seen (for cursor advancement).
+    ``skip_pending`` seeds the slash-command skip from the cursor record, so
+    a command in one window still suppresses its response in the next.
+
+    Returns new messages since last_uuid, the UUID of the last entry seen,
+    and whether a skip is still pending at the end of the window.
 
     If last_uuid is set but not found in the transcript (stale cursor
     from a rotated/truncated file), falls back to processing the entire
@@ -475,7 +615,9 @@ def parse_transcript(
     messages = []
     last_seen_uuid = None
     found_cursor = last_uuid is None  # If no cursor, start from beginning
-    skip_next_assistant = False  # Flag to skip assistant response to a command
+    # Seeded from the cursor record, so a command in a previous window still
+    # suppresses its response here (audit round four C1).
+    skip_next_assistant = skip_pending
 
     with open(transcript_path, encoding="utf-8") as f:
         for line in f:
@@ -490,6 +632,20 @@ def parse_transcript(
             if not found_cursor:
                 if entry_uuid == last_uuid:
                     found_cursor = True
+                    # The cursor can sit ON a command entry — code before
+                    # audit round four wrote exactly that. The entry is
+                    # consumed here, before the marker test below ever runs,
+                    # so without this its response would leak into the next
+                    # window (audit round four L-2). Sidechain entries are
+                    # excluded for the same reason they are below.
+                    if entry.get("type") == "user" and not entry.get(
+                        "isSidechain"
+                    ):
+                        if any(
+                            marker in _entry_text(entry)
+                            for marker in COMMAND_MARKERS
+                        ):
+                            skip_next_assistant = True
                 continue
 
             if entry_uuid:
@@ -499,25 +655,24 @@ def parse_transcript(
             if entry.get("type") not in ("user", "assistant"):
                 continue
 
-            msg = entry.get("message", {})
-            content = msg.get("content", "")
+            # Subagent turns belong to that agent's own transcript, never to
+            # this session's conversation, and they are dropped HERE —
+            # before the slash-command branch — because the flag must not
+            # cross them in either direction (audit round three M4). A
+            # sidechain assistant entry is not the command's response and
+            # must not consume the flag; a sidechain user entry is not
+            # Shawn's invocation and must not set it.
+            if entry.get("isSidechain"):
+                continue
 
-            # Handle structured content blocks
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif block.get("type") == "thinking":
-                            # Include thinking for LLM research value
-                            thinking = block.get("thinking", "")
-                            if MAX_THINKING_CHARS:
-                                thinking = thinking[:MAX_THINKING_CHARS]
-                            text_parts.append(f"[THINKING]: {thinking}")
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                content = " ".join(text_parts)
+            # ``isMeta`` on anything but a user entry cannot be a command
+            # invocation and is not conversation either, so it is dropped
+            # here too. isMeta USER entries must survive to the command
+            # branch below — see the note there.
+            if entry.get("isMeta") and entry.get("type") != "user":
+                continue
+
+            content = _entry_text(entry)
 
             # Skip slash command exchanges — these are handled by the
             # commands themselves (e.g., /remember writes to JSONL
@@ -532,6 +687,14 @@ def parse_transcript(
             # command response, producing sporadic double-extractions.
             # The flag is cleared only by the first assistant turn that
             # follows.
+            #
+            # Known limit, recorded not fixed (audit round four L-4): the
+            # test is a substring match on the entry's text, so a NON-meta
+            # user entry that merely quotes a command header — a tool result
+            # echoing ``commands/*.md``, say — sets the flag too, and the
+            # next genuine assistant turn is dropped. Narrowing it needs a
+            # position-anchored match against the harness's real expansion
+            # shape, which is a separate change.
             if entry.get("type") == "user":
                 if any(marker in content for marker in COMMAND_MARKERS):
                     skip_next_assistant = True
@@ -545,6 +708,30 @@ def parse_transcript(
                     skip_next_assistant = False
                 continue
 
+            # A harness-injected USER entry that was not a command (audit
+            # H22, 2026-09-08). ``isMeta`` marks text the harness wrote into
+            # the transcript — system-reminder injections, slash-command
+            # expansions — and records it with ``"role": "user"``, so
+            # feeding it to the extractor invents memories out of the
+            # harness's own prose.
+            #
+            # This one check sits AFTER the slash-command branch, and that
+            # ordering is load-bearing: slash commands ARE delivered as
+            # ``isMeta`` user entries (measured 2026-09-08 across
+            # ~/.claude/projects/-home-shawn-personal-assistant: all 364
+            # marker-bearing user entries were isMeta, and no non-meta user
+            # entry carried a marker). Dropping them any earlier would stop
+            # the markers ever setting ``skip_next_assistant``, letting every
+            # /remember, /forget, and /update response back into extraction.
+            #
+            # ``last_seen_uuid`` is assigned above this point, so a skipped
+            # entry still yields a cursor position. ``main()`` is what
+            # actually saves it for an all-dropped window (see the ``if not
+            # messages`` branch there) — until audit round two M1 it exited
+            # first, so such a window really was reprocessed every firing.
+            if entry.get("isMeta"):
+                continue
+
             if content and content.strip():
                 messages.append(
                     {
@@ -555,7 +742,13 @@ def parse_transcript(
                 )
 
     # If cursor UUID was set but never found (stale/rotated transcript),
-    # fall back to processing the entire file from the start
+    # fall back to processing the entire file from the start.
+    #
+    # The stored skip flag is deliberately NOT passed down (audit round
+    # five, mutation 4): a full reparse starts before the command that set
+    # it, so the command is re-encountered on the way through and re-arms
+    # the flag by itself. Seeding it as well would suppress the first
+    # assistant turn in the file, which belongs to no command at all.
     if last_uuid is not None and not found_cursor:
         logger.warning(
             "Cursor UUID %s not found in transcript — stale cursor. "
@@ -564,7 +757,12 @@ def parse_transcript(
         )
         return parse_transcript(transcript_path, None)
 
-    return messages, last_seen_uuid
+    # ``skip_next_assistant`` still set at end of window means the command's
+    # response has not arrived yet (PreCompact fires before the model call,
+    # and an interrupt mid-tool-use leaves [command, tool-use-only
+    # assistant]). The caller stores it alongside the position, so the next
+    # window resumes with the skip still owed.
+    return ParsedWindow(messages, last_seen_uuid, skip_next_assistant)
 
 
 # ============================================================================
@@ -1115,13 +1313,60 @@ def main() -> None:
     with cursor_file_lock():
         # Load cursor to find where we left off in this session's transcript
         cursor = load_cursor()
-        last_uuid = cursor.get(session_id)
+        last_uuid, stored_skip = cursor_entry(cursor, session_id)
 
-        # Parse new content from transcript
-        messages, new_last_uuid = parse_transcript(transcript_path, last_uuid)
+        # Parse new content from transcript, resuming any owed skip.
+        window = parse_transcript(transcript_path, last_uuid, stored_skip)
+        messages, new_last_uuid = window.messages, window.last_uuid
+
+        # The cursor always advances to the last entry actually read, and
+        # carries the pending skip with it (audit round four C1). Position
+        # and skip state are two different facts; making one pointer serve
+        # both is what produced the two earlier regressions — holding the
+        # cursor re-extracted the real messages before a command, and
+        # stopping at a "safe" position stalled forever on
+        # ``[real, /cmd, real]``.
+        advance_uuid = new_last_uuid
 
         if not messages:
-            logger.debug("No new messages in session %s", session_id)
+            # A window can hold entries and still yield no messages: every
+            # one of them was harness-injected (``isMeta``), a subagent turn
+            # (``isSidechain``), a slash-command exchange, or a
+            # non-conversation entry type. All four are dropped BY DESIGN, so
+            # stepping past them loses nothing — and not stepping past them
+            # means re-parsing the same window on every subsequent firing,
+            # forever (audit round two M1: the comment in ``parse_transcript``
+            # claimed this already happened, but this branch exited before
+            # ``save_cursor`` ever ran).
+            #
+            # Distinct from the too-short-window case (audit H16), which
+            # returns None from ``extract_memories`` and deliberately holds
+            # the cursor: a short window accumulates into an extractable one,
+            # whereas dropped entries would simply be dropped again.
+            #
+            # ``skip_pending`` is why the advance is conditional. A window
+            # that ends BETWEEN a slash-command entry and its response has
+            # nothing extractable in it, so it looks all-dropped — but the
+            # skip flag has to survive into the next window or the response
+            # is sent to Haiku and re-extracted into the store /remember
+            # (or /forget, or /update) has already written to. Reproduced
+            # end to end: W1 = the command entry alone, W2 = its response.
+            # The split is reachable because PreCompact fires before the
+            # model call, and an interrupt mid-tool-use leaves
+            # [command, tool-use-only assistant].
+            if advance_uuid and advance_uuid != last_uuid:
+                set_cursor_entry(
+                    cursor, session_id, advance_uuid, window.skip_pending
+                )
+                save_cursor(cursor)
+                logger.debug(
+                    "No extractable messages in session %s; cursor advanced "
+                    "to %s past dropped entries",
+                    session_id,
+                    advance_uuid,
+                )
+            else:
+                logger.debug("No new entries at all in session %s", session_id)
             sys.exit(0)
 
         logger.info(
@@ -1194,8 +1439,10 @@ def main() -> None:
                     update_vocabulary(new_tags)
 
                 # Only advance cursor AFTER successful append
-                if new_last_uuid:
-                    cursor[session_id] = new_last_uuid
+                if advance_uuid:
+                    set_cursor_entry(
+                        cursor, session_id, advance_uuid, window.skip_pending
+                    )
                     save_cursor(cursor)
 
                 logger.info(
@@ -1213,8 +1460,10 @@ def main() -> None:
         else:
             # No memories extracted, but still advance cursor so we don't
             # reprocess the same content
-            if new_last_uuid:
-                cursor[session_id] = new_last_uuid
+            if advance_uuid:
+                set_cursor_entry(
+                    cursor, session_id, advance_uuid, window.skip_pending
+                )
                 save_cursor(cursor)
             logger.info(
                 "No memories extracted from %d messages (session %s)",
