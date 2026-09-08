@@ -99,6 +99,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from _sync_cursor import comparable_timestamp  # noqa: E402
+
 # ============================================================================
 # Cycle outcomes
 # ============================================================================
@@ -333,15 +335,14 @@ def cursor_went_backwards(
 def _comparable_cursor(value: int | str) -> int | str:
     """Put a timestamp cursor into one spelling before comparing it.
 
-    The sessions cursor is an ISO-8601 instant compared LEXICALLY, and
-    the same instant has two spellings: ``...T00:00:00Z`` and
-    ``...T00:00:00+00:00``. ``+`` sorts before ``Z``, so a writer that
-    changed spelling would look like a cursor that had gone backwards and
-    a rebuild would be announced that never happened (tenth re-audit,
-    low L1).
+    Delegates to :func:`_sync_cursor.comparable_timestamp`, which the
+    sessions cycle's own newer-than-the-cursor filter also uses. Two
+    spellings of the same instant compare unequal, so a helper used by
+    only one of the two readers is a difference of opinion waiting to
+    happen (tenth re-audit L1; eleventh re-audit L2).
     """
-    if isinstance(value, str) and value[-1:] in ("Z", "z"):
-        return value[:-1] + "+00:00"
+    if isinstance(value, str):
+        return comparable_timestamp(value)
     return value
 
 

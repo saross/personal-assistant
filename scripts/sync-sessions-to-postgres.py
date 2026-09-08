@@ -44,6 +44,7 @@ from _sync_cursor import (  # noqa: E402
     QUARANTINE_FAILED,
     QUARANTINE_WRITTEN,
     append_quarantine_entry,
+    comparable_timestamp,
     count_quarantine_entries,
     read_quarantine_entries,
     normalise_timestamp_cursor,
@@ -254,8 +255,8 @@ def find_session_metadata(
         if since:
             archived_at = metadata.get("archive", {}).get("archived_at", "")
             if archived_at:
-                normalised = archived_at.replace("Z", "+00:00")
-                since_normalised = since.replace("Z", "+00:00")
+                normalised = comparable_timestamp(archived_at)
+                since_normalised = comparable_timestamp(since)
                 if normalised <= since_normalised:
                     continue
 
@@ -1092,8 +1093,8 @@ def _sync_locked_body(
         # still advance past id-less sessions once they are quarantined.
         archived_at = metadata.get("archive", {}).get("archived_at", "")
         if archived_at:
-            normalised = archived_at.replace("Z", "+00:00")
-            latest_normalised = latest_archived_at.replace("Z", "+00:00")
+            normalised = comparable_timestamp(archived_at)
+            latest_normalised = comparable_timestamp(latest_archived_at)
             if normalised > latest_normalised:
                 latest_archived_at = archived_at
 

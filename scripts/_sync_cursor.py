@@ -133,6 +133,36 @@ def _ends_mid_line(path: Path) -> bool:
         return False
 
 
+def comparable_timestamp(value: str) -> str:
+    """
+    Put an ISO-8601 instant into ONE spelling, for lexical comparison.
+
+    The sessions cursor is compared as text, and the same instant has
+    several spellings: a trailing ``Z``, a trailing ``z``, an explicit
+    ``+00:00``, or no offset at all. ``+`` sorts before ``Z`` and a naive
+    string is a prefix of an aware one, so mixing spellings makes a
+    cursor look as though it has gone backwards and announces a rebuild
+    that never happened.
+
+    One helper, used by the gate's rebuild check and by the cycle's own
+    "is this session newer than the cursor" filter, so the two can never
+    disagree about the order of two timestamps (eleventh re-audit, L2).
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    text = value.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    marker = text.find("T")
+    if marker != -1:
+        tail = text[marker + 1:]
+        # No offset at all: treat it as UTC, which is what every writer
+        # in this repo means by a naive timestamp.
+        if "+" not in tail and "-" not in tail:
+            text += "+00:00"
+    return text
+
+
 def normalise_line_cursor(
     value: object,
     *,

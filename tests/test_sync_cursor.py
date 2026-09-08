@@ -844,3 +844,56 @@ class TestThereIsOnlyOneAppender:
             f"a quarantine file is appended to outside the one appender: "
             f"{offenders}"
         )
+
+
+class TestOneSpellingForATimestamp:
+    """
+    Eleventh re-audit, L2 — the gate's rebuild check and the cycle's
+    newer-than-the-cursor filter both compare ISO instants as text, and
+    they were normalising differently. A helper used by only one of two
+    readers is a difference of opinion waiting to happen.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        ("2026-09-01T00:00:00Z", "2026-09-01T00:00:00+00:00"),
+        ("2026-09-01T00:00:00z", "2026-09-01T00:00:00+00:00"),
+        ("2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00+00:00"),
+        # Naive is a PREFIX of aware, so it sorts first without this.
+        ("2026-09-01T00:00:00", "2026-09-01T00:00:00+00:00"),
+        ("2026-09-01T00:00:00+10:00", "2026-09-01T00:00:00+10:00"),
+        ("2026-09-01T00:00:00-05:00", "2026-09-01T00:00:00-05:00"),
+        ("  2026-09-01T00:00:00Z  ", "2026-09-01T00:00:00+00:00"),
+        ("", ""),
+    ])
+    def test_the_spellings_collapse(self, value, expected):
+        """The mutation this kills: handling only an upper-case Z."""
+        assert _sync_cursor.comparable_timestamp(value) == expected
+
+    def test_every_spelling_of_one_instant_compares_equal(self):
+        """The property the helper exists for, stated directly."""
+        spellings = [
+            "2026-09-01T00:00:00Z",
+            "2026-09-01T00:00:00z",
+            "2026-09-01T00:00:00+00:00",
+            "2026-09-01T00:00:00",
+        ]
+        canonical = {
+            _sync_cursor.comparable_timestamp(s) for s in spellings
+        }
+        assert len(canonical) == 1, canonical
+
+    def test_the_gate_and_the_cycle_use_the_same_helper(self):
+        """
+        Structural: two readers of the same order must share the code
+        that defines it. The mutation this kills: either of them growing
+        its own ``.replace("Z", ...)`` again.
+        """
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        for name in ("_sync_gate.py", "sync-sessions-to-postgres.py"):
+            source = (scripts / name).read_text(encoding="utf-8")
+            assert "comparable_timestamp" in source, (
+                f"{name} does not use the shared helper"
+            )
+            assert 'replace("Z", "+00:00")' not in source, (
+                f"{name} normalises timestamps on its own again"
+            )
