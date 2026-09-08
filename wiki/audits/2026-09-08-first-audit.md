@@ -442,9 +442,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     marker regex, the file loop, two of the five refusal sites, orphan pop
     by selector); every `fail` on the rebase and push paths wedges the
     sync with no gate line; the marker re-scan runs after `rebase
-    --abort`. Fourth round running: `fail` itself gates every non-zero
-    exit. Both machines: no stash in the parent or data repositories at
-    14:05.
+    --abort`. Fourth round done (bb029fd–9ebbbd7): diff3/zdiff3 markers
+    recognised and the base section dropped whole (stripping only the
+    marker line resurrected records both machines had deleted); the latch
+    reset; `fail` itself gates every non-zero exit; the marker list
+    captured before the abort; orphans applied by commit; a non-existent
+    `HOME` refused; the five surviving mutations killed. Suite 1,398.
+    Fourth pass running. Both machines at 14:30: no stash in either
+    repository, no marker line in either corpus, no `merge.conflictStyle`
+    set.
   - PR #117, first pass: **a regression class** — `ProgrammingError` and
     `InternalError` (revoked privilege, missing table, aborted transaction)
     were routed to "row refused", so an environment fault would quarantine
@@ -492,8 +498,22 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     → environment; transient remedy for classes 40 and 57; a structural
     test pins every gate write to an injectable path after the suite
     wrote a fabricated gate under the real `~/.cache` a third time. Suite
-    1,540, measured. Fourth pass running. After merge the PreCompact and
-    SessionEnd hook commands in `~/.claude/settings.json` on both
+    1,540, measured. Fourth pass: **block** — three criticals of one
+    shape: a run that did no work (nothing new to sync; an unmounted
+    archive root; a `--project`-scoped indexer run; an empty root that
+    made the prune loop wipe the refusal memory) is labelled a completed
+    cycle and lowers a gate it learnt nothing about, so the quarantine
+    warning self-erases within one tick. Also: the indexer gates nothing
+    on exit 3/4; the syncs gate nothing on exit 1/2 (a schema mismatch
+    stalls invisibly); a degraded run's quarantines are discarded; a
+    persistent outage has no signal at all; the sessions gate policy and
+    the memories correlated hold are untested; the structural gate test
+    is substring-based. Fifth round running, briefed as one invariant: a
+    gate is lowered only by evidence that the fault is gone; absence of
+    work is not evidence (an idle outcome that never touches the gate;
+    the indexer gate reflects the whole refusal memory; an outage counter
+    that gates after three consecutive runs). After merge the PreCompact
+    and SessionEnd hook commands in `~/.claude/settings.json` on both
     machines must follow the new template.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
