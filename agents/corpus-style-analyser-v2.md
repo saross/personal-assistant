@@ -819,6 +819,16 @@ on conversation history.
 - Passive ratio rises slightly (0.28 → 0.31). Probably cleaner parses
   find more real passives, but pending a fresh diagnostic-3 sample on
   the clean corpus before any passive-related claim is published.
+  **Both figures are per-VERB, and are superseded.** They came from a
+  `passive_ratio` that divided qualifying VERBS by sentences — a quantity
+  unbounded above 1, and not the measure §5 of this document specifies
+  (audit finding ST8, 2026-09-09). `phase1_pipeline.py` now reports the
+  specified measure, the **fraction of sentences carrying at least one
+  `nsubjpass`/`auxpass` construction**, bounded 0–1, under the name
+  `passive_ratio`; the old per-verb quantity survives beside it as
+  `passive_verbs_per_sentence`. Neither 0.28 nor 0.31 is a value of the
+  new metric, so no passive figure should be quoted until Phase 1 has
+  been re-run over the clean corpus.
 - Run-1 anchors are retired as a regression target — they were
   contaminated by extraction noise. Use the clean-corpus values as the
   new baseline.
