@@ -35,9 +35,15 @@ Exit codes:
     0 - ran to completion (possibly indexing nothing)
     2 - psycopg2 is missing, or the database schema version is not the
         one this script was written against
-    3 - PostgreSQL is unreachable. Not critical: the archive tree is
-        canonical and the index can be rebuilt at any time by re-running
-        this script.
+    3 - PostgreSQL is unreachable (at connect time or mid-run). Not
+        critical: the archive tree is canonical and the index can be
+        rebuilt at any time by re-running this script.
+    4 - environment fault: PostgreSQL is reachable but not in the expected
+        state (permissions, a missing column, a full disk). Retrying will
+        not help until someone changes something.
+    5 - the run completed but one or more files were REFUSED and are not
+        searchable. They are remembered in ~/.cache and retried when the
+        file changes, or with --force.
 """
 
 from __future__ import annotations
@@ -71,6 +77,28 @@ from _pg_row_guard import (  # noqa: E402
 
 DB_NAME = "claude_memories"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
+
+
+#: Where refused files are remembered between runs. Machine-local runtime
+#: state, so ~/.cache rather than the data submodule: it is a "do not retry
+#: this yet" note, rebuildable by deleting the file.
+REFUSAL_FILE = Path.home() / ".cache" / "index-session-content-refusals.json"
+
+
+class IndexerAbort(RuntimeError):
+    """
+    The run cannot continue, and the exit code says why.
+
+    Every abort path funnels through this so ``main`` has one thing to
+    catch. Before it, ``main`` caught only ``ImportError``, so an outage
+    or an environment fault *mid-run* produced a raw traceback while the
+    identical fault at connect time degraded politely (second re-audit,
+    finding M4).
+    """
+
+    def __init__(self, exit_code: int, message: str) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
 # Defence-in-depth cap: natural turn text is small; this only guards against a
 # pathological block. Far below anything that would stress the row.
 MAX_CHUNK_CHARS = 100_000
@@ -88,7 +116,10 @@ logger = logging.getLogger("index-session-content")
 
 # --- Transcript parsing (line-oriented, bounded) ----------------------------
 
-def extract_turn_text(record: dict) -> str | None:
+def extract_turn_text(
+    record: dict,
+    stats: dict[str, int] | None = None,
+) -> str | None:
     """Return the clean prose of one user/assistant turn, or None to skip it.
 
     Keeps: user string content, and `text` blocks from either role. Drops:
@@ -122,7 +153,9 @@ def extract_turn_text(record: dict) -> str | None:
     if isinstance(content, str):
         # Same NUL strip as the block path below — a plain-string turn is
         # just as capable of carrying one (re-audit finding M4).
-        text, _nuls = sanitise_nuls(content.strip())
+        text, nuls = sanitise_nuls(content.strip())
+        if nuls and stats is not None:
+            stats["nuls_removed"] = stats.get("nuls_removed", 0) + nuls
         return text or None
     if not isinstance(content, list):
         return None
@@ -148,7 +181,9 @@ def extract_turn_text(record: dict) -> str | None:
     # LLM-generated prose that put NULs into two session.meta.json files
     # is what this indexes (re-audit finding M4). This is the ingest
     # boundary, so it is where the stripping belongs.
-    text, _nuls = sanitise_nuls(text)
+    text, nuls = sanitise_nuls(text)
+    if nuls and stats is not None:
+        stats["nuls_removed"] = stats.get("nuls_removed", 0) + nuls
     if not text:
         return None
     return text[:MAX_CHUNK_CHARS] if len(text) > MAX_CHUNK_CHARS else text
@@ -167,8 +202,12 @@ def open_transcript(path: Path):
     return open(path, "rt", errors="replace", encoding="utf-8")
 
 
-def iter_turns(transcript_path: Path):
+def iter_turns(transcript_path: Path, stats: dict[str, int] | None = None):
     """Yield (turn_idx, role, text) for each prose turn in one transcript.
+
+    ``stats`` is an optional counter dict; when given, the number of NUL
+    characters stripped is accumulated under ``"nuls_removed"`` so the
+    caller can report them (low finding L3).
 
     Streams one line at a time; a malformed line is skipped, never fatal.
     turn_idx is the ordinal of the source record in the file, so it is a
@@ -184,7 +223,7 @@ def iter_turns(transcript_path: Path):
                     record = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
-                text = extract_turn_text(record)
+                text = extract_turn_text(record, stats=stats)
                 if text is None:
                     continue
                 # extract_turn_text has already required message.role —
@@ -255,15 +294,67 @@ def discover(archive_root: Path, project: str | None, include_subagents: bool):
                 yield by_stem[stem], proj_name, session_dir
 
 
+# --- Refusal memory ---------------------------------------------------------
+
+def load_refusals(refusal_file: Path = REFUSAL_FILE) -> dict[str, float]:
+    """Return ``{archive_path: source_mtime}`` for files PostgreSQL refused.
+
+    Second re-audit, finding M3: a refused file was skipped and then
+    re-parsed and re-refused on every single run, for ever, reporting
+    nothing. The incremental skip is keyed on ``source_mtime`` in
+    ``session_chunks``, and a refused file writes no row there, so it never
+    became "already indexed". Remembering the refusal alongside the mtime
+    means the file is skipped until it actually changes — at which point it
+    is worth another try.
+
+    A missing or unreadable file reads as "nothing refused": the memory is
+    an optimisation and a report, never a gate on correctness.
+    """
+    try:
+        data = json.loads(refusal_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(key): float(value)
+        for key, value in data.items()
+        if isinstance(value, (int, float))
+    }
+
+
+def save_refusals(
+    refusals: dict[str, float],
+    refusal_file: Path = REFUSAL_FILE,
+) -> bool:
+    """Persist the refusal memory atomically. Returns True on success.
+
+    Written via temp file + rename so a kill mid-write cannot leave a
+    half-parsed file that reads as "nothing refused" and sends the next run
+    back into the same wall.
+    """
+    try:
+        refusal_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = refusal_file.with_name(f"{refusal_file.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(refusals, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, refusal_file)
+    except OSError as exc:
+        logger.warning("Could not save the refusal memory: %s", exc)
+        return False
+    return True
+
+
 # --- Indexing ---------------------------------------------------------------
 
 def index_archive(archive_root: Path, project: str | None,
-                  include_subagents: bool,
-                  force: bool) -> tuple[int, int, int] | None:
+                  include_subagents: bool, force: bool,
+                  refusal_file: Path = REFUSAL_FILE
+                  ) -> tuple[int, int, int, int]:
     """Index matching transcripts.
 
-    Returns ``(files_indexed, files_skipped, chunks)``, or ``None`` when
-    PostgreSQL is unreachable.
+    Returns ``(files_indexed, files_skipped, chunks, files_refused)``.
+    Aborts raise :class:`IndexerAbort`, whose ``exit_code`` the caller
+    returns.
 
     A stopped database used to produce a raw traceback here — ``connect``
     was unguarded and ``main`` caught only ``ImportError`` — while every
@@ -283,7 +374,7 @@ def index_archive(archive_root: Path, project: str | None,
             "tree remains canonical; re-run this script once it is back to "
             "rebuild the index."
         )
-        return None
+        raise IndexerAbort(3, f"cannot connect to PostgreSQL: {exc}") from exc
 
     # Refuse to write against a schema shape this script was not written
     # for: session_chunks' columns and its (archive_path, turn_idx) unique
@@ -293,16 +384,34 @@ def index_archive(archive_root: Path, project: str | None,
     except SchemaVersionError as exc:
         logger.error("Schema-version mismatch: %s", exc)
         conn.close()
-        sys.exit(2)
+        raise IndexerAbort(2, f"schema-version mismatch: {exc}") from exc
 
     conn.autocommit = False
     files_indexed = files_skipped = total_chunks = files_refused = 0
+    nuls_stripped = 0
+    # Files PostgreSQL refused on a previous run, with the mtime they had
+    # then. ``force`` ignores the memory, which is the operator's way of
+    # saying "try them again anyway".
+    known_refusals = {} if force else load_refusals(refusal_file)
+    refusals_changed = False
     try:
         with conn.cursor() as cur:
             for transcript_path, proj_name, session_dir in discover(
                     archive_root, project, include_subagents):
                 rel_path = str(transcript_path.relative_to(archive_root))
                 mtime = transcript_path.stat().st_mtime
+
+                # Refused on an earlier run and unchanged since: skip it
+                # rather than re-parsing and re-refusing every run (M3).
+                if known_refusals.get(rel_path) == mtime:
+                    files_skipped += 1
+                    files_refused += 1
+                    continue
+                if rel_path in known_refusals:
+                    # The file changed — worth another try. Forget the
+                    # old verdict either way.
+                    del known_refusals[rel_path]
+                    refusals_changed = True
 
                 # Incremental skip: already indexed at this mtime?
                 if not force:
@@ -314,11 +423,22 @@ def index_archive(archive_root: Path, project: str | None,
                         continue
 
                 sess_id = session_id_for(session_dir)
+                # Per-file NUL accounting (low finding L3): the counts
+                # sanitise_nuls returns were discarded, so text was being
+                # silently altered on the way into the index.
+                file_stats: dict[str, int] = {"nuls_removed": 0}
                 rows = [
                     (sess_id, proj_name, session_dir.name, rel_path, turn_idx,
                      role, text, len(text), mtime)
-                    for turn_idx, role, text in iter_turns(transcript_path)
+                    for turn_idx, role, text in iter_turns(
+                        transcript_path, stats=file_stats)
                 ]
+                if file_stats["nuls_removed"]:
+                    nuls_stripped += file_stats["nuls_removed"]
+                    logger.warning(
+                        "  stripped %d NUL character(s) from %s before "
+                        "indexing — PostgreSQL cannot store U+0000 in text",
+                        file_stats["nuls_removed"], rel_path)
 
                 # Replace this file's rows transactionally (no stale turns).
                 # Known limitation: a file with ZERO extractable prose turns
@@ -357,15 +477,24 @@ def index_archive(archive_root: Path, project: str | None,
                         # Not about this file: the database went away, or
                         # is not in the state this script expects. Stop —
                         # ploughing on would report every remaining file
-                        # as poison.
+                        # as poison. Same exit codes as the connect-time
+                        # path rather than a traceback (finding M4).
                         logger.error(
-                            "Aborting the index run — %s: %s",
-                            type(exc).__name__, str(exc).strip())
-                        raise
+                            "Aborting the index run — %s (SQLSTATE %s): %s",
+                            type(exc).__name__,
+                            getattr(exc, "pgcode", None) or "none",
+                            str(exc).strip())
+                        raise IndexerAbort(
+                            3 if verdict == OUTAGE else 4,
+                            f"{type(exc).__name__}: {str(exc).strip()}",
+                        ) from exc
                     files_refused += 1
+                    known_refusals[rel_path] = mtime
+                    refusals_changed = True
                     logger.error(
-                        "  REFUSED %-22s %-45s — %s. Skipping this file and "
-                        "continuing; it is retried on the next run.",
+                        "  REFUSED %-22s %-45s — %s. Skipping this file; it "
+                        "is remembered and not retried until the file "
+                        "changes (or --force).",
                         proj_name, session_dir.name[:45], str(exc).strip())
                     continue
                 files_indexed += 1
@@ -377,12 +506,20 @@ def index_archive(archive_root: Path, project: str | None,
         raise
     finally:
         conn.close()
+        if refusals_changed:
+            save_refusals(known_refusals, refusal_file)
+    if nuls_stripped:
+        logger.warning(
+            "Stripped %d NUL character(s) in total across this run.",
+            nuls_stripped)
     if files_refused:
         logger.error(
-            "%d file(s) were refused by PostgreSQL and left unindexed. "
-            "They are retried on the next run; the archive tree is "
-            "canonical either way.", files_refused)
-    return files_indexed, files_skipped, total_chunks
+            "%d file(s) are refused by PostgreSQL and left unindexed — "
+            "their transcripts are NOT searchable. Recorded in %s; they "
+            "are retried when the file changes, or with --force. The "
+            "archive tree is canonical either way.",
+            files_refused, refusal_file)
+    return files_indexed, files_skipped, total_chunks, files_refused
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -417,13 +554,21 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         logger.error("psycopg2 is required; install it in the venv.")
         return 2
-    if result is None:
-        # Database unreachable — reported by index_archive, not fatal to
-        # the archive itself. Non-zero so a wrapper or cron job notices.
-        return 3
-    indexed, skipped, chunks = result
-    logger.info("Done: %d file(s) indexed, %d skipped (unchanged), %d chunks.",
-                indexed, skipped, chunks)
+    except IndexerAbort as exc:
+        # Reported in full by index_archive; the code carries the reason.
+        logger.error("Index run aborted (exit %d): %s", exc.exit_code, exc)
+        return exc.exit_code
+    indexed, skipped, chunks, refused = result
+    logger.info(
+        "Done: %d file(s) indexed, %d skipped (unchanged), %d chunks, "
+        "%d refused.", indexed, skipped, chunks, refused)
+    if refused:
+        # Non-zero so the refusal shows in the hook log rather than being
+        # a line in a "Done:" message that reads like success (M3).
+        logger.error(
+            "%d transcript(s) are not searchable. See the REFUSED lines "
+            "above and %s.", refused, REFUSAL_FILE)
+        return 5
     return 0
 
 

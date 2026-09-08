@@ -96,8 +96,25 @@ def _install_fake_psycopg2(
     cur = MagicMock()
     cur.__enter__ = MagicMock(return_value=cur)
     cur.__exit__ = MagicMock(return_value=False)
-    cur.fetchone.return_value = (schema_version,)
     cur.fetchall.return_value = []
+
+    # fetchone answers the schema-version probe with a version and the
+    # "already indexed at this mtime?" probe with nothing. A blanket
+    # truthy return makes every file look already-indexed, which silently
+    # short-circuits any test that does not pass ``force``.
+    last_sql = {"value": ""}
+
+    def _execute(sql, *args, **kwargs):
+        last_sql["value"] = str(sql)
+        return None
+
+    def _fetchone():
+        if "meta" in last_sql["value"]:
+            return (schema_version,)
+        return None
+
+    cur.execute.side_effect = _execute
+    cur.fetchone.side_effect = _fetchone
 
     conn = MagicMock()
     conn.cursor.return_value = cur
@@ -115,6 +132,18 @@ def _install_fake_psycopg2(
     monkeypatch.setitem(sys.modules, "psycopg2", fake)
     monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_extras)
     return conn
+
+
+@pytest.fixture(autouse=True)
+def pinned_refusal_file(indexer, tmp_path, monkeypatch):
+    """Keep the refusal memory inside the test's tmp directory.
+
+    It lives in ~/.cache in production; a test writing the real one would
+    make the next real run skip files it should have indexed.
+    """
+    path = tmp_path / "cache" / "index-session-content-refusals.json"
+    monkeypatch.setattr(indexer, "REFUSAL_FILE", path)
+    return path
 
 
 @pytest.fixture
@@ -154,7 +183,7 @@ class TestSchemaVersionGuard:
     """schema.sql's stated contract, finally honoured by this script."""
 
     def test_schema_version_is_asserted_before_any_query(
-        self, indexer, monkeypatch, archive_root,
+        self, indexer, monkeypatch, archive_root, pinned_refusal_file,
     ):
         """
         Every other PG-touching script asserts ``meta.schema_version``
@@ -170,7 +199,9 @@ class TestSchemaVersionGuard:
 
         monkeypatch.setattr(indexer, "assert_schema_version", _assert)
 
-        indexer.index_archive(archive_root, None, False, False)
+        indexer.index_archive(
+            archive_root, None, False, False, pinned_refusal_file,
+        )
 
         assert seen["called"] is True
 
@@ -188,10 +219,10 @@ class TestSchemaVersionGuard:
 
         monkeypatch.setattr(indexer, "assert_schema_version", _mismatch)
 
-        with pytest.raises(SystemExit) as excinfo:
+        with pytest.raises(indexer.IndexerAbort) as excinfo:
             indexer.index_archive(archive_root, None, False, False)
 
-        assert excinfo.value.code == 2
+        assert excinfo.value.exit_code == 2
         assert sys.modules["psycopg2.extras"].execute_values.call_count == 0
         conn.close.assert_called_once()
 
@@ -214,7 +245,9 @@ class TestPostgresOutage:
         psycopg2.OperationalError`` around ``connect``.
         """
         _install_fake_psycopg2(monkeypatch, raise_on_connect=True)
-        assert indexer.index_archive(archive_root, None, False, False) is None
+        with pytest.raises(indexer.IndexerAbort) as excinfo:
+            indexer.index_archive(archive_root, None, False, False)
+        assert excinfo.value.exit_code == 3
 
     def test_main_reports_exit_code_three(
         self, indexer, monkeypatch, archive_root,
@@ -312,7 +345,7 @@ class TestRefusedFileIsSkipped:
         return tmp_path
 
     def test_refused_file_does_not_stop_the_run(
-        self, indexer, monkeypatch, tmp_path,
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
     ):
         """
         The first file is refused; the second must still be indexed. The
@@ -332,12 +365,13 @@ class TestRefusedFileIsSkipped:
 
         # ``force`` so the incremental mtime skip does not short-circuit
         # both files before either reaches the INSERT.
-        indexed, skipped, chunks = indexer.index_archive(
-            archive, None, False, True,
+        indexed, skipped, chunks, refused = indexer.index_archive(
+            archive, None, False, True, pinned_refusal_file,
         )
 
         assert indexed == 1, "the healthy file was not indexed"
         assert chunks == 1
+        assert refused == 1
 
     def test_outage_still_aborts_the_run(self, indexer, monkeypatch, tmp_path):
         """
@@ -353,8 +387,9 @@ class TestRefusedFileIsSkipped:
 
         sys.modules["psycopg2.extras"].execute_values.side_effect = _gone
 
-        with pytest.raises(_OperationalError):
+        with pytest.raises(indexer.IndexerAbort) as excinfo:
             indexer.index_archive(archive, None, False, True)
+        assert excinfo.value.exit_code == 3
 
     def test_environment_fault_aborts_the_run(
         self, indexer, monkeypatch, tmp_path,
@@ -371,5 +406,270 @@ class TestRefusedFileIsSkipped:
 
         sys.modules["psycopg2.extras"].execute_values.side_effect = _revoke
 
-        with pytest.raises(_ProgrammingError):
+        with pytest.raises(indexer.IndexerAbort) as excinfo:
             indexer.index_archive(archive, None, False, True)
+        assert excinfo.value.exit_code == 4
+
+
+# ---------------------------------------------------------------------------
+# Second re-audit, findings M3 and M4
+# ---------------------------------------------------------------------------
+
+
+class TestRefusalMemory:
+    """
+    M3 — a refused file was re-parsed and re-refused on every run, for
+    ever, and reported nothing. The incremental skip is keyed on
+    ``source_mtime`` in ``session_chunks``, and a refused file writes no
+    row there, so it never became "already indexed".
+    """
+
+    def _archive(self, tmp_path: Path, name: str = "aaa-poison") -> Path:
+        """One indexable session."""
+        session_dir = tmp_path / "personal-assistant" / name
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": name},
+                "project": {"name": "personal-assistant"},
+            }),
+            encoding="utf-8",
+        )
+        (session_dir / "session.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "hello"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def _refuse_everything(self, cur, sql, values, page_size=None, fetch=False):
+        """PostgreSQL refuses this file's rows on content grounds."""
+        raise _DataError("value too long for type character varying", "22001")
+
+    def test_a_refusal_is_remembered(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        The mutation this kills: dropping the ``known_refusals[rel_path]``
+        assignment, so nothing is remembered.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_everything
+        )
+
+        indexer.index_archive(archive, None, False, True, pinned_refusal_file)
+
+        remembered = indexer.load_refusals(pinned_refusal_file)
+        assert list(remembered) == [
+            "personal-assistant/aaa-poison/session.jsonl",
+        ]
+
+    def test_a_remembered_refusal_is_not_reparsed(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        Second run: the file must be skipped without the database being
+        asked again — and still counted as refused so it is reported.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_everything
+        )
+        indexer.index_archive(archive, None, False, True, pinned_refusal_file)
+
+        calls = {"n": 0}
+
+        def _count(cur, sql, values, page_size=None, fetch=False):
+            calls["n"] += 1
+            return self._refuse_everything(cur, sql, values, page_size, fetch)
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _count
+
+        indexed, skipped, chunks, refused = indexer.index_archive(
+            archive, None, False, False, pinned_refusal_file,
+        )
+
+        assert calls["n"] == 0, "the refused file was sent to PostgreSQL again"
+        assert refused == 1
+        assert skipped == 1
+
+    def test_a_changed_file_is_retried(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        The memory is keyed on ``archive_path`` *and* ``source_mtime``, so
+        repairing the transcript makes the next run try it again.
+        """
+        archive = self._archive(tmp_path)
+        transcript = archive / "personal-assistant" / "aaa-poison" / "session.jsonl"
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_everything
+        )
+        indexer.index_archive(archive, None, False, True, pinned_refusal_file)
+
+        # Repair the file: new content, new mtime.
+        transcript.write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "repaired"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        os.utime(transcript, (0, 0))
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        sys.modules["psycopg2.extras"].execute_values.return_value = None
+
+        indexed, skipped, chunks, refused = indexer.index_archive(
+            archive, None, False, False, pinned_refusal_file,
+        )
+
+        assert indexed == 1, "the repaired file was not retried"
+        assert refused == 0
+        assert indexer.load_refusals(pinned_refusal_file) == {}
+
+    def test_force_ignores_the_memory(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """``--force`` is the operator saying "try them again anyway"."""
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_everything
+        )
+        indexer.index_archive(archive, None, False, True, pinned_refusal_file)
+
+        calls = {"n": 0}
+
+        def _count(cur, sql, values, page_size=None, fetch=False):
+            calls["n"] += 1
+            return None
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _count
+        indexer.index_archive(archive, None, False, True, pinned_refusal_file)
+
+        assert calls["n"] == 1, "--force did not retry the refused file"
+
+    def test_main_exits_five_when_a_file_was_refused(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+    ):
+        """
+        A refusal used to be one line in a "Done:" message that otherwise
+        reads like success. The mutation this kills: returning 0 when
+        ``refused`` is non-zero.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+        sys.modules["psycopg2.extras"].execute_values.side_effect = (
+            self._refuse_everything
+        )
+
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == 5
+
+    def test_corrupt_refusal_memory_reads_as_empty(
+        self, indexer, pinned_refusal_file,
+    ):
+        """The memory is an optimisation, never a gate on correctness."""
+        pinned_refusal_file.parent.mkdir(parents=True, exist_ok=True)
+        pinned_refusal_file.write_text("{not json", encoding="utf-8")
+        assert indexer.load_refusals(pinned_refusal_file) == {}
+
+
+class TestMidRunAbortsHaveExitCodes:
+    """M4 — a mid-run fault must not traceback out of ``main``."""
+
+    def _archive(self, tmp_path: Path) -> Path:
+        session_dir = tmp_path / "personal-assistant" / "sess"
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "sess"},
+                "project": {"name": "personal-assistant"},
+            }),
+            encoding="utf-8",
+        )
+        (session_dir / "session.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "hello"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @pytest.mark.parametrize("exc,expected", [
+        (_OperationalError("server closed the connection"), 3),
+        (_ProgrammingError("permission denied", "42501"), 4),
+    ])
+    def test_main_returns_the_code_instead_of_tracebacking(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        exc, expected,
+    ):
+        """
+        ``main`` caught only ImportError, so a mid-run outage or REVOKE
+        produced a raw traceback while the identical fault at connect time
+        degraded politely. The mutation this kills: removing the
+        ``except IndexerAbort`` clause from ``main``.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        def _raise(cur, sql, values, page_size=None, fetch=False):
+            raise exc
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _raise
+
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == expected
+
+
+class TestNulCountsAreReported:
+    """L3 — the counts ``sanitise_nuls`` returns were being discarded."""
+
+    def test_stats_dict_accumulates_the_count(self, indexer):
+        """
+        Text was being silently altered on the way into the index. The
+        mutation this kills: dropping the ``stats`` accumulation.
+        """
+        stats: dict[str, int] = {"nuls_removed": 0}
+        indexer.extract_turn_text(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "a\x00b\x00c"},
+            },
+            stats=stats,
+        )
+        indexer.extract_turn_text(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "d\x00e"}],
+                },
+            },
+            stats=stats,
+        )
+        assert stats["nuls_removed"] == 3
+
+    def test_stats_is_optional(self, indexer):
+        """Callers that do not care must not have to pass a dict."""
+        assert indexer.extract_turn_text({
+            "type": "user",
+            "message": {"role": "user", "content": "a\x00b"},
+        }) == "ab"
