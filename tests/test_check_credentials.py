@@ -130,11 +130,18 @@ class TestParseEnvValues:
         assert len(cc.findings) == 1
         assert "has a '#' in its value" in cc.findings[0]
 
-    def test_a_value_beginning_with_hash_is_flagged(self, tmp_path):
-        """Kills dropping ``or value.startswith("#")`` from the same test."""
-        cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake\n"))
-        assert len(cc.findings) == 1
-        assert "has a '#' in its value" in cc.findings[0]
+    def test_a_value_beginning_with_hash_is_not_a_comment(self, tmp_path):
+        """Kills an ``^`` alternative in the comment scan (audit round six M-A1).
+
+        This test used to assert the opposite, and was wrong. bash starts a
+        comment only at the beginning of a WORD, and the word began at the
+        ``=`` — verified against bash 5.2.37 from a temp cwd, ``A=#c``
+        assigns ``#c``. Reporting a dropped comment there was a false
+        statement about the line, and it truncated the scan.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake\n"))
+        assert cc.findings == []
+        assert env["TOKEN"] == "#abcfake"
 
     def test_a_hash_inside_a_closed_quote_is_not_flagged(self, tmp_path):
         """Kills dropping the ``quoted`` exemption altogether.
@@ -1637,11 +1644,17 @@ class TestParseEnvCommentBoundary:
         assert "contains > and is not quoted" in cc.findings[0]
         assert "'#' in its value" not in cc.findings[0]
 
-    def test_a_leading_hash_is_still_a_comment(self, tmp_path):
-        """Kills dropping the ``^`` alternative from ``_COMMENT_START``."""
-        cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake\n"))
+    def test_a_leading_hash_still_hides_nothing(self, tmp_path):
+        """Kills an ``^`` alternative, at the cost that matters.
+
+        Also corrected in audit round six M-A1: with ``^`` in the scan the
+        value was cut to nothing and the ``>`` went unreported, while bash
+        assigns ``#c`` and STILL redirects — verified from a temp cwd, the
+        target file is created.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake>target\n"))
         assert len(cc.findings) == 1
-        assert "has a '#' in its value" in cc.findings[0]
+        assert "contains > and is not quoted" in cc.findings[0]
 
     def test_a_byte_order_mark_mid_file_is_not_a_leading_bom(self, tmp_path):
         """Kills ``data.startswith(_UTF8_BOM)`` -> ``_UTF8_BOM in data``.
@@ -1743,3 +1756,117 @@ class TestParseEnvBlankClasses:
         env = cc.parse_env(_env_file(tmp_path, "TOKEN='a\\ #b'\n"))
         assert cc.findings == []
         assert env["TOKEN"] == "a\\ #b"
+
+
+class TestCommentIsWordAnchored:
+    """Audit round six M-A1, M-A2, L-1 and M6.
+
+    Every case below was run against bash 5.2.37 from a temporary working
+    directory, so the redirect cases could be confirmed by the target file
+    actually appearing.
+    """
+
+    def test_a_hash_at_the_start_of_the_value_is_not_a_comment(self, tmp_path):
+        """Kills an ``^`` alternative in the comment scan.
+
+        The word began at the ``=``, so the ``#`` does not begin one:
+        ``A=#c`` assigns ``#c``.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake\n"))
+        assert cc.findings == []
+        assert env["TOKEN"] == "#abcfake"
+
+    def test_a_hash_at_the_start_does_not_hide_a_redirect(self, tmp_path):
+        """The cost of the ``^`` alternative, not just its wrongness.
+
+        ``A=#c>z`` assigns ``#c`` AND creates z. Cutting the value at the
+        ``#`` lost the one finding here that destroys a file.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=#abcfake>target\n"))
+        assert len(cc.findings) == 1
+        assert "contains > and is not quoted" in cc.findings[0]
+
+    def test_a_blank_after_the_equals_does_start_a_comment(self, tmp_path):
+        """Kills matching on the STRIPPED value (audit round six M-A1).
+
+        ``A= #c>z`` and ``A=#c>z`` differ only in the blank the strip
+        removes, and bash treats them oppositely: the first is a comment
+        with no redirect, the second a redirect with no comment. Matching
+        after the strip made them indistinguishable.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN= #abcfake>target\n"))
+        messages = " ".join(cc.findings)
+        assert "whitespace after the '='" in messages
+        assert "has a '#' in its value" in messages
+        assert "contains >" not in messages, "reported a redirect bash never runs"
+
+    @pytest.mark.parametrize(
+        "backslashes,is_comment",
+        [(1, False), (2, True), (3, False), (4, True)],
+    )
+    def test_backslash_parity_decides_the_comment(
+        self, tmp_path, backslashes, is_comment
+    ):
+        """Kills the fixed-width ``(?<!\\\\)`` lookbehind (M-A2).
+
+        A run of backslashes escapes itself pairwise, so an even count
+        leaves the blank free. Verified: ``a\\ #b`` assigns ``a #b`` (no
+        comment) while ``a\\\\ #b`` assigns ``a\\`` (comment). A lookbehind
+        sees only the nearest character and calls both escaped.
+        """
+        value = "a" + "\\" * backslashes + " #b"
+        cc.parse_env(_env_file(tmp_path, f"TOKEN={value}\n"))
+        reported = any("has a '#' in its value" in f for f in cc.findings)
+        assert reported is is_comment, cc.findings
+
+    def test_even_backslashes_do_not_invent_a_command(self, tmp_path):
+        """Kills the same lookbehind at the other finding.
+
+        ``A=x\\\\ #y;id`` is a comment in bash — the ``;id`` never runs — so
+        the ';' finding was false, and so was its explanation.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=x\\\\ #y;id\n"))
+        assert not any("contains ;" in f for f in cc.findings), cc.findings
+        assert any("has a '#' in its value" in f for f in cc.findings)
+
+    def test_an_escaped_blank_does_not_split_the_value(self, tmp_path):
+        """Kills splitting the value on escaped blanks.
+
+        ``A=a\\ b`` assigns ``a b`` and runs nothing, so the
+        "runs the rest as a command" finding would be a false statement.
+        The retained backslash is still reported.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN=a\\ b\n"))
+        assert not any("runs the rest as a command" in f for f in cc.findings)
+        assert len(cc.findings) == 1
+        assert "contains a backslash" in cc.findings[0]
+
+    @pytest.mark.parametrize(
+        "blank,name", [("\v", "vertical tab"), ("\f", "form feed"), (" ", "NBSP")]
+    )
+    def test_a_non_blank_before_a_hash_leaves_a_running_command(
+        self, tmp_path, blank, name
+    ):
+        """Kills Python ``split()`` in the whitespace check (audit round six L-1).
+
+        ``A=abc<X># c`` leaves A UNSET and runs ``c`` — verified for all
+        three characters. ``split()`` treated <X> as a separator, so the
+        line looked like [abc, #, c] and the "second word starts with #"
+        exemption waved it through with no finding at all.
+        """
+        cc.parse_env(_env_file(tmp_path, f"TOKEN=abcfake{blank}# c\n"))
+        assert any(
+            "runs the rest as a command" in f for f in cc.findings
+        ), f"{name}: {cc.findings}"
+
+    def test_a_double_quoted_backslash_is_not_flagged(self, tmp_path):
+        """Kills ``not quoted`` -> ``not literal`` on the backslash finding (M6).
+
+        Inside double quotes a backslash before a space is NOT an escape:
+        ``A="a\\ b"`` assigns ``a\\ b``, exactly what this parser keeps, so
+        there is nothing to report. Guarding on ``literal`` would flag every
+        double-quoted Windows path.
+        """
+        env = cc.parse_env(_env_file(tmp_path, 'TOKEN="a\\ b"\n'))
+        assert cc.findings == []
+        assert env["TOKEN"] == "a\\ b"

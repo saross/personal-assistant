@@ -96,15 +96,10 @@ VALID_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _LINE_SPLIT = re.compile(r"([^\r\n]*)(\r\n|\r|\n|$)")
 # A leading UTF-8 byte-order mark. bash keeps it; ``utf-8-sig`` drops it.
 _UTF8_BOM = b"\xef\xbb\xbf"
-# Where an unquoted trailing comment begins: a '#' at the start of the value,
-# or after an UNESCAPED space or tab. Deliberately NOT ``\s`` (audit round
-# five M-1): Python's ``\s`` also matches \v, \f and NBSP, which bash does not
-# treat as word blanks — ``A=abc\v# > z`` keeps the '#' inside the word and
-# STILL redirects, so cutting the scan there hid the '>'. The negative
-# lookbehind covers the other half (L-4): in ``A=a\ #b`` the space is escaped,
-# so bash assigns ``a #b`` and there is no comment. bash also treats '#' as
-# ordinary text mid-word, so ``A=x#y`` assigns ``x#y``.
-_COMMENT_START = re.compile(r"(?:^|(?<!\\)[ \t])#")
+# The blanks bash recognises between words. Deliberately not Python's ``\s``
+# (audit round five M-1): ``\v``, ``\f`` and NBSP are not word separators to
+# bash, and treating them as such hid findings on the text that follows.
+_BASH_BLANKS = " \t"
 ZOTERO_API = "https://api.zotero.org"
 OSF_API = "https://api.osf.io/v2"
 GITHUB_API = "https://api.github.com"
@@ -122,6 +117,55 @@ def note(msg: str) -> None:
     """Record a finding and print it inline."""
     findings.append(msg)
     print(f"  FINDING: {msg}")
+
+
+def blank_is_unescaped(text: str, index: int) -> bool:
+    """True when the blank at *index* is not backslash-escaped.
+
+    A run of backslashes escapes itself pairwise, so an EVEN count before
+    the blank (including none) leaves the blank free to separate words.
+    Verified against bash 5.2.37: ``a\\ #b`` assigns ``a #b`` (one
+    backslash, escaped space) while ``a\\\\ #b`` assigns ``a\\`` (two
+    backslashes, free space, comment). A fixed-width lookbehind cannot tell
+    those apart, which is what audit round six M-A2 caught.
+    """
+    backslashes = 0
+    j = index - 1
+    while j >= 0 and text[j] == "\\":
+        backslashes += 1
+        j -= 1
+    return backslashes % 2 == 0
+
+
+def comment_index(value_field: str) -> int | None:
+    r"""Index of the blank that starts an unquoted trailing comment, or None.
+
+    ``value_field`` is the RAW text after the ``=``, before any stripping —
+    that matters, because the leading blank is the whole signal (audit round
+    six M-A1). Two rules, both verified against bash 5.2.37 from a temp cwd:
+
+    * A comment starts at a ``#`` that begins a WORD, so the ``#`` must
+      follow a blank. It is never the start of the value field: the word
+      began at the ``=``, so ``A=#c`` assigns ``#c``, and ``A=#c>z`` assigns
+      ``#c`` AND redirects. An ``^`` alternative reported a dropped comment
+      on both and lost the ``>``.
+    * "Unescaped" is a question of backslash PARITY, not of the single
+      preceding character (M-A2). ``A=a\ #b`` assigns ``a #b`` (escaped
+      space, no comment) but ``A=a\\ #b`` assigns ``a\`` — the backslashes
+      escape each other and the blank is free, so the comment does start.
+      A fixed-width lookbehind cannot tell those apart.
+
+    Returns the index OF THE BLANK, so the caller can slice the value bash
+    would actually assign.
+    """
+    for i, char in enumerate(value_field):
+        if char != "#" or i == 0:
+            continue
+        if value_field[i - 1] not in _BASH_BLANKS:
+            continue
+        if blank_is_unescaped(value_field, i - 1):
+            return i - 1
+    return None
 
 
 def parse_env(path: pathlib.Path) -> dict[str, str]:
@@ -176,6 +220,15 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
         )
         value = raw_value[1:-1] if quoted else raw_value.strip('"').strip("'")
         out[name] = value
+        # Where bash stops reading the value, computed on the UNSTRIPPED
+        # field so a leading blank still counts (audit round six M-A1).
+        # ``code`` is what bash would actually assign, and every "does this
+        # run something" check below scans it rather than the whole value.
+        comment_at = comment_index(raw_value_field)
+        code = (
+            raw_value_field if comment_at is None
+            else raw_value_field[:comment_at]
+        ).strip()
         if raw_name != name:
             # bash treats "NAME =value" as a command named NAME — the leak class
             # pass 1 exists to catch — so whitespace around the name is a finding.
@@ -203,11 +256,26 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
         if not quoted:
             # Whitespace INSIDE an unquoted value is the same leak class:
             # verified against bash 5.2, ``A=a b`` assigns nothing to A, runs
-            # ``b`` as a command, and echoes "b: command not found". A trailing
-            # comment is a different problem, reported separately below, so a
-            # second word beginning with '#' is excluded here.
-            words = raw_value.split()
-            if len(words) > 1 and not words[1].startswith("#"):
+            # ``b`` as a command, and echoes "b: command not found".
+            #
+            # Split on bash's blanks over the comment-stripped ``code``, not
+            # with Python's ``split()`` over the whole value (audit round six
+            # L-1). ``split()`` treats ``\v`` as a separator, so
+            # ``A=abc\v# c`` — where bash leaves A UNSET and runs ``c`` —
+            # looked like [abc, #, c] and was waved through by the old
+            # "second word starts with #" exemption. Removing the comment
+            # first makes that exemption unnecessary as well as wrong.
+            # An UNESCAPED blank with something after it means bash stops
+            # the assignment and runs the rest. The escape matters: ``A=a\ b``
+            # assigns ``a b`` and runs nothing, so splitting naively reported
+            # a command that never runs, with a false explanation.
+            runs_a_command = any(
+                char in _BASH_BLANKS
+                and blank_is_unescaped(code, i)
+                and code[i:].strip()
+                for i, char in enumerate(code)
+            )
+            if runs_a_command:
                 note(
                     f"line {lineno}: {name}'s value contains whitespace and is not "
                     "quoted — bash assigns only the first word and runs the rest as "
@@ -253,16 +321,9 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             # The URL is the form most likely to appear in a real credential
             # file; the redirection is the one that destroys something.
             #
-            # Scan the value with any trailing comment removed: bash stops
-            # reading at a '#' that starts a word, so an '&' after that cannot
-            # run and reporting it was a false positive (audit round three
-            # L1). ``_COMMENT_START`` matches the '#' only where bash would —
-            # after an unescaped space or tab, or at the start of the value —
-            # so ``A=x#y>z`` and ``A=abc\v#>z`` both keep their '>' finding,
-            # bash having assigned ``x#y`` / ``abc\v#`` and redirected anyway.
-            # The comment itself is reported below.
-            comment = _COMMENT_START.search(raw_value)
-            code = raw_value if comment is None else raw_value[: comment.start()]
+            # Only what bash would actually read: an operator after the
+            # comment cannot run, and reporting it was a false positive
+            # (audit round three L1). ``code`` is computed above.
             operators = sorted({char for char in "&;|<>" if char in code})
             if operators:
                 note(
@@ -329,7 +390,7 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                 f"name is assigned (the rest of the file becomes its value) and "
                 f"{name} may never be set at all. Convert the file to LF endings."
             )
-        if not quoted and _COMMENT_START.search(value):
+        if not quoted and comment_at is not None:
             # bash sourcing drops an unquoted trailing comment; the Codex launcher
             # and this parser keep it as part of the value. One of them would
             # hand a process the wrong secret, so the line must be unambiguous.
