@@ -2560,6 +2560,24 @@ ownership hook guards not-yet-existing ones. **Archiver shipped** (`b184b4b`):
 `data/agent-mail/` seeded with 46 messages + 45 receipts and `index.jsonl`;
 daily sync runs it. Live-watch round 1 since Shawn's last message.
 
+**First repository audit (Shawn, 8 Sep).** Two fresh-context Opus lenses per
+tranche (correctness; test adequacy via mutation testing), read-only. First
+wave reported: today's code (fixed at `0577648`, 67 tests in the five files,
+suite 1,250), the session hooks, the git/sync writers, the Postgres pipeline.
+**Live defects found in older code:** the `sessions` table stale since
+17 Aug (a NUL in LLM narrative misreported as an outage); extraction drops
+every message before the last 30 in a window (5.2% of firings); `daily-sync`
+publishes pointer bumps to unpushed submodule commits, sweeps concurrent
+prose with `git add -A`, unions prose conflicts, and takes the wrong rebase
+side with `--ours`; code-state overwrites `commit_at_start` on resume; the
+legacy retrieval path surfaces disproved memories as fact; `/forget` and
+`/update` markers no longer match their headers. **Durable record with
+dispositions:** `wiki/audits/2026-09-08-first-audit.md`. Three decisions
+put to Shawn (extraction chunking spend; what the sync may auto-commit;
+sessions re-sync). Round 2 fixes queued; remaining tranches after that.
+Astra: acceptance design agreed; #113 identity fix at `0577648` awaiting
+their re-review.
+
 Carry-forward (Claude-owned, from Sol's readiness review, in order):
 
 - [x] 2026-09-07 Follow-up review of gpt-hub `b49713d` — all addressed, closed by mail.
