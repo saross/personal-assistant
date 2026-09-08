@@ -340,6 +340,8 @@ class TestUnmergedStatusRegex:
 
 #: Everything ``write_stash_state`` and its readers need, extracted live.
 _SIDECAR_FUNCTIONS = (
+    "ancestor_blocks_checkout",
+    "mode_matches",
     "append_stash_state_row",
     "write_stash_state",
     "previously_recorded_stashes",
@@ -588,7 +590,11 @@ _CLASSIFY_FUNCTIONS = (
     "unmerged_paths",
     "snapshot_before_apply",
     "classify_apply_failure",
+    "stash_tracked_half_landed",
+    "status_lines_for",
     "unrestored_untracked_paths",
+    "ancestor_blocks_checkout",
+    "mode_matches",
 )
 
 
@@ -958,6 +964,17 @@ def _conflicted_repo(tmp_path: Path, names: list[str]) -> Path:
     return repo
 
 
+#: Everything the single drop site consults before letting an entry go.
+_DROP_GUARD_FUNCTIONS = (
+    "drop_applied_stash",
+    "unrestored_untracked_paths",
+    "ancestor_blocks_checkout",
+    "mode_matches",
+    "record_partial_stash",
+    "describe_stash",
+)
+
+
 class TestDropAppliedStashGuard:
     """The S27 invariant, at the one place that drops an applied entry.
     The classification above decides what the operator is TOLD; this
@@ -992,12 +1009,7 @@ class TestDropAppliedStashGuard:
                     'printf "%s\\n" "${partial_stash_shas[@]}"',
                 ]
             ),
-            (
-                "drop_applied_stash",
-                "unrestored_untracked_paths",
-                "record_partial_stash",
-                "describe_stash",
-            ),
+            _DROP_GUARD_FUNCTIONS,
         )
         assert "KEPT" in result.stdout, result.stdout + result.stderr
         assert sha in result.stdout, "the entry was not recorded as partial"
@@ -1029,12 +1041,7 @@ class TestDropAppliedStashGuard:
                     f'drop_applied_stash "{repo}" "{sha}" "data submodule"',
                 ]
             ),
-            (
-                "drop_applied_stash",
-                "unrestored_untracked_paths",
-                "record_partial_stash",
-                "describe_stash",
-            ),
+            _DROP_GUARD_FUNCTIONS,
         )
         assert result.returncode == 0, result.stderr
         assert _stash_shas(repo) == [], "the entry was left on the stack"
@@ -1289,6 +1296,279 @@ class TestCarryForwardPartialStashes:
         assert result.stdout.strip() == "1", result.stdout
 
 
+class TestStashTrackedHalfLanded:
+    """The positive evidence `applied` rests on. "The tree changed" is
+    not that evidence: git 2.48.1 restores the untracked half BEFORE the
+    tracked merge, so an entry whose files came back and whose merge was
+    then refused changes the tree without landing a byte of what it was
+    asked to land."""
+
+    _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for")
+
+    def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
+        """Run the predicate over two recorded porcelain snapshots."""
+        result = _run_shell(
+            'apply_before_status="$PA_TEST_BEFORE"\n'
+            'apply_after_status="$PA_TEST_AFTER"\n'
+            f'if stash_tracked_half_landed "{repo}" "{sha}"; then\n'
+            "  echo LANDED\nelse\n  echo NOT-LANDED\nfi\n",
+            self._FUNCTIONS,
+            {"PA_TEST_BEFORE": before, "PA_TEST_AFTER": after},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def _entry(self, tmp_path: Path) -> tuple[Path, str]:
+        """A repo whose stash changes one tracked file and adds one
+        untracked file -- the shape the C1 sequence needs."""
+        repo = tmp_path / "landed"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "t.txt").write_text("base\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "t.txt").write_text("stashed\n", encoding="utf-8")
+        (repo / "u.txt").write_text("new file\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def test_an_untracked_file_appearing_is_not_the_tracked_half(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-C1: reading `git status` differing as evidence.
+
+        The measured git 2.48.1 signature -- `?? u.txt` appears because
+        the untracked half was restored first, and `t.txt` says exactly
+        what it said before because the merge was refused.
+        """
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(repo, sha, " M t.txt", " M t.txt\n?? u.txt") == "NOT-LANDED"
+
+    def test_an_unrelated_write_is_not_the_tracked_half(
+        self, tmp_path: Path
+    ) -> None:
+        """The weaker variant: anything at all writing in the window
+        between the snapshot and the classification."""
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(
+            repo, sha, " M t.txt", " M t.txt\n?? somebody-elses-file.md"
+        ) == "NOT-LANDED"
+
+    def test_the_tracked_path_changing_is_the_tracked_half(
+        self, tmp_path: Path
+    ) -> None:
+        """And the other direction, or nothing would ever be dropped."""
+        repo, sha = self._entry(tmp_path)
+        assert self._ask(repo, sha, "", " M t.txt") == "LANDED"
+
+    def test_an_entry_with_no_tracked_half_lands_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """An untracked-only entry has nothing to land, so a changed tree
+        says nothing about it either way."""
+        repo = tmp_path / "untracked-only"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "only.txt").write_text("only\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        assert self._ask(repo, sha, "", "?? only.txt") == "NOT-LANDED"
+
+
+class TestAncestorBlocksCheckout:
+    """`git checkout <sha>^3 -- <path>` creates every directory on the way
+    to <path>. An ancestor that is a regular file is deleted; an ancestor
+    that is a symlink -- this repository's whole root layout -- is
+    replaced by a real directory."""
+
+    def _report(self, repo: Path, sha: str) -> str:
+        """The predicate's verdict for one entry."""
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def _entry_holding(self, tmp_path: Path, name: str, inner: str) -> tuple[Path, str]:
+        """A repo whose stash holds one untracked file at ``inner``."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        target = repo / inner
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stashed\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        return repo, _stash_shas(repo)[0]
+
+    def test_a_regular_file_where_a_directory_belongs_is_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-M1: testing only the leaf. `fileclash/deep.md` is
+        absent, but `fileclash` is a FILE -- and the advised checkout
+        deletes it."""
+        repo, sha = self._entry_holding(tmp_path, "fileclash", "fileclash/deep.md")
+        (repo / "fileclash").write_text("somebody's notes\n", encoding="utf-8")
+        assert self._report(repo, sha) == "differs\tfileclash/deep.md"
+
+    def test_a_symlinked_ancestor_is_differs(self, tmp_path: Path) -> None:
+        """This repository's root is symlinks into the data submodule --
+        `memories -> data/memories`, `logs -> data/logs`. Checking a path
+        out through one replaces the link with a real directory."""
+        repo, sha = self._entry_holding(tmp_path, "linkdir", "linkdir/new.md")
+        (repo / "real-target").mkdir()
+        (repo / "linkdir").symlink_to("real-target")
+        assert self._report(repo, sha) == "differs\tlinkdir/new.md"
+
+    def test_a_real_directory_ancestor_is_still_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard must not turn every nested path into `differs`: an
+        ordinary directory is exactly what a checkout expects."""
+        repo, sha = self._entry_holding(tmp_path, "plaindir", "notes/new.md")
+        (repo / "notes").mkdir(exist_ok=True)
+        assert self._report(repo, sha) == "missing\tnotes/new.md"
+
+
+class TestSymlinkWhereAFileBelongs:
+    """A symlink standing where the entry holds a regular file is
+    something in the tree, and it is not this."""
+
+    def test_a_symlink_to_identical_content_is_still_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: deleting the symlink-in-tree branch. Without it the path
+        falls through to `hash-object`, which FOLLOWS the link and hashes
+        what is at the other end -- so a link pointing at a byte-identical
+        file reads as restored, and the entry is dropped while the real
+        file it held is nowhere."""
+        repo = tmp_path / "linkfile"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "report.txt").write_text("the same bytes\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # A symlink to a file whose content matches the stashed blob.
+        (repo / "elsewhere.txt").write_text("the same bytes\n", encoding="utf-8")
+        (repo / "report.txt").symlink_to("elsewhere.txt")
+
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "differs\treport.txt", result.stdout
+
+
+class TestModeIsPartOfRestored:
+    """Identical bytes at the wrong mode is not a restored file."""
+
+    def test_an_executable_bit_lost_in_the_tree_is_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L3: comparing content alone. A hook the entry holds as
+        100755 and the tree holds as 0644 does not run, and dropping the
+        entry loses the only record that it should."""
+        repo = tmp_path / "modes"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        script = repo / "hook.sh"
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        # Same bytes, restored without the bit.
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o644)
+
+        result = _run_shell(
+            f'unrestored_untracked_paths "{repo}" "{sha}"\n', _CLASSIFY_FUNCTIONS
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "differs\thook.sh", result.stdout
+
+
+class TestCorpusLineCount:
+    """Both shrink sites count the same way, and a corpus whose last
+    record lacks its newline must not read as one record shorter."""
+
+    def test_an_unterminated_last_record_still_counts(self) -> None:
+        """Kills DS-L4: `wc -l`, which counts newlines. A commit that only
+        drops the trailing terminator then reads as a one-line shrink and
+        raises a false exit 4 on a corpus nobody truncated."""
+        result = _run_shell(
+            'printf \'{"a":1}\\n{"b":2}\' | corpus_line_count\n',
+            ("corpus_line_count",),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "2", result.stdout
+
+    def test_a_terminated_corpus_counts_the_same(self) -> None:
+        """The same two records, terminated: the count must not move."""
+        result = _run_shell(
+            'printf \'{"a":1}\\n{"b":2}\\n\' | corpus_line_count\n',
+            ("corpus_line_count",),
+        )
+        assert result.stdout.strip() == "2", result.stdout
+
+    def test_an_empty_corpus_is_zero(self) -> None:
+        """`grep -c ''` exits 1 on no match; that must not abort the run."""
+        result = _run_shell("printf '' | corpus_line_count\n", ("corpus_line_count",))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "0", result.stdout
+
+
+class TestAdvisedCheckoutIsSafe:
+    """The advised command is run verbatim by a human under stress. It
+    must be the command that works."""
+
+    def test_the_path_separator_is_present_and_load_bearing(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: dropping `--` from the advised checkout. A path
+        beginning with a dash is a path, not an option, and without the
+        separator git rejects the command the operator was shown."""
+        repo = tmp_path / "dash"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        awkward = "-dash-leading.md"
+        (repo / awkward).write_text("the only copy\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        assert not (repo / awkward).exists()
+
+        advice = _run_shell(
+            'partial_recovery_advice "$PA_TEST_REPO" "$PA_TEST_SHA" "$PA_TEST_LINES"\n',
+            ("partial_recovery_advice", "partial_paths_list"),
+            {
+                "PA_TEST_REPO": str(repo),
+                "PA_TEST_SHA": sha,
+                "PA_TEST_LINES": f"missing\t{awkward}",
+            },
+        )
+        assert advice.returncode == 0, advice.stderr
+        assert " -- " in advice.stdout, advice.stdout
+
+        command = advice.stdout.split("restore with ", 1)[1].split(". ", 1)[0]
+        run = subprocess.run(command, shell=True, cwd=str(repo),
+                             capture_output=True, text=True, check=False)
+        assert run.returncode == 0, run.stderr
+        assert (repo / awkward).read_text(encoding="utf-8") == "the only copy\n"
+
+
 class TestSidecarIsWrittenWhole:
     """A sidecar is read by the NEXT run to decide whether an entry may be
     deleted. Half of one is worse than none: rows for some entries and not
@@ -1366,3 +1646,119 @@ class TestSidecarIsWrittenWhole:
         ), "a half-written sidecar replaced a good one"
         assert "could not write" in result.stdout, result.stdout
         assert not list(tmp_path.glob("sidecar.*")), "a temporary file was left behind"
+
+
+class TestCarriedForwardRows:
+    """What the early trap rewrites the sidecar from. A row it does not
+    carry is a row the next run cannot read."""
+
+    _FUNCTIONS = (
+        "carry_forward_partial_stashes",
+        "record_partial_stash",
+        "record_conflicted_stash",
+        "unrestored_untracked_paths",
+        "ancestor_blocks_checkout",
+        "mode_matches",
+    )
+
+    def _carry(self, repo: Path, sidecar: Path) -> subprocess.CompletedProcess[str]:
+        """Run the carry-forward over one sidecar and print what it took."""
+        return _run_shell(
+            "\n".join(
+                [
+                    f'STASH_STATE_FILE="{sidecar}"',
+                    f'DATA_DIR="{repo}"',
+                    f'PA_DIR="{repo}"',
+                    "partial_stash_shas=()",
+                    "partial_stash_records=()",
+                    "conflicted_stash_shas=()",
+                    "conflicted_stash_records=()",
+                    "carry_forward_partial_stashes",
+                    'printf "partial=%s\\n" "${#partial_stash_records[@]}"',
+                    'printf "conflicted=%s\\n" "${#conflicted_stash_records[@]}"',
+                ]
+            ),
+            self._FUNCTIONS,
+        )
+
+    def test_a_conflicted_row_is_carried(self, repo: Path, tmp_path: Path) -> None:
+        """Kills DS-M2: carrying only `partial`. An early exit then
+        rewrote the sidecar from this run's arrays alone and dropped every
+        previous run's conflicted row -- the rows
+        previously_recorded_stashes needs to say whose markers a
+        half-merged tree holds."""
+        (repo / "tracked.txt").write_text("ours\n", encoding="utf-8")
+        _git("stash", "push", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(f"{repo}\t{sha}\tconflicted\tnotes/a.md\n", encoding="utf-8")
+
+        result = self._carry(repo, sidecar)
+        assert result.returncode == 0, result.stderr
+        assert "conflicted=1" in result.stdout, result.stdout
+
+    def test_an_applied_row_is_not_carried(self, repo: Path, tmp_path: Path) -> None:
+        """Kills: `[[ "$state" == "partial" ]]` -> `-n "$state"`, and the
+        same widening of the case below it. An `applied` row is a
+        statement about a tree this run has not looked at; re-asserting it
+        lets a stale row outlive the state it describes.
+
+        The entry deliberately HOLDS an unrestored untracked file, so a
+        widened match would record it as partial rather than falling
+        through on an empty comparison.
+        """
+        (repo / "notes-only.md").write_text("only in the stash\n", encoding="utf-8")
+        _git("stash", "push", "-u", "--quiet", "-m", "ours", cwd=repo)
+        sha = _stash_shas(repo)[0]
+        assert not (repo / "notes-only.md").exists()
+        sidecar = tmp_path / "sidecar"
+        sidecar.write_text(f"{repo}\t{sha}\tapplied\t\n", encoding="utf-8")
+
+        result = self._carry(repo, sidecar)
+        assert result.returncode == 0, result.stderr
+        assert "partial=0" in result.stdout, result.stdout
+        assert "conflicted=0" in result.stdout, result.stdout
+
+
+class TestPublishedShrinkPrecondition:
+    """The guard is called from two sites, both of which now establish
+    that origin/main exists first. Reaching it without one means a push
+    site was added without that gate — and a guard that cannot check a
+    push must not pass it."""
+
+    def test_a_missing_origin_ref_is_refused_not_waved_through(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-M4's silent `return 0`: the one push that publishes
+        commits nothing in the run inspected went out with no record that
+        its guard had not run."""
+        repo = tmp_path / "no-origin"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "one"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        logs = tmp_path / "logs"
+        logs.mkdir()
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            ("abort_on_published_shrink", "corpus_line_count"),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, (
+            "a push the guard could not check was waved through: " + result.stdout
+        )
+        assert "no origin/main" in result.stderr, result.stderr

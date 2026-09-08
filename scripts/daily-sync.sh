@@ -1121,7 +1121,7 @@ unrestored_untracked_paths() {
     # path holding a space or a comma correctly, and shares the whole
     # script's one limitation — a path holding a newline.
     local repo="$1" sha="$2" entry mode blob path hashed index
-    local -a present_paths=() present_blobs=() hashes=()
+    local -a present_paths=() present_blobs=() present_modes=() hashes=()
     git -C "$repo" rev-parse --verify --quiet "${sha}^3" >/dev/null 2>&1 || return 0
     while IFS= read -r -d '' entry; do
         [[ -n "$entry" ]] || continue
@@ -1131,7 +1131,19 @@ unrestored_untracked_paths() {
         blob="${blob##* }"
         path="${entry#*$'\t'}"
         if [[ ! -e "$repo/$path" ]] && [[ ! -L "$repo/$path" ]]; then
-            printf 'missing\t%s\n' "$path"
+            # audit M1 (second re-audit): an absent LEAF is not enough to
+            # earn a checkout. `git checkout <sha>^3 -- <path>` creates
+            # every directory on the way to <path>, so an ancestor that is
+            # a regular FILE is deleted and an ancestor that is a SYMLINK
+            # — this repository's entire root layout is symlinks into the
+            # data submodule — is replaced by a real directory. Either way
+            # the advised command destroys something that is present,
+            # which is the one thing the advice may never do.
+            if ancestor_blocks_checkout "$repo" "$path"; then
+                printf 'differs\t%s\n' "$path"
+            else
+                printf 'missing\t%s\n' "$path"
+            fi
         elif [[ "$mode" == "120000" ]]; then
             if [[ ! -L "$repo/$path" ]]; then
                 printf 'differs\t%s\n' "$path"
@@ -1147,6 +1159,7 @@ unrestored_untracked_paths() {
         else
             present_paths+=("$path")
             present_blobs+=("$blob")
+            present_modes+=("$mode")
         fi
     done < <(git -C "$repo" ls-tree -r -z "${sha}^3" 2>/dev/null || true)
     [[ ${#present_paths[@]} -gt 0 ]] || return 0
@@ -1163,10 +1176,53 @@ unrestored_untracked_paths() {
         return 0
     fi
     for (( index=0; index<${#present_paths[@]}; index++ )); do
-        [[ "${hashes[index]}" == "${present_blobs[index]}" ]] \
-            || printf 'differs\t%s\n' "${present_paths[index]}"
+        if [[ "${hashes[index]}" != "${present_blobs[index]}" ]]; then
+            printf 'differs\t%s\n' "${present_paths[index]}"
+        elif ! mode_matches "$repo" "${present_paths[index]}" "${present_modes[index]}"; then
+            # audit L3 (second re-audit): identical bytes at the wrong
+            # mode is not a restored file. A script the entry holds as
+            # 100755 and the tree holds as 0644 does not run, and
+            # dropping the entry loses the only record that it should.
+            printf 'differs\t%s\n' "${present_paths[index]}"
+        fi
     done
     return 0
+}
+
+ancestor_blocks_checkout() {
+    # ancestor_blocks_checkout <repo> <path>
+    # True when some directory on the way to <path> is NOT a real
+    # directory — a regular file, or a symlink to anywhere — so that
+    # checking <path> out would delete or replace it. See the call site
+    # for why this decides the advice (audit M1, second re-audit).
+    local repo="$1" path="$2" prefix="" index
+    local -a parts=()
+    IFS='/' read -r -a parts <<<"$path"
+    for (( index=0; index<${#parts[@]}-1; index++ )); do
+        prefix+="${parts[index]}"
+        # -L first: a symlink to a directory satisfies -d as well, and it
+        # is exactly the case that must block.
+        if [[ -L "$repo/$prefix" ]]; then
+            return 0
+        fi
+        if [[ -e "$repo/$prefix" ]] && [[ ! -d "$repo/$prefix" ]]; then
+            return 0
+        fi
+        prefix+="/"
+    done
+    return 1
+}
+
+mode_matches() {
+    # mode_matches <repo> <path> <git mode>
+    # git records exactly two modes for a regular file, and the only bit
+    # that distinguishes them is the executable one.
+    local repo="$1" path="$2" mode="$3"
+    case "$mode" in
+        100755) [[ -x "$repo/$path" ]] ;;
+        100644) [[ ! -x "$repo/$path" ]] ;;
+        *)      return 0 ;;
+    esac
 }
 
 partial_paths_list() {
@@ -1192,22 +1248,27 @@ partial_recovery_advice() {
     # only a path with nothing at it gets a checkout.
     local repo="$1" sha="$2" lines="$3" line state path
     local missing="" differs=""
+    local -a missing_paths=()
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         state="${line%%$'\t'*}"
         path="${line#*$'\t'}"
         if [[ "$state" == "missing" ]]; then
             missing+="$path, "
+            missing_paths+=("$path")
         else
             differs+="$path, "
         fi
     done <<<"$lines"
-    if [[ -n "$missing" ]]; then
-        printf 'Nothing is at %s, so the entry holds the only copy: restore each with git -C %s checkout %s^3 -- <path>. ' \
-            "${missing%, }" "$repo" "$sha"
+    if [[ ${#missing_paths[@]} -gt 0 ]]; then
+        # `--` is load-bearing: a path beginning with a dash is a path,
+        # not an option, and without the separator the command git is
+        # handed is not the command the operator was shown.
+        printf 'Nothing is at %s, and no file or symlink is in the way, so the entry holds the only copy: restore with git -C %s checkout %s^3 --%s. ' \
+            "${missing%, }" "$repo" "$sha" "$(printf ' %q' "${missing_paths[@]}")"
     fi
     if [[ -n "$differs" ]]; then
-        printf 'Your tree holds a DIFFERENT copy of %s — do NOT check the stashed one out over it, that overwrites what is there and the next run publishes it. Read the stashed one with git -C %s show %s^3:<path> and merge by hand. ' \
+        printf 'Your tree already holds a DIFFERENT copy of %s — or a file or a symlink standing in the way of it. Do NOT check the stashed one out over it: that destroys what is there and the next run publishes the result. Read the stashed one with git -C %s show %s^3:<path> and merge by hand. ' \
             "${differs%, }" "$repo" "$sha"
     fi
     printf 'Once every one of them is safe, and only then, delete the entry: git -C %s stash drop <ref>.' "$repo"
@@ -1345,6 +1406,14 @@ drop_applied_stash() {
     # silently give up on the untracked half in the same command; the
     # conflicted-then-resolved path then reached this function with rc 0
     # and a clean gate, and the file was gone.
+    #
+    # audit C1 (second re-audit): the TRACKED half's evidence is the
+    # caller's to establish, and only two callers may claim it — an apply
+    # git itself reported as clean, and the `applied` verdict, which
+    # requires stash_tracked_half_landed. Nothing else reaches here. A
+    # byte comparison against the entry would be wrong: a clean apply
+    # MERGES the entry's change into a tree that has moved on, so the
+    # result is deliberately not the entry's content.
     local repo="$1" sha="$2" label="$3" unrestored
     unrestored="$(unrestored_untracked_paths "$repo" "$sha")"
     if [[ -n "$unrestored" ]]; then
@@ -1608,6 +1677,63 @@ apply_outcome_untracked=""
 #: did NOTHING can be told from one that did half of what it was asked.
 apply_before_unmerged=""
 apply_before_status=""
+#: And immediately after, so the two can be compared path by path.
+apply_after_status=""
+
+status_lines_for() {
+    # status_lines_for <porcelain text> <path>...
+    # The lines of <porcelain text> that describe one of <path>.
+    #
+    # Porcelain v1 puts two status characters and a space before the
+    # path, so the path starts at offset 3. git C-quotes anything exotic,
+    # which then fails the compare and reads as "not mentioned" — the
+    # conservative direction, because an entry whose paths cannot be
+    # matched is never called applied.
+    local text="$1" line entry path
+    shift
+    while IFS= read -r line; do
+        [[ ${#line} -gt 3 ]] || continue
+        entry="${line:3}"
+        for path in "$@"; do
+            if [[ "$entry" == "$path" ]]; then
+                printf '%s\n' "$line"
+                break
+            fi
+        done
+    done <<<"$text"
+    return 0
+}
+
+stash_tracked_half_landed() {
+    # stash_tracked_half_landed <repo> <sha>
+    # True when THIS apply changed the working tree at one of the paths
+    # the entry's TRACKED half touches — the positive evidence `applied`
+    # rests on (audit C1, second re-audit).
+    #
+    # "The tree changed" on its own is not that evidence, and mistaking
+    # it for evidence cost the only copy of a tracked change: git 2.48.1
+    # restores the untracked half BEFORE the tracked merge, so an entry
+    # whose files came back and whose merge was then refused outright
+    # ("Your local changes to t.txt would be overwritten by merge")
+    # changes the tree without landing a byte of what it was asked to
+    # land. A concurrent write by anything else did the same to a plainly
+    # refused apply.
+    #
+    # A byte comparison against the entry would be wrong here: a clean
+    # apply MERGES its change into a tree that has moved on, so the
+    # result is deliberately not the entry's content. What is checkable
+    # is whether the tree's word about those paths CHANGED.
+    local repo="$1" sha="$2" path
+    local -a paths=()
+    while IFS= read -r -d '' path; do
+        [[ -n "$path" ]] && paths+=("$path")
+    done < <(git -C "$repo" diff --name-only -z "${sha}^1" "$sha" 2>/dev/null || true)
+    # An entry with no tracked half has nothing to land, so nothing can
+    # be concluded from the tree having changed.
+    [[ ${#paths[@]} -gt 0 ]] || return 1
+    [[ "$(status_lines_for "$apply_before_status" "${paths[@]}")" \
+        != "$(status_lines_for "$apply_after_status" "${paths[@]}")" ]]
+}
 
 snapshot_before_apply() {
     # snapshot_before_apply <repo>
@@ -1642,6 +1768,7 @@ classify_apply_failure() {
     new_paths="$(comm -13 <(printf '%s\n' "$apply_before_unmerged") \
         <(printf '%s\n' "$after") || true)"
     after_status="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
+    apply_after_status="$after_status"
     apply_outcome_untracked="$(unrestored_untracked_paths "$repo" "$sha")"
     if [[ -n "$new_paths" ]]; then
         # The apply certainly ran: it wrote markers. Whether it also
@@ -1652,25 +1779,35 @@ classify_apply_failure() {
             apply_outcome="conflicted"
         fi
         apply_outcome_paths="$new_paths"
-    elif [[ "$after_status" != "$apply_before_status" ]]; then
-        # No markers, but the tree changed: the tracked half merged
-        # cleanly and git then gave up on the untracked files. Measured on
-        # git 2.48.1. Whether anything is still ONLY in the entry is what
-        # the untracked comparison says, and it is the whole difference
-        # between an entry that must be kept and one that must be dropped.
+    elif [[ "$after_status" != "$apply_before_status" ]] \
+            && [[ -n "$apply_outcome_untracked" ]]; then
+        # No markers, but the tree changed and something is still only in
+        # the entry: the untracked half is incomplete however the tracked
+        # half fared.
+        apply_outcome="partial"
+        apply_outcome_paths=""
+    elif [[ "$after_status" != "$apply_before_status" ]] \
+            && stash_tracked_half_landed "$repo" "$sha"; then
+        # audit M3 (eleventh re-audit): the untracked collision can be
+        # with an IDENTICAL file — the same report written by both
+        # machines — which git declines just as loudly while leaving
+        # nothing behind. That was classified `refused` ("the tree was
+        # left untouched") after the tracked half had already landed, so
+        # a fully recovered entry was gated as unrecovered work and never
+        # dropped, and every later run stacked another stash on it.
         #
-        # audit M3 (eleventh re-audit): the collision can be with an
-        # IDENTICAL file — the same report written by both machines —
-        # which git declines just as loudly while leaving nothing behind.
-        # That was classified `refused` ("the tree was left untouched")
-        # after the tracked half had already landed, so the entry was
-        # gated as unrecovered work and never dropped, and every later
-        # run stacked another stash on it.
-        if [[ -n "$apply_outcome_untracked" ]]; then
-            apply_outcome="partial"
-        else
-            apply_outcome="applied"
-        fi
+        # audit C1 (second re-audit): but a CHANGED TREE IS NOT EVIDENCE
+        # THAT THIS APPLY CHANGED IT. Measured on git 2.48.1: the
+        # untracked half is restored BEFORE the tracked merge, so a stash
+        # whose untracked files land and whose tracked change is then
+        # refused outright ("Your local changes to t.txt would be
+        # overwritten by merge") produces exactly this signature — and
+        # the entry, holding the only copy of that tracked change, was
+        # dropped. A concurrent write by anything else in the same window
+        # did the same to a plainly refused apply. `applied` now requires
+        # positive evidence: every path the entry's tracked half touches
+        # matches the entry in the working tree.
+        apply_outcome="applied"
         apply_outcome_paths=""
     elif [[ -n "$apply_before_unmerged" ]]; then
         # git refused because the index was ALREADY unmerged; it never
@@ -1767,9 +1904,27 @@ carry_forward_partial_stashes() {
     local repo sha state path unrestored seen
     local -a done_shas=()
     [[ -f "$STASH_STATE_FILE" ]] || return 0
+    # audit M2 (second re-audit): CONFLICTED rows are carried too. The
+    # early trap now rewrites the sidecar from this run's arrays alone, so
+    # an early exit — reconcile_orphaned_stashes `fail`s before the full
+    # handler exists — dropped every previous run's conflicted row, which
+    # is exactly what previously_recorded_stashes needs to say whose
+    # markers a half-merged tree holds. `applied` rows are deliberately
+    # NOT carried: they are a statement about a tree this run has not
+    # looked at, and re-asserting one would let a stale row outlive the
+    # state it describes.
     while IFS=$'\t' read -r repo sha state path; do
-        [[ "$state" == "partial" ]] || continue
+        case "$state" in
+            partial|conflicted) ;;
+            *) continue ;;
+        esac
         [[ "$repo" == "$DATA_DIR" ]] || [[ "$repo" == "$PA_DIR" ]] || continue
+        if [[ "$state" == "conflicted" ]]; then
+            [[ -n "$path" ]] || continue
+            stash_ref_for "$repo" "$sha" >/dev/null || continue
+            record_conflicted_stash "$repo" "$sha" "$path"
+            continue
+        fi
         # audit low (eleventh re-audit): the sidecar holds one row per
         # PATH, and re-deriving an entry's state re-reads its whole
         # untracked tree. Once per entry, not once per row.
@@ -1998,7 +2153,7 @@ restore_stash_on_exit() {
                             log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was blocked by an earlier conflict; the entry is intact"
                             ;;
                         *)
-                            log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was refused; the tree is untouched and the stash is preserved"
+                            log "ERROR: restoring $(describe_stash "$_repo" "$_sha") was refused; git declined the merge and the stash is preserved"
                             ;;
                     esac
                 fi
@@ -2193,14 +2348,14 @@ abort_on_jsonl_shrink() {
     # WARN if either side errors so the failure is visible.
     git_show_err=$(mktemp 2>/dev/null) \
         || fail "could not create a temporary file for the shrink check"
-    if ! lines_before=$(git show "HEAD~1:$target" 2>"$git_show_err" | wc -l); then
+    if ! lines_before=$(git show "HEAD~1:$target" 2>"$git_show_err" | corpus_line_count); then
         lines_before=0
     fi
     if [[ -s "$git_show_err" ]]; then
         log "WARN: git show HEAD~1:$target emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
     fi
     : >"$git_show_err"
-    if ! lines_after=$(git show "HEAD:$target" 2>"$git_show_err" | wc -l); then
+    if ! lines_after=$(git show "HEAD:$target" 2>"$git_show_err" | corpus_line_count); then
         lines_after=0
     fi
     if [[ -s "$git_show_err" ]]; then
@@ -2209,7 +2364,7 @@ abort_on_jsonl_shrink() {
     rm -f "$git_show_err"
     [[ "$lines_after" -lt "$lines_before" ]] || return 0
     head_msg="$(git log -1 --format=%B)"
-    if echo "$head_msg" | grep -q "^Rewrite-Class: bulk"; then
+    if echo "$head_msg" | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then
         return 0
     fi
     # audit low (eleventh re-audit): a `.log` name, because the private
@@ -2245,6 +2400,28 @@ abort_on_jsonl_shrink() {
     fail "data submodule: unexpected shrink detected at the $context (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
 }
 
+corpus_line_count() {
+    # corpus_line_count — records on stdin, counted the one way both
+    # shrink sites use.
+    #
+    # audit L4 (second re-audit): `wc -l` counts NEWLINES, so a corpus
+    # whose last record lacks its terminator counts one short — and a
+    # commit that merely adds the missing terminator then reads as a
+    # one-line GROWTH while one that drops it reads as a one-line shrink,
+    # which is a false exit 4 on a corpus nobody truncated. `grep -c ''`
+    # counts LINES, including a final unterminated one, so it is stable
+    # across that change and is the record count a reader would give.
+    #
+    # It is not identical to Python's `splitlines()`, which
+    # sync-to-postgres uses: that also splits on U+2028, U+2029, and the
+    # other Unicode line breaks, so a record containing one would be
+    # counted twice there and once here. The stricter count is the right
+    # one for a guard — it never invents growth — and JSON escapes those
+    # code points inside strings anyway, so the two agree on every record
+    # this corpus can hold.
+    grep -c '' || true
+}
+
 abort_on_published_shrink() {
     # abort_on_published_shrink <context>
     #
@@ -2268,17 +2445,52 @@ abort_on_published_shrink() {
     # Must be called from inside the data submodule, immediately before a
     # push.
     local context="$1" lines_before lines_after shrink_report
+    local commit before after offender=""
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
-    # No origin/main means the S1 guard has already withheld the bump and
-    # there is nothing to compare against.
-    git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || return 0
-    lines_before=$(git show "origin/main:$target" 2>/dev/null | wc -l) || lines_before=0
-    lines_after=$(git show "HEAD:$target" 2>/dev/null | wc -l) || lines_after=0
+    # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
+    # quietly meant the one push that publishes commits nothing in this
+    # run inspected went out with no record that its guard had not run.
+    # Both call sites now decide publishability before they get here, so
+    # reaching this line at all means a push site was added without that
+    # gate — refuse, loudly, rather than wave it through.
+    if ! git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: the $context could not be checked against origin because $DATA_DIR has no origin/main ref, and this guard will not pass a push it cannot check. Check the submodule's remote (git -C $DATA_DIR remote -v) and fetch it."
+        fail "data submodule: refusing the $context — no origin/main to check it against" 4
+    fi
+    # `set -o pipefail` plus `set -e` makes an unguarded assignment from a
+    # failing `git show` abort the whole run; a path that is not in that
+    # tree is simply zero lines.
+    lines_before=$(git show "origin/main:$target" 2>/dev/null | corpus_line_count) \
+        || lines_before=0
+    lines_after=$(git show "HEAD:$target" 2>/dev/null | corpus_line_count) \
+        || lines_after=0
     [[ "$lines_after" -lt "$lines_before" ]] || return 0
-    if git log --format=%B origin/main..HEAD 2>/dev/null \
-            | grep -q "^Rewrite-Class: bulk"; then
-        log "corpus shrank against origin/main but the range carries a Rewrite-Class: bulk trailer — allowed"
+    # audit M3 (second re-audit): PER COMMIT. Asking whether the range
+    # holds a trailer anywhere let one deliberate archive commit wave
+    # through every unrelated truncation beside it — origin 100 lines, a
+    # bulk commit to 50, a botched hand commit to 10, "allowed". Every
+    # commit that shortens the file must carry its own trailer; the first
+    # that does not is the one to look at. `^...$` is anchored at both
+    # ends so a message merely QUOTING the phrase is not a trailer.
+    while IFS= read -r commit; do
+        # A root commit has no `^`, and a commit that added the file has
+        # no version of it in its parent: both are zero lines, not errors.
+        before=$(git show "${commit}^:$target" 2>/dev/null | corpus_line_count) \
+            || before=0
+        after=$(git show "${commit}:$target" 2>/dev/null | corpus_line_count) \
+            || after=0
+        [[ "$after" -lt "$before" ]] || continue
+        if git log -1 --format=%B "$commit" 2>/dev/null \
+                | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then
+            continue
+        fi
+        offender="$commit"
+        break
+    done < <(git rev-list --reverse origin/main..HEAD 2>/dev/null || true)
+    if [[ -z "$offender" ]]; then
+        log "corpus is shorter than origin/main, but every commit that shortened it carries a Rewrite-Class: bulk trailer — allowed"
         return 0
     fi
     shrink_report="$LOG_DIR/daily-sync-shrink-$(date +'%Y-%m-%d-%H%M%S').log"
@@ -2289,6 +2501,9 @@ abort_on_published_shrink() {
         echo "HEAD:                 $lines_after lines"
         echo "Delta:                $((lines_after - lines_before))"
         echo ""
+        echo "First offending commit (shortened it, no trailer):"
+        git log -1 --format='%H %s' "$offender"
+        echo ""
         echo "Unpushed commits (git log --oneline origin/main..HEAD):"
         git log --oneline origin/main..HEAD
         echo ""
@@ -2297,7 +2512,7 @@ abort_on_published_shrink() {
     } > "$shrink_report" 2>&1
     log "SHRINK DETECTED against origin ($context): $lines_before -> $lines_after lines. Report: $shrink_report"
     add_sync_gate_detail \
-        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines) and none of them carries a 'Rewrite-Class: bulk' trailer. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
+        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines), and ${offender:0:8} shortened it without a 'Rewrite-Class: bulk' trailer. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
     fail "data submodule: refusing to publish a corpus shorter than origin's (see $shrink_report)" 4
 }
 
@@ -2513,6 +2728,19 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
 fi
 
 # Commit + push if there's anything to commit.
+# audit M4 (second re-audit): decided BEFORE the first push, not after
+# it. `abort_on_published_shrink` cannot run without origin/main, and the
+# auto-sync block below pushed regardless — publishing content no guard
+# had compared against anything. The same ref decides whether the parent
+# pointer bump may be published (audit S1/M1), so one determination
+# serves both.
+data_publishable=1
+if [[ $DRY_RUN -eq 0 ]] \
+        && ! git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    data_publishable=0
+    log "data submodule: no origin/main ref — cannot verify that HEAD is published, and the shrink check against origin cannot run"
+fi
+
 if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
     log "data submodule: committing merged local changes"
     # audit C2: `git add -A` sweeps whatever is dirty, so this is the last
@@ -2522,8 +2750,14 @@ if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
     git commit -m "chore(auto-sync): daily sync from $HOST $(date +'%Y-%m-%d')" \
         >>"$LOG_FILE" 2>&1 || fail "data commit failed"
     abort_on_jsonl_shrink "auto-sync commit"
-    abort_on_published_shrink "auto-sync commit"
-    push_with_retry "data submodule"
+    if [[ $data_publishable -eq 1 ]]; then
+        abort_on_published_shrink "auto-sync commit"
+        push_with_retry "data submodule"
+    else
+        log "data submodule: committed, but the push is WITHHELD — there is no origin/main to check it against"
+        add_sync_gate_detail \
+            "daily-sync: the data submodule has no origin/main ref, so its commit was made but NOT pushed — nothing could compare it against what origin holds. Check the submodule's remote (git -C $DATA_DIR remote -v) and fetch it."
+    fi
 else
     log "data submodule: nothing to commit"
 fi
@@ -2540,25 +2774,19 @@ fi
 # than only when this block committed. origin/main is used rather than
 # @{u} because that is the ref push_with_retry actually pushes to, and
 # a submodule clone does not always have upstream tracking configured.
-data_publishable=1
-if [[ $DRY_RUN -eq 0 ]]; then
-    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
-        unpushed="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
-        if [[ "$unpushed" -gt 0 ]]; then
-            log "data submodule: $unpushed commit(s) ahead of origin/main — pushing"
-            # audit M4: this push publishes commits nothing in this run
-            # made or inspected.
-            abort_on_published_shrink "ahead-of-origin push"
-            push_with_retry "data submodule"
-        fi
-    else
-        # audit M1: without origin/main there is no way to tell whether the
-        # submodule HEAD has been published, so the check above cannot run
-        # — and falling through to the parent bump would publish a pointer
-        # to a possibly-unpushed commit, which is precisely the S1 state
-        # this block exists to prevent. Withhold the bump instead.
-        data_publishable=0
-        log "data submodule: no origin/main ref — cannot verify that HEAD is published"
+# audit M1: without origin/main there is no way to tell whether the
+# submodule HEAD has been published, so this check cannot run — and
+# falling through to the parent bump would publish a pointer to a
+# possibly-unpushed commit, which is precisely the S1 state this block
+# exists to prevent. data_publishable, decided above, withholds both.
+if [[ $DRY_RUN -eq 0 ]] && [[ $data_publishable -eq 1 ]]; then
+    unpushed="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+    if [[ "$unpushed" -gt 0 ]]; then
+        log "data submodule: $unpushed commit(s) ahead of origin/main — pushing"
+        # audit M4: this push publishes commits nothing in this run
+        # made or inspected.
+        abort_on_published_shrink "ahead-of-origin push"
+        push_with_retry "data submodule"
     fi
 fi
 
@@ -2678,7 +2906,7 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 fail "parent repo: applying stash ${_sha:0:8} was blocked by an earlier conflict"
             fi
             add_sync_gate_detail \
-                "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR was REFUSED — the tree was left untouched and the work is only in the stash. Clear whatever collides (git -C $PA_DIR status), then pop it: git -C $PA_DIR stash pop <ref>."
+                "daily-sync STOPPED: applying parent-repo stash $(describe_stash "$PA_DIR" "$_sha") in $PA_DIR was REFUSED — git declined the merge and preserved the entry, so its tracked work is still only in the stash. Clear whatever collides (git -C $PA_DIR status), then pop it: git -C $PA_DIR stash pop <ref>."
             fail "parent repo: applying stash ${_sha:0:8} was refused — manual resolution required"
         else
             drop_applied_stash "$PA_DIR" "$_sha" "parent repo" || true

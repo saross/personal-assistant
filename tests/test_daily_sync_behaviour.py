@@ -3417,3 +3417,280 @@ class TestExitHandlerPartialRestore:
         corpus = machine.memories.read_text(encoding="utf-8")
         assert corpus.count("2026-09-08-exit-handler") == 1, corpus
         assert (machine.data / report).read_text(encoding="utf-8") == "main's copy\n"
+
+
+# ============================================================================
+# `applied` needs positive evidence, not a changed tree (audit C1, second)
+# ============================================================================
+
+
+class TestAppliedNeedsEvidence:
+    """git 2.48.1 restores a stash's untracked half BEFORE merging the
+    tracked one. An entry whose files come back and whose merge is then
+    refused outright changes the working tree without landing a byte of
+    what it was asked to land -- and was dropped for it, taking the only
+    copy of that tracked change with it."""
+
+    def test_an_untracked_landing_with_a_refused_merge_is_not_dropped(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-C1: classifying `applied` from `git status` differing.
+
+        Staged so the branch-switch stash carries both halves, the pull
+        brings nothing that collides with the untracked one, and a local
+        edit made in the meantime makes the tracked merge impossible.
+        """
+        machine = world.add_machine("a")
+        base = machine.head("data")
+        report = "reports/from-the-stash.md"
+        machine.append_memory("2026-09-08-only-in-the-stash")
+        target = machine.data / report
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("the stashed report\n", encoding="utf-8")
+        git("checkout", "-q", "--detach", base, cwd=machine.data)
+        # The archiver runs between the branch-switch stash and the pop,
+        # and writes the corpus -- so the stash's tracked change can no
+        # longer be merged into it.
+        published_before = world.published_data_head()
+
+        result = world.run_sync(
+            machine,
+            PA_TEST_GIT_REFUSE_APPLY_IN=str(machine.data),
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        listed = git("stash", "list", "--format=%H", cwd=machine.data).stdout.split()
+        assert listed, "the entry holding the only copy of the append was dropped"
+        kept = git("show", f"{listed[0]}:memories/memories.jsonl",
+                   cwd=machine.data).stdout
+        assert "2026-09-08-only-in-the-stash" in kept, kept
+        joined = "\n".join(gate_details(world))
+        assert joined, "nothing was gated about the entry that was kept"
+        assert world.published_data_head() == published_before
+
+    def test_a_concurrent_write_during_a_refused_apply_is_still_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """The weaker variant: anything writing between the snapshot and
+        the classification flipped a plainly refused apply to `applied`.
+
+        Kills DS-C1 in its cheapest form -- the write here is by another
+        session and touches nothing the stash holds.
+        """
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- unsaved work\n", encoding="utf-8"
+        )
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        result = world.run_sync(
+            machine,
+            PA_TEST_GIT_REFUSE_APPLY_IN=str(machine.data),
+            PA_TEST_WRITE_DURING_APPLY=str(machine.data / "unrelated.md"),
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert git("stash", "list", cwd=machine.data).stdout.strip(), (
+            "a refused apply was read as applied because something else wrote"
+        )
+        joined = "\n".join(gate_details(world))
+        assert "REFUSED" in joined or "UNRECOVERED" in joined, joined
+        assert "could not drop" not in joined, (
+            "an apply that did nothing was reported as applied: " + joined
+        )
+
+
+# ============================================================================
+# A conflicted row survives an early exit (audit M2, second re-audit)
+# ============================================================================
+
+
+class TestConflictedRowsAreCarried:
+    """The early trap rewrites the sidecar from this run's arrays. A row
+    it does not carry forward is a row the next run cannot read -- and
+    the conflicted rows are exactly what previously_recorded_stashes
+    needs to say whose markers a half-merged tree holds."""
+
+    def test_a_conflicted_row_survives_an_early_exit(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M2: carrying only `partial` rows forward.
+
+        Run 1 leaves a conflicted row. Run 2 exits early -- an orphan the
+        drift detector names, which fails before the full EXIT handler
+        exists -- and must not take the row with it. Run 3 still
+        attributes the markers.
+        """
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-conflicting")
+        git("stash", "push", "-q", "-m", "recorded as conflicted", cwd=machine.data)
+        sha = git("rev-parse", "stash@{0}", cwd=machine.data).stdout.strip()
+        machine.memories.write_text('{"id": "committed"}\n', encoding="utf-8")
+        machine.commit_data("diverge", "memories/memories.jsonl")
+        git("stash", "apply", "stash@{0}", cwd=machine.data, check=False)
+        sidecar = world.home / ".cache" / "daily-sync-stash-state"
+        sidecar.write_text(
+            f"{machine.data}\t{sha}\tconflicted\tmemories/memories.jsonl\n",
+            encoding="utf-8",
+        )
+
+        # Run 2 exits early, at the corpus guard, before the full handler.
+        second = world.run_sync(machine)
+        assert second.returncode == 2, second.stdout + second.stderr
+        rows = [r for r in sidecar.read_text(encoding="utf-8").splitlines() if r]
+        assert rows, "the early exit emptied the sidecar"
+        assert rows[0].split("\t")[1] == sha, rows
+        assert rows[0].split("\t")[2] == "conflicted", rows
+
+        third = world.run_sync(machine)
+        assert third.returncode == 2, third.stdout + third.stderr
+        joined = "\n".join(gate_details(world))
+        assert "these markers ARE that stash's content" in joined, (
+            "attribution was lost with the conflicted row: " + joined
+        )
+
+
+# ============================================================================
+# The bulk trailer excuses one commit, not a range (audit M3, second)
+# ============================================================================
+
+
+class TestPerCommitTrailer:
+    """One deliberate archive commit waved through every unrelated
+    truncation beside it."""
+
+    def _publish_two_hundred(self, world: SyncWorld) -> object:
+        """A machine whose origin holds a corpus worth truncating."""
+        machine = world.add_machine("a")
+        for index in range(4):
+            machine.append_memory(f"2026-09-08-record-{index}")
+        machine.commit_data("real captures", "memories/memories.jsonl")
+        git("push", "-q", "origin", "main", cwd=machine.data)
+        return machine
+
+    def test_an_untrailered_truncation_beside_a_bulk_one_is_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M3: asking whether the RANGE holds a trailer anywhere.
+
+        A legitimate archive commit, then a botched one. The second must
+        stop the push even though the first is blameless.
+        """
+        machine = self._publish_two_hundred(world)
+        published_before = world.published_data_head()
+        machine.memories.write_text(
+            '{"id": "kept-by-the-archive"}\n{"id": "also-kept"}\n', encoding="utf-8"
+        )
+        machine.commit_data("archive", "memories/memories.jsonl")
+        git("commit", "-q", "--amend", "-m",
+            "chore(memories): monthly archive\n\nRewrite-Class: bulk\n",
+            cwd=machine.data)
+        machine.memories.write_text('{"id": "oops"}\n', encoding="utf-8")
+        machine.commit_data("a botched rewrite", "memories/memories.jsonl")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert world.published_data_head() == published_before, (
+            "a truncation rode out on somebody else's trailer"
+        )
+        joined = "\n".join(gate_details(world))
+        assert "Rewrite-Class: bulk" in joined, joined
+
+    def test_a_body_merely_quoting_the_trailer_is_not_one(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills: unanchoring the trailer grep. A commit that talks about
+        the trailer has not declared one."""
+        machine = self._publish_two_hundred(world)
+        published_before = world.published_data_head()
+        machine.memories.write_text('{"id": "all that is left"}\n', encoding="utf-8")
+        machine.commit_data("prune", "memories/memories.jsonl")
+        git("commit", "-q", "--amend", "-m",
+            "chore(memories): prune\n\nRewrite-Class: bulk would be wrong here,\n"
+            "because this is not a bulk rewrite.\n",
+            cwd=machine.data)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert world.published_data_head() == published_before, (
+            "a commit merely quoting the trailer was treated as declaring it"
+        )
+
+    def test_a_trailing_terminator_change_is_not_a_shrink(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit L4: `wc -l` counts newlines, so a commit that only drops
+        the corpus's final terminator read as a one-line shrink and raised
+        a false exit 4 on a corpus nobody truncated."""
+        machine = self._publish_two_hundred(world)
+        text = machine.memories.read_text(encoding="utf-8")
+        machine.memories.write_text(text.rstrip("\n"), encoding="utf-8")
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not list((machine.pa / "logs").glob("daily-sync-shrink-*.log")), (
+            "dropping the final newline was reported as a shrink"
+        )
+
+
+# ============================================================================
+# Nothing is pushed that no guard could check (audit M4, second re-audit)
+# ============================================================================
+
+
+class TestUnverifiablePushIsWithheld:
+    """Without origin/main the shrink check cannot run. The auto-sync
+    block pushed anyway, publishing content nothing had compared against
+    anything -- and the skip was silent."""
+
+    def test_without_origin_main_nothing_is_pushed_and_the_skip_is_said(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M4: the silent `return 0` and the ungated push."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-unverifiable")
+        published_before = world.published_data_head()
+        # The remote-tracking ref the guard and the S1 check both need,
+        # removed the way production loses it: a fetch refspec that never
+        # writes it, under which the pull still succeeds.
+        git("config", "--unset", "remote.origin.fetch", cwd=machine.data)
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=machine.data)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "no origin/main ref" in combined, combined
+        assert world.published_data_head() == published_before, (
+            "a commit no guard could check was pushed anyway"
+        )
+        joined = "\n".join(gate_details(world))
+        assert "origin/main" in joined, joined
+
+    def test_a_commit_the_auto_sync_block_makes_is_withheld_too(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M4's other half: the auto-sync block pushed whatever
+        it had just committed, whether or not anything could check it.
+
+        Dirtied with a prose file, which the append-only block leaves
+        alone, so the auto-sync block is the one that commits.
+        """
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- written by a session\n", encoding="utf-8"
+        )
+        published_before = world.published_data_head()
+        git("config", "--unset", "remote.origin.fetch", cwd=machine.data)
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=machine.data)
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "push is WITHHELD" in combined, combined
+        assert world.published_data_head() == published_before, (
+            "the auto-sync block pushed a commit no guard could check"
+        )
+        # The commit was still made: the work is on the branch, not lost.
+        assert machine.head("data") != published_before
