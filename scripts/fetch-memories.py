@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,42 @@ MAX_RESULTS = 10
 # fallback rather than hang the session.
 CONNECT_TIMEOUT_SECONDS = 5
 STATEMENT_TIMEOUT_MS = 30_000
+
+#: Environment variable pinning the tier-2 invocation log (audit R17).
+#: ``log-recall.py`` writes to the same file and honours the same variable,
+#: so one override redirects both halves of the retrieval log.
+LOG_PATH_ENV = "PA_FETCH_LOG"
+
+#: The shipped destination, derived from ``__file__`` rather than ``HOME``.
+#: Resolve through :func:`default_log_path` rather than reading this.
+SHIPPED_LOG_PATH = PA_DIR / "logs" / "fetch-memories.log"
+
+
+def default_log_path() -> Path | None:
+    """Where an unpinned write goes, or ``None`` for "write nothing".
+
+    Resolved at CALL time, never bound as a default argument: nothing here
+    touches the filesystem until something actually logs. The rules, in
+    order (audit S22, extended to this script by audit R17):
+
+    1. ``PA_FETCH_LOG`` wins whenever it is set to a non-empty value.
+    2. Under pytest there is NO destination — the caller gets ``None`` and
+       writes nothing at all.
+    3. Otherwise :data:`SHIPPED_LOG_PATH`.
+
+    Rule 2 matters because ``SHIPPED_LOG_PATH`` comes from ``__file__``,
+    not from ``HOME``: it points at the operator's own checkout wherever
+    the suite pins ``HOME``, and runs through the ``logs`` symlink into the
+    private data submodule. A test exercising this path would otherwise
+    append live-looking rows to the operator's real instrumentation.
+    """
+    override = os.environ.get(LOG_PATH_ENV)
+    if override:
+        return Path(override)
+    if "pytest" in sys.modules:
+        return None
+    return SHIPPED_LOG_PATH
+
 
 # Freshness-warning thresholds (M3). Both must be exceeded for a warning
 # to fire, so a quiet day doesn't flood stderr.
@@ -932,14 +969,18 @@ def main() -> None:
     _log_invocation(args, results)
 
 
-def _log_invocation(args: argparse.Namespace, results: Any) -> None:
+def _log_invocation(
+    args: argparse.Namespace,
+    results: Any,
+    log_path: Path | None = None,
+) -> None:
     """Append a one-line tier-2 retrieval record to fetch-memories.log.
 
     Tab-separated: timestamp, the selectors used, limit, and result
     count. Best-effort — any failure is swallowed so instrumentation can
     never degrade the retrieval path itself.
     """
-    log_path = PA_DIR / "logs" / "fetch-memories.log"
+    target = log_path if log_path is not None else default_log_path()
     try:
         # Use ``key:value`` (colon) for selectors that log a value, so the
         # joined field reads ``selectors=tag:foo`` not ``selectors=tag=foo``
@@ -963,9 +1004,13 @@ def _log_invocation(args: argparse.Namespace, results: Any) -> None:
             f"limit={getattr(args, 'limit', '?')}\t"
             f"results={n}\n"
         )
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+        # The mkdir sits inside the "we have a destination" branch: an
+        # unpinned call under pytest must not even create the directory,
+        # since ``logs`` runs into the private data submodule.
+        if target is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(line)
     except Exception:  # noqa: BLE001 — instrumentation must never raise
         pass
     # Item 16 (earned-utility, Stage 1): log which memories this autonomous

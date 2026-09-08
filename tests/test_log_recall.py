@@ -136,3 +136,88 @@ def test_format_parity_with_autonomous_path() -> None:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ============================================================================
+# Audit R10 / lens B RT12 — the CLI entry point and the limit field
+# ============================================================================
+
+
+def test_limit_is_whitespace_collapsed() -> None:
+    """Kills: interpolating ``limit`` raw into the line.
+
+    ``limit`` was the one free-form field left unsanitised, so a value
+    carrying a tab wrote forged columns ahead of the real ones and the
+    review parser read them as fact.
+    """
+    line = log_recall_mod.format_line(
+        "query", "10\tsource=fetch\tresults=999", 3, "recall", now=FIXED_NOW
+    )
+    fields = line.rstrip("\n").split("\t")
+    assert len(fields) == 5
+    assert fields[2] == "limit=10 source=fetch results=999"
+
+
+def test_cli_rejects_a_non_integer_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """argparse types the flag, so the forged value cannot even be passed."""
+    monkeypatch.setattr(
+        sys, "argv", ["log-recall.py", "--limit", "10\tsource=fetch"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        log_recall_mod.main()
+    assert exc.value.code == 2
+
+
+class TestMain:
+    """``main()`` is the only entry point ``commands/recall.md`` invokes."""
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, target, argv: list[str]):
+        monkeypatch.setenv("PA_FETCH_LOG", str(target))
+        monkeypatch.setattr(sys, "argv", ["log-recall.py", *argv])
+        log_recall_mod.main()
+        return target.read_text(encoding="utf-8").rstrip("\n").split("\t")
+
+    def test_selectors_and_results_reach_the_line(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Kills: discarding --selectors or --results in main()."""
+        fields = self._run(
+            monkeypatch, tmp_path / "fetch-memories.log",
+            ["--selectors", "category:decision;query", "--results", "7"],
+        )
+        assert "selectors=category:decision;query" in fields
+        assert "results=7" in fields
+
+    def test_source_defaults_to_recall_not_fetch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Kills: writing ``source=fetch``.
+
+        ``source=`` is the discriminator tier-2-retrieval.md defines between
+        the manual and the autonomous path; getting it wrong silently
+        misattributes every manual recall.
+        """
+        fields = self._run(
+            monkeypatch, tmp_path / "fetch-memories.log", ["--selectors", "none"],
+        )
+        assert "source=recall" in fields
+
+    def test_source_is_overridable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        fields = self._run(
+            monkeypatch, tmp_path / "fetch-memories.log",
+            ["--selectors", "none", "--source", "digest"],
+        )
+        assert "source=digest" in fields
+
+    def test_defaults_are_the_documented_ones(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """A bare invocation logs the zero-match shape recall.md describes."""
+        fields = self._run(monkeypatch, tmp_path / "fetch-memories.log", [])
+        assert fields[1:] == [
+            "selectors=none", "limit=10", "results=0", "source=recall",
+        ]

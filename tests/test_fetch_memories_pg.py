@@ -355,3 +355,126 @@ class TestSchemaVersionGuard:
         _install(monkeypatch, [_row("a")],
                  schema_version=EXPECTED_SCHEMA_VERSION)
         assert fetch_memories.try_postgres(category="decision") is not None
+
+
+# ---------------------------------------------------------------------------
+# main() end to end, with PostgreSQL up and down (lens B, RT4)
+# ---------------------------------------------------------------------------
+
+
+class TestMainEndToEnd:
+    """``main()`` had no test at all: the JSONL fallback could be deleted."""
+
+    @pytest.fixture(autouse=True)
+    def _pinned_log(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """Pin the invocation log so main() exercises the real writer safely."""
+        target = tmp_path / "logs" / "fetch-memories.log"
+        monkeypatch.setenv("PA_FETCH_LOG", str(target))
+        return target
+
+    def test_postgres_results_are_printed_and_logged(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], _pinned_log: Path,
+    ) -> None:
+        """The happy path: query, render, instrument."""
+        _install(monkeypatch, [_row("2026-03-15-abc", content="grid spacing")])
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--query", "grid spacing"],
+        )
+        fetch_memories.main()
+        out = capsys.readouterr().out
+        assert "Memory Details (1 result)" in out
+        line = _pinned_log.read_text(encoding="utf-8")
+        assert "selectors=query" in line
+        assert "results=1" in line
+
+    def test_falls_back_to_jsonl_when_postgres_is_down(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str], _pinned_log: Path,
+    ) -> None:
+        """Kills: deleting the JSONL fallback (``results = []`` instead).
+
+        This is the path every machine without PostgreSQL takes for every
+        recall, so a silent empty result is a total retrieval failure.
+        """
+        import json
+
+        import psycopg2
+
+        corpus = tmp_path / "memories.jsonl"
+        corpus.write_text(
+            json.dumps({
+                "id": "2026-03-15-off", "category": "decision",
+                "content": "grid spacing is 20 m",
+                "created_at": "2026-03-15T10:00:00+00:00",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fetch_memories, "MEMORIES_FILE", corpus)
+
+        def _refuse(*args: Any, **kwargs: Any):
+            raise psycopg2.OperationalError("connection refused")
+
+        monkeypatch.setattr(psycopg2, "connect", _refuse)
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--query", "grid spacing"],
+        )
+        fetch_memories.main()
+        captured = capsys.readouterr()
+        assert "Falling back to JSONL search" in captured.err
+        assert "grid spacing is 20 m" in captured.out
+        assert "results=1" in _pinned_log.read_text(encoding="utf-8")
+
+    def test_zero_results_still_print_a_message_and_log(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], _pinned_log: Path,
+    ) -> None:
+        """An empty result is reported, never silent."""
+        _install(monkeypatch, [])
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--query", "nothing matches"],
+        )
+        fetch_memories.main()
+        assert "Memory Details (0 results)" in capsys.readouterr().out
+        assert "results=0" in _pinned_log.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("argv", [
+        ["fetch-memories.py"],                       # no filter at all
+        ["fetch-memories.py", "--query", "x", "--limit", "0"],
+        ["fetch-memories.py", "--query", "x", "--limit", "-3"],
+    ])
+    def test_usage_errors_exit_two(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str],
+    ) -> None:
+        """Kills: neutering the --limit bound or the at-least-one-filter rule."""
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit) as exc:
+            fetch_memories.main()
+        assert exc.value.code == 2
+
+    def test_archive_is_appended_only_when_asked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str], _pinned_log: Path,
+    ) -> None:
+        """``--include-archive`` is opt-in and merges after the active hits."""
+        import json
+
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "memories-archive-2026-01.jsonl").write_text(
+            json.dumps({
+                "id": "2026-01-04-cold", "category": "decision",
+                "content": "grid spacing was 10 m in the pilot",
+                "created_at": "2026-01-04T10:00:00+00:00",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        _install(monkeypatch, [_row("2026-03-15-hot", content="grid spacing")])
+        monkeypatch.setattr(sys, "argv", [
+            "fetch-memories.py", "--query", "grid spacing", "--include-archive",
+        ])
+        fetch_memories.main()
+        captured = capsys.readouterr()
+        assert "+1 archived record(s)" in captured.err
+        assert "Memory Details (2 results)" in captured.out
