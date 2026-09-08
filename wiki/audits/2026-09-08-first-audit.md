@@ -187,6 +187,7 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
 | H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
 | H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | **round 2** (PR #115, fourth round): a safe-advance position — every cursor write moves to the last entry processed with no skip pending, so the command and its response are seen together next time and no real message is read twice |
+| H29 | `hooks/extraction-hook.py` marker branch — a non-meta user entry whose text merely contains a slash-command header (a tool result echoing `commands/*.md` or `scripts/_command_markers.py`) sets the skip flag and drops the next genuine assistant turn (SUSPECTED by the round-four re-audit; one such entry exists, created by this audit session) | deferred (round 3; require `isMeta` on the marker entry, which live data supports: 364 of 364 command entries are meta) |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -393,8 +394,15 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     writes (six tests including a two-firing run); subagent entries dropped
     before the command branch; the checker guards on the closing quote,
     adds `<`/`>`, scopes the operator scan to the value before a comment,
-    and decodes a BOM; `conftest.py` fixtures retired. Fourth, narrow pass
-    running. Merge strategy: squash, so the six commits carrying private
+    and decodes a BOM; `conftest.py` fixtures retired. Fourth pass:
+    **hold** — the safe-advance position regresses on `[real, /cmd,
+    real-user]`: the later message is extracted but the cursor stays
+    behind it, so it is re-extracted every firing (a live shape). Fifth
+    round running: the cursor record persists the pending-skip state
+    per session, so the cursor always advances to the last processed
+    entry and the skip carries over; a legacy cursor sitting on a command
+    entry sets the flag; tab-delimited comments; two untested lines
+    pinned. Merge strategy: squash, so the six commits carrying private
     rows never enter `main`'s history; the branch itself is D6.
   - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
     guard pushes a second stash and only one is popped, so a run that
