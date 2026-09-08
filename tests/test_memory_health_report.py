@@ -1062,3 +1062,74 @@ class TestTheVerdictMatchesTheDocumentedExitCodes:
         report, clean = _build()
         assert report["integrity"]["only_in_postgres"] == "n/a"
         assert clean is True
+
+
+class TestTheSurfacedTopIsCheckedAgainstTheActiveCorpus:
+    """[G]'s "no longer live" branch has to be reachable (finding L7)."""
+
+    def test_a_forgotten_id_is_reported_as_gone(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """Kills the mutation passing live_ids instead of the active ids.
+
+        surfaced.log outlives /forget, so a heavily-retrieved id can name a
+        record recall will never return again. Testing membership against
+        every JSONL line marked it present and the branch never fired.
+        """
+        _write_corpus(report_paths, [
+            _anchored(id="m-live"),
+            _anchored(id="m-forgotten", is_active=False),
+        ])
+        pinned = report_paths / "logs" / "pinned-surfaced.log"
+        pinned.write_text(
+            "2031-01-02T03:04:05+00:00\tid=m-forgotten\tpath=recall\trank=1\t"
+            "session=s-1\n"
+            "2031-01-02T03:04:06+00:00\tid=m-live\tpath=recall\trank=2\t"
+            "session=s-1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PA_SURFACED_LOG", str(pinned))
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-live", "is_active": True},
+            {"id": "m-forgotten", "is_active": False},
+        ]))
+        report, _clean = _build()
+        assert report["surfacing"]["top_not_in_corpus"] == 1
+        by_id = {t["id"]: t["in_corpus"] for t in report["surfacing"]["top"]}
+        assert by_id == {"m-forgotten": False, "m-live": True}
+        rendered = "\n".join(mhr.render_report(report))
+        assert "no longer in the live corpus" in rendered
+
+
+class TestTheNonListAnchorsCountIsShown:
+    """A counted field nobody renders is a field nobody reads (L5)."""
+
+    def test_the_report_names_the_non_list_anchors_records(self) -> None:
+        """Kills the mutation dropping the clause from the rendered line."""
+        report = {
+            "generated_at": "2031-01-01T00:00:00+00:00",
+            "corpus": {"total_records": 2, "distinct_ids": 2,
+                       "duplicate_id_groups": 0, "duplicate_id_excess_lines": 0,
+                       "by_category": {}, "by_source": {}, "active_records": 2,
+                       "inactive_records": 0},
+            "postgres": None,
+            "growth": {}, "archival": {"total_archived": 0, "archival_runs": 0,
+                                       "last_run_at": None},
+            "cold_partition_records": 0,
+            "anchors": {"anchored": 0, "unanchored": 1, "anchored_any": 1,
+                        "anchored_pct": 0.0, "verified_breakdown": {},
+                        "malformed_anchors": 1,
+                        "records_with_malformed_anchor": 1,
+                        "malformed_anchor_fields": 1},
+            "integrity": {"clean": True, "duplicate_id_groups": 0,
+                          "quarantine_count": 0,
+                          "quarantine_state": mhr.QUARANTINE_ABSENT,
+                          "only_in_canonical": "n/a",
+                          "only_in_postgres": "n/a", "archive_parity": None},
+            "confab": {"rows": 0},
+            "surfacing": {"distinct_memories_surfaced": 0},
+            "drift_trend": {"runs": 0},
+        }
+        line = next(ln for ln in mhr.render_report(report)
+                    if "malformed anchors" in ln)
+        assert "non-list anchors field" in line

@@ -250,12 +250,6 @@ def archival_summary(archive_runs_lines: list[str]) -> dict[str, Any]:
 #: (audit 2026-09-08, finding AN5).
 VERIFIABLE_ANCHOR_TYPES = frozenset({"file", "commit"})
 
-#: ``verified`` values the write path may legitimately record
-#: (``global-claude-md/memory-system-reference.md``). Anything else is
-#: bucketed as-is so the report shows it rather than hiding it.
-KNOWN_VERIFIED_VALUES = ("true", "false", "pending", "stale", "tier3")
-
-
 def _has_verifiable_anchor(anchors: Any) -> bool:
     """Does this ``anchors`` value carry at least one resolvable anchor?"""
     if not isinstance(anchors, list):
@@ -400,11 +394,12 @@ def surfacing_section(
     corpus summary plus the top-5 most actively-retrieved ids. Empty input
     yields zeros (the normal pre-accrual state).
 
-    *known_ids* is the live corpus's id set. Each top entry is marked
+    *known_ids* is the ACTIVE corpus's id set. Each top entry is marked
     ``in_corpus``, and ``top_not_in_corpus`` counts the ones that are not:
     ``surfaced.log`` is append-only and outlives archival and ``/forget``, so
-    a heavily-retrieved id may name a record that no longer exists — reported
-    as a fact rather than shown as if it were live (finding AN17).
+    a heavily-retrieved id may name a record that has since been archived or
+    forgotten — reported as a fact rather than shown as if it were live
+    (findings AN17 and L7).
     """
     summary = surfacing_stats.summarise(stats)
     # Tiebreak on recency (last_any_at) so the top-N is reproducible when two
@@ -740,10 +735,19 @@ def render_report(report: dict[str, Any]) -> list[str]:
         "well-formed file/commit anchor)"
     )
     out.append(f"  verified breakdown      : {_fmt_top(h['verified_breakdown'])}")
-    out.append(
+    malformed_line = (
         f"  malformed anchors       : {h['malformed_anchors']} "
         f"(on {h['records_with_malformed_anchor']} record(s))"
     )
+    if h.get("malformed_anchor_fields"):
+        # A non-list ``anchors`` value is a different defect from a malformed
+        # entry inside a well-formed list, and it was counted but never shown
+        # (round 4f-3, finding L5).
+        malformed_line += (
+            f"; {h['malformed_anchor_fields']} of those are a non-list "
+            "anchors field"
+        )
+    out.append(malformed_line)
 
     i = report["integrity"]
     out.append("\n[D] Sync & archive integrity")
@@ -916,8 +920,13 @@ def build_report(
     # operator who pinned PA_SURFACED_LOG reads the log they are writing
     # (finding M-c); SURFACED_LOG is the shipped fallback.
     surfaced_log_path = surfacing_log.default_log_path() or SURFACED_LOG
+    # Membership is tested against the ACTIVE ids, not every line: a
+    # /forget-ed record is still in the JSONL, so live_ids marked it present
+    # and the "no longer in the live corpus" branch could never fire —
+    # which is precisely the case worth surfacing (round 4f-3, finding L7).
+    active_ids = {str(r["id"]) for r in active_records if r.get("id")}
     surfacing = surfacing_section(
-        surfacing_stats.aggregate_surfacing(surfaced_log_path), live_ids,
+        surfacing_stats.aggregate_surfacing(surfaced_log_path), active_ids,
     )
 
     # §H anchor drift trend (reads the drift-sweep.jsonl trend log; fast).
