@@ -1018,6 +1018,33 @@ class SanitySample:
     fit_X: np.ndarray        # corpus matrix this sample is scored against
     fit_loo: list[float]     # LOO envelope recomputed from `fit_X`
     fit_note: str            # rendered in the report's "Fit" column
+    #: The phase 1 results the advisory cluster ranges are read from. The
+    #: held-out sample gets a copy with its own paper dropped: those ranges
+    #: are corpus evidence too, and a paper compared against a band it helped
+    #: define is being compared with itself (re-audit item 11).
+    fit_phase1: dict = field(default_factory=dict)
+    #: False when the 8-metric gate's targets still contain this sample. The
+    #: targets are corpus AGGREGATES, not per-paper rows, so dropping a row
+    #: cannot remove a paper from them: for the held-out sample the gate is
+    #: rendered as not-independent rather than as a pass or a fail it has not
+    #: earned.
+    gate_is_independent: bool = True
+
+
+def phase1_without(phase1: dict, key: str) -> dict:
+    """Return a copy of ``phase1`` with paper ``key`` removed from per_paper.
+
+    Used for the held-out sanity sample so the advisory cluster ranges it is
+    compared against are corpus evidence that excludes it (re-audit item 11).
+    The ``aggregate`` block is carried over unchanged and deliberately: it is
+    a set of corpus-wide recomputations, not a sum of rows, so it cannot be
+    corrected by dropping one — which is why the gate is reported as
+    not-independent for that sample rather than silently trusted.
+    """
+    reduced = dict(phase1)
+    reduced["per_paper"] = [p for p in phase1.get("per_paper", [])
+                            if p.get("key") != key]
+    return reduced
 
 
 def build_validation_report(phase1: dict, phase3: dict, nlp,
@@ -1100,7 +1127,8 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
 
     samples: list[SanitySample] = [
         SanitySample(label=label, text=text, is_corpus=False,
-                     fit_X=X, fit_loo=loo, fit_note=f"full (n={len(X)})")
+                     fit_X=X, fit_loo=loo, fit_note=f"full (n={len(X)})",
+                     fit_phase1=phase1)
         for label, text in SANITY_FIXTURES
     ]
     held_out_key: str | None = None
@@ -1117,15 +1145,25 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
             fit_X=reduced_X,
             fit_loo=reduced_loo,
             fit_note=f"n−1 (n={len(reduced_X)}, `{median_key}` excluded)",
+            fit_phase1=phase1_without(phase1, median_key),
+            # The gate's targets are corpus aggregates; no row can be dropped
+            # from them, so this row's gate is not an independent check.
+            gate_is_independent=False,
         ))
 
     if held_out_key is not None:
         L.append(f"**Held out for the n−1 fit:** `{held_out_key}` — the "
                  f"LOO-median paper of the full {len(X)}-paper fit.")
     elif not body.exists():
-        L.append(f"**No held-out arm:** `{median_key}/body.md` is not present "
-                 f"under `{extracted_dir}`, so only the off-register fixtures "
-                 "were scored.")
+        # The held-out arm is the only part of this report that tests whether
+        # the metric RECOGNISES corpus prose; without it the run proves half
+        # of what it claims, so it fails rather than passing quietly.
+        sanity_ok = False
+        L.append(f"**No held-out arm — FAIL:** `{median_key}/body.md` is not "
+                 f"present under `{extracted_dir}`, so nothing checked that "
+                 "the metric recognises genuine corpus prose. Point "
+                 "`--extracted-dir` at the extraction, or re-run "
+                 "`extract_corpus.py`.")
     else:
         L.append(f"**No held-out arm:** an n−1 fit needs at least "
                  f"{HELD_OUT_MIN_PAPERS} papers and this corpus has {len(X)}.")
@@ -1134,7 +1172,8 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
     L.append("|---|---:|---:|---|---|:--:|")
 
     for sample in samples:
-        ev = evaluate_text(sample.text, sample.label, phase1, phase3, nlp,
+        ev = evaluate_text(sample.text, sample.label,
+                           sample.fit_phase1 or phase1, phase3, nlp,
                            loo=sample.fit_loo, X=sample.fit_X, fs=fs)
         fit_summary = distribution_summary(sample.fit_loo)
         # One rule drives the rendered verdict and the overall flag alike
@@ -1145,7 +1184,10 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
             sample.is_corpus,
         )
         sanity_ok = sanity_ok and sample_ok
-        gate_tag = "✓" if ev.gate_pass else "✗"
+        # "—" rather than a tick the sample did not earn: see
+        # SanitySample.gate_is_independent.
+        gate_tag = ("✓" if ev.gate_pass else "✗") \
+            if sample.gate_is_independent else "—"
         L.append(
             f"| {sample.label} | {ev.n_words:,} | {ev.distance} | "
             f"{sample.fit_note} | {verdict} | {gate_tag} |"
@@ -1232,6 +1274,23 @@ def write_output(path: Path | None, text: str, *, payload: dict | None = None,
     return wrote
 
 
+def render_provenance_section(provenance: dict) -> str:
+    """Render a provenance block as a Markdown section for a report footer."""
+    lines = ["", "## Provenance", ""]
+    dirty = provenance.get("git_dirty")
+    lines.append(f"- Script: `{provenance['script']}`, commit "
+                 f"`{provenance['git_commit']}`"
+                 + (" (working tree DIRTY: the commit alone does not identify "
+                    "this run)" if dirty else ""))
+    if provenance.get("git_note"):
+        lines.append(f"- Commit not recorded: {provenance['git_note']}")
+    if provenance.get("spacy_model"):
+        lines.append(f"- spaCy model: `{provenance['spacy_model']}`")
+    for item in provenance.get("inputs", []):
+        lines.append(f"- Input `{item['path']}` sha256 `{item['sha256']}`")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Phase 5 downstream style evaluator (Mahalanobis + 8-metric gate)."
@@ -1283,6 +1342,15 @@ def main() -> int:
     if args.validate:
         report, sanity_ok = build_validation_report(
             phase1, phase3, nlp, args.extracted_dir
+        )
+        # The validation artefact carries provenance too (re-audit item 12):
+        # it is the report that says whether the instrument works, so a
+        # reader needs to know which code and which corpus produced it.
+        report += render_provenance_section(
+            style_support.provenance_block(
+                Path(__file__).name, [args.phase1, args.phase3],
+                spacy_model=args.spacy_model,
+            )
         )
         write_output(args.report, report, dry_run=args.dry_run)
         print(report)

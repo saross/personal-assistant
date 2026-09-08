@@ -332,21 +332,25 @@ def test_the_verdict_strings_are_not_written_out_in_phase_five():
     assert "ABOVE (unexpected)" not in report_body
 
 
-def test_json_output_carries_a_provenance_block():
-    """JSON results must record the code and inputs behind their numbers.
+def test_both_output_paths_carry_a_provenance_block():
+    """Every artefact must record the code and inputs behind its numbers.
 
-    The mutation this kills: deleting the
-    ``payload["provenance"] = style_support.provenance_block(...)``
-    assignment in ``main``, which would leave a results file that cannot be
-    tied back to the phase1/phase3 bytes it was derived from.
+    There are two: the single-text result and — since re-audit item 12 — the
+    ``--validate`` report, which is the artefact that says whether the
+    instrument works at all and carried no provenance of any kind.
+
+    The mutation this kills: deleting either ``provenance_block`` call in
+    ``main``, which leaves an artefact that cannot be tied back to the
+    phase1/phase3 bytes it was derived from.
     """
     main_fn = _function_def(_module_ast(), "main")
     blocks = _attribute_calls(main_fn, "provenance_block")
 
-    assert len(blocks) == 1
-    keywords = {kw.arg for kw in blocks[0].keywords}
-    # The spaCy model is part of the measurement, so it belongs in the record.
-    assert "spacy_model" in keywords
+    assert len(blocks) == 2
+    for block in blocks:
+        keywords = {kw.arg for kw in block.keywords}
+        # The spaCy model is part of the measurement, so it belongs in both.
+        assert "spacy_model" in keywords
 
 
 # ---------------------------------------------------------------------------
@@ -759,3 +763,117 @@ def test_an_input_below_the_mattr_window_scores_instead_of_raising(tmp_path,
     assert isinstance(evaluation.distance, float)
     # And the report says so, rather than presenting a full-evidence distance.
     assert "imputed with the corpus mean" in phase5.render_markdown(evaluation)
+
+
+# ---------------------------------------------------------------------------
+# Re-audit items 11 and 12 — the held-out paper, and the validate artefact
+# ---------------------------------------------------------------------------
+
+def test_phase1_without_drops_only_the_named_paper():
+    """The advisory ranges must be corpus evidence excluding the sample.
+
+    Pure enough to run without numpy? No — the module imports it — but the
+    helper itself is a dict operation, so it is asserted here rather than
+    left to the integration-only path. The mutation this kills: returning
+    ``phase1`` unchanged, which puts the held-out paper back into the bands
+    it is compared against.
+    """
+    pytest.importorskip("numpy")
+    from style_test_helpers import load_style_module
+
+    phase5 = load_style_module("phase5_evaluator")
+    phase1 = _fake_phase1()
+
+    reduced = phase5.phase1_without(phase1, FAKE_KEYS[2])
+
+    assert [p["key"] for p in reduced["per_paper"]] == [
+        k for k in FAKE_KEYS[:len(phase1["per_paper"])] if k != FAKE_KEYS[2]]
+    # The aggregate is carried over deliberately, and the gate is reported as
+    # not-independent because of it.
+    assert reduced["aggregate"] is phase1["aggregate"]
+    assert len(phase1["per_paper"]) == 6, "the input must not be mutated"
+
+
+@pytest.mark.integration
+def test_the_held_out_sample_gets_advisory_ranges_without_itself(tmp_path,
+                                                                 monkeypatch):
+    """Item 11: the advisory block self-included the held-out paper.
+
+    The mutation this kills: passing the full ``phase1`` for the corpus
+    sample, which restores a paper being compared against a cluster range it
+    helped define.
+    """
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy")
+    pytest.importorskip("sklearn")
+    from style_test_helpers import load_style_module
+
+    phase5 = load_style_module("phase5_evaluator")
+    phase1 = _fake_phase1()
+    phase3 = _fake_phase3(bimodal=("em_dash_per_1k",))
+    extracted = tmp_path / "extracted"
+    _write_fake_bodies(extracted, FAKE_KEYS)
+
+    seen: list[dict] = []
+    real = phase5.evaluate_text
+
+    def capture(text, label, p1_arg, *args, **kwargs):
+        seen.append({"label": label, "phase1": p1_arg})
+        return real(text, label, p1_arg, *args, **kwargs)
+
+    monkeypatch.setattr(phase5, "evaluate_text", capture)
+    phase5.build_validation_report(phase1, phase3, nlp=None,
+                                   extracted_dir=extracted)
+
+    corpus_call = [c for c in seen if c["label"].startswith("corpus:")][0]
+    held_key = corpus_call["label"].split(":", 1)[1].split(" ", 1)[0]
+    assert held_key not in [p["key"] for p in corpus_call["phase1"]["per_paper"]]
+    # The fixtures keep the full corpus: they are not corpus rows.
+    fixture_call = [c for c in seen if not c["label"].startswith("corpus:")][0]
+    assert len(fixture_call["phase1"]["per_paper"]) == len(phase1["per_paper"])
+
+
+@pytest.mark.integration
+def test_a_missing_held_out_paper_fails_the_validation(tmp_path):
+    """Item 12: the arm that tests recognition cannot simply be skipped.
+
+    With no body.md the run used to report PASS having checked only that
+    off-register prose scores far away — half of what the report claims. The
+    mutation this kills: dropping the ``sanity_ok = False`` in that branch.
+    """
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy")
+    pytest.importorskip("sklearn")
+    from style_test_helpers import load_style_module
+
+    phase5 = load_style_module("phase5_evaluator")
+    report, sanity_ok = phase5.build_validation_report(
+        _fake_phase1(), _fake_phase3(), nlp=None,
+        extracted_dir=tmp_path / "absent",
+    )
+
+    assert sanity_ok is False
+    assert "No held-out arm — FAIL" in report
+
+
+def test_the_provenance_section_names_the_code_and_the_inputs():
+    """Item 12: the validate artefact carried no provenance at all.
+
+    The mutation this kills: dropping the ``render_provenance_section`` call
+    from the ``--validate`` branch (the section would simply vanish).
+    """
+    pytest.importorskip("numpy")
+    from style_test_helpers import load_style_module
+
+    phase5 = load_style_module("phase5_evaluator")
+
+    section = phase5.render_provenance_section({
+        "script": "phase5_evaluator.py", "git_commit": "cafe1234",
+        "git_dirty": True, "spacy_model": "en_core_web_sm",
+        "inputs": [{"path": "phase1.json", "sha256": "abc"}],
+    })
+
+    assert "## Provenance" in section
+    assert "cafe1234" in section
+    assert "DIRTY" in section
+    assert "phase1.json" in section and "abc" in section
