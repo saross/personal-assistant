@@ -1229,9 +1229,34 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
         logger.info("Loaded manifest with %d sessions", len(manifest))
 
-    # Load checkpoint for resume
+    # Load checkpoint for resume, then CHECK IT AGAINST DISK.
+    #
+    # The checkpoint is a progress file under logs/, and logs/ is git-tracked
+    # and synced between machines, while the archive itself is per-machine.
+    # So a checkpoint written on the other machine arrives here saying "these
+    # 600 sessions are archived" about an archive that has never held them —
+    # and this machine then skips every one of them, permanently, with the
+    # drift gate reporting them forever (audit 2026-09-08, finding AR12).
+    #
+    # A checkpoint entry is now only honoured when the session really is on
+    # this machine's disk. Stale entries are dropped, named in the log, and
+    # removed from the file so the state self-heals.
     checkpoint = _load_checkpoint()
-    already_done = set(checkpoint["archived_ids"])
+    on_disk = archived_session_ids_on_disk(DEFAULT_ARCHIVE_ROOT, logger)
+    claimed = list(checkpoint["archived_ids"])
+    already_done = {sid for sid in claimed if sid in on_disk}
+    stale = [sid for sid in claimed if sid not in on_disk]
+    if stale:
+        logger.warning(
+            "Dropping %d checkpoint entr%s claiming a session this machine "
+            "has never archived (checkpoint synced from another machine, or "
+            "an archive entry removed): %s",
+            len(stale), "y" if len(stale) == 1 else "ies",
+            ", ".join(sid[:8] for sid in stale[:10])
+            + (" …" if len(stale) > 10 else ""),
+        )
+        checkpoint["archived_ids"] = sorted(already_done)
+        _save_checkpoint(checkpoint)
     already_failed = set(checkpoint["failed_ids"].keys())
 
     # Apply limit

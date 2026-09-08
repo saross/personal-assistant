@@ -387,3 +387,103 @@ class TestLayoutProbe:
         assert bulk_archive.detect_source_layout(
             root, LOGGER, "live"
         ) == "live"
+
+
+# ---------------------------------------------------------------------------
+# AR12 — the checkpoint is a claim, not evidence
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointIsVerifiedAgainstDisk:
+    """logs/ is synced between machines; the archive is per-machine.
+
+    A checkpoint written on the other machine says "these sessions are
+    archived" about an archive that has never held them. Honoured unchecked,
+    it made this machine skip them permanently while the drift gate reported
+    them forever.
+    """
+
+    def test_a_checkpoint_naming_an_unarchived_session_is_dropped(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        pipeline.checkpoint.write_text(json.dumps({
+            "started_at": "2026-03-01T00:00:00+00:00",
+            "updated_at": "2026-03-01T00:00:00+00:00",
+            "archived_ids": [SID_A],
+            "skipped_trivial_ids": [],
+            "failed_ids": {},
+            "stats": {
+                "total_archived": 1, "total_subagents": 0,
+                "total_compressed_bytes": 0,
+            },
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert len(pipeline.entries()) == 1, (
+            "a checkpoint from another machine suppressed archiving of a "
+            "session this machine has never archived"
+        )
+        assert any(
+            "never archived" in record.message for record in caplog.records
+        )
+        assert pipeline.checkpoint_state()["archived_ids"] == [SID_A]
+
+    def test_a_checkpoint_matching_disk_still_skips(
+        self, pipeline: Pipeline
+    ) -> None:
+        """The resume behaviour the checkpoint exists for must survive."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        pipeline.archive()
+        entries_after_first = pipeline.entries()
+
+        pipeline.archive()
+
+        assert pipeline.entries() == entries_after_first
+
+
+# ---------------------------------------------------------------------------
+# ART14 — the cross-machine tie-break
+# ---------------------------------------------------------------------------
+
+
+class TestCrossMachineTieBreak:
+    """"Largest wins" is evidence-backed: 14 quarantined copies were 0 bytes."""
+
+    def test_the_larger_copy_of_a_duplicated_session_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "snapshot"
+        archive_root = tmp_path / "cc-archives"
+        archive_root.mkdir()
+        small = root / "amd-tower" / "-home-tester-Workshop"
+        large = root / "zbook" / "-home-tester-Workshop"
+        write_transcript(
+            small / f"{SID_A}.jsonl", substantive_records(SID_A, turns=1)
+        )
+        write_transcript(
+            large / f"{SID_A}.jsonl", substantive_records(SID_A, turns=4)
+        )
+        for path in (small, large):
+            age_file(path / f"{SID_A}.jsonl", hours=96)
+        monkeypatch.setattr(bulk_archive, "DEFAULT_ARCHIVE_ROOT", archive_root)
+        monkeypatch.setattr(
+            bulk_archive, "CATALOGUE_FILE", archive_root / "CATALOG.json"
+        )
+
+        pairs = bulk_archive.iter_source_project_dirs(root, LOGGER)
+        mapping = bulk_archive.resolve_project_mapping(LOGGER, pairs)
+        manifest = bulk_archive.discover_sessions(
+            mapping, 0, LOGGER, pairs, min_content_tokens=0,
+            min_content_chars=bulk_archive.MIN_CONTENT_CHARS,
+        )
+
+        assert len(manifest) == 1
+        assert manifest[0]["source_machine"] == "zbook", (
+            "the smaller copy won the cross-machine tie-break; a 0-byte "
+            "transcript would beat a complete one"
+        )
