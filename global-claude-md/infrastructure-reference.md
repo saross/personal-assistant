@@ -361,6 +361,18 @@ not been updated for six hours (`PA_GATE_STALE_HOURS`): a script that is
 not running writes no gate at all, which is the one failure a gate cannot
 report about itself.
 
+Staleness is only asserted once the machine has been up longer than that
+window. After a shutdown longer than six hours every pipeline gate is old
+on the first session back, and three "the script is not running" lines
+that mean "the machine was off" are what teach people to ignore gates. A
+gate older than the boot itself is reported in those words ("has not been
+updated since this machine booted Nh ago"). The freshness test looks at
+the newest of the gate file and its `.state.json` sidecar, so a run that
+saved its state but could not render the gate is reported as a missing
+gate file rather than as a dead script. Note that Linux counts suspended
+time in `/proc/uptime`, so this silences the shutdown and reboot cases
+exactly and a suspend only where the machine was really powered down.
+
 To clear a quarantine problem once the rows have been dealt with:
 
 ```bash
@@ -383,6 +395,9 @@ To clear a quarantine problem once the rows have been dealt with:
   anything else falls back to the default, because the value is expanded
   inside `$(( ))` where bash would otherwise evaluate it as an
   arithmetic expression.
+- `PA_UPTIME_FILE` (default `/proc/uptime`) — where the trigger reads the
+  machine's uptime for the staleness guard. Overridable so the guard can
+  be tested without a reboot.
 
 ### Test Suite
 

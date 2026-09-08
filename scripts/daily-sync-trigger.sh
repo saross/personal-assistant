@@ -130,18 +130,75 @@ if [[ "${PA_GATE_STALE_HOURS:-}" =~ ^[0-9]+$ ]] \
    && (( 10#${PA_GATE_STALE_HOURS} > 0 )); then
     PG_GATE_STALE_HOURS="$(( 10#${PA_GATE_STALE_HOURS} ))"
 fi
+PG_STALE_SECONDS=$(( PG_GATE_STALE_HOURS * 3600 ))
+
+# A gate cannot be fresher than the machine is old. After a shutdown
+# longer than the window, every pipeline gate is stale on the first
+# session back, and telling Shawn that three scripts have died when the
+# truth is "the machine was off" is exactly the noise that teaches
+# people to ignore gates (eighth re-audit, C2). Staleness is therefore
+# asserted only once the machine has been up longer than the window, and
+# the message distinguishes "has not run since boot" from "stopped
+# part-way through an uptime".
+#
+# Caveat, documented rather than papered over: on Linux /proc/uptime
+# counts time spent suspended, so this silences the shutdown and reboot
+# cases exactly, and a suspend only where the machine was really powered
+# down. There is no user-readable monotonic clock to separate a sleeping
+# machine from a dead cron entry.
+PG_UPTIME_FILE="${PA_UPTIME_FILE:-/proc/uptime}"
+PG_UPTIME_SECONDS=""
+PG_BOOT_EPOCH=""
+_pg_uptime_raw=""
+_pg_uptime_rest=""
+if [[ -r "$PG_UPTIME_FILE" ]]; then
+    read -r _pg_uptime_raw _pg_uptime_rest < "$PG_UPTIME_FILE" || true
+    if [[ "$_pg_uptime_raw" =~ ^([0-9]+) ]]; then
+        PG_UPTIME_SECONDS="${BASH_REMATCH[1]}"
+        PG_BOOT_EPOCH=$(( $(date +%s) - PG_UPTIME_SECONDS ))
+    fi
+fi
 
 for _pg_gate_name in postgres-sync-memories-gate \
                      postgres-sync-sessions-gate \
                      index-session-content-gate; do
     _pg_gate_file="${HOME}/.cache/${_pg_gate_name}"
-    if [[ ! -f "$_pg_gate_file" ]]; then
+    # The sidecar is written by the same run that renders the gate, so it
+    # is independent evidence that the script is alive. A run that saved
+    # its state but could not write the gate is not a dead script, and
+    # saying so would send Shawn after the wrong thing (eighth re-audit,
+    # low).
+    _pg_state_file="${_pg_gate_file}.state.json"
+    if [[ ! -f "$_pg_gate_file" ]] && [[ ! -f "$_pg_state_file" ]]; then
         GATE_LINES+=("[${_pg_gate_name%-gate} gate] has NEVER been written — that script has not completed a run on this machine. Check the cron entry and the session hooks.")
         continue
     fi
-    if [[ -n "$(find "$_pg_gate_file" -mmin "+$((PG_GATE_STALE_HOURS * 60))" 2>/dev/null)" ]]; then
-        GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated for over ${PG_GATE_STALE_HOURS}h — the script is not running. Check the cron entry and the session hooks.")
+    if [[ ! -f "$_pg_gate_file" ]]; then
+        GATE_LINES+=("[${_pg_gate_name%-gate} gate] the script is running but its gate file is missing — whatever it found is not reaching session start. Check the permissions on ${HOME}/.cache.")
     fi
+
+    _pg_newest=0
+    for _pg_witness in "$_pg_gate_file" "$_pg_state_file"; do
+        [[ -f "$_pg_witness" ]] || continue
+        _pg_mtime="$(stat -c %Y "$_pg_witness" 2>/dev/null)" || _pg_mtime=""
+        if [[ "$_pg_mtime" =~ ^[0-9]+$ ]] && (( _pg_mtime > _pg_newest )); then
+            _pg_newest="$_pg_mtime"
+        fi
+    done
+
+    _pg_age=$(( $(date +%s) - _pg_newest ))
+    if (( _pg_newest > 0 )) && (( _pg_age > PG_STALE_SECONDS )); then
+        if [[ -z "$PG_UPTIME_SECONDS" ]]; then
+            GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated for over ${PG_GATE_STALE_HOURS}h — the script is not running. Check the cron entry and the session hooks.")
+        elif (( PG_UPTIME_SECONDS <= PG_STALE_SECONDS )); then
+            : # The machine has not been up long enough for it to have run.
+        elif [[ -n "$PG_BOOT_EPOCH" ]] && (( _pg_newest < PG_BOOT_EPOCH )); then
+            GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated since this machine booted $(( PG_UPTIME_SECONDS / 3600 ))h ago — the script is not running. Check the cron entry and the session hooks.")
+        else
+            GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated for over ${PG_GATE_STALE_HOURS}h — the script is not running. Check the cron entry and the session hooks.")
+        fi
+    fi
+
     _pg_count="$(head -1 "$_pg_gate_file" 2>/dev/null)"
     if [[ "$_pg_count" =~ ^[0-9]+$ ]] && [[ "$_pg_count" -gt 0 ]]; then
         # EVERY detail line, not just the first: since the fifth re-audit
@@ -154,7 +211,8 @@ for _pg_gate_name in postgres-sync-memories-gate \
         done < <(tail -n +2 "$_pg_gate_file")
     fi
 done
-unset _pg_gate_name _pg_gate_file _pg_count _pg_line
+unset _pg_gate_name _pg_gate_file _pg_state_file _pg_count _pg_line
+unset _pg_witness _pg_mtime _pg_newest _pg_age _pg_uptime_raw _pg_uptime_rest
 
 # ---------------------------------------------------------------------------
 # Slack dashboard refresh (added 2026-08-22)

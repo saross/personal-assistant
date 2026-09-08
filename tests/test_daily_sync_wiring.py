@@ -293,6 +293,87 @@ def test_a_fresh_clean_gate_says_nothing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Eighth re-audit, finding C2 — staleness measured against a machine that
+# was switched off is three false alarms, not three dead scripts
+# ---------------------------------------------------------------------------
+
+
+def test_old_gates_after_a_fresh_boot_say_nothing(tmp_path):
+    """
+    The false-alarm case: the machine was off overnight, so every gate is
+    hours old and none of the scripts has had a chance to run yet. The
+    mutation this kills: dropping the uptime guard, which puts three
+    "the script is not running" lines in front of Shawn every morning.
+    """
+    _write_gates(tmp_path, age_hours=9)
+
+    result = _run_gate_block(tmp_path, uptime_seconds=600)
+
+    assert result.returncode == 0, result.stderr
+    assert "has not been updated" not in result.stdout
+    assert result.stdout.strip() == ""
+
+
+def test_old_gates_after_a_long_uptime_are_reported(tmp_path):
+    """
+    The true case: the machine has been up for two days and the gates
+    stopped being refreshed seven hours ago. That is a dead cron entry
+    and must still be reported.
+    """
+    _write_gates(tmp_path, age_hours=7)
+
+    result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+    assert "has not been updated for over 6h" in result.stdout
+    assert result.stdout.count("has not been updated") == 3
+
+
+def test_a_gate_predating_the_boot_names_the_boot(tmp_path):
+    """
+    Up seven hours, gates eight hours old: the scripts have not run since
+    the machine came up, which is worth saying in those words rather than
+    as a bare age. The mutation this kills: dropping the boot-epoch
+    comparison, which loses the distinction.
+    """
+    _write_gates(tmp_path, age_hours=8)
+
+    result = _run_gate_block(tmp_path, uptime_seconds=7 * 3600)
+
+    assert "has not been updated since this machine booted 7h ago" in (
+        result.stdout
+    )
+    assert result.stdout.count("since this machine booted") == 3
+
+
+def test_an_unreadable_uptime_file_still_reports_staleness(tmp_path):
+    """
+    The guard must fail towards reporting: a machine with no readable
+    /proc/uptime keeps the behaviour that existed before it.
+    """
+    _write_gates(tmp_path, age_hours=9)
+    missing = tmp_path / "no-such-uptime"
+
+    script = tmp_path / "gate-block.sh"
+    script.write_text(
+        "GATE_LINES=()\n" + _gate_block(TRIGGER.read_text(encoding="utf-8"))
+        + '\nprintf "%s\\n" "${GATE_LINES[@]}"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True, text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": os.environ["PATH"],
+            "PA_GATE_STALE_HOURS": "6",
+            "PA_UPTIME_FILE": str(missing),
+        },
+    )
+
+    assert "has not been updated for over 6h" in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # Eighth re-audit, finding M6 — PA_GATE_STALE_HOURS reached $(( )) unchecked
 # ---------------------------------------------------------------------------
 
@@ -343,3 +424,45 @@ def test_a_valid_override_is_still_honoured(tmp_path):
     )
 
     assert "has not been updated for over 2h" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Eighth re-audit, low — the sidecar is independent evidence that the
+# script ran, so staleness must look at it too
+# ---------------------------------------------------------------------------
+
+
+def test_a_fresh_sidecar_keeps_a_stale_gate_quiet(tmp_path):
+    """
+    The run saved its state but its gate render failed. The script is
+    alive; "the script is not running" would send Shawn after the wrong
+    thing. The mutation this kills: measuring the gate file alone.
+    """
+    _write_gates(tmp_path, age_hours=9, sidecar_age=0)
+
+    result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+    assert "has not been updated" not in result.stdout
+
+
+def test_a_missing_gate_beside_a_live_sidecar_is_reported(tmp_path):
+    """
+    The mirror of the case above: state is being written and the gate is
+    not there at all, so whatever the script found never reaches session
+    start. That is its own problem and must be named as such rather than
+    reported as a script that has never run.
+    """
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    for name in (
+        "postgres-sync-memories-gate",
+        "postgres-sync-sessions-gate",
+        "index-session-content-gate",
+    ):
+        (cache / f"{name}.state.json").write_text("{}", encoding="utf-8")
+
+    result = _run_gate_block(tmp_path, uptime_seconds=48 * 3600)
+
+    assert "its gate file is missing" in result.stdout
+    assert "has NEVER been written" not in result.stdout
+    assert result.stdout.count("its gate file is missing") == 3
