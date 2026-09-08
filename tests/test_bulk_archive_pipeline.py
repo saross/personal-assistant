@@ -277,6 +277,43 @@ class TestDiscoverSelection:
 
         assert pipeline.discover() == []
 
+    def test_a_ghost_catalogue_entry_does_not_suppress_archiving(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """CATALOG.json is a derived index, never the dedup key (AR2).
+
+        A catalogued id with no ``session.meta.json`` on disk is a ghost. It
+        used to make discovery skip the session while the drift check — which
+        reads metas only — kept reporting it, so the two disagreed forever.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": [{"id": SID_A, "title": "ghost"}]}),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            manifest = pipeline.discover()
+
+        assert [entry["session_id"] for entry in manifest] == [SID_A], (
+            "a catalogue entry with no metadata on disk suppressed archiving"
+        )
+        assert any("ghost" in record.message for record in caplog.records), (
+            "the ghost count must be reported, not silently absorbed"
+        )
+
+    def test_a_catalogued_and_archived_session_is_still_skipped(
+        self, pipeline: Pipeline
+    ) -> None:
+        """Dropping the catalogue union must not disable the real skip."""
+        pipeline.add_session(SID_A)
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.catalogue.write_text(
+            json.dumps({"sessions": [{"id": SID_A}]}), encoding="utf-8"
+        )
+
+        assert pipeline.discover() == []
+
     def test_flat_agent_transcripts_are_skipped(
         self, pipeline: Pipeline
     ) -> None:

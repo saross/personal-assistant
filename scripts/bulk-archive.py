@@ -486,26 +486,35 @@ def discover_sessions(
         is_trivial_session,
     )
 
-    # Load already-archived session IDs for deduplication. Disk is
-    # authoritative; the catalogue is merged in only as a belt-and-braces
-    # superset in case an entry exists in the index but not (yet) on disk.
+    # Load already-archived session IDs for deduplication. **Disk is the
+    # only dedup key.** ``session.meta.json`` on disk is what an archived
+    # session IS; CATALOG.json is a derived index, rebuilt by
+    # ``verify --fix-catalogue``, and it under-reports and over-reports in
+    # both directions (2026-07-28: 539 entries against 728 ids on disk).
+    #
+    # Until 2026-09-08 the catalogue's ids were unioned in three lines after
+    # logging that some of them had no metadata on disk. That made a GHOST
+    # entry — catalogued, never archived — suppress archiving of the very
+    # session it named, while check-archive-drift.py (which reads metas only)
+    # kept reporting it: a second permanent gate, on top of AR1's. Ghosts are
+    # now counted and reported, and nothing more (audit finding AR2).
     archived_ids: set[str] = archived_session_ids_on_disk(
         DEFAULT_ARCHIVE_ROOT, logger
     )
     if CATALOGUE_FILE.exists():
         catalogued = get_archived_session_ids(CATALOGUE_FILE)
-        only_in_catalogue = catalogued - archived_ids
-        if only_in_catalogue:
+        ghosts = catalogued - archived_ids
+        if ghosts:
             logger.warning(
-                "%d session ids in CATALOG.json have no metadata on disk",
-                len(only_in_catalogue),
+                "%d session id(s) in CATALOG.json have no metadata on disk "
+                "(ghost entries — NOT treated as archived; rebuild the "
+                "catalogue with `verify --fix-catalogue`)",
+                len(ghosts),
             )
-        archived_ids |= catalogued
         logger.info(
-            "Deduplicating against %d archived session ids "
-            "(%d on disk, %d catalogued)",
-            len(archived_ids), len(archived_ids - only_in_catalogue),
-            len(catalogued),
+            "Deduplicating against %d archived session ids on disk "
+            "(catalogue holds %d, %d of them ghosts)",
+            len(archived_ids), len(catalogued), len(ghosts),
         )
 
     manifest: list[dict[str, Any]] = []
