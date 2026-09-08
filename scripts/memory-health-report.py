@@ -790,6 +790,8 @@ def render_report(report: dict[str, Any]) -> list[str]:
                 f"  failing file-ref split  : "
                 f"{_fmt_top(tc['failing_file_ref_recovery'])}"
             )
+    elif report.get("tier_c_skipped"):
+        out.append(f"\n[F] Tier C — skipped: {report['tier_c_skipped']}")
     else:
         out.append("\n[F] Tier C — skipped (pass --tier-c to run; does git resolution)")
 
@@ -972,7 +974,16 @@ def build_report(
     }
 
     if run_tier_c:
-        repos = ta.broad_repo_set()
+        try:
+            repos = ta.broad_repo_set()
+        except ta.RepoSetUnavailable as exc:
+            # Section [F] is one of nine, and the other eight need no
+            # repositories at all. Losing the whole report to a discovery
+            # failure is the same defect as the schema-mismatch exit that
+            # AN4 fixed, reintroduced on the tier-C path (round 4f-3, M1).
+            logger.warning("[F] Tier C skipped: %s", exc)
+            report["tier_c_skipped"] = f"repository discovery failed ({exc})"
+            return report, clean
         basename_index = ta.build_basename_index(repos)
         # Memoised per (resolver, ref): verify_file walks every repository and
         # spawns up to two git processes each, and tier_c_audit re-resolves

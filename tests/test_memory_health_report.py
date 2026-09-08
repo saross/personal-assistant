@@ -457,8 +457,9 @@ def _write_corpus(root: Path, records: list[dict]) -> None:
 def _build(**kw):
     """Call build_report with the test defaults."""
     import logging
+    kw.setdefault("run_tier_c", False)
     return mhr.build_report(
-        as_of=NOW, run_tier_c=False, tier_c_days=30,
+        as_of=NOW, tier_c_days=30,
         logger=logging.getLogger("test-mhr"), **kw
     )
 
@@ -844,3 +845,49 @@ class TestLoadRecordsSkipsOnlyBadJson:
         monkeypatch.setattr(mhr.json, "loads", boom)
         with pytest.raises(RuntimeError):
             mhr.load_records(path)
+
+
+class TestTierCSurvivesADiscoveryFailure:
+    """[F] is one section of nine; the other eight need no repositories."""
+
+    def test_the_report_still_prints_when_discovery_is_empty(
+        self, report_paths, fake_pg, monkeypatch, capsys,
+    ) -> None:
+        """AN4's defect, reintroduced on the tier-C path (round 4f-3, M1).
+
+        Kills the mutation removing the try/except around broad_repo_set:
+        --tier-c on a machine with no discoverable repositories tracebacks
+        out of main() with stdout EMPTY, discarding sections [A] to [H] that
+        were already built.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+
+        def _raise() -> list:
+            raise mhr.ta.RepoSetUnavailable("no git repositories discovered")
+
+        monkeypatch.setattr(mhr.ta, "broad_repo_set", _raise)
+        monkeypatch.setattr(
+            sys, "argv", ["memory-health-report.py", "--tier-c"],
+        )
+        rc = mhr.main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "[A] Corpus size" in out
+        assert "[H] Anchor drift trend" in out
+        assert "[F] Tier C — skipped: repository discovery failed" in out
+
+    def test_build_report_omits_the_tier_c_section(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """The section is absent, not zero-filled: we did not measure it."""
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+
+        def _raise() -> list:
+            raise mhr.ta.RepoSetUnavailable("no git repositories discovered")
+
+        monkeypatch.setattr(mhr.ta, "broad_repo_set", _raise)
+        report, clean = _build(run_tier_c=True)
+        assert "tier_c" not in report
+        assert clean is True
