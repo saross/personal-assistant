@@ -30,7 +30,15 @@ import _pg_row_guard  # noqa: E402
 
 
 class _Error(Exception):
-    """Stand-in for ``psycopg2.Error``."""
+    """Stand-in for ``psycopg2.Error``.
+
+    Carries ``pgcode`` like the real class: PostgreSQL's SQLSTATE for a
+    server-side error, ``None`` for one psycopg2 raised client-side.
+    """
+
+    def __init__(self, message: str = "", pgcode: str | None = None) -> None:
+        super().__init__(message)
+        self.pgcode = pgcode
 
 
 class _InterfaceError(_Error):
@@ -54,7 +62,23 @@ class _IntegrityError(_DatabaseError):
 
 
 class _ProgrammingError(_DatabaseError):
-    """Stand-in for ``psycopg2.ProgrammingError`` — e.g. can't adapt a dict."""
+    """Stand-in for ``psycopg2.ProgrammingError``.
+
+    Two very different faults share this class in psycopg2 2.9.12, which is
+    what re-audit finding C1 turned on: ``InsufficientPrivilege`` (42501),
+    ``UndefinedTable`` (42P01), and ``UndefinedColumn`` (42703) are
+    server-side environment faults carrying a SQLSTATE, while "can't adapt
+    type 'dict'" is raised client-side with no SQLSTATE and is entirely
+    about the row.
+    """
+
+
+class _InternalError(_DatabaseError):
+    """Stand-in for ``psycopg2.InternalError`` — e.g. InFailedSqlTransaction."""
+
+
+class _NotSupportedError(_DatabaseError):
+    """Stand-in for ``psycopg2.NotSupportedError``."""
 
 
 def _fake_psycopg2() -> types.ModuleType:
@@ -67,6 +91,8 @@ def _fake_psycopg2() -> types.ModuleType:
     module.DataError = _DataError
     module.IntegrityError = _IntegrityError
     module.ProgrammingError = _ProgrammingError
+    module.InternalError = _InternalError
+    module.NotSupportedError = _NotSupportedError
     return module
 
 
@@ -94,8 +120,8 @@ def conn() -> MagicMock:
 # ============================================================================
 
 
-class TestIsOutageError:
-    """Only connection-level failures count as outages."""
+class TestClassifyPgError:
+    """The three-way split introduced by re-audit finding C1."""
 
     @pytest.mark.parametrize("exc", [
         _OperationalError("server closed the connection unexpectedly"),
@@ -103,27 +129,68 @@ class TestIsOutageError:
     ])
     def test_connection_failures_are_outages(self, exc) -> None:
         """These say nothing about the row — retry, hold the cursor."""
+        assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "outage"
         assert _pg_row_guard.is_outage_error(exc, _fake_psycopg2()) is True
 
     @pytest.mark.parametrize("exc", [
-        _DataError("unsupported Unicode escape sequence"),
-        _IntegrityError('null value in column "project" violates not-null'),
-        _ProgrammingError("can't adapt type 'dict'"),
+        # Verified against psycopg2 2.9.12: these three are ProgrammingError.
+        _ProgrammingError("permission denied for table memories", "42501"),
+        _ProgrammingError('relation "memories" does not exist', "42P01"),
+        _ProgrammingError('column "is_active" does not exist', "42703"),
+        # And this one is InternalError.
+        _InternalError(
+            "current transaction is aborted, commands ignored", "25P02",
+        ),
+        _NotSupportedError("feature not supported", "0A000"),
+    ])
+    def test_environment_faults_are_not_row_errors(self, exc) -> None:
+        """
+        A REVOKE, a half-applied migration, or an aborted transaction
+        refuses every row alike. Classed as a row error (the pre-re-audit
+        behaviour on this branch), the replay quarantined the whole slice
+        and advanced the cursor past it — after a cursor reset that is
+        42k rows into a quarantine file, with exit 0. The mutation this
+        kills: dropping ENVIRONMENT_ERROR_NAMES back into the row class.
+        """
+        assert (
+            _pg_row_guard.classify_pg_error(exc, _fake_psycopg2())
+            == "environment"
+        )
+        assert _pg_row_guard.is_outage_error(exc, _fake_psycopg2()) is False
+
+    @pytest.mark.parametrize("exc", [
+        _DataError("unsupported Unicode escape sequence", "22P05"),
+        _IntegrityError(
+            'null value in column "project" violates not-null', "23502",
+        ),
         ValueError("A string literal cannot contain NUL (0x00) characters"),
         TypeError("not JSON serialisable"),
     ])
-    def test_content_failures_are_not_outages(self, exc) -> None:
+    def test_content_failures_are_row_errors(self, exc) -> None:
         """
         These are permanent and row-specific: retrying reproduces them
-        exactly. Classifying them as outages is the P1/P2 defect.
+        exactly, and the row is genuinely at fault.
         """
-        assert _pg_row_guard.is_outage_error(exc, _fake_psycopg2()) is False
+        assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "row"
+
+    def test_client_side_adaptation_error_stays_a_row_error(self) -> None:
+        """
+        psycopg2 raises ProgrammingError client-side when it cannot adapt a
+        value ("can't adapt type 'dict'"). It carries no SQLSTATE, and it is
+        entirely about the row — treating it as an environment fault would
+        stall the cursor on one malformed record.
+        """
+        exc = _ProgrammingError("can't adapt type 'dict'")
+        assert exc.pgcode is None
+        assert _pg_row_guard.classify_pg_error(exc, _fake_psycopg2()) == "row"
 
     def test_missing_class_on_the_module_is_tolerated(self) -> None:
         """A partial stand-in module must not make the classifier throw."""
         partial = types.ModuleType("psycopg2")
         partial.Error = _Error
-        assert _pg_row_guard.is_outage_error(_DataError("x"), partial) is False
+        assert (
+            _pg_row_guard.classify_pg_error(_DataError("x"), partial) == "row"
+        )
 
 
 # ============================================================================
@@ -182,13 +249,13 @@ class TestSanitiseNuls:
 class TestInsertRowsIndividually:
     """The per-row replay isolates poison rows from healthy ones."""
 
-    def _execute_values(self, poison_ids: set[str], error: type[Exception]):
+    def _execute_values(self, poison_ids: set[str], error_factory):
         """Return an ``execute_values`` stand-in refusing the given ids."""
 
         def _call(cur, sql, values, page_size=None, fetch=False):
             offending = [row[0] for row in values if row[0] in poison_ids]
             if offending:
-                raise error(f"refused {offending[0]}")
+                raise error_factory(offending[0])
             return [(row[0],) for row in values]
 
         return _call
@@ -198,30 +265,177 @@ class TestInsertRowsIndividually:
     ) -> None:
         """Two good rows insert; the third is named as poison."""
         rows = [("a", 1), ("bad", 2), ("c", 3)]
-        returned, poison, reachable = _pg_row_guard.insert_rows_individually(
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
-            execute_values=self._execute_values({"bad"}, _DataError),
+            execute_values=self._execute_values(
+                {"bad"}, lambda rid: _DataError(f"refused {rid}", "22P05"),
+            ),
             logger=logger,
         )
         assert returned == {"a", "c"}
         assert [pid for pid, _ in poison] == ["bad"]
-        assert reachable is True
+        assert status == "row"
 
-    def test_every_row_poison(
+    def test_single_refused_row_stays_a_row_fault(
         self, conn: MagicMock, logger: logging.Logger,
     ) -> None:
-        """An all-poison batch quarantines everything and stays reachable."""
-        rows = [("x", 1), ("y", 2)]
-        returned, poison, reachable = _pg_row_guard.insert_rows_individually(
-            conn, "INSERT ... VALUES %s RETURNING id", rows,
+        """
+        A one-row slice that fails is the case the replay exists for:
+        there is no "all alike" evidence with a single row, so it must be
+        quarantined rather than stalling the cursor forever.
+        """
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", [("only", 1)],
             psycopg2_module=_fake_psycopg2(),
-            execute_values=self._execute_values({"x", "y"}, _IntegrityError),
+            execute_values=self._execute_values(
+                {"only"}, lambda rid: _DataError("bad timestamp", "22007"),
+            ),
             logger=logger,
         )
         assert returned == set()
-        assert [pid for pid, _ in poison] == ["x", "y"]
-        assert reachable is True
+        assert [pid for pid, _ in poison] == ["only"]
+        assert status == "row"
+
+    def test_all_rows_refused_alike_is_an_environment_fault(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        Every row refused, none succeeded, one SQLSTATE between them: that
+        is the database or the schema, not four independently bad rows.
+        Quarantining them would advance the cursor past all four. The
+        mutation this kills: dropping the all-alike check and returning
+        ``ROW`` whenever no outage or environment class was raised.
+        """
+        rows = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", rows,
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=self._execute_values(
+                {"a", "b", "c", "d"},
+                lambda rid: _DataError("value too long", "22001"),
+            ),
+            logger=logger,
+        )
+        assert status == "environment"
+        assert poison == [], "nothing may be quarantined on an environment fault"
+        assert returned == set()
+
+    def test_all_rows_refused_but_differently_is_still_row_poison(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        Distinct SQLSTATEs mean distinct faults in distinct rows — the
+        all-alike rule must not swallow a genuinely poisoned slice.
+        """
+        codes = {"a": "22P05", "b": "23502"}
+
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            rid = values[0][0]
+            raise _DataError(f"refused {rid}", codes[rid])
+
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", [("a", 1), ("b", 2)],
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=_call,
+            logger=logger,
+        )
+        assert status == "row"
+        assert [pid for pid, _ in poison] == ["a", "b"]
+
+    def test_one_success_makes_the_rest_row_faults(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        A single successful insert proves the environment is healthy, so
+        identical failures on the others are per-row by demonstration.
+        """
+        rows = [("good", 1), ("a", 2), ("b", 3)]
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", rows,
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=self._execute_values(
+                {"a", "b"}, lambda rid: _DataError("same fault", "22P05"),
+            ),
+            logger=logger,
+        )
+        assert status == "row"
+        assert returned == {"good"}
+        assert [pid for pid, _ in poison] == ["a", "b"]
+
+    def test_environment_error_mid_replay_stops_immediately(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        A REVOKE part-way through must stop the replay, quarantine
+        nothing, and report an environment fault — not quarantine the
+        remaining rows one by one.
+        """
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            rid = values[0][0]
+            if rid == "a":
+                return [(rid,)]
+            raise _ProgrammingError(
+                "permission denied for table memories", "42501",
+            )
+
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id",
+            [("a", 1), ("b", 2), ("c", 3)],
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=_call,
+            logger=logger,
+        )
+        assert status == "environment"
+        assert poison == []
+        assert returned == {"a"}
+
+    def test_quarantine_cap_stops_the_run(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        Beyond the cap the run holds and reports rather than quarantining:
+        hundreds of refusals in one tick is a symptom, and every
+        quarantined row is one the cursor then skips. The mutation this
+        kills: removing the cap check from the replay loop.
+        """
+        rows = [(f"r{i}", i) for i in range(20)]
+        # Distinct SQLSTATEs so the all-alike rule cannot be what fires.
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            rid = values[0][0]
+            raise _DataError(f"refused {rid}", f"22{rid[1:]:>03}")
+
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", rows,
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=_call,
+            logger=logger,
+            quarantine_cap=5,
+        )
+        assert status == "environment"
+        assert poison == []
+
+    def test_under_the_cap_still_quarantines(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """The cap must not fire on an ordinary handful of poison rows."""
+        rows = [(f"r{i}", i) for i in range(4)]
+
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            rid = values[0][0]
+            if rid in ("r1", "r2"):
+                raise _DataError(f"refused {rid}", f"22{rid[1:]:>03}")
+            return [(rid,)]
+
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", rows,
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=_call,
+            logger=logger,
+            quarantine_cap=5,
+        )
+        assert status == "row"
+        assert [pid for pid, _ in poison] == ["r1", "r2"]
 
     def test_outage_mid_replay_stops_and_reports_unreachable(
         self, conn: MagicMock, logger: logging.Logger,
@@ -238,7 +452,7 @@ class TestInsertRowsIndividually:
                 return [(values[0][0],)]
             raise _OperationalError("server closed the connection")
 
-        returned, poison, reachable = _pg_row_guard.insert_rows_individually(
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id",
             [("a", 1), ("b", 2), ("c", 3)],
             psycopg2_module=_fake_psycopg2(),
@@ -247,7 +461,7 @@ class TestInsertRowsIndividually:
         )
         assert returned == {"a"}
         assert poison == []
-        assert reachable is False
+        assert status == "outage"
         # Stopped at the outage rather than ploughing on through row c.
         assert calls["n"] == 2
 
@@ -262,7 +476,69 @@ class TestInsertRowsIndividually:
         _pg_row_guard.insert_rows_individually(
             conn, "INSERT ... VALUES %s RETURNING id", rows,
             psycopg2_module=_fake_psycopg2(),
-            execute_values=self._execute_values({"bad"}, _DataError),
+            execute_values=self._execute_values(
+                {"bad"}, lambda rid: _DataError(f"refused {rid}", "22P05"),
+            ),
             logger=logger,
         )
         assert conn.__enter__.call_count == 3
+
+    def test_rolls_back_before_replaying(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """
+        Re-audit finding M1: called from inside an aborted transaction —
+        a caller that did not use ``with conn:`` — every statement would
+        fail with InFailedSqlTransaction and the FIRST GOOD ROW would be
+        quarantined. The replay now rolls back first. The mutation this
+        kills: removing the opening ``conn.rollback()``.
+        """
+        aborted = {"value": True}
+
+        def _rollback():
+            aborted["value"] = False
+
+        conn.rollback.side_effect = _rollback
+
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            if aborted["value"]:
+                raise _InternalError(
+                    "current transaction is aborted, commands ignored "
+                    "until end of transaction block",
+                    "25P02",
+                )
+            rid = values[0][0]
+            if rid == "bad":
+                raise _DataError("genuinely bad row", "22P05")
+            return [(rid,)]
+
+        returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id",
+            [("good", 1), ("bad", 2)],
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=_call,
+            logger=logger,
+        )
+
+        conn.rollback.assert_called_once()
+        assert returned == {"good"}, "the first good row was not quarantined"
+        assert [pid for pid, _ in poison] == ["bad"]
+        assert status == "row"
+
+    def test_rollback_failure_is_tolerated(
+        self, conn: MagicMock, logger: logging.Logger,
+    ) -> None:
+        """A rollback on a dead connection must not mask the real error."""
+        conn.rollback.side_effect = _OperationalError("connection is closed")
+
+        def _call(cur, sql, values, page_size=None, fetch=False):
+            raise _OperationalError("server closed the connection")
+
+        _returned, poison, status = _pg_row_guard.insert_rows_individually(
+            conn, "INSERT ... VALUES %s RETURNING id", [("a", 1)],
+            psycopg2_module=_fake_psycopg2(),
+            execute_values=_call,
+            logger=logger,
+        )
+        assert status == "outage"
+        assert poison == []

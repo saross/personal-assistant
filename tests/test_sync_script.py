@@ -473,7 +473,15 @@ class TestFieldConsistency:
 
 
 class _FakePsycopg2Error(Exception):
-    """Stand-in for ``psycopg2.Error`` — base class for all DB errors."""
+    """Stand-in for ``psycopg2.Error`` — base class for all DB errors.
+
+    Carries ``pgcode`` like the real class: PostgreSQL's SQLSTATE for a
+    server-side error, ``None`` for one psycopg2 raised client-side.
+    """
+
+    def __init__(self, message: str = "", pgcode: str | None = None) -> None:
+        super().__init__(message)
+        self.pgcode = pgcode
 
 
 class _FakePsycopg2OperationalError(_FakePsycopg2Error):
@@ -489,7 +497,16 @@ class _FakePsycopg2DataError(_FakePsycopg2Error):
 
 
 class _FakePsycopg2ProgrammingError(_FakePsycopg2Error):
-    """Stand-in for ``psycopg2.ProgrammingError`` — e.g. can't adapt a dict."""
+    """Stand-in for ``psycopg2.ProgrammingError``.
+
+    Client-side ("can't adapt type 'dict'") when constructed without a
+    SQLSTATE; server-side (InsufficientPrivilege, UndefinedTable,
+    UndefinedColumn) when given one.
+    """
+
+
+class _FakePsycopg2InternalError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.InternalError`` — e.g. InFailedSqlTransaction."""
 
 
 def _poisoning_execute_values(
@@ -498,6 +515,7 @@ def _poisoning_execute_values(
     message: str = (
         'invalid input syntax for type timestamp with time zone: "TBD"'
     ),
+    pgcode: str | None = "",
 ):
     """
     Build an ``execute_values`` stand-in that refuses specific ids.
@@ -511,7 +529,15 @@ def _poisoning_execute_values(
         ids = [row[0] for row in values]
         offending = [mid for mid in ids if mid in poison_ids]
         if offending:
-            raise error_class(f"{message} (row {offending[0]})")
+            # Default: a distinct SQLSTATE per row, so the all-alike
+            # environment rule is never what these tests exercise. Pass
+            # ``pgcode=None`` to model an error psycopg2 raised
+            # client-side, which carries no SQLSTATE.
+            code = (
+                f"22{abs(hash(offending[0])) % 1000:03d}"
+                if pgcode == "" else pgcode
+            )
+            raise error_class(f"{message} (row {offending[0]})", code)
         return [(mid,) for mid in ids]
 
     return _side_effect
@@ -548,6 +574,7 @@ def _install_fake_psycopg2(
     fake_psycopg2.InterfaceError = _FakePsycopg2InterfaceError
     fake_psycopg2.DataError = _FakePsycopg2DataError
     fake_psycopg2.ProgrammingError = _FakePsycopg2ProgrammingError
+    fake_psycopg2.InternalError = _FakePsycopg2InternalError
 
     # Fake Json wrapper for JSONB columns (v2 schema). record_to_tuple
     # imports Json lazily from psycopg2.extras to wrap anchors/links/
@@ -1237,7 +1264,10 @@ class TestRefusedRecordsVersusOutages:
     ):
         """
         A JSON object where a scalar belongs raises ProgrammingError
-        ("can't adapt type 'dict'"). That is content, not an outage.
+        ("can't adapt type 'dict'") — client-side, with no SQLSTATE. That
+        is content, not an outage and not an environment fault: the
+        SQLSTATE is what separates it from an InsufficientPrivilege or an
+        UndefinedTable, which share its exception class (re-audit C1).
         """
         monkeypatch.setattr(
             sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
@@ -1250,6 +1280,9 @@ class TestRefusedRecordsVersusOutages:
                 {"b"},
                 error_class=_FakePsycopg2ProgrammingError,
                 message="can't adapt type 'dict'",
+                # Client-side adaptation failure: no SQLSTATE, and about
+                # this row alone — unlike a server-side ProgrammingError.
+                pgcode=None,
             ),
         )
         records = [
@@ -1358,6 +1391,209 @@ class TestQuarantineDedupAtTheCallSite:
         assert entries[0]["reason"] == "parse_failure"
         # And the cursor really is still halted, which is what makes the
         # re-read happen at all.
+        if cursor_file.exists():
+            assert json.loads(
+                cursor_file.read_text()
+            ).get("postgres_sync_line", 0) == 0
+
+
+# ============================================================================
+# Re-audit finding C1 — an environment fault is neither an outage nor a
+# refused record
+# ============================================================================
+
+
+class TestEnvironmentFaults:
+    """
+    The memories store is the one where quarantining wrongly costs most:
+    a cursor reset would put 42k records through the replay, and a REVOKE
+    or a half-applied migration refuses every one of them alike.
+    """
+
+    def _canonical(self, path: Path, ids: list[str]) -> None:
+        """Write a small valid canonical file."""
+        path.write_text(
+            "".join(
+                json.dumps({
+                    "id": mid, "category": "progress", "content": "c",
+                    "created_at": "2026-09-01T00:00:00+00:00",
+                }) + "\n"
+                for mid in ids
+            ),
+            encoding="utf-8",
+        )
+
+    def _undefined_column(self, cur, sql, values, page_size=None, fetch=False):
+        """execute_values stand-in modelling a half-applied migration."""
+        raise _FakePsycopg2ProgrammingError(
+            'column "is_active" does not exist', "42703",
+        )
+
+    def test_missing_column_holds_the_cursor_and_quarantines_nothing(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        The C1 regression in full: with ProgrammingError in the refused-row
+        class, every record was quarantined and the cursor advanced past
+        the whole slice. The mutation this kills: returning ROW for a
+        ProgrammingError carrying a SQLSTATE.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1", "m2", "m3"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=self._undefined_column,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.sync(test_logger)
+
+        assert not quarantine.exists()
+        if cursor_file.exists():
+            assert json.loads(
+                cursor_file.read_text()
+            ).get("postgres_sync_line", 0) == 0
+
+    def test_main_exits_four(self, monkeypatch, tmp_path):
+        """
+        Not exit 0. Before this, an environment fault could quarantine a
+        whole cursor window and still report success.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1", "m2"])
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=self._undefined_column,
+        )
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 4
+
+    def test_every_record_refused_alike_holds_the_cursor(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        Even a DataError becomes an environment fault when every record
+        fails with the same SQLSTATE and not one succeeds — a schema or
+        server problem wearing a row error's clothes.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1", "m2", "m3"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        def _same_fault(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2DataError("value too long for type", "22001")
+
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=_same_fault,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.sync(test_logger)
+
+        assert not quarantine.exists()
+        if cursor_file.exists():
+            assert json.loads(
+                cursor_file.read_text()
+            ).get("postgres_sync_line", 0) == 0
+
+    def test_a_single_poison_record_still_advances(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        The guard against over-correction: one refused record in a
+        one-record slice is a row fault, not an environment fault, and
+        must still be quarantined so the cursor can move.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m-only"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=_poisoning_execute_values({"m-only"}),
+        )
+
+        sync_mod.sync(test_logger)
+
+        assert json.loads(cursor_file.read_text())["postgres_sync_line"] == 1
+        entries = [
+            json.loads(line)
+            for line in quarantine.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [e["record"]["id"] for e in entries] == ["m-only"]
+
+    def test_revoke_after_a_success_still_holds_the_cursor(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        The case the all-alike rule cannot catch: one record lands, then a
+        REVOKE refuses the rest. Only the exception's *class* says this is
+        not about the data. Without that, the remaining records are
+        quarantined and the cursor advances past them. The mutation this
+        kills: emptying ENVIRONMENT_ERROR_NAMES.
+        """
+        memories = tmp_path / "memories.jsonl"
+        self._canonical(memories, ["m1", "m2", "m3"])
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+
+        def _revoke_after_first(cur, sql, values, page_size=None, fetch=False):
+            ids = [row[0] for row in values]
+            if ids == ["m1"]:
+                return [("m1",)]
+            if len(ids) > 1:
+                # The initial batch: fails because m2/m3 are refused.
+                raise _FakePsycopg2DataError("batch aborted", "22P05")
+            raise _FakePsycopg2ProgrammingError(
+                "permission denied for table memories", "42501",
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+            execute_values_side_effect=_revoke_after_first,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.sync(test_logger)
+
+        assert not quarantine.exists()
         if cursor_file.exists():
             assert json.loads(
                 cursor_file.read_text()

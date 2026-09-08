@@ -413,7 +413,15 @@ class TestEndToEnd:
 
 
 class _FakePsycopg2Error(Exception):
-    """Stand-in for ``psycopg2.Error`` in patched-sys.modules tests."""
+    """Stand-in for ``psycopg2.Error`` in patched-sys.modules tests.
+
+    Carries ``pgcode`` like the real class: PostgreSQL's SQLSTATE for a
+    server-side error, ``None`` for one psycopg2 raised client-side.
+    """
+
+    def __init__(self, message: str = "", pgcode: str | None = None) -> None:
+        super().__init__(message)
+        self.pgcode = pgcode
 
 
 class _FakePsycopg2OperationalError(_FakePsycopg2Error):
@@ -430,6 +438,14 @@ class _FakePsycopg2DataError(_FakePsycopg2Error):
 
 class _FakePsycopg2IntegrityError(_FakePsycopg2Error):
     """Stand-in for ``psycopg2.IntegrityError`` — e.g. a NOT NULL violation."""
+
+
+class _FakePsycopg2ProgrammingError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.ProgrammingError`` — e.g. InsufficientPrivilege."""
+
+
+class _FakePsycopg2InternalError(_FakePsycopg2Error):
+    """Stand-in for ``psycopg2.InternalError`` — e.g. InFailedSqlTransaction."""
 
 
 def _poisoning_execute_values(
@@ -453,7 +469,12 @@ def _poisoning_execute_values(
         ids = [row[0] for row in values]
         offending = [sid for sid in ids if sid in poison_ids]
         if offending:
-            raise error_class(f"{message} (row {offending[0]})")
+            # A distinct SQLSTATE per row, so the all-alike environment
+            # rule is never what these tests are actually exercising.
+            raise error_class(
+                f"{message} (row {offending[0]})",
+                f"22{abs(hash(offending[0])) % 1000:03d}",
+            )
         return [(sid,) for sid in ids]
 
     return _side_effect
@@ -487,6 +508,8 @@ def _install_fake_psycopg2(
     fake_psycopg2.InterfaceError = _FakePsycopg2InterfaceError
     fake_psycopg2.DataError = _FakePsycopg2DataError
     fake_psycopg2.IntegrityError = _FakePsycopg2IntegrityError
+    fake_psycopg2.ProgrammingError = _FakePsycopg2ProgrammingError
+    fake_psycopg2.InternalError = _FakePsycopg2InternalError
 
     cur = MagicMock()
     cur.__enter__ = MagicMock(return_value=cur)
@@ -1032,3 +1055,109 @@ class TestNotNullColumnDefaults:
         meta["session"]["id"] = None
         row = sync_mod.metadata_to_row(tmp_path / "session.meta.json", meta)
         assert row["id"] == ""
+
+
+# ============================================================================
+# Re-audit finding C1 — an environment fault is neither an outage nor a
+# refused row
+# ============================================================================
+
+
+class TestEnvironmentFaults:
+    """
+    ``ProgrammingError`` and ``InternalError`` are not about the data.
+
+    Verified against psycopg2 2.9.12: ``InsufficientPrivilege`` (42501),
+    ``UndefinedTable`` (42P01), and ``UndefinedColumn`` (42703) are all
+    ``ProgrammingError``; ``InFailedSqlTransaction`` (25P02) is
+    ``InternalError``. Classed as refused rows they would empty the whole
+    cursor window into a quarantine file and exit 0.
+    """
+
+    def _revoke(self, cur, sql, values, page_size=None, fetch=False):
+        """execute_values stand-in modelling a REVOKE on the sessions table."""
+        raise _FakePsycopg2ProgrammingError(
+            "permission denied for table sessions", "42501",
+        )
+
+    def test_permission_denied_holds_the_cursor(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """
+        Cursor untouched, quarantine file never created. The mutation this
+        kills: classifying ProgrammingError as a refused row.
+        """
+        cursor_file = tmp_path / "sync-cursors.json"
+        quarantine = tmp_path / "sessions-quarantine.jsonl"
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._revoke,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.sync(archive_tree, full_resync=True, logger=test_logger)
+
+        assert not quarantine.exists()
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text(encoding="utf-8"))
+            assert "sessions_sync_timestamp" not in data
+
+    def test_main_exits_four(
+        self, monkeypatch, tmp_path, archive_tree,
+    ):
+        """
+        The whole point of C1: the run must not report success. Exit 4,
+        distinct from the outage path (0) and an unexpected error (1).
+        """
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        # Keep the run's own log inside tmp_path rather than the repo's.
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync-sessions.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=self._revoke,
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["sync-sessions-to-postgres.py", "--archive-root",
+             str(archive_tree), "--full-resync"],
+        )
+
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                sync_mod.main()
+        finally:
+            logging.getLogger("sync-sessions-to-postgres").handlers.clear()
+
+        assert excinfo.value.code == 4
+
+    def test_aborted_transaction_is_an_environment_fault(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """InFailedSqlTransaction (InternalError, 25P02) must not quarantine."""
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+
+        def _aborted(cur, sql, values, page_size=None, fetch=False):
+            raise _FakePsycopg2InternalError(
+                "current transaction is aborted, commands ignored", "25P02",
+            )
+
+        _install_fake_psycopg2(
+            monkeypatch, returned_ids=[],
+            execute_values_side_effect=_aborted,
+        )
+
+        with pytest.raises(sync_mod.EnvironmentFault):
+            sync_mod.upsert_sessions(
+                [_minimal_row("s1"), _minimal_row("s2")], test_logger,
+            )
+        assert not (tmp_path / "quarantine.jsonl").exists()

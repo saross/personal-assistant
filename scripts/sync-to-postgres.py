@@ -31,8 +31,11 @@ from _sync_cursor import (  # noqa: E402
 from _schema_version import assert_schema_version, SchemaVersionError  # noqa: E402
 # Row-level Postgres guards (audit round two, finding P2 / lens A-X1+A-X2).
 from _pg_row_guard import (  # noqa: E402
+    ENVIRONMENT,
+    OUTAGE,
+    EnvironmentFault,
+    classify_pg_error,
     insert_rows_individually,
-    is_outage_error,
     sanitise_nuls,
 )
 
@@ -728,7 +731,8 @@ def insert_memories(
                     )
                     returned_ids = {row[0] for row in returned}
         except (psycopg2.Error, ValueError, TypeError) as exc:
-            if is_outage_error(exc, psycopg2):
+            verdict = classify_pg_error(exc, psycopg2)
+            if verdict == OUTAGE:
                 logger.warning("Cannot reach PostgreSQL during insert: %s", exc)
                 logger.info(
                     "PostgreSQL may be stopped — this is not critical. "
@@ -742,6 +746,16 @@ def insert_memories(
                     db_available=False,
                     duplicates_within_batch=duplicates_within_batch,
                 )
+            if verdict == ENVIRONMENT:
+                # Permissions, a missing table or column, an aborted
+                # transaction: reachable but not in the expected state.
+                # The records are fine; quarantining them would discard
+                # good memories and advance the cursor past them.
+                raise EnvironmentFault(
+                    f"PostgreSQL refused the insert for a reason that is "
+                    f"not about the data ({type(exc).__name__}: "
+                    f"{str(exc).strip()}). Cursor held; nothing quarantined."
+                ) from exc
             # The database refused a record's content (a bad timestamp, a
             # dict where a scalar belongs, a NUL). ``execute_values`` sends
             # the page in one transaction, so one bad record aborts the
@@ -751,7 +765,7 @@ def insert_memories(
                 "record(s) individually to isolate the offending row(s).",
                 str(exc).strip(), len(deduped_records),
             )
-            returned_ids, poison, reachable = insert_rows_individually(
+            returned_ids, poison, status = insert_rows_individually(
                 conn,
                 insert_sql,
                 deduped_records,
@@ -759,7 +773,7 @@ def insert_memories(
                 execute_values=execute_values,
                 logger=logger,
             )
-            if not reachable:
+            if status == OUTAGE:
                 return InsertResult(
                     input_count=input_count,
                     inserted=len(returned_ids),
@@ -767,6 +781,12 @@ def insert_memories(
                     unexpected_drops=[],
                     db_available=False,
                     duplicates_within_batch=duplicates_within_batch,
+                )
+            if status == ENVIRONMENT:
+                raise EnvironmentFault(
+                    "The per-row replay stopped: the refusals are not about "
+                    "the data (see the preceding log line). Cursor held; "
+                    "nothing quarantined."
                 )
             quarantined = _quarantine_refused_records(
                 poison, records_by_id, logger,
@@ -1166,11 +1186,33 @@ def _sync_locked(logger: logging.Logger) -> None:
 
 
 def main() -> None:
-    """Entry point."""
+    """Entry point.
+
+    Exit codes:
+        0 - ran to completion (possibly syncing nothing)
+        1 - unexpected error
+        2 - schema-version mismatch
+        4 - environment fault: PostgreSQL is reachable but not in the
+            expected state (permissions, a missing table or column, an
+            aborted transaction), or refused far more rows than a data
+            problem explains. Nothing was quarantined; the cursor held.
+        6 - a rebuild removed this sync's cursor key mid-run; the position
+            was deliberately not written back
+    """
     logger = setup_logging()
     logger.info("Starting sync")
     try:
         sync(logger)
+    except EnvironmentFault as exc:
+        # Reachable database, wrong state. Retrying cannot help, so exit
+        # non-zero rather than reporting success over a database we never
+        # wrote to (re-audit finding C1).
+        logger.error("ENVIRONMENT FAULT — %s", exc)
+        logger.error(
+            "Fix the database (grants, schema, migration state) and re-run. "
+            "No memory was quarantined and the cursor did not move."
+        )
+        sys.exit(4)
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         sys.exit(1)
