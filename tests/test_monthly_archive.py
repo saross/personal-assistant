@@ -71,6 +71,23 @@ def test_parse_jsonl_records_skips_bad_lines() -> None:
     assert [r.get("id") for r in recs] == ["a", "b"]
 
 
+def test_parse_jsonl_records_does_not_split_on_unicode_separator() -> None:
+    """A raw U+2028 inside a record must not break it into two lines.
+
+    Kills the mutation ``text.split("\\n")`` -> ``text.splitlines()``: that
+    tears the first record into two unparseable fragments, so the invariance
+    gate would silently not see it among the records the apply archived.
+    Audit 2026-09-08, finding A1.
+    """
+    content = "Section one\u2028section two"
+    # Serialised WITHOUT the ASCII escape, i.e. the on-disk shape an older
+    # ``ensure_ascii=False`` rewrite left behind.
+    text = json.dumps({"id": "a", "content": content}, ensure_ascii=False) + "\n"
+    recs = ma.parse_jsonl_records(text)
+    assert [r.get("id") for r in recs] == ["a"]
+    assert recs[0]["content"] == content
+
+
 # ===========================================================================
 # sanity_verdict
 # ===========================================================================
@@ -117,7 +134,13 @@ def test_record_age_days_missing_or_unparseable_is_none() -> None:
 
 def test_record_age_days_parses_z_suffixed_timestamp() -> None:
     # The corpus contains Z-stamped timestamps; they must parse, not read as
-    # unparseable (which would falsely flag the record as an invariance offender).
+    # unparseable (which would falsely flag the record as an invariance
+    # offender). NB (audit 2026-09-08, B18): on Python 3.11+ fromisoformat
+    # accepts a trailing Z natively, so this pins the OUTCOME, not the
+    # ``.replace("Z", "+00:00")`` line — deleting that line leaves this green
+    # on 3.13. It still guards the interpreter floor and the aware/naive
+    # branch below it; test_naive_timestamps_are_read_as_utc covers the part
+    # that does carry weight today.
     rec = {"id": "z", "category": "progress", "created_at": "2026-05-03T06:11:28.861073Z"}
     age = ma.record_age_days(rec, AS_OF)
     assert age is not None and age == pytest.approx(30.24, abs=0.1)
@@ -382,6 +405,116 @@ def test_apply_from_a_worktree_is_refused_before_anything_runs(cadence, tmp_path
     monkeypatch.setattr(ma, "PA_DIR", tmp_path / "worktrees" / "pa-copy")
     assert ma.main(["--apply"]) == 2
     assert cadence.labels == []
+
+
+# ===========================================================================
+# Caps and halts (audit 2026-09-08, round 4a, finding B15)
+#
+# The cap tests were self-referential (SANITY_ABS_CAP + 1 passes whatever the
+# cap is), the post-apply sanity re-check was deletable, and the "could not
+# determine the partition" HALT could be turned into `return 0`.
+# ===========================================================================
+
+
+def test_the_sanity_caps_are_the_signed_off_values() -> None:
+    """Pin the literal bounds, not the constants against themselves.
+
+    Kills the mutation that raises SANITY_ABS_CAP to a number no real sweep
+    could reach: every `SANITY_ABS_CAP + 1` assertion in this file stays
+    green while the gate stops gating anything.
+    """
+    assert ma.SANITY_ABS_CAP == 10_000
+    assert ma.SANITY_FRACTION_CAP == 0.25
+    assert ma.sanity_verdict(10_001, 10_000_000)[0] is False
+    assert ma.sanity_verdict(2_501, 10_000)[0] is False
+    assert ma.sanity_verdict(2_500, 10_000)[0] is True
+
+
+def test_post_apply_sanity_recheck_halts_before_the_push(cadence) -> None:
+    """The apply count is re-gated against reality, not trusted.
+
+    The dry run under-reports (one record), the apply archives five of a
+    ten-record active corpus — 50%, over the fraction cap. Kills the mutation
+    that deletes the post-apply ``sanity_verdict`` re-check.
+    """
+    cadence.dryrun_count = 1
+    cadence.active_counts = "progress|10"
+    cadence.archived_records = [
+        _production_record("progress", 400, f"past-decay-{i}") for i in range(5)
+    ]
+
+    assert ma.main(["--apply"]) == 4
+    assert "archive --apply" in cadence.labels
+    assert "push (daily-sync)" not in cadence.labels, (
+        "an oversized sweep was pushed because the apply count was trusted")
+
+
+def test_unparseable_partition_halts_instead_of_reporting_success(
+    cadence, monkeypatch,
+) -> None:
+    """A missing partition line is a HALT, never a clean exit.
+
+    The tool reports the partition it wrote on stderr; if that line cannot be
+    read the run does not know WHAT it archived, so neither the invariance
+    gate nor the PG-drift gate can run. Kills the mutation that turns the
+    HALT into ``return 0`` — which would push an unverified archival.
+    """
+    cadence.dryrun_count = 1
+    cadence.archived_records = [_production_record("progress", 400, "x")]
+    real_run = cadence.run
+
+    def run_without_the_partition_line(cmd, *, label):
+        result = real_run(cmd, label=label)
+        if label == "archive --apply":
+            return _completed(stderr="archived some records somewhere")
+        return result
+
+    monkeypatch.setattr(ma, "_run", run_without_the_partition_line)
+
+    assert ma.main(["--apply"]) == 4
+    assert "push (daily-sync)" not in cadence.labels
+
+
+def test_a_genuine_no_op_apply_is_not_a_halt(cadence, monkeypatch) -> None:
+    """"nothing to archive" from the in-lock re-read is a clean exit.
+
+    The counterpart to the test above: the tool legitimately archives nothing
+    if the candidates were synced away between the dry run and the apply.
+    """
+    cadence.dryrun_count = 1
+    real_run = cadence.run
+
+    def run_reporting_a_no_op(cmd, *, label):
+        result = real_run(cmd, label=label)
+        if label == "archive --apply":
+            return _completed(stderr="nothing to archive (corpus unchanged).")
+        return result
+
+    monkeypatch.setattr(ma, "_run", run_reporting_a_no_op)
+
+    assert ma.main(["--apply"]) == 0
+    assert "push (daily-sync)" not in cadence.labels
+
+
+# ===========================================================================
+# Timestamp normalisation (audit 2026-09-08, round 4a, finding B18)
+# ===========================================================================
+
+
+def test_naive_timestamps_are_read_as_utc() -> None:
+    """A stamp with no offset must age from UTC, not raise or drift.
+
+    Replaces the vacuous companion to the Z test: Python 3.11+ parses a
+    trailing Z natively, so ``.replace("Z", "+00:00")`` is belt-and-braces
+    rather than the thing under test. THIS is the branch that carries weight
+    — ``ts.replace(tzinfo=timezone.utc)`` — and deleting it makes the
+    subtraction raise on a naive corpus record.
+    """
+    naive = {"id": "n", "category": "progress",
+             "created_at": "2026-05-03T06:11:28.861073"}
+    aware = {"id": "a", "category": "progress",
+             "created_at": "2026-05-03T06:11:28.861073+00:00"}
+    assert ma.record_age_days(naive, AS_OF) == ma.record_age_days(aware, AS_OF)
 
 
 if __name__ == "__main__":

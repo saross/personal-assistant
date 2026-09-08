@@ -13,8 +13,15 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+import _schema_version  # noqa: E402
 import sync_memory_edit as sme  # noqa: E402
+
+#: Read from the module the guard lives in, so a schema bump cannot quietly
+#: turn the fake connection's answer into a permanent mismatch.
+SCHEMA_VERSION = _schema_version.EXPECTED_SCHEMA_VERSION
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -102,6 +109,13 @@ def test_extract_values_non_list_anchors_coerced() -> None:
 
 
 class _FakeCursor:
+    """Records the SQL text and parameters it was actually handed.
+
+    ``execute`` takes ``params`` optionally so the schema-version guard's
+    parameterless ``SELECT`` runs against it too, and ``fetchone`` answers
+    that guard with the version the code expects.
+    """
+
     def __init__(self, rowcount: int) -> None:
         self.calls: list[tuple] = []
         self.rowcount = rowcount
@@ -112,16 +126,21 @@ class _FakeCursor:
     def __exit__(self, *exc):
         return False
 
-    def execute(self, sql: str, params: tuple) -> None:
+    def execute(self, sql: str, params: tuple | None = None) -> None:
         self.calls.append((sql, params))
+
+    def fetchone(self):
+        return (SCHEMA_VERSION,)
 
 
 class _FakeConn:
     def __init__(self, rowcount: int = 1) -> None:
         self.cur = _FakeCursor(rowcount)
         self.closed = False
+        self.entered = 0
 
     def __enter__(self):
+        self.entered += 1
         return self
 
     def __exit__(self, *exc):
@@ -134,22 +153,100 @@ class _FakeConn:
         self.closed = True
 
 
+def _update_call(conn: _FakeConn) -> tuple:
+    """The single UPDATE the reconcile issued (not the schema-guard SELECT)."""
+    updates = [c for c in conn.cur.calls if c[0].lstrip().startswith("UPDATE")]
+    assert len(updates) == 1, f"expected one UPDATE, got {conn.cur.calls}"
+    return updates[0]
+
+
 def test_reconcile_pg_issues_update_and_returns_rowcount() -> None:
+    """The literal SQL, its parameter order, and the committing context.
+
+    Kills, together: ``WHERE id=%s`` -> ``WHERE id!=%s`` (which would blank
+    every OTHER row), a swapped parameter order, and dropping ``conn`` from
+    the ``with`` (the UPDATE would be discarded on close while the command
+    still printed "PostgreSQL reconciled").
+    """
     conn = _FakeConn(rowcount=1)
     rec = {"id": "2026-06-05-abc", "content": "x", "is_active": False,
            "anchors": [{"type": "file"}], "revisions": [{"action": "forget"}]}
     n = sme.reconcile_pg(rec, connect=lambda: conn)
     assert n == 1
     assert conn.closed is True
-    sql, params = conn.cur.calls[0]
-    assert sql == sme.UPDATE_SQL
-    # is_active, content, confidence, verified, Json(anchors), Json(revisions), id
+    assert conn.entered == 1, "the UPDATE must run inside `with conn`"
+
+    sql, params = _update_call(conn)
+    # Asserted against the literal text, not against the module constant:
+    # comparing the constant with itself let WHERE id!=%s stay green.
+    assert sql == (
+        "UPDATE memories SET is_active=%s, content=%s, confidence=%s, "
+        "verified=%s, anchors=%s, revisions=%s, "
+        "embedding = CASE WHEN content IS DISTINCT FROM %s THEN NULL "
+        "ELSE embedding END "
+        "WHERE id=%s"
+    )
+    # is_active, content, confidence, verified, Json(anchors),
+    # Json(revisions), content again (the embedding comparison), id
     assert params[0] is False
     assert params[1] == "x"
-    assert params[6] == "2026-06-05-abc"
+    assert params[2] == "medium"
+    assert params[3] is None
+    assert params[6] == "x"
+    assert params[7] == "2026-06-05-abc"
     # anchors + revisions are psycopg2 Json wrappers over the original lists.
     assert params[4].adapted == [{"type": "file"}]
     assert params[5].adapted == [{"action": "forget"}]
+
+
+def test_reconcile_pg_clears_the_embedding_when_content_changes() -> None:
+    """The embedding is invalidated by comparing old content with new.
+
+    Kills the mutation that drops the ``embedding = CASE ...`` clause: the
+    refill paths select ``WHERE embedding IS NULL``, so without it semantic
+    recall keeps matching the pre-edit wording forever. The comparison
+    parameter must be the NEW content, so an unchanged record keeps its
+    embedding.
+    """
+    conn = _FakeConn(rowcount=1)
+    sme.reconcile_pg({"id": "a", "content": "revised wording"},
+                     connect=lambda: conn)
+    sql, params = _update_call(conn)
+    assert "embedding = CASE WHEN content IS DISTINCT FROM %s" in sql
+    assert "THEN NULL" in sql
+    assert params[6] == "revised wording"
+
+
+def test_reconcile_pg_checks_the_schema_version() -> None:
+    """A pre-v2 mirror is caught before the UPDATE, not after.
+
+    Kills the mutation that deletes the ``assert_schema_version`` call.
+    """
+    conn = _FakeConn(rowcount=1)
+    sme.reconcile_pg({"id": "a", "content": "x"}, connect=lambda: conn)
+    assert any(
+        "schema_version" in sql for sql, _params in conn.cur.calls
+    ), "the schema-version guard did not run"
+
+
+def test_reconcile_pg_refuses_on_a_schema_mismatch() -> None:
+    """A wrong version raises rather than issuing the UPDATE."""
+
+    class _StaleCursor(_FakeCursor):
+        def fetchone(self):
+            return ("0",)
+
+    class _StaleConn(_FakeConn):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cur = _StaleCursor(1)
+
+    conn = _StaleConn()
+    with pytest.raises(_schema_version.SchemaVersionError):
+        sme.reconcile_pg({"id": "a", "content": "x"}, connect=lambda: conn)
+    assert not [c for c in conn.cur.calls
+                if c[0].lstrip().startswith("UPDATE")]
+    assert conn.closed is True
 
 
 def test_reconcile_pg_rowcount_zero_when_absent() -> None:

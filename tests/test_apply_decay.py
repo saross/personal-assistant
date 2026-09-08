@@ -6,8 +6,10 @@ without requiring a running PostgreSQL instance. Integration tests that
 hit a real database are marked with @pytest.mark.integration.
 """
 
+import importlib
 import importlib.util
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,6 +21,16 @@ _decay_path = Path(__file__).parent.parent / "scripts" / "apply-decay.py"
 _spec = importlib.util.spec_from_file_location("apply_decay", _decay_path)
 decay_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(decay_mod)
+
+# archive-memories.py is hyphenated; load it under an importable alias so the
+# PERMANENT_OVERRIDES cross-check below can compare the two lists.
+_archive_path = Path(__file__).parent.parent / "scripts" / "archive-memories.py"
+_archive_spec = importlib.util.spec_from_file_location(
+    "archive_memories_for_overrides", _archive_path
+)
+_archive_mod = importlib.util.module_from_spec(_archive_spec)
+_archive_spec.loader.exec_module(_archive_mod)
+sys.modules["archive_memories_for_overrides"] = _archive_mod
 
 
 # ============================================================================
@@ -404,3 +416,196 @@ class TestApplyDecayIntegration:
 
         cur.close()
         conn.close()
+
+
+# ============================================================================
+# The decay predicate, executed rather than pattern-matched
+#
+# Audit 2026-09-08, round 4a, findings A18 and B7. The predicate was asserted
+# by substring, so NOW() - interval -> NOW() + interval, < -> >, and
+# AND m.is_active -> OR all stayed green. The production ``decay_where`` text
+# is translated into SQLite here and RUN against fixture rows, so a mutation
+# is caught by the rows it selects, not by the characters it contains.
+# ============================================================================
+
+import re  # noqa: E402
+import sqlite3  # noqa: E402
+from datetime import timedelta, timezone  # noqa: E402
+
+#: The instant every fixture row is aged against.
+_AS_OF = datetime(2031, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _days_before(days: int) -> str:
+    """An ISO timestamp ``days`` before the pinned reference instant."""
+    return (_AS_OF - timedelta(days=days)).isoformat()
+
+
+def _capture_decay_where() -> str:
+    """Run apply_decay against a recording cursor and return the SQL it built.
+
+    Taking the predicate from the SQL the script actually executes (rather
+    than re-typing it here) is what makes this a test of production code.
+    """
+    executed: list[str] = []
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append(sql)
+
+        def fetchone(self):
+            return ("3",)
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            return None
+
+    logger = logging.getLogger("apply-decay-sql-capture")
+    with patch("psycopg2.connect", return_value=_Conn()):
+        decay_mod.apply_decay(logger, dry_run=True)
+
+    preview = next(sql for sql in executed if "content_preview" in sql)
+    return preview.split("JOIN category_config c ON", 1)[1]
+
+
+def _to_sqlite(where: str) -> str:
+    """Translate the PostgreSQL predicate into an equivalent SQLite one.
+
+    Only the dialect is rewritten — the interval arithmetic, the timestamp
+    coercion, the boolean literal, and the array membership. Every operator
+    and connective the test is about is left exactly as production wrote it,
+    so a mutation to one changes which rows come back.
+    """
+    sql = " ".join(
+        line.split("--", 1)[0] for line in where.splitlines()
+    )
+    sql = " ".join(sql.split())
+    sql = sql.replace("(c.decay_days || ' days')::INTERVAL", "c.decay_days")
+    sql = sql.replace("NOW()", "julianday(:now)")
+    sql = sql.replace(
+        "COALESCE(m.deadline_at, m.created_at)",
+        "julianday(COALESCE(m.deadline_at, m.created_at))",
+    )
+    sql = re.sub(r"m\.created_at\s*([<>]=?)", r"julianday(m.created_at) \1", sql)
+    sql = sql.replace("m.is_active = TRUE", "m.is_active = 1")
+    permanent = ", ".join(
+        f"'{category}'" for category in decay_mod.PERMANENT_OVERRIDES
+    )
+    sql = sql.replace("m.category <> ALL(%s)", f"m.category NOT IN ({permanent})")
+    assert "%s" not in sql, f"an untranslated parameter remains: {sql}"
+    return sql
+
+
+#: (id, category, created days ago, deadline days ago or None, is_active)
+_FIXTURE_ROWS = [
+    ("old-progress", "progress", 400, None, 1),
+    ("fresh-progress", "progress", 5, None, 1),
+    ("old-but-inactive", "progress", 400, None, 0),
+    ("overdue-commitment", "commitment", 400, 400, 1),
+    ("future-commitment", "commitment", 400, -10, 1),
+    ("legacy-gotcha", "gotcha", 400, None, 1),
+    ("legacy-pattern", "pattern", 400, None, 1),
+    ("permanent-feedback", "feedback", 400, None, 1),
+]
+
+#: category -> decay_days. gotcha/pattern carry a LEGACY finite window, the
+#: exact shape PERMANENT_OVERRIDES exists to neutralise; feedback is NULL.
+_FIXTURE_CONFIG = [
+    ("progress", 30),
+    ("commitment", 30),
+    ("gotcha", 180),
+    ("pattern", 180),
+    ("feedback", None),
+]
+
+
+def _select_decayable() -> list[str]:
+    """Ids the production predicate selects from the fixture rows."""
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "CREATE TABLE memories (id TEXT, category TEXT, created_at TEXT, "
+        "deadline_at TEXT, is_active INTEGER)"
+    )
+    db.execute("CREATE TABLE category_config (category TEXT, decay_days INT)")
+    for mid, category, created, deadline, active in _FIXTURE_ROWS:
+        db.execute(
+            "INSERT INTO memories VALUES (?, ?, ?, ?, ?)",
+            (mid, category, _days_before(created),
+             None if deadline is None else _days_before(deadline), active),
+        )
+    db.executemany(
+        "INSERT INTO category_config VALUES (?, ?)", _FIXTURE_CONFIG
+    )
+    where = _to_sqlite(_capture_decay_where())
+    rows = db.execute(
+        f"SELECT m.id FROM memories m JOIN category_config c ON {where}",
+        {"now": _AS_OF.isoformat()},
+    ).fetchall()
+    db.close()
+    return sorted(r[0] for r in rows)
+
+
+class TestDecayPredicateSemantics:
+    """What the predicate actually selects, run rather than pattern-matched."""
+
+    def test_selects_exactly_the_past_decay_active_rows(self):
+        """Kills NOW() - interval -> NOW() + interval, < -> >, and AND -> OR.
+
+        Each of those mutations changes this set: the arithmetic flip and the
+        operator flip select the FRESH rows instead of the stale ones, and
+        turning the is_active conjunction into a disjunction pulls in
+        old-but-inactive.
+        """
+        assert _select_decayable() == [
+            "old-progress", "overdue-commitment",
+        ]
+
+    def test_a_legacy_window_cannot_decay_a_permanent_category(self):
+        """gotcha/pattern survive a finite decay_days in category_config.
+
+        Kills the mutation that deletes ``AND m.category <> ALL(%s)``: the
+        fixture gives both categories a legacy 180-day window, exactly the
+        row schema.sql's ON CONFLICT DO NOTHING cannot repair.
+        """
+        selected = _select_decayable()
+        assert "legacy-gotcha" not in selected
+        assert "legacy-pattern" not in selected
+
+    def test_permanent_overrides_mirror_archive_memories(self):
+        """The two lists must not drift apart."""
+        archive = importlib.import_module("archive_memories_for_overrides")
+        assert set(decay_mod.PERMANENT_OVERRIDES) == set(
+            archive.PERMANENT_OVERRIDES
+        )
+
+
+class TestSchemaVersionGuard:
+    """The version check must actually run before any decay query."""
+
+    def test_meta_query_precedes_the_decay_query(self, mock_db):
+        """Kills the mutation that deletes the assert_schema_version call."""
+        mock_conn, mock_cur = mock_db
+        with patch("psycopg2.connect", return_value=mock_conn):
+            decay_mod.apply_decay(logging.getLogger("apply-decay"), dry_run=True)
+
+        executed = [call.args[0] for call in mock_cur.execute.call_args_list]
+        assert "meta" in executed[0], "the schema-version guard did not run first"
+        assert any("content_preview" in sql for sql in executed[1:])
