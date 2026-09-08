@@ -1181,3 +1181,401 @@ class TestAuditRoundTwo:
         source = inspect.getsource(eh.format_memories)
         assert "update_vocabulary(" not in source
         assert "update_vocabulary(new_tags)" in inspect.getsource(eh.main)
+
+
+# ============================================================================
+# Audit round two, Lens B (2026-09-08): H5 (persistence path), H21 (flock
+# wiring in main), H22 (transcript-shape fidelity)
+# ============================================================================
+
+
+def make_live_shape_entry(
+    role: str,
+    content: str | list,
+    uuid: str,
+    *,
+    is_meta: bool = False,
+    is_sidechain: bool = False,
+) -> dict:
+    """Build a transcript entry carrying the keys a live transcript carries.
+
+    ``make_transcript_entry`` above emits the three keys the parser reads
+    (``type``, ``uuid``, ``message``), which is why the ``isMeta`` /
+    ``isSidechain`` blindness of audit H22 was invisible to the suite. The
+    key set here was measured (2026-09-08) from the entries under
+    ``~/.claude/projects/-home-shawn-personal-assistant``: every ``user``
+    and ``assistant`` entry carries ``cwd``, ``entrypoint``, ``gitBranch``,
+    ``isSidechain``, ``message``, ``parentUuid``, ``sessionId``,
+    ``timestamp``, ``type``, ``userType``, ``uuid``, and ``version``, and a
+    harness-injected entry adds ``isMeta``. Only the SHAPE is reproduced —
+    every value below is synthetic.
+    """
+    return {
+        "type": role,
+        "uuid": uuid,
+        "parentUuid": None,
+        "sessionId": "00000000-0000-0000-0000-000000000000",
+        "timestamp": "2026-09-08T00:00:00.000Z",
+        "cwd": "/home/shawn/personal-assistant",
+        "gitBranch": "main",
+        "entrypoint": "cli",
+        "userType": "external",
+        "version": "0.0.0",
+        "isMeta": is_meta,
+        "isSidechain": is_sidechain,
+        "message": {"role": role, "content": content},
+    }
+
+
+def _write_transcript(path: Path, entries: list[dict]) -> None:
+    """Write JSONL entries to *path*, one compact object per line."""
+    path.write_text(
+        "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8"
+    )
+
+
+def _mock_extraction_response(payload: str):
+    """Build a mock Anthropic response carrying *payload* as its only text."""
+    block = MagicMock()
+    block.text = payload
+    resp = MagicMock()
+    resp.content = [block]
+    resp.stop_reason = "end_turn"
+    return resp
+
+
+# One extracted memory, in the shape ``format_memories`` expects. Anchor-less
+# on purpose: ``anchor_verify.verify_memory`` short-circuits to None without
+# anchors, so no git subprocess is spawned by these tests.
+_ONE_MEMORY_JSON = json.dumps(
+    [
+        {
+            "category": "decision",
+            "content": "Pinned the persistence path with an end-to-end test.",
+            "summary": "Persistence path pinned.",
+            "confidence": "high",
+            "research_tags": ["audit-round-two"],
+        }
+    ]
+)
+
+
+def _stage_main_paths(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
+    """Redirect every file ``main()`` writes into *tmp_path*.
+
+    Returns ``(transcript, cursor_file, memories_file)``. The transcript
+    holds one user turn long enough to clear ``MIN_CONTENT_LENGTH``.
+    ``repo_set_for`` is stubbed to an empty repo set so anchor verification
+    does no filesystem discovery outside the temporary directory.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(
+        transcript,
+        [make_live_shape_entry("user", "decide: " + "x" * 800, "uuid-A")],
+    )
+    cursor_file = tmp_path / "cursor.json"
+    memories_file = tmp_path / "memories.jsonl"
+    monkeypatch.setattr(eh, "CURSOR_FILE", cursor_file)
+    monkeypatch.setattr(eh, "MEMORIES_FILE", memories_file)
+    monkeypatch.setattr(eh, "VOCABULARY_FILE", tmp_path / "tags.txt")
+    monkeypatch.setattr(eh, "load_env", lambda: None)
+    monkeypatch.setattr(eh, "repo_set_for", lambda project: [])
+    return transcript, cursor_file, memories_file
+
+
+class TestAppendMemories:
+    """H5: the append path itself — no test called it before 2026-09-08."""
+
+    def test_append_preserves_the_existing_store(self, tmp_path, monkeypatch):
+        """Kills ``with open(MEMORIES_FILE, "wb") as fh`` in append_memories.
+
+        The mutation truncates the ~42k-record canonical store on every
+        session close. Seeding a prior record and asserting it survives —
+        and that the file grew by exactly the encoded payload — is what
+        makes truncation visible.
+        """
+        store = tmp_path / "memories.jsonl"
+        seed = json.dumps({"id": "seed-1", "content": "already here"}) + "\n"
+        store.write_text(seed, encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+
+        new = [{"id": "new-1", "content": "appended"}]
+        eh.append_memories(new)
+
+        text = store.read_text(encoding="utf-8")
+        assert text.startswith(seed), "the pre-existing store was truncated"
+        expected = json.dumps(new[0]) + "\n"
+        assert text == seed + expected
+        assert store.stat().st_size == len((seed + expected).encode("utf-8"))
+
+    def test_append_is_a_no_op_for_an_empty_list(self, tmp_path, monkeypatch):
+        """Kills ``if not memories: return`` → falling through to os.write.
+
+        An empty append must not even create the file — the hook fires on
+        every session close, most of which extract nothing.
+        """
+        store = tmp_path / "memories.jsonl"
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        eh.append_memories([])
+        assert not store.exists()
+
+    def test_append_creates_the_store_and_its_parent(self, tmp_path, monkeypatch):
+        """Kills ``target_path.parent.mkdir(parents=True, exist_ok=True)``.
+
+        First run on a fresh clone has no ``memories/`` directory; without
+        the mkdir the very first extraction raises and is lost.
+        """
+        store = tmp_path / "memories" / "memories.jsonl"
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        eh.append_memories([{"id": "first", "content": "x"}])
+        assert json.loads(store.read_text(encoding="utf-8"))["id"] == "first"
+
+
+class TestMainPersistsAndAdvances:
+    """H5: a *successful* main() — bytes appended, cursor advanced."""
+
+    def test_main_appends_the_extracted_memories(self, tmp_path, monkeypatch):
+        """Kills ``append_memories(memories)`` → ``pass`` in main().
+
+        Also kills the truncating-append mutation: the seeded record must
+        still be in the store afterwards. Nothing in the suite asserted a
+        byte reached ``memories.jsonl`` before this test.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        seed = json.dumps({"id": "seed-1", "content": "already here"}) + "\n"
+        store.write_text(seed, encoding="utf-8")
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-P"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        lines = store.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == seed.rstrip("\n"), "the store was rewritten, not appended"
+        assert len(lines) == 2, f"expected one appended record, got {lines[1:]}"
+        record = json.loads(lines[1])
+        assert record["content"] == (
+            "Pinned the persistence path with an end-to-end test."
+        )
+        assert record["session_id"] == "sess-P"
+        # Cursor advanced only because the append succeeded.
+        assert json.loads(cursor_file.read_text())["sess-P"] == "uuid-A"
+
+    def test_main_holds_the_cursor_when_the_append_fails(self, tmp_path, monkeypatch):
+        """Kills moving the cursor advance ABOVE ``append_memories(memories)``.
+
+        With the advance moved up, a failed append loses the window's
+        memories forever: the bytes never land and the cursor has already
+        stepped past them.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        # A regular file standing where the store's parent directory must be,
+        # so ``parent.mkdir`` raises and the append cannot happen.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", blocker / "sub" / "memories.jsonl")
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-F"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            with pytest.raises(SystemExit) as exc:
+                eh.main()
+
+        assert exc.value.code == 1, "a failed save must exit non-zero"
+        saved = json.loads(cursor_file.read_text()) if cursor_file.exists() else {}
+        assert "sess-F" not in saved, (
+            "cursor advanced past a window whose memories were never written; "
+            f"cursor is {saved!r}"
+        )
+
+
+class TestConcurrentMainInvocations:
+    """H21: the flock wiring inside main(), not just the context manager.
+
+    Stop / PreCompact / SessionEnd fire seconds apart at session close, so
+    two main() runs genuinely race over one transcript.
+    """
+
+    def test_two_racing_main_runs_persist_the_window_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``with cursor_file_lock():`` → ``if True:`` in main().
+
+        Without the lock both runs read the same starting cursor, both
+        extract the same window, and both append — the window's memories
+        land twice with a fresh id each, so dedup-by-id never catches them.
+        ``TestCursorFileLock`` exercises the context manager directly and
+        would stay green through that mutation.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-R"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+
+        # Both runs meet inside the mocked API call. With the lock the second
+        # run never gets there (it blocks on flock), so the barrier times out
+        # and breaks — which is exactly the signal that serialisation held.
+        barrier = threading.Barrier(2)
+        response = _mock_extraction_response(_ONE_MEMORY_JSON)
+
+        def _create(**_kwargs):
+            try:
+                barrier.wait(timeout=1.0)
+            except threading.BrokenBarrierError:
+                pass
+            return response
+
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                eh.main()
+            except SystemExit:
+                pass  # "no new messages" exits 0 — the expected second run
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.side_effect = _create
+            mock_cls.return_value = mock_client
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+        assert not errors, f"worker errors: {errors!r}"
+        assert not any(t.is_alive() for t in threads), "a run never finished"
+
+        lines = [
+            ln for ln in store.read_text(encoding="utf-8").splitlines() if ln.strip()
+        ]
+        # No corruption: every line is a whole JSON object.
+        records = [json.loads(ln) for ln in lines]
+        assert len(records) == 1, (
+            f"the window was persisted {len(records)} times — the second run "
+            "was not serialised behind the first"
+        )
+        assert json.loads(cursor_file.read_text())["sess-R"] == "uuid-A"
+
+
+class TestTranscriptShapeFidelity:
+    """H22: harness-injected and subagent turns must not reach the model."""
+
+    def test_meta_entries_are_not_sent_as_user_turns(self, tmp_path):
+        """Kills dropping the ``entry.get("isMeta")`` guard in parse_transcript.
+
+        A system-reminder injection is recorded with ``"role": "user"``; fed
+        to the extractor it becomes a "memory" of the harness's own prose.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", "harness injection, not something Shawn said",
+                    "u-meta", is_meta=True,
+                ),
+                make_live_shape_entry("user", "a real question from Shawn", "u-real"),
+                make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
+            ],
+        )
+        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in messages]
+        assert "harness injection, not something Shawn said" not in texts
+        assert texts == ["a real question from Shawn", "an ordinary answer"]
+        # The skipped entry still advances the cursor.
+        assert last_uuid == "a-real"
+
+    def test_sidechain_entries_are_not_sent_as_conversation(self, tmp_path):
+        """Kills dropping the ``entry.get("isSidechain")`` guard.
+
+        A subagent's turns belong to that agent's own transcript; extracting
+        them here attributes the subagent's words to this session.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", "subagent task brief text here", "u-side",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "subagent reply text here", "a-side",
+                    is_sidechain=True,
+                ),
+                make_live_shape_entry("user", "the real turn", "u-real"),
+            ],
+        )
+        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in messages] == ["the real turn"]
+        assert last_uuid == "u-real"
+
+    def test_a_meta_slash_command_still_suppresses_its_response(self, tmp_path):
+        """Kills moving the isMeta guard ABOVE the command-marker branch.
+
+        Slash commands arrive as ``isMeta`` user entries (all 364
+        marker-bearing user entries measured under
+        ~/.claude/projects/-home-shawn-personal-assistant on 2026-09-08).
+        Skipping meta entries before the marker test would leave
+        ``skip_next_assistant`` unset and let every /remember, /forget, and
+        /update response back into extraction — the duplication the marker
+        filter exists to stop.
+        """
+        marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", marker + "\nrun it", "u-cmd", is_meta=True,
+                ),
+                make_live_shape_entry(
+                    "assistant", "the slash-command response", "a-cmd",
+                ),
+                make_live_shape_entry("user", "an unrelated real question", "u-real"),
+                make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
+            ],
+        )
+        messages, _ = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in messages]
+        assert "the slash-command response" not in texts
+        assert texts == ["an unrelated real question", "an ordinary answer"]
+
+    def test_a_window_of_only_meta_entries_still_advances_the_cursor(self, tmp_path):
+        """Kills placing the isMeta guard ABOVE the ``last_seen_uuid`` assignment.
+
+        A window of nothing but harness injections yields no messages; if it
+        also yielded no cursor position the hook would reparse it on every
+        firing forever.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "injection one", "u1", is_meta=True),
+                make_live_shape_entry("user", "injection two", "u2", is_meta=True),
+            ],
+        )
+        messages, last_uuid = eh.parse_transcript(str(transcript), None)
+        assert messages == []
+        assert last_uuid == "u2"
