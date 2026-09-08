@@ -1457,6 +1457,23 @@ class TestR2PushSafety:
         assert result.returncode == 2
         assert "safe to retry" in result.stdout + result.stderr
 
+    def test_staged_temporaries_are_excluded_from_the_push(
+        self, sandbox
+    ) -> None:
+        """L-10's other half: never upload a half-written file.
+
+        The push is --immutable and never deletes, so a partial `.tmp`
+        uploaded once becomes a permanent object in R2 that cannot be
+        replaced or removed.
+        """
+        assert self._run(sandbox).returncode == 0
+
+        argv = self._argv(sandbox)
+        assert "--exclude" in argv, f"no exclusion passed to rclone: {argv}"
+        assert "*.tmp" in argv, (
+            f"staged temporaries are not excluded from the push: {argv}"
+        )
+
 
 # ----------------------------------------------------------------------------
 # ART5 — search-archives-safe.sh: the limits and the single-run lock

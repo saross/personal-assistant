@@ -205,6 +205,13 @@ fi
 
 # --- Push ----------------------------------------------------------------
 RCLONE_FLAGS=(
+    # Never upload a staged temporary. normalise-archive-storage.py and
+    # bulk-archive.py both write via `<name>.tmp` and rename; a process
+    # killed in between leaves the partial file behind. Uploading one is
+    # worse than it sounds: the push is --immutable and never deletes, so a
+    # half-written temporary becomes a PERMANENT object in R2 that cannot
+    # be replaced or removed (audit round 4c-3, finding L-10).
+    --exclude "*.tmp"
     # Refuse to modify an object already in R2 — see the header. An
     # existing file whose size or modtime differs from the source is a
     # corruption signal in an append-only archive, not an update.
