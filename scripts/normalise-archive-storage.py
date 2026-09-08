@@ -41,7 +41,6 @@ import argparse
 import gzip
 import hashlib
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -146,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
                     if args.apply:
                         tmp = d / "session.jsonl.gz.tmp"
                         write_gz_verified(raw, tmp)
-                        shutil.move(tmp, gz)
+                        tmp.replace(gz)
                         _repoint(meta_path, gz)
                         raw.unlink()
                 elif gz_n > raw_n and is_prefix(raw, gz, shorter_gz=False, longer_gz=True):
@@ -164,7 +163,17 @@ def main(argv: list[str] | None = None) -> int:
                 n_raw_only += 1
                 print(f"[raw-only] {d.relative_to(root)}")
                 if args.apply:
-                    write_gz_verified(raw, gz)
+                    # Stage the compression, exactly as the dual-raw-longer
+                    # branch above does. Writing straight to session.jsonl.gz
+                    # meant a kill mid-write left a partial .gz beside the
+                    # raw: every later run then read that entry as dual-form,
+                    # found the truncated gz neither identical to nor a
+                    # prefix relationship with the raw, called it DIVERGENT,
+                    # and exited 1 forever without ever converging (audit
+                    # round 4c-2, finding 9).
+                    tmp = d / "session.jsonl.gz.tmp"
+                    write_gz_verified(raw, tmp)
+                    tmp.replace(gz)
                     _repoint(meta_path, gz)
                     raw.unlink()
             elif gz.exists() and not _meta_points_at_gz(meta_path):

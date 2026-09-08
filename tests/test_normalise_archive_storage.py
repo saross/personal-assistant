@@ -284,3 +284,64 @@ class TestRoundTripVerification:
 
         assert sorted(p.name for p in entry.iterdir()) == before
         assert _meta(entry)["archive"]["jsonl_path"] == "session.jsonl"
+
+
+class TestRawOnlyCompressionIsStaged:
+    """A kill mid-compression must leave a state the next run can finish.
+
+    The raw-only branch wrote straight to session.jsonl.gz. A kill mid-write
+    left a partial .gz beside the raw, and every later run then read the
+    entry as dual-form, found the truncated gz neither identical to the raw
+    nor in a prefix relationship with it, called it DIVERGENT, and exited 1
+    forever without converging (round 4c-2, finding 9).
+    """
+
+    def test_a_crash_mid_compression_leaves_no_partial_gz(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = _entry(tmp_path, raw=RAW_BODY)
+
+        real_replace = Path.replace
+
+        def boom(self, target):
+            raise OSError("killed mid-write")
+
+        monkeypatch.setattr(Path, "replace", boom)
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 1
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert not (entry / "session.jsonl.gz").exists(), (
+            "a partial .gz was left where a complete one belongs; the entry "
+            "now reads as DIVERGENT on every future run"
+        )
+        assert (entry / "session.jsonl").read_text(encoding="utf-8") == RAW_BODY
+
+    def test_the_re_run_converges_after_an_interrupted_compression(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole point of staging: the next run finishes the job."""
+        entry = _entry(tmp_path, raw=RAW_BODY)
+
+        real_replace = Path.replace
+        monkeypatch.setattr(
+            Path, "replace",
+            lambda self, target: (_ for _ in ()).throw(OSError("killed")),
+        )
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 1
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert not (entry / "session.jsonl").exists()
+        with gzip.open(entry / "session.jsonl.gz", "rt") as handle:
+            assert handle.read() == RAW_BODY
+        assert _meta(entry)["archive"]["jsonl_path"] == "session.jsonl.gz"
+
+    def test_no_temporary_file_survives_a_successful_run(
+        self, tmp_path: Path
+    ) -> None:
+        entry = _entry(tmp_path, raw=RAW_BODY)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert list(entry.glob("*.tmp")) == []
