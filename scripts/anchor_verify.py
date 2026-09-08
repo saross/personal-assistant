@@ -48,6 +48,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 
@@ -68,6 +69,44 @@ _PATHSPEC_MAGIC = ("*", "?", "[")
 # not check". Any other non-zero exit from the history probe is treated as a
 # failure to check and reported as "pending" (finding AN3).
 _UNMATCHED_PATHSPEC = "did not match any file"
+
+#: Repositories that cannot be consulted AT ALL — git is missing, the path is
+#: not a repository, the volume is unmounted. Keyed by path, value is the
+#: reason; the warning is printed once per process.
+#:
+#: A repository-level failure is a property of the repository, not of the ref
+#: being checked, so it must not make every ref in the corpus "pending". One
+#: unmounted checkout out of thirty-six did exactly that: every absent ref
+#: read pending, the drift sweep's pending rate went to 100 %, and the 10 %
+#: floor refused every sweep from then on (round 4f-3, finding M6). Such a
+#: repository is EXCLUDED with a warning; only a ref-level failure — a
+#: timeout, an unreadable object — still yields pending, and only for the
+#: repositories that could hold the ref.
+_UNUSABLE_REPOS: dict[str, str] = {}
+
+
+def note_unusable_repo(repo: Path, reason: str) -> None:
+    """Record *repo* as unusable, warning once per process."""
+    key = str(repo)
+    if key not in _UNUSABLE_REPOS:
+        _UNUSABLE_REPOS[key] = reason
+        print(f"[anchor_verify] WARN: excluding {key} from anchor resolution "
+              f"({reason})", file=sys.stderr)
+
+
+def repo_is_unusable(repo: Path) -> bool:
+    """Has *repo* already been found unusable in this process?"""
+    return str(repo) in _UNUSABLE_REPOS
+
+
+def unusable_repos() -> dict[str, str]:
+    """A copy of the exclusion registry, for reporting."""
+    return dict(_UNUSABLE_REPOS)
+
+
+def reset_unusable_repos() -> None:
+    """Clear the registry. For tests and long-lived callers."""
+    _UNUSABLE_REPOS.clear()
 
 # Minimum hex characters we will treat as a commit reference. Git itself
 # resolves a 4-character prefix in a small repository, which made
@@ -141,6 +180,8 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
         # to resolve here, and probing it would ask about a path outside the
         # checkout entirely.
         return "false"
+    if repo_is_unusable(repo):
+        return "unusable"
     # 1. Present at the current tip? A non-zero exit here is inconclusive on
     #    its own (an empty repository has no HEAD), so fall through to the
     #    history probe rather than deciding.
@@ -153,11 +194,14 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
         if result.returncode == 0:
             return "true"
     except subprocess.TimeoutExpired:
+        # Ref-level: this repository is alive, this probe was slow.
         return "pending"
-    except (FileNotFoundError, OSError):
-        # git not installed, or the repository vanished/unmounted mid-check:
-        # we did not check, so we must not say "absent".
-        return "pending"
+    except (FileNotFoundError, OSError) as exc:
+        # Repository-level: git is missing, or the checkout vanished. It will
+        # fail identically for every other ref, so exclude it rather than
+        # mark the whole corpus unchecked.
+        note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
+        return "unusable"
     # 2. Ever in history (any ref)? Covers deleted-since + renames.
     try:
         result = subprocess.run(
@@ -169,8 +213,9 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
         )
     except subprocess.TimeoutExpired:
         return "pending"
-    except (FileNotFoundError, OSError):
-        return "pending"
+    except (FileNotFoundError, OSError) as exc:
+        note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
+        return "unusable"
     if result.returncode == 0:
         # git answered: output means the path is in history, no output means
         # it never was. This is the only path that may return "false".
@@ -181,6 +226,11 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
         # "did not match any file(s) known to git" — a completed check whose
         # answer is "absent", not a broken repository.
         return "false"
+    if result.returncode == 128:
+        # Any other 128 is the repository itself: not a git repository, a
+        # corrupt object store, no commits at all. Same for every ref.
+        note_unusable_repo(repo, (result.stderr or "git exit 128").strip()[:120])
+        return "unusable"
     return "pending"
 
 
@@ -254,6 +304,10 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
             status = _git_knows_path(repo, rel)
             if status == "true":
                 return "true"
+            if status == "unusable":
+                # Excluded, not unchecked: this repository fails identically
+                # for every ref, so it must not colour this verdict (M6).
+                continue
             if status == "pending":
                 pending_seen = True
             else:
@@ -284,6 +338,8 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
         status = _git_knows_path(repo, expanded)
         if status == "true":
             return "true"
+        if status == "unusable":
+            continue      # excluded with a warning; see finding M6
         if status == "pending":
             pending_seen = True
         else:
@@ -424,6 +480,8 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
     pending_seen = False
     checked_any = False
     for repo in repo_set:
+        if repo_is_unusable(repo):
+            continue
         try:
             result = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse",
@@ -432,10 +490,14 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
                 timeout=_GIT_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
+            # Ref-level: the repository is alive, this probe was slow.
             pending_seen = True
             continue
-        except (FileNotFoundError, OSError):
-            pending_seen = True
+        except (FileNotFoundError, OSError) as exc:
+            # Repository-level: exclude it with a warning rather than let one
+            # broken checkout make every commit ref in the corpus pending
+            # (finding M6).
+            note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
             continue
         if result.returncode == 0:
             return "true"
@@ -443,8 +505,12 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
             # rev-parse --verify --quiet: the object is not in this repo.
             checked_any = True
         else:
-            # 128 = not a repository, corrupt object store, and so on.
-            pending_seen = True
+            # 128 = not a repository, corrupt object store, and so on: a
+            # property of the repository, so exclude it.
+            note_unusable_repo(
+                repo, (result.stderr or b"git exit 128").decode(
+                    "utf-8", "replace").strip()[:120] or "git exit 128",
+            )
 
     return "false" if checked_any and not pending_seen else "pending"
 

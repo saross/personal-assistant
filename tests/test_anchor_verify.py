@@ -658,6 +658,19 @@ class TestCommitRefHexFloor:
 # ============================================================================
 
 
+@pytest.fixture(autouse=True)
+def _clear_repo_exclusions():
+    """Empty anchor_verify's unusable-repository registry around every test.
+
+    The registry is process-wide by design — a repository that cannot be
+    consulted stays excluded for the rest of a sweep — so without this a test
+    that breaks ``/repo`` silently excludes it from every later test.
+    """
+    av.reset_unusable_repos()
+    yield
+    av.reset_unusable_repos()
+
+
 class TestTransientFailureIsPending:
     """Every way a check can fail to complete must read "pending".
 
@@ -670,15 +683,17 @@ class TestTransientFailureIsPending:
     the unconditional trailing ``return "false"`` in the history probe.
     """
 
-    def test_missing_git_binary_is_pending(self):
+    def test_missing_git_binary_excludes_the_repository(self):
+        """A repository-level failure is not a ref-level one (finding M6)."""
         with patch("subprocess.run", side_effect=FileNotFoundError("git")):
-            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+        assert av.repo_is_unusable(Path("/repo"))
 
-    def test_unreadable_repository_is_pending(self):
+    def test_unreadable_repository_is_excluded(self):
         with patch("subprocess.run", side_effect=PermissionError("denied")):
-            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
 
-    def test_oserror_mid_history_probe_is_pending(self):
+    def test_oserror_mid_history_probe_excludes_the_repository(self):
         results = [MagicMock(returncode=1), OSError("mount went away")]
 
         def run(*_a, **_kw):
@@ -688,9 +703,9 @@ class TestTransientFailureIsPending:
             return item
 
         with patch("subprocess.run", side_effect=run):
-            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
 
-    def test_unrecognised_git_exit_code_is_pending(self):
+    def test_unrecognised_git_exit_code_excludes_the_repository(self):
         """rc 128 without the "did not match" text: a broken repository."""
         results = [
             MagicMock(returncode=1),
@@ -698,7 +713,14 @@ class TestTransientFailureIsPending:
                       stderr="fatal: not a git repository"),
         ]
         with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+
+    def test_a_timeout_is_still_ref_level_pending(self):
+        """A live repository that was slow tells us nothing about this ref."""
+        import subprocess as _sp
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
             assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+        assert not av.repo_is_unusable(Path("/repo"))
 
     def test_unmatched_pathspec_is_a_completed_check(self):
         """rc 128 WITH the marker means "checked, and absent"."""
@@ -716,6 +738,14 @@ class TestTransientFailureIsPending:
         repo = tmp_path / "repo"
         repo.mkdir()
         with patch("subprocess.run", side_effect=OSError("unmounted")):
+            assert av.verify_file("scripts/gone.py", [repo]) == "pending"
+
+    def test_verify_file_is_pending_when_a_live_repo_times_out(self, tmp_path):
+        """A timeout on a usable repository still withholds the verdict."""
+        import subprocess as _sp
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
             assert av.verify_file("scripts/gone.py", [repo]) == "pending"
 
     def test_verify_file_relative_with_no_repos_is_pending(self):
@@ -820,3 +850,70 @@ class TestZeroValidAnchorsIsNotVerified:
     def test_only_malformed_entries_returns_none(self):
         record = {"id": "x", "anchors": ["not a dict", {"type": "file"}]}
         assert av.verify_memory(record, []) is None
+
+
+# ============================================================================
+# One broken repository must not condemn the whole corpus (finding M6)
+# ============================================================================
+
+
+class TestABrokenRepositoryIsExcludedNotContagious:
+    """A repository that fails for every ref is excluded, with a warning.
+
+    Before this, ``pending_seen`` was set by any repository-level failure, so
+    a single unmounted checkout out of thirty-six made EVERY absent ref read
+    "pending": the drift sweep's pending rate went to 100 %, tripped the 10 %
+    reliability floor, and refused every sweep from then on.
+    """
+
+    def test_an_absent_ref_is_still_false_beside_a_broken_repo(
+        self, tmp_path, capsys,
+    ):
+        """The verdict comes from the repositories that could answer.
+
+        Kills the mutation that treats "unusable" as "pending" in
+        verify_file: the ref below then reads pending for ever.
+        """
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"      # a directory, not a repository
+        broken.mkdir()
+        assert av.verify_file("scripts/ghost.py", [broken, good]) == "false"
+        assert av.repo_is_unusable(broken)
+        assert "excluding" in capsys.readouterr().err
+
+    def test_a_present_ref_is_still_true_beside_a_broken_repo(self, tmp_path):
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        assert av.verify_file("scripts/real.py", [broken, good]) == "true"
+
+    def test_the_warning_is_printed_once_per_process(self, tmp_path, capsys):
+        """A per-ref warning would drown the sweep's own output."""
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        for ref in ("scripts/a.py", "scripts/b.py", "scripts/c.py"):
+            av.verify_file(ref, [broken, good])
+        assert capsys.readouterr().err.count("excluding") == 1
+
+    def test_commit_refs_are_not_poisoned_either(self, tmp_path, capsys):
+        """verify_commit had the same short-circuit."""
+        good = _throwaway_repo(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        assert av.verify_commit("abc1234def", [broken, good]) == "false"
+        assert av.repo_is_unusable(broken)
+
+    def test_every_repository_broken_is_still_pending(self, tmp_path):
+        """The control: with nothing left to ask, we do not answer."""
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        assert av.verify_file("scripts/ghost.py", [broken]) == "pending"
+        assert av.verify_commit("abc1234def", [broken]) == "pending"
+
+    def test_the_registry_is_reportable(self, tmp_path):
+        """A sweep can say which repositories it left out."""
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        av.verify_file("scripts/ghost.py", [broken])
+        assert str(broken) in av.unusable_repos()
