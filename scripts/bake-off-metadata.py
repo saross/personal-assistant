@@ -111,14 +111,20 @@ TERRA_MODEL = "gpt-5.6-terra"
 TERRA_INPUT_PRICE_PER_MTOK = 2.50
 TERRA_OUTPUT_PRICE_PER_MTOK = 15.00
 
-# Anthropic Claude Sonnet 5, verified 2026-07-28 against the Anthropic model
-# reference. List price is 3.00/15.00, but INTRODUCTORY pricing of 2.00/10.00
-# runs through 2026-08-31 -- the rates below are the intro rates, so they go
-# STALE on 1 Sep 2026 and must be raised to 3.00/15.00 then. Batch is -50%;
-# this arm runs real-time like the Haiku arm, so the standard rate applies.
+# Anthropic Claude Sonnet 5, list price, from the Anthropic model reference.
+# The introductory 2.00/10.00 rate expired on 2026-08-31 exactly as the
+# previous comment here predicted; these are the post-introductory LIST rates
+# it instructed the next reader to install, applied 2026-09-08. Every
+# estimate this file produced between 1 and 8 September under-counted the
+# Sonnet arm by a third. Batch is -50%; this arm runs real-time like the
+# Haiku arm, so the standard rate applies.
+#
+# NEXT REVIEW: on the next Anthropic pricing announcement, or by 2027-03-08 —
+# whichever comes first. There is no further scheduled step, so a calendar
+# date is the only tripwire left.
 SONNET_MODEL = "claude-sonnet-5"
-SONNET_INPUT_PRICE_PER_MTOK = 2.00
-SONNET_OUTPUT_PRICE_PER_MTOK = 10.00
+SONNET_INPUT_PRICE_PER_MTOK = 3.00
+SONNET_OUTPUT_PRICE_PER_MTOK = 15.00
 
 # Provider -> (model id, input $/MTok, output $/MTok) at the discounted tier
 # each provider can actually reach for this workload. Haiku is listed at its

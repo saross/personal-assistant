@@ -559,3 +559,25 @@ class TestBlinding:
             rubric_out.with_name(rubric_out.stem + ".blind-key.json").read_text()
         )
         assert key["redacted_errors"]["beta"][session_id] == fx.RESPONSE_ERROR["error"]
+
+
+class TestPricingConstants:
+    """Stale prices produce estimates the operator approves in good faith."""
+
+    def test_sonnet_uses_post_introductory_list_prices(self):
+        """The intro 2.00/10.00 rate expired on 2026-08-31."""
+        assert bom.SONNET_INPUT_PRICE_PER_MTOK == 3.00
+        assert bom.SONNET_OUTPUT_PRICE_PER_MTOK == 15.00
+
+    def test_provider_specs_track_the_constants(self):
+        model, in_rate, out_rate = bom.PROVIDER_SPECS["sonnet-5"]
+        assert model == bom.SONNET_MODEL
+        assert in_rate == bom.SONNET_INPUT_PRICE_PER_MTOK
+        assert out_rate == bom.SONNET_OUTPUT_PRICE_PER_MTOK
+
+    def test_estimate_uses_the_provider_rate(self, tmp_path):
+        manifest = _one_session_manifest(tmp_path)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        cost = bom.estimate_cost_usd(requests, provider="sonnet-5")
+        assert cost["input_rate_per_mtok"] == 3.00
+        assert cost["output_rate_per_mtok"] == 15.00
