@@ -110,9 +110,13 @@ import style_support  # noqa: E402  (flat sibling; standard library only)
 # Default paths
 # ---------------------------------------------------------------------------
 
-PHASE1_DEFAULT = Path("data/style-corpus/phase1-results-clean.json")
-PHASE3_DEFAULT = Path("data/style-corpus/phase3-promotion-clean.json")
-EXTRACTED_DEFAULT = Path("data/style-corpus/extracted")
+# __file__-derived, not relative to the working directory: the documented
+# invocation gives this script an absolute path and never cd's first, so a
+# relative default resolved against wherever the shell happened to be.
+PA_ROOT = Path(__file__).resolve().parents[2]
+PHASE1_DEFAULT = PA_ROOT / "data" / "style-corpus" / "phase1-results-clean.json"
+PHASE3_DEFAULT = PA_ROOT / "data" / "style-corpus" / "phase3-promotion-clean.json"
+EXTRACTED_DEFAULT = PA_ROOT / "data" / "style-corpus" / "extracted"
 
 # ---------------------------------------------------------------------------
 # Mahalanobis feature space (plan §6.3 / §9 decision 10)

@@ -44,8 +44,10 @@ from _bulk_rewrite_guard import (  # noqa: E402
     release_lock,
 )
 from _sync_cursor import (  # noqa: E402
+    UnusableCursor,
     postgres_backlog_refusal,
     unsynced_line_backlog,
+    unusable_cursor_refusal,
 )
 
 # ---------------------------------------------------------------------------
@@ -441,7 +443,14 @@ def main() -> None:
         # Refuse a line-deleting rewrite while PostgreSQL is behind: those
         # records would end up below the line-position cursor and never sync
         # (audit 2026-09-08, finding A9).
-        backlog = unsynced_line_backlog(MEMORIES_FILE, CURSOR_FILE, logger=logger)
+        try:
+            backlog = unsynced_line_backlog(
+                MEMORIES_FILE, CURSOR_FILE, logger=logger)
+        except UnusableCursor as exc:
+            # Fail CLOSED: an unreadable cursor is the state in which the
+            # effect of deleting lines cannot be reasoned about at all.
+            logger.error("%s", unusable_cursor_refusal("dedup-memories", str(exc)))
+            sys.exit(1)
         if backlog:
             logger.error("%s", postgres_backlog_refusal(
                 "dedup-memories", backlog, CURSOR_FILE))

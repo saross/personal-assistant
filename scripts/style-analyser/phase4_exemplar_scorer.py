@@ -44,7 +44,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import style_support  # noqa: E402
 
-CORPUS = Path("data/style-corpus/extracted")
+# See phase3_promotion.py: __file__-derived so the documented absolute-path
+# invocation works from any working directory. Overridable on the CLI.
+PA_ROOT = Path(__file__).resolve().parents[2]
+CORPUS = PA_ROOT / "data" / "style-corpus" / "extracted"
+OUT = PA_ROOT / "data" / "style-corpus" / "phase4-exemplar-candidates.json"
 MIN_CATS = 3
 TOP_PER_PAPER = 3
 MIN_WORDS = 20
@@ -240,7 +244,7 @@ def _split_paragraph_sentences(paragraph: str) -> list[str]:
 # -- Per-paper metadata -------------------------------------------------------
 
 def load_meta(key: str) -> dict:
-    p = CORPUS / key / "metadata.json"
+    p = corpus_dir() / key / "metadata.json"
     if not p.exists():
         return {}
     return json.load(open(p))
@@ -260,33 +264,45 @@ def author_role(meta: dict) -> str:
 
 # -- Driver -------------------------------------------------------------------
 
+#: Set by ``main`` so ``load_meta`` (called deep in the scoring loop) can see
+#: the corpus directory without threading it through every helper.
+_CORPUS_DIR: Path = CORPUS
+
+
+def corpus_dir() -> Path:
+    """Return the corpus directory the current run is reading."""
+    return _CORPUS_DIR
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the command line.
 
-    ``--dry-run`` is the only behavioural flag: it scores and summarises
-    exactly as a real run does, and writes nothing at all — so an operator can
-    see what the script *would* put in the production output path without
-    touching the file that is already there.
+    ``--corpus`` and ``--out`` move the two production paths off the working
+    directory. ``--dry-run`` scores and summarises exactly as a real run does
+    and writes nothing at all, so an operator can see what the script *would*
+    put in the output path without touching the file already there.
     """
-    parser = argparse.ArgumentParser(
-        description="Phase 4 — score corpus sentences as exemplar candidates.",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="score and summarise, but write no output file",
-    )
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument("--corpus", type=Path, default=CORPUS,
+                        help=f"extracted-corpus directory (default: {CORPUS})")
+    parser.add_argument("--out", type=Path, default=OUT,
+                        help=f"where to write the candidates (default: {OUT})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="score and summarise, but write no output file")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Score every paper in ``CORPUS`` and write the candidate JSON.
+    """Score every corpus sentence and write the exemplar candidates.
 
     Returns ``2`` when the corpus directory is missing, ``0`` otherwise.
     """
+    global _CORPUS_DIR
     args = parse_args(argv)
+    _CORPUS_DIR = args.corpus
 
-    if not CORPUS.is_dir():
-        print(f"Corpus dir not found: {CORPUS}", file=sys.stderr)
+    if not args.corpus.is_dir():
+        print(f"Corpus dir not found: {args.corpus}", file=sys.stderr)
         return 2
 
     results: dict[str, list[tuple[int, str, list[str]]]] = defaultdict(list)
@@ -295,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     #: block so a result can be tied to the exact input bytes behind it.
     inputs: list[Path] = []
 
-    for key_dir in sorted(CORPUS.iterdir()):
+    for key_dir in sorted(args.corpus.iterdir()):
         if not key_dir.is_dir():
             continue
         body = key_dir / "body.md"
@@ -341,10 +357,13 @@ def main(argv: list[str] | None = None) -> int:
         # every body.md read. No wall-clock field, so two runs over unchanged
         # inputs are byte-identical (see style_support's module docstring).
         "provenance": style_support.provenance_block(
-            Path(__file__).name, inputs, extra={"corpus_dir": str(CORPUS)},
+            Path(__file__).name, inputs,
+            extra={"corpus_dir": str(args.corpus)},
         ),
     }
-    out_path = Path("data/style-corpus/phase4-exemplar-candidates.json")
+    # The atomic writer creates the parent directory itself, and only on a
+    # real write, so a dry run leaves no directory behind either.
+    out_path = args.out
     wrote = style_support.atomic_write_json(out_path, out, dry_run=args.dry_run)
     if wrote:
         print(f"Wrote {out_path}")

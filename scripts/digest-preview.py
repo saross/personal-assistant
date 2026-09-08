@@ -10,7 +10,8 @@ side-by-side byte comparison plus the actual digest text.
 This is the deliverable a human reviews before the live cutover (PASS 2):
 it changes NOTHING about session-start behaviour — it only reads the
 corpus and reports. It also appends one demonstration line to
-``data/logs/digest.log`` so the instrumentation format is exercised.
+``data/logs/digest-preview.log`` — its OWN file, marked ``preview=true``,
+never the live ``digest.log`` (audit R17).
 
 Usage::
 
@@ -18,7 +19,7 @@ Usage::
     python3 scripts/digest-preview.py --cwd /home/shawn/Code/inscriptions
     python3 scripts/digest-preview.py --budget 1500 --window-days 7
     python3 scripts/digest-preview.py --show-digest    # also print the text
-    python3 scripts/digest-preview.py --no-log          # skip digest.log write
+    python3 scripts/digest-preview.py --no-log          # skip the preview log
 
 The recall-dump reproduction calls the hook's own ``retrieve_*`` and
 ``format_context`` functions, so the "before" number tracks the real
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +38,41 @@ from pathlib import Path
 PA_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PA_DIR / "scripts"
 HOOK_PATH = PA_DIR / "hooks" / "session-start-retrieval.py"
-DIGEST_LOG = PA_DIR / "data" / "logs" / "digest.log"
+
+#: Environment variable pinning this harness's log (audit R17).
+LOG_PATH_ENV = "PA_DIGEST_PREVIEW_LOG"
+
+#: Its OWN file, not ``digest.log`` (audit R17). A dry run is not a session:
+#: writing demonstration rows into the live digest instrumentation made a
+#: preview indistinguishable from a real session digest in the very log the
+#: Vector 2 measurements are read from. Every line here also carries
+#: ``preview=true`` so a mis-pointed run is still self-identifying.
+SHIPPED_LOG_PATH = PA_DIR / "data" / "logs" / "digest-preview.log"
+
+#: Marker appended to every line this harness writes.
+PREVIEW_MARKER = "preview=true"
+
+
+def default_log_path() -> Path | None:
+    """Where an unpinned preview line goes, or ``None`` for "write nothing".
+
+    Resolved at CALL time, never bound as a default argument (audit S22,
+    extended here by R17): ``PA_DIGEST_PREVIEW_LOG`` first, then nothing at
+    all under pytest, then :data:`SHIPPED_LOG_PATH`. The shipped path comes
+    from ``__file__``, so it points into the operator's private data
+    submodule however the suite pins ``HOME``.
+    """
+    override = os.environ.get(LOG_PATH_ENV)
+    if override:
+        return Path(override)
+    if "pytest" in sys.modules:
+        return None
+    return SHIPPED_LOG_PATH
+
+
+def preview_log_line(result, *, now: datetime) -> str:
+    """The digest's own log line, marked as a preview (pure; no I/O)."""
+    return f"{digest.digest_log_line(result, now=now)}\t{PREVIEW_MARKER}"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 import digest  # noqa: E402  (pure selector module)
@@ -100,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--no-log",
         action="store_true",
-        help="Do not append a demonstration line to data/logs/digest.log.",
+        help="Do not append a demonstration line to data/logs/digest-preview.log.",
     )
     return p.parse_args()
 
@@ -177,15 +213,18 @@ def main() -> None:
         print("-" * 72)
         print(result.text)
 
-    # Instrumentation demonstration (design §9 pre-step).
-    if not args.no_log:
+    # Instrumentation demonstration (design §9 pre-step). Its own file, and
+    # its own marker, so a dry run can never be mistaken for a live session
+    # in the digest measurements.
+    target = default_log_path()
+    if not args.no_log and target is not None:
         try:
-            DIGEST_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with DIGEST_LOG.open("a", encoding="utf-8") as fh:
-                fh.write(digest.digest_log_line(result, now=now) + "\n")
-            print(f"\n[logged demonstration line to {DIGEST_LOG}]")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(preview_log_line(result, now=now) + "\n")
+            print(f"\n[logged demonstration line to {target}]")
         except OSError as exc:  # best-effort; never fail the preview
-            print(f"\n[warn: could not write {DIGEST_LOG}: {exc}]", file=sys.stderr)
+            print(f"\n[warn: could not write {target}: {exc}]", file=sys.stderr)
 
 
 if __name__ == "__main__":

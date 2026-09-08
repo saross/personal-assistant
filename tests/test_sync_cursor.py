@@ -1112,3 +1112,122 @@ class TestUnsyncedLineBacklog:
         assert "7 record(s)" in text
         assert "sync-to-postgres.py first" in text
         assert "Nothing was written." in text
+
+
+# ===========================================================================
+# One definition of "a line" (audit 2026-09-08, round 4a-2, finding M2)
+#
+# sync-to-postgres SAVED the cursor as a splitlines() count while the bulk
+# rewriters' backlog gate COMPARED it against a b"\n" count. A raw U+2028
+# below the cursor made the gate read "caught up" with records still unsynced
+# beneath it. Both now go through this module.
+# ===========================================================================
+
+#: The three code points ``str.splitlines()`` breaks on and ``"\n"``-splitting
+#: does not. Each is legal inside a JSON string, so each can reach disk in a
+#: record whose writer forgot ``ensure_ascii``.
+LINE_SEPARATOR = "\u2028"
+PARAGRAPH_SEPARATOR = "\u2029"
+NEXT_LINE = "\u0085"
+
+
+class TestSplitAndCountAgree:
+    """``len(split_jsonl_lines(text))`` must equal ``count_jsonl_lines(path)``."""
+
+    CASES = {
+        "plain": '{"id": "a"}\n{"id": "b"}\n',
+        "no trailing newline": '{"id": "a"}\n{"id": "b"}',
+        "blank line": '{"id": "a"}\n\n{"id": "b"}\n',
+        "empty": "",
+        "raw line separator":
+            '{"id": "a", "c": "one' + LINE_SEPARATOR + 'two"}\n{"id": "b"}\n',
+        "raw paragraph separator":
+            '{"id": "a", "c": "one' + PARAGRAPH_SEPARATOR + 'two"}\n',
+        "raw next line":
+            '{"id": "a", "c": "one' + NEXT_LINE + 'two"}\n',
+    }
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_the_two_halves_agree(self, tmp_path, name):
+        """Both halves of the definition must answer the same for every shape."""
+        text = self.CASES[name]
+        path = tmp_path / "memories.jsonl"
+        path.write_text(text, encoding="utf-8")
+        assert len(_sync_cursor.split_jsonl_lines(text)) == \
+            _sync_cursor.count_jsonl_lines(path), name
+
+    def test_a_raw_separator_makes_splitlines_disagree(self, tmp_path):
+        """The divergence this finding is about, reproduced.
+
+        Kills the mutation ``text.split("\\n")`` -> ``text.splitlines()``
+        inside ``split_jsonl_lines``: three records, one carrying a raw
+        U+2028, count as three by newline and four by splitlines.
+        """
+        text = (
+            '{"id": "a"}\n'
+            '{"id": "b", "content": "one' + LINE_SEPARATOR + 'two"}\n'
+            '{"id": "c"}\n'
+        )
+        path = tmp_path / "memories.jsonl"
+        path.write_text(text, encoding="utf-8")
+
+        assert len(text.splitlines()) == 4, "the divergence must still exist"
+        assert _sync_cursor.count_jsonl_lines(path) == 3
+        assert len(_sync_cursor.split_jsonl_lines(text)) == 3
+
+
+class TestUnusableCursorFailsClosed:
+    """A cursor present and unreadable must refuse, never read as no backlog."""
+
+    def _corpus(self, tmp_path, n=5):
+        """A throwaway corpus of ``n`` one-line records."""
+        path = tmp_path / "memories.jsonl"
+        path.write_text(
+            "".join(json.dumps({"id": str(i)}) + "\n" for i in range(n)),
+            encoding="utf-8",
+        )
+        return path
+
+    @pytest.mark.parametrize("value", [-1, "not-a-number", True, None, 3.5, []])
+    def test_a_present_unusable_cursor_raises(self, tmp_path, value):
+        """Kills the mutation that returns 0 for an unusable cursor.
+
+        A negative integer, a non-digit string, a bool, an explicit null, a
+        float, and a list are each as unreadable as the next, and each used
+        to read as "caught up" while the sweep went on to delete lines.
+        """
+        corpus = self._corpus(tmp_path)
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text(json.dumps({"postgres_sync_line": value}),
+                          encoding="utf-8")
+        with pytest.raises(_sync_cursor.UnusableCursor):
+            _sync_cursor.unsynced_line_backlog(corpus, cursor)
+
+    def test_a_malformed_cursor_file_raises(self, tmp_path):
+        """An unparseable cursor file is not the same as an absent one."""
+        corpus = self._corpus(tmp_path)
+        cursor = tmp_path / "sync-cursors.json"
+        cursor.write_text("{not json", encoding="utf-8")
+        with pytest.raises(_sync_cursor.UnusableCursor):
+            _sync_cursor.unsynced_line_backlog(corpus, cursor)
+
+    def test_an_absent_file_or_key_is_still_zero(self, tmp_path):
+        """A machine with no PostgreSQL must not be blocked.
+
+        An absent file, a file carrying other cursors, and a readable empty
+        object all mean "this host has never synced memories".
+        """
+        corpus = self._corpus(tmp_path)
+        cursor = tmp_path / "sync-cursors.json"
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+        cursor.write_text(json.dumps({"zotero_sync_line": 2}), encoding="utf-8")
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+        cursor.write_text("{}", encoding="utf-8")
+        assert _sync_cursor.unsynced_line_backlog(corpus, cursor) == 0
+
+    def test_refusal_text_names_the_repair(self):
+        """The operator is told what to do, not merely that it stopped."""
+        text = _sync_cursor.unusable_cursor_refusal("dedup-memories", "why")
+        assert "cannot be read" in text
+        assert "sync-to-postgres.py" in text
+        assert "Nothing was written." in text

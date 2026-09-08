@@ -39,8 +39,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import style_support  # noqa: E402  (after the sys.path insertion above)
 
-PHASE1 = Path("data/style-corpus/phase1-results-clean.json")
-OUT = Path("data/style-corpus/phase3-promotion-clean.json")
+# Paths are resolved against the repository root derived from ``__file__``,
+# not against the current working directory. The documented invocation gives
+# this script an absolute path and no ``cd``, so relative defaults meant the
+# run failed (or, worse, wrote into whatever tree the shell happened to be
+# sitting in). Both are overridable on the command line.
+PA_ROOT = Path(__file__).resolve().parents[2]
+PHASE1 = PA_ROOT / "data" / "style-corpus" / "phase1-results-clean.json"
+OUT = PA_ROOT / "data" / "style-corpus" / "phase3-promotion-clean.json"
 
 # Promotion thresholds (plan §4.2).
 CV_THRESHOLD = 1.5
@@ -269,20 +275,25 @@ def pp_count(per_paper: list[dict], path: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Apply the promotion rules to every metric and write the verdict file.
+    """Apply the promotion rules to the Phase 1 output and write the verdicts.
 
     Returns 0 on success and 2 when the phase 1 input is missing.
     """
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--dry-run", action="store_true",
-                    help="compute and print the verdicts, but write no file")
-    args = ap.parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument("--phase1", type=Path, default=PHASE1,
+                        help=f"Phase 1 results JSON (default: {PHASE1})")
+    parser.add_argument("--out", type=Path, default=OUT,
+                        help=f"where to write the promotions (default: {OUT})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="compute and print the verdicts, but write no file")
+    args = parser.parse_args(argv)
+    phase1_path, out_path = args.phase1, args.out
 
-    if not PHASE1.exists():
-        print(f"Phase 1 input not found: {PHASE1}", file=sys.stderr)
+    if not phase1_path.exists():
+        print(f"Phase 1 input not found: {phase1_path}", file=sys.stderr)
         return 2
 
-    data = json.loads(PHASE1.read_text(encoding="utf-8"))
+    data = json.loads(phase1_path.read_text(encoding="utf-8"))
     per_paper = data["per_paper"]
     agg_reg = data["aggregate"]["regression"]
 
@@ -402,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
     sections_not_covered = [s for s in all_sections if s not in sections_covered]
 
     out = {
-        "phase1_input": str(PHASE1),
+        "phase1_input": str(phase1_path),
         "thresholds": {
             "cv_threshold": CV_THRESHOLD,
             "n_occ_floor": N_OCC_FLOOR,
@@ -425,12 +436,14 @@ def main(argv: list[str] | None = None) -> int:
             "n_uncovered": len(sections_not_covered),
         },
     }
-    # Which code and which input produced these verdicts.
+    # Which code and which input produced these verdicts. The atomic writer
+    # creates the parent directory itself, and only on a real write.
     out["provenance"] = style_support.provenance_block(
-        Path(__file__).name, [PHASE1])
-    wrote = style_support.atomic_write_json(OUT, out, dry_run=args.dry_run)
-    print(f"Wrote {OUT}" if wrote
-          else f"--dry-run: nothing written to {OUT}")
+        Path(__file__).name, [phase1_path])
+    wrote = style_support.atomic_write_json(out_path, out,
+                                            dry_run=args.dry_run)
+    print(f"Wrote {out_path}" if wrote
+          else f"--dry-run: nothing written to {out_path}")
     print(f"\nMetrics promoted: {len(promotions)}")
     print(f"Sections covered:   {sections_covered}")
     print(f"\n{'§':5} {'metric':32} {'n_pres':>6} {'n_occ':>6} {'mean':>8} {'CV':>7}  promotion")

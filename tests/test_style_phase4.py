@@ -93,10 +93,19 @@ def corpus(tmp_path, monkeypatch):
 
 @pytest.fixture
 def run_dir(tmp_path, monkeypatch):
-    """A working directory for ``main``, whose relative output path lands here."""
+    """A working directory for ``main``, with the output path pointed into it.
+
+    The output default is now absolute (an audit round moved both production
+    paths off the working directory), so pointing ``main`` at a throwaway file
+    means monkeypatching the module's ``OUT`` constant, exactly as ``corpus``
+    does for ``CORPUS``. Relying on ``chdir`` alone would write into the real
+    checkout's ``data/`` directory — which is precisely what it did, once,
+    before this fixture was corrected.
+    """
     root = tmp_path / "run"
     root.mkdir()
     monkeypatch.chdir(root)
+    monkeypatch.setattr(phase4, "OUT", root / OUT_RELATIVE)
     return root
 
 

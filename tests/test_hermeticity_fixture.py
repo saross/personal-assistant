@@ -16,6 +16,8 @@ Nothing here touches the operator's real ``~/.cache``: the child run's
 from __future__ import annotations
 
 import os
+import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -616,3 +618,431 @@ def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
     before = conftest._canonical_store_snapshot()
     (logs / "tag-gardening.log").write_text("stray entry\n", encoding="utf-8")
     assert conftest._canonical_store_snapshot() != before
+
+
+# ===========================================================================
+# The store guard's own failure path (audit 2026-09-08, round 4a-2, M5)
+#
+# The snapshot function was covered; the ASSERTION was not. A guard whose
+# failure path never executes is a guard nobody has checked: neutering
+# `assert not touched`, emptying _CANONICAL_FILES, or dropping mtime from the
+# snapshot tuple all left the suite green. These run the guard's own logic
+# against a throwaway tree, in-process.
+# ===========================================================================
+
+
+def _throwaway_store(tmp_path, monkeypatch):
+    """A tree shaped like the repo: data/memories + logs, reached by symlink."""
+    real_dir = tmp_path / "data" / "memories"
+    real_dir.mkdir(parents=True)
+    logs_dir = tmp_path / "data" / "logs"
+    logs_dir.mkdir(parents=True)
+    corpus = real_dir / "memories.jsonl"
+    vocabulary = real_dir / "tag-vocabulary.txt"
+    corpus.write_text('{"id": "2031-01-01-aaaabbbbcccc"}\n', encoding="utf-8")
+    vocabulary.write_text("kiln\nrecording\n", encoding="utf-8")
+    (tmp_path / "memories").symlink_to(real_dir)
+    (tmp_path / "logs").symlink_to(logs_dir)
+
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (
+        tmp_path / "memories" / "memories.jsonl",
+        tmp_path / "memories" / "tag-vocabulary.txt",
+    ))
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", (tmp_path / "logs",))
+    return corpus, vocabulary, logs_dir
+
+
+def test_the_guard_raises_on_a_rewritten_canonical(tmp_path, monkeypatch):
+    """The assertion itself must fire, not merely the snapshot differ.
+
+    The mutation this kills: neutering ``assert not touched`` in
+    ``assert_canonical_store_untouched`` (to ``assert True``, or deleting
+    it), which would let every stray write through while the run stayed
+    green.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    conftest.assert_canonical_store_untouched(before, before)  # a no-op run
+
+    corpus.write_text('{"id": "rewritten-by-a-careless-test"}\n',
+                      encoding="utf-8")
+    after = conftest._canonical_store_snapshot()
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(before, after)
+    assert str(corpus.resolve()) in conftest.canonical_store_changes(
+        before, after)
+
+
+def test_the_guard_raises_on_a_created_or_deleted_canonical(tmp_path,
+                                                            monkeypatch):
+    """Creation and deletion are changes too, because absence is recorded."""
+    corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+    vocabulary.unlink()
+
+    before = conftest._canonical_store_snapshot()
+    vocabulary.write_text("kiln\n", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+    before = conftest._canonical_store_snapshot()
+    corpus.unlink()
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_the_store_guard_catches_a_same_size_rewrite(tmp_path, monkeypatch):
+    """A rewrite that keeps the byte count must still be caught.
+
+    The mutation this kills: dropping ``st_mtime_ns`` from the snapshot
+    tuple. Size alone cannot see a record swapped for another of the same
+    length — and a corrupting write is not obliged to change the length.
+    """
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+    original = corpus.read_text(encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    replacement = '{"id": "2031-01-01-ZZZZYYYYXXXX"}\n'
+    assert len(replacement) == len(original), "the fixture must be same-size"
+    corpus.write_text(replacement, encoding="utf-8")
+    # Pin an explicitly different mtime so the test cannot pass by accident
+    # of clock resolution, nor fail by two writes landing in one tick.
+    stat = corpus.stat()
+    os.utime(corpus, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_the_watched_paths_name_the_canonical_files(tmp_path, monkeypatch):
+    """_CANONICAL_FILES must actually name the store, and be non-empty.
+
+    The mutation this kills: emptying ``_CANONICAL_FILES`` (or dropping
+    ``_CANONICAL_DIRS``), which leaves the guard watching nothing and
+    passing on every run.
+    """
+    names = {path.name for path in conftest._CANONICAL_FILES}
+    assert names == {"memories.jsonl", "tag-vocabulary.txt"}
+    assert all(
+        path.parent.name == "memories" for path in conftest._CANONICAL_FILES)
+    # Widened by the round 4a-2 addendum: instruction sources, task state,
+    # and executable code are all clobberable and were all unwatched.
+    assert {path.name for path in conftest._CANONICAL_DIRS} == {
+        "logs", "tasks", "global-claude-md", "global-agent-guidance",
+        "wiki", "commands", "hooks", "scripts",
+    }
+
+    # And the snapshot really visits each of them.
+    _corpus, _vocabulary, logs_dir = _throwaway_store(tmp_path, monkeypatch)
+    (logs_dir / "tag-gardening.log").write_text("entry\n", encoding="utf-8")
+    snapshot = conftest._canonical_store_snapshot()
+    assert str((tmp_path / "data" / "memories" / "memories.jsonl")) in snapshot
+    assert str(
+        (tmp_path / "data" / "memories" / "tag-vocabulary.txt")) in snapshot
+    assert str((logs_dir / "tag-gardening.log")) in snapshot
+
+
+def test_the_session_fixture_calls_the_store_assertion():
+    """The fixture must still USE the guard, not merely have one available.
+
+    Structural, like the live-resource scan above: extracting the assertion
+    into a function makes its behaviour testable, but a mutation could then
+    simply stop calling it from ``no_real_cache_writes``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fixture = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "no_real_cache_writes"
+    )
+    called = {
+        ast.unparse(node.func) for node in ast.walk(fixture)
+        if isinstance(node, ast.Call)
+    }
+    assert "assert_canonical_store_untouched" in called, (
+        "the session fixture no longer checks the canonical store")
+    assert "_canonical_store_snapshot" in called
+
+
+# ===========================================================================
+# The two holes under the runtime PG net (audit round 4a-2, finding M8)
+#
+# Patching psycopg2.connect does not stop a module that bound the real
+# function at import time with `from psycopg2 import connect`, and it does
+# nothing at all for a script that shells out to psql. conftest closes both
+# through the environment: PGHOST at an empty socket directory, and a stub
+# psql first on PATH.
+# ===========================================================================
+
+
+#: Bound at MODULE import — that is, during collection, before any fixture
+#: has run. This is exactly the shape of the hole: a production module doing
+#: ``from psycopg2 import connect`` at import time holds the real driver
+#: function, and patching the module attribute later cannot reach it.
+from psycopg2 import OperationalError as _PG_OPERATIONAL_ERROR  # noqa: E402
+from psycopg2 import connect as _IMPORT_BOUND_CONNECT  # noqa: E402
+
+
+def test_an_import_bound_connector_cannot_reach_a_server():
+    """`from psycopg2 import connect` must still fail to connect.
+
+    The mutation this kills: dropping the PGHOST/PGPORT repoint from
+    conftest. The fixture's attribute patch cannot help here -- this is the
+    real driver function, bound before any fixture ran -- so the only thing
+    standing between it and the operator's database is libpq's environment.
+    """
+    with pytest.raises(_PG_OPERATIONAL_ERROR) as excinfo:
+        _IMPORT_BOUND_CONNECT(dbname="claude_memories")
+
+    # libpq's message names the socket path it tried; assert it is the
+    # suite's dead end, not a real server refusing us.
+    assert conftest._NO_PG_SOCKET_DIR.name in str(excinfo.value), str(
+        excinfo.value)
+
+
+def test_the_pg_environment_points_nowhere():
+    """PGHOST names an empty directory, and nothing overrides it."""
+    assert os.environ["PGHOST"] == str(conftest._NO_PG_SOCKET_DIR)
+    assert conftest._NO_PG_SOCKET_DIR.is_dir()
+    assert not any(conftest._NO_PG_SOCKET_DIR.iterdir()), (
+        "the dead-end socket directory must stay empty")
+    assert "PGHOSTADDR" not in os.environ, (
+        "PGHOSTADDR would take precedence over PGHOST")
+    assert os.environ["PGPORT"] == "1"
+    assert str(conftest._SUITE_HOME.name) in os.environ["PGHOST"], (
+        "the dead end must live inside the suite's own home")
+
+
+def test_a_script_shelling_out_to_psql_is_refused():
+    """A stub psql is first on PATH and exits non-zero.
+
+    The mutation this kills: dropping the PATH stub from conftest.
+    monthly-archive.py and check-memory-drift.py reach PostgreSQL by
+    subprocess, so psycopg2 patching never sees them.
+    """
+    resolved = shutil.which("psql")
+    assert resolved is not None
+    assert Path(resolved).parent == Path(conftest._STUB_BIN), (
+        f"the real psql is first on PATH: {resolved}")
+
+    result = subprocess.run(
+        ["psql", "-t", "-A", "-c", "SELECT count(*) FROM memories"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert conftest.PSQL_STUB_MESSAGE in result.stderr
+    assert result.stdout == ""
+
+
+def test_the_stub_is_inherited_by_a_child_process():
+    """A grandchild sees the stub too, so a script's own subprocess is covered."""
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import subprocess, sys;"
+         "r = subprocess.run(['psql', '-c', 'select 1'],"
+         " capture_output=True, text=True);"
+         "sys.stdout.write(str(r.returncode)); sys.stderr.write(r.stderr)"],
+        capture_output=True, text=True,
+    )
+    assert result.stdout == "1"
+    assert conftest.PSQL_STUB_MESSAGE in result.stderr
+
+
+# ===========================================================================
+# The network guard (audit round 4a-2 addendum)
+#
+# Nothing watched sockets: a probe test stood up a local TCP server, connected
+# to it, and passed with no complaint — which means an escaped httpx,
+# pyzotero, urllib, or Slack call from any test would have reached the real
+# internet. conftest now refuses by default, with a loopback-only opt-in.
+# ===========================================================================
+
+
+def test_an_unmarked_test_cannot_reach_a_listening_loopback_server():
+    """Loopback ALONE does not open the door, even to a live listener.
+
+    A server really is listening here, so the refusal cannot be an accident
+    of nothing being there. This is the policy under test: allowing loopback
+    unconditionally was rejected because this machine runs the operator's
+    PostgreSQL and Ollama on 127.0.0.1, and a stray connection to either is
+    exactly what the guard is for.
+
+    The mutations this kills: dropping the ``no_network`` fixture, and
+    relaxing the opt-in to "any loopback address" by removing the
+    ``_ACTIVE_TEST["local_socket"]`` half of the condition.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))   # bind and listen are not guarded
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        with pytest.raises(AssertionError, match="refused by the test suite"):
+            socket.create_connection(("127.0.0.1", port), timeout=1)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            with pytest.raises(AssertionError, match="no network"):
+                client.connect(("127.0.0.1", port))
+        finally:
+            client.close()
+    finally:
+        server.close()
+
+
+def test_a_routable_connection_is_refused():
+    """A real host is refused before any DNS or TCP work happens."""
+    with pytest.raises(AssertionError, match="no network"):
+        socket.create_connection(("api.zotero.org", 443), timeout=1)
+
+
+def test_the_refusal_names_the_test_and_the_address():
+    """A bare "no network" would not say where to look."""
+    with pytest.raises(AssertionError) as excinfo:
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(
+            ("example.invalid", 80))
+    message = str(excinfo.value)
+    assert "test_the_refusal_names_the_test_and_the_address" in message
+    assert "example.invalid" in message
+    assert conftest.LOCAL_SOCKET_MARKER in message
+
+
+def test_connect_ex_is_guarded_too():
+    """``connect_ex`` needs its own wrapper.
+
+    It returns an errno rather than raising, so an unguarded ``connect_ex``
+    would connect and report success while the guarded ``connect`` beside it
+    refused -- the kind of half-closed door that reads as covered.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        with pytest.raises(AssertionError, match="refused by the test suite"):
+            sock.connect_ex(("127.0.0.1", 9))
+    finally:
+        sock.close()
+
+
+@pytest.mark.local_socket
+def test_a_marked_test_may_reach_a_server_it_owns():
+    """The opt-in works, and only for loopback.
+
+    A test that starts its own server must be able to talk to it; the marker
+    is how it says so. The routable address at the end shows the opt-in does
+    not become a blanket exemption.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        client = socket.create_connection(("127.0.0.1", port), timeout=5)
+        client.close()
+    finally:
+        server.close()
+
+    with pytest.raises(AssertionError, match="no network"):
+        socket.create_connection(("api.zotero.org", 443), timeout=1)
+
+
+def test_the_marker_is_registered():
+    """An unregistered marker is silently a no-op under --strict-markers."""
+    ini = (Path(conftest.__file__).resolve().parent.parent / "pytest.ini")
+    assert conftest.LOCAL_SOCKET_MARKER in ini.read_text(encoding="utf-8")
+
+
+def test_zotero_data_dir_is_not_inherited():
+    """A stray ZOTERO_DATA_DIR would point a test at the real library."""
+    assert "ZOTERO_DATA_DIR" not in os.environ
+
+
+# ===========================================================================
+# The widened store guard (audit round 4a-2 addendum)
+#
+# The snapshot watched only memories.jsonl, tag-vocabulary.txt, and logs/. A
+# probe test clobbered global-claude-md/claude.md — the source the composer
+# reads — plus data/tasks/FOCUS.md and wiki/continuity.md, and stayed green.
+# ===========================================================================
+
+
+def _throwaway_checkout(tmp_path, monkeypatch):
+    """A tree with the instruction, task, and code directories the guard watches."""
+    (tmp_path / "data" / "tasks").mkdir(parents=True)
+    (tmp_path / "tasks").symlink_to(tmp_path / "data" / "tasks")
+    for name in ("global-claude-md", "wiki", "commands", "hooks", "scripts"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "global-claude-md" / "claude.md").write_text(
+        "# composed source\n", encoding="utf-8")
+    (tmp_path / "data" / "tasks" / "FOCUS.md").write_text(
+        "# Current Focus\n", encoding="utf-8")
+    (tmp_path / "wiki" / "continuity.md").write_text(
+        "# Continuity\n", encoding="utf-8")
+    (tmp_path / "scripts" / "example.py").write_text(
+        "print('hello')\n", encoding="utf-8")
+
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", tuple(
+        tmp_path / name for name in (
+            "tasks", "global-claude-md", "wiki", "commands", "hooks", "scripts")
+    ))
+    return tmp_path
+
+
+@pytest.mark.parametrize("relative", [
+    "global-claude-md/claude.md",
+    "data/tasks/FOCUS.md",
+    "wiki/continuity.md",
+    "scripts/example.py",
+])
+def test_the_guard_catches_a_clobbered_checkout_file(tmp_path, monkeypatch,
+                                                     relative):
+    """Each of the probe's targets must now be caught.
+
+    The mutation this kills: narrowing ``_CANONICAL_DIRS`` back to ``logs``
+    alone. global-claude-md/claude.md is the source the composer reads, so a
+    stray write there reaches every future session.
+    """
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    target = root / relative
+
+    before = conftest._canonical_store_snapshot()
+    target.write_text("clobbered by a careless test\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="REAL checkout"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_the_guard_catches_a_file_created_in_a_watched_tree(tmp_path,
+                                                            monkeypatch):
+    """A NEW file in a watched directory is a change too."""
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "commands" / "invented.md").write_text("/invented\n",
+                                                   encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_generated_bytecode_is_not_mistaken_for_a_leak(tmp_path, monkeypatch):
+    """__pycache__ is written by the interpreter, not by a careless test.
+
+    Without the skip the guard would fail every run the moment a test
+    imported a script — a false alarm that would get the guard switched off.
+    """
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+    cache = root / "scripts" / "__pycache__"
+    cache.mkdir()
+
+    before = conftest._canonical_store_snapshot()
+    (cache / "example.cpython-313.pyc").write_bytes(b"\x00\x01")
+
+    conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
