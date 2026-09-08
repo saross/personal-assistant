@@ -1249,6 +1249,72 @@ class TestComposerTargetIdentity:
         assert not link.is_symlink(), "mv followed the link instead"
         assert real.read_text(encoding="utf-8") == "placeholder\n"
 
+    def test_a_relative_symlink_to_the_live_target_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """L1 — `readlink -f` must canonicalise, not just read the link.
+
+        Every earlier test linked with an ABSOLUTE path, where plain
+        `readlink` happens to give the same answer as `readlink -f`, so
+        dropping the flag survived. A relative link separates them: plain
+        `readlink` yields ".claude/CLAUDE.md", which matches nothing.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        claude = compose_sandbox["home"] / ".claude"
+        claude.mkdir()
+        target = claude / "CLAUDE.md"
+        target.write_text("the live instructions\n", encoding="utf-8")
+        link = compose_sandbox["home"] / "relative-link"
+        link.symlink_to(Path(".claude") / "CLAUDE.md")
+
+        result = _run_compose(compose_sandbox, "--target", str(link))
+
+        assert result.returncode == 2, result.stdout
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_a_dangling_symlink_to_the_live_target_is_refused(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """L5 — `-e` is false for a dangling link, so `-L` has to be there.
+
+        A link naming the live CLAUDE.md before that file exists slipped
+        past the guard entirely and would have been replaced by a regular
+        file.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        claude = compose_sandbox["home"] / ".claude"
+        claude.mkdir()
+        link = compose_sandbox["home"] / "dangling-link"
+        link.symlink_to(claude / "CLAUDE.md")
+        assert not link.exists() and link.is_symlink()
+
+        result = _run_compose(compose_sandbox, "--target", str(link))
+
+        assert result.returncode == 2, result.stdout
+        assert link.is_symlink(), "the dangling link was replaced by a file"
+        assert not (claude / "CLAUDE.md").exists()
+
+    def test_the_live_target_itself_is_resolved(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """L1 — LIVE_TARGET must go through resolve_path, not be literal.
+
+        When ~/.claude is itself a symlinked directory, a literal
+        "$HOME/.claude/CLAUDE.md" never equals the resolved target the
+        operator names, and the guard silently stops firing.
+        """
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        real_claude = compose_sandbox["home"] / "real-claude-dir"
+        real_claude.mkdir()
+        (compose_sandbox["home"] / ".claude").symlink_to(real_claude)
+        target = real_claude / "CLAUDE.md"
+        target.write_text("the live instructions\n", encoding="utf-8")
+
+        result = _run_compose(compose_sandbox, "--target", str(target))
+
+        assert result.returncode == 2, result.stdout
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
     def test_an_unusable_live_root_is_refused(
         self, compose_sandbox: dict[str, Path]
     ) -> None:

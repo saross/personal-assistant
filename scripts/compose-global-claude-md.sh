@@ -109,7 +109,11 @@ resolve_path() {
     # operator's symlink and left the live file stale but present, which
     # is its own quiet failure and is exactly the intent the guard exists
     # to catch.)
-    if [[ -e "$path" ]]; then
+    # `-e` alone is FALSE for a dangling symlink (round 4d-4, L5), so a
+    # link naming the live CLAUDE.md before that file exists slipped past
+    # the guard and was replaced by a regular file. `-L` catches it, and
+    # `readlink -f` canonicalises a link whose target does not exist yet.
+    if [[ -e "$path" || -L "$path" ]]; then
         resolved="$(readlink -f -- "$path" 2>/dev/null || true)"
         if [[ -n "$resolved" ]]; then
             printf '%s\n' "$resolved"
