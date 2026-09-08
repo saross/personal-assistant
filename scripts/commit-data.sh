@@ -14,10 +14,14 @@
 #
 # Exit codes:
 #   0  committed and pushed, or there was genuinely nothing to do
-#   1  the lock is held, or the data submodule is not on `main`
-#   2  the data submodule is mid-merge / mid-rebase — nothing was staged
+#   1  the lock is held, or the data submodule is not on `main` (a rebase,
+#      `git am`, or a bisect that detached HEAD lands here too)
+#   2  the data submodule has an unfinished merge, cherry-pick, revert, or
+#      bisect, or unmerged index entries left by a conflicted stash pop or
+#      `apply -3` — nothing was staged
 #   3  this run had nothing of its own, but paths are staged and
-#      uncommitted (another session's, or a run that died mid-commit)
+#      uncommitted (another session's, or a run that died mid-commit), or
+#      the parent's data pointer is stale and data's HEAD is not on origin
 
 set -euo pipefail
 
@@ -62,12 +66,18 @@ fi
 # sits uncommitted: a silent no-op that latches and survives every later run.
 # Refuse before touching the index.
 GIT_DIR_PATH="$(git rev-parse --git-dir)"
+# Second re-audit: a conflicted `git stash pop` or `git apply -3` leaves
+# UNMERGED INDEX ENTRIES with no marker file at all, and the marker-file
+# test alone let the run stage the conflict markers, commit them, push, and
+# exit 0. `ls-files --unmerged` is the check that sees the index itself.
 if git rev-parse -q --verify MERGE_HEAD >/dev/null \
     || [ -d "$GIT_DIR_PATH/rebase-merge" ] \
     || [ -d "$GIT_DIR_PATH/rebase-apply" ] \
     || [ -e "$GIT_DIR_PATH/CHERRY_PICK_HEAD" ] \
-    || [ -e "$GIT_DIR_PATH/REVERT_HEAD" ]; then
-    echo "ERROR: the data submodule has an unfinished merge/rebase." >&2
+    || [ -e "$GIT_DIR_PATH/REVERT_HEAD" ] \
+    || [ -e "$GIT_DIR_PATH/BISECT_LOG" ] \
+    || [ -n "$(git ls-files --unmerged)" ]; then
+    echo "ERROR: the data submodule has an unfinished merge/rebase or unmerged paths." >&2
     echo "  NOTHING has been staged. Finish or abort it inside data/ first:" >&2
     echo "    git -C data status" >&2
     echo "    git -C data merge --continue   # or --abort" >&2
@@ -115,27 +125,30 @@ for _path in ${PRESTAGED[@]+"${PRESTAGED[@]}"}; do
     WITHHELD+=("$_path")
 done
 
+DATA_COMMITTED=0
 if [[ ${#DATA_PATHS[@]} -eq 0 ]]; then
     if [[ ${#WITHHELD[@]} -gt 0 ]]; then
         echo "ERROR: nothing for this run to stage, but these paths are" >&2
         echo "  staged and uncommitted in the data submodule:" >&2
-        printf '    %s\n' "${WITHHELD[@]}" >&2
+        printf '    %q\n' "${WITHHELD[@]}" >&2
         echo "  They are another session's work, or a previous run that died" >&2
         echo "  mid-commit. Exiting non-zero rather than reporting success on" >&2
-        echo "  data that is neither committed nor pushed. Commit them where" >&2
-        echo "  they belong, or run 'git -C data reset' and re-run." >&2
+        echo "  data that is neither committed nor pushed. If a live session" >&2
+        echo "  staged them, let it commit them. Only if you are sure a path is" >&2
+        echo "  orphaned, unstage exactly that path and re-run:" >&2
+        echo "    git -C data reset -- <path>    # never a bare reset: it would" >&2
+        echo "                                   # hand another session's work" >&2
+        echo "                                   # to this script's next run" >&2
         exit 3
     fi
     echo "No data changes to commit."
-    exit 0
-fi
-
-echo "=== Committing these paths ==="
-printf '  %s\n' "${DATA_PATHS[@]}"
-if [[ ${#WITHHELD[@]} -gt 0 ]]; then
-    echo "=== Withheld: staged by another session, NOT committed here ==="
-    printf '  %s\n' "${WITHHELD[@]}"
-fi
+else
+    echo "=== Committing these paths ==="
+    printf '  %q\n' "${DATA_PATHS[@]}"
+    if [[ ${#WITHHELD[@]} -gt 0 ]]; then
+        echo "=== Withheld: staged by another session, NOT committed here ==="
+        printf '  %q\n' "${WITHHELD[@]}"
+    fi
 
 # `git --literal-pathspecs` is load-bearing, not decoration. A pathspec is a
 # GLOB by default, so a real filename such as `weird[1].md` matched — and
@@ -143,34 +156,54 @@ fi
 # re-audit). `--pathspec-file-nul` does NOT help: it makes the FILE FORMAT
 # literal (no C-quoting), not the pathspec matching. Feeding the list on stdin
 # additionally removes any argv-length ceiling and all quoting questions.
-printf '%s\0' "${DATA_PATHS[@]}" \
-    | git --literal-pathspecs add --pathspec-from-file=- --pathspec-file-nul
+    printf '%s\0' "${DATA_PATHS[@]}" \
+        | git --literal-pathspecs add --pathspec-from-file=- --pathspec-file-nul
 
-if git --literal-pathspecs diff --cached --quiet -- "${DATA_PATHS[@]}"; then
-    echo "No data changes to commit."
-    exit 0
-fi
-
-printf '%s\0' "${DATA_PATHS[@]}" \
-    | git --literal-pathspecs commit --pathspec-from-file=- --pathspec-file-nul \
-        -m "$MSG
+    if git --literal-pathspecs diff --cached --quiet -- "${DATA_PATHS[@]}"; then
+        echo "No data changes to commit."
+    else
+        printf '%s\0' "${DATA_PATHS[@]}" \
+            | git --literal-pathspecs commit --pathspec-from-file=- --pathspec-file-nul \
+                -m "$MSG
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+        DATA_COMMITTED=1
 
-# Post-condition: name anything this run left staged, so an operator never has
-# to infer it from a "Done" line.
-mapfile -d '' -t STILL_STAGED < <(git diff --cached --name-only -z)
-if [[ ${#STILL_STAGED[@]} -gt 0 ]]; then
-    echo "NOTE: still staged in the data submodule, NOT committed by this run:"
-    printf '  %s\n' "${STILL_STAGED[@]}"
-    echo "  (left for the session that staged them)"
+        # Post-condition: name anything this run left staged, so an operator
+        # never has to infer it from a "Done" line.
+        mapfile -d '' -t STILL_STAGED < <(git diff --cached --name-only -z)
+        if [[ ${#STILL_STAGED[@]} -gt 0 ]]; then
+            echo "NOTE: still staged in the data submodule, NOT committed by this run:"
+            printf '  %q\n' "${STILL_STAGED[@]}"
+            echo "  (left for the session that staged them)"
+        fi
+        # Use HEAD:main rather than a bare `main` ref so the push fails loudly
+        # if the local branch ever diverges from the expected name (defence in
+        # depth — the explicit branch check above should already have caught it).
+        git push origin HEAD:main
+    fi
 fi
-# Use HEAD:main rather than a bare `main` ref so the push fails loudly
-# if the local branch ever diverges from the expected name (defence in
-# depth — the explicit branch check above should already have caught it).
-git push origin HEAD:main
 
 cd "$PA_DIR"
+
+# Second re-audit, medium: a previous run may have committed and pushed the
+# data submodule and died before the pointer bump below, leaving the parent
+# with a stale pointer and every later run saying "nothing to do". If this
+# run committed nothing, bump anyway when the pointer is stale and data's
+# HEAD is already on origin; refuse (never silently succeed) when it is not.
+if [[ $DATA_COMMITTED -eq 0 ]]; then
+    # A parent with no commit yet has no pointer to be stale.
+    if ! git rev-parse -q --verify HEAD >/dev/null || git diff HEAD --quiet -- data; then
+        exit 0                      # pointer current: genuinely nothing to do
+    fi
+    if ! git -C data merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+        echo "ERROR: the parent's data pointer is stale and data's HEAD is not on" >&2
+        echo "  origin/main (a previous run died before its push?). Push it first:" >&2
+        echo "    git -C data push origin HEAD:main" >&2
+        exit 3
+    fi
+    echo "Parent pointer is stale but data's HEAD is already on origin — bumping it."
+fi
 
 # Mirror the branch check on the parent repo: pushing a submodule pointer
 # bump from a non-main branch is the same silent-data-loss shape.

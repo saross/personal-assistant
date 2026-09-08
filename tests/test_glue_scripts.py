@@ -934,3 +934,98 @@ class TestCommitDataSafetyContracts:
         # intact and still the other session's to commit.
         status = _git("status", "--short", cwd=data_dir).stdout
         assert "R  prose.md -> prose-renamed.md" in status
+
+    # ---- second re-audit of PR #114 (2026-09-08) ----
+
+    def test_refuses_on_unmerged_index_entries_without_a_marker_file(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """CRITICAL (second re-audit). A conflicted ``git stash pop`` leaves
+        unmerged index entries but no MERGE_HEAD; the marker-file guard let the
+        run stage the conflict markers, commit them, push, and exit 0."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "memories.jsonl").write_text("seed\n")
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "base", cwd=data_dir)
+        (data_dir / "memories.jsonl").write_text("seed\nstashed\n")
+        _git("stash", "push", "--quiet", cwd=data_dir)
+        (data_dir / "memories.jsonl").write_text("seed\nother\n")
+        _git("commit", "--quiet", "-am", "other", cwd=data_dir)
+        pop = subprocess.run(["git", "stash", "pop"], cwd=data_dir,
+                             capture_output=True, text=True)
+        assert pop.returncode != 0 and not (data_dir / ".git" / "MERGE_HEAD").exists()
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "unmerged" in result.stderr
+        assert "<<<<<<<" in (data_dir / "memories.jsonl").read_text()   # untouched
+        assert self._commit_count(data_dir) == 3                        # seed, base, other
+        remote = pa_dir.parent / "data.git"
+        assert _git("rev-list", "--count", "main", cwd=remote).stdout.strip() == "1"
+
+    def test_latched_state_remedy_never_advises_a_bare_reset(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """MEDIUM (second re-audit). The printed remedy said ``git -C data reset``,
+        which unstages another session's work so the re-run sweeps it — the
+        very sweep the pathspec work exists to prevent."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "their-draft.md").write_text("another session's\n")
+        _git("add", "their-draft.md", cwd=data_dir)
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 3
+        assert "reset -- <path>" in result.stderr
+        assert "'git -C data reset'" not in result.stderr
+        assert "never a bare reset" in result.stderr
+
+    def test_stale_parent_pointer_is_bumped_when_data_is_already_pushed(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """MEDIUM (second re-audit). A run that committed and pushed the data
+        submodule and died before the pointer bump left the parent stale, and
+        every later run said "No data changes to commit." and exited 0."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        _git("-c", "advice.addEmbeddedRepo=false", "add", "data", cwd=pa_dir)
+        _git("commit", "--quiet", "-m", "record pointer", cwd=pa_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "dead run's data commit", cwd=data_dir)
+        _git("push", "--quiet", "origin", "HEAD:main", cwd=data_dir)
+        assert _git("status", "--porcelain", "--", "data", cwd=pa_dir).stdout.strip()
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "stale" in result.stdout
+        assert _git("log", "-1", "--format=%s", cwd=pa_dir).stdout.strip() == (
+            "chore: update data submodule reference")
+        assert _git("status", "--porcelain", "--", "data", cwd=pa_dir).stdout.strip() == ""
+
+    def test_stale_pointer_with_unpushed_data_refuses(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """The other half: a stale pointer whose data commit never reached
+        origin must not be bumped (origin would name an unfetchable commit)."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        _git("-c", "advice.addEmbeddedRepo=false", "add", "data", cwd=pa_dir)
+        _git("commit", "--quiet", "-m", "record pointer", cwd=pa_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "unpushed", cwd=data_dir)
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 3
+        assert "not on" in result.stderr and "push origin HEAD:main" in result.stderr
+        assert "record pointer" == _git("log", "-1", "--format=%s", cwd=pa_dir).stdout.strip()
