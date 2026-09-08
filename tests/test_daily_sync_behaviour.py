@@ -299,6 +299,31 @@ class TestCrossMachineRebase:
         assert "remote-tag" in published
         assert "<<<<<<<" not in published
 
+    def test_an_unresolvable_rebase_leaves_a_gate(self, world: SyncWorld) -> None:
+        """Audit M3 (third re-audit): every non-zero exit must leave a gate
+        line naming the reason.
+
+        The rebase and push paths all wedge the sync until a human
+        intervenes — the same divergence recurs on every run — and all of
+        them exited 2 having written nothing but a log line and a stderr
+        message the SessionStart hook chain never surfaces.
+        """
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- local commitment\n", encoding="utf-8"
+        )
+        machine.commit_data("local inbox edit", "tasks/inbox.md")
+        world.publish_data_change("tasks/inbox.md", "# Inbox\n\n- remote item\n")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        gate = world.gate("daily-sync-gate")
+        assert gate.splitlines()[0] == "1", gate
+        assert "rebase" in gate or "unsupported" in gate, gate
+        assert "daily-sync FAILED" in gate or "STOPPED" in gate, gate
+
     def test_rebase_conflict_on_prose_aborts(self, world: SyncWorld) -> None:
         """Kills DS-M6: routing an unknown path to the submodule branch
         would resolve a conflicted prose file trust-ours instead."""
@@ -855,10 +880,16 @@ class TestParentStashWedge:
         assert "stash pop raised conflicts" in combined
 
         gate = world.gate("daily-sync-gate")
+        details = gate.splitlines()[1:]
         assert gate.splitlines()[0] == "1", gate
-        assert "parent-repo stash pop conflicted" in gate
-        # …and the stash holding the work is named too (second re-audit C1).
-        assert "UNRECOVERED" in gate
+        assert any("parent-repo stash pop conflicted" in d for d in details), gate
+        # …and the stash holding the work is named too (second re-audit C1),
+        # AFTER the diagnosis: popping into a half-merged tree is the wrong
+        # first move, so the reader must meet the diagnosis first (L5).
+        assert any("UNRECOVERED" in d for d in details), gate
+        diagnosis = next(i for i, d in enumerate(details) if "conflicted" in d)
+        recovery = next(i for i, d in enumerate(details) if "UNRECOVERED" in d)
+        assert diagnosis < recovery, details
         # The stash git preserved on a conflicted pop is still there.
         assert git("stash", "list", cwd=machine.pa).stdout.strip()
 

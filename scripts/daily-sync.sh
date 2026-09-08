@@ -126,7 +126,20 @@ log() {
 }
 
 fail() {
+    # audit M3 (third re-audit): EVERY non-zero exit must leave a gate
+    # line naming the reason. The rebase and push paths — a rebase on
+    # unsupported paths, a push rejected three times, a pull that is not
+    # fast-forwardable — all wedge the sync until a human intervenes, and
+    # all of them exited 2 having written nothing but a log line and a
+    # stderr message the SessionStart hook chain never surfaces.
+    #
+    # Blocks that raised a more specific gate keep it: this only fills the
+    # gap. write_sync_gate is defined below and always by the time any
+    # fail can run.
     log "ERROR: $*"
+    if [[ "${sync_gate_problems:-0}" -eq 0 ]]; then
+        write_sync_gate 1 "daily-sync FAILED and will keep failing until this is resolved: $*"
+    fi
     exit "${2:-2}"
 }
 
@@ -613,16 +626,20 @@ stranded_stashes() {
     done
 }
 
-prepend_sync_gate_detail() {
-    # Put <detail> at the top of the gate's detail lines, keeping whatever a
-    # failing block already recorded. The trigger surfaces the first detail
-    # line, and unrecovered work outranks every other diagnosis.
+append_sync_gate_detail() {
+    # Add <detail> after whatever a failing block already recorded.
+    #
+    # audit L5: order matters to the reader. The diagnosis — what stopped
+    # the run, and whether the tree is half-merged — has to come before
+    # "recover with git stash pop", because popping into a half-merged
+    # tree is the wrong first move. The trigger renders every detail line
+    # in order.
     local detail="$1" existing=() line
     if [[ -f "$SYNC_GATE" ]]; then
         while IFS= read -r line; do existing+=("$line"); done \
             < <(tail -n +2 "$SYNC_GATE" 2>/dev/null || true)
     fi
-    write_sync_gate 1 "$detail" ${existing[@]+"${existing[@]}"}
+    write_sync_gate 1 ${existing[@]+"${existing[@]}"} "$detail"
 }
 
 # If any step between a `git stash push` and its explicit pop below aborts
@@ -669,7 +686,7 @@ restore_stash_on_exit() {
     if [[ ${#_stranded[@]} -gt 0 ]]; then
         log "STRANDED STASH: ${#_stranded[@]} stash(es) this run pushed are still on a stack:"
         for _i in "${_stranded[@]}"; do log "  $_i"; done
-        prepend_sync_gate_detail \
+        append_sync_gate_detail \
             "daily-sync left ${#_stranded[@]} of its own stash(es) UNRECOVERED — they hold work that is in no commit: ${_stranded[*]}. Recover with: git -C <repo> stash pop <ref> (inspect first: git -C <repo> stash show -p <ref>)"
     fi
 }
