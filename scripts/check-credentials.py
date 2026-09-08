@@ -109,15 +109,15 @@ def note(msg: str) -> None:
 def parse_env(path: pathlib.Path) -> dict[str, str]:
     """Parse KEY=VALUE lines, anchoring on '=' so malformed names are visible."""
     out: dict[str, str] = {}
-    # ``newline=""`` so the real line terminators survive the read: text mode
-    # translates ``\r\n`` to ``\n``, and ``splitlines()`` would then strip what
-    # is left, which is why the CRLF divergence went unreported (audit round
-    # two M4). Splitting on ``\r\n|\r|\n`` rather than ``\n`` alone keeps a
-    # legacy CR-only file parsing line by line — splitting on ``\n`` collapsed
-    # it into one "line" and reported the wrong names (audit round two L1) —
-    # while ``term`` still says which ending each line actually had.
-    with path.open(encoding="utf-8", newline="") as handle:
-        text = handle.read()
+    # Read as BYTES and decode by hand: text mode translates ``\r\n`` to
+    # ``\n``, and ``splitlines()`` would then strip what is left, which is why
+    # the CRLF divergence went unreported (audit round two M4). Splitting on
+    # ``\r\n|\r|\n`` rather than ``\n`` alone keeps a legacy CR-only file
+    # parsing line by line — splitting on ``\n`` collapsed it into one "line"
+    # and reported the wrong names (audit round two L1) — while ``term`` still
+    # says which ending each line actually had.
+    data = path.read_bytes()
+    text = data.decode("utf-8")
     for lineno, match in enumerate(_LINE_SPLIT.finditer(text), start=1):
         raw, term = match.group(1), match.group(2)
         line = raw.strip()
@@ -198,8 +198,14 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
         # ``A=$(id)`` both EXECUTE id and assign its output, and so does
         # ``A="`id`"``; only single quotes make them literal. A credential
         # file is not a place for anything that executes.
+        # ``literal`` means the WHOLE value is inside single quotes, which is
+        # the only form bash leaves alone. Guarding on the opening quote alone
+        # was a false negative (audit round three M1): ``A='abc'$(id)`` opens
+        # with a single quote and still EXECUTES, because the quoted run ends
+        # before the substitution begins. Verified against bash 5.2.37.
+        literal = quoted and quote_char == "'"
         substitution = "`" in value or "$(" in value
-        if quote_char != "'" and substitution:
+        if not literal and substitution:
             note(
                 f"line {lineno}: {name}'s value contains a command substitution "
                 "(backtick or '$(') outside single quotes — bash EXECUTES it when "
@@ -221,12 +227,13 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
                     f"rest as a command, often leaving {name} unset entirely. Quote "
                     "the whole value."
                 )
-        if quote_char != "'" and "$" in value and not substitution:
+        if not literal and "$" in value and not substitution:
             # bash expands ``$`` unless the value is single-quoted; this parser
             # and the Codex launcher keep it literal. Verified against bash 5.2:
             # ``A=$B`` and ``A="$B"`` both assign the EMPTY string for an unset
             # B, so the process gets no credential at all while the file looks
-            # populated. ``A='$B'`` agrees on both sides and is not flagged.
+            # populated. ``A='$B'`` agrees on both sides and is not flagged,
+            # but ``A='abc'$B`` expands to ``abc`` in bash and is (M1).
             note(
                 f"line {lineno}: {name}'s value contains '$' outside single quotes "
                 "— bash expands it (to nothing, for an unset name) while the Codex "

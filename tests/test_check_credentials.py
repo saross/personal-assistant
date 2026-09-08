@@ -1470,3 +1470,53 @@ class TestParseEnvFinalLine:
         cc.parse_env(path)
         assert len(cc.findings) == 1
         assert cc.findings[0].startswith("line 2:")
+
+
+class TestParseEnvQuotingBoundaries:
+    """Audit round three M1: the guard must be the CLOSING quote.
+
+    A value can OPEN with a single quote and still be dangerous, because
+    the quoted run ends before the rest of the value begins. Guarding on
+    ``quote_char != "'"`` therefore let the worst case through silently.
+    """
+
+    def test_a_single_quoted_prefix_does_not_excuse_a_substitution(
+        self, tmp_path
+    ):
+        """Kills guarding command substitution on the opening quote.
+
+        Verified against bash 5.2.37: ``A='abc'$(id)`` EXECUTES id and
+        assigns "abc" plus its output. The old guard saw a leading single
+        quote and said nothing at all — a false negative on the one class
+        that runs code.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN='abcfake'$(whoami)\n"))
+        assert any("command substitution" in f for f in cc.findings), cc.findings
+
+    def test_a_single_quoted_prefix_does_not_excuse_an_expansion(self, tmp_path):
+        """Kills the same opening-quote guard on the '$' expansion check.
+
+        Verified against bash 5.2.37: ``A='abc'$B`` assigns "abc" for an
+        unset B while this parser keeps ``abc'$B``.
+        """
+        cc.parse_env(_env_file(tmp_path, "TOKEN='abcfake'$OTHER_VAR\n"))
+        assert any("'$' outside single quotes" in f for f in cc.findings)
+
+    def test_a_fully_single_quoted_value_stays_quiet(self, tmp_path):
+        """Kills widening the guard to any value containing a single quote.
+
+        ``A='abc'`` is the form every one of these findings recommends, so
+        it must not itself be a finding.
+        """
+        env = cc.parse_env(_env_file(tmp_path, "TOKEN='abcfake'\n"))
+        assert cc.findings == []
+        assert env["TOKEN"] == "abcfake"
+
+    def test_a_double_quoted_prefix_is_flagged_too(self, tmp_path):
+        """Kills treating a closing double quote as protective.
+
+        Double quotes never stop substitution, closed or not: verified
+        against bash 5.2.37, ``A="abc"$(id)`` executes.
+        """
+        cc.parse_env(_env_file(tmp_path, 'TOKEN="abcfake"$(whoami)\n'))
+        assert any("command substitution" in f for f in cc.findings)
