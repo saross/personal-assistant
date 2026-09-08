@@ -200,17 +200,13 @@ push_with_retry() {
             local -a unknown_conflicts=()
             local _f
             for _f in "${rebase_conflicts[@]}"; do
-                case "$_f" in
-                    memories/memories.jsonl|memories/tag-vocabulary.txt)
-                        jsonl_conflicts+=("$_f")
-                        ;;
-                    data)
-                        submodule_conflicts+=("$_f")
-                        ;;
-                    *)
-                        unknown_conflicts+=("$_f")
-                        ;;
-                esac
+                if is_memory_append_file "$_f"; then
+                    jsonl_conflicts+=("$_f")
+                elif [[ "$_f" == "data" ]]; then
+                    submodule_conflicts+=("$_f")
+                else
+                    unknown_conflicts+=("$_f")
+                fi
             done
             if [[ ${#unknown_conflicts[@]} -gt 0 ]]; then
                 git rebase --abort >>"$LOG_FILE" 2>&1 || true
@@ -286,6 +282,20 @@ log "=== daily-sync start on $HOST (dry-run=$DRY_RUN) ==="
 # ---------------------------------------------------------------------------
 MEMORY_APPEND_FILES=(memories/memories.jsonl memories/tag-vocabulary.txt)
 
+is_memory_append_file() {
+    # is_memory_append_file <path>
+    # True for a path the append-safe resolver may union — i.e. one of
+    # MEMORY_APPEND_FILES. audit L1: three conflict partitions each
+    # repeated that list as a literal `case` pattern, so adding a file to
+    # the array above would have silently left all three routing it to
+    # "unsupported" (or, worse, one of them to the resolver).
+    local candidate="$1" known
+    for known in "${MEMORY_APPEND_FILES[@]}"; do
+        [[ "$candidate" == "$known" ]] && return 0
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # resolve_rebase_conflicts — shared conflict partitioning for rebase paths.
 #
@@ -312,11 +322,13 @@ resolve_rebase_conflicts() {
         return 1
     fi
     for _f in "${conflicts[@]}"; do
-        case "$_f" in
-            memories/memories.jsonl|memories/tag-vocabulary.txt) jsonl+=("$_f") ;;
-            data) submodule+=("$_f") ;;
-            *) unknown+=("$_f") ;;
-        esac
+        if is_memory_append_file "$_f"; then
+            jsonl+=("$_f")
+        elif [[ "$_f" == "data" ]]; then
+            submodule+=("$_f")
+        else
+            unknown+=("$_f")
+        fi
     done
     if [[ ${#unknown[@]} -gt 0 ]]; then
         git rebase --abort >>"$LOG_FILE" 2>&1 || true
@@ -692,14 +704,11 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             unsupported_conflicts=()
             resolvable_conflicts=()
             for f in "${conflicted_files[@]}"; do
-                case "$f" in
-                    memories/memories.jsonl|memories/tag-vocabulary.txt)
-                        resolvable_conflicts+=("$f")
-                        ;;
-                    *)
-                        unsupported_conflicts+=("$f")
-                        ;;
-                esac
+                if is_memory_append_file "$f"; then
+                    resolvable_conflicts+=("$f")
+                else
+                    unsupported_conflicts+=("$f")
+                fi
             done
             if [[ ${#unsupported_conflicts[@]} -gt 0 ]]; then
                 # Leave the tree exactly as git left it: half-merged, with

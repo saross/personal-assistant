@@ -460,6 +460,28 @@ class TestStashPopConflictPartitioning:
         assert gate and gate[0] == "1", gate
         assert "tasks/inbox.md" in gate[1]
 
+    def test_tag_vocabulary_conflict_is_resolved_like_the_corpus(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit L1: every entry of MEMORY_APPEND_FILES must reach the
+        resolver, not just the first. The vocabulary is the second, and
+        nothing exercised it through the stash-pop path."""
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        world.publish_data_change(
+            "memories/tag-vocabulary.txt", "seed-tag\nremote-tag\n"
+        )
+        (machine.data / "memories" / "tag-vocabulary.txt").write_text(
+            "seed-tag\nlocal-tag\n", encoding="utf-8"
+        )
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        published = world.published_data_file("memories/tag-vocabulary.txt")
+        assert "local-tag" in published
+        assert "remote-tag" in published
+        assert "<<<<<<<" not in published
+
     def test_next_run_refuses_to_commit_the_conflicted_corpus(
         self, world: SyncWorld
     ) -> None:
@@ -687,6 +709,17 @@ class TestRebasePointerConflict:
         assert world.published_pointer() == machine.head("data"), (
             "origin kept the stale foreign pointer "
             f"({foreign_sha[:8]}) instead of our freshly pushed submodule SHA"
+        )
+
+    def test_memory_append_list_has_one_source_of_truth(self) -> None:
+        """Audit L1: the three conflict partitions must derive from
+        MEMORY_APPEND_FILES, not each repeat it as a literal. With the
+        list written out three times, adding a file to the array would
+        have silently left every partition routing it to "unsupported"."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "daily-sync.sh").read_text(encoding="utf-8")
+        assert source.count("memories/tag-vocabulary.txt") == 1, (
+            "the append-only file list is written out more than once"
         )
 
     def test_source_never_takes_origin_side_in_a_rebase(self) -> None:
