@@ -338,10 +338,41 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   sync helpers S8, S11, S13–S16, S20 (PR #114, `claude/audit-sync-helpers`);
   sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (PR #116,
   `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16 and the
-  `rebuild.log` half of S22 (PR #117, `claude/audit-postgres`). PR #114's re-audit found a
-  critical in the new `commit-data.sh` staging logic (latches into a silent
-  no-op after a failed run) and glob pathspecs; being fixed on the branch
-  before merge.
+  `rebuild.log` half of S22 (PR #117, `claude/audit-postgres`).
+- Branch re-audits (each a fresh agent; fixes land on the branch before
+  merge). Every branch's first pass found at least one critical in the fix
+  code itself, which is the protocol's point:
+  - PR #114, first pass: the new `commit-data.sh` staging logic latched into
+    a silent no-op after a failed run, and glob pathspecs swept lookalike
+    files. Fixed (ae35435–689c949). Second pass: the in-progress guard
+    missed unmerged index entries with no marker file (a conflicted stash
+    pop pushed conflict markers with exit 0); the exit-3 remedy advised the
+    very sweep the fix prevents; a stale parent pointer was never bumped.
+    Fixed (2e3d616). Third pass running.
+  - PR #115, first pass: **private content in a public branch** (H27, D6);
+    a false comment about cursor advance on harness-only windows; unpinned
+    digest constants; loose banner assertions; three checker divergences
+    from bash (`$VAR`, trailing backslash, CRLF); deletable checker passes;
+    an untested cursor prune; two old tests reading the real scratchpads.
+    Tip purged (41ae79b); the rest being fixed on the branch.
+  - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
+    guard pushes a second stash and only one is popped, so a run that
+    reports success leaves the day's appends in a stash (the very loss
+    class the branch closes); and the append-only block stages an unmerged
+    `memories.jsonl`, so conflict markers left by the S3 abort are committed
+    by the next run and published by the S1 push. Plus: the S1 bump goes
+    ahead when `origin/main` is absent; a parent stash-pop conflict has no
+    gate; one commit body over-claims its mutation kills. Being fixed on
+    the branch.
+  - PR #117, first pass: **a regression class** — `ProgrammingError` and
+    `InternalError` (revoked privilege, missing table, aborted transaction)
+    were routed to "row refused", so an environment fault would quarantine
+    every pending row and advance the cursor with exit 0 where the old code
+    held it; the per-row replay lacks a defensive rollback; two of four
+    cursor writers still unlocked; the rebuild truncates before resetting
+    the cursor with no lock against the cron; `index-session-content.py`
+    still lacks NUL sanitising and refused-row handling. Being fixed on the
+    branch.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
