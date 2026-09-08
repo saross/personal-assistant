@@ -160,6 +160,21 @@ def setup_logging() -> logging.Logger:
 # ============================================================================
 
 
+def ensure_toolkit_on_path() -> Path:
+    """Put ``cc_session_toolkit``'s source on ``sys.path`` and return it.
+
+    Four call sites used to carry their own copy of these three lines, and
+    ``_enrich_terra`` carried none — it worked only because
+    ``_make_token_counter`` happened to run first and had already done it, a
+    dependency nothing stated and nothing tested (audit round 4c-2, finding
+    15; AR15 was the same defect, one call site over).
+    """
+    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
+    if str(toolkit_src) not in sys.path:
+        sys.path.insert(0, str(toolkit_src))
+    return toolkit_src
+
+
 def _extract_cwd_from_jsonl(session_path: Path) -> str | None:
     """
     Extract the working directory from the first entries of a session JSONL.
@@ -331,6 +346,22 @@ def detect_source_layout(
         child for child in children
         if any(g.is_dir() and g.name.startswith("-") for g in child.iterdir())
     ]
+
+    # A live store whose project directories hold no top-level *.jsonl right
+    # now — every session archived and its transcript rotated away — is still
+    # a live store, and check-archive-drift.py reads it happily and reports
+    # Clean. Refusing here while the gate says Clean is an inconsistency the
+    # operator has to resolve by hand, over a tree that is in fact fine
+    # (round 4c-2, finding 13). The leading-dash encoding is what makes a
+    # project key recognisable, so children that all look like project keys
+    # are a live store even when empty.
+    if children and all(child.name.startswith("-") for child in children):
+        logger.info(
+            "Source %s: live layout (%d project directories, none holding a "
+            "transcript right now)", source_root, len(children),
+        )
+        return "live"
+
     if uuid_named or (children and not project_keyed):
         logger.error(
             "Cannot tell what %s is: no project directory holds a "
@@ -609,9 +640,7 @@ def discover_sessions(
     # cc_session_toolkit at module scope, so building it first made
     # ``--min-content-tokens`` — the preferred floor — die with "No module
     # named cc_session_toolkit" (audit 2026-09-08, finding AR15).
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     distilled_tokens = _make_token_counter(logger) if min_content_tokens else None
 
@@ -1450,9 +1479,7 @@ def refuse_incomplete_source(
 def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run the archive mode: compress and archive sessions."""
     # Add cc-session-toolkit to path
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     from cc_session_toolkit.archive import archive_session
 
@@ -2059,6 +2086,9 @@ def _enrich_terra(
         sys.exit(1)
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
+    # Explicitly, rather than relying on _make_token_counter below having
+    # done it first (round 4c-2, finding 15).
+    ensure_toolkit_on_path()
     distilled = _make_token_counter(logger)
     unenriched = _find_unenriched_sessions(logger)
     if not unenriched:
@@ -2489,9 +2519,7 @@ def _enrich_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         sys.exit(1)
 
     # Add cc-session-toolkit to path for stats extraction
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     from cc_session_toolkit.archive import extract_session_stats
 
@@ -2808,9 +2836,7 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> int:
     ``normalise-archive-storage.py`` already work this way.
     """
     # Add cc-session-toolkit to path
-    toolkit_src = Path.home() / "Code" / "cc-session-toolkit" / "src"
-    if str(toolkit_src) not in sys.path:
-        sys.path.insert(0, str(toolkit_src))
+    ensure_toolkit_on_path()
 
     from cc_session_toolkit.catalogue import rebuild_catalogue
 

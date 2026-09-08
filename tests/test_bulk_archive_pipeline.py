@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import importlib
+import importlib.util
 import json
 import logging
 import sys
@@ -1747,3 +1748,132 @@ class TestCatalogueLockIsHeld:
         assert released.is_set()
         catalogue = json.loads(pipeline.catalogue.read_text(encoding="utf-8"))
         assert [entry["id"] for entry in catalogue["sessions"]] == [SID_A]
+
+
+class TestToolkitPathHelper:
+    """One helper, called by every path that imports the toolkit.
+
+    Four call sites carried their own copy of the sys.path insert and
+    _enrich_terra carried none — it worked only because _make_token_counter
+    happened to run first, a dependency nothing stated and nothing tested
+    (round 4c-2, finding 15). AR15 was this same defect one call site over.
+    """
+
+    def test_the_helper_adds_the_toolkit_source_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        toolkit_src = tmp_path / "Code" / "cc-session-toolkit" / "src"
+        toolkit_src.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            sys, "path", [p for p in sys.path if p != str(toolkit_src)]
+        )
+
+        assert bulk_archive.ensure_toolkit_on_path() == toolkit_src
+        assert sys.path.count(str(toolkit_src)) == 1
+
+        bulk_archive.ensure_toolkit_on_path()
+        assert sys.path.count(str(toolkit_src)) == 1, (
+            "the helper appended a duplicate entry on a second call"
+        )
+
+    def test_every_toolkit_importer_calls_the_helper(self) -> None:
+        """No call site may keep its own copy of the three lines.
+
+        A private copy is how _enrich_terra came to have none at all: the
+        lines were duplicated until one branch was written without them.
+        """
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+
+        builds = source.count('Path.home() / "Code" / "cc-session-toolkit"')
+        assert builds == 1, (
+            f"the toolkit path is constructed in {builds} places; it belongs "
+            "only in ensure_toolkit_on_path()"
+        )
+
+    def test_the_terra_path_puts_the_toolkit_up_before_distilling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_enrich_terra must not depend on someone else having done it."""
+        toolkit_src = tmp_path / "Code" / "cc-session-toolkit" / "src"
+        toolkit_src.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            sys, "path", [p for p in sys.path if p != str(toolkit_src)]
+        )
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Summarise the session.", encoding="utf-8")
+
+        observed: dict[str, bool] = {}
+
+        def spy(logger):
+            observed["on_path"] = str(toolkit_src) in sys.path
+            raise SystemExit(0)
+
+        monkeypatch.setattr(bulk_archive, "_make_token_counter", spy)
+
+        with pytest.raises(SystemExit):
+            bulk_archive._enrich_terra(
+                argparse.Namespace(prompt=prompt, limit=0, dry_run=True),
+                LOGGER,
+            )
+
+        assert observed.get("on_path") is True
+
+
+class TestLayoutProbeAgreesWithTheGate:
+    """AR10's refusal must not fire on a store the gate calls Clean.
+
+    A live store whose projects hold no top-level *.jsonl right now — every
+    session archived and rotated away — is still a live store.
+    check-archive-drift.py reads it and reports Clean, so a refusal here left
+    the operator reconciling two tools that disagreed about a healthy tree
+    (round 4c-2, finding 13).
+    """
+
+    def test_an_empty_live_store_is_read_as_live(self, tmp_path: Path) -> None:
+        root = tmp_path / "projects"
+        for key in ("-home-tester-Workshop", "-home-tester-Zenodo-uploads"):
+            (root / key).mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(root, LOGGER) == "live"
+
+    def test_the_drift_check_reads_the_same_store_without_complaint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two tools must agree about this tree."""
+        root = tmp_path / "projects"
+        archive_root = tmp_path / "cc-archives"
+        archive_root.mkdir()
+        for key in ("-home-tester-Workshop", "-home-tester-Zenodo-uploads"):
+            (root / key).mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(root, LOGGER) == "live"
+
+        drift = _load_drift_check()
+        monkeypatch.setattr(drift, "RAW_ROOT", root)
+        monkeypatch.setattr(drift, "ARCHIVE_ROOT", archive_root)
+        monkeypatch.setattr(drift, "GATE_FILE", tmp_path / "gate")
+        assert drift.main([]) == 0
+
+    def test_a_uuid_shaped_child_is_still_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The AR10 refusal must survive: a session dir is never a project."""
+        root = tmp_path / "projects"
+        (root / SID_A).mkdir(parents=True)
+
+        with pytest.raises(SystemExit):
+            bulk_archive.detect_source_layout(root, LOGGER)
+
+
+def _load_drift_check():
+    """Import check-archive-drift.py by path, for the agreement test above."""
+    spec = importlib.util.spec_from_file_location(
+        "check_archive_drift_for_layout_test",
+        str(SCRIPTS_DIR / "check-archive-drift.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
