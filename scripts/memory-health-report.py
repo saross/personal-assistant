@@ -721,7 +721,8 @@ def render_report(report: dict[str, Any]) -> list[str]:
     )
     out.append(
         f"  any anchors at all      : {h.get('anchored_any', h['anchored'])} "
-        "(the rest carry only zotero/url anchors, which never resolve locally)"
+        "(the rest carry only anchor types this system cannot resolve, or no "
+        "well-formed file/commit anchor)"
     )
     out.append(f"  verified breakdown      : {_fmt_top(h['verified_breakdown'])}")
     out.append(

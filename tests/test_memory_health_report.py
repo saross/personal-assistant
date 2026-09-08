@@ -947,3 +947,40 @@ class TestTheSoftDeletePredicateIsShared:
         assert report["integrity"]["only_in_postgres"] == 0
         assert report["integrity"]["only_in_canonical"] == 0
         assert clean is True
+
+
+class TestTheAnchoredGapIsDescribedAccurately:
+    """[C]'s explanatory clause is a measurable claim (finding M3)."""
+
+    def test_the_sentence_covers_more_than_zotero_and_url(
+        self, report_paths, fake_pg,
+    ) -> None:
+        """The old wording said "the rest carry only zotero/url anchors".
+
+        Measured against the live corpus, most of that population carried
+        something else entirely: `ref` and `context` anchors, `line` anchors,
+        and records whose file/commit anchors are all malformed. The fixture
+        below holds one of each, none of them zotero or url, so a report
+        that names those two types is describing records that are not there.
+        """
+        _write_corpus(report_paths, [
+            _anchored(id="m-ok"),
+            _rec(id="m-ref", anchors=[{"type": "ref", "ref": "Obs 14"}]),
+            _rec(id="m-bad-file",
+                 anchors=[{"type": "file", "ref": "a scoring table (7 cells)"}]),
+        ])
+        fake_pg(FakeDatabase(memories=[
+            {"id": mid, "is_active": True}
+            for mid in ("m-ok", "m-ref", "m-bad-file")
+        ]))
+        report, _clean = _build()
+        assert report["anchors"]["anchored"] == 1
+        assert report["anchors"]["anchored_any"] == 3
+
+        line = next(
+            ln for ln in mhr.render_report(report)
+            if "any anchors at all" in ln
+        )
+        assert "zotero/url" not in line
+        assert "cannot resolve" in line
+        assert "no well-formed file/commit anchor" in line
