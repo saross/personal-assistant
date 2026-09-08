@@ -38,7 +38,7 @@ def get_focus_limit() -> int:
     """Read focus_limit from SYSTEM.md, falling back to default."""
     if not SYSTEM_FILE.exists():
         return DEFAULT_FOCUS_LIMIT
-    content = SYSTEM_FILE.read_text()
+    content = SYSTEM_FILE.read_text(encoding="utf-8")
     match = re.search(r"focus_limit\s*\|\s*(\d+)", content)
     if match:
         return int(match.group(1))
@@ -49,7 +49,7 @@ def count_inbox_items() -> int:
     """Count unchecked items in inbox.md."""
     if not INBOX_FILE.exists():
         return 0
-    content = INBOX_FILE.read_text()
+    content = INBOX_FILE.read_text(encoding="utf-8")
     return len(re.findall(r"^- \[ \]", content, re.MULTILINE))
 
 
@@ -65,7 +65,7 @@ def count_waiting_items() -> int:
     """
     if not WAITING_FILE.exists():
         return 0
-    content = WAITING_FILE.read_text()
+    content = WAITING_FILE.read_text(encoding="utf-8")
     count = 0
     for line in content.splitlines():
         line = line.strip()
@@ -93,7 +93,11 @@ def count_waiting_items() -> int:
         # should also be skipped.
         non_empty = [c for c in cells if c]
         first_non_empty = non_empty[0] if non_empty else ""
-        is_struck = bool(re.match(r"^~~.+~~$", first_non_empty))
+        # The live convention (audit H8, 2026-09-08: 23 of 25 completed rows
+        # were being counted as open) closes the strikethrough mid-cell and
+        # appends an un-struck project tag — ``~~Car service~~ (`personal`)``.
+        # A first cell that BEGINS struck is a completed row.
+        is_struck = bool(re.match(r"^~~.+?~~", first_non_empty))
         if is_struck:
             continue
         if non_empty and all(
@@ -114,7 +118,7 @@ def parse_focus_slots() -> list[dict]:
     if not FOCUS_FILE.exists():
         return []
 
-    content = FOCUS_FILE.read_text()
+    content = FOCUS_FILE.read_text(encoding="utf-8")
     slots = []
 
     # Match slot headers: ## Slot N: [Name]
@@ -161,7 +165,7 @@ def parse_focus_slots() -> list[dict]:
         # variants appear in real FOCUS.md files today (Slot 1 uses
         # ``Started``, Slot 2 uses ``Task starts``).
         started_match = re.search(
-            r"\*\*\s*(?:Started|Task\s+starts)\s*:\s*\*\*\s*"
+            r"\*\*\s*(?:Started|Task\s+starts|Rotated\s+in)\s*:\s*\*\*\s*"
             r"(\d{4}-\d{2}-\d{2})",
             block,
             re.IGNORECASE,
@@ -170,12 +174,18 @@ def parse_focus_slots() -> list[dict]:
             slot_info["started"] = started_match.group(1)
 
         # Parse Deadline
-        deadline_match = re.search(
-            r"\*\*Deadline:\*\*\s*(\d{4}-\d{2}-\d{2}|None)", block
-        )
+        # Capture whatever follows the field. An ISO date or ``None`` parse as
+        # before; anything else is kept as text so format_deadline_status
+        # reports it as UNPARSEABLE instead of "no deadline" (audit H10).
+        deadline_match = re.search(r"\*\*\s*Deadline\s*:\s*\*\*\s*(.+?)\s*$", block, re.M)
         if deadline_match:
-            val = deadline_match.group(1)
-            slot_info["deadline"] = val if val != "None" else None
+            val = deadline_match.group(1).strip().strip("*").strip()
+            if val == "None":
+                slot_info["deadline"] = None
+            elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", val):
+                slot_info["deadline"] = val
+            else:
+                slot_info["deadline"] = val[:60]
 
         slots.append(slot_info)
 

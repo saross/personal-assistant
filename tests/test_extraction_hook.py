@@ -1120,3 +1120,64 @@ class TestTruncationRouting:
                 mock_cls.return_value = mock_client
                 result = eh.extract_memories(_long_conversation(), "sess-ok")
         assert result == [{"category": "progress", "content": "a"}]
+
+
+# ============================================================================
+# Audit round two (2026-09-08): H11, H13, H16
+# ============================================================================
+
+
+class TestAuditRoundTwo:
+    def test_tool_only_assistant_entry_does_not_consume_the_skip_flag(self, tmp_path):
+        """H11: the command response is often split into a tool-use-only entry
+        (empty text) followed by the text-bearing one; only the latter is skipped."""
+        marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+        transcript = tmp_path / "t.jsonl"
+        entries = [
+            make_transcript_entry("user", marker + "\nrun it", "u1"),
+            {"type": "assistant", "uuid": "a-tool",
+             "message": {"content": [{"type": "tool_use", "name": "x", "input": {}}]}},
+            make_transcript_entry("assistant", "Here is the command response text", "a-text"),
+            make_transcript_entry("user", "thanks, unrelated follow-up question here", "u2"),
+            make_transcript_entry("assistant", "an ordinary answer that must survive", "a2"),
+        ]
+        transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        messages, _ = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in messages]
+        assert "Here is the command response text" not in texts
+        assert "an ordinary answer that must survive" in texts
+
+    def test_too_short_window_returns_none_so_the_cursor_holds(self):
+        """H16: a too-short window is neither success nor sterile; it must accumulate."""
+        with patch("anthropic.Anthropic") as mock_cls:
+            result = eh.extract_memories([{"role": "user", "content": "hi"}], "s")
+        assert result is None
+        mock_cls.assert_not_called()
+
+    def test_recent_seed_tags_come_from_the_newest_records(self, tmp_path, monkeypatch):
+        """H13: seed tags are the most common tags in recent records, not the
+        alphabetical head of the vocabulary file."""
+        store = tmp_path / "memories.jsonl"
+        lines = ["partial-first-line-is-ignored"]
+        for i in range(40):
+            tags = ["common-tag", "rare-%d" % i] if i % 2 else ["common-tag", "second-tag"]
+            lines.append(json.dumps({"id": str(i), "research_tags": tags}))
+        store.write_text("\n".join(lines) + "\n")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", store)
+        seeds = eh.recent_seed_tags(3)
+        assert seeds[0] == "common-tag" and seeds[1] == "second-tag" and len(seeds) == 3
+        monkeypatch.setattr(eh, "MEMORIES_FILE", tmp_path / "absent.jsonl")
+        vocab = tmp_path / "vocab.txt"
+        vocab.write_text("aaa\nbbb\n")
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+        assert eh.recent_seed_tags(5) == ["aaa", "bbb"]          # fallback
+
+    def test_vocabulary_is_not_written_by_format_memories(self, tmp_path, monkeypatch):
+        """H18: the vocabulary update moved to after the append in main()."""
+        vocab = tmp_path / "vocab.txt"
+        vocab.write_text("existing\n")
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+        import inspect
+        source = inspect.getsource(eh.format_memories)
+        assert "update_vocabulary(" not in source
+        assert "update_vocabulary(new_tags)" in inspect.getsource(eh.main)

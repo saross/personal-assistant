@@ -161,3 +161,23 @@ def test_marker_count_matches_documented(shared_markers):
     the test forces a deliberate update rather than silent drift.
     """
     assert len(shared_markers) == 19
+
+
+# Audit H4 (2026-09-08): the /forget and /update markers had drifted from the
+# command headers and nothing noticed, because the fixture above is a copy.
+# Derive the truth from commands/*.md so header drift fails loudly.
+COMMANDS_DIR = Path(__file__).resolve().parent.parent / "commands"
+
+
+def test_every_slash_command_marker_matches_its_command_header(shared_markers):
+    checked = 0
+    for marker in shared_markers:
+        if not marker.startswith("# /"):
+            continue
+        name = marker[3:].split(" ", 1)[0]
+        header = (COMMANDS_DIR / f"{name}.md").read_text(encoding="utf-8").splitlines()[0]
+        # The hook matches by substring, so a marker must be a PREFIX of the
+        # live header (a shortened header would otherwise still pass).
+        assert header.startswith(marker), f"{name}: header {header!r} vs marker {marker!r}"
+        checked += 1
+    assert checked >= 15

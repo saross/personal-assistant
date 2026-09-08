@@ -147,19 +147,20 @@ class TestCountWaitingItems:
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
         assert accountability.count_waiting_items() == 1
 
-    def test_partial_strikethrough_in_first_cell_still_counts(
+    def test_struck_leading_fragment_marks_the_row_done(
         self, tmp_path, monkeypatch
     ):
-        """A row whose first cell mixes a struck-through fragment
-        with un-struck text (e.g. ``~~Old name~~ new name``) is still
-        a live row — only a fully struck-through first cell signals
-        completion.
+        """The live convention closes the strikethrough mid-cell and appends
+        a project tag: ``~~Car service~~ (`personal`)``. A first cell that
+        BEGINS struck is a completed row (audit H8, 2026-09-08). A cell that
+        is struck only in the middle is still live.
         """
         waiting = tmp_path / "waiting.md"
         waiting.write_text(
             "| Item | Waiting On |\n"
             "|------|------------|\n"
-            "| ~~Old name~~ new name | Someone |\n"
+            "| ~~Car service~~ (`personal`) | Scott |\n"
+            "| Renamed ~~old~~ item | Someone |\n"
         )
         monkeypatch.setattr(accountability, "WAITING_FILE", waiting)
         assert accountability.count_waiting_items() == 1
@@ -458,3 +459,30 @@ class TestMainFilesMissing:
         # Normal banner emitted.
         assert "# Task Status" in captured.out
         assert "Test Slot" in captured.out
+
+
+
+class TestAuditRoundTwo:
+    """Live FOCUS.md formats the parser missed (audit H9, H10, 2026-09-08)."""
+
+    def test_rotated_in_drives_the_day_counter(self, tmp_path, monkeypatch):
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(
+            "## Slot 1: EFN website\n\n- **Rotated in:** 2026-08-17, per the trigger\n"
+            "- **Deadline:** None\n\n---\n"
+        )
+        monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
+        slots = accountability.parse_focus_slots()
+        assert slots and slots[0]["started"] == "2026-08-17"
+
+    def test_prose_deadline_is_reported_unparseable_not_absent(self, tmp_path, monkeypatch):
+        focus = tmp_path / "FOCUS.md"
+        focus.write_text(
+            "## Slot 1: EFN website\n\n- **Started:** 2026-08-17\n"
+            "- **Deadline:** **~26 Aug commitment to Steve**; contracted **mid-Sept**.\n\n---\n"
+        )
+        monkeypatch.setattr(accountability, "FOCUS_FILE", focus)
+        slots = accountability.parse_focus_slots()
+        assert slots[0]["deadline"].startswith("~26 Aug")
+        status = accountability.format_deadline_status(slots[0]["deadline"])
+        assert "UNPARSEABLE" in status and "~26 Aug" in status

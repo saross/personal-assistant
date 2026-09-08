@@ -2032,3 +2032,56 @@ class TestLoadFocusProfile:
         focus.write_text("# Current Focus\n\nNo slots populated.\n")
         monkeypatch.setattr(retrieval, "FOCUS_FILE", focus)
         assert retrieval.load_focus_profile() == (set(), "")
+
+
+# ============================================================================
+# Audit H3 (2026-09-08): disproved records never surface on the legacy path
+# ============================================================================
+
+
+class TestDisprovedRecordsAreFiltered:
+    """A record whose anchors were mechanically disproved (``verified: "false"``)
+    is never injected as fact; it stays reachable via /recall."""
+
+    @staticmethod
+    def _record(category: str, days_old: int, verified: str | None, ident: str) -> dict:
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+        record = {"id": ident, "category": category, "content": f"content {ident}",
+                  "summary": f"summary {ident}", "created_at": created,
+                  "research_tags": ["t"], "project": "p", "confidence": "high"}
+        if verified is not None:
+            record["verified"] = verified
+        return record
+
+    def test_is_disproved(self):
+        assert retrieval.is_disproved({"verified": "false"})
+        assert retrieval.is_disproved({"verified": "FALSE "})
+        assert not retrieval.is_disproved({"verified": "true"})
+        assert not retrieval.is_disproved({})
+
+    def test_all_four_buckets_skip_disproved(self):
+        from datetime import datetime, timedelta, timezone
+        permanent = next(iter(retrieval.PERMANENT_CATEGORIES))
+        middle = next(iter(retrieval.MIDDLE_AGED_CATEGORIES))
+        constraint = next(iter(retrieval.CONSTRAINT_CATEGORIES))
+        memories = [
+            self._record(permanent, 100, "false", "perm-bad"),
+            self._record(permanent, 100, "true", "perm-good"),
+            self._record(middle, 30, "false", "mid-bad"),
+            self._record(middle, 30, None, "mid-ok"),
+            self._record(constraint, 100, "false", "con-bad"),
+            self._record(constraint, 100, None, "con-ok"),
+            self._record("progress", 1, "false", "recent-bad"),
+            self._record("progress", 1, None, "recent-ok"),
+        ]
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retrieval.RECENT_DAYS)
+        recent = retrieval.retrieve_recent(memories, cutoff, "p")
+        assert {m["id"] for m in recent} == {"recent-ok"}
+        permanent_hits = retrieval.retrieve_permanent(memories, set(), "p")
+        assert "perm-bad" not in {m["id"] for m in permanent_hits}
+        assert "perm-good" in {m["id"] for m in permanent_hits}
+        middle_hits = retrieval.retrieve_middle_aged(memories, set(), "p")
+        assert {m["id"] for m in middle_hits} == {"mid-ok"}
+        constraint_hits = retrieval.retrieve_constraints(memories, set(), "p")
+        assert {m["id"] for m in constraint_hits} == {"con-ok"}

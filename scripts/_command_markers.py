@@ -58,8 +58,8 @@ COMMAND_MARKERS: tuple[str, ...] = (
     # Verified 2026-05-20 against ``commands/sync-board.md`` header.
     "# /sync-board — GitHub Projects Board Sync",
     "# /process-email — Email Triage",
-    "# /forget — Soft-delete Memory",
-    "# /update — Revise Memory",
+    "# /forget — Soft-delete a memory",
+    "# /update — Revise the content of an existing memory",
     # Reflection protocol — reflection docs are the canonical record;
     # extracting from them creates lossy duplicates.
     "# End-of-Session Reflection",

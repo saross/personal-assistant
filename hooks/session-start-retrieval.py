@@ -219,13 +219,12 @@ MAX_CONSTRAINTS = 10
 # Fix: stream the file backwards, decoding one line at a time, and
 # stop after ``MAX_LOAD_RECORDS`` records. The cap must be generous
 # enough to cover the full retrieval window — recent (14d), middle-
-# aged (180d), and permanent (any age) — so it is sized well above
-# the current corpus (~24k records / ~310 records/day at audit
-# time, i.e. ~75 days). 50000 records is ~160 days at present
-# growth rate; the corpus today fits entirely inside the cap with
-# ~2× headroom, while bounding worst-case load under future
-# growth.
-MAX_LOAD_RECORDS = 50000
+# aged (180d), and permanent (any age). Re-sized 2026-09-08 (audit
+# H15): the corpus was 42,291 records / 43 MB growing ~140/day, so the
+# previous 50,000 would have silently truncated the permanent bucket
+# within weeks. 200,000 is ~3 years at that rate; a measured full load
+# of 42k records took 0.29 s, so the bound is about growth, not speed.
+MAX_LOAD_RECORDS = 200000
 
 # How large a chunk to read when streaming the file backwards. Sized
 # to comfortably hold a few hundred lines of typical memory records
@@ -347,12 +346,13 @@ def load_all_memories(max_records: int = MAX_LOAD_RECORDS) -> list[dict]:
     """Load up to ``max_records`` memories, newest-first.
 
     Audit C-C3 (2026-05-02): the previous implementation called
-    ``MEMORIES_FILE.read_text().splitlines()`` which materialises the
-    whole 23k-line / ~19 MB file plus a list of decoded strings on
-    every session start, against a 10-second hook timeout. We now
-    stream the file backwards (newest-first) and stop after
-    ``max_records`` successfully-decoded records, bounding the load
-    irrespective of corpus growth.
+    ``MEMORIES_FILE.read_text().splitlines()`` which materialised the
+    whole file plus a list of decoded strings on every session start,
+    against a 10-second hook timeout. We now stream the file backwards
+    (newest-first) and stop after ``max_records`` successfully-decoded
+    records. Note (audit 2026-09-08): the newline-counting pre-pass still
+    reads the whole file once, so the load is O(file size); it is the
+    decoded-record count that is bounded, not the bytes read.
 
     Per-line ``JSONDecodeError``s are counted (not raised) so a single
     truncated line does not block session start, but the count and the
@@ -571,6 +571,18 @@ def _sort_key(mem: dict) -> datetime:
     return parse_created_at(mem) or datetime.min.replace(tzinfo=timezone.utc)
 
 
+
+def is_disproved(mem: dict) -> bool:
+    """True when mechanical anchor verification found the record's specifics wrong.
+
+    The digest path already filters on ``verified``; the legacy four-bucket
+    path did not (audit H3, 2026-09-08: 738 disproved records, 401 of them
+    in permanent categories, were surfaced indistinguishably from verified
+    ones). A record whose specifics were proven false is never a fact to
+    inject; it stays reachable through ``/recall``.
+    """
+    return str(mem.get("verified", "")).strip().lower() == "false"
+
 def retrieve_recent(
     memories: list[dict],
     cutoff: datetime,
@@ -593,6 +605,8 @@ def retrieve_recent(
     excluded_categories = {"commitment", "waiting_for"}
 
     for mem in memories:
+        if is_disproved(mem):
+            continue
         created = parse_created_at(mem)
         if not created or created < cutoff:
             continue
@@ -642,6 +656,8 @@ def retrieve_permanent(
     other = []
 
     for mem in memories:
+        if is_disproved(mem):
+            continue
         if mem.get("category") not in PERMANENT_CATEGORIES:
             continue
         if mem.get("id") in recent_ids:
@@ -698,6 +714,8 @@ def retrieve_middle_aged(
     same = []
     other = []
     for mem in memories:
+        if is_disproved(mem):
+            continue
         if mem.get("category") not in MIDDLE_AGED_CATEGORIES:
             continue
         if mem.get("id") in already_ids:
@@ -774,6 +792,8 @@ def retrieve_constraints(
     candidates = []
 
     for mem in memories:
+        if is_disproved(mem):
+            continue
         if mem.get("category") not in CONSTRAINT_CATEGORIES:
             continue
         if mem.get("id") in already_ids:
@@ -978,7 +998,7 @@ def load_scratchpad() -> str:
     if not SCRATCHPAD_FILE.exists():
         return ""
 
-    content = SCRATCHPAD_FILE.read_text().strip()
+    content = SCRATCHPAD_FILE.read_text(encoding="utf-8").strip()
     if not content:
         return ""
 
@@ -1026,7 +1046,7 @@ def load_project_scratchpad(cwd: str) -> tuple[str, Path | None]:
     path = SCRATCHPADS_DIR / f"{name}.md"
     if not path.exists():
         return "", None
-    content = path.read_text().strip()
+    content = path.read_text(encoding="utf-8").strip()
     if not content:
         return "", None
 
@@ -1412,4 +1432,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # fail open: a retrieval error must never block a session
+        print(f"[retrieval] WARN: hook failed: {exc!r}", file=sys.stderr)
+        sys.exit(0)

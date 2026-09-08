@@ -96,14 +96,19 @@ def load_env() -> None:
 # Logging setup
 # ============================================================================
 
-if __name__ == "__main__" or "pytest" not in sys.modules:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    filename=str(LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+try:
+    if __name__ == "__main__" or "pytest" not in sys.modules:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(LOG_FILE),
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+except OSError:
+    # ``logs`` is a symlink into the data submodule; on a fresh clone it
+    # dangles and mkdir raises FileExistsError. A hook must not die at
+    # import (audit H12) — log to stderr instead and carry on.
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 logger = logging.getLogger("extraction-hook")
 
 # ============================================================================
@@ -290,6 +295,37 @@ def normalise_tags(tags: list[str]) -> list[str]:
     normalised = [t for t in normalised if t]
     # Deduplicate preserving order
     return list(dict.fromkeys(normalised))
+
+
+SEED_TAIL_BYTES = 262_144
+
+
+def recent_seed_tags(limit: int = 30) -> list[str]:
+    """The most common tags in the newest records, as prompt seed vocabulary.
+
+    The vocabulary file is 56k alphabetically sorted lines, so its head is
+    useless as a "prefer existing tags" hint (audit H13). Recent records
+    carry the tags that are actually in use; read only the file's tail.
+    """
+    counts: dict[str, int] = {}
+    try:
+        with MEMORIES_FILE.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - SEED_TAIL_BYTES))
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        tail = ""
+    for line in tail.splitlines()[1:]:      # the first line may be partial
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        for tag in record.get("research_tags") or []:
+            if isinstance(tag, str) and tag:
+                counts[tag] = counts.get(tag, 0) + 1
+    ranked = sorted(counts, key=lambda tag: (-counts[tag], tag))[:limit]
+    return ranked or load_seed_tags()[:limit]
 
 
 def load_seed_tags() -> list[str]:
@@ -501,7 +537,12 @@ def parse_transcript(
                     skip_next_assistant = True
                     continue
             elif entry.get("type") == "assistant" and skip_next_assistant:
-                skip_next_assistant = False
+                # Assistant turns are often split: a tool-use-only entry
+                # (empty text) precedes the text-bearing one. Only the
+                # text-bearing entry is the command response, so only it
+                # consumes the flag (audit H11: 52 of 585 cases leaked).
+                if content and content.strip():
+                    skip_next_assistant = False
                 continue
 
             if content and content.strip():
@@ -602,14 +643,17 @@ def extract_memories(messages: list[dict], session_id: str) -> list[dict] | None
     )
 
     if len(conversation_text) < MIN_CONTENT_LENGTH:
+        # None, not []: the cursor must not advance past a window that was
+        # merely too short, or it never accumulates into an extractable one
+        # (audit H16: 649 such windows skipped for good).
         logger.info(
-            "Conversation too short (%d chars), skipping extraction",
+            "Conversation too short (%d chars), leaving the window for next time",
             len(conversation_text),
         )
-        return []
+        return None
 
     # Build the prompt with categories, seed tags, and current date
-    seed_tags = ", ".join(load_seed_tags()[:30])
+    seed_tags = ", ".join(recent_seed_tags(30))
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     year = datetime.now(timezone.utc).strftime("%Y")
     prompt = EXTRACTION_PROMPT.format(
@@ -710,7 +754,7 @@ def extract_memories(messages: list[dict], session_id: str) -> list[dict] | None
     except json.JSONDecodeError as e:
         logger.error("Failed to parse extraction JSON: %s", e)
         logger.debug("Raw response: %s", response_text[:500])
-        return []
+        return None  # not advanced: retried next firing (audit H16)
 
 
 # ============================================================================
@@ -921,9 +965,8 @@ def format_memories(
 
         memories.append(record)
 
-    # Update vocabulary with any new tags
-    if all_tags:
-        update_vocabulary(all_tags)
+    # Vocabulary is updated by main() AFTER the memories are appended (audit
+    # H18): a failed append must not leave tags for memories never written.
 
     # Item 11 — surface dropped malformed anchors so the write-path bug is
     # observable (e.g. the extractor writing slugs as commit refs) rather than
@@ -1097,8 +1140,9 @@ def main() -> None:
         # so we don't reprocess sterile content forever.
         if extracted is None:
             logger.info(
-                "Skipping cursor advance due to transient API error "
-                "(session %s); window will be retried on next hook firing",
+                "Skipping cursor advance (transient API error, too-short window, "
+                "or unparseable extraction) for session %s; window will be "
+                "retried on next hook firing",
                 session_id,
             )
             # Suppress hook output and exit cleanly — no work persisted.
@@ -1143,6 +1187,11 @@ def main() -> None:
                     )
 
                 append_memories(memories)
+                new_tags = {
+                    str(tag) for m in memories for tag in (m.get("research_tags") or [])
+                }
+                if new_tags:
+                    update_vocabulary(new_tags)
 
                 # Only advance cursor AFTER successful append
                 if new_last_uuid:

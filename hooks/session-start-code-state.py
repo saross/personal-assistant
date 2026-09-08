@@ -107,6 +107,18 @@ def main() -> int:
         )
         return 0
 
+    # First write wins. SessionStart fires again with the same session_id on
+    # resume and compact; a later HEAD is not the session's starting commit
+    # (audit H2, 2026-09-08: 37 of 42 multi-write sessions had been clobbered).
+    sidecar_path = SIDECAR_DIR / f"{session_id}.json"
+    if sidecar_path.exists():
+        _log(
+            f"sidecar exists for session_id={session_id} "
+            f"(source={hook_input.get('source', '?')}); keeping the first write",
+            level="INFO",
+        )
+        return 0
+
     commit = _git_head(Path(cwd))
     if commit is None:
         _log(
@@ -125,7 +137,6 @@ def main() -> int:
 
     try:
         SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
-        sidecar_path = SIDECAR_DIR / f"{session_id}.json"
         # Atomic write: write to a sibling ``.json.tmp`` then rename onto
         # the target so a concurrent reader never sees a partially-written
         # sidecar. Same pattern as ``hooks/extraction-hook.save_cursor``.
