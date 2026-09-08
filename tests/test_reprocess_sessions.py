@@ -529,3 +529,79 @@ class TestRewriteGuardIsWired:
             "bulk-rewrite guard"
         )
         assert "msgbatch_guard" in called[0]
+
+
+class TestOwedResponsesAreCapped:
+    """Round 4c-3 finding M-3 — an unspent skip is a debt against real turns.
+
+    The hook caps the counter at MAX_RESPONSES_OWED; this script's copy grew
+    without limit, so a run of marker-bearing isMeta entries owed one skip
+    each and swallowed that many genuine assistant replies afterwards.
+    """
+
+    def test_the_owed_cap_matches_the_hook(self) -> None:
+        """Lockstep with hooks/extraction-hook.py, checked by reading it.
+
+        The literal is duplicated rather than imported, because importing
+        the hook would run its module-level logging setup. This test is what
+        keeps the duplicate honest.
+        """
+        hook_source = (
+            Path(__file__).resolve().parent.parent
+            / "hooks" / "extraction-hook.py"
+        ).read_text(encoding="utf-8")
+
+        assert f"MAX_RESPONSES_OWED = {reprocess.MAX_RESPONSES_OWED}" in (
+            hook_source
+        ), (
+            "the owed-response cap has diverged from the hook's; the two "
+            "readers of the same transcripts would skip different turns"
+        )
+
+    def test_many_commands_swallow_at_most_two_assistant_turns(
+        self, tmp_path: Path
+    ) -> None:
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        records = [
+            prose_record(
+                "user", f"{marker} number {n}", index=n + 1, is_meta=True
+            )
+            for n in range(6)
+        ]
+        # Six commands, then six assistant turns. Only two may be swallowed.
+        records += [
+            prose_record("assistant", f"Reply number {n}", index=10 + n)
+            for n in range(6)
+        ]
+
+        messages = reprocess.parse_archived_transcript(
+            _write_gz(tmp_path / "session.jsonl.gz", records)
+        )
+
+        kept = [message["content"] for message in messages]
+        assert kept == [
+            "Reply number 2", "Reply number 3",
+            "Reply number 4", "Reply number 5",
+        ], (
+            f"expected exactly two replies swallowed, got {kept}"
+        )
+
+    def test_two_commands_still_swallow_two(self, tmp_path: Path) -> None:
+        """The cap must not clip the shape it exists to allow."""
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        records = [
+            prose_record("user", f"{marker} one", index=1, is_meta=True),
+            prose_record("user", f"{marker} two", index=2, is_meta=True),
+            prose_record("assistant", "Output one.", index=3),
+            prose_record("assistant", "Output two.", index=4),
+            prose_record("user", "A genuine question.", index=5),
+            prose_record("assistant", "A genuine answer.", index=6),
+        ]
+
+        messages = reprocess.parse_archived_transcript(
+            _write_gz(tmp_path / "session.jsonl.gz", records)
+        )
+
+        assert [message["content"] for message in messages] == [
+            "A genuine question.", "A genuine answer.",
+        ]

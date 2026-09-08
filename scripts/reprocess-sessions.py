@@ -67,6 +67,22 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS_OUTPUT = 4096
 MAX_EXCHANGES = 30
 MAX_MESSAGE_CHARS = 3000
+
+# Ceiling on slash-command responses owed a skip, in lockstep with
+# hooks/extraction-hook.py's constant of the same name (audit round 4c-3,
+# finding M-3). An owed skip that is never spent is a debt against future
+# genuine turns: a transcript with a run of marker-bearing isMeta entries
+# would otherwise owe one skip each and swallow that many real assistant
+# replies. The hook caps at the largest shape live traffic produces, and
+# being wrong in the recoverable direction — extracting a command's output
+# once — beats losing a real exchange.
+#
+# The literal is duplicated rather than imported: importing the hook module
+# would run its module-level logging setup, opening a file handler on the
+# extraction log from a script that has nothing to do with it.
+# ``test_the_owed_cap_matches_the_hook`` reads the hook's source and fails
+# if the two ever diverge.
+MAX_RESPONSES_OWED = 2
 MAX_THINKING_CHARS = 1500
 MIN_CONTENT_LENGTH = 500
 
@@ -381,7 +397,10 @@ def parse_archived_transcript(gz_path: Path) -> list[dict[str, str]]:
                     if entry.get("isMeta") and any(
                         marker in content for marker in COMMAND_MARKERS
                     ):
-                        responses_owed += 1
+                        # Capped: see MAX_RESPONSES_OWED.
+                        responses_owed = min(
+                            responses_owed + 1, MAX_RESPONSES_OWED
+                        )
                         continue
                     # Harness-injected user prose that was not a command:
                     # dropped here, AFTER the marker branch, because slash
