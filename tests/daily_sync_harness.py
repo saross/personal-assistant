@@ -209,15 +209,29 @@ printf '%s\\n' "${PA_TEST_HOSTNAME:-test-machine}"
 #: pushed itself — the orphan path can be staged by other means, this one
 #: cannot (audit M2, sixth re-audit).
 _GIT_SHIM = """#!/usr/bin/env bash
-if [[ -n "${PA_TEST_GIT_REFUSE_DROP:-}" ]]; then
-    _saw_stash=0
-    for _arg in "$@"; do
-        [[ "$_arg" == "stash" ]] && _saw_stash=1
-        if [[ "$_saw_stash" -eq 1 && "$_arg" == "drop" ]]; then
-            echo "refusing to drop (PA_TEST_GIT_REFUSE_DROP)" >&2
-            exit 1
-        fi
-    done
+_saw_stash=0
+_saw_drop=0
+_saw_apply=0
+_in_target=0
+for _arg in "$@"; do
+    [[ "$_arg" == "stash" ]] && _saw_stash=1
+    [[ "$_saw_stash" -eq 1 && "$_arg" == "drop" ]] && _saw_drop=1
+    [[ "$_saw_stash" -eq 1 && "$_arg" == "apply" ]] && _saw_apply=1
+    if [[ -n "${PA_TEST_GIT_REFUSE_APPLY_IN:-}" \
+          && "$_arg" == "$PA_TEST_GIT_REFUSE_APPLY_IN" ]]; then
+        _in_target=1
+    fi
+done
+if [[ -n "${PA_TEST_GIT_REFUSE_DROP:-}" && "$_saw_drop" -eq 1 ]]; then
+    echo "refusing to drop (PA_TEST_GIT_REFUSE_DROP)" >&2
+    exit 1
+fi
+# A REFUSED apply: git declines and leaves the tree untouched, which is
+# what it does when applying would overwrite local changes. Distinct from
+# a CONFLICTED apply, which writes markers.
+if [[ "$_saw_apply" -eq 1 && "$_in_target" -eq 1 ]]; then
+    echo "error: Your local changes would be overwritten by merge." >&2
+    exit 1
 fi
 exec /usr/bin/git "$@"
 """

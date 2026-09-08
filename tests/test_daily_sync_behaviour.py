@@ -927,6 +927,39 @@ class TestDetachedHeadGuard:
         # …and the restore path must not call a failed drop a conflict.
         assert "restore raised conflicts" not in combined, combined
 
+    def test_the_exit_handler_never_re_applies_what_was_applied(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C2 (seventh re-audit): still-on-the-stack is not unapplied.
+
+        The exit handler re-applied any of the run's stashes still on the
+        stack without asking whether the run had already applied them. An
+        entry whose DROP failed has its content in the tree — and, by the
+        time the handler runs, committed — so applying it again lands the
+        same content on top of itself: `UU` markers in the live
+        memories.jsonl, with exit 0.
+        """
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-c2-ours")
+        world.publish_memory_append("2026-09-08-c2-theirs")
+
+        result = world.run_sync(machine, PA_TEST_GIT_REFUSE_DROP="1")
+        combined = result.stdout + result.stderr
+
+        corpus = machine.memories.read_text(encoding="utf-8")
+        assert "<<<<<<<" not in corpus, (
+            "the exit handler applied an already-applied stash onto the "
+            "committed tree:\n" + corpus
+        )
+        for line in corpus.splitlines():
+            json.loads(line)
+        assert "already applied it" in combined, combined
+        # The undroppable entry is reported, and the run says so.
+        assert result.returncode != 0 or "could not drop" in combined, combined
+        joined = "\n".join(gate_details(world))
+        assert "could not drop" in joined or "ALREADY in the working tree" in joined, joined
+
     def test_a_conflicted_apply_is_not_told_to_pop(
         self, world: SyncWorld
     ) -> None:
@@ -1436,10 +1469,19 @@ class TestParentStashWedge:
     """The parent half wedges the same way the data half does: while a
     path is unmerged, the next run's `git stash push -u -- ':!data'`
     refuses, so every later session fails in the same place. Audit M3 —
-    it had no gate line."""
+    it had no gate line; audit C1 (seventh re-audit) — and then it had
+    the data half's diagnosis but not its distinctions."""
 
-    def test_parent_pop_conflict_writes_a_gate_line(self, world: SyncWorld) -> None:
-        """A conflicted parent pop is surfaced at session start."""
+    def test_a_conflicted_parent_apply_is_not_told_to_pop(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C1 (seventh re-audit): the third state, on both halves.
+
+        A conflicted apply put the stash's content in the tree as
+        markers. Telling the operator to pop it — as the parent half did,
+        and as the old test asserted — applies the same content again on
+        top of them.
+        """
         machine = world.add_machine("a")
         world.publish_parent_change("settings.json", '{"from": "the other machine"}\n')
         (machine.pa / "settings.json").write_text('{"from": "here"}\n', encoding="utf-8")
@@ -1447,19 +1489,48 @@ class TestParentStashWedge:
         result = world.run_sync(machine)
         combined = result.stdout + result.stderr
         assert result.returncode == 2, combined
-        assert "stash pop raised conflicts" in combined
+        assert "raised conflicts" in combined
 
         details = gate_details(world)
-        assert any("parent-repo stash pop conflicted" in d for d in details), details
-        # …and the stash holding the work is named too (second re-audit C1),
-        # AFTER the diagnosis: popping into a half-merged tree is the wrong
-        # first move, so the reader must meet the diagnosis first (L5).
-        assert any("UNRECOVERED" in d for d in details), details
+        joined = "\n".join(details)
+        assert "in the tree as conflict markers" in joined, joined
+        assert "DELETE the entry" in joined, joined
+        assert "Do NOT pop" in joined, joined
+        assert "UNRECOVERED" not in joined, (
+            "a conflicted parent apply was called unrecovered: " + joined
+        )
+        assert "WITH CONFLICTS" in joined, "the third state was not recorded: " + joined
+        # The diagnosis precedes the recovery advice (audit L5).
         diagnosis = next(i for i, d in enumerate(details) if "conflicted" in d)
-        recovery = next(i for i, d in enumerate(details) if "UNRECOVERED" in d)
+        recovery = next(i for i, d in enumerate(details) if "WITH CONFLICTS" in d)
         assert diagnosis < recovery, details
-        # The stash git preserved on a conflicted pop is still there.
+        # The stash git preserved on a conflicted apply is still there.
         assert git("stash", "list", cwd=machine.pa).stdout.strip()
+
+    def test_a_refused_parent_apply_is_told_to_pop(self, world: SyncWorld) -> None:
+        """And the opposite state gets the opposite advice.
+
+        A REFUSED apply leaves the tree untouched and the work only in
+        the stash, so popping it — once whatever collides is cleared — is
+        exactly right. The parent half made no distinction and gated
+        "conflict markers are preserved" over a clean tree.
+        """
+        machine = world.add_machine("a")
+        (machine.pa / "settings.json").write_text('{"from": "here"}\n', encoding="utf-8")
+
+        result = world.run_sync(
+            machine, PA_TEST_GIT_REFUSE_APPLY_IN=str(machine.pa)
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        joined = "\n".join(gate_details(world))
+        assert "REFUSED" in joined, joined
+        assert "then pop it" in joined, joined
+        assert "in the tree as conflict markers" not in joined, (
+            "a refused apply was described as leaving markers: " + joined
+        )
+        assert "WITH CONFLICTS" not in joined, joined
 
 
 class TestUnusableHomeIsNotLockContention:

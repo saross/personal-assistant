@@ -973,6 +973,16 @@ restore_stash_on_exit() {
             for (( _i=0; _i<${#_shas[@]}; _i++ )); do
                 _sha="${_shas[_i]}"
                 stash_ref_for "$_repo" "$_sha" >/dev/null || continue
+                # audit C2 (seventh re-audit): an entry still on the stack
+                # is not necessarily unapplied. One whose DROP failed has
+                # its content in the tree already — applying it again puts
+                # the same content on top of itself, which for a corpus
+                # that was committed in between means `UU` markers in the
+                # live memories.jsonl, with rc 0.
+                if stash_was_applied "$_sha" || stash_was_conflicted "$_sha"; then
+                    log "not restoring ${_sha:0:8} in $_repo — this run already applied it"
+                    continue
+                fi
                 log "WARNING: aborting before stash pop — restoring ${_sha:0:8} in $_repo"
                 if apply_then_drop "$_repo" "$_sha" "restore"; then
                     :
@@ -1435,17 +1445,29 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             continue
         fi
         if ! apply_stash_by_sha "$PA_DIR" "$_sha"; then
-            # Stash applied but conflicted (or refused); the entry is
-            # preserved by git, and the EXIT handler must not re-pop.
+            # The entry is preserved by git either way, and the EXIT
+            # handler must not try again.
             stash_restore_allowed=0
             #
             # audit M3: this wedges every later run — the next
             # `git stash push -u -- ':!data'` refuses while a path is
-            # unmerged — and, like the data half, nothing but the log said
-            # so. Gate it before failing.
+            # unmerged — and nothing but the log said so.
+            #
+            # audit C1 (seventh re-audit): CONFLICTED and REFUSED are
+            # different states with opposite advice, and the parent half
+            # had neither. A conflicted apply put its content in the tree
+            # as markers — popping it again would apply the same content
+            # on top of them — while a refused one left the tree untouched
+            # and its work only in the stash, where a pop is exactly right.
+            if [[ -n "$(git status --porcelain -- ':!data' | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)" ]]; then
+                conflicted_stash_shas+=("$_sha")
+                add_sync_gate_detail \
+                    "daily-sync STOPPED: applying parent-repo stash ${_sha:0:8} in $PA_DIR conflicted. Its content is in the tree as conflict markers — resolve them (git -C $PA_DIR status), then DELETE the entry (git -C $PA_DIR stash drop <ref>). Do NOT pop it: that would apply the same content again on top of the markers."
+                fail "parent repo: applying stash ${_sha:0:8} raised conflicts — manual resolution required"
+            fi
             add_sync_gate_detail \
-                "daily-sync STOPPED: parent-repo stash pop conflicted in $PA_DIR; conflict markers and the stash are preserved, and every session start will fail here until it is resolved by hand (git -C $PA_DIR status)"
-            fail "parent repo: stash pop raised conflicts — manual resolution required"
+                "daily-sync STOPPED: applying parent-repo stash ${_sha:0:8} in $PA_DIR was REFUSED — the tree was left untouched and the work is only in the stash. Clear whatever collides (git -C $PA_DIR status), then pop it: git -C $PA_DIR stash pop <ref>."
+            fail "parent repo: applying stash ${_sha:0:8} was refused — manual resolution required"
         else
             drop_applied_stash "$PA_DIR" "$_sha" "parent repo" || true
         fi
