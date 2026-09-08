@@ -162,7 +162,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         metavar="QUERY",
-        help="Semantic similarity search (requires pgvector + embeddings).",
+        help="Semantic similarity search (requires pgvector + embeddings). "
+             "Carries its own query text, so it cannot be combined with "
+             "--query or --id; --tag and --category do apply. Only rows "
+             "that already have an embedding are searched — the count of "
+             "active rows without one is reported on stderr. Falls back to "
+             "full-text search if semantic search is unavailable or returns "
+             "nothing.",
     )
     parser.add_argument(
         "--limit", "-n",
@@ -183,6 +189,19 @@ def parse_args() -> argparse.Namespace:
 
     if args.limit < 1:
         parser.error("--limit must be a positive integer")
+
+    # --semantic carries its own query text and try_semantic takes no
+    # memory_id, so combining it with --query or --id silently DISCARDED
+    # the other selector (audit R6): --semantic X --query Y searched for X
+    # and never mentioned that Y was dropped. Refuse the combination rather
+    # than guess which one the caller meant.
+    if args.semantic and (args.query or args.memory_id):
+        parser.error(
+            "--semantic cannot be combined with --query or --id: it carries "
+            "its own query text and cannot filter by id. Use --semantic "
+            "alone (optionally with --tag/--category), or drop --semantic "
+            "to run a full-text/id search."
+        )
 
     # Require at least one filter
     if not any([args.tags, args.query, args.category, args.memory_id, args.semantic]):
@@ -769,8 +788,9 @@ def main() -> None:
     if warning:
         print(warning, file=sys.stderr)
 
-    # Determine the effective text query for FTS/JSONL fallback.
-    # --semantic provides the query text if --query is not also set.
+    # The effective text query for FTS/JSONL. parse_args refuses
+    # --semantic together with --query, so at most one of them is set and
+    # this is simply "whichever the caller gave".
     effective_query = args.query or args.semantic
 
     # Semantic search path (pgvector cosine similarity)
@@ -788,6 +808,18 @@ def main() -> None:
                 "trying FTS",
                 file=sys.stderr,
             )
+        elif not results:
+            # Semantic ran and matched nothing. The stderr contract above
+            # promises FTS as the backstop, and before audit R6 an empty
+            # list short-circuited it: the caller got "0 results" from a
+            # path that only searches embedded rows. Reset to None so the
+            # FTS branch below runs on the same query text.
+            print(
+                "[fetch-memories] Semantic search returned no matches, "
+                "trying FTS",
+                file=sys.stderr,
+            )
+            results = None
 
     # Standard search path (FTS via PostgreSQL)
     if results is None and (

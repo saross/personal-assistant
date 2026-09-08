@@ -668,3 +668,105 @@ class TestMergeArchive:
     def test_empty_archive_returns_empty(self):
         primary = [_make_memory(mem_id="a")]
         assert fetch_memories._merge_archive(primary, []) == []
+
+
+# ============================================================================
+# Audit R6 — --semantic must not silently discard --query / --id, and an
+# empty semantic result must honour the FTS-fallback promise
+# ============================================================================
+
+
+@pytest.fixture()
+def _quiet_invocation_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise ``_log_invocation`` for main()-driving tests in this block.
+
+    These tests are about which search path runs, not about instrumentation;
+    the logger's own destination resolution is pinned separately.
+    """
+    monkeypatch.setattr(
+        fetch_memories, "_log_invocation", lambda args, results: None,
+    )
+
+
+class TestSemanticFlagCombinations:
+    """``--semantic`` is refused alongside selectors it cannot honour."""
+
+    @pytest.mark.parametrize("extra", [
+        ["--query", "gps"],
+        ["--id", "2026-03-15-abc123"],
+    ])
+    def test_semantic_with_query_or_id_is_a_usage_error(
+        self, monkeypatch: pytest.MonkeyPatch, extra: list[str],
+    ) -> None:
+        """Kills: dropping the parse_args guard (the selector was discarded).
+
+        argparse exits 2 for a usage error.
+        """
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy", *extra],
+        )
+        with pytest.raises(SystemExit) as exc:
+            fetch_memories.parse_args()
+        assert exc.value.code == 2
+
+    def test_semantic_with_tag_and_category_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """try_semantic honours these two, so they must stay legal."""
+        monkeypatch.setattr(sys, "argv", [
+            "fetch-memories.py", "--semantic", "canopy",
+            "--tag", "gps", "--category", "decision",
+        ])
+        args = fetch_memories.parse_args()
+        assert args.semantic == "canopy"
+        assert args.tags == ["gps"]
+
+
+class TestEmptySemanticFallsBackToFts:
+    """An empty semantic result must fall through to full-text search."""
+
+    def test_empty_semantic_result_triggers_fts(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        _quiet_invocation_log: None,
+    ) -> None:
+        """Kills: leaving ``results = []`` in place (FTS never ran).
+
+        The stderr contract promises FTS as the backstop; before the fix an
+        empty list satisfied ``results is not None`` and short-circuited it.
+        """
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy"],
+        )
+        monkeypatch.setattr(fetch_memories, "try_semantic", lambda **kw: [])
+        seen: dict[str, Any] = {}
+
+        def fake_postgres(**kwargs: Any) -> list[dict[str, Any]]:
+            seen.update(kwargs)
+            return [_make_memory(mem_id="from-fts")]
+
+        monkeypatch.setattr(fetch_memories, "try_postgres", fake_postgres)
+        fetch_memories.main()
+
+        captured = capsys.readouterr()
+        assert seen["query"] == "canopy"  # the semantic text drove the FTS
+        assert "Semantic search returned no matches" in captured.err
+        assert "Memory Details (1 result)" in captured.out
+
+    def test_non_empty_semantic_result_skips_fts(
+        self, monkeypatch: pytest.MonkeyPatch, _quiet_invocation_log: None,
+    ) -> None:
+        """A successful semantic search must NOT also run FTS."""
+        monkeypatch.setattr(
+            sys, "argv", ["fetch-memories.py", "--semantic", "canopy"],
+        )
+        monkeypatch.setattr(
+            fetch_memories, "try_semantic",
+            lambda **kw: [_make_memory(mem_id="from-semantic")],
+        )
+
+        def fail(**kwargs: Any) -> None:
+            raise AssertionError("FTS must not run after a semantic hit")
+
+        monkeypatch.setattr(fetch_memories, "try_postgres", fail)
+        fetch_memories.main()
