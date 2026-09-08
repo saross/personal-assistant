@@ -15,6 +15,16 @@ reaching the published style guide, and the audit found four ways past it:
 * every eight-character upper-case token was treated as a Zotero key, so
   METADATA, ANALYSIS and 20260530 were reported as confabulated keys (ST7).
 
+The re-audit found two more:
+
+* the per-1k extractor required a decimal point and a bare ``1 000``, so
+  ``0.57 per 1,000 words``, ``0.57/1,000 words``, ``0.57 per 1k`` and the
+  integer ``6 per 1 000 words`` produced no row at all and passed unchecked
+  (ST-R4g-7);
+* the key check decided what WAS a key by shape, requiring both a letter and a
+  digit, so an all-letter key such as ABCDEFGH was invisible to check 5 and a
+  confabulated one passed (ST-R4g-8).
+
 Every fixture here is invented: the keys, the rates, and the guide prose are
 all synthetic, and no corpus file is read.
 """
@@ -166,6 +176,83 @@ def test_a_correct_per_1k_rate_passes():
     assert _statuses(results, "per-1k rate") == ["PASS"]
 
 
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        ("0.57 per 1,000 words", 0.57),   # comma thousands separator
+        ("0.57 per 1 000 words", 0.57),   # space separator (the old shape)
+        ("0.57 per 1000 words", 0.57),    # no separator at all
+        ("0.57 per 1 000 w", 0.57),       # abbreviated unit
+        ("0.57 per 1k", 0.57),            # `1k` after `per`
+        ("0.57/1,000 words", 0.57),       # slash plus comma
+        ("0.57/1k", 0.57),                # slash plus `1k` (the old shape)
+        ("6 per 1 000 words", 6.0),       # integer rate, space separator
+        ("6 per 1,000 words", 6.0),       # integer rate, comma separator
+    ],
+)
+def test_every_per_1k_shape_the_guide_writes_is_extracted(shape, expected):
+    r"""Each way of writing a per-1 000-word rate must reach check 4b.
+
+    The mutation this kills: restoring
+    ``r"(\d+\.\d+)\s*(?:per\s+1\s*0?\s*0?\s*0\s*w?|...|/1k)"``, which
+    requires a decimal point and a separator-free ``1 000``, so the comma,
+    ``per 1k`` and integer shapes match nothing.
+    """
+    assert verifier.extract_per_1k_aggregates(
+        f"Semicolons run at {shape} across the corpus.") == [expected]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The 2026 revision covers 1,000 words of prose in all.",
+        "The corpus has 12 semicolons / 1,000 words.",
+        "A budget of 1 000 words per section was agreed.",
+    ],
+)
+def test_a_word_count_with_no_leading_rate_is_not_a_per_1k_claim(text):
+    r"""Widening the pattern must not turn word counts and years into rates.
+
+    The mutation this kills: dropping the mandatory leading
+    ``(\d+(?:\.\d+)?)\s*(?:per\s+|/\s*)`` from ``_PER_1K_RE``, which makes
+    a bare ``1,000 words`` — check 4's own denominator among them — match as a
+    per-1k rate and fabricates check-4b rows for claims that make no such
+    assertion.
+    """
+    assert verifier.extract_per_1k_aggregates(text) == []
+
+
+def test_a_comma_separated_per_1k_rate_is_checked_rather_than_skipped():
+    """A missed shape is not a PASS, it is silence, which is the whole hole.
+
+    The mutation this kills: restoring the decimal-and-bare-``1 000``-only
+    pattern, under which this confabulated rate produces NO ROW AT ALL and the
+    guide passes the gate with exit 0.
+    """
+    body = "**Status:** attested\n\nSemicolons run at 0.57 per 1,000 words."
+
+    results = verifier.verify_claim("6.2", "Semicolons", body, PHASE1, PHASE3)
+
+    assert _statuses(results, "per-1k rate") == ["FAIL"]
+
+
+def test_an_integer_per_1k_rate_is_checked_in_both_directions():
+    r"""An integer rate is a rate: wrong ones fail, right ones pass.
+
+    The mutation this kills: restoring the ``(\d+\.\d+)`` numerator, which
+    requires a decimal point and so drops every integer rate unchecked.
+    """
+    wrong = "**Status:** attested\n\nSemicolons run at 6 per 1 000 words."
+    right = "**Status:** attested\n\nSemicolons run at 12 per 1 000 words."
+
+    assert _statuses(
+        verifier.verify_claim("6.2", "Semicolons", wrong, PHASE1, PHASE3),
+        "per-1k rate") == ["FAIL"]
+    assert _statuses(
+        verifier.verify_claim("6.2", "Semicolons", right, PHASE1, PHASE3),
+        "per-1k rate") == ["PASS"]
+
+
 def test_a_section_with_no_metric_mapping_is_reported_as_unverified():
     """52 §-claims used to be skipped in silence; each now leaves a row.
 
@@ -247,6 +334,58 @@ def test_a_real_corpus_key_passes_the_key_check():
     results = verifier.verify_claim("6.2", "Semicolons", body, PHASE1, PHASE3)
 
     assert _statuses(results, "named-key validity") == []
+
+
+def _phase1_with_extra_paper(key: str) -> dict:
+    """Return PHASE1 plus one more invented paper, so a key can be made real."""
+    extra = {"key": key, "regression": {"semicolon_per_1k": 8.0,
+                                        "em_dash_per_1k": 0.0}}
+    return {**PHASE1, "per_paper": [*PHASE1["per_paper"], extra]}
+
+
+def test_an_all_letter_corpus_key_is_recognised_and_checked():
+    """ABCDEFGH is a real key here, and the shape test made it invisible.
+
+    The mutation this kills: restoring the single-argument
+    ``named = extract_named_keys_in_block(body)`` call, which filters every
+    candidate through the letters-AND-digits shape test before the corpus key
+    set is consulted, so no all-letter key is ever checked.
+    """
+    phase1 = _phase1_with_extra_paper("ABCDEFGH")
+    body = "**Status:** attested\n\nSee ABCDEFGH for the pattern."
+
+    results = verifier.verify_claim("6.2", "Semicolons", body, phase1, PHASE3)
+
+    assert [r.status for r in results if r.actual == "ABCDEFGH"] == ["PASS"]
+    assert _statuses(results, "named-key validity") == []
+
+
+def test_the_same_all_letter_token_is_ignored_when_it_is_not_a_key():
+    """ABCDEFGH with no such paper in phase 1 is prose, not a confabulation.
+
+    The mutation this kills: dropping the ``& known`` intersection from
+    ``extract_named_keys_in_block`` (``sorted(candidates | plausible)``), which
+    reports every eight-character upper-case word as an invalid key and brings
+    the whole ST7 false-positive class back.
+    """
+    body = "**Status:** attested\n\nSee ABCDEFGH for the pattern."
+
+    results = verifier.verify_claim("6.2", "Semicolons", body, PHASE1, PHASE3)
+
+    assert [r for r in results if r.actual == "ABCDEFGH"] == []
+
+
+def test_the_extractor_defers_to_the_corpus_key_set():
+    """Known keys are keys whatever their shape; unknown ones need the shape.
+
+    The mutation this kills: returning ``sorted(plausible)`` regardless of
+    ``valid_keys``, i.e. keeping the shape test as the primary filter, under
+    which the real all-letter key ABCDEFGH is dropped from the result.
+    """
+    text = "ABCDEFGH METADATA ABCD1234 20260530 SENTENCE"
+
+    assert verifier.extract_named_keys_in_block(
+        text, {"ABCDEFGH"}) == ["ABCD1234", "ABCDEFGH"]
 
 
 # ---------------------------------------------------------------------------

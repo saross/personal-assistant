@@ -253,12 +253,24 @@ _SUBCLUSTER_CLAUSE_RE = re.compile(
     re.I,
 )
 
-# A Zotero key is eight characters of upper-case letters and digits, and in
-# practice always mixes the two. Finding ST7: `[0-9A-Z]{8}` alone also matches
-# METADATA, ANALYSIS and 20260530, each of which was reported as a
-# confabulated corpus key. Requiring at least one letter AND at least one
-# digit keeps the check (an invented key such as ABCD1234 still fails) while
-# dropping the whole class of false positives.
+# A Zotero key is eight characters of upper-case letters and digits, which is
+# also the shape of METADATA, ANALYSIS and 20260530 — reported as confabulated
+# corpus keys until finding ST7. Two patterns, because shape alone cannot
+# settle it:
+#
+# * `_KEY_CANDIDATE_RE` finds every token of the right shape, and the corpus's
+#   own key set — not a pattern — then decides which of them ARE keys, the way
+#   check 6 already does at its "Where it appears" window.
+# * `_ZOTERO_KEY_RE` survives only as the tiebreaker for a candidate the
+#   corpus does NOT know: mixing letters and digits makes an invented key such
+#   as ABCD1234 reportable as a confabulation, while an all-letter token stays
+#   ignorable prose.
+#
+# Finding ST-R4g-8: using that mixed-shape test as the PRIMARY filter hid
+# every all-letter key — a real and far from negligible slice of the
+# eight-character keyspace, e.g. ABCDEFGH — from check 5 altogether, so a
+# confabulated all-letter key was never even looked at.
+_KEY_CANDIDATE_RE = re.compile(r"\b([0-9A-Z]{8})\b")
 _ZOTERO_KEY_RE = re.compile(
     r"\b(?=[0-9A-Z]{8}\b)(?=[0-9A-Z]*[A-Z])(?=[0-9A-Z]*[0-9])([0-9A-Z]{8})\b"
 )
@@ -286,14 +298,31 @@ def extract_count_paper_fractions(body: str) -> list[tuple[int, int, str, bool]]
     return out
 
 
-def extract_named_keys_in_block(body: str) -> list[str]:
-    """Return the Zotero-key-shaped tokens in the body, sorted.
+def extract_named_keys_in_block(body: str,
+                                valid_keys: set[str] | None = None
+                                ) -> list[str]:
+    """Return the tokens in the body that must be treated as Zotero keys.
+
+    Every eight-character ``[0-9A-Z]`` token is a candidate, and ``valid_keys``
+    — the corpus's own key set — is what decides. A candidate that IS a known
+    key is returned however it is spelled, all-letter keys included (the shape
+    test used to drop those, finding ST-R4g-8); a candidate the corpus does not
+    know is returned only when it is key-shaped-and-plausible, so METADATA,
+    ANALYSIS and 20260530 raise nothing (finding ST7). The PASS/FAIL verdict is
+    the caller's, which holds the same key set.
+
+    ``valid_keys`` may be omitted, in which case only the plausibility test
+    applies and an all-letter key is invisible — which is why check 5 always
+    passes the corpus's keys in.
 
     Sorted, not ``list(set(...))``: set iteration order varies with the
     interpreter's hash seed, which made the report's FAIL rows come out in a
     different order on every run (finding STT-M2).
     """
-    return sorted(set(_ZOTERO_KEY_RE.findall(body)))
+    known = set(valid_keys or ())
+    candidates = set(_KEY_CANDIDATE_RE.findall(body))
+    plausible = set(_ZOTERO_KEY_RE.findall(body))
+    return sorted((candidates & known) | plausible)
 
 
 def extract_cv_values(body: str) -> list[float]:
@@ -302,13 +331,33 @@ def extract_cv_values(body: str) -> list[float]:
     return [float(m.group(1)) for m in pat.finditer(body)]
 
 
+# A claimed per-1 000-word rate, in every shape the guide actually writes one.
+# Finding ST-R4g-7: the old pattern required a decimal point and a bare
+# `1 000`, so `0.57 per 1,000 words`, `0.57/1,000 words`, `0.57 per 1k` and
+# the integer `6 per 1 000 words` all slipped past it — and a shape check
+# 4b never sees produces NO ROW AT ALL, so the claim passed unchecked, which
+# is precisely the hole check 4b exists to close.
+#
+# The leading number is mandatory and has to sit adjacent to the `per` or the
+# `/`, which is what keeps a bare `1,000 words`, a year, and check 4's own
+# `12 semicolons / 1,000 words` shape out of this extractor.
+_PER_1K_RE = re.compile(
+    r"(\d+(?:\.\d+)?)"          # the rate itself: integer or decimal
+    r"\s*(?:per\s+|/\s*)"       # `per ` or `/`
+    r"1(?:[,\s]?000|k)"         # 1,000 / 1 000 / 1000 / 1k
+    r"\b",                      # ...with nothing glued on the end (`1kg`)
+    re.I,
+)
+
+
 def extract_per_1k_aggregates(body: str) -> list[float]:
-    """Numeric aggregate rates of the form `X per 1 000` or `X per 1k` or `X/1k`."""
-    pat = re.compile(
-        r"(\d+\.\d+)\s*(?:per\s+1\s*0?\s*0?\s*0\s*w?|/\s*1\s*0?\s*0?\s*0\s*w?|/1k)",
-        re.I,
-    )
-    return [float(m.group(1)) for m in pat.finditer(body)]
+    """Find every claimed per-1 000-word rate in a claim body.
+
+    Accepts `X per 1,000 words`, `X per 1 000 w`, `X per 1000`, `X per 1k`,
+    `X/1,000 words` and `X/1k`, with X either an integer or a decimal, and
+    with the thousands separator a comma, a space, or nothing at all.
+    """
+    return [float(m.group(1)) for m in _PER_1K_RE.finditer(body)]
 
 
 def extract_explicit_count_word_ratios(body: str) -> list[tuple[int, str, int]]:
@@ -571,10 +620,23 @@ def verify_claim(section: str, title: str, body: str,
                 ))
 
     # ---- Check 5: Named Zotero keys in claim body must be valid papers
+    #
+    # The corpus key set, not the token's shape, decides what counts as a key
+    # (finding ST-R4g-8). A key that is really in phase 1 is recognised and
+    # gets its own row whatever its spelling — including the all-letter keys
+    # the old shape test silently dropped — while an eight-character token the
+    # corpus does not know is only reported when it is plausibly a key at all.
     valid_keys = {p["key"] for p in phase1["per_paper"]}
-    named = extract_named_keys_in_block(body)
-    invalid = [k for k in named if k not in valid_keys]
-    for k in invalid:
+    named = extract_named_keys_in_block(body, valid_keys)
+    for k in named:
+        if k in valid_keys:
+            out.append(CheckResult(
+                section, None, "named key recognised",
+                "PASS",
+                expected="known corpus key",
+                actual=k,
+            ))
+            continue
         out.append(CheckResult(
             section, None, "named-key validity",
             "FAIL",
