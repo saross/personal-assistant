@@ -134,6 +134,32 @@ class TestSubmoduleCommitsArePublished:
             'with "reference is not a tree"'
         )
 
+    def test_bump_is_withheld_when_the_submodule_is_unverifiable(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M1: no origin/main means the ahead-check cannot run, so the
+        parent bump must not be published either.
+
+        Reached by a misconfigured remote — a fetch refspec that never
+        writes refs/remotes/origin/main — under which the pull still
+        succeeds, so the run reaches the bump with no way to tell whether
+        the submodule HEAD is fetchable.
+        """
+        machine = world.add_machine("a")
+        git("config", "--unset", "remote.origin.fetch", cwd=machine.data)
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=machine.data)
+        machine.append_memory("2026-09-08-m1")
+        parent_before = world.published_parent_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+        assert "bump WITHHELD" in combined
+        assert world.published_parent_head() == parent_before, (
+            "published a pointer to a data commit that may be unfetchable"
+        )
+        assert world.gate("daily-sync-gate").splitlines()[0] == "1"
+
     def test_second_machine_can_follow(self, world: SyncWorld) -> None:
         """The end-to-end consequence: machine B can update to A's push."""
         machine_a = world.add_machine("a")

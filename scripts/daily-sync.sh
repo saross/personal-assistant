@@ -127,10 +127,16 @@ fail() {
 # ---------------------------------------------------------------------------
 SYNC_GATE="$HOME/.cache/daily-sync-gate"
 
+# Most gate writes are followed by `fail`, but not all: audit M1's withheld
+# pointer bump is a problem in a run that otherwise completes. Remember that
+# so the end-of-run clear does not wipe a gate this very run raised.
+sync_gate_problems=0
+
 write_sync_gate() {
     # write_sync_gate <count> [detail ...]
     # Never fatal: a gate that cannot be written must not itself abort a
     # sync, and the log line beside every call site still records the state.
+    sync_gate_problems="$1"
     mkdir -p "$(dirname "$SYNC_GATE")" 2>/dev/null || true
     printf '%s\n' "$@" > "$SYNC_GATE" 2>/dev/null || true
 }
@@ -809,6 +815,7 @@ fi
 # than only when this block committed. origin/main is used rather than
 # @{u} because that is the ref push_with_retry actually pushes to, and
 # a submodule clone does not always have upstream tracking configured.
+data_publishable=1
 if [[ $DRY_RUN -eq 0 ]]; then
     if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
         unpushed="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
@@ -817,7 +824,13 @@ if [[ $DRY_RUN -eq 0 ]]; then
             push_with_retry "data submodule"
         fi
     else
-        log "data submodule: no origin/main ref — skipping unpushed-commit check"
+        # audit M1: without origin/main there is no way to tell whether the
+        # submodule HEAD has been published, so the check above cannot run
+        # — and falling through to the parent bump would publish a pointer
+        # to a possibly-unpushed commit, which is precisely the S1 state
+        # this block exists to prevent. Withhold the bump instead.
+        data_publishable=0
+        log "data submodule: no origin/main ref — cannot verify that HEAD is published"
     fi
 fi
 
@@ -898,11 +911,21 @@ fi
 
 # Bump submodule pointer if the data submodule moved.
 if [[ $DRY_RUN -eq 0 ]] && ! git diff --quiet data; then
-    log "parent repo: data submodule pointer moved — committing bump"
-    git add data >>"$LOG_FILE" 2>&1
-    git commit -m "chore(auto-sync): bump data pointer from $HOST $(date +'%Y-%m-%d')" \
-        >>"$LOG_FILE" 2>&1 || fail "parent commit failed"
-    push_with_retry "parent repo"
+    # audit M1: only publish a pointer we know is fetchable. The data half
+    # sets data_publishable=0 when it could not confirm the submodule HEAD
+    # reached origin; bumping anyway is how origin comes to name a pa-data
+    # SHA the other machine cannot fetch (audit S1).
+    if [[ $data_publishable -eq 1 ]]; then
+        log "parent repo: data submodule pointer moved — committing bump"
+        git add data >>"$LOG_FILE" 2>&1
+        git commit -m "chore(auto-sync): bump data pointer from $HOST $(date +'%Y-%m-%d')" \
+            >>"$LOG_FILE" 2>&1 || fail "parent commit failed"
+        push_with_retry "parent repo"
+    else
+        log "parent repo: pointer moved but the data submodule is not verifiably published — bump WITHHELD"
+        write_sync_gate 1 \
+            "daily-sync: the data submodule has no origin/main ref, so the parent pointer bump was withheld — publishing it would name a pa-data commit the other machine cannot fetch. Check the submodule's remote (git -C $DATA_DIR remote -v) and fetch it."
+    fi
 else
     log "parent repo: nothing to commit"
 fi
@@ -1197,8 +1220,9 @@ fi
 
 # audit S3/S17: the run finished, so whatever wedged state a previous run
 # recorded is over. Clearing here (rather than at the top) means the gate
-# keeps nagging for exactly as long as the sync is actually stuck.
-if [[ $DRY_RUN -eq 0 ]]; then
+# keeps nagging for exactly as long as the sync is actually stuck — and not
+# when THIS run raised a non-fatal problem of its own (audit M1).
+if [[ $DRY_RUN -eq 0 ]] && [[ "$sync_gate_problems" -eq 0 ]]; then
     write_sync_gate 0
 fi
 
