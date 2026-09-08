@@ -114,48 +114,59 @@ fi
 #
 # These are the gates the September 2026 incident argued for: the sessions
 # table sat three weeks stale behind an error in a log nobody reads.
-# How old a gate may be before its absence or staleness is itself the
-# problem. The syncs run every five minutes and the indexer on every
-# session close, so six hours means the pipeline has been dead for a
-# while and nobody noticed — the failure mode a gate cannot report,
-# because a dead script writes no gate at all (seventh re-audit, M6).
-PG_GATE_STALE_HOURS=6
-# The override is validated before it is used. It is expanded inside
-# $(( )) and compared with -gt, and bash evaluates a non-numeric value
-# there as an arithmetic EXPRESSION: PA_GATE_STALE_HOURS='x[$(id>&2)]'
-# would run a command out of the environment (eighth re-audit, M6).
-# Anything that is not a positive integer falls back to the shipped
-# default rather than being trusted.
-if [[ "${PA_GATE_STALE_HOURS:-}" =~ ^[0-9]+$ ]] \
-   && (( 10#${PA_GATE_STALE_HOURS} > 0 )); then
-    PG_GATE_STALE_HOURS="$(( 10#${PA_GATE_STALE_HOURS} ))"
-fi
-PG_STALE_SECONDS=$(( PG_GATE_STALE_HOURS * 3600 ))
-
-# A gate cannot be fresher than the machine is old. After a shutdown
-# longer than the window, every pipeline gate is stale on the first
-# session back, and telling Shawn that three scripts have died when the
-# truth is "the machine was off" is exactly the noise that teaches
-# people to ignore gates (eighth re-audit, C2). Staleness is therefore
-# asserted only once the machine has been up longer than the window, and
-# the message distinguishes "has not run since boot" from "stopped
-# part-way through an uptime".
 #
-# Caveat, documented rather than papered over: on Linux /proc/uptime
-# counts time spent suspended, so this silences the shutdown and reboot
-# cases exactly, and a suspend only where the machine was really powered
-# down. There is no user-readable monotonic clock to separate a sleeping
-# machine from a dead cron entry.
+# --- Is each pipeline script still running? -----------------------------
+#
+# The two kinds of gate here fail in completely different ways, and a
+# single wall-clock rule cannot describe both (ninth re-audit, M4).
+#
+#   postgres-sync-memories-gate  is written by cron every five minutes.
+#       Silence for half an hour means the cron entry is gone. Measured
+#       from the LATER of the gate's own mtime and the machine's boot,
+#       because a gate cannot be refreshed while the machine is off — and
+#       with a short grace after boot, so the first session back does not
+#       report a script that has not had its turn yet.
+#
+#   postgres-sync-sessions-gate and index-session-content-gate are
+#       written by session hooks. Wall-clock age says nothing about them:
+#       a fortnight of no sessions, or one very long session, leaves them
+#       untouched and everything is fine. They are only late when a
+#       SESSION HAS ENDED and the hook did not run — which is exactly
+#       "there is a session.meta.json newer than the gate".
+#
+# Every override is validated before use: these values are expanded
+# inside $(( )), where bash evaluates a non-numeric value as an
+# arithmetic EXPRESSION and an array subscript runs a command
+# substitution (eighth re-audit, M6).
+_pa_gate_minutes() {
+    # $1 = the value from the environment, $2 = the shipped default.
+    if [[ "${1:-}" =~ ^[0-9]+$ ]] && (( 10#${1} > 0 )); then
+        printf '%s' "$(( 10#${1} ))"
+    else
+        printf '%s' "$2"
+    fi
+}
+PG_CRON_STALE_MINUTES="$(_pa_gate_minutes "${PA_GATE_STALE_MINUTES:-}" 30)"
+PG_BOOT_GRACE_MINUTES="$(_pa_gate_minutes "${PA_GATE_BOOT_GRACE_MINUTES:-}" 10)"
+PG_HOOK_LAG_MINUTES="$(_pa_gate_minutes "${PA_HOOK_GATE_LAG_MINUTES:-}" 15)"
+
+# Where session archives land. A session.meta.json newer than a
+# hook-written gate is the evidence that the hook did not run.
+PG_ARCHIVE_ROOT="${PA_CC_ARCHIVES:-${HOME}/cc-archives}"
+
+# Uptime, for the boot reference and the post-boot grace. Overridable so
+# the guard can be tested without a reboot.
 PG_UPTIME_FILE="${PA_UPTIME_FILE:-/proc/uptime}"
 PG_UPTIME_SECONDS=""
 PG_BOOT_EPOCH=""
 _pg_uptime_raw=""
 _pg_uptime_rest=""
+PG_NOW="$(date +%s)"
 if [[ -r "$PG_UPTIME_FILE" ]]; then
     read -r _pg_uptime_raw _pg_uptime_rest < "$PG_UPTIME_FILE" || true
     if [[ "$_pg_uptime_raw" =~ ^([0-9]+) ]]; then
         PG_UPTIME_SECONDS="${BASH_REMATCH[1]}"
-        PG_BOOT_EPOCH=$(( $(date +%s) - PG_UPTIME_SECONDS ))
+        PG_BOOT_EPOCH=$(( PG_NOW - PG_UPTIME_SECONDS ))
     fi
 fi
 
@@ -186,16 +197,43 @@ for _pg_gate_name in postgres-sync-memories-gate \
         fi
     done
 
-    _pg_age=$(( $(date +%s) - _pg_newest ))
-    if (( _pg_newest > 0 )) && (( _pg_age > PG_STALE_SECONDS )); then
-        if [[ -z "$PG_UPTIME_SECONDS" ]]; then
-            GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated for over ${PG_GATE_STALE_HOURS}h — the script is not running. Check the cron entry and the session hooks.")
-        elif (( PG_UPTIME_SECONDS <= PG_STALE_SECONDS )); then
-            : # The machine has not been up long enough for it to have run.
-        elif [[ -n "$PG_BOOT_EPOCH" ]] && (( _pg_newest < PG_BOOT_EPOCH )); then
-            GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated since this machine booted $(( PG_UPTIME_SECONDS / 3600 ))h ago — the script is not running. Check the cron entry and the session hooks.")
+    if (( _pg_newest == 0 )); then
+        continue
+    fi
+
+    if [[ "$_pg_gate_name" == "postgres-sync-memories-gate" ]]; then
+        # Cron-written: silence itself is the signal.
+        if [[ -n "$PG_UPTIME_SECONDS" ]] \
+           && (( PG_UPTIME_SECONDS < PG_BOOT_GRACE_MINUTES * 60 )); then
+            : # Too soon after boot for cron to have had its turn.
         else
-            GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been updated for over ${PG_GATE_STALE_HOURS}h — the script is not running. Check the cron entry and the session hooks.")
+            _pg_reference="$_pg_newest"
+            _pg_since_boot=0
+            if [[ -n "$PG_BOOT_EPOCH" ]] \
+               && (( PG_BOOT_EPOCH > _pg_reference )); then
+                _pg_reference="$PG_BOOT_EPOCH"
+                _pg_since_boot=1
+            fi
+            _pg_age_minutes=$(( (PG_NOW - _pg_reference) / 60 ))
+            if (( _pg_age_minutes > PG_CRON_STALE_MINUTES )); then
+                if (( _pg_since_boot )); then
+                    GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written in the ${_pg_age_minutes}m since this machine booted — the sync runs every five minutes, so it is not running. Check the cron entry.")
+                else
+                    GATE_LINES+=("[${_pg_gate_name%-gate} gate] has not been written for ${_pg_age_minutes}m — the sync runs every five minutes, so it is not running. Check the cron entry.")
+                fi
+            fi
+        fi
+    else
+        # Hook-written: only a session that ENDED without the hook
+        # running is evidence. Wall-clock age is not — a long session, or
+        # a fortnight away, leaves these untouched and nothing is wrong.
+        if [[ -d "$PG_ARCHIVE_ROOT" ]]; then
+            _pg_late="$(find "$PG_ARCHIVE_ROOT" -name session.meta.json \
+                -newermt "@$(( _pg_newest + PG_HOOK_LAG_MINUTES * 60 ))" \
+                -print -quit 2>/dev/null)"
+            if [[ -n "$_pg_late" ]]; then
+                GATE_LINES+=("[${_pg_gate_name%-gate} gate] a session was archived more than ${PG_HOOK_LAG_MINUTES}m after this gate was last written (${_pg_late}) — the session hooks are not running. Check the PreCompact and SessionEnd hooks in ~/.claude/settings.json.")
+            fi
         fi
     fi
 
@@ -212,7 +250,8 @@ for _pg_gate_name in postgres-sync-memories-gate \
     fi
 done
 unset _pg_gate_name _pg_gate_file _pg_state_file _pg_count _pg_line
-unset _pg_witness _pg_mtime _pg_newest _pg_age _pg_uptime_raw _pg_uptime_rest
+unset _pg_witness _pg_mtime _pg_newest _pg_uptime_raw _pg_uptime_rest
+unset _pg_reference _pg_since_boot _pg_age_minutes _pg_late
 
 # ---------------------------------------------------------------------------
 # Slack dashboard refresh (added 2026-08-22)

@@ -143,7 +143,7 @@ class TestGateFormat:
         script, which runs the daily sync.
         """
         source = TRIGGER.read_text(encoding="utf-8")
-        start = source.index("PG_GATE_STALE_HOURS=")
+        start = source.index("_pa_gate_minutes() {")
         end = source.index("unset _pg_gate_name", start)
         block = source[start:end]
 
@@ -166,10 +166,18 @@ class TestGateFormat:
             + '\nprintf "%s\\n" "${GATE_LINES[@]}"\n',
             encoding="utf-8",
         )
+        # A stand-in uptime, so a real machine that has been up for weeks
+        # does not make the freshly written gates look overdue.
+        uptime = tmp_path / "fake-uptime"
+        uptime.write_text("172800.00 172800.00\n", encoding="utf-8")
         result = subprocess.run(
             ["bash", str(script)],
             capture_output=True, text=True,
-            env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+            env={
+                "HOME": str(tmp_path),
+                "PATH": os.environ["PATH"],
+                "PA_UPTIME_FILE": str(uptime),
+            },
         )
 
         assert result.returncode == 0, result.stderr

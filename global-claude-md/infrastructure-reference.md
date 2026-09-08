@@ -356,22 +356,31 @@ archive root still exits 2; the failure to persist is logged at ERROR in
 its own right. The acknowledgement is the one command for which a
 persistence failure *is* the error, and it exits 9.
 
-The trigger also reports a gate that has **never been written** or has
-not been updated for six hours (`PA_GATE_STALE_HOURS`): a script that is
-not running writes no gate at all, which is the one failure a gate cannot
-report about itself.
+The trigger also reports a gate that has **never been written**: a script
+that is not running writes no gate at all, which is the one failure a
+gate cannot report about itself.
 
-Staleness is only asserted once the machine has been up longer than that
-window. After a shutdown longer than six hours every pipeline gate is old
-on the first session back, and three "the script is not running" lines
-that mean "the machine was off" are what teach people to ignore gates. A
-gate older than the boot itself is reported in those words ("has not been
-updated since this machine booted Nh ago"). The freshness test looks at
-the newest of the gate file and its `.state.json` sidecar, so a run that
-saved its state but could not render the gate is reported as a missing
-gate file rather than as a dead script. Note that Linux counts suspended
-time in `/proc/uptime`, so this silences the shutdown and reboot cases
-exactly and a suspend only where the machine was really powered down.
+Beyond that, the two kinds of gate are judged differently, because they
+fail differently:
+
+- **`postgres-sync-memories-gate` is written by cron every five
+  minutes**, so silence itself is the signal. It is late when more than
+  30 minutes (`PA_GATE_STALE_MINUTES`) have passed since the *later* of
+  the gate's own mtime and the machine's boot — a gate cannot be
+  refreshed while the machine is off — with a 10-minute grace after boot
+  (`PA_GATE_BOOT_GRACE_MINUTES`) so the first session back does not
+  report a job that has not had its turn.
+- **`postgres-sync-sessions-gate` and `index-session-content-gate` are
+  written by session hooks**, and wall-clock age says nothing about
+  them: a fortnight away, or one very long session, leaves them
+  untouched and nothing is wrong. They are late only when a session has
+  *ended* and the hook did not run — that is, when a `session.meta.json`
+  under `~/cc-archives` (`PA_CC_ARCHIVES`) is more than 15 minutes
+  (`PA_HOOK_GATE_LAG_MINUTES`) newer than the gate.
+
+The freshness test looks at the newest of the gate file and its
+`.state.json` sidecar, so a run that saved its state but could not render
+the gate is reported as a missing gate file rather than as a dead script.
 
 To clear a quarantine problem once the rows have been dealt with:
 
@@ -390,14 +399,25 @@ To clear a quarantine problem once the rows have been dealt with:
   Equivalent to `--quarantine-anyway`.
 - `OLLAMA_BASE_URL` — the embedding endpoint; an empty value falls back
   to localhost.
-- `PA_GATE_STALE_HOURS` (default 6) — how old a pipeline gate may be
-  before the trigger calls it stale. Must be a positive integer;
-  anything else falls back to the default, because the value is expanded
-  inside `$(( ))` where bash would otherwise evaluate it as an
-  arithmetic expression.
+- `PA_GATE_STALE_MINUTES` (default 30) — how long the cron-written
+  memories gate may go unrefreshed before the trigger calls the sync
+  dead.
+- `PA_GATE_BOOT_GRACE_MINUTES` (default 10) — how long after boot the
+  cron gate is left alone.
+- `PA_HOOK_GATE_LAG_MINUTES` (default 15) — how much newer than a
+  hook-written gate an archived `session.meta.json` must be before the
+  hook is called late.
+- `PA_CC_ARCHIVES` (default `~/cc-archives`) — where the trigger looks
+  for archived sessions when judging the hook-written gates.
 - `PA_UPTIME_FILE` (default `/proc/uptime`) — where the trigger reads the
-  machine's uptime for the staleness guard. Overridable so the guard can
-  be tested without a reboot.
+  machine's uptime. Overridable so the boot rules can be tested without a
+  reboot.
+
+  Each of the four numeric values must be a positive integer; anything
+  else falls back to the default, because they are expanded inside
+  `$(( ))` where bash would otherwise evaluate them as arithmetic
+  expressions. `PA_GATE_STALE_HOURS` is retired — a single wall-clock age
+  described neither kind of gate.
 
 ### Test Suite
 
