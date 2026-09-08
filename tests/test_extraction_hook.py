@@ -1172,15 +1172,150 @@ class TestAuditRoundTwo:
         monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
         assert eh.recent_seed_tags(5) == ["aaa", "bbb"]          # fallback
 
-    def test_vocabulary_is_not_written_by_format_memories(self, tmp_path, monkeypatch):
-        """H18: the vocabulary update moved to after the append in main()."""
-        vocab = tmp_path / "vocab.txt"
-        vocab.write_text("existing\n")
+    def test_vocabulary_is_untouched_when_the_append_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """H18, behaviourally: the vocabulary is written only after the append.
+
+        Kills moving ``update_vocabulary(new_tags)`` above
+        ``append_memories(memories)`` in main(), and kills reinstating the
+        ``update_vocabulary`` call inside ``format_memories`` — either puts
+        the window's tags in the shared vocabulary for memories that were
+        never persisted, so the vocabulary claims tags no record carries.
+
+        Replaces an ``inspect.getsource`` string assertion (audit round two
+        M6), which passed for any rename or reordering that kept the literal
+        text.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text("existing-tag\n", encoding="utf-8")
         monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
-        import inspect
-        source = inspect.getsource(eh.format_memories)
-        assert "update_vocabulary(" not in source
-        assert "update_vocabulary(new_tags)" in inspect.getsource(eh.main)
+        # A regular file where the store's parent directory must be, so the
+        # append raises before any vocabulary work could legitimately run.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(eh, "MEMORIES_FILE", blocker / "sub" / "memories.jsonl")
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-V"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            with pytest.raises(SystemExit):
+                eh.main()
+
+        assert vocab.read_text(encoding="utf-8") == "existing-tag\n", (
+            "the vocabulary gained tags from memories that were never written"
+        )
+
+    def test_vocabulary_records_the_tags_of_a_successful_append(
+        self, tmp_path, monkeypatch
+    ):
+        """The other half: after a good append the tags DO land.
+
+        Kills ``update_vocabulary(new_tags)`` -> ``pass``, which the
+        ordering test above cannot see on its own.
+        """
+        transcript, _, _ = _stage_main_paths(tmp_path, monkeypatch)
+        vocab = tmp_path / "tag-vocabulary.txt"
+        vocab.write_text("existing-tag\n", encoding="utf-8")
+        monkeypatch.setattr(eh, "VOCABULARY_FILE", vocab)
+
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": "sess-W"}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            eh.main()
+
+        text = vocab.read_text(encoding="utf-8")
+        assert "existing-tag" in text
+        assert "audit-round-two" in text
+
+
+class TestCursorPruning:
+    """Audit round two M6: ``save_cursor``'s prune had no coverage."""
+
+    def test_an_overflowing_cursor_is_pruned_to_the_cap(self, tmp_path, monkeypatch):
+        """Kills ``for key in keys[:len(keys) - MAX_CURSOR_ENTRIES]`` -> ``keys``.
+
+        The mutation deletes EVERY entry, so every live session reparses its
+        whole transcript on the next firing. Nothing asserted the size, so it
+        survived.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        overflow = 20
+        cursor = {
+            f"sess-{i:04d}": f"uuid-{i:04d}"
+            for i in range(eh.MAX_CURSOR_ENTRIES + overflow)
+        }
+        eh.save_cursor(cursor)
+
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        assert len(saved) == eh.MAX_CURSOR_ENTRIES
+        # The prune keeps the tail of insertion order — the newest sessions.
+        assert "sess-0000" not in saved
+        assert f"sess-{overflow:04d}" in saved
+        last = eh.MAX_CURSOR_ENTRIES + overflow - 1
+        assert saved[f"sess-{last:04d}"] == f"uuid-{last:04d}"
+
+    def test_a_cursor_exactly_at_the_cap_is_not_pruned(self, tmp_path, monkeypatch):
+        """Kills a prune that drops a session while still at the cap.
+
+        Specifically ``keys[:len(keys) - MAX_CURSOR_ENTRIES + 1]``: the
+        dropped session reprocesses its entire transcript on the next
+        firing.
+
+        Note the honest limit: ``>`` -> ``>=`` on the guard above is an
+        EQUIVALENT mutant, not a surviving one. At exactly the cap the
+        slice is empty either way, so no test can distinguish them.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        cursor = {
+            f"sess-{i:04d}": f"uuid-{i:04d}"
+            for i in range(eh.MAX_CURSOR_ENTRIES)
+        }
+        eh.save_cursor(cursor)
+
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        assert len(saved) == eh.MAX_CURSOR_ENTRIES
+        assert saved["sess-0000"] == "uuid-0000"
+
+    def test_the_cursor_is_written_atomically(self, tmp_path, monkeypatch):
+        """Kills ``tmp.rename(CURSOR_FILE)`` -> ``CURSOR_FILE.write_text(...)``.
+
+        A crash mid-write would otherwise leave a truncated cursor, which
+        ``load_cursor`` reads as empty — every session reparsed from the top.
+        The temp file must not survive the write either.
+        """
+        target = tmp_path / "cursor.json"
+        monkeypatch.setattr(eh, "CURSOR_FILE", target)
+        renames: list[tuple[str, str]] = []
+        real_rename = type(target).rename
+
+        def _tracking_rename(self, dest):
+            renames.append((str(self), str(dest)))
+            return real_rename(self, dest)
+
+        monkeypatch.setattr(type(target), "rename", _tracking_rename)
+        eh.save_cursor({"sess-A": "uuid-A"})
+
+        assert renames == [(str(target.with_suffix(".tmp")), str(target))]
+        assert json.loads(target.read_text(encoding="utf-8")) == {"sess-A": "uuid-A"}
+        assert not target.with_suffix(".tmp").exists()
 
 
 # ============================================================================
