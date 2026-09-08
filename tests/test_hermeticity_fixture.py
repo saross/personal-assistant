@@ -785,8 +785,11 @@ def test_the_session_fixture_calls_the_store_assertion():
         ast.unparse(node.func) for node in ast.walk(fixture)
         if isinstance(node, ast.Call)
     }
-    assert "assert_canonical_store_untouched" in called, (
+    assert "store_findings" in called, (
         "the session fixture no longer checks the canonical store")
+    assert "classify_store_changes" in called, (
+        "the fixture must classify once and hand the result to both halves")
+    assert "report_source_tree_changes" in called
     assert "_canonical_store_snapshot" in called
 
 
@@ -1921,17 +1924,78 @@ def test_lock_files_and_rotations_are_violations_under_strict(tmp_path,
             before, conftest._canonical_store_snapshot())
 
 
-def test_an_ordinary_new_log_file_is_still_a_violation(tmp_path, monkeypatch):
-    """The allowance is narrow: only *.lock and a rotation of a known base."""
+def test_a_new_log_file_is_tolerated_in_advisory_mode(tmp_path, monkeypatch):
+    """The live system starting a new log is not the suite writing.
+
+    Round 4a-5, finding 4: a new ``logs/*.log`` failed in both modes, so any
+    script that opened a fresh log during the run failed a shared-checkout
+    suite. Narrow on purpose: that directory, that extension.
+    """
     monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
     _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
 
     before = conftest._canonical_store_snapshot()
-    (logs / "written-by-a-test.log").write_text("oops\n", encoding="utf-8")
+    (logs / "tag-gardening.log").write_text("started\n", encoding="utf-8")
+
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert tolerated == [str((logs / "tag-gardening.log").resolve())]
+
+
+def test_a_new_log_file_is_fatal_under_strict(tmp_path, monkeypatch):
+    """In a clean copy nothing else is writing, so it IS the suite."""
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "tag-gardening.log").write_text("started\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_new_non_log_file_under_logs_is_still_a_violation(tmp_path,
+                                                            monkeypatch):
+    """The allowance is by extension: anything else is still the suite.
+
+    Kills a mutation that widens the rule to every new file under logs/.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "written-by-a-test.txt").write_text("oops\n", encoding="utf-8")
 
     with pytest.raises(AssertionError):
         conftest.assert_canonical_store_untouched(
             before, conftest._canonical_store_snapshot())
+
+
+@pytest.mark.parametrize("rotated", [
+    "extraction.log.1", "extraction.log.gz", "extraction.log.1.gz",
+    "extraction.log.2.bz2", "extraction.log.zst",
+])
+def test_a_compressed_rotation_is_tolerated(tmp_path, monkeypatch, rotated):
+    """logrotate compresses what it rotates; the digit-only rule missed that.
+
+    Kills the mutation that drops the compression-suffix strip: ``X.gz``
+    would read as an ordinary new file and fail a shared-checkout run.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    log = logs / "extraction.log"
+    log.write_text("a long-standing log with plenty of content\n",
+                   encoding="utf-8")
+
+    before = conftest._canonical_store_snapshot()
+    log.rename(logs / rotated)
+    log.write_text("fresh\n", encoding="utf-8")
+
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert str((logs / rotated).resolve()) in tolerated
+    assert str(log.resolve()) in tolerated
 
 
 # ===========================================================================
@@ -2079,3 +2143,454 @@ def test_a_marked_test_may_use_the_three_argument_sendto():
     finally:
         client.close()
         server.close()
+
+
+# ===========================================================================
+# The three notes must reach the terminal (round 4a-5, finding 1)
+#
+# All three survived mutation: the INERT banner's call site could return
+# None, and either _DEFERRED_REPORT key could be renamed, and the suite
+# stayed green because every test exercised the FUNCTION and none the
+# WIRING. These run a nested pytest under default capture and grep stdout.
+# ===========================================================================
+
+#: Populates a synthetic store inside the nested tree and points the guard
+#: at it, so the store half is live there rather than inert.
+_NESTED_POPULATED_STORE = "\n".join([
+    "",
+    "_STORE = Path(__file__).resolve().parent / 'data' / 'memories'",
+    "_STORE.mkdir(parents=True, exist_ok=True)",
+    "_LOGS = Path(__file__).resolve().parent / 'data' / 'logs'",
+    "_LOGS.mkdir(parents=True, exist_ok=True)",
+    "(_STORE / 'memories.jsonl').write_text(",
+    "    '{\"id\": \"2031-01-01-aaaabbbbcccc\", \"content\": \"seed\", '",
+    "    '\"created_at\": \"2031-01-01T00:00:00+00:00\"}\\n', encoding='utf-8')",
+    "(_STORE / 'tag-vocabulary.txt').write_text('kiln\\n', encoding='utf-8')",
+    "_CANONICAL_FILES = (",
+    "    _STORE / 'memories.jsonl', _STORE / 'tag-vocabulary.txt')",
+    "_APPEND_TOLERANT_DIRS = (_LOGS,)",
+    "_CANONICAL_DIRS = (_LOGS,)",
+    "",
+])
+
+#: Points the guard at store paths that do not exist, the shape an archive
+#: export has.
+_NESTED_DANGLING_STORE = "\n".join([
+    "",
+    "_ABSENT = Path(__file__).resolve().parent / 'no-data' / 'memories'",
+    "_CANONICAL_FILES = (",
+    "    _ABSENT / 'memories.jsonl', _ABSENT / 'tag-vocabulary.txt')",
+    "_APPEND_TOLERANT_DIRS = (_ABSENT.parent / 'logs',)",
+    "_CANONICAL_DIRS = (_ABSENT.parent / 'logs',)",
+    "",
+])
+
+
+def _nested_test_body(statement: str) -> str:
+    """A one-test module whose body runs ``statement``."""
+    return "\n".join([
+        "import json",
+        "from pathlib import Path",
+        "",
+        "_ROOT = Path(__file__).resolve().parent",
+        "",
+        "",
+        "def test_the_live_system_does_something():",
+        f"    {statement}",
+        "    assert True",
+        "",
+    ])
+
+
+def _run_nested(tmp_path, override, body, extra_env=None):
+    """Run a nested pytest with DEFAULT capture; return the CompletedProcess."""
+    work = tmp_path / "nested"
+    (work / "watched").mkdir(parents=True)
+    real_conftest = Path(conftest.__file__).resolve()
+    (work / "conftest.py").write_text(
+        real_conftest.read_text(encoding="utf-8") + override, encoding="utf-8")
+    (work / "test_body.py").write_text(body, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.update(extra_env or {})
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--no-header",
+         "-p", "no:cacheprovider", "--basetemp", str(tmp_path / "bt"),
+         str(work)],
+        capture_output=True, text=True, cwd=str(work), env=env,
+    )
+
+
+def test_the_inert_banner_reaches_the_terminal(tmp_path):
+    """STRICT over a dangling store must SAY the store half is inert.
+
+    Kills the mutation that makes the call site
+    (``coverage = strict_store_coverage_warning()``) return None: the
+    function keeps its own tests and the banner never prints.
+    """
+    result = _run_nested(
+        tmp_path, _NESTED_DANGLING_STORE,
+        _nested_test_body("pass"),
+        {conftest.STRICT_ENV_VAR: "1"},
+    )
+
+    combined = result.stdout + result.stderr
+    assert "hermeticity" in combined, combined[-2000:]
+    assert "INERT" in combined
+    assert "memories.jsonl" in combined, "the banner must name what is missing"
+    assert result.returncode == 0
+
+
+def test_the_append_note_reaches_the_terminal(tmp_path):
+    """A well-formed append to a populated store is reported, with bytes.
+
+    Kills the mutation that renames the ``appends`` key: the append is still
+    tolerated, but the operator is told nothing — which is the whole point
+    of the note, since a test that forgot to patch a path appends silently.
+    """
+    append = (
+        "(_ROOT / 'data' / 'memories' / 'memories.jsonl').open("
+        "'a', encoding='utf-8').write(json.dumps({"
+        "'id': '2031-01-02-ddddeeeeffff', 'content': 'appended', "
+        "'created_at': '2031-01-02T00:00:00+00:00'}) + '\\n')"
+    )
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE,
+                         _nested_test_body(append))
+
+    combined = result.stdout + result.stderr
+    assert "hermeticity" in combined, combined[-2000:]
+    assert "the live system appended to" in combined
+    assert "memories.jsonl" in combined
+    assert "bytes)" in combined, "the note must carry the byte count"
+    assert result.returncode == 0
+
+
+def test_the_tolerated_noise_note_reaches_the_terminal(tmp_path):
+    """A .lock creation without STRICT is reported as tolerated noise.
+
+    Kills the mutation that renames the ``tolerated`` key.
+    """
+    result = _run_nested(
+        tmp_path, _NESTED_POPULATED_STORE,
+        _nested_test_body(
+            "(_ROOT / 'data' / 'logs' / 'daily-sync.lock')"
+            ".write_text('', encoding='utf-8')"),
+    )
+
+    combined = result.stdout + result.stderr
+    assert "hermeticity" in combined, combined[-2000:]
+    assert "tolerated shared-checkout noise" in combined
+    assert "daily-sync.lock" in combined
+    assert result.returncode == 0
+
+
+# ===========================================================================
+# One classification per teardown (round 4a-5, finding 2)
+# ===========================================================================
+
+
+def test_the_session_teardown_classifies_once(tmp_path, monkeypatch):
+    """Both halves share one answer instead of recomputing it.
+
+    Each changed file is hashed and content-checked inside
+    classify_store_changes, so calling it twice doubled that work over the
+    live 45 MB corpus. Kills the mutation that drops ``classified=`` from
+    either call.
+    """
+    calls = []
+    real = conftest.classify_store_changes
+    monkeypatch.setattr(
+        conftest, "classify_store_changes",
+        lambda before, after: (calls.append(1), real(before, after))[1],
+    )
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "extraction.log").write_text("a line\n", encoding="utf-8")
+    after = conftest._canonical_store_snapshot(with_digests=False)
+
+    classified = conftest.classify_store_changes(before, after)
+    conftest.report_source_tree_changes(
+        before, after, classified=classified, raise_on_strict=False)
+    conftest.store_findings(before, after, classified=classified)
+
+    assert len(calls) == 1, (
+        f"the classification was computed {len(calls)} times, not once")
+
+
+# ===========================================================================
+# Both halves are reported before either fails (round 4a-5, finding 6)
+# ===========================================================================
+
+
+def test_a_source_edit_does_not_mask_a_store_violation(tmp_path, monkeypatch):
+    """Under STRICT, a simultaneous source edit used to raise first.
+
+    ``report_source_tree_changes`` raising before the store half ran meant
+    the store violation was never even computed, so the operator saw the
+    lesser of the two problems. Kills the mutation that restores the early
+    raise (``raise_on_strict=True`` from the session teardown).
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    root = tmp_path / "checkout"
+    store = root / "data" / "memories"
+    store.mkdir(parents=True)
+    wiki = root / "wiki"
+    wiki.mkdir()
+    corpus = store / "memories.jsonl"
+    corpus.write_text('{"id": "a", "content": "x", '
+                      '"created_at": "2031-01-01T00:00:00+00:00"}\n',
+                      encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (corpus,))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", ())
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", (wiki,))
+
+    before = conftest._canonical_store_snapshot()
+    (wiki / "theirs.md").write_text("a concurrent edit\n", encoding="utf-8")
+    corpus.write_text('{"id": "clobbered"}\n', encoding="utf-8")
+    after = conftest._canonical_store_snapshot(with_digests=False)
+
+    classified = conftest.classify_store_changes(before, after)
+    source_changes = conftest.report_source_tree_changes(
+        before, after, classified=classified, raise_on_strict=False)
+    store_violations, _appends, _tolerated = conftest.store_findings(
+        before, after, classified=classified)
+
+    assert source_changes, "the source edit must still be reported"
+    assert store_violations, (
+        "the store violation was hidden behind the source edit")
+
+
+# ===========================================================================
+# An indented vocabulary line is not a bare tag (round 4a-5, finding 3)
+# ===========================================================================
+
+
+def test_an_indented_vocabulary_append_is_a_violation(tmp_path, monkeypatch):
+    """``stripped != line``, not ``stripped != line.strip()``.
+
+    The old disjunct compared a value with itself and could never fire, so
+    an indented append was accepted as a bare tag.
+    """
+    _corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with vocabulary.open("a", encoding="utf-8") as handle:
+        handle.write("   indented\n")
+
+    with pytest.raises(AssertionError, match="not a bare tag"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_trailing_space_vocabulary_append_is_a_violation(tmp_path,
+                                                           monkeypatch):
+    """Trailing whitespace is the same defect from the other side."""
+    _corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with vocabulary.open("a", encoding="utf-8") as handle:
+        handle.write("kiln-firing   \n")
+
+    with pytest.raises(AssertionError, match="not a bare tag"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# A half-written trailing line (round 4a-5, finding 5)
+# ===========================================================================
+
+
+def test_a_partial_trailing_line_is_tolerated_in_advisory_mode(tmp_path,
+                                                               monkeypatch):
+    """A writer caught mid-line is normal in a live checkout.
+
+    Kills the mutation that treats an unterminated tail as an ordinary
+    content violation: the extraction hook appending while the guard reads
+    would fail a shared-checkout run.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "id": "2031-01-02-ddddeeeeffff",
+            "content": "A complete record.",
+            "created_at": "2031-01-02T00:00:00+00:00",
+        }) + "\n")
+        handle.write('{"id": "2031-01-03-999988887777", "cont')  # cut off
+
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert any("not terminated" in entry for entry in tolerated), tolerated
+
+
+def test_a_partial_trailing_line_is_fatal_under_strict(tmp_path, monkeypatch):
+    """In a clean copy nothing should be writing at all."""
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write('{"id": "2031-01-03-999988887777", "cont')
+
+    with pytest.raises(AssertionError, match="not terminated"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_garbage_complete_line_before_a_partial_tail_is_still_fatal(
+    tmp_path, monkeypatch,
+):
+    """The allowance covers the LAST line only, not what precedes it."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write("not json at all\n")
+        handle.write('{"id": "partial", "cont')
+
+    with pytest.raises(AssertionError, match="not JSON"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+# ===========================================================================
+# The INERT banner names what is missing (round 4a-5, finding 7)
+# ===========================================================================
+
+
+def test_the_inert_banner_does_not_assume_an_archive_export(tmp_path,
+                                                            monkeypatch):
+    """A worktree with a populated logs/ but no store files says so.
+
+    The old wording asserted "an archive export has no data/ submodule"
+    whatever was actually absent, which is wrong from a worktree where only
+    the two files are missing.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (tmp_path / "memories" / "memories.jsonl",))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", (logs,))
+
+    message = conftest.strict_store_coverage_warning()
+
+    assert message is not None
+    assert "memories.jsonl" in message
+    assert str(logs) not in message, "a present directory must not be listed"
+    assert "missing or dangling" in message
+
+
+def _session_fixture_calls():
+    """Every Call node inside the ``no_real_cache_writes`` fixture."""
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    fixture = next(
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "no_real_cache_writes"
+    )
+    return [node for node in ast.walk(fixture) if isinstance(node, ast.Call)]
+
+
+def test_the_session_teardown_shares_one_classification():
+    """Both halves must be HANDED the classification, not recompute it.
+
+    Structural, because the cost is invisible to an assertion on results:
+    dropping ``classified=`` from either call leaves every test green while
+    each changed file is hashed and content-checked twice over. Kills that
+    mutation on the session fixture itself (round 4a-5, finding 2).
+    """
+    import ast
+
+    calls = _session_fixture_calls()
+    by_name = {}
+    for call in calls:
+        name = ast.unparse(call.func)
+        by_name.setdefault(name, []).append(call)
+
+    assert len(by_name.get("classify_store_changes", [])) == 1, (
+        "the fixture must classify exactly once")
+    for name in ("report_source_tree_changes", "store_findings"):
+        call = by_name[name][0]
+        keywords = {kw.arg for kw in call.keywords}
+        assert "classified" in keywords, (
+            f"{name} recomputes the classification instead of reusing it")
+
+
+def test_the_session_teardown_defers_the_strict_source_raise():
+    """The source half must not raise before the store half has run.
+
+    Kills the mutation that restores ``raise_on_strict=True`` on the
+    session fixture's call (round 4a-5, finding 6).
+    """
+    import ast
+
+    call = next(
+        node for node in _session_fixture_calls()
+        if ast.unparse(node.func) == "report_source_tree_changes"
+    )
+    deferred = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+    assert deferred.get("raise_on_strict") == "False", (
+        "the source half still raises before the store half is checked")
+
+
+def test_a_run_with_both_kinds_of_violation_reports_both(tmp_path):
+    """End to end: under STRICT the operator is told about BOTH.
+
+    A source edit and a store violation in the same run used to surface as
+    the source edit alone, because ``report_source_tree_changes`` raised
+    first and the store half never ran. The nested run's output must name
+    each of them.
+    """
+    override = "\n".join([
+        "",
+        "_ROOT2 = Path(__file__).resolve().parent",
+        "_STORE2 = _ROOT2 / 'data' / 'memories'",
+        "_STORE2.mkdir(parents=True, exist_ok=True)",
+        "(_STORE2 / 'memories.jsonl').write_text(",
+        "    '{\"id\": \"a\", \"content\": \"seed\", '",
+        "    '\"created_at\": \"2031-01-01T00:00:00+00:00\"}\\n',",
+        "    encoding='utf-8')",
+        "(_ROOT2 / 'wiki').mkdir(exist_ok=True)",
+        "_CANONICAL_FILES = (_STORE2 / 'memories.jsonl',)",
+        "_APPEND_TOLERANT_DIRS = ()",
+        "_CANONICAL_DIRS = (_ROOT2 / 'wiki',)",
+        "",
+    ])
+    body = "\n".join([
+        "from pathlib import Path",
+        "",
+        "_ROOT = Path(__file__).resolve().parent",
+        "",
+        "",
+        "def test_touches_both():",
+        "    (_ROOT / 'wiki' / 'theirs.md').write_text(",
+        "        'a concurrent edit\\n', encoding='utf-8')",
+        "    (_ROOT / 'data' / 'memories' / 'memories.jsonl').write_text(",
+        "        '{\"id\": \"clobbered\"}\\n', encoding='utf-8')",
+        "    assert True",
+        "",
+    ])
+
+    result = _run_nested(tmp_path, override, body,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2000:]
+    assert "theirs.md" in combined, "the source edit was not reported"
+    assert "memories.jsonl" in combined, "the store violation was not reported"
+    assert "source trees" in combined
+    assert "canonical memory store" in combined

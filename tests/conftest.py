@@ -958,6 +958,7 @@ def classify_store_changes(
 
     violations: list[str] = []
     appends: list[str] = []
+    in_progress_appends: list[str] = []
     changed = [
         path for path in sorted(set(after) | set(before))
         if comparable(before.get(path)) != comparable(after.get(path))
@@ -986,15 +987,21 @@ def classify_store_changes(
         if _digest_prefix(Path(path), old_size) != old_digest:
             violations.append(path)
             continue
-        problem = _appended_content_problem(Path(path), old_size)
+        problem, in_progress = _appended_content_problem(Path(path), old_size)
         if problem is None:
             appends.append(path)
+        elif in_progress:
+            in_progress_appends.append(f"{path} ({problem})")
         else:
             violations.append(f"{path} ({problem})")
 
     tolerated = _shared_checkout_noise(violations, created, before)
     violations = [path for path in violations if path not in tolerated]
-    return violations, appends, tolerated
+    return violations, appends, sorted(tolerated + in_progress_appends)
+
+
+#: Suffixes logrotate adds when it compresses a rotated file.
+_COMPRESSION_SUFFIXES = (".gz", ".bz2", ".xz", ".zst", ".Z")
 
 
 def _shared_checkout_noise(
@@ -1002,13 +1009,20 @@ def _shared_checkout_noise(
 ) -> list[str]:
     """Violations that a live checkout produces on its own, not the suite.
 
-    Two shapes, both under the append-tolerant roots:
+    All under the append-tolerant roots:
 
     * a ``*.lock`` file appearing — ``_bulk_rewrite_guard`` creates
       ``logs/daily-sync.lock`` the moment any bulk rewrite runs;
     * a rotation — ``X`` renamed to ``X.1`` (or ``.2``, ...) with a fresh
       ``X`` in its place, which shows up as a new ``X.N`` plus an ``X`` that
-      appears to have shrunk.
+      appears to have shrunk. logrotate may also COMPRESS the rotated copy,
+      so ``X.gz`` and ``X.1.gz`` count too (round 4a-5, finding 4);
+    * a new ``*.log`` under ``logs/`` — a log file the live system started
+      writing during the run. Narrow on purpose: only that directory, only
+      that extension.
+
+    Every one of these is advisory-only. Under ``PA_HERMETICITY_STRICT``
+    nothing else is running, so the caller treats them as violations.
     """
     noise: set[str] = set()
     for path in created:
@@ -1017,82 +1031,161 @@ def _shared_checkout_noise(
         if path.endswith(".lock"):
             noise.add(path)
             continue
-        base, _, suffix = path.rpartition(".")
-        if suffix.isdigit() and base in before:
-            # A rotation: the rotated-away copy, and the fresh file that
-            # replaced it (which reads as a shrink or a prefix change).
+        stem = path
+        for suffix in _COMPRESSION_SUFFIXES:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        base, _, tail = stem.rpartition(".")
+        rotated_from = None
+        if tail.isdigit() and base in before:
+            rotated_from = base          # X -> X.1 (optionally compressed)
+        elif stem != path and stem in before:
+            rotated_from = stem          # X -> X.gz, no number in between
+        if rotated_from is not None:
             noise.add(path)
-            if base in violations:
-                noise.add(base)
+            if rotated_from in violations:
+                # The fresh file that replaced it reads as a shrink.
+                noise.add(rotated_from)
+            continue
+        if path.endswith(".log") and _under_logs(path):
+            noise.add(path)
     return sorted(noise)
 
 
-def _appended_content_problem(path: Path, old_size: int) -> str | None:
-    """Describe why the bytes appended to ``path`` are not what its writer emits.
+def _under_logs(path: str) -> bool:
+    """Is ``path`` inside one of the append-tolerant log directories?"""
+    for directory in _APPEND_TOLERANT_DIRS:
+        root = str(directory.resolve())
+        if path.startswith(root + os.sep):
+            return True
+    return False
 
-    Returns ``None`` when the appended text is plausible. Growth alone used
-    to be enough to call an append benign, so a test that appended a garbage
-    line to the real ``memories.jsonl`` was classified as the live system
-    doing its job (audit round 4a-4, finding M4). Only the two structured
-    files are checked; a log line has no shape to check against.
+
+def _appended_content_problem(
+    path: Path, old_size: int,
+) -> tuple[str | None, bool]:
+    """Why the bytes appended to ``path`` are not what its writer emits.
+
+    Returns ``(problem, in_progress)``. ``problem`` is ``None`` when the
+    appended text is plausible. ``in_progress`` is true when the ONLY thing
+    wrong is that the last appended line has no terminating newline — a
+    writer caught mid-line, or a crash-truncated tail. That is a normal
+    sight in a live checkout and is tolerated in advisory mode, but it stays
+    fatal under STRICT, where nothing should be writing at all (round 4a-5,
+    finding 5).
+
+    Growth alone used to be enough to call an append benign, so a test that
+    appended a garbage line to the real ``memories.jsonl`` was classified as
+    the live system doing its job (round 4a-4, finding M4). Only the two
+    structured files are checked; a log line has no shape to check against.
     """
     resolved = str(path)
     canonical = {str(candidate.resolve()): candidate.name
                  for candidate in _CANONICAL_FILES}
     kind = canonical.get(resolved)
     if kind is None:
-        return None  # a log file: nothing to validate
+        return None, False  # a log file: nothing to validate
     try:
         with path.open("rb") as handle:
             handle.seek(old_size)
             tail = handle.read().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        return f"the appended bytes could not be read as UTF-8: {exc}"
+        return f"the appended bytes could not be read as UTF-8: {exc}", False
 
+    lines = tail.split("\n")
+    # A trailing "" means the append ended on a newline; anything else in
+    # that slot is a partial line still being written.
+    partial = lines.pop() if lines else ""
+
+    for line in lines:
+        problem = _line_problem(kind, line)
+        if problem is not None:
+            return problem, False
+    if partial.strip():
+        # The complete lines are all fine; only the tail is unterminated.
+        return ("the final appended line is not terminated — an append in "
+                "progress, or a crash-truncated tail"), True
+    return None, False
+
+
+def _line_problem(kind: str, line: str) -> str | None:
+    """Why one appended line is not what ``kind``'s writer emits."""
+    stripped = line.strip()
     if kind == "memories.jsonl":
-        for line in tail.split("\n"):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                return "an appended line is not JSON"
-            if not isinstance(record, dict):
-                return "an appended line is not a JSON object"
-            missing = _REQUIRED_MEMORY_KEYS - set(record)
-            if missing:
-                return f"an appended record lacks {sorted(missing)}"
+        if not stripped:
+            return None
+        try:
+            record = json.loads(stripped)
+        except ValueError:
+            return "an appended line is not JSON"
+        if not isinstance(record, dict):
+            return "an appended line is not a JSON object"
+        missing = _REQUIRED_MEMORY_KEYS - set(record)
+        if missing:
+            return f"an appended record lacks {sorted(missing)}"
         return None
 
-    # tag-vocabulary.txt: one tag per line, plus comments and blanks.
-    for line in tail.split("\n"):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped != line.strip() or " " in stripped or "\t" in stripped:
-            return "an appended vocabulary line is not a bare tag"
+    # tag-vocabulary.txt: one bare tag per line, plus comments and blanks.
+    if not stripped or stripped.startswith("#"):
+        return None
+    # ``stripped != line`` — NOT ``line.strip()``, which is what ``stripped``
+    # already is. The old disjunct compared a value with itself and could
+    # never fire, so an indented append was accepted (round 4a-5, finding 3).
+    if stripped != line or " " in stripped or "\t" in stripped:
+        return "an appended vocabulary line is not a bare tag"
     return None
 
 
 def assert_canonical_store_untouched(
     before: dict[str, object],
     after: dict[str, object],
+    *,
+    classified: tuple[list[str], list[str], list[str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Raise if the suite created, modified, or deleted a canonical file.
 
     Returns ``(appends, tolerated)`` — the benign growth and the
     shared-checkout noise it let through — so the caller can report both.
 
+    ``classified`` takes an already-computed
+    :func:`classify_store_changes` result. The session teardown passes it,
+    because both halves of the guard need the same answer and computing it
+    twice hashed and content-checked every changed file twice over (round
+    4a-5, finding 2).
+
     Under ``PA_HERMETICITY_STRICT`` the noise is fatal too: in a clean copy
-    nothing else is running, so a lock file or a rotation appearing IS the
-    suite's doing.
+    nothing else is running, so a lock file, a rotation, or a half-written
+    line IS the suite's doing.
 
     A named function rather than an inline assert so its behaviour can be
     exercised in-process by ``test_hermeticity_fixture.py`` — a guard whose
     own failure path is never executed is a guard nobody has checked (audit
     round 4a-2, finding M5).
     """
-    violations, appends, tolerated = classify_store_changes(before, after)
+    store_violations, appends, tolerated = store_findings(
+        before, after, classified=classified)
+    assert not store_violations, _store_failure_text(store_violations)
+    return appends, tolerated
+
+
+def store_findings(
+    before: dict[str, object],
+    after: dict[str, object],
+    *,
+    classified: tuple[list[str], list[str], list[str]] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """The store half's verdict, without raising.
+
+    Returns ``(store_violations, appends, tolerated)``. Split out from the
+    assertion so the session teardown can collect BOTH halves before failing
+    (round 4a-5, finding 6): a source edit landing in the same run used to
+    raise first and hide the store violation underneath it.
+    """
+    violations, appends, tolerated = (
+        classified if classified is not None
+        else classify_store_changes(before, after)
+    )
     # ``_is_append_tolerant`` is what splits the store half from the source
     # half here: a source-tree path in ``violations`` belongs to
     # report_source_tree_changes, not to this assertion. Dropping the filter
@@ -1102,7 +1195,12 @@ def assert_canonical_store_untouched(
                         if _is_append_tolerant(path.split(" (")[0])]
     if hermeticity_is_strict():
         store_violations = store_violations + tolerated
-    assert not store_violations, (
+    return store_violations, appends, tolerated
+
+
+def _store_failure_text(store_violations: list[str]) -> str:
+    """The message for a store violation."""
+    return (
         "the test suite wrote to the REAL canonical memory store or its "
         "logs. An APPEND by the live system is tolerated; this was not — a "
         "shrink, a rewritten prefix, a deletion, a new file, or appended "
@@ -1110,7 +1208,6 @@ def assert_canonical_store_untouched(
         "module's path constant rewrote the operator's data.\n"
         f"  touched: {store_violations}"
     )
-    return appends, tolerated
 
 
 def describe_tolerated_appends(
@@ -1143,34 +1240,38 @@ def describe_tolerated_appends(
 def strict_store_coverage_warning() -> str | None:
     """Under STRICT, say so when the store half is watching nothing.
 
-    An archive export has no ``data/`` submodule, so ``memories/`` and
-    ``logs/`` are dangling symlinks and the store half of the guard is
-    INERT there — the one invocation that turns strict mode on was the one
-    where the strictness bought nothing (round 4a-4, finding M2). Strict
-    mode is meaningful in the live checkout, or in a worktree whose
-    submodule is populated, run when no other session is editing.
+    An export or a fresh worktree may have no ``data/`` submodule content,
+    so ``memories/`` and ``logs/`` dangle and the store half of the guard is
+    INERT — the one invocation that turns strict mode on was the one where
+    the strictness bought nothing (round 4a-4, finding M2). The message
+    names exactly what is missing rather than assuming a cause, because the
+    same words used to claim "an archive export has no data/ submodule" from
+    a worktree where only the two store files were absent (round 4a-5,
+    finding 7).
     """
     if not hermeticity_is_strict():
         return None
-    missing = [str(path) for path in _CANONICAL_FILES
-               if not path.exists()]
-    dirs_missing = [str(path) for path in _APPEND_TOLERANT_DIRS
-                    if not path.is_dir()]
-    if not missing and not dirs_missing:
+    missing = [str(path) for path in _CANONICAL_FILES if not path.exists()]
+    missing += [str(path) for path in _APPEND_TOLERANT_DIRS
+                if not path.is_dir()]
+    if not missing:
         return None
     return (
-        f"{STRICT_ENV_VAR}=1, but the canonical store is not present here "
-        f"(missing: {missing + dirs_missing}). The store half of the "
-        "hermeticity guard is INERT in this run — an archive export has no "
-        "data/ submodule, so those paths dangle. Only the source-tree half "
-        "is strict. Run in the live checkout, or a worktree with the "
-        "submodule populated, to exercise the store half."
+        f"{STRICT_ENV_VAR}=1, but these watched store paths are missing or "
+        f"dangling here: {missing}. The store half of the hermeticity guard "
+        "is INERT in this run; only the source-tree half is strict. (A "
+        "git-archive export carries no data/ submodule, and a fresh worktree "
+        "has it uninitialised.) Run where the store files exist to exercise "
+        "that half."
     )
 
 
 def report_source_tree_changes(
     before: dict[str, object],
     after: dict[str, object],
+    *,
+    classified: tuple[list[str], list[str], list[str]] | None = None,
+    raise_on_strict: bool = True,
 ) -> list[str]:
     """Warn — or, under ``PA_HERMETICITY_STRICT=1``, fail — on source edits.
 
@@ -1189,13 +1290,22 @@ def report_source_tree_changes(
 
     Returns the changed paths.
     """
-    violations, _appends, _tolerated = classify_store_changes(before, after)
+    violations, _appends, _tolerated = (
+        classified if classified is not None
+        else classify_store_changes(before, after)
+    )
     changed = [path for path in violations
                if not _is_append_tolerant(path.split(" (")[0])]
     if not changed:
         return changed
     detail = "\n".join(f"    {path}" for path in changed)
     if hermeticity_is_strict():
+        if not raise_on_strict:
+            # The session teardown collects both halves before failing, so
+            # a simultaneous source edit cannot hide a store violation
+            # underneath it (round 4a-5, finding 6).
+            _DEFERRED_REPORT["source_changes"] = list(changed)
+            return changed
         raise AssertionError(
             "the test suite changed the REAL checkout's source trees "
             f"({STRICT_ENV_VAR}=1, so this is fatal):\n{detail}"
@@ -1265,11 +1375,32 @@ def no_real_cache_writes():
     # tolerated; anything else is not. The source trees are reported
     # separately, because a concurrent session editing them is ordinary work
     # — see report_source_tree_changes.
-    report_source_tree_changes(store_before, store_after)
-    appended, tolerated = assert_canonical_store_untouched(
-        store_before, store_after)
+    # Classified ONCE and handed to both halves: each changed file is
+    # hashed and content-checked a single time (round 4a-5, finding 2).
+    classified = classify_store_changes(store_before, store_after)
+    source_changes = report_source_tree_changes(
+        store_before, store_after, classified=classified,
+        raise_on_strict=False,
+    )
+    store_violations, appended, tolerated = store_findings(
+        store_before, store_after, classified=classified)
     if appended:
         _DEFERRED_REPORT["appends"] = describe_tolerated_appends(
             store_before, appended, store_after)
     if tolerated:
         _DEFERRED_REPORT["tolerated"] = list(tolerated)
+
+    # BOTH halves are reported before either one fails, so a source edit
+    # landing in the same run cannot mask a store violation underneath it
+    # (round 4a-5, finding 6). The notes above are queued either way, so the
+    # terminal summary still explains a failing run.
+    problems: list[str] = []
+    if store_violations:
+        problems.append(_store_failure_text(store_violations))
+    if source_changes and hermeticity_is_strict():
+        detail = "\n".join(f"    {path}" for path in source_changes)
+        problems.append(
+            "the test suite changed the REAL checkout's source trees "
+            f"({STRICT_ENV_VAR}=1, so this is fatal):\n{detail}"
+        )
+    assert not problems, "\n\n".join(problems)
