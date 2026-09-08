@@ -1069,6 +1069,12 @@ prior-art report, PASS).
 
 ## Things to verify on next session (priority queue)
 
+- [ ] 2026-09-08 audit merge: at the first session start on each machine,
+  expect three `[… gate] has NEVER been written` lines until the memories
+  cron tick (≤5 min) and the first session close have run; expect the new
+  daily-sync gate at `0`; check `logs/sync-cron.log` for the first
+  post-merge tick's outcome and `~/.cache/postgres-sync-*-gate` afterwards.
+  Report anything standing.
 Read these *before* starting new work. Most should take <5 min each.
 
 ### ⚠ From the 2026-08-22 session, closed 2026-09-03 — three items it could not safely close
@@ -2342,6 +2348,53 @@ question was put to Shawn four times in one day.**
 
 **Hours: 2026-09-06 = 8.0h · 2026-09-07 = 9.5h.**
 
+
+### 2026-09-08 (Tue, latest AUDIT) — FIRST REPOSITORY AUDIT: FIVE BRANCHES MERGED AFTER 40 FRESH-CONTEXT RE-AUDITS, ONE PRIVACY INCIDENT CONTAINED
+
+Fable session. Shawn asked for `/audit` on the day's agent-mail and tripwire
+code, then widened it to the whole repository ("I don't think we've ever done
+an audit in this repo before"). The durable record is
+`wiki/audits/2026-09-08-first-audit.md` (every finding with a disposition,
+every round with its re-audit outcome, six decisions for Shawn).
+
+- **Method.** Two orthogonal fresh-context Opus lenses per tranche
+  (correctness; test adequacy with mutation testing in throwaway copies),
+  fixes by Opus agents in per-branch worktrees, a fresh re-audit of every
+  fix round before merge. Round 1 (today's code) needed four re-audit
+  rounds; round 2 ran on five branches. Every branch's first re-audit found
+  at least one critical in the fix code itself; the daily-sync and Postgres
+  branches took ten and twelve rounds. Merged: #114 (8c61bb8), #115
+  (b0f3269, squash), #116 (0d1d391), #117 (773a0bd), #118 (190bc7c). Main
+  suite 1,250 → 2,362.
+- **What changed live.** `daily-sync.sh` has a behavioural harness, gates
+  every non-zero exit, tracks stashes by SHA, refuses conflict markers by
+  content, and never pops a stash it cannot prove; the Postgres syncs and the
+  indexer have a gate state machine (six independent problems, evidence-based
+  lowering, `--ack-quarantine`, per-kind staleness), three new gate files
+  under `~/.cache`, and new exit codes 4–9; the extraction hook persists a
+  count of owed slash-command responses in the cursor record; the digest
+  never heads a disproved record as verified; the credential checker models
+  bash from probes. The PreCompact/SessionEnd hook commands in
+  `~/.claude/settings.json` on both machines now follow the template
+  (backups `settings.json.bak-20260908T2038*`).
+- **Privacy incident (H27, D6).** A fix agent copied rows from the private
+  task files into public test fixtures and the branch was pushed. Tip and
+  `main` are clean (synthetic fixtures everywhere; the agent later found and
+  replaced six more); the six offending commits remain on the
+  `claude/audit-hook-tests` branch on GitHub, and one name has been in
+  `main`'s history since 82f5035 (May). Purging is Shawn's call; the shared
+  brief now forbids copying from private sources.
+- **Decisions pending (report §Decisions).** D1 extraction window; D2 what
+  the daily sync may auto-commit; D3 sessions re-sync (now moot: the first
+  hook run after merge syncs the 48 stalled archives); D4 the tripwire's
+  `Claude-Session` exemption; D5 pushing unpushed parent commits; D6 the
+  history purge.
+- **Open.** Round 3c (`claude/audit-round3c`, running): the pre-existing
+  partial-stash-apply loss (S27), the stash-state sidecar mediums (S28), the
+  shrink detector's coverage (S23). Round 3b: `surfacing_log.py` (S22's
+  third member). Tranches 3b–6 of the original plan not yet run. Astra owes
+  a re-review of PR #113 and a mirror of the slug rule (message of
+  02:19Z); gpt-hub PR #3 unreviewed by me.
 
 ### 2026-09-07 (Mon, latest SOL) — FIRST CREDENTIAL GRANT: GITHUB PAT VERIFIED BY PROCESS, PR #109 OPENED, 28 REMOTES TO HTTPS, LAUNCHER PROPOSAL TO SOL
 
