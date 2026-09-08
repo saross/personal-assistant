@@ -2375,7 +2375,7 @@ fi
 # ---------------------------------------------------------------------------
 abort_on_jsonl_shrink() {
     # abort_on_jsonl_shrink <context>
-    local context="$1" git_show_err lines_before lines_after head_msg shrink_report
+    local context="$1" lines_before lines_after head_msg shrink_report
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # `git show HEAD~1:path | wc -l` correctly counts trailing-\n-terminated
@@ -2385,24 +2385,18 @@ abort_on_jsonl_shrink() {
     # Audit 2026-05-02 (E daily-sync.sh:336-337): previously both
     # `git show` calls discarded stderr and `wc -l` returned 0 on any
     # error, so a path move (e.g. memories renamed) would evade the
-    # shrink check entirely. Capture stderr to a temp file and log a
-    # WARN if either side errors so the failure is visible.
-    git_show_err=$(mktemp 2>/dev/null) \
-        || fail "could not create a temporary file for the shrink check"
-    if ! lines_before=$(git show "HEAD~1:$target" 2>"$git_show_err" | corpus_line_count); then
-        lines_before=0
-    fi
-    if [[ -s "$git_show_err" ]]; then
-        log "WARN: git show HEAD~1:$target emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
-    fi
-    : >"$git_show_err"
-    if ! lines_after=$(git show "HEAD:$target" 2>"$git_show_err" | corpus_line_count); then
-        lines_after=0
-    fi
-    if [[ -s "$git_show_err" ]]; then
-        log "WARN: git show HEAD:$target emitted stderr — shrink check may be unreliable. Detail: $(tr '\n' ' ' <"$git_show_err")"
-    fi
-    rm -f "$git_show_err"
+    # shrink check entirely.
+    #
+    # audit L4 (third re-audit): corpus_lines_at is now the one place
+    # that distinguishes the three cases — the blob is not in that tree
+    # (zero records, a real answer), the blob is there and counts, and
+    # the blob is there and CANNOT be counted, which stops the run rather
+    # than passing for zero. The stderr scratch file it replaced only
+    # warned.
+    corpus_lines_at "HEAD~1:$target"
+    lines_before="$corpus_lines"
+    corpus_lines_at "HEAD:$target"
+    lines_after="$corpus_lines"
     [[ "$lines_after" -lt "$lines_before" ]] || return 0
     head_msg="$(git log -1 --format=%B)"
     if echo "$head_msg" | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then
@@ -2460,7 +2454,55 @@ corpus_line_count() {
     # one for a guard — it never invents growth — and JSON escapes those
     # code points inside strings anyway, so the two agree on every record
     # this corpus can hold.
-    grep -c '' || true
+    #
+    # audit M-b (third re-audit): `-a`. Without it GNU grep 3.11 treats a
+    # corpus holding a NUL as BINARY and prints "binary file matches"
+    # instead of a count — measured: `a\0b\nc\n` counted 3 with plain
+    # `-c` and 2 with `-ac`, and an unterminated three-record file counts
+    # 3 either way. The inflation lands exactly when the corpus is
+    # corrupt, which is when a truncation most needs catching.
+    #
+    # audit L4 (third re-audit): and a count that could not be produced
+    # is NOT zero. `grep` exits 2 on a read error and prints nothing;
+    # `|| true` turned that into an empty string, which every caller then
+    # compared as 0 — so a guard whose measurement failed passed
+    # silently. Anything but a number is a failure the caller must treat
+    # as one.
+    local count
+    count="$(grep -ac '' || true)"
+    if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+        log "ERROR: could not count the corpus (the counter produced '$count')"
+        return 1
+    fi
+    printf '%s' "$count"
+    return 0
+}
+
+#: Set by corpus_lines_at, which cannot print its answer through $( ):
+#: it may need to `fail`, and a `fail` inside a command substitution
+#: exits nothing but the subshell (the trap this script has fallen into
+#: twice before — see memory_files_with_markers).
+corpus_lines=""
+
+corpus_lines_at() {
+    # corpus_lines_at <rev>:<path>
+    # Record count of one committed blob, into $corpus_lines.
+    #
+    # A path that is not in that tree is zero records, which is a real
+    # answer. A path that IS there and cannot be counted is not an
+    # answer at all, and this guard will not judge a shrink without one
+    # (audit L4, third re-audit).
+    local spec="$1"
+    if ! git rev-parse --verify --quiet "$spec" >/dev/null 2>&1; then
+        corpus_lines=0
+        return 0
+    fi
+    if ! corpus_lines="$(git show "$spec" 2>/dev/null | corpus_line_count)"; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: the records in $spec could not be counted, so this run cannot tell whether the corpus shrank. Nothing was pushed. Check that $DATA_DIR is readable and that memories.jsonl is not corrupt."
+        fail "data submodule: could not count the corpus at $spec; refusing to judge a shrink without it" 4
+    fi
+    return 0
 }
 
 abort_on_published_shrink() {
@@ -2486,7 +2528,7 @@ abort_on_published_shrink() {
     # Must be called from inside the data submodule, immediately before a
     # push.
     local context="$1" lines_before lines_after shrink_report
-    local commit before after offender=""
+    local commit parent before after offender=""
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
@@ -2500,13 +2542,10 @@ abort_on_published_shrink() {
             "daily-sync STOPPED: the $context could not be checked against origin because $DATA_DIR has no origin/main ref, and this guard will not pass a push it cannot check. Check the submodule's remote (git -C $DATA_DIR remote -v) and fetch it."
         fail "data submodule: refusing the $context — no origin/main to check it against" 4
     fi
-    # `set -o pipefail` plus `set -e` makes an unguarded assignment from a
-    # failing `git show` abort the whole run; a path that is not in that
-    # tree is simply zero lines.
-    lines_before=$(git show "origin/main:$target" 2>/dev/null | corpus_line_count) \
-        || lines_before=0
-    lines_after=$(git show "HEAD:$target" 2>/dev/null | corpus_line_count) \
-        || lines_after=0
+    corpus_lines_at "origin/main:$target"
+    lines_before="$corpus_lines"
+    corpus_lines_at "HEAD:$target"
+    lines_after="$corpus_lines"
     [[ "$lines_after" -lt "$lines_before" ]] || return 0
     # audit M3 (second re-audit): PER COMMIT. Asking whether the range
     # holds a trailer anywhere let one deliberate archive commit wave
@@ -2516,12 +2555,29 @@ abort_on_published_shrink() {
     # that does not is the one to look at. `^...$` is anchored at both
     # ends so a message merely QUOTING the phrase is not a trailer.
     while IFS= read -r commit; do
-        # A root commit has no `^`, and a commit that added the file has
-        # no version of it in its parent: both are zero lines, not errors.
-        before=$(git show "${commit}^:$target" 2>/dev/null | corpus_line_count) \
-            || before=0
-        after=$(git show "${commit}:$target" 2>/dev/null | corpus_line_count) \
-            || after=0
+        # audit M-a (third re-audit): a MERGE is measured against the
+        # SMALLEST of its parents, not its first. A bulk rewrite made on
+        # a branch and brought in with `git merge --no-ff` shows the whole
+        # truncation against the first parent while carrying no trailer of
+        # its own — exit 4 with no way out short of rewriting history.
+        # Taking the minimum still catches a merge whose own RESOLUTION
+        # truncates below both sides, which skipping merges entirely
+        # (`--no-merges`) would miss.
+        #
+        # A root commit has no parent, and a commit that added the file
+        # has no version of it in its parent: both are zero records, not
+        # errors.
+        before=""
+        while IFS= read -r parent; do
+            [[ -n "$parent" ]] || continue
+            corpus_lines_at "${parent}:$target"
+            if [[ -z "$before" ]] || [[ "$corpus_lines" -lt "$before" ]]; then
+                before="$corpus_lines"
+            fi
+        done < <(git rev-parse "${commit}^@" 2>/dev/null || true)
+        [[ -n "$before" ]] || before=0
+        corpus_lines_at "${commit}:$target"
+        after="$corpus_lines"
         [[ "$after" -lt "$before" ]] || continue
         if git log -1 --format=%B "$commit" 2>/dev/null \
                 | grep -qE '^Rewrite-Class: bulk[[:space:]]*$'; then

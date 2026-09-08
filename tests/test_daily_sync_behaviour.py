@@ -3694,3 +3694,72 @@ class TestUnverifiablePushIsWithheld:
         )
         # The commit was still made: the work is on the branch, not lost.
         assert machine.head("data") != published_before
+
+
+# ============================================================================
+# A merge is measured against its smallest parent (audit M-a, third)
+# ============================================================================
+
+
+class TestMergedBulkRewrite:
+    """A bulk rewrite made on a branch and brought in with `--no-ff` shows
+    the whole truncation against the merge's FIRST parent while carrying
+    no trailer of its own -- exit 4 with no way out short of rewriting
+    history."""
+
+    def _published_corpus(self, world: SyncWorld) -> object:
+        """A machine whose origin holds a corpus worth truncating."""
+        machine = world.add_machine("a")
+        for index in range(4):
+            machine.append_memory(f"2026-09-08-record-{index}")
+        machine.commit_data("real captures", "memories/memories.jsonl")
+        git("push", "-q", "origin", "main", cwd=machine.data)
+        return machine
+
+    def test_a_bulk_rewrite_merged_no_ff_still_publishes(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M-a: comparing a merge against its first parent."""
+        machine = self._published_corpus(world)
+        git("checkout", "-q", "-b", "archive-run", cwd=machine.data)
+        machine.memories.write_text('{"id": "kept"}\n', encoding="utf-8")
+        machine.commit_data("archive", "memories/memories.jsonl")
+        git("commit", "-q", "--amend", "-m",
+            "chore(memories): monthly archive\n\nRewrite-Class: bulk\n",
+            cwd=machine.data)
+        git("checkout", "-q", "main", cwd=machine.data)
+        git("merge", "-q", "--no-ff", "-m", "Merge the monthly archive",
+            "archive-run", cwd=machine.data)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert world.published_data_file("memories/memories.jsonl") == (
+            '{"id": "kept"}\n'
+        )
+
+    def test_a_merge_that_truncates_below_both_parents_is_refused(
+        self, world: SyncWorld
+    ) -> None:
+        """And skipping merges entirely would miss this: the resolution
+        itself throws records away that neither side dropped."""
+        machine = self._published_corpus(world)
+        base = machine.head("data")
+        git("checkout", "-q", "-b", "side", cwd=machine.data)
+        machine.append_memory("2026-09-08-from-the-branch")
+        machine.commit_data("branch capture", "memories/memories.jsonl")
+        git("checkout", "-q", "main", cwd=machine.data)
+        machine.append_memory("2026-09-08-from-main")
+        machine.commit_data("main capture", "memories/memories.jsonl")
+        git("merge", "-q", "--no-commit", "side", cwd=machine.data, check=False)
+        # A "resolution" that keeps almost nothing from either side.
+        machine.memories.write_text('{"id": "oops"}\n', encoding="utf-8")
+        git("add", "--", "memories/memories.jsonl", cwd=machine.data)
+        git("commit", "-q", "-m", "Merge side", cwd=machine.data)
+        assert machine.head("data") != base
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert world.published_data_head() == published_before, (
+            "a merge whose own resolution truncated the corpus was published"
+        )

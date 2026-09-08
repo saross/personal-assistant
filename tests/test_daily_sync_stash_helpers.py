@@ -1898,3 +1898,93 @@ class TestTrackedHalfEvidenceIsTheHunks:
         (repo / "blob.bin").write_bytes(b"\x00\x01\x02stashed\n")
 
         assert self._ask(repo, sha, "", " M blob.bin") == "NOT-LANDED"
+
+
+class TestCorpusLineCountIsBinarySafe:
+    """The count is what decides whether a shrink is real. Getting it
+    wrong upward hides a truncation exactly when the corpus is damaged."""
+
+    def test_a_nul_byte_does_not_inflate_the_count(self, tmp_path: Path) -> None:
+        """Kills DS-M-b: `grep -c ''` without `-a`. GNU grep 3.11 treats a
+        file holding a NUL as binary and prints "binary file matches"
+        instead of a count -- measured 3 for `a\\0b\\nc\\n`, true 2 -- so
+        lines_after was inflated precisely when the corpus was corrupt and
+        a truncation could pass."""
+        corrupt = tmp_path / "nul.jsonl"
+        corrupt.write_bytes(b'{"a":1}\x00{"b":2}\n{"c":3}\n')
+        result = _run_shell(
+            f'corpus_line_count < "{corrupt}"\n', ("corpus_line_count",)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "2", result.stdout
+
+    def test_a_count_that_cannot_be_produced_is_a_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L4: `|| true`. grep exits 2 on a read error and prints
+        nothing; the empty string then compared as 0 at every call site,
+        so a guard whose measurement failed passed in silence."""
+        result = _run_shell(
+            "corpus_line_count() {\n"
+            "    local count\n"
+            '    count="$(printf "" || true)"\n'
+            '    if [[ ! "$count" =~ ^[0-9]+$ ]]; then return 1; fi\n'
+            '    printf "%s" "$count"\n'
+            "}\n"
+            'if printf "" | corpus_line_count; then echo PASSED; else echo FAILED; fi\n'
+        )
+        assert "FAILED" in result.stdout, result.stdout
+
+    def test_an_unreadable_blob_stops_the_run(self, tmp_path: Path) -> None:
+        """And the caller treats it as one: a guard that cannot measure
+        must not wave a push through."""
+        repo = tmp_path / "unreadable"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories.jsonl").write_text('{"id": "one"}\n', encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'cd "{repo}"',
+                    f'DATA_DIR="{repo}"',
+                    # A counter that cannot count, standing in for grep
+                    # exiting 2 on a read error.
+                    "corpus_line_count() { return 1; }",
+                    'corpus_lines_at "HEAD:memories.jsonl"',
+                    "echo REACHED-THE-VERDICT",
+                ]
+            ),
+            ("corpus_lines_at",),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-VERDICT" not in result.stdout, result.stdout
+        assert "could not count" in result.stderr, result.stderr
+
+    def test_a_blob_that_is_not_there_is_zero_records(
+        self, tmp_path: Path
+    ) -> None:
+        """A path absent from a tree is a real answer, and the commonest
+        one: the corpus did not exist before the commit that added it."""
+        repo = tmp_path / "absent"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "other.txt").write_text("x\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'cd "{repo}"',
+                    f'DATA_DIR="{repo}"',
+                    'corpus_lines_at "HEAD:memories.jsonl"',
+                    'printf "%s\\n" "$corpus_lines"',
+                ]
+            ),
+            ("corpus_lines_at", "corpus_line_count"),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "0", result.stdout
