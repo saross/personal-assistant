@@ -39,12 +39,13 @@ def _entry_text_result(entry: dict) -> str:
     return eh._entry_text(entry)
 
 
-def _cursor_state(cursor_file: Path, session_id: str) -> tuple[str | None, bool]:
+def _cursor_state(cursor_file: Path, session_id: str) -> tuple[str | None, int]:
     """Read ``(uuid, skip_pending)`` from a cursor FILE, as main() wrote it.
 
     Cursor records are ``{"uuid": …, "skip_pending": …}`` since audit round
-    four; going through ``cursor_entry`` keeps the shape stated in one place
-    and reads legacy plain-string rows too.
+    four, where ``skip_pending`` counts the command responses still owed a
+    skip (audit H30); going through ``cursor_entry`` keeps the shape stated
+    in one place and reads legacy plain-string and boolean rows too.
     """
     if not cursor_file.exists():
         return None, False
@@ -1965,7 +1966,7 @@ class TestSidechainAndTheSkipFlag:
         texts = [m["content"] for m in window.messages]
         assert "THE REAL COMMAND RESPONSE" not in texts
         assert texts == []
-        assert window.skip_pending is False  # the real response spent it
+        assert window.skip_pending == 0  # the real response spent it
 
     def test_a_sidechain_user_entry_does_not_set_the_flag(self, tmp_path):
         """Kills setting the flag before the isSidechain drop.
@@ -1990,7 +1991,7 @@ class TestSidechainAndTheSkipFlag:
         window = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in window.messages]
         assert "AN ORDINARY ANSWER THAT MUST SURVIVE" in texts
-        assert window.skip_pending is False
+        assert window.skip_pending == 0
 
 
 class TestPersistedSkipState:
@@ -2267,7 +2268,7 @@ class TestPersistedSkipState:
         assert seen[-1] == "u4"
 
     def test_the_stored_flag_seeds_the_next_parse(self, tmp_path):
-        """Kills ``skip_next_assistant = skip_pending`` -> ``= False``.
+        """Kills ``responses_owed = pending_count(skip_pending)`` -> ``= 0``.
 
         The unit-level statement of the whole mechanism: without the seed
         the response in the next window is an ordinary assistant turn.
@@ -2277,11 +2278,11 @@ class TestPersistedSkipState:
             transcript,
             [make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u1")],
         )
-        seeded = eh.parse_transcript(str(transcript), None, True)
+        seeded = eh.parse_transcript(str(transcript), None, 1)
         assert seeded.messages == []
-        assert seeded.skip_pending is False
+        assert seeded.skip_pending == 0
 
-        unseeded = eh.parse_transcript(str(transcript), None, False)
+        unseeded = eh.parse_transcript(str(transcript), None, 0)
         assert [m["content"] for m in unseeded.messages] == [
             "THE COMMAND RESPONSE"
         ]
@@ -2295,12 +2296,13 @@ class TestPersistedSkipState:
         """
         monkeypatch.setattr(eh, "CURSOR_FILE", tmp_path / "cursor.json")
         cursor = {}
-        eh.set_cursor_entry(cursor, "s1", "u9", True)
+        eh.set_cursor_entry(cursor, "s1", "u9", 2)
         eh.save_cursor(cursor)
         reloaded = eh.load_cursor()
-        assert eh.cursor_entry(reloaded, "s1") == ("u9", True)
-        assert eh.cursor_entry(reloaded, "absent") == (None, False)
-        assert eh.cursor_entry({"s2": "legacy-uuid"}, "s2") == ("legacy-uuid", False)
+        assert reloaded["s1"] == {"uuid": "u9", "skip_pending": 2}
+        assert eh.cursor_entry(reloaded, "s1") == ("u9", 2)
+        assert eh.cursor_entry(reloaded, "absent") == (None, 0)
+        assert eh.cursor_entry({"s2": "legacy-uuid"}, "s2") == ("legacy-uuid", 0)
 
 
 class TestMetaAssistantAndTheSkipFlag:
@@ -2329,7 +2331,7 @@ class TestMetaAssistantAndTheSkipFlag:
         )
         window = eh.parse_transcript(str(transcript), None)
         assert [m["content"] for m in window.messages] == []
-        assert window.skip_pending is False
+        assert window.skip_pending == 0
 
 
 class TestCursorFileShapes:
@@ -2418,7 +2420,7 @@ class TestRoundFiveSurvivors:
         assert [m["content"] for m in window.messages] == [
             "AN ORDINARY ANSWER THAT MUST SURVIVE"
         ]
-        assert window.skip_pending is False
+        assert window.skip_pending == 0
 
     def test_a_sterile_window_still_stores_the_pending_skip(
         self, tmp_path, monkeypatch
@@ -2868,3 +2870,200 @@ class TestQuotedCommandHeaders:
         assert "THE ANSWER THAT MUST BE EXTRACTED" in sent
         # Nothing is owed, so the next window starts clean.
         assert _cursor_state(cursor_file, "sess-Q") == ("u2", 0)
+
+
+class TestOwedResponsesAreCounted:
+    """H30: the command skip was a boolean, so two commands owed one skip.
+
+    ``[/cmd, /cmd]`` in one window then ``[resp, resp]`` in the next: the
+    first response spent the flag and the second was sent to Haiku and
+    re-extracted into the store the command had already written itself.
+    Consecutive commands are ordinary (two ``/remember`` calls in a row, or
+    ``/recall`` then ``/remember``), and the window split is reachable
+    because PreCompact fires before the model call.
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _fire(monkeypatch, transcript, session_id, *, expect_call):
+        """Run main() once; return the prompt sent, or None if none was."""
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": session_id}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            try:
+                eh.main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main exited {exc.code}"
+            if not expect_call:
+                mock_cls.assert_not_called()
+                return None
+            assert mock_client.messages.create.call_count == 1
+            return mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+    def test_pending_count_reads_every_stored_shape(self):
+        """Kills ``pending_count`` -> ``bool(raw)`` (or ``int(bool(raw))``).
+
+        ``bool`` has to be tested before ``int`` because ``True`` IS an int
+        in Python; a row holding ``2`` must not collapse to one.
+        """
+        assert eh.pending_count(True) == 1
+        assert eh.pending_count(False) == 0
+        assert eh.pending_count(0) == 0
+        assert eh.pending_count(1) == 1
+        assert eh.pending_count(3) == 3
+        assert eh.pending_count(-2) == 0  # clamped, never a negative debt
+        assert eh.pending_count(None) == 0
+        assert eh.pending_count("2") == 0  # unrecognised reads as none owed
+        # And a real int, not a bool that merely compares equal to one:
+        # dropping the ``isinstance(raw, bool)`` branch returns ``True`` here
+        # and writes ``true`` back into the cursor file, re-creating the very
+        # shape this change exists to retire.
+        assert not isinstance(eh.pending_count(True), bool)
+        assert isinstance(eh.pending_count(True), int)
+
+    def test_a_legacy_boolean_row_owes_exactly_one_response(self, tmp_path):
+        """Kills reading a legacy ``true`` as anything but one owed skip.
+
+        Rows written before this change stored a bool. Reading ``true`` as
+        zero lets the response through; reading it as more than one eats the
+        genuine turn behind it. Asserted through the parse, not just the
+        accessor, so the seeding path is covered.
+        """
+        assert eh.cursor_entry({"s": {"uuid": "u1", "skip_pending": True}}, "s") == (
+            "u1",
+            1,
+        )
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u1"),
+                make_live_shape_entry("assistant", "AN ORDINARY ANSWER", "u2"),
+            ],
+        )
+        _uuid, owed = eh.cursor_entry({"s": {"uuid": "x", "skip_pending": True}}, "s")
+        window = eh.parse_transcript(str(transcript), None, owed)
+        assert [m["content"] for m in window.messages] == ["AN ORDINARY ANSWER"]
+        assert window.skip_pending == 0
+
+    def test_two_commands_then_two_responses_send_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills ``responses_owed += 1`` -> ``= 1`` (the boolean behaviour).
+
+        The second response reached the model with the mutation in place,
+        duplicating into ``memories.jsonl`` what the command had already
+        written there.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave one", "u1", is_meta=True),
+            make_live_shape_entry("user", marker + "\nsave two", "u2", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-2C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-2C") == ("u2", 2)
+
+        entries += [
+            make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "u3"),
+            make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "u4"),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-2C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-2C") == ("u4", 0)
+        assert not store.exists(), "a command response was extracted"
+
+    def test_a_command_response_and_another_command_still_owe_one(
+        self, tmp_path, monkeypatch
+    ):
+        """``[/cmd, resp, /cmd]`` then ``[resp]`` — the count goes up AND down.
+
+        Kills ``responses_owed -= 1`` -> ``pass`` as well: with the decrement
+        gone the first window would end owing two, and a later genuine
+        assistant turn would be swallowed.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave one", "u1", is_meta=True),
+            make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "u2"),
+            make_live_shape_entry("user", marker + "\nsave two", "u3", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-3C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-3C") == ("u3", 1)
+
+        entries.append(
+            make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "u4")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-3C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-3C") == ("u4", 0)
+        assert not store.exists(), "a command response was extracted"
+
+    def test_a_genuine_turn_after_the_owed_skips_is_still_extracted(
+        self, tmp_path, monkeypatch
+    ):
+        """The negative control: the counter must actually reach zero.
+
+        Kills ``responses_owed -= 1`` -> ``pass`` and any scheme that never
+        spends the owed skips — both would silently drop real conversation
+        for the rest of the session.
+        """
+        transcript, _cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave one", "u1", is_meta=True),
+                make_live_shape_entry("user", marker + "\nsave two", "u2", is_meta=True),
+                make_live_shape_entry("assistant", "FIRST COMMAND RESPONSE", "u3"),
+                make_live_shape_entry("assistant", "SECOND COMMAND RESPONSE", "u4"),
+                make_live_shape_entry(
+                    "user", "an ordinary question " + "q" * 800, "u5"
+                ),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER " + "a" * 800, "u6"
+                ),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-4C", expect_call=True)
+        assert "AN ORDINARY ANSWER" in sent
+        assert "COMMAND RESPONSE" not in sent
+
+    def test_the_cursor_on_a_command_does_not_owe_the_skip_twice(self, tmp_path):
+        """Kills ``responses_owed = max(responses_owed, 1)`` -> ``+= 1``.
+
+        The entry at the cursor position was already counted by the window
+        that read it, so re-arming there must not add a second owed skip:
+        with the mutation the genuine turn after the command response is
+        swallowed and never comes back.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._marker() + "\nsave", "u1", is_meta=True
+                ),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+                make_live_shape_entry("assistant", "AN ORDINARY ANSWER", "u3"),
+            ],
+        )
+        # Resuming exactly as main() would: cursor on the command, one owed.
+        window = eh.parse_transcript(str(transcript), "u1", 1)
+        assert [m["content"] for m in window.messages] == ["AN ORDINARY ANSWER"]
+        assert window.skip_pending == 0
