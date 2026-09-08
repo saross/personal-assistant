@@ -626,3 +626,55 @@ class TestComposeGlobalClaudeMdIsAtomic:
         )
 
 
+# ----------------------------------------------------------------------------
+# S14 — the rclone version probe must not kill push-archives-to-r2.sh
+# ----------------------------------------------------------------------------
+
+
+class TestR2PushVersionProbe:
+    """Under ``set -euo pipefail`` a non-matching ``grep`` in the advisory
+    version probe made the whole pipeline non-zero, killing the script before
+    the mount and remote preconditions — and before any log line, so
+    daily-sync reported the indistinguishable "push skipped or errored".
+    """
+
+    def test_unparseable_rclone_version_reaches_the_preconditions(
+        self, tmp_path: Path
+    ) -> None:
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "push-archives-to-r2.sh").symlink_to(R2_PUSH_SCRIPT)
+        home = tmp_path / "home"
+        home.mkdir()  # no mnt/rpi-shares → the mount precondition must refuse
+
+        # A fake rclone whose version banner carries no X.Y number. Nothing
+        # here contacts the network; the real rclone is never invoked.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "rclone"
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then\n'
+            '    echo "rclone banner with no parseable number"\n'
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+
+        result = _run_script(
+            pa_dir / "scripts" / "push-archives-to-r2.sh",
+            home=home,
+            extra_env={"RCLONE_BIN": str(fake),
+                       "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+
+        combined = result.stdout + result.stderr
+        assert "canonical mount point missing" in combined, (
+            "the script died on the advisory version probe before reaching "
+            f"its real preconditions; got rc={result.returncode}, "
+            f"output:\n{combined}"
+        )
+        assert result.returncode == 1
+
+
