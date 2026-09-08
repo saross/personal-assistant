@@ -109,6 +109,21 @@ def _tree_snapshot(root: Path) -> dict[str, tuple[bool, int, int]]:
     return snapshot
 
 
+#: The tree must be genuinely covered before an "unchanged" verdict means
+#: anything. Both the count and the named files are asserted, because a
+#: threshold alone can be relaxed to nothing without a test noticing.
+def _assert_snapshot_covers_the_repository(
+    snapshot: dict[str, tuple[bool, int, int]]
+) -> None:
+    """Fail unless ``snapshot`` plausibly covers the whole checkout."""
+    assert len(snapshot) > 100, (
+        f"the repository snapshot holds {len(snapshot)} entries — "
+        "implausibly few, so an 'unchanged' verdict would be vacuous"
+    )
+    assert str(PROJECT_ROOT / "scripts") in snapshot
+    assert str(PROJECT_ROOT / "tests") in snapshot
+
+
 class TestWritesNothing:
     """The analyser is read-only; a report that lands on disk is a defect."""
 
@@ -120,17 +135,21 @@ class TestWritesNothing:
         symlinks into the private data submodule and ``data`` is the
         submodule itself, so wherever the submodule is uninitialised those
         comparisons were {} == {} — a guard that passed because it was
-        looking at nothing. Snapshotting the root wholesale, and asserting
-        the snapshot is not trivially small, removes both failure modes.
+        looking at nothing. Snapshotting the root wholesale, and checking
+        the snapshot really covers the tree, removes both failure modes.
+
+        ``Path.home()`` here is the SUITE'S own temporary home, not the
+        operator's: ``tests/conftest.py`` repoints ``HOME`` at import time
+        so the suite's gate files and sidecars land somewhere disposable.
+        Watching it still catches a script that writes to ``~`` — the write
+        lands in the temp home rather than the real one, and shows up in
+        this diff either way.
         """
         corpus(TYPICAL_RECORDS)
         home = Path.home()
         repo_before = _tree_snapshot(PROJECT_ROOT)
         home_before = _tree_snapshot(home)
-        assert len(repo_before) > 100, (
-            "the repository snapshot is implausibly small — this guard "
-            "would be vacuous"
-        )
+        _assert_snapshot_covers_the_repository(repo_before)
 
         assert vocab.main([]) == 0
 
@@ -145,6 +164,25 @@ class TestWritesNothing:
             f"{sorted(set(home_after) ^ set(home_before))}"
         )
         capsys.readouterr()
+
+    def test_the_snapshot_covers_known_repository_files(self):
+        """Pin the coverage check itself.
+
+        A bare count threshold can be neutered by relaxing the number
+        (``> 100`` -> ``>= 0``) without any test noticing. Naming files
+        that must be in the snapshot cannot be relaxed the same way: if
+        they are absent the walk is not looking at the repository.
+        """
+        snapshot = _tree_snapshot(PROJECT_ROOT)
+        _assert_snapshot_covers_the_repository(snapshot)
+        for relative in (
+            "scripts/analyse-wiki-vocabulary.py",
+            "scripts/bake-off-metadata.py",
+            "tests/conftest.py",
+            "agents/corpus-style-analyser-v2.md",
+            "CLAUDE.md",
+        ):
+            assert str(PROJECT_ROOT / relative) in snapshot, relative
 
     def test_the_snapshot_notices_a_new_file(self, tmp_path):
         """Guard the guard: the snapshot must be able to fail."""
