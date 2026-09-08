@@ -221,6 +221,38 @@ class SessionRequest:
     custom_id: str
 
 
+#: Anthropic's Message Batches API caps ``custom_id`` at 64 characters and
+#: allows only ASCII letters, digits, underscores, and hyphens.
+CUSTOM_ID_MAX_CHARS = 64
+CUSTOM_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def build_custom_id(session_id: str) -> str:
+    """Return a batch ``custom_id`` that maps one-to-one onto ``session_id``.
+
+    The previous form was ``f"sess-{session_id[:8]}"``, justified as "unique
+    enough across 10 sessions". It is not: the re-sampler sets
+    ``session_id = path.stem`` for sub-agent transcripts, and those stems
+    share long prefixes. ``haiku_submit`` then builds
+    ``{custom_id: session_id}``, the second entry silently overwrites the
+    first, and on retrieval one session's metadata is written to disk under
+    the other session's name — with no error anywhere.
+
+    A full id is used whenever it fits the API's 64-character, restricted
+    alphabet; otherwise a SHA-256 digest of the id stands in, which is
+    collision-free for any realistic corpus and still round-trips through
+    the batch-state map.
+    """
+    candidate = f"sess-{session_id}"
+    if (
+        len(candidate) <= CUSTOM_ID_MAX_CHARS
+        and CUSTOM_ID_SAFE_RE.match(candidate) is not None
+    ):
+        return candidate
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:40]
+    return f"sess-{digest}"
+
+
 def _build_user_message(
     *,
     session_id: str,
@@ -296,9 +328,7 @@ def assemble_requests(
             content_tokens=entry["content_tokens"],
             transcript_text=transcript_text,
         )
-        # custom_id must be <=64 chars for Anthropic Batch API; first 8 of
-        # the session ID is unique enough across 10 sessions.
-        custom_id = f"sess-{entry['session_id'][:8]}"
+        custom_id = build_custom_id(entry["session_id"])
         requests.append(
             SessionRequest(
                 session_id=entry["session_id"],

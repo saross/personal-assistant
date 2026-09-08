@@ -447,3 +447,43 @@ class TestUngatedRetrieval:
         ])
         assert code == 2
         assert not (tmp_path / "out").exists()
+
+
+class TestCustomIdUniqueness:
+    """A batch custom_id must identify exactly one session."""
+
+    def test_ids_sharing_an_eight_char_prefix_stay_distinct(self):
+        """The finding: sess-{id[:8]} collapsed sub-agent stems together."""
+        first = "subagent-explore-2026-01-05T09-15-00-alpha"
+        second = "subagent-explore-2026-01-05T09-15-00-beta"
+        assert first[:8] == second[:8]
+        assert bom.build_custom_id(first) != bom.build_custom_id(second)
+
+    def test_custom_ids_satisfy_the_api_constraints(self):
+        ids = [
+            "aaaa1111-2222-3333-4444-555566667777",
+            "subagent-explore-2026-01-05T09-15-00-alpha",  # colons, too long
+            "short",
+        ]
+        for session_id in ids:
+            custom_id = bom.build_custom_id(session_id)
+            assert 1 <= len(custom_id) <= bom.CUSTOM_ID_MAX_CHARS
+            assert bom.CUSTOM_ID_SAFE_RE.match(custom_id)
+
+    def test_a_manifest_of_similar_ids_round_trips(self, tmp_path):
+        """assemble_requests + the batch-state map must not lose a session."""
+        session_ids = [
+            "subagent-explore-2026-01-05T09-15-00-alpha",
+            "subagent-explore-2026-01-05T09-15-00-beta",
+        ]
+        rows = []
+        for session_id in session_ids:
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=8
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        mapping = {r.custom_id: r.session_id for r in requests}
+        assert len(mapping) == len(session_ids)
+        assert sorted(mapping.values()) == sorted(session_ids)
