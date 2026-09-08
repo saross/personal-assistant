@@ -219,7 +219,11 @@ class TestGateRendering:
         )
         result = rig.run(sync_rc=2)
         assert result.returncode == 0, result.stderr
-        assert result.stdout.count("Infra gates") == 1, result.stdout
+        # The exact header: Claude and Shawn both key off this line, and a
+        # reworded one is a signal nobody is looking for (audit low, sixth
+        # re-audit).
+        header = "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start"
+        assert result.stdout.count(header) == 1, result.stdout
         # …and both reports are still there, under the one header.
         assert "records survive in only ONE store" in result.stdout
         assert "the sync just failed (exit 2)" in result.stdout
@@ -228,7 +232,7 @@ class TestGateRendering:
         """The failure line must reach stdout even with no other gate —
         stderr never reaches the session (this script's own channel note)."""
         result = rig.run(sync_rc=4)
-        assert "Infra gates" in result.stdout
+        assert "# ⚠ Infra gates — RELAY THESE TO SHAWN at session start" in result.stdout
         assert "the sync just failed (exit 4)" in result.stdout
 
     def test_an_unwritable_lock_is_surfaced(

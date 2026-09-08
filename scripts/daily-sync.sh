@@ -748,6 +748,20 @@ drop_stash_by_sha() {
 # telling the operator to pop it, as the stranded-stash line did, duplicates
 # every record in it.
 applied_stash_shas=()
+#: Entries whose apply CONFLICTED and was then abandoned. Their content is
+#: in the tree as conflict markers: neither lost nor usable (audit M1,
+#: sixth re-audit — these were told "UNRECOVERED, recover with stash pop",
+#: which would apply the same content a second time on top of the markers).
+conflicted_stash_shas=()
+
+stash_was_conflicted() {
+    # stash_was_conflicted <sha>
+    local sha="$1" entry
+    for entry in ${conflicted_stash_shas[@]+"${conflicted_stash_shas[@]}"}; do
+        [[ "$entry" == "$sha" ]] && return 0
+    done
+    return 1
+}
 
 stash_was_applied() {
     # stash_was_applied <sha>
@@ -794,7 +808,9 @@ stranded_stashes() {
     for sha in "$@"; do
         ref="$(stash_ref_for "$repo" "$sha")" || continue
         subject="$(git -C "$repo" log -1 --format=%s "$sha" 2>/dev/null || true)"
-        if stash_was_applied "$sha"; then
+        if stash_was_conflicted "$sha"; then
+            state=conflicted
+        elif stash_was_applied "$sha"; then
             state=applied
         else
             state=unrecovered
@@ -969,7 +985,7 @@ restore_stash_on_exit() {
 
     # The invariant. Anything of ours still on a stack needs saying — but
     # the advice depends on whether its work reached the tree (audit M2).
-    local _applied=()
+    local _applied=() _conflicted=()
     for _repo in "$DATA_DIR" "$PA_DIR"; do
         if [[ "$_repo" == "$DATA_DIR" ]]; then
             _shas=(${data_stash_shas[@]+"${data_stash_shas[@]}"})
@@ -983,6 +999,8 @@ restore_stash_on_exit() {
             [[ -n "$_entry" ]] || continue
             if [[ "$_entry" == applied\ * ]]; then
                 _applied+=("$_line: ${_entry#applied }")
+            elif [[ "$_entry" == conflicted\ * ]]; then
+                _conflicted+=("$_line: ${_entry#conflicted }")
             else
                 _stranded+=("$_line: ${_entry#unrecovered }")
             fi
@@ -993,6 +1011,12 @@ restore_stash_on_exit() {
         for _i in "${_stranded[@]}"; do log "  $_i"; done
         add_sync_gate_detail \
             "daily-sync left ${#_stranded[@]} of its own stash(es) UNRECOVERED — they hold work that is in no commit: ${_stranded[*]}. Recover with: git -C <repo> stash pop <ref> (inspect first: git -C <repo> stash show -p <ref>)"
+    fi
+    if [[ ${#_conflicted[@]} -gt 0 ]]; then
+        log "CONFLICTED STASH: ${#_conflicted[@]} stash(es) applied with conflicts:"
+        for _i in "${_conflicted[@]}"; do log "  $_i"; done
+        add_sync_gate_detail \
+            "daily-sync applied ${#_conflicted[@]} of its own stash(es) WITH CONFLICTS: ${_conflicted[*]}. Their content is already in the tree as conflict markers — resolve the markers, then DELETE the entry (git stash drop <ref>). Do NOT pop it: that would apply the same content again on top of the markers."
     fi
     if [[ ${#_applied[@]} -gt 0 ]]; then
         log "APPLIED STASH: ${#_applied[@]} stash(es) were applied but not dropped:"
@@ -1151,6 +1175,14 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # handler must not try again: into a half-merged tree that
             # corrupts it, and into a refusal it just fails again.
             stash_restore_allowed=0
+            # audit M1 (sixth re-audit): if it conflicted, its content IS
+            # in the tree — as markers. That is neither lost work to pop
+            # nor clean work to delete, and it gets its own advice. The
+            # `conflicted_files` scan below decides which of the two
+            # happened; a refusal leaves the tree untouched.
+            if [[ -n "$(git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD) ' || true)" ]]; then
+                conflicted_stash_shas+=("$_sha")
+            fi
             log "stash pop raised conflicts — running resolver"
             conflicted_files=()
             while IFS= read -r line; do

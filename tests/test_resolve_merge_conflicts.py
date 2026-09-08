@@ -333,6 +333,9 @@ class TestStrayMarkersOutsideBlocks:
         assert "line 2" in result.stderr
         assert "outside any conflict block" in result.stderr
         assert "needs a human" in result.stderr
+        # The offending line is QUOTED, so trailing spaces and the exact
+        # text are visible to whoever has to edit it.
+        assert "'||||||| looks like a base'" in result.stderr, result.stderr
 
     def test_a_stray_after_a_completed_block_is_still_reported(
         self, tmp_path: Path

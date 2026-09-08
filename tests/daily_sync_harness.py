@@ -204,6 +204,24 @@ _HOSTNAME_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "${PA_TEST_HOSTNAME:-test-machine}"
 """
 
+#: PA_TEST_GIT_REFUSE_DROP makes every `git stash drop` fail, which is the
+#: only way to stage "applied but still on the stack" for a stash the run
+#: pushed itself — the orphan path can be staged by other means, this one
+#: cannot (audit M2, sixth re-audit).
+_GIT_SHIM = """#!/usr/bin/env bash
+if [[ -n "${PA_TEST_GIT_REFUSE_DROP:-}" ]]; then
+    _saw_stash=0
+    for _arg in "$@"; do
+        [[ "$_arg" == "stash" ]] && _saw_stash=1
+        if [[ "$_saw_stash" -eq 1 && "$_arg" == "drop" ]]; then
+            echo "refusing to drop (PA_TEST_GIT_REFUSE_DROP)" >&2
+            exit 1
+        fi
+    done
+fi
+exec /usr/bin/git "$@"
+"""
+
 _PARENT_GITIGNORE = "venv/\nlogs/\n"
 _DATA_GITIGNORE = "logs/\n"
 
@@ -634,6 +652,9 @@ def _build_offline_bin(bin_dir: Path) -> None:
     for name in OFFLINE_BINARIES:
         _write_stub(bin_dir / name, _OFFLINE_STUB.format(name=name))
     _write_stub(bin_dir / "hostname", _HOSTNAME_STUB)
+    # A git that can be told to refuse `stash drop`, so "applied but not
+    # dropped" can be staged for the run's own stashes (audit M2).
+    _write_stub(bin_dir / "git", _GIT_SHIM)
 
 
 def build_world(tmp_path: Path) -> SyncWorld:

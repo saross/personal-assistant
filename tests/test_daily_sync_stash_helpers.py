@@ -65,6 +65,8 @@ def _run_shell(body: str) -> subprocess.CompletedProcess[str]:
             # The script's own logger writes to stderr via tee; here it
             # just goes to stderr, which the assertions read.
             'log() { printf "%s\\n" "$*" >&2; }',
+            "sync_gate_details=()",
+            _extract_function("add_sync_gate_detail"),
             _extract_function("push_stash"),
             _extract_function("stash_ref_for"),
             _extract_function("drop_stash_by_sha"),
@@ -97,6 +99,33 @@ def _stash_shas(repo: Path) -> list[str]:
     """SHAs currently on the stack, newest first."""
     out = _git("stash", "list", "--format=%H", cwd=repo).stdout
     return out.split()
+
+
+class TestAddSyncGateDetail:
+    """The gate is built in memory during a run and rendered once. Two
+    blocks reaching the same conclusion must not tell the operator twice
+    (audit low, sixth re-audit): the count is the number of lines, so a
+    repeat inflates the count as well as the reading."""
+
+    def test_a_repeat_is_dropped(self) -> None:
+        """Same text twice, recorded once, order preserved."""
+        result = _run_shell(
+            'add_sync_gate_detail "first"\n'
+            'add_sync_gate_detail "second"\n'
+            'add_sync_gate_detail "first"\n'
+            'printf "%s\\n" "${#sync_gate_details[@]}" "${sync_gate_details[@]}"\n'
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["2", "first", "second"]
+
+    def test_distinct_details_all_survive(self) -> None:
+        """Dedup must not collapse things that merely start alike."""
+        result = _run_shell(
+            'add_sync_gate_detail "stash 0badc0de could not be dropped"\n'
+            'add_sync_gate_detail "stash 0badc0df could not be dropped"\n'
+            'printf "%s\\n" "${#sync_gate_details[@]}"\n'
+        )
+        assert result.stdout.strip() == "2", result.stdout
 
 
 class TestPushStash:

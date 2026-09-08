@@ -487,6 +487,27 @@ class TestCrossMachineRebase:
         assert result.returncode == 0, result.stdout + result.stderr
         assert world.gate("daily-sync-gate").splitlines() == ["0"]
 
+    def test_a_repeated_problem_is_recorded_once(self, world: SyncWorld) -> None:
+        """Audit (low, sixth re-audit): the dedup in add_sync_gate_detail.
+
+        Several blocks can reach the same conclusion in one run — the
+        marker guard fires at more than one call site — and the operator
+        should be told once. Staged with a corpus the guard refuses,
+        which reaches the guard from the append-only block and would
+        reach it again from the auto-sync block.
+        """
+        machine = world.add_machine("a")
+        machine.memories.write_text(
+            '{"id": "a"}\n=======\n{"id": "b"}\n', encoding="utf-8"
+        )
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- dirty too\n", encoding="utf-8"
+        )
+        assert world.run_sync(machine).returncode == 2
+
+        details = gate_details(world)
+        assert len(details) == len(set(details)), f"a problem was recorded twice: {details}"
+
     def test_lock_contention_leaves_a_standing_gate(
         self, world: SyncWorld
     ) -> None:
@@ -585,6 +606,36 @@ class TestStashIsRestoredWhenTheRunAborts:
     """If anything between the stash and the pop fails, the EXIT trap must
     put the working tree back. An un-popped stash is invisible until
     someone goes looking — the shape that orphaned 41 records."""
+
+    def test_a_failed_drop_during_restore_is_not_called_a_conflict(
+        self, world: SyncWorld
+    ) -> None:
+        """The EXIT restore applies, then drops. A failed DROP is not a
+        failed apply: the work is in the tree, and saying the restore
+        "raised conflicts" sends the operator looking for markers that are
+        not there while the real problem — an entry still on the stack —
+        goes unnamed.
+        """
+        machine = world.add_machine("a")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- unsaved work\n", encoding="utf-8"
+        )
+        git("remote", "set-url", "origin", str(world.root / "no-such-remote.git"),
+            cwd=machine.data)
+
+        result = world.run_sync(machine, PA_TEST_GIT_REFUSE_DROP="1")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        # The edit came back…
+        assert "unsaved work" in (
+            machine.data / "tasks" / "inbox.md"
+        ).read_text(encoding="utf-8")
+        # …so this was not a conflicted restore.
+        assert "restore raised conflicts" not in combined, combined
+        joined = "\n".join(gate_details(world))
+        assert "could not drop" in combined, combined
+        assert "ALREADY in the working tree" in joined, joined
 
     def test_failed_pull_restores_the_stashed_edits(self, world: SyncWorld) -> None:
         """Kills DS-M5: removing `trap restore_stash_on_exit EXIT` leaves
@@ -845,6 +896,65 @@ class TestDetachedHeadGuard:
             "duplicate every record: " + joined
         )
         assert "Do NOT pop" in joined, joined
+
+    def test_an_undroppable_own_stash_is_classified_as_applied(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M2 (sixth re-audit): pin the `applied` classification.
+
+        A git that refuses `stash drop` leaves the run having applied its
+        own stash and been unable to drop it. That work is in the tree and
+        published; calling it UNRECOVERED and advising a pop would apply
+        every record in it a second time.
+        """
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-m2-applied")
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- forces a stash\n", encoding="utf-8"
+        )
+
+        result = world.run_sync(machine, PA_TEST_GIT_REFUSE_DROP="1")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        joined = "\n".join(gate_details(world))
+        assert "could not drop" in combined, combined
+        assert "ALREADY in the working tree" in joined, joined
+        assert "Do NOT pop" in joined, joined
+        assert "UNRECOVERED" not in joined, (
+            "applied work was classified as lost: " + joined
+        )
+        # …and the restore path must not call a failed drop a conflict.
+        assert "restore raised conflicts" not in combined, combined
+
+    def test_a_conflicted_apply_is_not_told_to_pop(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M1 (sixth re-audit): markers in the tree are a third state.
+
+        A conflicted apply that is then abandoned leaves the stash's
+        content in the tree AS MARKERS. Popping it applies the same
+        content again on top of them; the advice has to be resolve, then
+        delete.
+        """
+        machine = world.add_machine("a")
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        (machine.data / "tasks" / "inbox.md").write_text(
+            "# Inbox\n\n- ours\n", encoding="utf-8"
+        )
+        world.publish_data_change("tasks/inbox.md", "# Inbox\n\n- theirs\n")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+
+        joined = "\n".join(gate_details(world))
+        assert "WITH CONFLICTS" in joined, joined
+        assert "resolve the markers" in joined, joined
+        assert "Do NOT pop" in joined, joined
+        assert "UNRECOVERED" not in joined, (
+            "a conflicted apply was called unrecovered: " + joined
+        )
 
     def test_a_concurrent_drop_mid_resolve_does_not_strand_our_stash(
         self, world: SyncWorld
