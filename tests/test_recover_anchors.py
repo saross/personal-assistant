@@ -787,3 +787,33 @@ class TestMainUsesGuardedDiscovery:
         assert ra.main([]) == 2
         assert corpus.read_bytes() == before
         assert "refusing to plan" in capsys.readouterr().err
+
+
+def test_the_recovery_memo_is_keyed_on_the_project_too(
+    tmp_path, monkeypatch,
+) -> None:
+    """Two projects, one dead ref, different answers (memo-key mutation).
+
+    Project A holds ``wiki/util.py``; project B holds nothing that matches.
+    Both memories carry the bare ref ``util.py``. With the memo keyed on the
+    ref alone, whichever record is planned first decides for both — so B
+    either recovers onto A's file or A stops recovering at all.
+    """
+    repo_a = _seed_project_repo(tmp_path, "project-a", "wiki/util.py")
+    repo_b = _seed_project_repo(tmp_path, "project-b", "pkg/other.py")
+    repos = [repo_a, repo_b]
+    records = [
+        _false_record(ra.project_id.encode_project_id(str(repo_a)), "util.py"),
+        _false_record(ra.project_id.encode_project_id(str(repo_b)), "util.py"),
+    ]
+    records[1]["id"] = "2031-07-05-ddddeeeeffff"
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8",
+    )
+    monkeypatch.setattr(ra.av, "verify_file", lambda ref, r: "false")
+    monkeypatch.setattr(ra.av, "verify_memory", lambda rec, r: "true")
+
+    plans = ra.build_plans(corpus, repos)
+    assert [p["id"] for p in plans] == ["2031-07-04-aaaabbbbcccc"]
+    assert plans[0]["ref_rewrites"] == [("util.py", "wiki/util.py")]

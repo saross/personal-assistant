@@ -1011,3 +1011,37 @@ class TestASymlinkCannotSmuggleAPathIntoTheRepo:
     def test_a_real_file_is_unaffected(self, tmp_path):
         repo = _throwaway_repo(tmp_path / "repo")
         assert av.verify_file("scripts/real.py", [repo]) == "true"
+
+
+class TestTheAbsoluteBranchWithholdsToo:
+    """The absolute path's aggregate has the same contract as the relative.
+
+    Both branches end in ``"false" if checked_any and not pending_seen else
+    "pending"``, and only the relative one was tested — a bare ``return
+    "false"`` in the absolute branch survived the suite.
+    """
+
+    def test_a_timed_out_history_probe_is_pending(self, tmp_path):
+        """Kills the mutation ``return "false"`` at the end of the branch."""
+        import subprocess as _sp
+        repo = _throwaway_repo(tmp_path / "repo")
+        abspath = str(repo / "scripts" / "ghost.py")   # never created
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
+            assert av.verify_file(abspath, [repo]) == "pending"
+
+    def test_an_absent_absolute_path_is_still_false(self, tmp_path):
+        """The control: git answered, so the verdict is committal."""
+        repo = _throwaway_repo(tmp_path / "repo")
+        assert av.verify_file(str(repo / "scripts" / "ghost.py"), [repo]) == \
+            "false"
+
+    def test_a_stat_that_raises_withholds_the_verdict(self, tmp_path):
+        """Kills the mutation dropping ``pending_seen`` on an OSError stat.
+
+        An unmounted volume makes the working-tree probe raise. git may still
+        answer "absent" for the repositories it CAN read, but we did not
+        finish looking, so the verdict must not be committal.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        with patch("pathlib.Path.exists", side_effect=PermissionError("denied")):
+            assert av.verify_file("scripts/ghost.py", [repo]) == "pending"
