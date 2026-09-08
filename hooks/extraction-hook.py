@@ -637,9 +637,13 @@ def parse_transcript(
                     # consumed here, before the marker test below ever runs,
                     # so without this its response would leak into the next
                     # window (audit round four L-2). Sidechain entries are
-                    # excluded for the same reason they are below.
-                    if entry.get("type") == "user" and not entry.get(
-                        "isSidechain"
+                    # excluded for the same reason they are below, and
+                    # ``isMeta`` is required for the reason given at the main
+                    # marker branch (audit H29).
+                    if (
+                        entry.get("type") == "user"
+                        and entry.get("isMeta")
+                        and not entry.get("isSidechain")
                     ):
                         if any(
                             marker in _entry_text(entry)
@@ -688,15 +692,24 @@ def parse_transcript(
             # The flag is cleared only by the first assistant turn that
             # follows.
             #
-            # Known limit, recorded not fixed (audit round four L-4): the
-            # test is a substring match on the entry's text, so a NON-meta
-            # user entry that merely quotes a command header — a tool result
-            # echoing ``commands/*.md``, say — sets the flag too, and the
-            # next genuine assistant turn is dropped. Narrowing it needs a
-            # position-anchored match against the harness's real expansion
-            # shape, which is a separate change.
+            # The marker test is a substring match on the entry's text, so
+            # on its own it fires on any user entry that merely QUOTES a
+            # command header — a tool result echoing ``commands/*.md`` or
+            # ``scripts/_command_markers.py``, say. That armed the skip and
+            # dropped the next genuine assistant turn, losing a real exchange
+            # for good (audit round four L-4, fixed as H29).
+            #
+            # ``isMeta`` is the narrowing signal, and live data supports it:
+            # measured 2026-09-08 across
+            # ~/.claude/projects/-home-shawn-personal-assistant, all 364
+            # marker-bearing user entries were isMeta and no non-meta user
+            # entry carried a marker. A non-meta user entry quoting a header
+            # is ordinary prose, so it falls through to the append below and
+            # is extracted like any other turn.
             if entry.get("type") == "user":
-                if any(marker in content for marker in COMMAND_MARKERS):
+                if entry.get("isMeta") and any(
+                    marker in content for marker in COMMAND_MARKERS
+                ):
                     skip_next_assistant = True
                     continue
             elif entry.get("type") == "assistant" and skip_next_assistant:

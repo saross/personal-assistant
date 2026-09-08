@@ -115,14 +115,28 @@ class TestNormaliseTags:
 
 
 def make_transcript_entry(
-    role: str, content: str, uuid: str, entry_type: str | None = None
+    role: str,
+    content: str,
+    uuid: str,
+    entry_type: str | None = None,
+    *,
+    is_meta: bool = False,
 ) -> dict:
-    """Helper to create a transcript JSONL entry."""
-    return {
+    """Helper to create a transcript JSONL entry.
+
+    ``is_meta`` is emitted only when true, so entries built without it keep
+    the three-key shape these older tests were written against. A slash
+    command reaches the transcript as an isMeta USER entry (audit H29), so
+    any fixture standing in for one has to say so.
+    """
+    entry = {
         "type": entry_type or role,
         "uuid": uuid,
         "message": {"content": content},
     }
+    if is_meta:
+        entry["isMeta"] = True
+    return entry
 
 
 class TestParseTranscript:
@@ -201,6 +215,7 @@ class TestParseTranscript:
                 "user",
                 "# /remember \u2014 Manual Memory Capture\n\nSome content",
                 "uuid-3",
+                is_meta=True,
             ),
             make_transcript_entry(
                 "assistant", "Captured to memory: ...", "uuid-4"
@@ -225,7 +240,7 @@ class TestParseTranscript:
         entries = []
         for i, marker in enumerate(eh.COMMAND_MARKERS):
             entries.append(
-                make_transcript_entry("user", marker, f"cmd-{i}")
+                make_transcript_entry("user", marker, f"cmd-{i}", is_meta=True)
             )
             entries.append(
                 make_transcript_entry("assistant", f"Response {i}", f"resp-{i}")
@@ -317,6 +332,7 @@ class TestParseTranscript:
                 "user",
                 "# /remember — Manual Memory Capture\n\nSave this",
                 "uuid-3",
+                is_meta=True,
             ),
             # MCP-style intervening user entry. Pre-fix this cleared the
             # flag; post-fix it must not.
@@ -1196,7 +1212,7 @@ class TestAuditRoundTwo:
         marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
         transcript = tmp_path / "t.jsonl"
         entries = [
-            make_transcript_entry("user", marker + "\nrun it", "u1"),
+            make_transcript_entry("user", marker + "\nrun it", "u1", is_meta=True),
             {"type": "assistant", "uuid": "a-tool",
              "message": {"content": [{"type": "tool_use", "name": "x", "input": {}}]}},
             make_transcript_entry("assistant", "Here is the command response text", "a-text"),
@@ -1964,7 +1980,7 @@ class TestSidechainAndTheSkipFlag:
             [
                 make_live_shape_entry(
                     "user", self._command_marker() + "\nquoted by a subagent",
-                    "u1", is_sidechain=True,
+                    "u1", is_meta=True, is_sidechain=True,
                 ),
                 make_live_shape_entry(
                     "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
@@ -2391,7 +2407,7 @@ class TestRoundFiveSurvivors:
             [
                 make_live_shape_entry(
                     "user", self._marker() + "\nquoted by a subagent", "u1",
-                    is_sidechain=True,
+                    is_meta=True, is_sidechain=True,
                 ),
                 make_live_shape_entry(
                     "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
@@ -2707,3 +2723,148 @@ class TestRoundSixCursorPins:
         )
         idle = eh.parse_transcript(str(transcript), "u1")
         assert [m["content"] for m in idle.messages] == ["AN ORDINARY ANSWER"]
+
+
+class TestQuotedCommandHeaders:
+    """H29: only a HARNESS-written user entry can be a command invocation.
+
+    The marker test is a substring match, so before this round any user
+    entry whose text merely quoted a command header — a tool result echoing
+    ``commands/*.md`` or ``scripts/_command_markers.py`` — armed the skip
+    and swallowed the next genuine assistant turn. That turn is gone for
+    good: the cursor moves past it and nothing re-reads it. Live data says
+    the narrowing is safe (measured 2026-09-08: all 364 marker-bearing user
+    entries under the personal-assistant project were isMeta, and no
+    non-meta user entry carried a marker).
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _fire(monkeypatch, transcript, session_id, *, expect_call):
+        """Run main() once; return the prompt sent, or None if none was."""
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": session_id}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            try:
+                eh.main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main exited {exc.code}"
+            if not expect_call:
+                mock_cls.assert_not_called()
+                return None
+            assert mock_client.messages.create.call_count == 1
+            return mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+    def test_a_quoted_header_in_ordinary_prose_arms_nothing(self, tmp_path):
+        """Kills dropping ``entry.get("isMeta") and`` from the marker branch.
+
+        The quoting entry is a tool result read back into the conversation,
+        not an invocation. With the mutation it arms the skip, the real
+        answer that follows is dropped, and the window ends owing a response
+        that no command ever asked for.
+        """
+        transcript = tmp_path / "t.jsonl"
+        quoting = (
+            "here is what the file says, verbatim:\n"
+            + self._marker()
+            + "\nand that is the whole header"
+        )
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", quoting, "u1"),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        texts = [m["content"] for m in window.messages]
+        assert "AN ORDINARY ANSWER THAT MUST SURVIVE" in texts, (
+            "a genuine assistant turn was dropped by a quoted header"
+        )
+        assert quoting in texts, "the quoting turn is prose and must be kept"
+        assert not window.skip_pending
+
+    def test_the_harness_written_shape_still_arms_the_skip(self, tmp_path):
+        """The control, so the narrowing cannot be satisfied by never arming.
+
+        Same text, same position, ``isMeta`` set: this IS the invocation and
+        its response must not reach the model.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry(
+                    "user", self._marker() + "\nsave this", "u1", is_meta=True
+                ),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == []
+        assert not window.skip_pending
+
+    def test_a_quoted_header_at_the_cursor_position_arms_nothing(self, tmp_path):
+        """Kills dropping ``entry.get("isMeta") and`` from the cursor branch.
+
+        The same substring match runs a second time on the entry sitting AT
+        the cursor, and the same quoting entry reaches it by that route.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", self._marker() + " quoted", "u1"),
+                make_live_shape_entry(
+                    "assistant", "AN ORDINARY ANSWER THAT MUST SURVIVE", "u2"
+                ),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), "u1")
+        assert [m["content"] for m in window.messages] == [
+            "AN ORDINARY ANSWER THAT MUST SURVIVE"
+        ]
+
+    def test_the_answer_after_a_quoted_header_reaches_the_model(
+        self, tmp_path, monkeypatch
+    ):
+        """The consequence, end to end through main() with the API mocked.
+
+        Kills the same mutation at the level that matters: the assistant
+        turn has to be IN the prompt sent for extraction, not merely present
+        in a returned list.
+        """
+        transcript, cursor_file, _store = _stage_main_paths(tmp_path, monkeypatch)
+        quoting = (
+            "quoting the command file back at you: "
+            + self._marker()
+            + " " + "q" * 800
+        )
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", quoting, "u1"),
+                make_live_shape_entry(
+                    "assistant", "THE ANSWER THAT MUST BE EXTRACTED " + "a" * 800,
+                    "u2",
+                ),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-Q", expect_call=True)
+        assert "THE ANSWER THAT MUST BE EXTRACTED" in sent
+        # Nothing is owed, so the next window starts clean.
+        assert _cursor_state(cursor_file, "sess-Q") == ("u2", 0)
