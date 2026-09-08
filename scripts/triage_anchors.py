@@ -28,14 +28,15 @@ Per-record disposition (``dispose``):
                             (``~``/absolute paths, HEAD-only checks), not wrong
                             memories — see the report's anchor-form breakdown.
 
-The broad repo set is the personal-assistant repo, its ``data`` submodule, and
-every ``~/Code/*`` git repo. Resolution reuses ``anchor_verify``'s real
-``verify_file`` / ``verify_commit`` (memoised per ``(type, ref)``).
+The broad repo set is whatever ``project_id.repo_set`` discovers — the same
+pass the live extraction hook uses — plus this checkout when it is a git
+worktree that HOME-based discovery cannot see. Resolution reuses
+``anchor_verify``'s real ``verify_file`` / ``verify_commit`` (memoised per
+``(type, ref)``).
 """
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 import subprocess
@@ -43,8 +44,14 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+#: This checkout, derived from ``__file__`` rather than ``HOME``. A copy run
+#: from a git worktree must resolve anchors against ITS OWN repository, not
+#: whatever happens to sit at ``~/personal-assistant`` (finding ANT5).
+PA_DIR = Path(__file__).resolve().parent.parent
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anchor_verify as av  # noqa: E402
+import project_id  # noqa: E402
 
 
 def build_basename_index(
@@ -145,25 +152,44 @@ class RepoSetUnavailable(RuntimeError):
 
 
 def broad_repo_set() -> list[Path]:
-    """PA repo + its data submodule + every ``~/Code/*`` git repo.
+    """Every discovered git repository, plus this checkout.
 
-    Raises :class:`RepoSetUnavailable` when discovery finds nothing: on a
-    fresh machine, an unmounted home, or a container, ``[]`` would silently
-    condemn every anchored memory instead of reporting that we could not look.
+    Discovery is :func:`project_id.repo_set` — the SAME pass the live
+    extraction hook resolves anchors against. Maintaining a second,
+    independently-written discovery here meant the two could silently
+    disagree the moment a root was added to one of them (finding ANT5); this
+    function is now a thin wrapper, and ``project_id`` is the source of truth.
+
+    On top of it, :data:`PA_DIR` (and its ``data`` submodule) is added when it
+    is a git repository discovery missed. ``project_id`` walks from ``HOME``,
+    so a copy running out of ``~/worktrees/...`` would otherwise resolve its
+    own anchors against a different checkout of the same repository.
+
+    Raises :class:`RepoSetUnavailable` when nothing is found: on a fresh
+    machine, an unmounted home, or a container, ``[]`` would silently condemn
+    every anchored memory instead of reporting that we could not look.
     """
-    home = Path.home()
-    repos = [home / "personal-assistant", home / "personal-assistant" / "data"]
-    repos += [Path(p).parent for p in glob.glob(str(home / "Code" / "*" / ".git"))]
-    found = [r for r in repos if r.exists()]
-    if not found:
+    repos = list(project_id.repo_set())
+    known = {str(r) for r in repos}
+    for candidate in (PA_DIR, PA_DIR / "data"):
+        if (candidate / ".git").exists() and str(candidate) not in known:
+            repos.append(candidate)
+            known.add(str(candidate))
+    if not repos:
         raise RepoSetUnavailable(
             "no git repositories discovered — anchor resolution would report "
             "every anchor as absent"
         )
-    return found
+    return repos
 
 
 def _make_resolver(repos: list[Path]):
+    """Return a memoised ``resolve(anchor)`` over *repos*.
+
+    The cache key is ``(type, ref)``, not the ref alone: a ``commit`` anchor
+    and a ``file`` anchor can carry the same text and must not share an
+    answer (finding ANT-L7).
+    """
     memo: dict[tuple, str] = {}
 
     def resolve(anchor: dict) -> str:

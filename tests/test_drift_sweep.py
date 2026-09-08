@@ -10,6 +10,8 @@ report's tests).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -230,3 +232,134 @@ def test_a_lost_trend_row_is_a_failed_run(tmp_path, monkeypatch) -> None:
     blocker.write_text("x", encoding="utf-8")
     rc = ds.main(["--log-path", str(blocker / "d.jsonl")])
     assert rc == 2
+
+
+# ============================================================================
+# run_sweep, unstubbed, against throwaway repositories
+# (findings ANT-Me / ANT-Mf / AN10)
+# ============================================================================
+
+
+def _init_repo(path: Path, relpath: str) -> Path:
+    """Create a throwaway git repository at *path* tracking one file."""
+    target = path / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# seeded\n", encoding="utf-8")
+    env = {
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "PATH": os.environ.get("PATH", ""), "HOME": str(path.parent),
+    }
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-qm", "seed"], check=True, env=env,
+    )
+    return path
+
+
+def _record(mid: str, ref: str, created: str) -> dict:
+    """One anchored synthetic memory."""
+    return {
+        "id": mid, "category": "progress", "created_at": created,
+        "anchors": [{"type": "file", "ref": ref}],
+    }
+
+
+OLD = "2026-01-01T00:00:00+00:00"      # long before FIXED_NOW
+RECENT = "2026-06-05T00:00:00+00:00"   # within a 30-day window of FIXED_NOW
+
+
+def test_run_sweep_resolves_the_full_back_set(tmp_path, monkeypatch) -> None:
+    """Every anchored record is checked, however old (the sweep's purpose).
+
+    Unstubbed: real git, real anchor_verify, one throwaway repository.
+    Kills the mutation hard-coding ``days=30`` in run_sweep, which would drop
+    the 2026-01 record and defeat the module docstring's "never ages out".
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    records = [
+        _record("m-old", "wiki/notes.md", OLD),
+        _record("m-recent", "wiki/notes.md", RECENT),
+        _record("m-gone", "wiki/ghost.md", OLD),
+    ]
+    result = ds.run_sweep(records, as_of=FIXED_NOW)
+    assert result["anchored_in_window"] == 3
+    assert result["verdicts"]["true"] == 2
+    assert result["fail_count"] == 1
+    assert result["repo_count"] == 1
+    assert result["failing_file_ref_recovery"] == {"absent": 1}
+
+
+def test_run_sweep_honours_a_narrow_window(tmp_path, monkeypatch) -> None:
+    """The control: ``days`` still narrows the population when asked."""
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    result = ds.run_sweep(
+        [_record("m-old", "wiki/notes.md", OLD),
+         _record("m-recent", "wiki/notes.md", RECENT)],
+        as_of=FIXED_NOW, days=30,
+    )
+    assert result["anchored_in_window"] == 1
+
+
+def test_run_sweep_recovers_a_prefix_mismatch(tmp_path, monkeypatch) -> None:
+    """The recovery split comes from the real basename index, not a stub."""
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    result = ds.run_sweep(
+        [_record("m-1", "notes.md", OLD)], as_of=FIXED_NOW,
+    )
+    assert result["fail_count"] == 1
+    assert result["failing_file_ref_recovery"] == {"recoverable": 1}
+
+
+def test_run_sweep_resolves_each_ref_once(tmp_path, monkeypatch) -> None:
+    """Kills the mutation dropping the resolver memo (finding AN10).
+
+    verify_file walks every repository and spawns up to two git processes
+    each; tier_c_audit asks about every failing file anchor a second time for
+    the recovery split, so an unmemoised sweep pays for the same ref twice
+    per record.
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    calls: list[str] = []
+    real_verify_file = ds.av.verify_file
+
+    def counting(ref, repos):
+        calls.append(ref)
+        return real_verify_file(ref, repos)
+
+    monkeypatch.setattr(ds.av, "verify_file", counting)
+    ds.run_sweep(
+        [_record("m-1", "wiki/ghost.md", OLD),
+         _record("m-2", "wiki/ghost.md", OLD)],
+        as_of=FIXED_NOW,
+    )
+    # Two failing records, one distinct ref, ONE resolution through the
+    # memoised split resolver. Without the memo it is one per record.
+    # (verify_memory dispatches through anchor_verify._VERIFIERS, which
+    # captured the real function at import, so it is not counted here.)
+    assert calls.count("wiki/ghost.md") == 1
+
+
+def test_main_reads_the_corpus_it_was_given(tmp_path, monkeypatch, capsys) -> None:
+    """``--memories`` must actually be honoured (finding ANT-Mf).
+
+    load_records is NOT stubbed here: the file named on the command line is
+    the one swept, and its record count reaches the rendered summary.
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta, "broad_repo_set", lambda: [repo])
+    corpus = tmp_path / "elsewhere.jsonl"
+    corpus.write_text(
+        "\n".join(json.dumps(_record(f"m-{i}", "wiki/notes.md", OLD))
+                  for i in range(4)) + "\n",
+        encoding="utf-8",
+    )
+    rc = ds.main(["--memories", str(corpus), "--no-log"])
+    assert rc == 0
+    assert "Anchored swept:   4" in capsys.readouterr().out

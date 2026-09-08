@@ -551,7 +551,11 @@ def _throwaway_repo(root: Path) -> Path:
     """
     repo = root / "repo"
     (repo / "scripts").mkdir(parents=True)
-    (repo / "scripts" / "real.py").write_text("x = 1\n", encoding="utf-8")
+    # The marker keeps two repositories seeded in the same second from
+    # producing byte-identical trees, and so identical commit hashes.
+    (repo / "scripts" / "real.py").write_text(
+        f"x = 1\n# {root.name}\n", encoding="utf-8",
+    )
     env = {
         "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
         "GIT_COMMITTER_NAME": "Test",
@@ -755,3 +759,64 @@ class TestTransientFailureIsPending:
         assert av.bind_confidence("pending") == "medium"
         # "false" is committal and still demotes, whatever the record says.
         assert av.bind_confidence("false", current="high") == "low"
+
+
+# ============================================================================
+# verify_commit across a real repo set, and the zero-valid-anchor guard
+# (findings ANT-L1 / ANT-Mh)
+# ============================================================================
+
+
+class TestVerifyCommitAcrossARepoSet:
+    """The repo set is searched, not just its first member."""
+
+    def _head(self, repo: Path) -> str:
+        """The full hash of *repo*'s tip commit."""
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return out.stdout.strip()
+
+    def test_a_hash_in_the_second_repository_resolves(self, tmp_path):
+        """Kills the mutation checking only ``repo_set[0]``."""
+        first = _throwaway_repo(tmp_path / "one")
+        second = _throwaway_repo(tmp_path / "two")
+        target = self._head(second)
+        assert av.verify_commit(target, [first, second]) == "true"
+
+    def test_the_repo_set_is_not_ignored(self, tmp_path):
+        """Kills the mutation that drops the repo_set argument entirely."""
+        first = _throwaway_repo(tmp_path / "one")
+        second = _throwaway_repo(tmp_path / "two")
+        target = self._head(second)
+        assert av.verify_commit(target, [first]) == "false"
+
+    def test_a_short_prefix_of_a_real_commit_resolves(self, tmp_path):
+        """Seven characters is a genuine abbreviation git can disambiguate."""
+        repo = _throwaway_repo(tmp_path)
+        assert av.verify_commit(self._head(repo)[:7], [repo]) == "true"
+
+
+class TestZeroValidAnchorsIsNotVerified:
+    """An anchors list with nothing checkable is None, never "true"."""
+
+    def test_only_unknown_types_returns_none(self):
+        """Kills the mutation removing the saw_any_valid_anchor guard.
+
+        Without it the loop checks nothing, falls through to the trailing
+        branch, and reports "true" — a memory verified on the strength of
+        anchors no verifier ever looked at (finding ANT-Mh).
+        """
+        record = {
+            "id": "x",
+            "anchors": [
+                {"type": "telepathy", "ref": "alpha-centauri"},
+                {"type": "vibes", "ref": "a good feeling"},
+            ],
+        }
+        assert av.verify_memory(record, []) is None
+
+    def test_only_malformed_entries_returns_none(self):
+        record = {"id": "x", "anchors": ["not a dict", {"type": "file"}]}
+        assert av.verify_memory(record, []) is None
