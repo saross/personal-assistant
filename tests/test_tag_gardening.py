@@ -833,3 +833,76 @@ class TestUnicodeLineSeparators:
         rewritten = json.loads(raw.split("\n")[0])
         assert rewritten["content"] == f"Section one{LINE_SEPARATOR}section two."
         assert rewritten["research_tags"] == ["pipeline", "api"]
+
+
+# -------------------------------------------------------------------------
+# Bulk-rewrite guard wiring (audit 2026-09-08, findings A5 and B6)
+# -------------------------------------------------------------------------
+
+
+class TestGuardWiring:
+    """Which merge paths may take the exclusive daily-sync lock."""
+
+    @staticmethod
+    def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+        """Write a corpus, a vocabulary, and a one-entry merge plan."""
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl)
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+        return jsonl, vocab, plan_file
+
+    def test_dry_run_does_not_invoke_the_guard(self, tmp_path: Path) -> None:
+        """A preview must not contend for the daily-sync flock.
+
+        Kills the mutation that calls ``ensure_safe_to_rewrite`` before the
+        ``--dry-run`` branch: the stub here refuses the way the real guard
+        refuses on a dirty tree, so the preview would exit 2.
+        """
+        jsonl, vocab, plan_file = self._fixture(tmp_path)
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise SystemExit(2)
+
+        before = jsonl.read_bytes()
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+            patch.object(tag_gardening, "ensure_safe_to_rewrite", refuse),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=True)
+            )
+
+        assert jsonl.read_bytes() == before
+
+    def test_real_run_invokes_the_guard(self, tmp_path: Path) -> None:
+        """A mutating merge must take the guard before rewriting.
+
+        Kills the mutation that deletes the ``ensure_safe_to_rewrite`` call
+        from the real-run path.
+        """
+        jsonl, vocab, plan_file = self._fixture(tmp_path)
+        calls: list[str] = []
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+            patch.object(
+                tag_gardening, "ensure_safe_to_rewrite",
+                lambda reason: calls.append(reason),
+            ),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        assert len(calls) == 1
+        assert "tag-gardening merge" in calls[0]

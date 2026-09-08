@@ -495,20 +495,6 @@ def cmd_merge(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # Guard against racing with extraction-hook appends or scheduled
-    # sync. The merge rewrites memories.jsonl and tag-vocabulary.txt
-    # in place.
-    ensure_safe_to_rewrite(
-        reason=f"tag-gardening merge (plan={plan_path.name})"
-    )
-    atexit.register(release_lock)
-    print(
-        "TIP: commit the result with 'Rewrite-Class: bulk' trailer so "
-        "the shrink check recognises it as intentional:\n"
-        "    cd data && git commit -m 'tags: merge' -m 'Rewrite-Class: bulk'",
-        file=sys.stderr,
-    )
-
     if not plan:
         print("Empty merge plan — nothing to do.")
         return
@@ -598,6 +584,24 @@ def cmd_merge(args: argparse.Namespace) -> None:
         )
         print("\n[DRY RUN] No files modified.")
         return
+
+    # Guard against racing with extraction-hook appends or a scheduled
+    # sync. Taken HERE, below the dry-run return: the guard acquires the
+    # exclusive daily-sync flock and refuses on a dirty tree, so calling it
+    # earlier made a read-only preview contend for that lock and abort with
+    # exit 2 whenever the extraction hook had just appended (audit
+    # 2026-09-08, finding A5). dedup-memories.py skips it on --dry-run for
+    # the same reason.
+    ensure_safe_to_rewrite(
+        reason=f"tag-gardening merge (plan={plan_path.name})"
+    )
+    atexit.register(release_lock)
+    print(
+        "TIP: commit the result with 'Rewrite-Class: bulk' trailer so "
+        "the shrink check recognises it as intentional:\n"
+        "    cd data && git commit -m 'tags: merge' -m 'Rewrite-Class: bulk'",
+        file=sys.stderr,
+    )
 
     # Real run: hold the JSONL exclusive lock through read + rename.
     with lock_jsonl_for_rewrite(MEMORIES_JSONL):
