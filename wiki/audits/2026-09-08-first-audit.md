@@ -666,33 +666,49 @@ spelling.
 ## Tranche 8 — style-analyser scripts (Lens A, 2026-09-09; Lens B running)
 
 Scope: the fourteen scripts under `scripts/style-analyser/`. Lens A:
-5 critical, 10 medium, 18 low. No external call exists in any of them. Fix
-round 4g on `claude/audit-round4g` once Lens B reports.
+5 critical, 10 medium, 18 low; Lens B: zero tests, seven damaging mutations
+all green, four criticals of its own (a self-including "held-out" sanity
+check; the blinding key inside the judge's directory; an empty corpus is a
+traceback; the verifier skips most claims and never checks per-1k rates)
+plus the missing-dependency finding (numpy, scipy, scikit-learn, spaCy are
+absent from the venv, so four modules cannot import). No external call exists
+in any of them. Fix round 4g on `claude/audit-round4g`: judge answers scored
+honestly (ties and refusals are `unusable`, pairs collapsed, exact binomial),
+the key moved outside the judge directory with randomised sides, the
+verifier verifies (feature-to-metric map, per-1k checks, UNVERIFIED rows),
+hapax over types and passive per sentence as documented, atomic writes and
+`--dry-run` on every writer with a provenance block, validators pointed at
+the live corpus, 239 tests. Recorded for Shawn: the dependency additions to
+`requirements.txt`; the nominalisation stop-list (ST24); the length-matched
+gate (ST30); the generator-side provenance sidecar. Live consequence: every
+published figure derived from hapax, passive, nominalisation, short-text
+MATTR, or announcement colons changes definition, so phase 1 must be re-run
+and the guide's numbers re-derived before the verifier passes again.
 
 ### Critical (style analyser)
 
 | # | Finding (file:line) | Verdict | Disposition |
 |---|---|---|---|
-| ST1 | `efficacy_score_judges.py:54` — any judge choice that is not the guide's side (a tie, a refusal, an empty string) is scored as a baseline win, biasing the headline result by the number of unusable judgements | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
-| ST2 | `efficacy_score_judges.py:47` — judgements parsed with a bare `json.loads`: a fenced or prose reply aborts, an empty file divides by zero, a duplicated pair id counts twice, a missing pair is silently dropped | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
-| ST3 | `efficacy_build_judge_tasks.py:129` — the unblinding key is written into the directory handed to the judge; pair ids also encode the key deterministically and each pair is emitted twice as identical files | CONFIRMED | **next** (round 4g, `claude/audit-round4g`) |
-| ST4 | `phase3_guide_verifier.py:394-403` — the count-over-words confabulation check matches the claimed number against any integer in the aggregate, so a figure attached to the wrong feature passes | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
-| ST5 | `phase1_pipeline.py:303-308` — hapax ratio divides by tokens while its docstring and the efficacy reference define it over types; the published figure is a different measure with a larger length artefact | CONFIRMED by repro | **next** (round 4g, `claude/audit-round4g`) |
+| ST1 | `efficacy_score_judges.py:54` — any judge choice that is not the guide's side (a tie, a refusal, an empty string) is scored as a baseline win, biasing the headline result by the number of unusable judgements | CONFIRMED by repro | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST2 | `efficacy_score_judges.py:47` — judgements parsed with a bare `json.loads`: a fenced or prose reply aborts, an empty file divides by zero, a duplicated pair id counts twice, a missing pair is silently dropped | CONFIRMED by repro | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST3 | `efficacy_build_judge_tasks.py:129` — the unblinding key is written into the directory handed to the judge; pair ids also encode the key deterministically and each pair is emitted twice as identical files | CONFIRMED | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST4 | `phase3_guide_verifier.py:394-403` — the count-over-words confabulation check matches the claimed number against any integer in the aggregate, so a figure attached to the wrong feature passes | CONFIRMED by repro | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST5 | `phase1_pipeline.py:303-308` — hapax ratio divides by tokens while its docstring and the efficacy reference define it over types; the published figure is a different measure with a larger length artefact | CONFIRMED by repro | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
 
 ### Medium (style analyser)
 
 | # | Finding | Disposition |
 |---|---|---|
-| ST6 | `phase3_guide_verifier.py:294-337` — an incidental word ("lower", "range") in the snippet downgrades a numeric FAIL to WARN | **next** (round 4g, `claude/audit-round4g`) |
-| ST7 | `phase3_guide_verifier.py:196,417-426` — any eight-character upper-case token is treated as a Zotero key, producing spurious FAILs | **next** (round 4g, `claude/audit-round4g`) |
-| ST8 | `phase1_pipeline.py:383-396` — passive counted per verb (ratio above one possible) where the definition says presence per sentence | **next** (round 4g, `claude/audit-round4g`) |
-| ST9 | `phase1_pipeline.py:397` — nominalisation per 1k words uses a punctuation-inclusive denominator unlike every other per-1k rate | **next** (round 4g, `claude/audit-round4g`) |
-| ST10 | `efficacy_build_reference.py:137,146` — windows measured before citation stripping land about a seventh short of the length they are matched to | **next** (round 4g, `claude/audit-round4g`) |
-| ST11 | `phase5_evaluator.py:948,1002-1012` — the "held-out real" sanity fixture is scored against a fit that includes itself (SUSPECTED) | **next** (round 4g, `claude/audit-round4g`) |
-| ST12 | `phase5_evaluator.py:1019-1021` — the sanity footer can say PASS over a table showing a fixture that is not farther | **next** (round 4g, `claude/audit-round4g`) |
-| ST13 | `efficacy_score_judges.py:36-39,83-89` — counterbalanced orders counted as independent trials, no test or interval, and the provenance line hard-coded | **next** (round 4g, `claude/audit-round4g`) |
-| ST14 | Both validators read a stale `/tmp` corpus layout: one crashes, the other silently reports zero examples, so neither precision estimate can be re-derived | **next** (round 4g, `claude/audit-round4g`) |
-| ST15 | `phase1_pipeline.py:106-148` — a body line beginning "References" in the last third truncates the document, including already-clean text | **next** (round 4g, `claude/audit-round4g`) |
+| ST6 | `phase3_guide_verifier.py:294-337` — an incidental word ("lower", "range") in the snippet downgrades a numeric FAIL to WARN | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST7 | `phase3_guide_verifier.py:196,417-426` — any eight-character upper-case token is treated as a Zotero key, producing spurious FAILs | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST8 | `phase1_pipeline.py:383-396` — passive counted per verb (ratio above one possible) where the definition says presence per sentence | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST9 | `phase1_pipeline.py:397` — nominalisation per 1k words uses a punctuation-inclusive denominator unlike every other per-1k rate | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST10 | `efficacy_build_reference.py:137,146` — windows measured before citation stripping land about a seventh short of the length they are matched to | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST11 | `phase5_evaluator.py:948,1002-1012` — the "held-out real" sanity fixture is scored against a fit that includes itself (SUSPECTED) | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST12 | `phase5_evaluator.py:1019-1021` — the sanity footer can say PASS over a table showing a fixture that is not farther | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST13 | `efficacy_score_judges.py:36-39,83-89` — counterbalanced orders counted as independent trials, no test or interval, and the provenance line hard-coded | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST14 | Both validators read a stale `/tmp` corpus layout: one crashes, the other silently reports zero examples, so neither precision estimate can be re-derived | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
+| ST15 | `phase1_pipeline.py:106-148` — a body line beginning "References" in the last third truncates the document, including already-clean text | **round 4g done** (`claude/audit-round4g`, 11 commits, 239 new tests, suite 2,692; merging with round 4e's changes, then PR and re-audit) |
 
 Lows recorded: ST16-ST33 (indentation collapsed in the injected guide;
 citation stripping mismatches its docstring; curly quotes and a numeric
