@@ -42,7 +42,17 @@ if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=1
 fi
 
-mkdir -p "$LOG_DIR"
+# audit S19: an unwritable or missing log directory aborted the script
+# under `set -e` with status 1 and no message of its own — and
+# daily-sync-trigger.sh maps exit 1 to "lock contention (another sync /
+# commit-data is running)", an actively wrong diagnosis for a broken
+# checkout. Fail with the git-error code and say what is wrong. `log`
+# cannot be used here: it writes to a file inside this directory.
+if ! mkdir -p "$LOG_DIR" 2>/dev/null || [[ ! -w "$LOG_DIR" ]]; then
+    echo "[daily-sync] ERROR: log directory $LOG_DIR is missing or not writable" >&2
+    echo "[daily-sync] (is the data submodule initialised? logs/ is a symlink into it)" >&2
+    exit 2
+fi
 
 # ---------------------------------------------------------------------------
 # Config (data/config/sync.json) — read with safe defaults. Rollback
@@ -244,7 +254,12 @@ push_with_retry() {
 # Lock (prevents overlap with a concurrent invocation on this machine)
 # ---------------------------------------------------------------------------
 
-exec 9>"$LOCK_FILE"
+# audit S19: a failed redirect here aborts with status 1, which the
+# trigger would report as lock contention. The writability check above
+# makes that unlikely; check anyway so the diagnosis is never wrong.
+if ! exec 9>"$LOCK_FILE"; then
+    fail "cannot open lock file $LOCK_FILE"
+fi
 if ! flock -n 9; then
     log "Another daily-sync is running (lock held). Exiting."
     exit 1
@@ -376,6 +391,15 @@ reconcile_orphaned_stashes() {
             # stash. Do NOT try to tidy up: `git checkout -- .` here would
             # destroy a concurrent session's uncommitted prose edits. Stop
             # and let a human resolve it — the stash is still intact.
+            #
+            # audit S17: this wedges every LATER session too. The tree
+            # stays conflicted, the extraction hook keeps appending to a
+            # now-invalid JSONL, and each run re-enters this function,
+            # fails again ("cannot pop, you have unmerged files"), and
+            # never reaches the sync. Nothing surfaced that state but the
+            # log, so write the gate as well.
+            write_sync_gate 1 \
+                "daily-sync STOPPED: orphaned stash $ref did not apply cleanly; $DATA_DIR is conflicted and every session start will fail here until it is resolved by hand (git -C $DATA_DIR status; git -C $DATA_DIR stash show -p $ref)"
             fail "ORPHANED STASH $ref did not apply cleanly; tree is conflicted and the stash is preserved. Resolve by hand: git -C $DATA_DIR stash show -p $ref"
         fi
     done
@@ -385,7 +409,16 @@ reconcile_orphaned_stashes() {
 # Data submodule sync
 # ---------------------------------------------------------------------------
 
-cd "$DATA_DIR"
+# audit S19: on an uninitialised submodule (first run on a new machine, or
+# after `git submodule deinit`) this `cd` aborted under `set -e` with
+# status 1 — reported by the trigger as lock contention. Worse, when
+# data/ exists but holds no .git, every `git` call below silently
+# operates on the PARENT repository instead of the submodule, because git
+# walks up to the enclosing work tree.
+if [[ ! -e "$DATA_DIR/.git" ]]; then
+    fail "data submodule is not initialised ($DATA_DIR/.git absent) — run: git -C $PA_DIR submodule update --init"
+fi
+cd "$DATA_DIR" || fail "cannot enter the data submodule at $DATA_DIR"
 
 # Crash-safe recovery FIRST — before anything reads or writes the tree.
 reconcile_orphaned_stashes

@@ -255,6 +255,71 @@ class TestStashPopConflictPartitioning:
 
 
 # ============================================================================
+# Wedged states are surfaced, not merely logged (audit S17, S19)
+# ============================================================================
+
+
+class TestOrphanedStashWedge:
+    """A conflicted orphan-stash pop stops every later run in the same
+    place — the tree stays conflicted, the extraction hook keeps
+    appending to an invalid JSONL, and each session re-enters the same
+    failure. Only the log said so."""
+
+    def test_conflicted_orphan_pop_writes_a_gate_line(self, world: SyncWorld) -> None:
+        """The wedge is recorded where session start will show it."""
+        machine = world.add_machine("a")
+        # Build a stash that cannot be applied cleanly: stash one append,
+        # then commit a different one at the same end-of-file position.
+        machine.append_memory("2026-09-08-stashed")
+        git("stash", "push", "-q", "-m", "orphan", cwd=machine.data)
+        machine.append_memory("2026-09-08-committed")
+        machine.commit_data("conflicting append", "memories/memories.jsonl")
+
+        result = world.run_sync(machine, PA_TEST_ORPHAN_STASHES="stash@{0}")
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "ORPHANED STASH" in combined
+
+        gate = world.gate("daily-sync-gate").splitlines()
+        assert gate and gate[0] == "1", gate
+        assert "orphaned stash" in gate[1].lower()
+        # The stash itself is preserved for the human.
+        assert git("stash", "list", cwd=machine.data).stdout.strip()
+
+
+class TestBrokenCheckoutIsNotLockContention:
+    """``daily-sync-trigger.sh`` maps exit 1 to "another sync is running".
+    A broken checkout must therefore never exit 1 (audit S19)."""
+
+    def test_uninitialised_submodule_fails_with_a_diagnosis(
+        self, world: SyncWorld
+    ) -> None:
+        """An absent data/.git is named, not mistaken for a lock."""
+        machine = world.add_machine("a")
+        (machine.data / ".git").rename(machine.data / ".git-disabled")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "not initialised" in combined
+        # Nothing was stashed in the parent by git walking up to it.
+        assert not git("stash", "list", cwd=machine.pa).stdout.strip()
+
+    def test_unwritable_log_dir_fails_with_a_diagnosis(
+        self, world: SyncWorld
+    ) -> None:
+        """A log dir that cannot be created is named, not mistaken for a lock."""
+        machine = world.add_machine("a")
+        (machine.pa / "logs").rmdir()
+        (machine.pa / "logs").write_text("not a directory\n", encoding="utf-8")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert "log directory" in combined
+
+
+# ============================================================================
 # Rebase-conflict resolution on the submodule pointer (audit S4)
 # ============================================================================
 
