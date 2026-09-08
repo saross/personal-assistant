@@ -396,7 +396,18 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     split by SQLSTATE, an all-alike rule, a 200-row quarantine cap, exit 4
     with the cursor held; all four cursor writers locked and atomic; the
     rebuild holds the cursor lock and a sync whose key vanished exits 6;
-    the indexer sanitises and skips. Second pass running.
+    the indexer sanitises and skips. Second pass: **do not merge as is** —
+    the all-alike rule (prescribed by the coordinator) re-creates P1 on
+    correlated poison (two NUL sessions in one batch hold the cursor forever
+    with exit 4), and exit 4 reaches nobody (cron discards status; the
+    settings hook chain `sessions-sync && indexer` now silently stops the
+    indexer); the sessions sync's compare-and-set is untested; a refused
+    file is retried and unreported every run; `DiskFull`/`QueryCanceled`
+    are `OperationalError` and were routed to "outage, exit 0". Third
+    round: classify by SQLSTATE class (22/23 row; 42/53/54/55/57/58/25/0A
+    environment; connection-level outage), tunable cap, a
+    `postgres-sync-gate` relayed at session start, indexer refusals
+    remembered and reported. Running.
 - Round 3 (queued, on main after the branches merge): H25, H26, H27 (the
   fixture on `main`), S22 (the guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
