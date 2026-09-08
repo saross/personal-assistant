@@ -34,6 +34,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# __file__-derived, not relative to the working directory: the documented
+# invocation gives this script an absolute path and never cd's first, so a
+# relative default resolved against wherever the shell happened to be.
+PA_ROOT = Path(__file__).resolve().parents[2]
+PHASE1_DEFAULT = PA_ROOT / "data" / "style-corpus" / "phase1-results-clean.json"
+PHASE3_DEFAULT = PA_ROOT / "data" / "style-corpus" / "phase3-promotion-clean.json"
+
 # --- Metric mapping: §N.N -> phase3 metric name(s) -------------------------
 # Each §-claim may have one primary metric (its main count/rate) plus
 # secondary metrics (e.g. §6.1 has both mean and median SL).
@@ -517,8 +524,8 @@ def verify_claim(section: str, title: str, body: str,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--guide", required=True, type=Path)
-    ap.add_argument("--phase1", default=Path("data/style-corpus/phase1-results-clean.json"), type=Path)
-    ap.add_argument("--phase3", default=Path("data/style-corpus/phase3-promotion-clean.json"), type=Path)
+    ap.add_argument("--phase1", default=PHASE1_DEFAULT, type=Path)
+    ap.add_argument("--phase3", default=PHASE3_DEFAULT, type=Path)
     ap.add_argument("--report", default=None, type=Path)
     args = ap.parse_args()
 
