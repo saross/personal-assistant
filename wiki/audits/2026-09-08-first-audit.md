@@ -186,7 +186,7 @@ Lens A: 4 critical, 12 medium, 12 low. Lens B: 57 mutations, 38 survived.
 | H25 | `scripts/digest.py:432,536,546` — `rank_fallback` admits anchored `verified: "false"` records and renders them under the heading "Verified-true entries", above the anti-confabulation line saying such content is not surfaced (CONFIRMED by the round-two agent; `tests/test_digest.py:214,323` pin it as deliberate) | **next** (after PR #115 merges: exclude disproved records from the fallback or head them honestly) |
 | H26 | `hooks/session-start-accountability.py:100` — `^~~.+?~~` needs the strikethrough to close inside the first cell; two live done rows close it in the last cell and count as open (23 detected, 2 missed) | **next** (a first cell that opens with `~~` is struck) |
 | H27 | **Private content in a public branch.** The round-two agent's banner fixtures on `claude/audit-hook-tests` (PR #115) copied rows from the private `tasks/waiting-for.md` and inbox — third-party names, a family-law item, a supplier, a car — into `tests/test_accountability_hook.py`, and the branch was pushed to the public repository (CONFIRMED by the branch's re-audit, 2026-09-08). One such name has been on `main` since commit 82f5035 (2026-05-02, line 122). | branch tip fixed with synthetic fixtures (normal commit); the history rewrite and force-push, and the `main` history, are **decision D6** |
-| H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | **decision** — needs a safe-advance position (the last point with no skip pending) rather than a guard, which would duplicate the window's own memories; round 3 design |
+| H28 | `hooks/extraction-hook.py` — a window shaped `[real user, real assistant, /command]` extracts normally and advances past the pending command skip, so the command's response is re-extracted on the next firing (the twin of the empty-window case fixed on PR #115; predates the branch; CONFIRMED by the round-two agent) | **round 2** (PR #115, fourth round): a safe-advance position — every cursor write moves to the last entry processed with no skip pending, so the command and its response are seen together next time and no real message is read twice |
 
 Lows (both lenses): docstring arithmetic (78 not 68), five lines over 100
 columns, `os.write` return unchecked, vocabulary dedup outside the lock (9
@@ -380,9 +380,17 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
     equipment log. `tests/test_digest.py` and `tests/test_retrieval_hook.py`
     carry project slugs the repository names openly (left);
     `tests/test_zotero.py` carries published author surnames from a
-    bibliographic fixture (Shawn's call). Narrow third pass running.
-    Merge waits on D6; a squash merge would keep the private rows out of
-    `main`'s history whatever is decided about the branch.
+    bibliographic fixture (Shawn's call). Third pass: **do not merge as
+    is** — the pending-skip guard covered only the empty-window advance; the
+    two non-empty advances still step past a trailing command (H28, now
+    being fixed with the safe-advance design); a subagent assistant entry
+    consumes the skip flag; the substitution guard checks the opening
+    quote, so `A='abc'$(id)` (which bash executes) is unreported; no test
+    covers a file without a trailing newline (dropping `|$` from the line
+    splitter silences the whole parse); `tests/conftest.py` still carries
+    the real focus slots and an institution. Fourth round running. Merge
+    waits on D6; a squash merge would keep the private rows out of `main`'s
+    history whatever is decided about the branch.
   - PR #116, first pass: **two new criticals** — on a detached HEAD the S5
     guard pushes a second stash and only one is popped, so a run that
     reports success leaves the day's appends in a stash (the very loss
