@@ -11,7 +11,12 @@ test (logger output parses cleanly via the aggregator's parser) lives in
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 import sys
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -165,7 +170,7 @@ def test_cli_ids_split_on_whitespace_and_commas(
 ) -> None:
     """``--ids`` accepts whitespace and/or comma separators."""
     log = tmp_path / "surfaced.log"
-    monkeypatch.setattr(surfacing_log, "DEFAULT_LOG_PATH", log)
+    monkeypatch.setenv(surfacing_log.LOG_PATH_ENV, str(log))
     monkeypatch.setattr(
         sys, "argv", ["surfacing_log.py", "--path", "recall", "--ids", "a, b  c"]
     )
@@ -180,7 +185,182 @@ def test_cli_ids_split_on_whitespace_and_commas(
 def test_cli_empty_ids_writes_nothing(tmp_path: Path, monkeypatch) -> None:
     """An empty ``--ids`` (zero-match recall) writes no lines."""
     log = tmp_path / "surfaced.log"
-    monkeypatch.setattr(surfacing_log, "DEFAULT_LOG_PATH", log)
+    monkeypatch.setenv(surfacing_log.LOG_PATH_ENV, str(log))
     monkeypatch.setattr(sys, "argv", ["surfacing_log.py", "--ids", ""])
     surfacing_log.main()
     assert not log.exists()
+
+
+# ============================================================================
+# Audit S22 — the shipped destination is lazy, and dormant under pytest
+#
+# ``SHIPPED_LOG_PATH`` derives from ``__file__``, not from ``HOME``, so the
+# suite's own home cannot contain it: exercising the session-start retrieval
+# hook appended rows to the operator's real ``logs/surfaced.log`` — inside
+# the private ``data`` submodule, and inside the evidence base a future
+# archival decision is meant to rest on. The module is exercised through a
+# COPY in a temporary repository layout, because that is the only way to
+# give these assertions a shipped path that is safe to watch.
+# ============================================================================
+
+MODULE_SOURCE = Path(__file__).resolve().parent.parent / "scripts" / "surfacing_log.py"
+
+
+def _staged_copy(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Copy the logger into ``<tmp>/repo/scripts/`` for a child to import.
+
+    Returns ``(scripts_dir, expected_log_dir, expected_log_file)``. Neither
+    the log directory nor the file is created here: their appearance is
+    exactly what these tests assert about.
+    """
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(MODULE_SOURCE, scripts / MODULE_SOURCE.name)
+    log_dir = repo / "logs"
+    return scripts, log_dir, log_dir / "surfaced.log"
+
+
+def _run_child(program: str, scripts: Path, home: Path) -> dict:
+    """Run *program* in a fresh interpreter; return its JSON last line.
+
+    ``HOME`` is pinned to a directory inside the test's own tmp tree and
+    ``PA_SURFACED_LOG`` is cleared, so the child resolves the destination
+    the way production does and can reach nothing of the operator's.
+    """
+    home.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, HOME=str(home))
+    env.pop("PA_SURFACED_LOG", None)
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(scripts)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"exit {result.returncode}\nstdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+#: Stand in for pytest so the child takes the under-test branch.
+_PYTEST_STUB = (
+    'import sys, types\n'
+    'sys.modules.setdefault("pytest", types.ModuleType("pytest"))\n'
+)
+
+#: Surface two memories through the module's public entry point, exactly as
+#: the retrieval hook and ``fetch-memories.py`` do — no ``log_path``.
+_SURFACE = textwrap.dedent(
+    """
+    import importlib, json, sys
+    sys.path.insert(0, sys.argv[1])
+    mod = importlib.import_module("surfacing_log")
+    written = mod.log_surfaced([{"id": "a"}, {"id": "b"}], "digest")
+    print(json.dumps({
+        "written": written,
+        "default": str(mod.default_log_path()),
+        "shipped": str(mod.SHIPPED_LOG_PATH),
+    }))
+    """
+)
+
+
+def test_import_alone_creates_nothing(tmp_path: Path) -> None:
+    """Importing the module must not create the log, or its directory.
+
+    Kills hoisting the destination back to an import-time constant that
+    opens or mkdirs anything, and any `mkdir` moved above the resolution.
+    """
+    scripts, log_dir, log_file = _staged_copy(tmp_path)
+    program = textwrap.dedent(
+        """
+        import importlib, json, sys
+        sys.path.insert(0, sys.argv[1])
+        mod = importlib.import_module("surfacing_log")
+        print(json.dumps({"shipped": str(mod.SHIPPED_LOG_PATH)}))
+        """
+    )
+    report = _run_child(_PYTEST_STUB + program, scripts, tmp_path / "home")
+
+    assert report["shipped"] == str(log_file)
+    assert not log_file.exists(), "importing the logger opened its log file"
+    assert not log_dir.exists(), "importing the logger created logs/"
+
+
+def test_an_unpinned_call_under_pytest_writes_nothing(tmp_path: Path) -> None:
+    """S22: the hook's own call, under pytest, must reach no file.
+
+    The mutation this kills: ``target = log_path or SHIPPED_LOG_PATH`` in
+    :func:`surfacing_log.log_surfaced` — the line as it stood, which wrote
+    a live-looking row into the operator's private ``data`` submodule
+    every time a test exercised the retrieval hook.
+    """
+    scripts, log_dir, log_file = _staged_copy(tmp_path)
+    report = _run_child(_PYTEST_STUB + _SURFACE, scripts, tmp_path / "home")
+
+    assert report["default"] == "None"
+    assert report["written"] == 0
+    assert not log_file.exists(), "an unpinned call under pytest wrote the log"
+    assert not log_dir.exists(), "an unpinned call under pytest created logs/"
+
+
+def test_the_production_path_still_writes(tmp_path: Path) -> None:
+    """Laziness must not cost the instrumentation its production write.
+
+    No pytest in ``sys.modules``, nothing pinned: the same unpinned call
+    the hook makes lands two lines in ``<repo>/logs/surfaced.log``. Kills
+    a "fix" that simply stops writing.
+    """
+    scripts, _log_dir, log_file = _staged_copy(tmp_path)
+    report = _run_child(_SURFACE, scripts, tmp_path / "home")
+
+    assert report["default"] == str(log_file)
+    assert report["written"] == 2
+    body = log_file.read_text(encoding="utf-8")
+    assert body.count("\n") == 2
+    assert "id=a" in body and "id=b" in body
+
+
+def test_the_environment_override_wins_under_pytest(tmp_path: Path) -> None:
+    """A test that pins the destination gets the writer, in full."""
+    scripts, _log_dir, shipped = _staged_copy(tmp_path)
+    pinned = tmp_path / "pinned" / "surfaced.log"
+    program = textwrap.dedent(
+        """
+        import importlib, json, os, sys
+        os.environ["PA_SURFACED_LOG"] = sys.argv[2]
+        sys.path.insert(0, sys.argv[1])
+        mod = importlib.import_module("surfacing_log")
+        written = mod.log_surfaced([{"id": "a"}], "recall")
+        print(json.dumps({"written": written}))
+        """
+    )
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, HOME=str(home))
+    env.pop("PA_SURFACED_LOG", None)
+    result = subprocess.run(
+        [sys.executable, "-c", _PYTEST_STUB + program, str(scripts), str(pinned)],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert json.loads(result.stdout.strip().splitlines()[-1])["written"] == 1
+    assert "id=a" in pinned.read_text(encoding="utf-8")
+    assert not shipped.exists(), "the pinned run also wrote the shipped path"
+
+
+def test_in_this_suite_the_default_is_dormant() -> None:
+    """The property the whole suite depends on, asserted in process.
+
+    Every unpinned ``log_surfaced`` call made by any test — the retrieval
+    hook's digest, ``fetch-memories.py`` — resolves to nothing while
+    pytest is imported. Pure: it opens no file to prove it.
+    """
+    assert "pytest" in sys.modules
+    assert os.environ.get(surfacing_log.LOG_PATH_ENV) in (None, "")
+    assert surfacing_log.default_log_path() is None
+    assert surfacing_log.log_surfaced([{"id": "a"}], "digest") == 0
