@@ -155,8 +155,12 @@ previous one, or (c) the user explicitly requests a fresh extraction.
    `references_split_failed`, `zero_reference_words`,
    `abstract_present_but_not_promoted`,
    `word_count_delta_{±N}pct`, and others. Read the corpus manifest
-   `~/personal-assistant/data/style-corpus/corpus-manifest.json` for the
-   summary `needs_review` list.
+   `~/personal-assistant/data/style-corpus/extracted/corpus-manifest.json`
+   for the summary `needs_review` list. **Note:** a stale copy of this file
+   still sits one directory up, at
+   `~/personal-assistant/data/style-corpus/corpus-manifest.json`, from
+   before `extract_corpus.py` was corrected to write inside its
+   `--output-dir` (2026-09-09). It is not regenerated and must not be read.
 3. **Legacy fallback (deprecated):** if the clean corpus is unavailable,
    the agent can fall back to `pdftotext -layout` + `phase1_pipeline.py`
    without the `--clean-corpus` flag. Reference-stripping then uses
@@ -582,15 +586,17 @@ wiped on reboot — do not assume it is still there, and do not write a new one
 back to `/tmp`.
 
 The durable record of the corpus is
-`~/personal-assistant/data/style-corpus/corpus-manifest.json`, the extraction
-*output*: `results[].key` enumerates every extracted paper, `source_manifest`
+`~/personal-assistant/data/style-corpus/extracted/corpus-manifest.json`, the
+extraction *output* (it lands INSIDE `--output-dir`; the copy one directory
+up is a stale pre-2026-09-09 artefact, not a second source):
+`results[].key` enumerates every extracted paper, `source_manifest`
 records where the input manifest lived, and each
 `extracted/<key>/metadata.json` carries that paper's Zotero fields. So:
 
 - **Step 2 only needs `key` and `extraction_notes`** (`phase1_pipeline.py`
   reads the manifest solely through `included_keys`), so a manifest for it
-  can be rebuilt from `corpus-manifest.json["results"]` without touching
-  Zotero.
+  can be rebuilt from `extracted/corpus-manifest.json["results"]` without
+  touching Zotero.
 - **Step 1 additionally needs `pdf_path`**, which only the Zotero export
   carries; re-export it if the PDFs must be re-extracted.
 
