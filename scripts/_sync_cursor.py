@@ -114,6 +114,23 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ends_mid_line(path: Path) -> bool:
+    """Does this file end without a newline — i.e. mid-entry?
+
+    A run killed between the write and its newline leaves a half-written
+    line. Appending straight onto it would join two entries into one
+    unparseable line, so the writer starts a fresh line first.
+    """
+    try:
+        with path.open("rb") as handle:
+            if handle.seek(0, 2) == 0:
+                return False
+            handle.seek(-1, 2)
+            return handle.read(1) != b"\n"
+    except OSError:
+        return False
+
+
 def count_quarantine_entries(quarantine_path: Path) -> int | None:
     """
     Return how many entries the quarantine file holds, or None if unknown.
@@ -126,15 +143,40 @@ def count_quarantine_entries(quarantine_path: Path) -> int | None:
     misses a path that never reported at all; a re-derived count repairs
     itself on the next tick.
 
-    ``None`` (unreadable) is not zero: the caller must leave the standing
-    problem alone rather than declare it resolved.
+    ``None`` (missing or unreadable) is not zero: the caller must leave
+    the standing problem alone rather than declare it resolved. A MISSING
+    file is emphatically not an empty one — the data submodule being
+    unmounted would otherwise erase every quarantine alarm on the machine
+    at the next cron tick (ninth re-audit, finding M1).
+
+    Only COMPLETE, PARSEABLE lines count. A run killed between the write
+    and the newline leaves a partial trailing line: counting it would
+    report a row that is not really recorded, and the next append repairs
+    the file by starting a fresh line rather than concatenating onto it —
+    after which the damaged line is newline-terminated but still not an
+    entry. This counts exactly what :func:`_existing_fingerprints`
+    considers present, so the gate's number always matches the number of
+    rows an operator can actually find and replay.
     """
-    if not quarantine_path.exists():
-        return 0
     try:
         with quarantine_path.open("r", encoding="utf-8") as handle:
-            return sum(1 for line in handle if line.strip())
-    except OSError:
+            entries = 0
+            for line in handle:
+                if not line.endswith("\n"):
+                    # Only the last line can lack its newline, and a
+                    # half-written entry is not an entry.
+                    break
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    entries += 1
+            return entries
+    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -187,6 +229,13 @@ def _existing_fingerprints(quarantine_path: Path) -> set[str]:
     try:
         with quarantine_path.open("r", encoding="utf-8") as fh:
             for line in fh:
+                # Deliberately NOT skipping a newline-less trailing line
+                # the way the counter does. The two guards have opposite
+                # jobs: the counter must not claim a row is recorded
+                # until the write completed, and the deduper must not
+                # write a second copy of a row that is already there in
+                # part. Erring safely means opposite answers about the
+                # same line (ninth re-audit, low).
                 stripped = line.strip()
                 if not stripped:
                     continue
@@ -272,6 +321,10 @@ def quarantine_record(
     try:
         quarantine_path.parent.mkdir(parents=True, exist_ok=True)
         with quarantine_path.open("a", encoding="utf-8") as fh:
+            # Repair a partial trailing line rather than concatenating
+            # onto it, which would corrupt two entries instead of one.
+            if _ends_mid_line(quarantine_path):
+                fh.write("\n")
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except (OSError, TypeError, ValueError) as exc:
         if logger is not None:

@@ -462,3 +462,128 @@ class TestQuarantineStatuses:
             _sync_cursor.QUARANTINE_DUPLICATE,
             _sync_cursor.QUARANTINE_FAILED,
         }) == 3
+
+
+# ---------------------------------------------------------------------------
+# Ninth re-audit, finding M1 — a file that is not there is not a file with
+# nothing in it
+# ---------------------------------------------------------------------------
+
+
+class TestCountingQuarantineEntries:
+    """
+    The gate derives its standing problem from this number, so what the
+    function says about a file it cannot see decides whether a real alarm
+    survives. A missing quarantine file means the data submodule is
+    unmounted far more often than it means the rows were repaired.
+    """
+
+    def test_a_missing_file_is_unknown_not_empty(self, tmp_path):
+        """
+        The mutation this kills: returning 0 for a missing file — the
+        gate then lowers every quarantine problem on the machine at the
+        next cron tick after the submodule is unmounted.
+        """
+        assert _sync_cursor.count_quarantine_entries(
+            tmp_path / "never-created.jsonl",
+        ) is None
+
+    def test_an_unreadable_file_is_unknown(self, tmp_path):
+        """A directory where a file should be reads as unknown, not zero."""
+        blocker = tmp_path / "quarantine.jsonl"
+        blocker.mkdir()
+        assert _sync_cursor.count_quarantine_entries(blocker) is None
+
+    def test_an_empty_file_is_zero(self, tmp_path):
+        """
+        A file that exists and holds nothing IS zero — the guard must not
+        amount to never reporting a cleared quarantine.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text("", encoding="utf-8")
+        assert _sync_cursor.count_quarantine_entries(path) == 0
+
+    def test_blank_lines_are_not_entries(self, tmp_path):
+        """The mutation this kills: counting every line, blanks included."""
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text(
+            '{"reason": "a"}\n\n   \n{"reason": "b"}\n\n', encoding="utf-8",
+        )
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+
+    def test_an_unparseable_line_is_not_an_entry(self, tmp_path):
+        """
+        The count must equal what an operator can actually find and
+        replay — which is what the dedup layer already considers present.
+        A line of damage is not a quarantined row. The mutation this
+        kills: counting any non-blank line.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text(
+            '{"reason": "a"}\nnot json at all\n["not", "an", "object"]\n'
+            '{"reason": "b"}\n',
+            encoding="utf-8",
+        )
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+
+    def test_a_half_written_last_line_is_not_counted(self, tmp_path):
+        """
+        A run killed between the write and its newline leaves a partial
+        entry. Counting it reports a row that is not really recorded, and
+        the acknowledged position would then be set past a line the
+        operator never saw. The mutation this kills: counting a line that
+        does not end in a newline.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text(
+            '{"reason": "a"}\n{"reason": "b"}\n{"reason": "c"}',
+            encoding="utf-8",
+        )
+        assert _sync_cursor.count_quarantine_entries(path) == 2
+
+    def test_the_deduper_still_sees_a_half_written_last_line(self, tmp_path):
+        """
+        The counter and the deduper answer differently about the same
+        line, on purpose: the counter must not claim a row is recorded
+        until its write completed, and the deduper must not append a
+        second copy of a row that is already there in part. The mutation
+        this kills: making the deduper skip the trailing line too, which
+        turns every interrupted write into a duplicate entry.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        _sync_cursor.quarantine_record(path, {"id": "m1"}, "refused")
+        # Strip the trailing newline, as a killed write would leave it.
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.rstrip("\n"), encoding="utf-8")
+        _sync_cursor._FINGERPRINT_CACHE.clear()
+
+        assert _sync_cursor.count_quarantine_entries(path) == 0
+
+        status = _sync_cursor.quarantine_record(path, {"id": "m1"}, "refused")
+
+        assert status == _sync_cursor.QUARANTINE_DUPLICATE, (
+            "the interrupted entry was written a second time"
+        )
+
+    def test_an_append_repairs_a_half_written_last_line(self, tmp_path):
+        """
+        The next append must start a fresh line rather than joining onto
+        the partial one, which would turn two entries into one
+        unparseable line. The mutation this kills: dropping the
+        ``_ends_mid_line`` repair.
+        """
+        path = tmp_path / "quarantine.jsonl"
+        path.write_text(
+            '{"reason": "a", "record": 1}\n{"reason": "half',
+            encoding="utf-8",
+        )
+
+        status = _sync_cursor.quarantine_record(path, {"id": "m2"}, "b")
+
+        assert status == _sync_cursor.QUARANTINE_WRITTEN
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3, lines
+        assert lines[1] == '{"reason": "half'
+        json.loads(lines[2])
+        # The complete entries either side of the damage are countable.
+        assert _sync_cursor.count_quarantine_entries(path) == 2
