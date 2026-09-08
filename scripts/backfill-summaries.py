@@ -45,6 +45,7 @@ from _bulk_rewrite_guard import (  # noqa: E402
     lock_jsonl_for_rewrite,
     release_lock,
 )
+from _log_dir import ensure_log_dir  # noqa: E402
 
 # ============================================================================
 # Configuration
@@ -122,7 +123,7 @@ def load_env() -> None:
 
 def setup_logging() -> logging.Logger:
     """Configure file and console logging."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_log_dir(LOG_DIR)
     logger = logging.getLogger("backfill-summaries")
     logger.setLevel(logging.INFO)
 

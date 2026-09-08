@@ -41,6 +41,7 @@ from typing import Any
 # machine, so the variable name carries a host suffix.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _openai_key import resolve_openai_key  # noqa: E402
+from _log_dir import ensure_log_dir  # noqa: E402
 from _batch_state import load_state, save_state  # noqa: E402
 # The ONE substantive-session predicate, shared with check-archive-drift.py so
 # that the drift gate's remediation command archives exactly what it reported
@@ -128,7 +129,7 @@ def load_env() -> None:
 
 def setup_logging() -> logging.Logger:
     """Configure file and console logging."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_log_dir(LOG_DIR)
     logger = logging.getLogger("bulk-archive")
     logger.setLevel(logging.INFO)
 

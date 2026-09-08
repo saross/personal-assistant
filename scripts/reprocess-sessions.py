@@ -41,6 +41,7 @@ from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E4
 # Shared writer helpers — keep COMMAND_MARKERS and timestamp shape in
 # lockstep with hooks/extraction-hook.py (audit IC1, IC4).
 from _batch_state import load_state, save_state  # noqa: E402
+from _log_dir import ensure_log_dir  # noqa: E402
 from _command_markers import COMMAND_MARKERS  # noqa: E402
 from _timestamps import coerce_to_iso, now_iso  # noqa: E402
 from typing import Any
@@ -185,7 +186,7 @@ def load_env() -> None:
 
 def setup_logging() -> logging.Logger:
     """Configure file and console logging."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_log_dir(LOG_DIR)
     log = logging.getLogger("reprocess-sessions")
     log.setLevel(logging.INFO)
 
