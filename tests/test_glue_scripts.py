@@ -811,3 +811,126 @@ class TestCommitDataSafetyContracts:
         )
         # The data half still went through — only the parent bump is withheld.
         assert self._commit_count(data_dir) == 2
+
+    # ---- re-audit of PR #114 (2026-09-08) ----------------------------------
+
+    def test_refuses_when_the_data_submodule_is_mid_merge(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """CRITICAL. Every commit here names a pathspec, so it is a PARTIAL
+        commit, which git refuses during a merge — but only after ``git add``
+        has staged the paths. The run then dies with the paths staged, and
+        every later run sees no UNSTAGED change, says "No data changes to
+        commit." and exits 0 with the data uncommitted: a latched silent
+        no-op. The guard must fire BEFORE anything is staged."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "conflict.txt").write_text("base\n")
+        _git("add", "conflict.txt", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "base", cwd=data_dir)
+        _git("checkout", "--quiet", "-b", "other", cwd=data_dir)
+        (data_dir / "conflict.txt").write_text("theirs\n")
+        _git("commit", "--quiet", "-am", "theirs", cwd=data_dir)
+        _git("checkout", "--quiet", "main", cwd=data_dir)
+        (data_dir / "conflict.txt").write_text("ours\n")
+        _git("commit", "--quiet", "-am", "ours", cwd=data_dir)
+        _git("merge", "other", cwd=data_dir)          # conflicts, on purpose
+        assert (data_dir / ".git" / "MERGE_HEAD").exists()
+        (data_dir / "conflict.txt").write_text("resolved\n")
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "unfinished merge/rebase" in result.stderr
+        # Nothing was staged: the new file is still untracked.
+        porcelain = _git("status", "--porcelain", cwd=data_dir).stdout
+        assert "?? memories.jsonl" in porcelain, (
+            f"the guard staged something before refusing:\n{porcelain}"
+        )
+
+    def test_refuses_to_report_success_on_a_latched_staged_state(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """CRITICAL, second half. The state a died-mid-commit run leaves
+        behind: paths staged, working tree clean. The old code found no
+        unstaged change and exited 0 — reporting success on data that was
+        neither committed nor pushed, forever."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("add", "memories.jsonl", cwd=data_dir)   # staged, tree now clean
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 3, (
+            f"a staged-but-uncommitted store must not exit 0; got "
+            f"rc={result.returncode}\n{result.stdout}\n{result.stderr}"
+        )
+        assert "memories.jsonl" in result.stderr
+        assert self._commit_count(data_dir) == 1
+        staged = _git("diff", "--cached", "--name-only", cwd=data_dir).stdout.split()
+        assert staged == ["memories.jsonl"], "the staged work was discarded"
+
+    def test_metacharacter_filename_does_not_sweep_a_lookalike(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """MEDIUM. A pathspec is a GLOB by default, so the real filename
+        ``weird[1].md`` matched a concurrent session's staged ``weird1.md``
+        and committed it too. ``--pathspec-file-nul`` does not help — it makes
+        the file FORMAT literal, not the matching; ``--literal-pathspecs``
+        does."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "weird[1].md").write_text("ours\n")
+        (data_dir / "weird1.md").write_text("theirs\n")
+        _git("add", "-A", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "add both", cwd=data_dir)
+        (data_dir / "weird[1].md").write_text("ours, edited\n")     # this run
+        (data_dir / "weird1.md").write_text("theirs, in progress\n")
+        _git("add", "weird1.md", cwd=data_dir)                      # other session
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        committed = _git("show", "--name-only", "--pretty=format:", "HEAD",
+                         cwd=data_dir).stdout.split()
+        assert committed == ["weird[1].md"], (
+            f"the glob pathspec swept a lookalike: {committed}"
+        )
+        staged = _git("diff", "--cached", "--name-only", cwd=data_dir).stdout.split()
+        assert staged == ["weird1.md"]
+
+    def test_withheld_staged_work_is_named_not_hidden(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """MEDIUM. The old pathspec-filtered ``git status --short -- <paths>``
+        hid withheld staged work: a fully staged ``git mv`` vanished from the
+        listing and the run still ended with "Done"."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "prose.md").write_text("a note\n")
+        _git("add", "prose.md", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "prose", cwd=data_dir)
+        # Another session's fully staged rename: nothing unstaged to see.
+        _git("mv", "prose.md", "prose-renamed.md", cwd=data_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "prose.md" in result.stdout, (
+            f"the withheld staged rename was never shown:\n{result.stdout}"
+        )
+        assert "still staged" in result.stdout.lower()
+        committed = _git("show", "--name-only", "--pretty=format:", "HEAD",
+                         cwd=data_dir).stdout.split()
+        assert committed == ["memories.jsonl"]
+        # Rename detection reports the new name only; the staged rename is
+        # intact and still the other session's to commit.
+        status = _git("status", "--short", cwd=data_dir).stdout
+        assert "R  prose.md -> prose-renamed.md" in status
