@@ -180,22 +180,29 @@ memory results.
 
 ### How to search sessions
 
-Run a `psql` command via Bash:
+Run the search script via Bash, passing the user's text as an **argument**:
 
 ```bash
-psql -d claude_memories -t -A -F '|' -c "
-SELECT id, project, title, started_at::date, duration_minutes
-FROM sessions
-WHERE to_tsvector('english',
-    COALESCE(title, '') || ' ' ||
-    COALESCE(purpose, '') || ' ' ||
-    COALESCE(prompt_summary, ''))
-  @@ plainto_tsquery('english', 'QUERY_HERE')
-AND is_active = TRUE
-ORDER BY started_at DESC
-LIMIT 5;
-"
+python3 ~/personal-assistant/scripts/search-sessions.py "<user query>" \
+  --limit 5 --json
 ```
+
+**Never build a SQL string containing the user's text.** This section used
+to hand `psql -c` a statement with the query pasted into a
+`plainto_tsquery('english', 'QUERY_HERE')` literal, inside a shell
+double-quoted string: a single apostrophe broke the statement, and
+deliberately crafted text could change it (audit R8, 2026-09-08). The
+script parameterises every query, so the same rule applies anywhere else
+in `commands/`: no user text is ever interpolated into SQL.
+
+Note this searches transcript **content** (the `session_chunks` index),
+not the `sessions` metadata table the old snippet queried — a broader and
+more useful match, and the only indexed path that never decompresses an
+archive. Each result carries `project`, `title`, `started_at`, an
+`archive_dir` and a `turn_idx`.
+
+If the script exits non-zero (PostgreSQL unavailable), skip the session
+section silently, as before.
 
 ### Display format
 
@@ -204,9 +211,12 @@ If sessions match, show them **after** the memory results in a separate section:
 ```text
 ### Related Sessions
 
-project — title — date — duration
-project — title — date — duration
+project — title — date — «snippet»
+project — title — date — «snippet»
 ```
+
+Offer the retrieval handle when a result looks relevant:
+`scripts/search-sessions.py --show <archive_dir> --turn <turn_idx>`.
 
 ### When to include session search
 
@@ -228,6 +238,10 @@ SELECT COUNT(*), COALESCE(SUM(duration_minutes), 0),
 FROM sessions WHERE is_active = TRUE;
 "
 ```
+
+This statement is a fixed literal — it takes no argument, so there is
+nothing to interpolate. Keep it that way: if this block ever needs to vary
+by user input, move it behind a parameterised script.
 
 Display as:
 
