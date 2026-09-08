@@ -267,7 +267,8 @@ def main() -> int:
     cost = (in_tokens / 1e6) * PRICE_IN_PER_MTOK + (out_tokens / 1e6) * PRICE_OUT_PER_MTOK
 
     print(f"=== extraction-prompt spot-check ({'RUN' if args.run else 'DRY-RUN'}) ===")
-    print(f"  windows sampled        : {len(windows)} (from {args.max_transcripts} newest transcripts)")
+    print(f"  windows sampled        : {len(windows)} "
+          f"(from {args.max_transcripts} newest transcripts)")
     print(f"  calls (old+new × win)  : {n_calls}")
     print(f"  est input tokens       : {in_tokens:,}")
     print(f"  est output tokens      : {out_tokens:,} (@ {EST_OUTPUT_TOKENS_PER_CALL}/call)")

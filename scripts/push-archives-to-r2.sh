@@ -143,8 +143,17 @@ rclone_ver="$("$RCLONE_BIN" version 2>/dev/null \
     | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
 rclone_major="${rclone_ver%%.*}"
 rclone_minor="${rclone_ver#*.}"
-if [[ -n "$rclone_ver" ]] && { [[ "$rclone_major" -lt 1 ]] || { [[ "$rclone_major" -eq 1 ]] && [[ "$rclone_minor" -lt 64 ]]; }; }; then
-    log "r2-push: WARNING rclone $rclone_ver is < 1.64 — known R2 501 flakiness; upgrade recommended (push may not complete)"
+rclone_too_old=0
+if [[ -n "$rclone_ver" ]]; then
+    if [[ "$rclone_major" -lt 1 ]]; then
+        rclone_too_old=1
+    elif [[ "$rclone_major" -eq 1 ]] && [[ "$rclone_minor" -lt 64 ]]; then
+        rclone_too_old=1
+    fi
+fi
+if [[ $rclone_too_old -eq 1 ]]; then
+    log "r2-push: WARNING rclone $rclone_ver is < 1.64 — known R2 501" \
+        "flakiness; upgrade recommended (push may not complete)"
 fi
 
 if [[ ! -d "$CANON" ]]; then

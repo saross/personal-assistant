@@ -8,17 +8,24 @@ with Haiku-generated metadata via the Anthropic Batch API, and verifies
 archive integrity.
 
 Usage:
-    python3 scripts/bulk-archive.py discover [--min-turns N]
-    python3 scripts/bulk-archive.py archive [--dry-run] [--limit N] [--resume]
+    python3 scripts/bulk-archive.py discover [--min-content-chars N]
+    python3 scripts/bulk-archive.py archive [--dry-run] [--limit N] [--force]
     python3 scripts/bulk-archive.py enrich --batch-submit [--limit N]
     python3 scripts/bulk-archive.py enrich --batch-apply BATCH_ID
+    python3 scripts/bulk-archive.py subagents [--dry-run]
     python3 scripts/bulk-archive.py verify [--fix-catalogue]
 
 Modes:
     discover        Scan for unarchived sessions, build manifest, report stats
     archive         Compress and archive sessions (no API calls)
-    enrich          Generate Haiku metadata via Batch API (submit or apply)
+    enrich          Generate metadata via Terra or the Haiku Batch API
+    subagents       Backfill orphan subagent transcripts into their parents
     verify          Integrity checks and catalogue rebuild
+
+``archive`` resumes from its checkpoint by default — there is no --resume
+flag, and the docstring claimed one until 2026-09-08 (audit finding AR19).
+Entries the checkpoint claims are re-verified against disk before they are
+skipped; see cmd_archive.
 """
 
 import argparse
@@ -1163,7 +1170,7 @@ def cmd_subagents(args: argparse.Namespace, logger: logging.Logger) -> None:
             logger.error("Failed to archive %s: %s", agent_file.name, exc)
 
     logger.info("Archived %d orphan subagent transcripts", written)
-    print(f"\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
+    print("\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
 
 
 def uncompressed_size(transcript: Path) -> int | None:
@@ -1471,7 +1478,7 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
             len(checkpoint["failed_ids"]), CHECKPOINT_FILE,
         )
 
-    print(f"\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
+    print("\nNext: python3 scripts/bulk-archive.py verify --fix-catalogue")
 
 
 # ============================================================================
@@ -2338,7 +2345,7 @@ def _enrich_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
     print("API COST GATE — Batch Enrichment")
     print(f"{'=' * 60}")
     print(f"Model:       {HAIKU_MODEL}")
-    print(f"Mode:        Anthropic Batch API (50% discount)")
+    print("Mode:        Anthropic Batch API (50% discount)")
     print(f"Requests:    {len(requests)}")
     print(f"Est. cost:   ${total_est:.2f}")
     print(f"{'=' * 60}")
@@ -2665,8 +2672,8 @@ def cmd_verify(args: argparse.Namespace, logger: logging.Logger) -> None:
             n_sessions, CATALOGUE_FILE,
         )
         print(
-            f"\nNext: python3 scripts/sync-sessions-to-postgres.py "
-            f"--full-resync"
+            "\nNext: python3 scripts/sync-sessions-to-postgres.py "
+            "--full-resync"
         )
 
 
