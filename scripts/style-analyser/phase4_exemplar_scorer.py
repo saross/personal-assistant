@@ -244,10 +244,20 @@ def _split_paragraph_sentences(paragraph: str) -> list[str]:
 # -- Per-paper metadata -------------------------------------------------------
 
 def load_meta(key: str) -> dict:
+    """Return the metadata block for paper ``key``, or ``{}`` when it has none.
+
+    The handle is opened in a ``with`` block. The previous
+    ``json.load(open(p))`` left the file object for the garbage collector to
+    close, which leaks a descriptor per paper on any interpreter that does not
+    refcount eagerly and raises a ``ResourceWarning`` even on CPython. The
+    encoding is stated rather than inherited from the locale, matching how
+    every other input in this script is read.
+    """
     p = corpus_dir() / key / "metadata.json"
     if not p.exists():
         return {}
-    return json.load(open(p))
+    with p.open(encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def is_pre_2023(meta: dict) -> bool:

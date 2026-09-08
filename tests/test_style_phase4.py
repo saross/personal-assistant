@@ -15,6 +15,10 @@ Findings covered, all from the 2026-09-08 repository audit:
   interrupted run truncated the JSON that the next stage then parsed as
   complete), the script had no ``--dry-run``, and the JSON recorded nothing
   about what had produced it.
+* **Round 4g** — four single-line mutations survived the suite as it stood:
+  the ``MIN_CATS`` threshold, the two command-line paths (``--corpus`` and
+  ``--out``, either of which could be replaced by its module default without
+  a test noticing), and ``load_meta``'s unclosed file handle.
 
 Every fixture here is invented. The real corpus is private and this is a
 public repository, so no paper key, sentence, or number below comes from it:
@@ -29,9 +33,11 @@ or writes the real ``data/style-corpus`` tree.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -65,6 +71,26 @@ def _paragraph(n_words: int, last_word: str, terminal: str = ".") -> str:
     head = ["We", "may", "note", "the", "fieldwork", "behaviour", "here;"]
     filler = ["alpha"] * (n_words - len(head) - 1)
     return " ".join(head + filler + [last_word + terminal])
+
+
+#: Head words tripping exactly two detectors: ``first_plural`` and ``hedge``.
+TWO_CATEGORY_HEAD = ["We", "may"]
+#: The same two, plus ``discipline_vocab`` — exactly three detectors.
+THREE_CATEGORY_HEAD = ["We", "may", "fieldwork"]
+
+
+def _sentence(head: list[str], last_word: str, n_words: int = 25) -> str:
+    """Return an ``n_words`` sentence tripping exactly ``head``'s detectors.
+
+    A companion to :func:`_paragraph` for the tests that need a *chosen*
+    category count rather than a stable five. ``head`` supplies the trigger
+    words, ``alpha`` filler pads to length (it is five letters, so it is below
+    the nominalisation detector's six-character token floor and matches no
+    regular expression in ``PATTERNS``), and ``last_word`` carries the full
+    stop so the caller can tell the emitted sentences apart.
+    """
+    filler = ["alpha"] * (n_words - len(head) - 1)
+    return " ".join([*head, *filler, last_word + "."])
 
 
 def _write_paper(corpus: Path, key: str, body: str,
@@ -431,3 +457,120 @@ def test_an_interrupted_write_leaves_the_previous_output_intact(corpus, run_dir,
     assert json.loads(out.read_text(encoding="utf-8")) == {"complete": True}
     # No temporary debris left behind for the next run to trip over.
     assert [p.name for p in out.parent.iterdir()] == [out.name]
+
+
+# ---------------------------------------------------------------------------
+# Round 4g — the threshold constant and the two command-line paths
+# ---------------------------------------------------------------------------
+
+def test_the_threshold_constant_is_the_documented_three():
+    """``MIN_CATS`` is the ">=3 distinct categories" the module promises.
+
+    The mutation this kills: the ``MIN_CATS = 3`` line rewritten to any other
+    threshold. The constant and the prose that documents it are pinned to each
+    other here, so raising the bar means saying so; the behavioural half of
+    the boundary is
+    :func:`test_the_category_threshold_admits_three_and_refuses_two`.
+    """
+    assert phase4.MIN_CATS == 3
+    assert "Threshold: >=3 distinct categories" in (phase4.__doc__ or "")
+
+
+def test_the_category_threshold_admits_three_and_refuses_two(corpus, run_dir):
+    """Exactly two categories is out, exactly three is in — the MIN_CATS edge.
+
+    The mutation this kills: the ``MIN_CATS = 3`` line rewritten to any other
+    threshold. A 2 would admit ``omegatwo`` and a 4 would reject
+    ``omegathree``; both sentences sit well inside the word window and differ
+    only in how many detectors they trip, so the threshold is the only thing
+    that can decide between them.
+    """
+    two = _sentence(TWO_CATEGORY_HEAD, "omegatwo")
+    three = _sentence(THREE_CATEGORY_HEAD, "omegathree")
+    # Guard the fixtures: the boundary only means something if these really do
+    # score 2 and 3. Both counts are literals, never ``MIN_CATS - 1`` and
+    # ``MIN_CATS`` — a test that derives its own fixtures from the constant
+    # moves with the mutation instead of catching it.
+    assert phase4.score_sentence(two, is_pre_2023=True)[0] == 2
+    assert phase4.score_sentence(three, is_pre_2023=True)[0] == 3
+
+    _write_paper(corpus, "AAAA1111", two + "\n\n" + three + "\n")
+
+    assert phase4.main([]) == 0
+
+    assert [c["sentence"] for c in _candidates(run_dir, "AAAA1111")] == [three]
+
+
+def test_the_corpus_option_chooses_which_tree_is_scored(corpus, run_dir,
+                                                        tmp_path):
+    """``--corpus`` decides which papers are read, not the module default.
+
+    The mutation this kills: the ``for key_dir in sorted(args.corpus.iterdir())``
+    line falling back to ``CORPUS.iterdir()``, which would score the default
+    tree while the missing-directory guard, ``load_meta``, and the provenance
+    block all pointed at the requested one — the worst kind of half-honoured
+    option, because the output still *says* it read the right directory.
+    """
+    _write_paper(corpus, "AAAA1111", _paragraph(25, "omegadefault") + "\n")
+    chosen = tmp_path / "chosen-corpus"
+    chosen.mkdir()
+    body = _write_paper(chosen, "BBBB2222",
+                        _paragraph(25, "omegachosen") + "\n") / "body.md"
+
+    assert phase4.main(["--corpus", str(chosen)]) == 0
+
+    payload = json.loads((run_dir / OUT_RELATIVE).read_text(encoding="utf-8"))
+    assert [paper["key"] for paper in payload["per_paper"]] == ["BBBB2222"]
+    # Provenance must name the bytes actually read, not the default tree's.
+    assert [e["path"] for e in payload["provenance"]["inputs"]] == [str(body)]
+
+
+def test_the_out_option_chooses_where_the_candidates_land(corpus, run_dir,
+                                                          tmp_path):
+    """``--out`` decides the destination, not the module default.
+
+    The mutation this kills: the ``out_path = args.out`` line falling back to
+    ``out_path = OUT``, after which an operator who redirects a run still
+    overwrites the production candidates file and finds nothing where they
+    asked for it.
+    """
+    _write_paper(corpus, "AAAA1111", _paragraph(25, "omegaend") + "\n")
+    chosen = tmp_path / "elsewhere" / "candidates.json"
+
+    assert phase4.main(["--out", str(chosen)]) == 0
+
+    payload = json.loads(chosen.read_text(encoding="utf-8"))
+    assert [paper["key"] for paper in payload["per_paper"]] == ["AAAA1111"]
+    # Honouring --out means the default path is left alone, not written too.
+    assert not (run_dir / OUT_RELATIVE).exists()
+
+
+def test_loading_metadata_leaks_no_file_handle(corpus, monkeypatch):
+    """``load_meta`` closes the handle it opens.
+
+    The mutation this kills: ``return json.load(open(p))`` in ``load_meta``,
+    which handed the file object to the garbage collector — one leaked
+    descriptor per paper, and a ``ResourceWarning`` on reclamation. The
+    warning is normally suppressed, so ``simplefilter("always")`` is what
+    makes the leak visible at all.
+    """
+    meta = {"zotero": {"date": "2019-04-01", "role": "sole"}}
+    _write_paper(corpus, "AAAA1111", _paragraph(25, "omegaend") + "\n", meta)
+    # ``load_meta`` reads through the module-level corpus pointer that ``main``
+    # would normally set; this test calls it directly, so set it here.
+    monkeypatch.setattr(phase4, "_CORPUS_DIR", corpus)
+    # Flush anything an earlier test left unreclaimed, so the only warning the
+    # block below can catch is one this call is responsible for.
+    gc.collect()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        loaded = phase4.load_meta("AAAA1111")
+        # Force reclamation inside the block: a handle left to the collector
+        # would otherwise be reported after the filter had been popped.
+        gc.collect()
+
+    assert loaded == meta
+    leaks = [str(w.message) for w in caught
+             if issubclass(w.category, ResourceWarning)]
+    assert leaks == []
