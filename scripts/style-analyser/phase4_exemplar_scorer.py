@@ -17,6 +17,7 @@ Per plan §5.2:
 No LLM calls. Deterministic.
 """
 from __future__ import annotations
+import argparse
 import json
 import os
 import re
@@ -24,7 +25,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-CORPUS = Path("data/style-corpus/extracted")
+# See phase3_promotion.py: __file__-derived so the documented absolute-path
+# invocation works from any working directory. Overridable on the CLI.
+PA_ROOT = Path(__file__).resolve().parents[2]
+CORPUS = PA_ROOT / "data" / "style-corpus" / "extracted"
+OUT = PA_ROOT / "data" / "style-corpus" / "phase4-exemplar-candidates.json"
 MIN_CATS = 3
 TOP_PER_PAPER = 3
 MIN_WORDS = 20
@@ -176,7 +181,7 @@ def split_sentences(text: str) -> list[str]:
 # -- Per-paper metadata -------------------------------------------------------
 
 def load_meta(key: str) -> dict:
-    p = CORPUS / key / "metadata.json"
+    p = corpus_dir() / key / "metadata.json"
     if not p.exists():
         return {}
     return json.load(open(p))
@@ -196,15 +201,35 @@ def author_role(meta: dict) -> str:
 
 # -- Driver -------------------------------------------------------------------
 
-def main() -> int:
-    if not CORPUS.is_dir():
-        print(f"Corpus dir not found: {CORPUS}", file=sys.stderr)
+#: Set by ``main`` so ``load_meta`` (called deep in the scoring loop) can see
+#: the corpus directory without threading it through every helper.
+_CORPUS_DIR: Path = CORPUS
+
+
+def corpus_dir() -> Path:
+    """Return the corpus directory the current run is reading."""
+    return _CORPUS_DIR
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Score every corpus sentence and write the exemplar candidates."""
+    global _CORPUS_DIR
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument("--corpus", type=Path, default=CORPUS,
+                        help=f"extracted-corpus directory (default: {CORPUS})")
+    parser.add_argument("--out", type=Path, default=OUT,
+                        help=f"where to write the candidates (default: {OUT})")
+    args = parser.parse_args(argv)
+    _CORPUS_DIR = args.corpus
+
+    if not args.corpus.is_dir():
+        print(f"Corpus dir not found: {args.corpus}", file=sys.stderr)
         return 2
 
     results: dict[str, list[tuple[int, str, list[str]]]] = defaultdict(list)
     metas: dict[str, dict] = {}
 
-    for key_dir in sorted(CORPUS.iterdir()):
+    for key_dir in sorted(args.corpus.iterdir()):
         if not key_dir.is_dir():
             continue
         body = key_dir / "body.md"
@@ -246,7 +271,8 @@ def main() -> int:
             for key in sorted(results.keys())
         ],
     }
-    out_path = Path("data/style-corpus/phase4-exemplar-candidates.json")
+    out_path = args.out
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False))
     print(f"Wrote {out_path}")
     # Brief stdout summary
