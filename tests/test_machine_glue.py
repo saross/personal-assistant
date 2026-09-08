@@ -453,6 +453,37 @@ class TestSubmoduleUpdateIsGated:
         recorded = sync_sandbox["log"].read_text(encoding="utf-8")
         assert "git submodule update --init --recursive --quiet" in recorded
 
+    def test_quiet_suppresses_the_submodule_ready_line(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L3 — `did_verbose` differs from `did` only under --quiet.
+
+        Nothing asserted the suppression, so the helper could collapse to
+        `did` and cron logs would gain a line per run that says nothing
+        happened.
+        """
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+
+        quiet = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
+        assert "Submodule ready." not in quiet.stdout, quiet.stdout
+
+    def test_without_quiet_the_submodule_ready_line_is_printed(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The negative half: the line exists, it is merely suppressible."""
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+
+        loud = _run_sync(sync_sandbox, submodule_status="-1234abcd data")
+
+        assert "Submodule ready." in loud.stdout, loud.stdout
+
     def test_a_non_empty_data_reports_rather_than_attempting_the_init(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
