@@ -353,6 +353,66 @@ corpus rename, idempotent retry, locks held across read-modify-rename (except
 W3), temp files beside their targets, no injection, no import-time writes,
 UK spelling.
 
+## Tranche 3c — retrieval and serving (both lenses, 2026-09-08 evening)
+
+Scope: `fetch-memories.py`, `memory_mcp.py`, `search-sessions.py`,
+`surfacing_stats.py`, `log-recall.py`, `log-confab-flag.py`,
+`digest-preview.py`, `project_id.py`, `resolve_session_id.py`, their tests,
+and the `/recall` and `/forget` command documents. Lens A: 4 critical,
+5 medium, 10 low. Lens B: 18 mutations, 18 survived; 8 critical, 8 medium.
+Fix round 4b on `claude/audit-round4b`.
+
+### Critical (retrieval)
+
+| # | Finding (file:line) | Verdict | Disposition |
+|---|---|---|---|
+| R1 | `scripts/fetch-memories.py:513-525,552-555,608-611` — the JSONL fallback sorts naive and aware datetimes together (date-only legacy records are still on disk), so `/recall`'s depth fetch dies with a `TypeError` exactly when Postgres is down; the retrieval hook fixed the same defect at `session-start-retrieval.py:452` and this script did not | CONFIRMED by repro | **next** (round 4b, `claude/audit-round4b`) |
+| R2 | `scripts/fetch-memories.py:462-510` (`matches_filters`) and `scripts/memory_mcp.py:250-271,433-445` never check `is_active`, so every non-Postgres path returns forgotten memories, ranked first, unmarked; `commands/forget.md:62-65` promises the opposite | CONFIRMED by repro | **next** (round 4b, `claude/audit-round4b`) |
+| R3 | `commands/recall.md:57-70,234` — the `/recall` procedure itself filters on content, category, and tag only and states that all memories are searched; it is the path `/forget` names as its id source | CONFIRMED by reading | **next** (round 4b, `claude/audit-round4b`) |
+| R4 | `scripts/project_id.py:56` does not encode `.` the way Claude Code does (live: `-home-shawn-personal-assistant--claude-worktrees-…`, double dash); any cwd with a dot component sees zero same-project memories, which is the drift the module docstring exists to prevent; `resolve()` breaks a symlinked cwd the same way | CONFIRMED by repro and directory evidence | **next** (round 4b, `claude/audit-round4b`) |
+| RT1 | `scripts/fetch-memories.py:241-301` — the whole Postgres query body is unreachable by the suite (a hard-coded result after connect passes 130 of 130); reading `memories` instead of `active_memories` (:248, and `memory_mcp.py:491`), `AND` to `OR` (:281-283), `DESC` to `ASC`, and `LIMIT` ignored all stay green | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
+| RT2 | `scripts/fetch-memories.py:710-803` — `main()` has no test: deleting the JSONL fallback and the `--limit` validation pass; `parse_args`, `_staleness_warning`, and `_log_invocation` are unreferenced by any test | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
+| RT3 | `scripts/memory_mcp.py:390-392,251-271` — `search_sessions` returning a hard-coded list is green; the JSONL fallback test stubs `matches_filters` to `True`, so dropping the project filter, reversing the sort, and dropping the limit pass together | CONFIRMED (mutation) | **next** (round 4b, `claude/audit-round4b`) |
+| RT4 | `scripts/search-sessions.py` has zero coverage in the full suite (LIKE escaping, the role filter, and the rank order all mutable); `scripts/fetch-memories.py:318-430` `try_semantic` is never called (worst matches first stays green) | CONFIRMED (mutation, full suite) | **next** (round 4b, `claude/audit-round4b`) |
+
+### Medium (retrieval)
+
+| # | Finding | Disposition |
+|---|---|---|
+| R5 | `scripts/memory_mcp.py` — six tools serve memories and none logs to `surfaced.log`; `tier-2-retrieval.md:82-92` names three paths, MCP is an undeclared fourth, so earned-utility counts are biased | **next** (round 4b, `claude/audit-round4b`) |
+| R6 | `scripts/fetch-memories.py:732-757` — `--semantic` silently discards `--query` and `--id`, and an empty semantic result never falls back to FTS despite the stderr text (SUSPECTED) | **next** (round 4b, `claude/audit-round4b`) |
+| R7 | `scripts/fetch-memories.py:389-390` — rows without an embedding are dropped, not ranked last: a memory written since the last backfill is invisible to `--semantic` and MCP `semantic_search`, undocumented | **next** (round 4b, `claude/audit-round4b`) (document and count) |
+| R8 | `commands/recall.md:174-187` — the session-search snippet interpolates user text into `plainto_tsquery(...)` inside a `psql -c` shell string | **next** (round 4b, `claude/audit-round4b`) (use `search-sessions.py`) |
+| R9 | `scripts/search-sessions.py:70-86` — a `--substring` pattern under three characters cannot use the trigram index and no statement or connect timeout exists anywhere in `scripts/`; the MCP tool exposes it (SUSPECTED) | **next** (round 4b, `claude/audit-round4b`) |
+| RT5 | `scripts/fetch-memories.py:496` — multi-tag OR to AND survives (every tag test passes one tag) | **next** (round 4b, `claude/audit-round4b`) |
+| RT6 | `scripts/surfacing_stats.py:42` — the reader's default path is never compared with the writer's; `_render_human` and `main()` untested | **next** (round 4b, `claude/audit-round4b`) |
+| RT7 | `scripts/log-recall.py:106-141` — `main()` untested; writing `source=fetch` for a recall passes | **next** (round 4b, `claude/audit-round4b`) |
+| RT8 | `scripts/memory_mcp.py:437` — `get_memory` prefix match survives | **next** (round 4b, `claude/audit-round4b`) |
+| RT9 | The `SchemaVersionError` guard is unpinned at every read call site (`fetch-memories.py:237,377`, `memory_mcp.py:111`) | **next** (round 4b, `claude/audit-round4b`) |
+| RT10 | `scripts/project_id.py:59-81,119-208` — `decode_project_id`, `repo_set`, `repo_set_for` untested (every id decoding to `/` passes) | **next** (round 4b, `claude/audit-round4b`) |
+| RT11 | `scripts/resolve_session_id.py` — zero coverage, nothing imports it; the planned `tests/test_resolve_session_id.py` does not exist | **next** (round 4b, `claude/audit-round4b`) |
+| RT12 | Write side: `log-recall.py:87` and `log-confab-flag.py:169` bind a `__file__`-derived default log path at import with no pytest guard, and `fetch-memories.py:813` has no injection point — a throwaway test created `logs/fetch-memories.log` and `logs/confab-flags.log` in the checkout and the suite stayed green (S22's fix reached one of four writers) | **next** (round 4b, `claude/audit-round4b`) |
+
+Lows recorded: R10 `log-recall --limit` not sanitised (forged columns);
+R11 FTS order has no final tiebreak; R12 `show_turns` multiplies rows with
+sub-agent chunks; R13 catalogue `rel` unvalidated (escapes the root); R14
+`resolve_session_id` tracebacks on a stale mount instead of exit 2; R15
+`/recall` output never shows the id that `/forget` needs; R16
+`matches_filters(tags=[])` excludes everything; R17 `fetch-memories.py:813`
+and `digest-preview.py:39` write into the private submodule by default
+(digest-preview lines carry no preview marker); R18 psycopg2 error text
+crosses the MCP boundary; R19 "5 read-only MCP tools" is six; RT13
+`digest-preview` zero coverage; RT14 `list_recent` omits `verified`.
+Cross-file: the flag-OFF legacy path in `hooks/session-start-retrieval.py:1381-1400`
+applies no `is_active` filter and logs nothing surfaced; two archive roots
+(Postgres built from `~/cc-archives` versus the rpi share) not
+cross-referenced; the JSONL-fallback ranking differs between CLI and MCP.
+Verified correct: parameterisation of every Python query; LIKE escaping;
+`is_active` on all four Postgres paths via `active_memories`; connections
+closed on every path; limit bounds; exact-match ids; empty and
+punctuation-only queries; no embedding call without an explicit flag
+(Ollama on localhost only, no cloud path); UK spelling.
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
