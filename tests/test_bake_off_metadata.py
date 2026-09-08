@@ -1288,3 +1288,56 @@ class TestHaikuApplyResume:
         assert json.loads((out_dir / "known-session.json").read_text()) == {
             "title": "a different, later answer"
         }
+
+
+class TestFailureCountsOnlyCountFilesWritten:
+    """The summary must describe what landed on disk, not what was attempted."""
+
+    def test_record_failure_reports_whether_it_wrote(self, tmp_path):
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        assert bom.record_failure(out_dir, "fresh", {"error": "x"}, tag="gemini") is True
+        (out_dir / "kept.json").write_text(fx.RESPONSE_BARE + "\n", encoding="utf-8")
+        assert bom.record_failure(out_dir, "kept", {"error": "x"}, tag="gemini") is False
+
+    def test_a_kept_response_is_not_counted_as_a_failure_written(
+        self, tmp_path, capsys, monkeypatch, gemini_boundary
+    ):
+        """The finding: a refused write still incremented the failure count."""
+        manifest = _one_session_manifest(tmp_path, "kept-aaaa-1111")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+        (out_dir / "kept-aaaa-1111.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+
+        def always_fails(*args, **kwargs):
+            raise RuntimeError("503 Service Unavailable")
+
+        monkeypatch.setattr(bom, "gemini_call_with_retry", always_fails)
+        # force=True so the completed session is attempted at all.
+        bom.gemini_run(requests, out_dir, "system prompt", force=True)
+        printed = capsys.readouterr().out
+        assert "wrote 0 successes and 0 failures" in printed
+        assert "kept 1 earlier complete response(s)" in printed
+        assert json.loads((out_dir / "kept-aaaa-1111.json").read_text()) == (
+            fx.RESPONSE_OBJECT
+        )
+
+    def test_a_real_failure_is_still_counted(
+        self, tmp_path, capsys, monkeypatch, gemini_boundary
+    ):
+        manifest = _one_session_manifest(tmp_path, "failed-aaaa-1111")
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "gemini"
+        out_dir.mkdir(parents=True)
+
+        def always_fails(*args, **kwargs):
+            raise RuntimeError("503 Service Unavailable")
+
+        monkeypatch.setattr(bom, "gemini_call_with_retry", always_fails)
+        bom.gemini_run(requests, out_dir, "system prompt")
+        printed = capsys.readouterr().out
+        assert "wrote 0 successes and 1 failures" in printed
+        assert "kept" not in printed

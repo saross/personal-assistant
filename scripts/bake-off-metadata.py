@@ -544,12 +544,18 @@ def response_is_complete(path: Path) -> bool:
 
 def record_failure(
     out_dir: Path, session_id: str, error: dict[str, Any], *, tag: str
-) -> None:
+) -> bool:
     """Persist an error record unless a complete response already exists.
 
     Deliberately unconditional, even under ``--force``: a re-run that fails
     must not destroy the answer an earlier run paid for. The refusal is
     printed, so a silently kept response cannot be mistaken for a fresh one.
+
+    Returns:
+        True when an error record was written, False when an existing
+        complete response was kept instead. Callers count the True cases:
+        the run summary reports files it actually created, and a kept
+        response is not a failure this run produced.
     """
     path = out_dir / f"{session_id}.json"
     if response_is_complete(path):
@@ -557,8 +563,23 @@ def record_failure(
             f"[{tag}]   a complete response for {session_id} is already on "
             "disk; keeping it rather than replacing it with this error"
         )
-        return
+        return False
     write_json_atomic(path, error)
+    return True
+
+
+def report_kept(n_kept: int, *, tag: str) -> None:
+    """Say how many earlier responses were kept in place of a failure.
+
+    Without this line the summary would simply omit them, and a run whose
+    calls all failed against an already-complete directory would report
+    "0 successes and 0 failures" with no explanation.
+    """
+    if n_kept:
+        print(
+            f"[{tag}] kept {n_kept} earlier complete response(s) rather than "
+            "recording a failure over them"
+        )
 
 
 def pending_requests(
@@ -829,6 +850,7 @@ def haiku_apply(
 
     n_ok = 0
     n_fail = 0
+    n_kept = 0
     for result in client.messages.batches.results(batch_id):
         session_id = custom_to_session.get(result.custom_id)
         if not session_id:
@@ -838,22 +860,27 @@ def haiku_apply(
             print(f"[haiku] {session_id} already complete — skipping")
             continue
         if result.result.type != "succeeded":
-            record_failure(
+            if record_failure(
                 out_dir, session_id, {"error": result.result.type}, tag="haiku"
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             continue
         # An empty ``content`` list (rare but possible if the model
         # returns a successful result with no text blocks) would raise
         # IndexError below. Persist a structured failure record and
         # continue rather than crashing the whole retrieval loop.
         if not result.result.message.content:
-            record_failure(
+            if record_failure(
                 out_dir,
                 session_id,
                 {"error": "succeeded result had empty content list"},
                 tag="haiku",
-            )
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(
                 f"[haiku] succeeded result for {session_id} carried no "
                 "content blocks — recording empty-content error"
@@ -865,17 +892,20 @@ def haiku_apply(
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag="haiku",
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{session_id}.json", parsed)
             n_ok += 1
     print(f"[haiku] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag="haiku")
 
 
 # ---------------------------------------------------------------------------
@@ -985,6 +1015,7 @@ def gemini_run(
     client = genai.Client()
     n_ok = 0
     n_fail = 0
+    n_kept = 0
     for i, r in enumerate(requests, 1):
         print(
             f"[gemini] {i}/{len(requests)}  {r.session_id[:8]}  "
@@ -995,25 +1026,32 @@ def gemini_run(
                 client, r.user_message, system_prompt
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag="gemini")
-            n_fail += 1
+            if record_failure(
+                out_dir, r.session_id, {"error": str(exc)}, tag="gemini"
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(f"[gemini]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 r.session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag="gemini",
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
             n_ok += 1
     print(f"[gemini] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag="gemini")
 
 
 # ---------------------------------------------------------------------------
@@ -1158,6 +1196,7 @@ def luna_run(
         return
     n_ok = 0
     n_fail = 0
+    n_kept = 0
     usage_log: list[dict[str, Any]] = []
     for i, r in enumerate(requests, 1):
         print(
@@ -1169,8 +1208,12 @@ def luna_run(
                 r.user_message, system_prompt, model=model
             )
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
-            n_fail += 1
+            if record_failure(
+                out_dir, r.session_id, {"error": str(exc)}, tag=tag
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(f"[{tag}]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
@@ -1180,13 +1223,15 @@ def luna_run(
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 r.session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag=tag,
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
             n_ok += 1
@@ -1194,6 +1239,7 @@ def luna_run(
     # comparison, merged so a resumed run keeps the earlier rows.
     merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag=tag)
     billed_in = sum(u.get("input_tokens", 0) for u in usage_log)
     billed_out = sum(u.get("output_tokens", 0) for u in usage_log)
     reasoning = sum(
@@ -1242,7 +1288,7 @@ def haiku_rt_run(
         print(f"[{tag}] nothing to do — every session already has a response")
         return
     client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    n_ok = n_fail = 0
+    n_ok = n_fail = n_kept = 0
     usage_log: list[dict[str, Any]] = []
     for i, r in enumerate(requests, 1):
         print(
@@ -1275,26 +1321,33 @@ def haiku_rt_run(
                 "output_tokens": resp.usage.output_tokens,
             })
         except Exception as exc:  # noqa: BLE001 — graceful per-session degrade
-            record_failure(out_dir, r.session_id, {"error": str(exc)}, tag=tag)
-            n_fail += 1
+            if record_failure(
+                out_dir, r.session_id, {"error": str(exc)}, tag=tag
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
             print(f"[{tag}]   failed: {exc}")
             continue
         _atomic_write(out_dir / f"{r.session_id}.raw.txt", raw_text)
         try:
             parsed = parse_response_json(raw_text)
         except ValueError as exc:
-            record_failure(
+            if record_failure(
                 out_dir,
                 r.session_id,
                 {"error": str(exc), "raw": raw_text[:500]},
                 tag=tag,
-            )
-            n_fail += 1
+            ):
+                n_fail += 1
+            else:
+                n_kept += 1
         else:
             write_json_atomic(out_dir / f"{r.session_id}.json", parsed)
             n_ok += 1
     merge_usage_log(out_dir, usage_log)
     print(f"[{tag}] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    report_kept(n_kept, tag=tag)
     print(
         f"[{tag}] billed: {sum(u['input_tokens'] for u in usage_log):,} input, "
         f"{sum(u['output_tokens'] for u in usage_log):,} output"
