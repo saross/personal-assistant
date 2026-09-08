@@ -459,6 +459,18 @@ def load_jsonl_memories() -> list[dict[str, Any]]:
     return records
 
 
+def is_active(mem: dict[str, Any]) -> bool:
+    """
+    False only when the record is explicitly forgotten (``is_active: false``).
+
+    A memory with no ``is_active`` field is active (the legacy default —
+    the key was added with ``/forget``). Mirrors ``scripts/digest.py``'s
+    helper of the same name so every reader shares one soft-delete
+    semantic.
+    """
+    return mem.get("is_active", True) is not False
+
+
 def matches_filters(
     mem: dict[str, Any],
     tags: list[str] | None = None,
@@ -469,14 +481,24 @@ def matches_filters(
     """
     Check whether a memory matches the given filter criteria.
 
+    A record retired with ``/forget`` (``is_active: false``) never
+    matches, whatever the filters say — the PostgreSQL paths get that for
+    free from the ``active_memories`` view, and before audit R2
+    (2026-09-08) every JSONL path silently disagreed, resurfacing
+    forgotten memories on any machine without a database.
+
     All provided filters are combined with AND logic:
     - **Tags:** any of the provided tags must appear in the memory's
-      ``research_tags`` (case-insensitive).
+      ``research_tags`` (case-insensitive). An empty list is "no filter".
     - **Query:** case-insensitive substring search across ``content``,
       ``summary``, and ``source_context``.
     - **Category:** exact match on the ``category`` field.
     - **ID:** exact match on the ``id`` field.
     """
+    # Soft-delete filter (audit R2): forgotten records never surface.
+    if not is_active(mem):
+        return False
+
     # ID filter (exact match)
     if memory_id is not None:
         if mem.get("id") != memory_id:
@@ -555,10 +577,17 @@ def fallback_jsonl(
     ``created_at`` descending (most recent first), and returns the
     top *limit* matches.
 
-    Note: this fallback does not apply decay rules — it returns all
-    memories regardless of ``is_active`` status.  When PostgreSQL is
-    unavailable, returning slightly more results is better than
-    returning nothing.
+    What this fallback does and does not apply, exactly:
+
+    - **Soft deletes ARE honoured.** A record with ``is_active: false``
+      (retired via ``/forget``) is excluded, matching the
+      ``active_memories`` view (audit R2).
+    - **Category decay is NOT applied.** The view also drops records
+      older than their category's retention window; this path has no
+      decay table, so a decayed-but-still-present record can appear.
+      When PostgreSQL is unavailable, returning a slightly stale record
+      is better than returning nothing — but returning a *forgotten* one
+      is not.
     """
     memories = load_jsonl_memories()
     matched = [

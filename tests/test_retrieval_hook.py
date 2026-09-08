@@ -2115,6 +2115,61 @@ class TestDisprovedRecordsAreFiltered:
 
 
 # ============================================================================
+# Audit R2 (2026-09-08): forgotten records never surface on the legacy path
+# ============================================================================
+
+
+class TestForgottenRecordsAreFiltered:
+    """A record retired via ``/forget`` (``is_active: false``) must not enter
+    session context through any of the four legacy retrieval buckets."""
+
+    @staticmethod
+    def _record(category: str, days_old: int, active: object, ident: str) -> dict:
+        """Build a same-project record, stamping ``is_active`` only when given."""
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+        record = {"id": ident, "category": category, "content": f"content {ident}",
+                  "summary": f"summary {ident}", "created_at": created,
+                  "research_tags": ["t"], "project": "p", "confidence": "high"}
+        if active is not None:
+            record["is_active"] = active
+        return record
+
+    def test_all_four_buckets_skip_forgotten(self):
+        """Kills: deleting the ``digest_selector.is_active`` guard from any of
+        ``retrieve_recent`` / ``_permanent`` / ``_middle_aged`` / ``_constraints``.
+
+        The absent-key and explicit-``True`` records must still come back —
+        a guard that excluded them would break the whole legacy corpus.
+        """
+        from datetime import datetime, timedelta, timezone
+        permanent = next(iter(retrieval.PERMANENT_CATEGORIES))
+        middle = next(iter(retrieval.MIDDLE_AGED_CATEGORIES))
+        constraint = next(iter(retrieval.CONSTRAINT_CATEGORIES))
+        memories = [
+            self._record(permanent, 100, False, "perm-forgotten"),
+            self._record(permanent, 100, None, "perm-legacy"),
+            self._record(middle, 30, False, "mid-forgotten"),
+            self._record(middle, 30, True, "mid-live"),
+            self._record(constraint, 100, False, "con-forgotten"),
+            self._record(constraint, 100, None, "con-legacy"),
+            self._record("progress", 1, False, "recent-forgotten"),
+            self._record("progress", 1, True, "recent-live"),
+        ]
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retrieval.RECENT_DAYS)
+        recent = retrieval.retrieve_recent(memories, cutoff, "p")
+        assert {m["id"] for m in recent} == {"recent-live"}
+        permanent_hits = {m["id"] for m in retrieval.retrieve_permanent(
+            memories, set(), "p")}
+        assert "perm-forgotten" not in permanent_hits
+        assert "perm-legacy" in permanent_hits
+        middle_hits = retrieval.retrieve_middle_aged(memories, set(), "p")
+        assert {m["id"] for m in middle_hits} == {"mid-live"}
+        constraint_hits = retrieval.retrieve_constraints(memories, set(), "p")
+        assert {m["id"] for m in constraint_hits} == {"con-legacy"}
+
+
+# ============================================================================
 # Audit round two, Lens B (2026-09-08): H7 (the digest path this machine
 # actually takes) and H20 (output bounds)
 # ============================================================================

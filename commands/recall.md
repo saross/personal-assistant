@@ -56,13 +56,19 @@ content (truncated to ~100 chars)
 
 1. **Read** `~/personal-assistant/memories/memories.jsonl` (canonical source)
 2. **Parse** each line as a JSON object
-3. **Filter** based on the query:
+3. **Drop forgotten memories**: skip any record whose `is_active` field is
+   `false`. A missing `is_active` key means active (the legacy default) —
+   only an explicit `false` excludes. This step is **mandatory**, not
+   optional: `/forget` promises the record stops surfacing, and `/recall`
+   reads the JSONL directly rather than through PostgreSQL's
+   `active_memories` view, which applies the filter server-side.
+4. **Filter** based on the query:
    - Free-text: case-insensitive substring match on `content` and `source_context`
    - Category filter: exact match on `category` field
    - Tag filter: match against `research_tags` array
    - Combine filters when both are provided (AND logic)
-4. **Sort** by `created_at` descending (most recent first)
-5. **Return** top 10 matches, formatted as:
+5. **Sort** by `created_at` descending (most recent first)
+6. **Return** top 10 matches, formatted as:
 
 ```text
 [category] (verified|pending|unanchored) — created_at
@@ -72,7 +78,7 @@ Source: source_context
 ---
 ```
 
-6. If more than 10 matches, note the total count and offer to show more
+7. If more than 10 matches, note the total count and offer to show more
 
 **Verification token** (shown in parentheses, from the memory's `verified`
 field — present in the JSONL since v2): `verified` = anchors resolved;
@@ -231,5 +237,9 @@ Display as:
 
 - Memory search reads the JSONL file directly — no database required
 - Session search requires PostgreSQL (gracefully skipped if unavailable)
-- All memories are searched, including decayed categories (the file is canonical)
+- Memories retired with `/forget` (`is_active: false`) are **excluded** —
+  see the mandatory filter step above. Everything else in the file is
+  searched, **including decayed categories**: the JSONL is canonical and
+  carries no decay table, so a record PostgreSQL would have aged out can
+  still appear here
 - If memories.jsonl is empty, say so and suggest using `/remember` to capture something

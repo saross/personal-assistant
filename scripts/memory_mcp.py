@@ -267,7 +267,11 @@ async def search_memories(
         return _envelope(
             filtered[:limit],
             source="jsonl",
-            note="PostgreSQL unavailable; using JSONL fallback (decay rules NOT applied)",
+            note=(
+                "PostgreSQL unavailable; using JSONL fallback. Forgotten "
+                "memories (is_active: false) ARE excluded; category decay "
+                "is NOT applied, so a decayed record may appear."
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"JSONL fallback failed: {exc}")
@@ -430,17 +434,22 @@ async def get_memory(
             )
         return _envelope(results, source="postgres")
 
-    # JSONL fallback — scan for matching ID
+    # JSONL fallback — scan for matching ID. A forgotten record
+    # (``is_active: false``) is skipped here exactly as the
+    # ``active_memories`` view would skip it (audit R2): "not found" is
+    # the honest answer for a memory the operator retired.
     try:
         all_memories = fetch_memories.load_jsonl_memories()
         for mem in all_memories:
-            if mem.get("id") == memory_id:
+            if mem.get("id") == memory_id and fetch_memories.is_active(mem):
                 return _envelope(
                     [mem],
                     source="jsonl",
                     note=(
-                        "PostgreSQL unavailable; using JSONL fallback "
-                        "(decay rules NOT applied — memory may be stale)"
+                        "PostgreSQL unavailable; using JSONL fallback. "
+                        "Forgotten memories (is_active: false) ARE "
+                        "excluded; category decay is NOT applied, so this "
+                        "record may be stale."
                     ),
                 )
         return _error_envelope(f"Memory {memory_id} not found")

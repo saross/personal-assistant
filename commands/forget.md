@@ -64,6 +64,16 @@ want to correct rather than retire.
    helper prints a no-op notice, and that machine's recall reads the
    git-synced JSONL directly, so the JSONL edit alone suffices there.
 
+   That last claim holds only because every JSONL-reading path now honours
+   the flag (audit R2, 2026-09-08 — before that fix it was false, and a
+   forgotten memory resurfaced on any database-less machine). The paths
+   that must, and now do, drop `is_active: false`:
+   `fetch-memories.py:matches_filters` (the CLI fallback and the cold
+   archive), the `search_memories` and `get_memory` JSONL fallbacks in
+   `memory_mcp.py`, the session-start hook's four legacy retrieval buckets,
+   and the `/recall` procedure in `commands/recall.md`. Anything reading the
+   JSONL that is added later must apply the same filter.
+
 ## Autonomous use (Claude self-invocation)
 
 Per the v2 design's L1 memory-correction layer and the self-driving

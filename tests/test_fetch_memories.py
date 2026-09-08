@@ -210,6 +210,61 @@ class TestMatchesFilters:
 
 
 # ============================================================================
+# TestSoftDeleteFilter — audit R2 (forgotten memories must not surface)
+# ============================================================================
+
+
+class TestSoftDeleteFilter:
+    """``is_active: false`` excludes a record from every JSONL path."""
+
+    def test_forgotten_record_never_matches(self) -> None:
+        """Kills: deleting the ``if not is_active(mem): return False`` guard."""
+        mem = _make_memory(mem_id="retired")
+        mem["is_active"] = False
+        assert not fetch_memories.matches_filters(mem, category="decision")
+        assert not fetch_memories.matches_filters(mem, memory_id="retired")
+
+    @pytest.mark.parametrize("record_extra", [{}, {"is_active": True}])
+    def test_absent_key_and_true_still_match(
+        self, record_extra: dict[str, Any],
+    ) -> None:
+        """Absent ``is_active`` is the legacy default: active."""
+        mem = {**_make_memory(), **record_extra}
+        assert fetch_memories.matches_filters(mem, category="decision")
+
+    def test_fallback_excludes_forgotten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The JSONL fallback drops a forgotten record and keeps the rest."""
+        live = _make_memory(mem_id="live", category="progress")
+        retired = _make_memory(mem_id="retired", category="progress")
+        retired["is_active"] = False
+        _write_jsonl(tmp_path / "memories.jsonl", [retired, live])
+        monkeypatch.setattr(
+            fetch_memories, "MEMORIES_FILE", tmp_path / "memories.jsonl",
+        )
+        results = fetch_memories.fallback_jsonl(category="progress")
+        assert [m["id"] for m in results] == ["live"]
+
+    def test_search_archive_excludes_forgotten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cold archive shares the filter (same ``matches_filters``)."""
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        live = _make_memory(mem_id="live", category="progress")
+        retired = _make_memory(mem_id="retired", category="progress")
+        retired["is_active"] = False
+        (archive / "memories-archive-2026-03.jsonl").write_text(
+            "".join(json.dumps(m) + "\n" for m in (retired, live)),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fetch_memories, "ARCHIVE_DIR", archive)
+        results = fetch_memories.search_archive(category="progress")
+        assert [m["id"] for m in results] == ["live"]
+
+
+# ============================================================================
 # TestParseDatetime — audit R1 (mixed naive/aware stamps must not crash)
 # ============================================================================
 

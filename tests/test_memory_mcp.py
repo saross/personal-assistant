@@ -253,8 +253,10 @@ class TestSearchMemories:
         data = json.loads(out)
         assert data["source"] == "jsonl"
         assert data["count"] == 2
-        # Pin the decay warning string — it's the reason the note exists
-        assert "decay rules NOT applied" in data["note"]
+        # Pin the fallback note: it must say soft deletes ARE honoured and
+        # decay is NOT (audit R2 — the old wording conflated the two).
+        assert "is_active: false) ARE excluded" in data["note"]
+        assert "decay is NOT applied" in data["note"]
 
     def test_limit_respected(self) -> None:
         """The limit parameter is passed through to try_postgres."""
@@ -766,7 +768,8 @@ class TestGetMemoryJsonlNotFound:
             ))
         data = json.loads(out)
         assert data["count"] == 1
-        assert "decay rules NOT applied" in data["note"]
+        assert "is_active: false) ARE excluded" in data["note"]
+        assert "decay is NOT applied" in data["note"]
 
 
 # -------------------------------------------------------------------------
@@ -876,3 +879,78 @@ class TestToolSchemas:
         props = tool.inputSchema["properties"]
         assert props["days"]["minimum"] == 1
         assert props["days"]["maximum"] == 365
+
+
+# -------------------------------------------------------------------------
+# Audit R2 (2026-09-08): forgotten memories must not surface via MCP
+# -------------------------------------------------------------------------
+
+class TestSoftDeleteInJsonlFallbacks:
+    """``is_active: false`` excludes a record from both JSONL fallbacks.
+
+    Deliberately does NOT stub ``matches_filters`` (lens B, RT7): the
+    fallback's own filtering is the thing under test.
+    """
+
+    @staticmethod
+    def _corpus() -> list[dict]:
+        """Two records, one of them retired via ``/forget``."""
+        retired = {**SAMPLE_RESULTS[0], "id": "2026-04-12-retired",
+                   "is_active": False}
+        live = {**SAMPLE_RESULTS[1], "id": "2026-04-11-live"}
+        return [retired, live]
+
+    def test_search_memories_fallback_drops_forgotten(self) -> None:
+        """Kills: removing the ``is_active`` guard from ``matches_filters``."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            out = _run(memory_mcp.search_memories(
+                project="-home-shawn-personal-assistant"))
+        data = json.loads(out)
+        assert [r["id"] for r in data["results"]] == ["2026-04-11-live"]
+
+    def test_get_memory_fallback_reports_forgotten_as_not_found(self) -> None:
+        """Kills: dropping ``and fetch_memories.is_active(mem)`` in get_memory."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            out = _run(memory_mcp.get_memory(memory_id="2026-04-12-retired"))
+        data = json.loads(out)
+        assert data["count"] == 0
+        assert "not found" in data["error"]
+
+    def test_get_memory_fallback_still_serves_a_live_record(self) -> None:
+        """The guard must not break the ordinary fallback hit."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            out = _run(memory_mcp.get_memory(memory_id="2026-04-11-live"))
+        data = json.loads(out)
+        assert data["count"] == 1
+        assert data["source"] == "jsonl"
+
+    def test_fallback_notes_say_what_is_and_is_not_applied(self) -> None:
+        """The note must not imply soft deletes are ignored (audit R2)."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=self._corpus()),
+        ):
+            search_note = json.loads(_run(memory_mcp.search_memories(
+                project="-home-shawn-personal-assistant")))["note"]
+            get_note = json.loads(_run(memory_mcp.get_memory(
+                memory_id="2026-04-11-live")))["note"]
+        for note in (search_note, get_note):
+            assert "is_active: false) ARE excluded" in note
+            assert "decay is NOT applied" in note
