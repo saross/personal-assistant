@@ -20,7 +20,7 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -740,7 +740,13 @@ def cmd_merge(args: argparse.Namespace) -> None:
         # surrounding LOCK_EX on MEMORIES_JSONL keeps the extraction
         # hook's appends queued behind us until the rename completes.
         tmp_path = MEMORIES_JSONL.with_suffix(".jsonl.tmp")
-        tmp_path.write_text("".join(lines), encoding="utf-8")
+        # Flush + fsync BEFORE the rename, so a crash or power loss between
+        # the write and the replace cannot leave a truncated canonical
+        # (parity with archive-memories.py; audit 2026-09-08, finding A15).
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.rename(str(tmp_path), str(MEMORIES_JSONL))
 
         print(f"  Updated: {MEMORIES_JSONL}")
@@ -844,7 +850,10 @@ def _log_merge(
     """Append a log entry for the merge operation."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / "tag-gardening.log"
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # UTC ISO-8601, as every other log in the system is stamped. A naive
+    # local stamp here could not be compared with the archival manifest or
+    # the sync logs without knowing which machine wrote it (finding A16).
+    timestamp = datetime.now(timezone.utc).isoformat()
     with open(log_file, "a", encoding="utf-8") as fh:
         fh.write(
             f"{timestamp} MERGE: {len(plan)} groups, "

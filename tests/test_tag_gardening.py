@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import threading
+from datetime import datetime, timedelta
 from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
@@ -1456,3 +1458,82 @@ class TestCaseHandling:
         written = json.loads(jsonl.read_text(encoding="utf-8").strip())
         assert written["research_tags"] == ["pipeline"]
         assert written["tags"] == ["kiln"], "the legacy field is untouched"
+
+
+# -------------------------------------------------------------------------
+# Durability and the merge log (audit 2026-09-08, findings A15, A16, B19)
+# -------------------------------------------------------------------------
+
+
+class TestMergeDurabilityAndLog:
+    """The corpus rewrite is fsynced, and the log entry is UTC ISO."""
+
+    @staticmethod
+    def _run_merge(tmp_path: Path) -> Path:
+        """Run a one-entry merge in ``tmp_path``; return the log directory."""
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        log_dir = tmp_path / "logs"
+        write_sample_jsonl(jsonl)
+        write_sample_vocab(vocab)
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "pipeline", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", log_dir),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+        return log_dir
+
+    def test_both_rewrites_are_fsynced_before_the_rename(
+        self, tmp_path: Path, pg_recorder: list,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The corpus and the vocabulary reach disk before they are renamed.
+
+        Kills the mutation that drops ``os.fsync`` from either rewrite: the
+        rename would then be durable while the bytes behind it were not.
+        """
+        events: list[str] = []
+        real_fsync = os.fsync
+        real_rename = os.rename
+
+        def recording_fsync(fd: int) -> None:
+            events.append("fsync")
+            return real_fsync(fd)
+
+        def recording_rename(src, dst, **kwargs):
+            events.append(f"rename:{Path(dst).name}")
+            return real_rename(src, dst, **kwargs)
+
+        monkeypatch.setattr(os, "fsync", recording_fsync)
+        monkeypatch.setattr(os, "rename", recording_rename)
+
+        self._run_merge(tmp_path)
+
+        assert events[:2] == ["fsync", "rename:memories.jsonl"]
+        assert events[2:] == ["fsync", "rename:tag-vocabulary.txt"]
+
+    def test_merge_log_entry_is_utc_iso(
+        self, tmp_path: Path, pg_recorder: list,
+    ) -> None:
+        """The log stamp parses as an aware UTC instant.
+
+        Kills the mutation ``datetime.now(timezone.utc).isoformat()`` ->
+        ``datetime.now().strftime("%Y-%m-%d %H:%M:%S")``: a naive local
+        stamp cannot be lined up with any other log in the system.
+        """
+        log_dir = self._run_merge(tmp_path)
+
+        entry = (log_dir / "tag-gardening.log").read_text(encoding="utf-8")
+        stamp, _, rest = entry.partition(" MERGE: ")
+        parsed = datetime.fromisoformat(stamp)
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timedelta(0)
+        assert rest.startswith("1 groups, 1 memories, 1 replacements")
