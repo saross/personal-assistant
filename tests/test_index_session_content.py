@@ -673,3 +673,20 @@ class TestNulCountsAreReported:
             "type": "user",
             "message": {"role": "user", "content": "a\x00b"},
         }) == "ab"
+
+
+def test_refusal_file_resolves_at_call_time(indexer, tmp_path, monkeypatch):
+    """
+    A default argument is evaluated once at import, so binding
+    ``REFUSAL_FILE`` into the signature made monkeypatching the constant a
+    no-op — and a test would then write the operator's real refusal
+    memory in ``~/.cache``. This happened once while the feature was
+    being written. The mutation this kills: restoring
+    ``refusal_file: Path = REFUSAL_FILE`` in any of the three signatures.
+    """
+    pinned = tmp_path / "pinned-refusals.json"
+    monkeypatch.setattr(indexer, "REFUSAL_FILE", pinned)
+
+    assert indexer.save_refusals({"some/path.jsonl": 1.0}) is True
+    assert pinned.exists(), "the module constant was not consulted"
+    assert indexer.load_refusals() == {"some/path.jsonl": 1.0}

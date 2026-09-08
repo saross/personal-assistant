@@ -296,7 +296,7 @@ def discover(archive_root: Path, project: str | None, include_subagents: bool):
 
 # --- Refusal memory ---------------------------------------------------------
 
-def load_refusals(refusal_file: Path = REFUSAL_FILE) -> dict[str, float]:
+def load_refusals(refusal_file: Path | None = None) -> dict[str, float]:
     """Return ``{archive_path: source_mtime}`` for files PostgreSQL refused.
 
     Second re-audit, finding M3: a refused file was skipped and then
@@ -309,7 +309,13 @@ def load_refusals(refusal_file: Path = REFUSAL_FILE) -> dict[str, float]:
 
     A missing or unreadable file reads as "nothing refused": the memory is
     an optimisation and a report, never a gate on correctness.
+
+    ``refusal_file`` defaults to :data:`REFUSAL_FILE` resolved *at call
+    time*, not bound into the signature: a default argument is evaluated
+    once at import, so monkeypatching the module constant would not reach
+    it — and a test would then write the operator's real refusal memory.
     """
+    refusal_file = REFUSAL_FILE if refusal_file is None else refusal_file
     try:
         data = json.loads(refusal_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
@@ -325,14 +331,16 @@ def load_refusals(refusal_file: Path = REFUSAL_FILE) -> dict[str, float]:
 
 def save_refusals(
     refusals: dict[str, float],
-    refusal_file: Path = REFUSAL_FILE,
+    refusal_file: Path | None = None,
 ) -> bool:
     """Persist the refusal memory atomically. Returns True on success.
 
     Written via temp file + rename so a kill mid-write cannot leave a
     half-parsed file that reads as "nothing refused" and sends the next run
-    back into the same wall.
+    back into the same wall. ``refusal_file`` resolves at call time — see
+    :func:`load_refusals`.
     """
+    refusal_file = REFUSAL_FILE if refusal_file is None else refusal_file
     try:
         refusal_file.parent.mkdir(parents=True, exist_ok=True)
         tmp = refusal_file.with_name(f"{refusal_file.name}.{os.getpid()}.tmp")
@@ -348,7 +356,7 @@ def save_refusals(
 
 def index_archive(archive_root: Path, project: str | None,
                   include_subagents: bool, force: bool,
-                  refusal_file: Path = REFUSAL_FILE
+                  refusal_file: Path | None = None
                   ) -> tuple[int, int, int, int]:
     """Index matching transcripts.
 
@@ -364,6 +372,9 @@ def index_archive(archive_root: Path, project: str | None,
     """
     import psycopg2
     from psycopg2.extras import execute_values
+
+    # Resolved at call time so the module constant stays monkeypatchable.
+    refusal_file = REFUSAL_FILE if refusal_file is None else refusal_file
 
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
