@@ -28,8 +28,13 @@ or insights.
 When invoked with no arguments, show memory statistics and a preview:
 
 1. **Read** `~/personal-assistant/memories/memories.jsonl`
-2. **Count** total memories and breakdown by category
-3. **Display**:
+2. **Drop forgotten memories**: skip any record whose `is_active` field is
+   `false`, exactly as the query branch below does. This applies to **both**
+   the counts and the "Most Recent" preview — without it a memory retired
+   seconds ago still appears at the top of the preview, which is the one
+   place the operator is most likely to look for it.
+3. **Count** total memories and breakdown by category
+4. **Display**:
 
 ```text
 ## Memory Statistics
@@ -50,7 +55,7 @@ content (truncated to ~100 chars)
 [... 4 more ...]
 ```
 
-4. Suggest follow-up: "Use `/recall [keyword]` to search, or `/recall recent` for the last 7 days."
+5. Suggest follow-up: "Use `/recall [keyword]` to search, or `/recall recent` for the last 7 days."
 
 ### With Query Arguments
 
@@ -255,8 +260,8 @@ Display as:
 
 - Memory search reads the JSONL file directly — no database required
 - Session search requires PostgreSQL (gracefully skipped if unavailable)
-- Memories retired with `/forget` (`is_active: false`) are **excluded** —
-  see the mandatory filter step above. Everything else in the file is
+- Memories retired with `/forget` (`is_active: false`) are **excluded** on
+  **both** branches — see the mandatory filter steps above. Everything else in the file is
   searched, **including decayed categories**: the JSONL is canonical and
   carries no decay table, so a record PostgreSQL would have aged out can
   still appear here
