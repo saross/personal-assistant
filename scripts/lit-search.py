@@ -183,28 +183,66 @@ log = logging.getLogger("lit-search")
 # ============================================================================
 
 
+def _enforce_credential_scope(request: httpx.Request) -> None:
+    """
+    Strip any credential header not addressed to its own host.
+
+    Runs as an httpx request event hook, so it fires on EVERY outgoing
+    request — including the ones httpx builds when following a redirect,
+    which is the case a per-call header cannot cover on its own. httpx
+    strips ``Authorization`` across origins but forwards arbitrary custom
+    headers such as ``x-api-key``, so without this a redirect from
+    Semantic Scholar to any other host would hand that host the key.
+
+    Args:
+        request: The outgoing request, mutated in place.
+    """
+    if request.url.host != S2_HOST and "x-api-key" in request.headers:
+        del request.headers["x-api-key"]
+
+
+def _with_s2_key(host: str, headers: dict | None) -> dict | None:
+    """
+    Attach the Semantic Scholar key to Semantic-Scholar-bound requests only.
+
+    Audit round 4d (E3): the key used to be set on the shared client, so
+    it went to CrossRef, DataCite, and OpenAlex on every call — three
+    unrelated operators, each handed a credential for a fourth. Mirrors
+    ``_with_openalex_key`` above.
+
+    Args:
+        host: hostname of the outbound request, from ``_host_of``.
+        headers: the caller's headers, possibly None.
+
+    Returns:
+        The headers unchanged for any non-S2 host, or when no key is
+        configured; otherwise a copy carrying ``x-api-key``.
+    """
+    if host != S2_HOST or not S2_API_KEY:
+        return headers
+    merged = dict(headers or {})
+    merged.setdefault("x-api-key", S2_API_KEY)
+    return merged
+
+
 def _get_client() -> httpx.Client:
     """Create an httpx client with appropriate headers.
 
-    If a Semantic Scholar API key is present in the environment it is added as
-    the `x-api-key` header (used only by S2; harmless to CrossRef/OpenAlex,
-    which ignore unknown headers). Absent a key, behaviour is identical to
-    before — the public unauthenticated tier.
-
-    The OpenAlex key is deliberately *not* set here. This client is shared
-    by five services, so a client-wide credential would be sent to all of
-    them; see `_with_openalex_key`, which attaches it per request.
+    Neither credential is set here. This client is shared by five
+    services, so a client-wide credential would be sent to all of them:
+    see `_with_openalex_key` and `_with_s2_key`, which attach each key per
+    request, and `_enforce_credential_scope`, which removes a stray one
+    from any request — redirect-generated included — bound elsewhere.
     """
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/json",
     }
-    if S2_API_KEY:
-        headers["x-api-key"] = S2_API_KEY
     return httpx.Client(
         headers=headers,
         timeout=30.0,
         follow_redirects=True,
+        event_hooks={"request": [_enforce_credential_scope]},
     )
 
 
@@ -457,9 +495,10 @@ def _safe_get(
     """
     host = _host_of(url)
     params = _with_openalex_key(host, params)
+    headers = _with_s2_key(host, None)
     try:
         resp = _request_with_retry(
-            lambda: client.get(url, params=params),
+            lambda: client.get(url, params=params, headers=headers),
             host=host,
             source=source,
         )
@@ -612,15 +651,24 @@ def _normalise_paper(
 
 def _normalise_crossref(raw: dict) -> dict[str, Any]:
     """Normalise a CrossRef work record."""
-    # Authors: CrossRef uses {given, family} objects
+    # Authors: CrossRef uses {given, family} objects for people and a
+    # single {name} for an organisation ("World Health Organization",
+    # "The LIGO Collaboration"). Audit round 4d (E19): the organisation
+    # form used to be dropped silently, so a corporate-authored work
+    # arrived with an empty author list and the verifier had nothing to
+    # check attribution against. The importer's own _creators_from_record
+    # has always handled both shapes.
     authors = []
     for author in raw.get("author", []):
-        family = author.get("family", "")
-        given = author.get("given", "")
+        family = (author.get("family") or "").strip()
+        given = (author.get("given") or "").strip()
+        name = (author.get("name") or "").strip()
         if family and given:
             authors.append(f"{family}, {given}")
         elif family:
             authors.append(family)
+        elif name:
+            authors.append(name)
 
     # Year: CrossRef nests dates oddly; values can be None
     year = None
@@ -674,9 +722,13 @@ def _normalise_s2(raw: dict) -> dict[str, Any]:
 def _normalise_openalex(raw: dict) -> dict[str, Any]:
     """Normalise an OpenAlex work record."""
     authors = []
-    for authorship in raw.get("authorships", []):
-        author = authorship.get("author", {})
-        name = author.get("display_name", "")
+    for authorship in raw.get("authorships", []) or []:
+        # OpenAlex emits `"author": null` for an authorship it could not
+        # resolve. `.get("author", {})` returns that None, not the default,
+        # so the next `.get` raised AttributeError and the whole record was
+        # lost (audit round 4d, lens B fixture gap).
+        author = authorship.get("author") or {}
+        name = author.get("display_name") or ""
         if name:
             authors.append(name)
 
@@ -1187,6 +1239,9 @@ def cmd_bibtex(
         "User-Agent": USER_AGENT,
         "Accept": "application/x-bibtex",
     }
+    #: Citation keys already emitted this run, so a collision can be
+    #: suffixed rather than silently shadowing an earlier entry.
+    seen_keys: set[str] = set()
 
     for doi in dois:
         encoded = urllib.parse.quote(doi, safe='')
@@ -1211,6 +1266,7 @@ def cmd_bibtex(
                 continue
             entry = resp.text.strip()
             if entry:
+                entry = _dedupe_bibtex_key(entry, seen_keys)
                 entries.append(entry)
                 log.info("bibtex: generated entry for %s", doi)
             else:
@@ -1225,6 +1281,54 @@ def cmd_bibtex(
 # ============================================================================
 # Helpers
 # ============================================================================
+
+
+#: The citation key of a BibTeX entry: "@type{key," on the opening line.
+_BIBTEX_KEY = re.compile(r"^(@\w+\s*\{)([^,]+)(,)", re.MULTILINE)
+
+
+def _dedupe_bibtex_key(entry: str, seen: set[str]) -> str:
+    """
+    Give ``entry`` a citation key unique within this run.
+
+    Audit round 4d (E18): CrossRef derives its key from author and year,
+    so two works by the same author in the same year come back with the
+    SAME key. Concatenated into one .bib file, the second silently
+    shadows the first in every LaTeX build — a wrong-citation bug with no
+    error message anywhere. A colliding key gains a lower-case letter
+    suffix, the convention BibTeX users already read as "second work by
+    the same author that year".
+
+    Args:
+        entry: One BibTeX entry as returned by CrossRef.
+        seen: Keys already emitted; mutated to include the key chosen.
+
+    Returns:
+        The entry, with its key replaced if it had to change.
+    """
+    match = _BIBTEX_KEY.search(entry)
+    if not match:
+        # Unparseable entry: pass it through rather than mangle it. It
+        # will be visible in the output for a human to resolve.
+        return entry
+    key = match.group(2).strip()
+    if key not in seen:
+        seen.add(key)
+        return entry
+    for suffix in "abcdefghijklmnopqrstuvwxyz":
+        candidate = f"{key}{suffix}"
+        if candidate not in seen:
+            break
+    else:  # pragma: no cover - 27 works by one author in one year
+        candidate = f"{key}-{len(seen)}"
+    seen.add(candidate)
+    log.warning(
+        "bibtex: citation key %r already used; emitting %r instead",
+        key, candidate,
+    )
+    return _BIBTEX_KEY.sub(
+        lambda m: f"{m.group(1)}{candidate}{m.group(3)}", entry, count=1
+    )
 
 
 def _parse_year(value: Any) -> int | None:
