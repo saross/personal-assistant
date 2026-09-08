@@ -8,21 +8,41 @@ the v2.2 style guide. Outputs the top-ranked candidates per paper with a
 per-category score breakdown.
 
 Per plan §5.2:
-- Score each sentence against 18 sentence-detectable feature categories.
+- Score each sentence against every sentence-detectable feature category
+  implemented here: the regular-expression categories in ``PATTERNS`` plus
+  the nominalisation detector, 17 in total. Plan §5.2 asks for 18 and this
+  file has only ever implemented 17; the prose used to claim 18 while the
+  emitted ``n_categories`` said 17 (audit finding ST23). That emitted number
+  is computed from ``PATTERNS`` and so cannot drift from what is actually
+  scored — the prose was the wrong half, and it is corrected here.
 - Threshold: >=3 distinct categories.
 - Sentence length 1-3 sentences (this script scores single sentences;
   multi-sentence stitching can be applied downstream).
 - Per-paper diversity (output top N per paper; selection happens later).
 
-No LLM calls. Deterministic.
+No LLM calls. Deterministic. The output is written through
+``style_support.atomic_write_json`` (an interrupted run used to truncate the
+JSON, which the next stage then parsed as if it were complete), carries a
+``provenance`` block naming the code and input hashes it came from, and is
+suppressed entirely by ``--dry-run``.
 """
 from __future__ import annotations
+import argparse
 import json
 import os
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+# The tranche's scripts import each other as flat siblings. Running this file
+# directly already puts its own directory on ``sys.path``; ``python -m`` and an
+# import from elsewhere do not, so put it there explicitly.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import style_support  # noqa: E402
 
 CORPUS = Path("data/style-corpus/extracted")
 MIN_CATS = 3
@@ -134,27 +154,71 @@ ABBR = {"e.g", "i.e", "cf", "et al", "Dr", "Mr", "Mrs", "Ms", "Prof",
 SENT_BREAK = re.compile(r"(?<=[.!?])\s+(?=[\"A-ZÀ-ſ])")
 
 
-def split_sentences(text: str) -> list[str]:
-    # First strip markdown headings + bullets + table rows; keep plain prose
-    cleaned_lines = []
+def split_paragraphs(text: str) -> list[str]:
+    """Group the prose lines of ``text`` into paragraphs, one string each.
+
+    Markdown headings, bullets, numbered list items, and table rows are
+    dropped: they are not prose, and their punctuation confuses the sentence
+    boundary regex. A blank line ends the current paragraph, and so does a
+    dropped structural line — a heading between two paragraphs is a stronger
+    boundary than a blank line, not a weaker one.
+    """
+    paragraphs: list[list[str]] = [[]]
+
+    def close() -> None:
+        """Start a new paragraph, unless the current one is still empty."""
+        if paragraphs[-1]:
+            paragraphs.append([])
+
     for line in text.splitlines():
         s = line.strip()
         if not s:
-            cleaned_lines.append("")
+            close()
             continue
         if s.startswith("#"):
+            close()
             continue
         if s.startswith("|") or s.startswith("- ") or s.startswith("* "):
+            close()
             continue
         if re.match(r"^\d+\.\s", s):
+            close()
             continue
-        cleaned_lines.append(s)
-    paragraph_text = " ".join(l for l in cleaned_lines if l)
+        paragraphs[-1].append(s)
 
-    candidates = SENT_BREAK.split(paragraph_text)
-    sents = []
+    # Lines within one paragraph are soft-wrapped, so joining them with a
+    # single space reconstitutes the paragraph's prose.
+    return [" ".join(lines) for lines in paragraphs if lines]
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split ``text`` into candidate sentences, never crossing a blank line.
+
+    Each paragraph is segmented independently (audit finding ST22). The
+    previous version joined *every* surviving line of the document into one
+    string before splitting, so a paragraph whose last line ended without
+    terminal punctuation — a heading run-on, a truncated column, a line ending
+    in a colon — was glued to the opening of the next paragraph, and the
+    stitched result could be emitted as a single "exemplar sentence" spanning
+    a paragraph break.
+    """
+    sents: list[str] = []
+    for paragraph in split_paragraphs(text):
+        sents.extend(_split_paragraph_sentences(paragraph))
+    return sents
+
+
+def _split_paragraph_sentences(paragraph: str) -> list[str]:
+    """Split one paragraph on sentence-final punctuation.
+
+    The buffer re-joins a candidate that was split at a known abbreviation's
+    full stop ("cf.", "e.g.", "Fig. 3"). Any text still in the buffer when the
+    paragraph ends is emitted as it stands: the buffer never survives into the
+    next paragraph, which is what stops a sentence spanning a blank line.
+    """
+    sents: list[str] = []
     buf = ""
-    for c in candidates:
+    for c in SENT_BREAK.split(paragraph):
         c = c.strip()
         if not c:
             continue
@@ -196,13 +260,40 @@ def author_role(meta: dict) -> str:
 
 # -- Driver -------------------------------------------------------------------
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the command line.
+
+    ``--dry-run`` is the only behavioural flag: it scores and summarises
+    exactly as a real run does, and writes nothing at all — so an operator can
+    see what the script *would* put in the production output path without
+    touching the file that is already there.
+    """
+    parser = argparse.ArgumentParser(
+        description="Phase 4 — score corpus sentences as exemplar candidates.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="score and summarise, but write no output file",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Score every paper in ``CORPUS`` and write the candidate JSON.
+
+    Returns ``2`` when the corpus directory is missing, ``0`` otherwise.
+    """
+    args = parse_args(argv)
+
     if not CORPUS.is_dir():
         print(f"Corpus dir not found: {CORPUS}", file=sys.stderr)
         return 2
 
     results: dict[str, list[tuple[int, str, list[str]]]] = defaultdict(list)
     metas: dict[str, dict] = {}
+    #: Every body.md actually read, in read order — hashed into the provenance
+    #: block so a result can be tied to the exact input bytes behind it.
+    inputs: list[Path] = []
 
     for key_dir in sorted(CORPUS.iterdir()):
         if not key_dir.is_dir():
@@ -210,6 +301,7 @@ def main() -> int:
         body = key_dir / "body.md"
         if not body.exists():
             continue
+        inputs.append(body)
         key = key_dir.name
         meta = load_meta(key)
         metas[key] = meta
@@ -245,10 +337,19 @@ def main() -> int:
             }
             for key in sorted(results.keys())
         ],
+        # What produced this file: the script, the commit, and the SHA-256 of
+        # every body.md read. No wall-clock field, so two runs over unchanged
+        # inputs are byte-identical (see style_support's module docstring).
+        "provenance": style_support.provenance_block(
+            Path(__file__).name, inputs, extra={"corpus_dir": str(CORPUS)},
+        ),
     }
     out_path = Path("data/style-corpus/phase4-exemplar-candidates.json")
-    out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    print(f"Wrote {out_path}")
+    wrote = style_support.atomic_write_json(out_path, out, dry_run=args.dry_run)
+    if wrote:
+        print(f"Wrote {out_path}")
+    else:
+        print(f"Dry run: nothing written (would have written {out_path})")
     # Brief stdout summary
     print(f"\n{'key':10} {'year':5} {'role':10} {'n_cand':>6}  top_score")
     print("-" * 60)
