@@ -1324,10 +1324,17 @@ class TestBatchSubmitIsNotRepeatable:
         requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
         out_dir = tmp_path / "haiku"
         out_dir.mkdir()
-        with pytest.raises(ValueError, match="custom_id collision"):
+        with pytest.raises(ValueError, match="custom_id collision") as excinfo:
             bom.haiku_submit(
                 requests, out_dir, "system prompt", manifest_path=manifest
             )
+        # The message must name BOTH sessions and the id they collapsed
+        # onto: "a collision happened" is not actionable, and the operator
+        # has to know which two transcripts to look at.
+        message = str(excinfo.value)
+        assert "clash-aaaa" in message
+        assert "clash-bbbb" in message
+        assert "sess-same" in message
         assert submit_stub.created == []
         assert not (out_dir / "batch-state.json").exists()
 
