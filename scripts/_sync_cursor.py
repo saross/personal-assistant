@@ -839,3 +839,70 @@ def detect_jsonl_shrink(
             line_count += 1
 
     return saved_cursor_line > line_count, line_count
+
+
+# ---------------------------------------------------------------------------
+# Unsynced-backlog gate for line-deleting rewrites
+# ---------------------------------------------------------------------------
+
+#: The key sync-to-postgres.py keeps its memories position under.
+MEMORIES_CURSOR_KEY = "postgres_sync_line"
+
+
+def count_jsonl_lines(jsonl_path: Path) -> int:
+    """Count the lines in ``jsonl_path``, splitting on ``"\n"`` alone.
+
+    Deliberately NOT ``str.splitlines()``: that also breaks on U+2028,
+    U+2029 and U+0085, which are legal inside a JSON string, so the two
+    disagree the moment such a character reaches disk unescaped.
+    """
+    if not jsonl_path.exists():
+        return 0
+    data = jsonl_path.read_bytes()
+    if not data:
+        return 0
+    count = data.count(b"\n")
+    if not data.endswith(b"\n"):
+        count += 1  # a final line with no terminator is still a line
+    return count
+
+
+def unsynced_line_backlog(
+    jsonl_path: Path,
+    cursor_path: Path,
+    *,
+    cursor_key: str = MEMORIES_CURSOR_KEY,
+    logger: logging.Logger | None = None,
+) -> int:
+    """How many lines sit past the saved sync cursor (0 when caught up).
+
+    A line-deleting rewrite (an archival sweep, a dedup pass) while records
+    below the cursor are still unsynced is silent data loss for the mirror:
+    the cursor is a LINE POSITION, and sync-to-postgres only rewinds when the
+    cursor sits *beyond* EOF. Remove K lines from the middle with a backlog of
+    B >= K unsynced records and K of them end up below the cursor forever —
+    never inserted, never noticed (audit 2026-09-08, finding A9).
+
+    Returns ``0`` when the cursor key is ABSENT: a machine with no PostgreSQL
+    never writes one, and refusing there would break archival on every
+    non-amd-tower host. Only a cursor that is present and behind is a backlog.
+    """
+    cursor = normalise_line_cursor(
+        read_cursor_file(cursor_path).get(cursor_key),
+        key=cursor_key,
+        logger=logger,
+    )
+    if cursor is None:
+        return 0
+    return max(0, count_jsonl_lines(jsonl_path) - cursor)
+
+
+def postgres_backlog_refusal(script: str, backlog: int, cursor_path: Path) -> str:
+    """The refusal text for a rewrite blocked by an unsynced backlog."""
+    return (
+        f"[{script}] {backlog} record(s) in the canonical are not yet in "
+        f"PostgreSQL (per {cursor_path}). This rewrite deletes lines, and the "
+        f"sync cursor is a line position, so those records would end up below "
+        f"the cursor and never sync. Run sync-to-postgres.py first, then "
+        f"re-run this script. Nothing was written."
+    )

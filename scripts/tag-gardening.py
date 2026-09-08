@@ -20,7 +20,7 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -44,6 +44,22 @@ PA_ROOT = Path(__file__).resolve().parent.parent
 MEMORIES_JSONL = PA_ROOT / "data" / "memories" / "memories.jsonl"
 VOCABULARY_FILE = PA_ROOT / "data" / "memories" / "tag-vocabulary.txt"
 LOG_DIR = PA_ROOT / "data" / "logs"
+DB_NAME = "claude_memories"  # scripts/sync-to-postgres.py:53
+
+#: The one PostgreSQL column that mirrors a memory's tags. schema.sql:46 —
+#: ``research_tags TEXT[]``; there is no ``tags`` column, so a record whose
+#: JSONL carries only a ``tags`` field has nothing to reconcile in PG.
+PG_TAGS_COLUMN = "research_tags"
+UPDATE_TAGS_SQL = f"UPDATE memories SET {PG_TAGS_COLUMN} = %s WHERE id = %s"
+
+#: What to tell the operator when the surgical UPDATE cannot be issued. The
+#: 5-minute cron is INSERT ... ON CONFLICT DO NOTHING, so it will never
+#: propagate an edit to an existing row (commands/tags.md, "Notes").
+PG_REMEDY = (
+    "PostgreSQL is now STALE for the merged tags. The regular sync is "
+    "insert-only and will not fix it. Run a full rebuild:\n"
+    "    venv/bin/python3 scripts/rebuild-postgres.py"
+)
 
 # Also check the symlink path as a fallback
 if not MEMORIES_JSONL.exists():
@@ -99,6 +115,50 @@ def load_vocabulary() -> set[str]:
         for line in lines
         if line.strip() and not line.strip().startswith("#")
     }
+
+
+def rewrite_vocabulary(path: Path, keep: set[str]) -> int:
+    """Rewrite the vocabulary file so it holds exactly ``keep``, in place.
+
+    Structure is preserved (audit 2026-09-08, finding A4): every ``#``
+    comment line and every blank line is written back at its original
+    position, and only tag lines change. A retired tag's line is dropped;
+    a tag that is new to the file is appended, sorted, after the existing
+    content — the honest minimum, since nothing in the file says which
+    section a new tag belongs to.
+
+    The write is atomic and durable (finding A2/A15): a temp file in the
+    SAME directory, flushed and fsynced, then :func:`os.rename` over the
+    original. The caller MUST already hold
+    :func:`_bulk_rewrite_guard.lock_jsonl_for_rewrite` on ``path`` — the
+    extraction hook appends to this file under ``LOCK_SH``, so an unlocked
+    rewrite silently drops a concurrent append.
+
+    Returns the number of tags in the rewritten file.
+    """
+    existing = path.read_text(encoding="utf-8").split("\n") if path.exists() else []
+    if existing and existing[-1] == "":
+        existing.pop()  # trailing newline, not a final blank line
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in existing:
+        tag = line.strip()
+        if not tag or tag.startswith("#"):
+            out.append(line)  # structural line: verbatim, in place
+            continue
+        if tag in keep and tag not in seen:
+            out.append(line)
+            seen.add(tag)
+    out.extend(sorted(keep - seen))
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        fh.write("\n".join(out) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.rename(str(tmp_path), str(path))
+    return len(keep)
 
 
 def _get_tags(mem: dict[str, Any]) -> list[str]:
@@ -495,20 +555,6 @@ def cmd_merge(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # Guard against racing with extraction-hook appends or scheduled
-    # sync. The merge rewrites memories.jsonl and tag-vocabulary.txt
-    # in place.
-    ensure_safe_to_rewrite(
-        reason=f"tag-gardening merge (plan={plan_path.name})"
-    )
-    atexit.register(release_lock)
-    print(
-        "TIP: commit the result with 'Rewrite-Class: bulk' trailer so "
-        "the shrink check recognises it as intentional:\n"
-        "    cd data && git commit -m 'tags: merge' -m 'Rewrite-Class: bulk'",
-        file=sys.stderr,
-    )
-
     if not plan:
         print("Empty merge plan — nothing to do.")
         return
@@ -531,14 +577,19 @@ def cmd_merge(args: argparse.Namespace) -> None:
             sys.exit(1)
         winner = entry["winner"]
         for loser in entry["losers"]:
-            if loser in replacements:
+            # Key the map by the LOWER-CASED loser: the rewrite loop matches
+            # `tag.lower()` against it (as build_tag_counts does), so a plan
+            # naming "API-Integration" used to replace nothing at all while
+            # still reporting "Tags retired: 1" (audit 2026-09-08, A12).
+            key = loser.lower()
+            if key in replacements:
                 print(
                     f"Warning: {loser} appears in multiple merge "
-                    f"entries — using first winner ({replacements[loser]})",
+                    f"entries — using first winner ({replacements[key]})",
                     file=sys.stderr,
                 )
                 continue
-            replacements[loser] = winner
+            replacements[key] = winner
 
     print(
         f"Merge plan: {len(replacements)} tags to retire "
@@ -553,6 +604,7 @@ def cmd_merge(args: argparse.Namespace) -> None:
     memories_touched = 0
     tags_replaced = 0
     lines: list[str] = []
+    pg_updates: list[tuple[str, list[str]]] = []
 
     if args.dry_run:
         # Read-only path: load and report, do not rewrite.
@@ -588,7 +640,7 @@ def cmd_merge(args: argparse.Namespace) -> None:
                     new_tags = list(dict.fromkeys(new_tags))
                     mem[tag_field] = new_tags
                     memories_touched += 1
-                    lines.append(json.dumps(mem, ensure_ascii=False) + "\n")
+                    lines.append(json.dumps(mem) + "\n")
                 else:
                     lines.append(line)
         print(
@@ -598,6 +650,24 @@ def cmd_merge(args: argparse.Namespace) -> None:
         )
         print("\n[DRY RUN] No files modified.")
         return
+
+    # Guard against racing with extraction-hook appends or a scheduled
+    # sync. Taken HERE, below the dry-run return: the guard acquires the
+    # exclusive daily-sync flock and refuses on a dirty tree, so calling it
+    # earlier made a read-only preview contend for that lock and abort with
+    # exit 2 whenever the extraction hook had just appended (audit
+    # 2026-09-08, finding A5). dedup-memories.py skips it on --dry-run for
+    # the same reason.
+    ensure_safe_to_rewrite(
+        reason=f"tag-gardening merge (plan={plan_path.name})"
+    )
+    atexit.register(release_lock)
+    print(
+        "TIP: commit the result with 'Rewrite-Class: bulk' trailer so "
+        "the shrink check recognises it as intentional:\n"
+        "    cd data && git commit -m 'tags: merge' -m 'Rewrite-Class: bulk'",
+        file=sys.stderr,
+    )
 
     # Real run: hold the JSONL exclusive lock through read + rename.
     with lock_jsonl_for_rewrite(MEMORIES_JSONL):
@@ -643,9 +713,19 @@ def cmd_merge(args: argparse.Namespace) -> None:
                     new_tags = list(dict.fromkeys(new_tags))
                     mem[tag_field] = new_tags
                     memories_touched += 1
-                    lines.append(
-                        json.dumps(mem, ensure_ascii=False) + "\n"
-                    )
+                    # Remember what PostgreSQL has to be told. Only the
+                    # research_tags field has a mirror column (schema.sql:46);
+                    # a record carrying only ``tags`` was synced with an empty
+                    # array and has nothing to reconcile.
+                    if tag_field == PG_TAGS_COLUMN and mem.get("id"):
+                        pg_updates.append((str(mem["id"]), new_tags))
+                    # ``ensure_ascii`` defaults to True, matching the
+                    # extraction hook's serialisation. Writing with
+                    # ensure_ascii False would UN-escape a U+2028/U+2029/
+                    # U+0085 inside a record's content, and the next reader
+                    # that splits on Unicode line boundaries would then
+                    # tear that record into two malformed lines.
+                    lines.append(json.dumps(mem) + "\n")
                 else:
                     # Preserve original line to avoid reformatting noise
                     lines.append(line)
@@ -660,7 +740,13 @@ def cmd_merge(args: argparse.Namespace) -> None:
         # surrounding LOCK_EX on MEMORIES_JSONL keeps the extraction
         # hook's appends queued behind us until the rename completes.
         tmp_path = MEMORIES_JSONL.with_suffix(".jsonl.tmp")
-        tmp_path.write_text("".join(lines), encoding="utf-8")
+        # Flush + fsync BEFORE the rename, so a crash or power loss between
+        # the write and the replace cannot leave a truncated canonical
+        # (parity with archive-memories.py; audit 2026-09-08, finding A15).
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.rename(str(tmp_path), str(MEMORIES_JSONL))
 
         print(f"  Updated: {MEMORIES_JSONL}")
@@ -675,21 +761,85 @@ def cmd_merge(args: argparse.Namespace) -> None:
             # Remove losers, add winners
             vocab -= set(replacements.keys())
             vocab |= set(replacements.values())
-            # Write sorted
-            sorted_vocab = sorted(vocab)
-            tmp_vocab = VOCABULARY_FILE.with_suffix(
-                VOCABULARY_FILE.suffix + ".tmp"
-            )
-            tmp_vocab.write_text(
-                "\n".join(sorted_vocab) + "\n",
-                encoding="utf-8",
-            )
-            os.rename(str(tmp_vocab), str(VOCABULARY_FILE))
-            print(f"  Updated: {VOCABULARY_FILE} ({len(sorted_vocab)} tags)")
+            n_tags = rewrite_vocabulary(VOCABULARY_FILE, vocab)
+            print(f"  Updated: {VOCABULARY_FILE} ({n_tags} tags)")
 
     # Log
     _log_merge(plan, memories_touched, tags_replaced)
-    print("\nDone. Run sync-to-postgres.py to update PostgreSQL.")
+
+    # Reconcile PostgreSQL LAST, once the JSONL and the vocabulary are both
+    # safely on disk. Anything that goes wrong from here leaves the canonical
+    # correct and only the mirror stale, which is a rebuild away.
+    reconcile_postgres(pg_updates)
+
+
+def reconcile_postgres(
+    updates: list[tuple[str, list[str]]],
+    *,
+    dbname: str = DB_NAME,
+    connect: Any = None,
+) -> None:
+    """Push the merged tag lists into PostgreSQL, one surgical UPDATE per id.
+
+    The regular sync is ``INSERT ... ON CONFLICT (id) DO NOTHING``, so it
+    never propagates an edit to a row already in the mirror: before this, a
+    tag merge simply never reached PostgreSQL, and the printed remedy ("run
+    sync-to-postgres.py") was wrong (audit 2026-09-08, finding A8). All the
+    updates go in ONE transaction, so the mirror is either fully reconciled
+    or untouched.
+
+    ``connect`` is an injectable zero-argument callable returning a
+    psycopg2-style connection; it defaults to ``psycopg2.connect``.
+
+    On any PostgreSQL failure this prints the real remedy (a full rebuild)
+    and exits non-zero — after the JSONL is already safe on disk.
+    """
+    if not updates:
+        print("  PostgreSQL: no research_tags rows to reconcile.")
+        return
+
+    if connect is None:
+        try:
+            import psycopg2
+        except ImportError:
+            print(f"\nWARNING: psycopg2 unavailable.\n{PG_REMEDY}",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        def connect() -> Any:  # noqa: F811 — deliberate default binding
+            return psycopg2.connect(dbname=dbname)
+
+    from _schema_version import assert_schema_version, SchemaVersionError
+
+    try:
+        conn = connect()
+    except Exception as exc:  # noqa: BLE001 — every failure has one remedy
+        print(f"\nWARNING: PostgreSQL unreachable ({exc}).\n{PG_REMEDY}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        try:
+            assert_schema_version(conn)
+        except SchemaVersionError as exc:
+            print(f"\nWARNING: PostgreSQL schema mismatch ({exc}).\n"
+                  f"{PG_REMEDY}", file=sys.stderr)
+            sys.exit(1)
+        # ``with conn`` commits on a clean exit and rolls back on an
+        # exception, so a failure part-way leaves no half-merged mirror.
+        with conn, conn.cursor() as cur:
+            for memory_id, tags in updates:
+                cur.execute(UPDATE_TAGS_SQL, (tags, memory_id))
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nWARNING: PostgreSQL update failed ({exc}).\n{PG_REMEDY}",
+              file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+    print(f"\nDone. PostgreSQL reconciled for {len(updates)} record(s).")
 
 
 def _log_merge(
@@ -700,7 +850,10 @@ def _log_merge(
     """Append a log entry for the merge operation."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / "tag-gardening.log"
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # UTC ISO-8601, as every other log in the system is stamped. A naive
+    # local stamp here could not be compared with the archival manifest or
+    # the sync logs without knowing which machine wrote it (finding A16).
+    timestamp = datetime.now(timezone.utc).isoformat()
     with open(log_file, "a", encoding="utf-8") as fh:
         fh.write(
             f"{timestamp} MERGE: {len(plan)} groups, "
@@ -739,17 +892,25 @@ def cmd_orphans(args: argparse.Namespace) -> None:
 
     if args.action == "clean":
         if orphaned or missing:
-            new_vocab = (vocab - set(orphaned)) | set(missing)
-            sorted_vocab = sorted(new_vocab)
-            VOCABULARY_FILE.write_text(
-                "\n".join(sorted_vocab) + "\n",
-                encoding="utf-8",
-            )
+            # `clean` rewrites a protected file, so it takes the same
+            # protection as `merge` (audit 2026-09-08, finding A2): the
+            # bulk-rewrite guard, then the vocabulary's own exclusive flock
+            # across the whole read-modify-rename window. Without them a
+            # concurrent extraction-hook append (taken under LOCK_SH) was
+            # silently lost, and daily-sync could commit a half-written file.
+            ensure_safe_to_rewrite(reason="tag-gardening orphans --action clean")
+            atexit.register(release_lock)
+            with lock_jsonl_for_rewrite(VOCABULARY_FILE):
+                # Re-read inside the lock: the counts above were taken
+                # without it, so an append since then must not be dropped.
+                vocab_now = load_vocabulary()
+                new_vocab = (vocab_now - set(orphaned)) | set(missing)
+                n_tags = rewrite_vocabulary(VOCABULARY_FILE, new_vocab)
             print(
                 f"\nUpdated {VOCABULARY_FILE}: "
                 f"removed {len(orphaned)} orphaned, "
                 f"added {len(missing)} missing "
-                f"({len(sorted_vocab)} total)"
+                f"({n_tags} total)"
             )
         else:
             print("\nVocabulary is clean — nothing to do.")

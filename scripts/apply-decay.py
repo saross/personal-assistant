@@ -32,6 +32,15 @@ LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "decay.log"
 DB_NAME = "claude_memories"
 
+# Categories the 2026-06-01 sign-off keeps PERMANENT, mirrored from
+# scripts/archive-memories.py. category_config is the live source of decay
+# windows, but schema.sql seeds gotcha/pattern with ON CONFLICT DO NOTHING,
+# so a legacy finite window already in the table cannot be repaired by
+# re-seeding — and nothing else stopped this script decaying guidance
+# memories. Applied on top of the PG windows as defence in depth (audit
+# 2026-09-08, finding A18).
+PERMANENT_OVERRIDES = ("gotcha", "pattern")
+
 
 # ============================================================================
 # Logging
@@ -101,6 +110,7 @@ def apply_decay(logger: logging.Logger, dry_run: bool = False) -> None:
         m.category = c.category
         AND m.is_active = TRUE
         AND c.decay_days IS NOT NULL
+        AND m.category <> ALL(%s)
         AND (
             -- Standard decay: from created_at
             (m.category != 'commitment'
@@ -133,8 +143,9 @@ def apply_decay(logger: logging.Logger, dry_run: bool = False) -> None:
     try:
         with conn:
             with conn.cursor() as cur:
+                params = (list(PERMANENT_OVERRIDES),)
                 if dry_run:
-                    cur.execute(preview_sql)
+                    cur.execute(preview_sql, params)
                     rows = cur.fetchall()
                     logger.info("[DRY RUN] Would decay %d memories:", len(rows))
                     for row in rows:
@@ -143,7 +154,7 @@ def apply_decay(logger: logging.Logger, dry_run: bool = False) -> None:
                             row[0], row[1], row[2], row[3], row[4],
                         )
                 else:
-                    cur.execute(decay_sql)
+                    cur.execute(decay_sql, params)
                     rows = cur.fetchall()
                     logger.info("Decayed %d memories:", len(rows))
                     for row in rows:

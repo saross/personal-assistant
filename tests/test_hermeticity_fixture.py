@@ -19,6 +19,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from conftest import INTEGRATION_MARKER
 
@@ -513,3 +516,103 @@ def test_a_set_xdg_cache_home_does_not_move_the_suite_cache(tmp_path):
     assert not any(stray.iterdir()), (
         "the child run wrote into a cache directory outside its home"
     )
+
+
+# ===========================================================================
+# The runtime net under the static database guard
+#
+# The AST scan above names a TEST that calls psycopg2.connect itself. It
+# cannot see a test that calls production code which connects — and during
+# audit round 4a a new surgical UPDATE in tag-gardening did exactly that,
+# opening the operator's live claude_memories from a plain unit test. The
+# conftest fixture ``no_live_postgres`` is the runtime net; this pins it.
+# ===========================================================================
+
+
+def test_the_runtime_guard_refuses_a_real_connection():
+    """A non-integration test cannot reach the live server.
+
+    The mutation this kills: deleting the ``no_live_postgres`` fixture from
+    ``conftest.py``. The connector is fetched through ``getattr`` so the
+    static scan above does not read this test as an offender itself.
+    """
+    import psycopg2
+
+    connector = getattr(psycopg2, "connect")
+    with pytest.raises(AssertionError, match="real PostgreSQL connection"):
+        connector(dbname="claude_memories")
+
+
+def test_a_test_may_still_patch_the_connector():
+    """A test's own patch wins over the guard, so fakes keep working."""
+    import psycopg2
+
+    sentinel = object()
+    with patch("psycopg2.connect", return_value=sentinel):
+        assert getattr(psycopg2, "connect")() is sentinel
+
+
+# ===========================================================================
+# The canonical-store half of the hermeticity guard
+#
+# Audit 2026-09-08, round 4a, finding B4. The guard watched ~/.cache only, so
+# a test that forgot to patch a module's path constant rewrote the REAL
+# data/memories/memories.jsonl and the suite stayed green (reproduced in a
+# copy). conftest now snapshots the canonical files and the log directory,
+# resolved through the root symlinks.
+# ===========================================================================
+
+
+import conftest  # noqa: E402
+
+
+def test_the_store_guard_sees_a_write_through_the_symlink(tmp_path,
+                                                          monkeypatch):
+    """Writing via the symlink and via the real path are the same event.
+
+    The mutation this kills: dropping ``.resolve()`` from the snapshot, which
+    would let a test that writes ``data/memories/memories.jsonl`` slip past a
+    guard watching ``memories/memories.jsonl``.
+    """
+    real_dir = tmp_path / "data" / "memories"
+    real_dir.mkdir(parents=True)
+    canonical = real_dir / "memories.jsonl"
+    link_dir = tmp_path / "memories"
+    link_dir.symlink_to(real_dir)
+
+    monkeypatch.setattr(
+        conftest, "_CANONICAL_FILES", (link_dir / "memories.jsonl",))
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", ())
+
+    before = conftest._canonical_store_snapshot()
+    assert before == {str(canonical): None}, "an absent file records as None"
+
+    # Written through the REAL path; watched through the SYMLINK.
+    canonical.write_text('{"id": "2031-01-01-aaaabbbbcccc"}\n',
+                         encoding="utf-8")
+    after_create = conftest._canonical_store_snapshot()
+    assert after_create != before, "a created canonical must be flagged"
+
+    canonical.write_text('{"id": "2031-01-01-aaaabbbbcccc"}\n{"id": "b"}\n',
+                         encoding="utf-8")
+    assert conftest._canonical_store_snapshot() != after_create, (
+        "a rewritten canonical must be flagged")
+
+    canonical.unlink()
+    assert conftest._canonical_store_snapshot() == before, (
+        "a deleted canonical must be flagged as a change from present")
+
+
+def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
+    """A stray log file in the real logs/ is flagged too.
+
+    The mutation this kills: dropping ``_CANONICAL_DIRS`` from the snapshot.
+    """
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(conftest, "_CANONICAL_DIRS", (logs,))
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "tag-gardening.log").write_text("stray entry\n", encoding="utf-8")
+    assert conftest._canonical_store_snapshot() != before
