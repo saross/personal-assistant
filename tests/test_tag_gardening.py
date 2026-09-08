@@ -1836,3 +1836,84 @@ class TestOrphansCleanWithNoVocabulary:
         out = capsys.readouterr().out
         assert "Tags in vocabulary but unused in JSONL: 0" in out
         assert not vocab.exists()
+
+
+class TestVocabularyRetirementIsCaseInsensitive:
+    """A12 moved the mismatch to the vocabulary; M7 closes it there too."""
+
+    def test_a_mixed_case_loser_leaves_the_vocabulary(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """The exact shape from the finding: a loser spelt "API-Integration".
+
+        Kills the mutation ``{tag for tag in vocab if tag.lower() not in
+        retired}`` -> ``vocab -= set(replacements.keys())``: the replacement
+        map is keyed lower-case while the vocabulary preserves case, so the
+        retired tag survived in the file while the JSONL was rewritten and
+        the run printed "Tags retired: 1".
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-501", "content": "Mixed-case tag.",
+             "research_tags": ["API-Integration", "kiln"]},
+        ])
+        vocab.write_text("API-Integration\napi\nkiln\n", encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "api", "losers": ["API-Integration"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
+        assert "API-Integration" not in tags, (
+            "the retired tag survived in the vocabulary while the JSONL was "
+            "rewritten and the run reported it retired"
+        )
+        assert tags == ["api", "kiln"]
+        # And the JSONL agrees with the file.
+        written = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert written["research_tags"] == ["api", "kiln"]
+
+    def test_a_winner_already_present_in_another_case_is_not_duplicated(
+        self, tmp_path: Path, pg_recorder: list, bypass_rewrite_guard: None,
+    ) -> None:
+        """"API" surviving in the file must not gain a second "api" entry.
+
+        Kills the mutation that unconditionally unions the winners back in:
+        the vocabulary would then carry two spellings of one tag, and every
+        later orphan report would list one of them as unused.
+        """
+        jsonl = tmp_path / "memories.jsonl"
+        vocab = tmp_path / "tag-vocabulary.txt"
+        write_sample_jsonl(jsonl, [
+            {"id": "mem-502", "content": "Loser only.",
+             "research_tags": ["pipelines"]},
+        ])
+        vocab.write_text("API\npipelines\n", encoding="utf-8")
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(
+            json.dumps([{"winner": "api", "losers": ["pipelines"]}]),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(tag_gardening, "MEMORIES_JSONL", jsonl),
+            patch.object(tag_gardening, "VOCABULARY_FILE", vocab),
+            patch.object(tag_gardening, "LOG_DIR", tmp_path / "logs"),
+        ):
+            tag_gardening.cmd_merge(
+                argparse.Namespace(plan=str(plan_file), dry_run=False)
+            )
+
+        tags = vocab.read_text(encoding="utf-8").split("\n")[:-1]
+        assert tags == ["API"], f"the winner was duplicated: {tags}"

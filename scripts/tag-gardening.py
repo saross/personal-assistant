@@ -758,9 +758,21 @@ def cmd_merge(args: argparse.Namespace) -> None:
     if VOCABULARY_FILE.exists():
         with lock_jsonl_for_rewrite(VOCABULARY_FILE):
             vocab = load_vocabulary()
-            # Remove losers, add winners
-            vocab -= set(replacements.keys())
-            vocab |= set(replacements.values())
+            # Remove losers, add winners — CASE-INSENSITIVELY on both sides.
+            # ``replacements`` is keyed by the lower-cased loser (finding
+            # A12), while the vocabulary file preserves whatever case a tag
+            # was written in, so a plain set difference left "API-Integration"
+            # in the file after the JSONL had been rewritten and the run had
+            # printed "Tags retired: 1" (audit round 4a-2, finding M7).
+            retired = set(replacements.keys())
+            vocab = {tag for tag in vocab if tag.lower() not in retired}
+            # A winner already present in some other case is the same tag; do
+            # not add a second spelling of it.
+            kept_lower = {tag.lower() for tag in vocab}
+            for winner in replacements.values():
+                if winner.lower() not in kept_lower:
+                    vocab.add(winner)
+                    kept_lower.add(winner.lower())
             n_tags = rewrite_vocabulary(VOCABULARY_FILE, vocab)
             print(f"  Updated: {VOCABULARY_FILE} ({n_tags} tags)")
 
