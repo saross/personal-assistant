@@ -108,6 +108,93 @@ def real_conflict(tmp_path: Path) -> Path:
     return corpus
 
 
+@pytest.fixture()
+def diff3_conflict(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
+    """
+    A git-generated conflict under ``merge.conflictStyle`` diff3/zdiff3.
+
+    Both machines append, and both delete the same pre-existing record, so
+    the merge base carries a record neither side kept — exactly the line
+    that must NOT be resurrected by the union.
+    """
+    style = getattr(request, "param", "diff3")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+    _git("config", "merge.conflictStyle", style, cwd=repo)
+    corpus = repo / "memories.jsonl"
+    corpus.write_text(
+        _record("shared-1") + "\n" + _record("deleted-on-both") + "\n", encoding="utf-8"
+    )
+    _git("add", "-A", cwd=repo)
+    _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+    _git("checkout", "--quiet", "-b", "other", cwd=repo)
+    corpus.write_text(
+        _record("shared-1") + "\n" + _record("from-zbook") + "\n", encoding="utf-8"
+    )
+    _git("commit", "--quiet", "-am", "zbook append", cwd=repo)
+
+    _git("checkout", "--quiet", "main", cwd=repo)
+    corpus.write_text(
+        _record("shared-1") + "\n" + _record("from-amd-tower") + "\n", encoding="utf-8"
+    )
+    _git("commit", "--quiet", "-am", "amd-tower append", cwd=repo)
+
+    merge = _git("merge", "other", cwd=repo)
+    assert merge.returncode != 0, "expected a conflict; git merged cleanly"
+    text = corpus.read_text(encoding="utf-8")
+    assert "|||||||" in text, f"expected a {style} base section, got:\n{text}"
+    return corpus
+
+
+# ============================================================================
+# diff3 / zdiff3 conflict style (audit C1, third re-audit)
+# ============================================================================
+
+
+class TestDiff3ConflictStyle:
+    """With ``merge.conflictStyle`` set to diff3 or zdiff3, git emits a
+    fourth marker — ``||||||| <ref>`` — and a whole merge-base section.
+    Recognising only the three classic markers left that line in the file
+    as "malformed but non-empty" and unioned the base back in."""
+
+    @pytest.mark.parametrize("diff3_conflict", ["diff3", "zdiff3"], indirect=True)
+    def test_base_marker_is_recognised_and_removed(self, diff3_conflict: Path) -> None:
+        """The marker line must never survive into the corpus."""
+        result = _run_resolver(str(diff3_conflict))
+        assert result.returncode == 0, result.stderr
+        text = diff3_conflict.read_text(encoding="utf-8")
+        assert "|||||||" not in text, text
+        for line in text.splitlines():
+            json.loads(line)
+
+    @pytest.mark.parametrize("diff3_conflict", ["diff3", "zdiff3"], indirect=True)
+    def test_the_base_section_is_not_resurrected(self, diff3_conflict: Path) -> None:
+        """A record both sides deleted stays deleted. Unioning the base
+        section back in would bring it back on every conflict."""
+        assert "deleted-on-both" in diff3_conflict.read_text(encoding="utf-8")
+        assert _run_resolver(str(diff3_conflict)).returncode == 0
+        text = diff3_conflict.read_text(encoding="utf-8")
+        assert "deleted-on-both" not in text, (
+            "the merge base was unioned back in, resurrecting a deleted record"
+        )
+        # Both sides' appends still survive: this is still a union.
+        assert "from-amd-tower" in text
+        assert "from-zbook" in text
+
+    def test_a_bare_base_marker_is_recognised(self) -> None:
+        """git writes `|||||||` alone when the base section is empty."""
+        assert rmc.is_conflict_marker("|||||||")
+        assert rmc.has_conflict_markers(["|||||||"])
+        assert rmc.is_conflict_marker("||||||| parent of 1a2b3c4 (seed)")
+
+    def test_base_marker_lookalikes_in_content_are_safe(self) -> None:
+        """Exact-line matching, as for the other three markers."""
+        embedded = json.dumps({"id": "x", "content": "a ||||||| pipe run"})
+        assert not rmc.has_conflict_markers([embedded])
+
+
 # ============================================================================
 # The union property — neither machine's records may be dropped
 # ============================================================================

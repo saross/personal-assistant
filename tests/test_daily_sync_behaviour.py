@@ -12,6 +12,7 @@ in the published repositories rather than log substrings.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -241,6 +242,38 @@ class TestCrossMachineRebase:
         assert "2026-09-08-from-a" in published
         assert "2026-09-08-from-b" in published, "the other machine's record was lost"
         assert "<<<<<<<" not in published
+
+    @pytest.mark.parametrize("style", ["diff3", "zdiff3"])
+    def test_diff3_conflict_style_never_publishes_a_base_marker(
+        self, world: SyncWorld, style: str
+    ) -> None:
+        """Audit C1 (third re-audit), end to end.
+
+        With ``merge.conflictStyle`` set to diff3 or zdiff3 — a per-machine
+        setting nothing here controls — git emits a fourth marker and a
+        merge-base section. Neither the resolver nor the marker guard knew
+        about it, so a corpus carrying ``||||||| parent of <sha>`` reached
+        the bare remote with exit 0 and a clean gate.
+        """
+        machine = world.add_machine("a")
+        git("config", "merge.conflictStyle", style, cwd=machine.data)
+        world.publish_memory_append("2026-09-08-from-b")
+        machine.append_memory("2026-09-08-from-a")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        published = world.published_data_file("memories/memories.jsonl")
+        assert "|||||||" not in published, (
+            f"a {style} base marker reached the remote:\n{published}"
+        )
+        assert "<<<<<<<" not in published
+        for line in published.splitlines():
+            json.loads(line)
+        # Still a union of both machines.
+        assert "2026-09-08-from-a" in published
+        assert "2026-09-08-from-b" in published
 
     def test_rebase_conflict_on_the_tag_vocabulary_is_unioned(
         self, world: SyncWorld

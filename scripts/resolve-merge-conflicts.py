@@ -46,6 +46,15 @@ from pathlib import Path
 CONFLICT_START_PREFIX = "<<<<<<< "
 CONFLICT_END_PREFIX = ">>>>>>> "
 CONFLICT_SEPARATOR = "======="  # Git emits exactly this with nothing after
+# audit C1 (third re-audit): under `merge.conflictStyle = diff3` or
+# `zdiff3` git emits a fourth marker and a whole extra section — the
+# merge BASE — between `|||||||` and `=======`. Recognising only the
+# three classic markers left `||||||| parent of <sha>` in the file as a
+# "malformed but non-empty" line, and unioned the base section back in:
+# records deleted on both sides would be resurrected, and the marker line
+# itself reached the remote as unparseable JSONL.
+CONFLICT_BASE_PREFIX = "||||||| "
+CONFLICT_BASE_BARE = "|||||||"  # git emits this alone when the base is empty
 
 
 def is_conflict_marker(line: str) -> bool:
@@ -59,8 +68,15 @@ def is_conflict_marker(line: str) -> bool:
     return (
         line.startswith(CONFLICT_START_PREFIX)
         or line.startswith(CONFLICT_END_PREFIX)
+        or line.startswith(CONFLICT_BASE_PREFIX)
         or line == CONFLICT_SEPARATOR
+        or line == CONFLICT_BASE_BARE
     )
+
+
+def is_base_marker(line: str) -> bool:
+    """Does this line open a diff3/zdiff3 merge-base section?"""
+    return line.startswith(CONFLICT_BASE_PREFIX) or line == CONFLICT_BASE_BARE
 
 
 def has_conflict_markers(lines: list[str]) -> bool:
@@ -69,8 +85,33 @@ def has_conflict_markers(lines: list[str]) -> bool:
 
 
 def strip_conflict_markers(lines: list[str]) -> list[str]:
-    """Remove conflict-marker lines, keeping everything between them."""
-    return [ln for ln in lines if not is_conflict_marker(ln)]
+    """
+    Remove conflict-marker lines, keeping everything between them —
+    EXCEPT a diff3/zdiff3 merge-base section, which is dropped entirely.
+
+    The correct resolution of an append-only conflict is `ours` ∪
+    `theirs`. The base section is neither: it is what both sides started
+    from, so anything in it that survived is already in one of the two
+    sides, and anything that did not survive was deleted deliberately.
+    Unioning it back in resurrects deleted records (audit C1).
+    """
+    out: list[str] = []
+    in_base = False
+    for ln in lines:
+        if is_base_marker(ln):
+            in_base = True
+            continue
+        if ln == CONFLICT_SEPARATOR:
+            in_base = False
+            continue
+        if is_conflict_marker(ln):
+            # `<<<<<<< ` or `>>>>>>> `: a new block, or the end of one.
+            in_base = False
+            continue
+        if in_base:
+            continue
+        out.append(ln)
+    return out
 
 
 def dedup_jsonl_by_id(lines: list[str]) -> list[str]:
