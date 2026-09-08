@@ -651,5 +651,235 @@ class TestComposerRefusesFromAWorktree:
         assert "--target needs a path" in result.stderr
 
 
+# ---------------------------------------------------------------------------
+# env-fingerprint.sh
+#
+# The tool exists to compare two .env files WITHOUT disclosing a value, and
+# had no tests at all: a value-leaking edit stayed green (lens B, ET14).
+# Every .env below is synthetic, written into a pytest tmp dir, with
+# obviously fake values. The real ~/personal-assistant/.env is never read.
+# ---------------------------------------------------------------------------
+
+#: A distinctive fake value: if any part of it appears in the output, the
+#: no-disclosure invariant is broken and grep will say so.
+CANARY = "canary-VALUE-8f3a-must-not-appear"
+
+ENV_FINGERPRINT = SCRIPTS / "env-fingerprint.sh"
+
+
+@pytest.fixture
+def synthetic_env(tmp_path: Path) -> Path:
+    """Write a synthetic .env carrying the canary and a duplicate key."""
+    env_file = tmp_path / "synthetic.env"
+    env_file.write_text(
+        "# a synthetic env file — none of these are real\n"
+        f"SYNTHETIC_TOKEN={CANARY}\n"
+        'SYNTHETIC_QUOTED="quoted-value-1234"\n'
+        "export SYNTHETIC_EXPORTED=exported-value-5678\n"
+        "SYNTHETIC_EMPTY=\n"
+        "SYNTHETIC_TOKEN=second-assignment-wins\n",
+        encoding="utf-8",
+    )
+    return env_file
+
+
+def _run_fingerprint(
+    env_file: Path, home: Path, salt: str | None = "synthetic-salt"
+) -> subprocess.CompletedProcess[str]:
+    """Run the fingerprinter over ``env_file`` with a pinned HOME."""
+    extra = {"ENV_FINGERPRINT_SALT": salt} if salt is not None else None
+    env = dict(os.environ)
+    env.pop("ENV_FINGERPRINT_SALT", None)
+    env["HOME"] = str(home)
+    if extra:
+        env.update(extra)
+    return subprocess.run(
+        ["bash", str(ENV_FINGERPRINT), str(env_file)],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(home),
+        timeout=60,
+    )
+
+
+class TestEnvFingerprintDisclosesNothing:
+    """ET14 — the whole point of the tool, finally pinned."""
+
+    def test_no_value_appears_in_the_output(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """Not one character sequence from any value is printed."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(synthetic_env, home)
+
+        assert result.returncode == 0, result.stderr
+        combined = result.stdout + result.stderr
+        for value in (
+            CANARY,
+            "quoted-value-1234",
+            "exported-value-5678",
+            "second-assignment-wins",
+        ):
+            assert value not in combined, f"{value!r} was disclosed"
+
+    def test_the_salt_is_never_printed(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """The shared secret must not leak through the output either."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(
+            synthetic_env, home, salt="salt-canary-9d2f"
+        )
+
+        assert "salt-canary-9d2f" not in result.stdout + result.stderr
+
+    def test_only_a_bucket_is_reported_not_a_length(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """E23 — an exact length narrows a brute-force sweep; a bucket does not."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(synthetic_env, home)
+
+        rows = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("SYNTHETIC_")
+        ]
+        assert rows, result.stdout
+        buckets = []
+        for row in rows:
+            bucket = row.split("\t")[2].split()[0]
+            assert bucket in ("empty", "short", "medium", "long"), row
+            buckets.append(bucket)
+        # The third column is never a number, so no exact length is on offer.
+        assert not any(b.isdigit() for b in buckets), buckets
+        assert "empty" in buckets, "the empty-value marker was lost"
+
+
+class TestEnvFingerprintRequiresASalt:
+    """E23 — a public default salt made the output a value oracle."""
+
+    def test_it_refuses_without_a_salt(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """No salt is a refusal, not a fall-back to a published constant."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(synthetic_env, home, salt=None)
+
+        assert result.returncode == 2
+        assert "ENV_FINGERPRINT_SALT" in result.stderr
+        assert not result.stdout.strip().endswith("### ---")
+
+    def test_no_salt_constant_is_committed(self) -> None:
+        """The script must carry no default salt for anyone to read."""
+        source = ENV_FINGERPRINT.read_text(encoding="utf-8")
+        assert "efn-envcmp" not in source
+        assert 'ENV_FINGERPRINT_SALT:-efn' not in source
+
+    def test_the_same_salt_gives_the_same_digest(
+        self, tmp_path: Path
+    ) -> None:
+        """Cross-host comparison still works: equal values, equal hashes."""
+        home = tmp_path / "home"
+        home.mkdir()
+        one = tmp_path / "host-a.env"
+        one.write_text(f"SYNTHETIC_TOKEN={CANARY}\n", encoding="utf-8")
+        two = tmp_path / "host-b.env"
+        two.write_text(
+            f'SYNTHETIC_TOKEN="{CANARY}"\n', encoding="utf-8"
+        )
+
+        first = _run_fingerprint(one, home, salt="shared-salt")
+        second = _run_fingerprint(two, home, salt="shared-salt")
+
+        def digest(result: subprocess.CompletedProcess[str]) -> str:
+            """Pull the digest column from the SYNTHETIC_TOKEN row."""
+            row = next(
+                line for line in result.stdout.splitlines()
+                if line.startswith("SYNTHETIC_TOKEN\t")
+            )
+            return row.split("\t")[1]
+
+        assert digest(first) == digest(second)
+        assert len(digest(first)) == 12
+
+    def test_a_different_salt_gives_a_different_digest(
+        self, tmp_path: Path
+    ) -> None:
+        """The salt actually participates in the hash."""
+        home = tmp_path / "home"
+        home.mkdir()
+        env_file = tmp_path / "one.env"
+        env_file.write_text("SYNTHETIC_ONE=same-value\n", encoding="utf-8")
+
+        a = _run_fingerprint(env_file, home, salt="salt-a")
+        b = _run_fingerprint(env_file, home, salt="salt-b")
+
+        assert a.stdout != b.stdout
+
+
+class TestEnvFingerprintParsing:
+    """Quotes, `export`, and the duplicate-key warning."""
+
+    def test_quotes_and_export_are_normalised(self, tmp_path: Path) -> None:
+        """The three spellings of one value fingerprint identically."""
+        home = tmp_path / "home"
+        home.mkdir()
+        env_file = tmp_path / "shapes.env"
+        env_file.write_text(
+            "PLAIN=shared-value\n"
+            'QUOTED="shared-value"\n'
+            "EXPORTED_ONE=shared-value\n"
+            "export EXPORTED_TWO=shared-value\n",
+            encoding="utf-8",
+        )
+
+        result = _run_fingerprint(env_file, home)
+
+        assert result.returncode == 0, result.stderr
+        digests = {
+            line.split("\t")[0]: line.split("\t")[1]
+            for line in result.stdout.splitlines()
+            if "\t" in line and not line.startswith("###")
+        }
+        assert set(digests) == {
+            "PLAIN", "QUOTED", "EXPORTED_ONE", "EXPORTED_TWO"
+        }, digests
+        assert len(set(digests.values())) == 1, digests
+
+    def test_the_duplicate_key_warning_fires(
+        self, synthetic_env: Path, tmp_path: Path
+    ) -> None:
+        """A duplicated key is a silent override at load time."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(synthetic_env, home)
+
+        assert "DUPLICATE KEYS" in result.stdout
+        assert "SYNTHETIC_TOKEN" in result.stdout
+
+    def test_a_missing_file_is_reported_not_crashed(
+        self, tmp_path: Path
+    ) -> None:
+        """An absent .env is a clear message, exit 0."""
+        home = tmp_path / "home"
+        home.mkdir()
+
+        result = _run_fingerprint(tmp_path / "absent.env", home)
+
+        assert result.returncode == 0
+        assert "MISSING" in result.stdout
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience entry point
     raise SystemExit(pytest.main([__file__, "-v"]))
