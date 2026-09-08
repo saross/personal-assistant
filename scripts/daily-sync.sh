@@ -576,6 +576,30 @@ else
     log "data submodule: nothing to commit"
 fi
 
+# audit S1: the block above pushes only when it made a commit itself. A
+# commit made EARLIER in this run — the append-only memory commit above,
+# or archive-agent-mail.py's own commit — usually empties the tree, so
+# the block takes its "nothing to commit" branch and never pushes; the
+# parent pointer bump referencing that commit is pushed anyway, leaving
+# origin's personal-assistant naming a pa-data SHA the other machine
+# cannot fetch ("reference is not a tree"). Observed live 2026-09-08
+# 09:29; monthly-archive.py:522-539 already carries a local workaround
+# for the same hole. Push whenever HEAD is ahead of its upstream rather
+# than only when this block committed. origin/main is used rather than
+# @{u} because that is the ref push_with_retry actually pushes to, and
+# a submodule clone does not always have upstream tracking configured.
+if [[ $DRY_RUN -eq 0 ]]; then
+    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+        unpushed="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+        if [[ "$unpushed" -gt 0 ]]; then
+            log "data submodule: $unpushed commit(s) ahead of origin/main — pushing"
+            push_with_retry "data submodule"
+        fi
+    else
+        log "data submodule: no origin/main ref — skipping unpushed-commit check"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Parent repo sync
 # ---------------------------------------------------------------------------

@@ -89,6 +89,57 @@ class TestSyncReachesTheEnd:
 
 
 # ============================================================================
+# Unpushed data-submodule commits (audit S1)
+# ============================================================================
+
+
+class TestSubmoduleCommitsArePublished:
+    """Every commit made in the data submodule during a run must reach
+    origin before the parent pointer bump that references it is pushed.
+
+    Observed live on 2026-09-08 at 09:29: the append-only memory commit
+    emptied the tree, so the commit-and-push block took its "nothing to
+    commit" branch and never pushed, while the parent bump referencing
+    that commit was published. Origin's personal-assistant then pointed
+    at a pa-data SHA the other machine could not fetch.
+    """
+
+    def test_memory_commit_reaches_the_data_remote(self, world: SyncWorld) -> None:
+        """The append-only commit is published even though the tree ended clean."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-s1")
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert world.published_data_head() == machine.head("data")
+        assert "2026-09-08-s1" in world.published_data_file("memories/memories.jsonl")
+
+    def test_published_pointer_is_fetchable(self, world: SyncWorld) -> None:
+        """The parent pointer must never name an object origin lacks."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-s1b")
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        pointer = world.published_pointer()
+        assert pointer == machine.head("data")
+        assert world.data_object_exists(pointer), (
+            f"published parent points at {pointer}, which is not in the data "
+            "remote — `git submodule update` on the other machine would fail "
+            'with "reference is not a tree"'
+        )
+
+    def test_second_machine_can_follow(self, world: SyncWorld) -> None:
+        """The end-to-end consequence: machine B can update to A's push."""
+        machine_a = world.add_machine("a")
+        machine_b = world.add_machine("b")
+        machine_a.append_memory("2026-09-08-s1c")
+        assert world.run_sync(machine_a).returncode == 0
+
+        git("pull", "-q", "--ff-only", "origin", "main", cwd=machine_b.pa)
+        git("submodule", "update", "--init", "--quiet", cwd=machine_b.pa)
+        assert "2026-09-08-s1c" in machine_b.memories.read_text(encoding="utf-8")
+
+
+# ============================================================================
 # Parent-repo branch guard (Batch 11 Medium, 2026-05-02)
 # ============================================================================
 
