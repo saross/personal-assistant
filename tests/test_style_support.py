@@ -154,6 +154,79 @@ def test_git_commit_reports_head_of_a_throwaway_repository(tmp_path):
     assert style_support.git_commit(repo) == expected
 
 
+def _throwaway_repo(tmp_path: Path) -> tuple[Path, callable]:
+    """Create a git repository with one committed file; return it and a runner."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
+           "GIT_CONFIG_SYSTEM": "/dev/null"}
+
+    def run(*args):
+        return subprocess.run(["git", "-C", str(repo), *args],
+                              capture_output=True, text=True, check=True,
+                              env=env)
+
+    run("init", "-q")
+    run("config", "user.email", "tests@example.invalid")
+    run("config", "user.name", "Style Tests")
+    (repo / "script.py").write_text("print('one')\n", encoding="utf-8")
+    run("add", "script.py")
+    run("commit", "-qm", "seed")
+    return repo, run
+
+
+def test_git_state_reports_a_tracked_file_in_a_clean_tree(tmp_path):
+    """The ordinary case: the commit that contains this very file."""
+    repo, run = _throwaway_repo(tmp_path)
+
+    state = style_support.git_state(repo / "script.py")
+
+    assert state["commit"] == run("rev-parse", "HEAD").stdout.strip()
+    assert state["dirty"] is False
+    assert state["reason"] is None
+
+
+def test_git_state_flags_an_uncommitted_change(tmp_path):
+    """A commit alone does not identify a result produced from a dirty tree.
+
+    The mutation this kills: hard-coding ``dirty`` to False, which lets
+    provenance claim reproducibility it cannot deliver.
+    """
+    repo, _run = _throwaway_repo(tmp_path)
+    (repo / "script.py").write_text("print('edited')\n", encoding="utf-8")
+
+    assert style_support.git_state(repo / "script.py")["dirty"] is True
+
+
+def test_git_state_refuses_an_untracked_copy_inside_another_repository(tmp_path):
+    """A copy under someone else's checkout must not borrow its HEAD.
+
+    ``git rev-parse HEAD`` searches upwards, so a copy of these scripts at
+    ``<repo>/sub/sub2/`` used to report that repository's commit — naming a
+    commit which does not contain the code that ran. The mutation this kills:
+    dropping the ``ls-files --error-unmatch`` check.
+    """
+    repo, _run = _throwaway_repo(tmp_path)
+    nested = repo / "sub" / "sub2"
+    nested.mkdir(parents=True)
+    copied = nested / "style_support.py"
+    copied.write_text("print('a copy nobody committed')\n", encoding="utf-8")
+
+    state = style_support.git_state(copied)
+
+    assert state["commit"] is None
+    assert state["dirty"] is None
+    assert "not tracked" in state["reason"]
+
+
+def test_git_state_outside_a_repository_says_so(tmp_path):
+    """No repository is a reason, not a crash."""
+    state = style_support.git_state(tmp_path)
+
+    assert state["commit"] is None
+    assert state["reason"] == "not inside a git repository"
+
+
 # ---------------------------------------------------------------------------
 # provenance_block
 # ---------------------------------------------------------------------------
@@ -184,7 +257,10 @@ def test_provenance_carries_no_wall_clock_field(tmp_path, monkeypatch):
     cheapest determinism check the tranche has. The mutation this kills:
     adding a ``generated_at_utc`` field.
     """
-    monkeypatch.setattr(style_support, "git_commit", lambda *a, **k: "cafe1234")
+    monkeypatch.setattr(style_support, "git_state", lambda *a, **k: {
+        "commit": "cafe1234", "dirty": False, "root": "/nowhere",
+        "reason": None,
+    })
     an_input = tmp_path / "phase1.json"
     an_input.write_text("{}\n", encoding="utf-8")
 
@@ -193,6 +269,41 @@ def test_provenance_carries_no_wall_clock_field(tmp_path, monkeypatch):
 
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
     assert not [k for k in first if "time" in k or "date" in k or "_at" in k]
+
+
+def test_provenance_records_whether_the_tree_was_dirty(tmp_path, monkeypatch):
+    """A reader must be able to tell a clean-commit result from a dirty one.
+
+    The mutation this kills: dropping the ``git_dirty`` field, which leaves a
+    result produced from a modified tree indistinguishable from one built at
+    the recorded commit.
+    """
+    monkeypatch.setattr(style_support, "git_state", lambda *a, **k: {
+        "commit": "cafe1234", "dirty": True, "root": "/nowhere",
+        "reason": None,
+    })
+
+    block = style_support.provenance_block("demo.py")
+
+    assert block["git_dirty"] is True
+
+
+def test_provenance_extra_cannot_overwrite_the_run_fields(tmp_path):
+    """`extra` is caller metadata; it must not rewrite what the block asserts.
+
+    The mutation this kills: restoring the bare ``record.update(dict(extra))``,
+    under which a caller could silently replace ``inputs`` or ``git_commit``.
+    """
+    with pytest.raises(ValueError, match="git_commit"):
+        style_support.provenance_block(
+            "demo.py", extra={"git_commit": "0000000", "note": "fine"})
+
+    with pytest.raises(ValueError, match="inputs"):
+        style_support.provenance_block("demo.py", extra={"inputs": []})
+
+    # A non-clashing extra still lands.
+    assert style_support.provenance_block(
+        "demo.py", extra={"note": "fine"})["note"] == "fine"
 
 
 # ---------------------------------------------------------------------------

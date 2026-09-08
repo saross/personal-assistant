@@ -115,27 +115,71 @@ def file_sha256(path: Path | str) -> str | None:
     return digest.hexdigest()
 
 
-def git_commit(repo_hint: Path | str | None = None) -> str | None:
-    """Return the HEAD commit of the repository containing ``repo_hint``.
+def _git(args: list[str], cwd: Path) -> str | None:
+    """Run one read-only git command in ``cwd``; return stdout, or ``None``.
 
-    ``repo_hint`` defaults to this file's own directory, so a script run from
-    any working directory still records the commit of the code that ran.
-    Returns ``None`` when git is unavailable, the directory is not a
-    repository, or the call fails for any other reason — provenance is
-    best-effort and must never break a run.
+    ``None`` covers every failure — git absent, not a repository, a non-zero
+    exit — because provenance is best-effort and must never break a run.
     """
-    start = Path(repo_hint) if repo_hint is not None else Path(__file__).resolve().parent
     try:
         proc = subprocess.run(
-            ["git", "-C", str(start), "rev-parse", "HEAD"],
+            ["git", "-C", str(cwd), *args],
             capture_output=True, text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if proc.returncode != 0:
-        return None
-    commit = proc.stdout.strip()
-    return commit or None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def git_state(path_hint: Path | str | None = None) -> dict[str, Any]:
+    """Describe the repository that actually contains the running code.
+
+    Returns ``{"commit": str | None, "dirty": bool | None, "root": str | None,
+    "reason": str | None}``; ``reason`` says why there is no commit.
+
+    The search is BOUNDED to the repository that tracks ``path_hint`` itself.
+    ``git rev-parse HEAD`` walks upwards, so a copy of these scripts placed
+    anywhere beneath another checkout used to report THAT checkout's HEAD —
+    provenance then named a commit which does not contain, and says nothing
+    about, the code that ran. The file must be tracked by the repository whose
+    commit is recorded, or nothing is recorded.
+
+    ``dirty`` reports uncommitted changes to TRACKED files (untracked files
+    are ignored: they are not part of the recorded code). A dirty tree means
+    the commit alone does not identify what ran, which is exactly what a
+    reader of a provenance block needs to know.
+    """
+    target = Path(path_hint) if path_hint is not None else Path(__file__)
+    target = target.resolve()
+    directory = target if target.is_dir() else target.parent
+
+    root = _git(["rev-parse", "--show-toplevel"], directory)
+    if root is None:
+        return {"commit": None, "dirty": None, "root": None,
+                "reason": "not inside a git repository"}
+    if not target.is_dir():
+        tracked = _git(["ls-files", "--error-unmatch", str(target)], directory)
+        if tracked is None:
+            return {"commit": None, "dirty": None, "root": root,
+                    "reason": f"{target.name} is not tracked by the repository "
+                              f"at {root}; its HEAD describes other code"}
+    commit = _git(["rev-parse", "HEAD"], directory)
+    if not commit:
+        return {"commit": None, "dirty": None, "root": root,
+                "reason": "the repository has no commits"}
+    status = _git(["status", "--porcelain", "--untracked-files=no"], directory)
+    return {"commit": commit, "dirty": bool(status), "root": root,
+            "reason": None}
+
+
+def git_commit(path_hint: Path | str | None = None) -> str | None:
+    """Return the HEAD commit of the repository that TRACKS ``path_hint``.
+
+    Defaults to this file, so a script run from any working directory records
+    the commit of the code that ran — and records nothing at all when the
+    running copy is not tracked by the repository it happens to sit inside.
+    """
+    return git_state(path_hint)["commit"]
 
 
 def provenance_block(script: str,
@@ -150,20 +194,38 @@ def provenance_block(script: str,
     the caller named it, so a relative invocation stays legible) and its
     SHA-256 — enough to prove which bytes a result was derived from.
 
+    ``git_dirty`` says whether the recorded commit is the whole story: a
+    result produced from a modified working tree is not reproducible from the
+    commit alone.
+
     Contains no wall-clock field, on purpose: see the module docstring.
+
+    Raises ValueError if ``extra`` would overwrite a field the block itself
+    owns — silently replacing ``inputs`` or ``git_commit`` with a caller's
+    value would make provenance say something the writer did not mean.
     """
+    state = git_state()
     record: dict[str, Any] = {
         "script": script,
-        "git_commit": git_commit(),
+        "git_commit": state["commit"],
+        "git_dirty": state["dirty"],
         "inputs": [
             {"path": str(item), "sha256": file_sha256(item)} for item in inputs
         ],
     }
+    if state["reason"]:
+        record["git_note"] = state["reason"]
     if seed is not None:
         record["seed"] = seed
     if spacy_model is not None:
         record["spacy_model"] = spacy_model
     if extra:
+        clashes = sorted(set(extra) & set(record))
+        if clashes:
+            raise ValueError(
+                f"provenance extra may not overwrite {clashes}: those fields "
+                "describe the run itself, not the caller's metadata"
+            )
         record.update(dict(extra))
     return record
 
