@@ -2399,12 +2399,16 @@ every round with its re-audit outcome, six decisions for Shawn).
   the hermeticity guards: no network, no live Postgres, store snapshots,
   bb616b7), #126 (bake-off tooling, 81eb4d3), #130 (retrieval follow-ups,
   552af25), #125 (external services, 23a85ef, after two re-audits), #131
-  (bake-off follow-ups, 45deb1f), #132 (daily-sync follow-ups, 6626a2c).
-  Open with re-audits or fix rounds in flight: #124 (archive pipeline,
-  second re-audit), #127 (hermeticity guards and the midnight flake, third
-  re-audit), #128 (style-analyser scripts, round 4g-2), #129 (memory
-  readers and anchors, round 4f-3); rounds 3c-6, 4d-3, and 4e-3 running.
-  Main suite about 3,400. Two operational lessons recorded in the
+  (bake-off follow-ups, 45deb1f), #132 (daily-sync follow-ups, 6626a2c),
+  #124 (archive pipeline, 3360630, after two re-audits), #127 (hermeticity
+  guards — no network, no live Postgres, store snapshots that tolerate live
+  appends and warn on concurrent source edits unless
+  `PA_HERMETICITY_STRICT=1` — plus the midnight flake, 282e6b3, after three
+  re-audits). Open with re-audits or fix rounds in flight: #128
+  (style-analyser scripts, round 4g-2 fixing two tests), #129 (memory
+  readers and anchors, round 4f-3), #133 (external-services follow-ups),
+  #134 (bake-off follow-ups); rounds 3c-6, 4a-5, and 4c-3 running. Main
+  suite about 3,650. Two operational lessons recorded in the
   scratchpad: concurrent agents need private scratch directories, and
   concurrent suites need isolated `--basetemp` and a bounded /tmp
   footprint (the 16 GB tmpfs filled and ran out of inodes twice). Decisions
