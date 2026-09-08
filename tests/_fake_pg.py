@@ -72,9 +72,12 @@ _UNSUPPORTED_CLAUSES = (
 class UnsupportedSQL(AssertionError):
     """The fake was handed SQL it does not fully implement.
 
-    Deliberately an ``AssertionError``: this is a test-harness defect or a
-    genuine behaviour change in the code under test, and either way the
-    test must fail loudly rather than receive a plausible-looking answer.
+    An ``AssertionError`` subclass so the failure reads as a harness
+    defect or a behaviour change in the code under test. Note that a
+    production ``except Exception`` DOES catch it (``AssertionError`` is
+    an ``Exception``); what keeps a swallowed raise from passing is that
+    every test asserts on the rows returned, and a swallowed raise yields
+    none. Assert on results, never merely on "no exception".
     """
 
 

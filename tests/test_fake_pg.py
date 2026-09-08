@@ -99,8 +99,9 @@ class TestRefusesWhatItCannotEmulate:
             db.run(sql, [])
 
     def test_the_refusal_is_an_assertion_error(self) -> None:
-        """So an unexpected shape fails the test rather than being caught
-        by a production ``except Exception`` and degrading silently."""
+        """So an unexpected shape reads as a harness defect. A production
+        ``except Exception`` still catches it; the tests stay honest by
+        asserting on returned rows, which a swallowed raise cannot supply."""
         assert issubclass(UnsupportedSQL, AssertionError)
 
     @pytest.mark.parametrize("clause", [
