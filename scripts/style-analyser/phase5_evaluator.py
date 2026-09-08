@@ -664,6 +664,9 @@ class Evaluation:
     feature_deltas: list[dict]
     advisory: list[dict]
     gate: list[GateCheck]
+    #: Active features phase 1 could not measure on this input, imputed with
+    #: the corpus mean (z = 0). Empty for any input long enough to measure.
+    imputed_features: list[str] = field(default_factory=list)
     record: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -696,13 +699,22 @@ def evaluate_text(text: str, source_label: str, phase1: dict, phase3: dict,
     record = p1.process_paper(source_label, text, nlp)
     n_words = record["n_words"]
 
-    # Input feature vector in the active space.
-    x_input = np.array(
-        [float(dotted(record, path)) for path in fs.active_paths], dtype=float
-    )
-
-    # Fit the full-corpus model and score the input.
+    # Fit the full-corpus model first: its per-feature MEAN is the neutral
+    # value an unmeasurable feature is imputed with below.
     mean, std = standardiser(X)
+
+    # Input feature vector in the active space. Phase 1 reports None for a
+    # metric it could not measure on this input — mattr_100 below its 100-word
+    # window, which is an ACTIVE feature — and `float(None)` raised TypeError
+    # deep inside numpy before the short-input warning could explain it. The
+    # corpus matrix has guarded this since it was written; the input vector
+    # now does too, and names every feature it had to impute.
+    x_values, imputed_features = style_support.impute_missing_features(
+        [dotted(record, path) for path in fs.active_paths],
+        fs.active_labels,
+        [float(m) for m in mean],
+    )
+    x_input = np.array(x_values, dtype=float)
     lw = fit_ledoit_wolf(zscore(X, mean, std))
     xz = zscore(x_input, mean, std)
     squared = float(lw.mahalanobis(xz.reshape(1, -1))[0])
@@ -743,6 +755,7 @@ def evaluate_text(text: str, source_label: str, phase1: dict, phase3: dict,
         feature_deltas=deltas,
         advisory=advisory,
         gate=gate,
+        imputed_features=imputed_features,
         record=record,
     )
 
@@ -761,6 +774,15 @@ def render_markdown(ev: Evaluation) -> str:
         L.append(
             f"> ⚠ Short input (< {SHORT_INPUT_WORDS} words): per-1k rates and the "
             "Mahalanobis estimate are noisy. Treat both verdicts as indicative only."
+        )
+    if ev.imputed_features:
+        # Say it in the report, not just the JSON: a distance computed with an
+        # imputed feature rests on one fewer piece of evidence than it looks.
+        L.append("")
+        L.append(
+            "> ⚠ Not measurable on this input, and imputed with the corpus "
+            f"mean (no contribution to the distance): "
+            f"{', '.join(ev.imputed_features)}."
         )
     L.append("")
 
@@ -868,6 +890,9 @@ def evaluation_to_dict(ev: Evaluation) -> dict:
         "source": ev.source_label,
         "n_words": ev.n_words,
         "short_input": ev.short_input,
+        # Named, not silent: a distance computed with an imputed feature is
+        # not the same evidence as one computed with all of them measured.
+        "imputed_features": ev.imputed_features,
         "mahalanobis": {
             "distance": ev.distance,
             "squared": ev.squared,

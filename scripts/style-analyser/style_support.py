@@ -230,6 +230,53 @@ def provenance_block(script: str,
     return record
 
 
+def is_measured(value: Any) -> bool:
+    """True when ``value`` is a real measurement, not ``None`` and not a bool.
+
+    ``isinstance(True, int)`` is True in Python, so a bare numeric check lets
+    a boolean through as 1.0 or 0.0 and silently fabricates a measurement.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def impute_missing_features(values: Sequence[Any], labels: Sequence[str],
+                            fallbacks: Sequence[float]
+                            ) -> tuple[list[float], list[str]]:
+    """Replace unmeasurable features with a neutral value; say which.
+
+    Phase 1 reports ``None`` for a metric it could not measure on a given
+    input — ``mattr_100`` below its 100-word window, for instance. The Phase 5
+    input vector had no guard for that (the corpus matrix did), so ANY input
+    shorter than one MATTR window raised ``TypeError`` deep inside numpy,
+    before the short-input warning that exists to explain exactly this case.
+
+    Each missing value is replaced by its ``fallbacks`` entry — the corpus
+    MEAN for that feature, which standardises to z = 0 and so contributes
+    nothing to the Mahalanobis distance. That is the honest choice: it says
+    "no evidence from this feature" rather than inventing a value that would
+    push the input toward or away from the corpus. The returned label list
+    names every feature imputed, for the caller to record in its output.
+
+    Raises ValueError if the three sequences do not line up, since a
+    mis-aligned fallback would impute one feature's mean into another.
+    """
+    if not (len(values) == len(labels) == len(fallbacks)):
+        raise ValueError(
+            f"impute_missing_features got {len(values)} values, "
+            f"{len(labels)} labels and {len(fallbacks)} fallbacks; the three "
+            "must be parallel or a fallback lands on the wrong feature"
+        )
+    vector: list[float] = []
+    imputed: list[str] = []
+    for value, label, fallback in zip(values, labels, fallbacks):
+        if is_measured(value):
+            vector.append(float(value))
+        else:
+            vector.append(float(fallback))
+            imputed.append(label)
+    return vector, imputed
+
+
 def sanity_verdict(distance: float, loo_max: float, loo_median: float,
                    is_corpus: bool) -> tuple[str, bool]:
     """Return ``(rendered_verdict, ok)`` for one Phase 5 sanity sample.

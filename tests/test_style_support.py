@@ -307,6 +307,59 @@ def test_provenance_extra_cannot_overwrite_the_run_fields(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# impute_missing_features (Phase 5's input vector, re-audit item 1)
+# ---------------------------------------------------------------------------
+
+def test_an_unmeasurable_feature_is_imputed_with_the_corpus_mean():
+    """`float(None)` used to raise TypeError deep inside numpy.
+
+    Phase 1 reports None for a metric it could not measure — mattr_100 below
+    its 100-word window — and mattr_100 is an ACTIVE Mahalanobis feature, so
+    every input under 100 words crashed before the short-input warning could
+    explain itself. The mutation this kills: dropping the ``is_measured``
+    branch and calling ``float(value)`` on everything.
+    """
+    values = [21.0, None, 0.42]
+    labels = ["Mean sentence length", "MATTR-100", "Hapax ratio"]
+    means = [23.0, 0.73, 0.40]
+
+    vector, imputed = style_support.impute_missing_features(values, labels, means)
+
+    # The imputed value is the corpus mean, which standardises to z = 0 and so
+    # contributes nothing to the distance.
+    assert vector == [21.0, 0.73, 0.42]
+    assert imputed == ["MATTR-100"]
+
+
+def test_a_fully_measured_input_imputes_nothing():
+    """The ordinary case must report an empty list, not a silent default."""
+    vector, imputed = style_support.impute_missing_features(
+        [1.0, 2.0], ["a", "b"], [9.0, 9.0])
+
+    assert vector == [1.0, 2.0]
+    assert imputed == []
+
+
+def test_a_boolean_is_not_a_measurement():
+    """`isinstance(True, int)` is True, so a bool would pass as 1.0.
+
+    The mutation this kills: using a bare ``isinstance(v, (int, float))``
+    check, which turns a stray boolean into a fabricated measurement.
+    """
+    vector, imputed = style_support.impute_missing_features(
+        [True], ["Flagged"], [4.5])
+
+    assert vector == [4.5]
+    assert imputed == ["Flagged"]
+
+
+def test_mis_aligned_fallbacks_are_refused():
+    """A fallback landing on the wrong feature would impute a wrong mean."""
+    with pytest.raises(ValueError, match="parallel"):
+        style_support.impute_missing_features([1.0, None], ["a", "b"], [0.0])
+
+
+# ---------------------------------------------------------------------------
 # sanity_verdict (Phase 5's decision rule, finding ST12)
 # ---------------------------------------------------------------------------
 

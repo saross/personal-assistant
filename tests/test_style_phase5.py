@@ -711,3 +711,51 @@ def test_a_json_report_is_written_through_the_json_helper(tmp_path):
     assert wrote is True
     assert text.endswith("\n")
     assert json.loads(text)["provenance"]["script"] == "phase5_evaluator.py"
+
+
+# ---------------------------------------------------------------------------
+# Re-audit item 1 — an unmeasurable feature must not crash the input vector
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_an_input_below_the_mattr_window_scores_instead_of_raising(tmp_path,
+                                                                  monkeypatch):
+    """Any input under 100 words used to raise TypeError inside numpy.
+
+    ``mattr_100`` is an ACTIVE feature and phase 1 now returns ``None`` for it
+    below its 100-word window, so ``float(dotted(record, path))`` raised
+    before the short-input warning at the end of ``evaluate_text`` could
+    explain what had happened. The guard imputes the corpus mean and names the
+    feature. The mutation this kills: restoring the bare
+    ``[float(dotted(record, path)) for path in fs.active_paths]``.
+
+    The pure half of this — ``style_support.impute_missing_features`` — is
+    tested without numpy in ``tests/test_style_support.py``; this asserts that
+    Phase 5 actually routes its input vector through it.
+    """
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy")
+    pytest.importorskip("sklearn")
+    from style_test_helpers import load_style_module
+
+    phase5 = load_style_module("phase5_evaluator")
+    phase1 = _fake_phase1()
+    phase3 = _fake_phase3()
+
+    # A record shaped exactly as phase 1 emits it for a very short input:
+    # every feature measured except MATTR, which is None below its window.
+    short_record = dict(_fake_paper(0, "AAAA1111"))
+    short_record["mattr_100"] = None
+    short_record["mattr_100_short_text"] = True
+    short_record["n_words"] = 40
+    monkeypatch.setattr(phase5.p1, "process_paper",
+                        lambda *a, **k: short_record)
+
+    evaluation = phase5.evaluate_text("forty invented words", "short-input",
+                                      phase1, phase3, nlp=None)
+
+    assert evaluation.short_input is True
+    assert "MATTR-100" in evaluation.imputed_features
+    assert isinstance(evaluation.distance, float)
+    # And the report says so, rather than presenting a full-evidence distance.
+    assert "imputed with the corpus mean" in phase5.render_markdown(evaluation)
