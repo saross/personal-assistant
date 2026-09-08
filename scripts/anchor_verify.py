@@ -430,6 +430,7 @@ def unique_suffix_match(
     tracked_paths: Iterable[object],
     *,
     project_repos: Iterable[Path] | None = None,
+    allow_union_fallback: bool = False,
 ) -> SuffixMatch | None:
     """Collision-guarded prefix recovery (item 21b core) — I/O-free.
 
@@ -457,11 +458,18 @@ def unique_suffix_match(
     *project_repos* scopes the search (finding AN2). When it is given, ONLY
     candidates inside those repositories are considered, and a unique hit is
     returned as ``"same-project"``; a memory that names a project must not
-    recover onto a same-named file in someone else's repository, so no union
-    fallback happens. When it is ``None`` — the memory records no project, or
-    none of the discovered repositories matches it — the union is searched and
-    a unique hit is labelled ``"cross-repo"`` for the caller to accept or
-    refuse.
+    recover onto a same-named file in someone else's repository. When it is
+    ``None`` — the memory records no project, or none of the discovered
+    repositories matches it — the union is searched and a unique hit is
+    labelled ``"cross-repo"`` for the caller to accept or refuse.
+
+    *allow_union_fallback* is the operator's explicit "search everywhere
+    anyway". With it, a memory whose project holds NO candidate falls back to
+    the union, still labelled ``"cross-repo"``. Without it the flag that
+    promises exactly this was a no-op for every memory with an attributable
+    project, which is most of them (round 4f-3, finding L3). The fallback
+    does not fire when the project holds SEVERAL candidates: an ambiguity
+    inside the memory's own project is not resolved by widening the search.
     """
     ref_norm = ref.rstrip("/")
     if not ref_norm:
@@ -479,7 +487,10 @@ def unique_suffix_match(
                         if c.repo and os.path.normpath(c.repo) in wanted])
         if len(scoped) == 1:
             return SuffixMatch(scoped[0].path, "same-project")
-        return None
+        if scoped or not allow_union_fallback:
+            # Ambiguous inside the project, or the operator has not asked for
+            # a wider search: withhold rather than guess.
+            return None
 
     matches = _hits(candidates)
     return SuffixMatch(matches[0].path, "cross-repo") if len(matches) == 1 else None

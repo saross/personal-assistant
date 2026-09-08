@@ -74,6 +74,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anchor_verify as av  # noqa: E402
 import project_id  # noqa: E402
+import triage_anchors as ta  # noqa: E402
 from triage_anchors import build_basename_index  # noqa: E402
 
 
@@ -241,6 +242,11 @@ def build_plans(corpus: Path, repos, *, allow_cross_repo: bool = False):
     candidate and is NOT rewritten unless *allow_cross_repo* is set: a memory
     about project A must not be re-anchored onto a same-named file in project
     B, which would then verify ``true`` and read as evidence.
+
+    *allow_cross_repo* does two things, and used to do only one: it accepts a
+    cross-repo match, AND it lets a memory whose own project holds no
+    candidate fall back to the union at all. Without the second half the flag
+    was a no-op for every memory with an attributable project (finding L3).
     """
     bn_index = build_basename_index(repos)
 
@@ -274,6 +280,7 @@ def build_plans(corpus: Path, repos, *, allow_cross_repo: bool = False):
             if key not in recover_memo:
                 match = av.unique_suffix_match(
                     ref, _flat(bn_index, ref), project_repos=scope_repos,
+                    allow_union_fallback=allow_cross_repo,
                 )
                 if match is None:
                     recover_memo[key] = None
@@ -553,7 +560,16 @@ def main(argv=None) -> int:
                           "to a same-named file it was never about."))
     args = ap.parse_args(argv)
 
-    repos = project_id.repo_set()
+    # Guarded discovery, not the raw walk: an empty repo set makes every
+    # anchor resolve nowhere, and this script WRITES the recomputed verdict
+    # and confidence back. On a degraded machine that means marking the
+    # corpus pending/medium wholesale (round 4f-3, finding L4).
+    try:
+        repos = ta.broad_repo_set()
+    except ta.RepoSetUnavailable as exc:
+        print(f"[recover-anchors] ERROR: {exc}; refusing to plan against an "
+              "empty repository set", file=sys.stderr)
+        return 2
     print(f"repo set: {len(repos)} repos; corpus: {CORPUS}", file=sys.stderr)
     plans = build_plans(CORPUS, repos, allow_cross_repo=args.allow_cross_repo)
     report = render_report(plans)

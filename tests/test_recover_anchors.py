@@ -24,6 +24,7 @@ def _load(name, rel):
 
 
 ra = _load("recover_anchors", "scripts/recover_anchors.py")
+av_module = ra.av
 
 
 def _const(v):
@@ -497,7 +498,7 @@ class TestApplyGate:
         called: list[str] = []
 
         monkeypatch.setattr(ra, "CORPUS", corpus)
-        monkeypatch.setattr(ra.project_id, "repo_set", lambda: [])
+        monkeypatch.setattr(ra.ta, "broad_repo_set", lambda: [tmp_path])
         monkeypatch.setattr(ra, "build_plans",
                             lambda corpus_path, repos, **kw: [_plan_for(rec)])
         monkeypatch.setattr(ra, "apply_plans",
@@ -702,3 +703,87 @@ class TestProjectReposFor:
         repo.mkdir(parents=True)
         assert ra.project_repos_for("-home-someone-else", [repo]) is None
         assert ra.project_repos_for(None, [repo]) is None
+
+
+class TestTheCrossRepoFlagDoesWhatItSays:
+    """--allow-cross-repo was a no-op for an attributable memory (L3)."""
+
+    def _fixture(self, tmp_path):
+        """Project A holds no candidate; project B holds exactly one."""
+        repo_a = _seed_project_repo(tmp_path, "project-a", "src/other.py")
+        repo_b = _seed_project_repo(tmp_path, "project-b", "pkg/src/util.py")
+        record = _false_record(
+            ra.project_id.encode_project_id(str(repo_a)), "src/util.py",
+        )
+        corpus = tmp_path / "memories.jsonl"
+        corpus.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        return corpus, [repo_a, repo_b]
+
+    def test_off_by_default_for_an_attributable_memory(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """The AN2 guarantee is unchanged: no silent cross-repo rewrite."""
+        corpus, repos = self._fixture(tmp_path)
+        monkeypatch.setattr(ra.av, "verify_file", lambda ref, r: "false")
+        monkeypatch.setattr(ra.av, "verify_memory", lambda rec, r: "true")
+        assert ra.build_plans(corpus, repos) == []
+
+    def test_the_flag_reaches_a_memory_that_names_its_project(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """Kills the mutation dropping allow_union_fallback.
+
+        Before this the scoped search returned None and never fell back, so
+        the flag changed nothing for any memory carrying a project — which
+        is most of them, and exactly the population an operator running
+        --allow-cross-repo is trying to reach.
+        """
+        corpus, repos = self._fixture(tmp_path)
+        monkeypatch.setattr(ra.av, "verify_file", lambda ref, r: "false")
+        monkeypatch.setattr(ra.av, "verify_memory", lambda rec, r: "true")
+        plans = ra.build_plans(corpus, repos, allow_cross_repo=True)
+        assert [p["ref_rewrites"] for p in plans] == [
+            [("src/util.py", "pkg/src/util.py")]
+        ]
+
+    def test_ambiguity_inside_the_project_is_not_widened(self) -> None:
+        """Two candidates at home is not solved by looking further afield."""
+        home = Path("/repo-a")
+        tracked = [
+            av_module.TrackedPath(str(home), "one/util.py"),
+            av_module.TrackedPath(str(home), "two/util.py"),
+            av_module.TrackedPath("/repo-b", "pkg/util.py"),
+        ]
+        assert av_module.unique_suffix_match(
+            "util.py", tracked, project_repos=[home],
+            allow_union_fallback=True,
+        ) is None
+
+
+class TestMainUsesGuardedDiscovery:
+    """A degraded machine must not drive a corpus rewrite (finding L4)."""
+
+    def test_an_empty_repo_set_refuses(
+        self, tmp_path, monkeypatch, capsys,
+    ) -> None:
+        """Kills the mutation calling project_id.repo_set() directly.
+
+        With no repositories every anchor resolves nowhere, and this script
+        writes the recomputed verdict and confidence back — so an unguarded
+        run marks the corpus pending/medium wholesale.
+        """
+        corpus = tmp_path / "memories.jsonl"
+        corpus.write_text(
+            json.dumps(_record("2031-05-01-aaaabbbbcccc")) + "\n",
+            encoding="utf-8",
+        )
+        before = corpus.read_bytes()
+        monkeypatch.setattr(ra, "CORPUS", corpus)
+
+        def _raise() -> list:
+            raise ra.ta.RepoSetUnavailable("no git repositories discovered")
+
+        monkeypatch.setattr(ra.ta, "broad_repo_set", _raise)
+        assert ra.main([]) == 2
+        assert corpus.read_bytes() == before
+        assert "refusing to plan" in capsys.readouterr().err
