@@ -16,6 +16,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -192,6 +193,10 @@ class TestPostgresOutage:
     ):
         """The documented outage exit code, asserted end to end."""
         _install_fake_psycopg2(monkeypatch, raise_on_connect=True)
+        # ``main`` renices itself to be a polite background citizen;
+        # niceness cannot be lowered again, so never let it touch the
+        # pytest process.
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
         code = indexer.main(["--archive-root", str(archive_root)])
         assert code == 3
 
@@ -201,5 +206,6 @@ class TestPostgresOutage:
         """The happy path is unchanged by the new guards."""
         _install_fake_psycopg2(monkeypatch)
         monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
         code = indexer.main(["--archive-root", str(archive_root)])
         assert code == 0
