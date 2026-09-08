@@ -2126,3 +2126,81 @@ class TestAnExitSixRecordsWhereTheCursorEndedUp:
         assert "cursor was reset" not in state.problems[
             _sync_gate.PROBLEM_QUARANTINE
         ].detail, "the reset was announced twice for one rebuild"
+
+
+class TestASidecarThatIsNotAnObjectIsCorrupt:
+    """
+    A sidecar holding ``[]`` or ``"nothing"`` is not a state file with
+    nothing in it — it is a state file somebody or something has
+    replaced. Reporting it as an ordinary empty state let the ack say
+    "nothing to clear" over a problem nobody could see.
+    """
+
+    @pytest.mark.parametrize("body", ["[]", '"nothing"', "42", "null"])
+    def test_the_status_says_corrupt(self, tmp_path, body):
+        """The mutation this kills: returning STATE_OK for a non-object."""
+        gate = tmp_path / "g"
+        gate.parent.mkdir(parents=True, exist_ok=True)
+        gate.with_name(gate.name + ".state.json").write_text(
+            body, encoding="utf-8",
+        )
+
+        state, status = _sync_gate.read_state_with_status(gate)
+
+        assert status == _sync_gate.STATE_CORRUPT, body
+        assert state.problems == {}
+
+    def test_an_object_is_ok_and_an_absent_file_is_missing(self, tmp_path):
+        """The other two arms, so "corrupt" cannot become the only answer."""
+        gate = tmp_path / "g"
+        gate.parent.mkdir(parents=True, exist_ok=True)
+        assert _sync_gate.read_state_with_status(gate)[1] == (
+            _sync_gate.STATE_MISSING
+        )
+        gate.with_name(gate.name + ".state.json").write_text(
+            "{}", encoding="utf-8",
+        )
+        assert _sync_gate.read_state_with_status(gate)[1] == _sync_gate.STATE_OK
+
+
+class TestRenderTextShowsAProblemItDoesNotKnow:
+    """
+    A gate written by a newer version, read by an older one: the problem
+    key is unknown, and dropping it would hide a fault behind a version
+    skew. The count and the body must both include it.
+    """
+
+    def test_an_unknown_key_still_reaches_the_file(self, tmp_path):
+        """
+        The mutation this kills: deleting the extend() that appends
+        problems whose key is not in PROBLEM_ORDER.
+        """
+        state = _sync_gate.GateState(
+            problems={
+                _sync_gate.PROBLEM_FAULT: _sync_gate.Problem("a known one"),
+                "some_future_problem": _sync_gate.Problem(
+                    "something a later version knows about",
+                ),
+            },
+        )
+
+        text = _sync_gate.render_text(state)
+
+        assert text.splitlines()[0] == "2", (
+            "the count dropped a problem this version does not recognise"
+        )
+        assert "something a later version knows about" in text
+        assert "a known one" in text
+
+    def test_the_known_ones_keep_their_order(self, tmp_path):
+        """An unknown key goes after, not in place of, the known ones."""
+        state = _sync_gate.GateState(
+            problems={
+                "zz_future": _sync_gate.Problem("later"),
+                _sync_gate.PROBLEM_FAULT: _sync_gate.Problem("fault text"),
+            },
+        )
+        lines = _sync_gate.render_text(state).splitlines()
+        assert lines[0] == "2"
+        assert lines[1] == "fault text"
+        assert lines[2] == "later"

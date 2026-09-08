@@ -403,3 +403,54 @@ def test_the_guard_would_see_an_unmarked_connection():
         "        pass\n"
     )
     assert _live_resource_calls(patched) == []
+
+
+def test_a_set_xdg_cache_home_does_not_move_the_suite_cache(tmp_path):
+    """
+    The scripts write gates under ``~/.cache`` directly, but anything
+    reading XDG_CACHE_HOME would follow it out of the suite's home and
+    straight back into the operator's — with the guard watching the
+    directory nobody was writing. conftest drops the variable when it
+    repoints HOME; this is the test that says so.
+
+    The mutation this kills: removing the ``os.environ.pop`` of
+    XDG_CACHE_HOME.
+    """
+    stray = tmp_path / "stray-cache"
+    stray.mkdir()
+
+    work = tmp_path / "child"
+    work.mkdir()
+    (work / "conftest.py").write_text(
+        _CHILD_CONFTEST.format(conftest=REPO_CONFTEST), encoding="utf-8",
+    )
+    (work / "test_probe.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "\n"
+        "\n"
+        "def test_probe():\n"
+        '    assert "XDG_CACHE_HOME" not in os.environ, (\n'
+        '        "the suite inherited a cache directory outside its home"\n'
+        "    )\n"
+        '    assert Path(os.environ["HOME"]) in (\n'
+        '        Path.home() / ".cache"\n'
+        "    ).parents\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--no-header",
+         "-p", "no:cacheprovider", str(work)],
+        capture_output=True, text=True, cwd=str(work),
+        env={
+            "HOME": str(tmp_path / "home"),
+            "PATH": os.environ["PATH"],
+            "XDG_CACHE_HOME": str(stray),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert not any(stray.iterdir()), (
+        "the child run wrote into a cache directory outside its home"
+    )

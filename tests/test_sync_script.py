@@ -3166,6 +3166,91 @@ class TestARebuildWithNoSyncRunningIsStillDetected:
         )
 
 
+class TestAMissingCanonicalIsNotAnOutage:
+    """
+    The return before the advisory lock says ``connected=None`` — the run
+    never tried. Saying ``False`` there would be a claim about
+    PostgreSQL, and three ticks of it would raise an outage over a
+    database nobody had contacted: the operator sent to restart a service
+    that was running, while the real problem — an unmounted data
+    submodule — sat in the degraded line underneath.
+    """
+
+    def test_three_ticks_never_raise_an_outage(
+        self, monkeypatch, tmp_path, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: ``connected=None`` → ``connected=False``
+        on the missing-canonical return.
+        """
+        import _sync_gate
+
+        monkeypatch.setattr(
+            sync_mod, "MEMORIES_FILE", tmp_path / "not-there.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(
+            sync_mod, "LOG_FILE", tmp_path / "logs" / "sync.log",
+        )
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=[],
+        )
+        monkeypatch.setattr(sys, "argv", ["sync-to-postgres.py"])
+
+        for tick in range(_sync_gate.OUTAGE_STREAK_THRESHOLD):
+            try:
+                sync_mod.main()
+            finally:
+                logging.getLogger("sync-to-postgres").handlers.clear()
+            state = _sync_gate.read_state(pinned_gate_file)
+            assert _sync_gate.PROBLEM_OUTAGE not in state.problems, (
+                f"tick {tick + 1} blamed PostgreSQL for a missing file"
+            )
+            assert state.outage_streak == 0, (
+                "a run that never tried moved the outage counter"
+            )
+
+        # The real problem is reported, and it is the only one.
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_DEGRADED in state.problems
+        assert "canonical memory store" in state.problems[
+            _sync_gate.PROBLEM_DEGRADED
+        ].detail
+
+    def test_the_ack_position_falls_back_to_what_was_recorded(self):
+        """
+        The acknowledgement takes its position from the event, and falls
+        back to the one already recorded when the event carries none —
+        NOT to zero, which would re-offer every row the operator had
+        dismissed the moment anything called the ack without a count.
+
+        The mutation this kills: replacing the fallback with 0.
+        """
+        import _sync_gate
+
+        state = _sync_gate.GateState(
+            problems={
+                _sync_gate.PROBLEM_QUARANTINE: _sync_gate.Problem("x", 3),
+            },
+            acked={"acked_position": 7},
+        )
+
+        after = _sync_gate.next_state(
+            state,
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_ACK, script="test",
+            ),
+        )
+
+        assert after.acked["acked_position"] == 7, (
+            "an acknowledgement with no count forgot what had been read"
+        )
+
+
 class TestAnExitSixDoesNotRepeatItself:
     """
     Tenth re-audit, L5 — exit 6 IS a rebuild, and the path that reported
