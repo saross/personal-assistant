@@ -18,6 +18,14 @@
 # Usage:
 #   bash scripts/compose-global-claude-md.sh
 #   bash scripts/compose-global-claude-md.sh --dry-run
+#   bash scripts/compose-global-claude-md.sh --target /path/to/CLAUDE.md
+#
+# Any other argument is a usage error (exit 2). The sources are resolved
+# from this script's own location, but the default target is the LIVE
+# ~/.claude/CLAUDE.md, so running the script from a worktree would
+# overwrite the operator's global instructions with a branch's content.
+# It therefore refuses to write the default target from anywhere but
+# $HOME/personal-assistant unless --target says otherwise.
 
 set -euo pipefail
 
@@ -29,9 +37,58 @@ OVERLAY="$PA_DIR/global-claude-md/claude.md"
 LOCAL="$PA_DIR/data/global-claude-md/local.md"
 TARGET="${HOME}/.claude/CLAUDE.md"
 
+usage() {
+    echo "Usage: compose-global-claude-md.sh [--dry-run] [--target <path>]" >&2
+}
+
 DRY_RUN=false
-if [[ "${1:-}" == "--dry-run" ]]; then
-    DRY_RUN=true
+TARGET_OVERRIDDEN=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            # Audit round 4d (E13): only this exact spelling used to be
+            # recognised, and "--dryrun" silently overwrote the target.
+            DRY_RUN=true
+            shift
+            ;;
+        --target)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "ERROR: --target needs a path" >&2
+                usage
+                exit 2
+            fi
+            TARGET="$2"
+            TARGET_OVERRIDDEN=true
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+# Audit round 4d (E11): the sources come from $SCRIPT_DIR but the default
+# target is the live ~/.claude/CLAUDE.md, so a run from a git worktree
+# would replace the operator's global instructions with whatever that
+# branch happens to contain. Refuse unless this checkout IS the live one,
+# or the caller has named a target explicitly. When there is no
+# $HOME/personal-assistant at all (a fresh machine, a pinned-HOME test)
+# there is nothing to protect and the guard stays out of the way.
+LIVE_ROOT="${HOME}/personal-assistant"
+if [[ "$TARGET_OVERRIDDEN" == false && -d "$LIVE_ROOT" ]]; then
+    live_real="$(cd "$LIVE_ROOT" && pwd -P)"
+    pa_real="$(cd "$PA_DIR" && pwd -P)"
+    if [[ "$live_real" != "$pa_real" ]]; then
+        echo "ERROR: refusing to write $TARGET from $PA_DIR (not $LIVE_ROOT);" \
+             "pass --target <path> to compose elsewhere" >&2
+        exit 2
+    fi
 fi
 
 # Verify source files exist.
@@ -115,7 +172,7 @@ else
     # config, so restore the mode a plain redirect would have produced.
     chmod 0644 "$TMP_TARGET"
     mv "$TMP_TARGET" "$TARGET"
-    echo "Composed ~/.claude/CLAUDE.md from:"
+    echo "Composed $TARGET from:"
     # Byte counts matter for the cross-harness instruction budget (plan §6):
     # common.md is also loaded by Codex, where oversized global instructions
     # silently displace nearer, more specific project files.

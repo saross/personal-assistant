@@ -472,5 +472,184 @@ class TestSyncSymlinksDryRun:
         assert not (sync_sandbox["home"] / ".claude").exists()
 
 
+# ---------------------------------------------------------------------------
+# compose-global-claude-md.sh
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def compose_sandbox(tmp_path: Path) -> dict[str, Path]:
+    """A synthetic PA_DIR carrying the composer's three sources."""
+    pa_dir = tmp_path / "pa"
+    (pa_dir / "scripts").mkdir(parents=True)
+    (pa_dir / "scripts" / "compose-global-claude-md.sh").symlink_to(
+        SCRIPTS / "compose-global-claude-md.sh"
+    )
+    (pa_dir / "global-agent-guidance").mkdir()
+    (pa_dir / "global-agent-guidance" / "common.md").write_text(
+        "# Shared guidance\n\nMARKER-COMMON\n", encoding="utf-8"
+    )
+    (pa_dir / "global-claude-md").mkdir()
+    (pa_dir / "global-claude-md" / "claude.md").write_text(
+        "# Claude overlay\n\nMARKER-OVERLAY\n", encoding="utf-8"
+    )
+    (pa_dir / "data" / "global-claude-md").mkdir(parents=True)
+    (pa_dir / "data" / "global-claude-md" / "local.md").write_text(
+        "# Local detail\n\nMARKER-LOCAL\n", encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    return {
+        "pa_dir": pa_dir,
+        "home": home,
+        "script": pa_dir / "scripts" / "compose-global-claude-md.sh",
+    }
+
+
+def _run_compose(
+    sandbox: dict[str, Path], *args: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the sandboxed composer with a pinned HOME."""
+    return run_script(sandbox["script"], *args, home=sandbox["home"])
+
+
+class TestComposerLayerOrder:
+    """ET9 — swapping common and overlay left the suite green."""
+
+    def test_the_three_layers_appear_in_order(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """common, then the Claude overlay, then the private local file."""
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 0, result.stderr
+        composed = (
+            compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        ).read_text(encoding="utf-8")
+        positions = [
+            composed.index(marker)
+            for marker in ("MARKER-COMMON", "MARKER-OVERLAY", "MARKER-LOCAL")
+        ]
+        assert positions == sorted(positions), positions
+
+
+class TestComposerDryRun:
+    """ET8 and E13 — --dry-run writes nothing, and only that spelling."""
+
+    def test_dry_run_writes_nothing(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The pinned HOME is unchanged by a dry run."""
+        before = snapshot(compose_sandbox["home"])
+
+        result = _run_compose(compose_sandbox, "--dry-run")
+
+        assert result.returncode == 0, result.stderr
+        assert snapshot(compose_sandbox["home"]) == before
+        assert not (
+            compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        ).exists()
+        assert "Would write to" in result.stdout
+
+    def test_a_dry_run_over_an_existing_file_leaves_it_alone(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """A previous composition survives a later dry run byte for byte."""
+        assert _run_compose(compose_sandbox).returncode == 0
+        target = compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        previous = target.read_text(encoding="utf-8")
+        (compose_sandbox["pa_dir"] / "global-agent-guidance"
+         / "common.md").write_text(
+            "# Shared guidance\n\nMARKER-CHANGED\n", encoding="utf-8"
+        )
+
+        assert _run_compose(compose_sandbox, "--dry-run").returncode == 0
+
+        assert target.read_text(encoding="utf-8") == previous
+
+    def test_a_misspelt_flag_is_a_usage_error(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """"--dryrun" used to overwrite the target with no error at all."""
+        result = _run_compose(compose_sandbox, "--dryrun")
+
+        assert result.returncode == 2
+        assert "unknown argument" in result.stderr
+        assert not (
+            compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        ).exists()
+
+
+class TestComposerWritesNowhereElse:
+    """ET10 — nothing stopped the script writing a Sol-owned surface."""
+
+    def test_only_the_target_is_created_under_home(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """A full run creates ~/.claude and ~/.claude/CLAUDE.md, nothing more."""
+        before = snapshot(compose_sandbox["home"])
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 0, result.stderr
+        created = snapshot(compose_sandbox["home"]) - before
+        assert created == {".claude", ".claude/CLAUDE.md"}, created
+
+    def test_no_codex_or_agents_file_is_touched(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The Sol-owned surfaces named in the header stay absent."""
+        _run_compose(compose_sandbox)
+
+        home = compose_sandbox["home"]
+        assert not (home / ".codex").exists()
+        assert not (home / "AGENTS.md").exists()
+        assert not (compose_sandbox["pa_dir"] / "AGENTS.md").exists()
+
+
+class TestComposerRefusesFromAWorktree:
+    """E11 — a worktree run must not overwrite the live instructions."""
+
+    def test_it_refuses_when_a_live_checkout_exists_elsewhere(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """With $HOME/personal-assistant present, another root is refused."""
+        live = compose_sandbox["home"] / "personal-assistant"
+        live.mkdir()
+        target = compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("the live instructions\n", encoding="utf-8")
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 2, result.stdout
+        assert "refusing to write" in result.stderr
+        assert target.read_text(encoding="utf-8") == "the live instructions\n"
+
+    def test_an_explicit_target_is_allowed(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """--target names somewhere else, so the guard steps aside."""
+        (compose_sandbox["home"] / "personal-assistant").mkdir()
+        elsewhere = compose_sandbox["home"] / "preview" / "CLAUDE.md"
+
+        result = _run_compose(compose_sandbox, "--target", str(elsewhere))
+
+        assert result.returncode == 0, result.stderr
+        assert "MARKER-LOCAL" in elsewhere.read_text(encoding="utf-8")
+        assert not (
+            compose_sandbox["home"] / ".claude" / "CLAUDE.md"
+        ).exists()
+
+    def test_target_without_a_path_is_a_usage_error(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """A bare --target must not silently compose to the default."""
+        result = _run_compose(compose_sandbox, "--target")
+
+        assert result.returncode == 2
+        assert "--target needs a path" in result.stderr
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience entry point
     raise SystemExit(pytest.main([__file__, "-v"]))
