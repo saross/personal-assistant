@@ -311,14 +311,15 @@ def commit(archive: Path, summary: str) -> bool:
     """Commit the archive directory in its repository with an explicit pathspec."""
     repo = archive.parent
     relative = archive.relative_to(repo).as_posix()
-    subprocess.run(["git", "-C", str(repo), "add", "--", relative], check=True)
-    staged = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--cached", "--quiet", "--", relative])
+    # --literal-pathspecs: a pathspec is a glob by default, and the archive
+    # directory name comes from the --archive option (re-audit, 2026-09-08).
+    git = ["git", "--literal-pathspecs", "-C", str(repo)]
+    subprocess.run([*git, "add", "--", relative], check=True)
+    staged = subprocess.run([*git, "diff", "--cached", "--quiet", "--", relative])
     if staged.returncode == 0:
         return False
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "-m", f"chore(agent-mail): {summary}",
-         "--", relative], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", f"chore(agent-mail): {summary}", "--", relative],
+                   check=True)
     return True
 
 
