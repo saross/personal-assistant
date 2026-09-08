@@ -3107,3 +3107,70 @@ class TestParentCheckPrecedesTheBranchGuard:
         assert machine.branch("parent") == "feature", (
             "the branch guard checked out main in the middle of a bisect"
         )
+
+
+# ============================================================================
+# Nothing is PUSHED that shrinks the corpus against origin (audit M4)
+# ============================================================================
+
+
+class TestPublishedShrinkGuard:
+    """abort_on_jsonl_shrink covers the two commits this script makes. The
+    ahead-of-origin push publishes whatever is on the branch, including a
+    commit made by commit-data.sh, monthly-archive.py, or by hand."""
+
+    def test_a_hand_committed_truncation_is_never_pushed(
+        self, world: SyncWorld
+    ) -> None:
+        """Kills DS-M4: removing `abort_on_published_shrink` from before
+        `push_with_retry "data submodule"`."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-one")
+        machine.append_memory("2026-09-08-two")
+        machine.commit_data("real captures", "memories/memories.jsonl")
+        git("push", "-q", "origin", "main", cwd=machine.data)
+        published_before = world.published_data_head()
+
+        # Something else truncates and commits -- no trailer, not this
+        # script, and the tree is left clean so the auto-sync block has
+        # nothing to do.
+        machine.memories.write_text('{"id": "all that is left"}\n', encoding="utf-8")
+        machine.commit_data("a botched rewrite", "memories/memories.jsonl")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 4, combined
+        assert world.published_data_head() == published_before, (
+            "a hand-committed truncation reached origin"
+        )
+        joined = "\n".join(gate_details(world))
+        assert "SHORTER than origin" in joined, joined
+        assert "Rewrite-Class: bulk" in joined, joined
+        # Nothing was undone: the commits are not this script's to reset.
+        assert git("log", "-1", "--format=%s", cwd=machine.data).stdout.strip() == (
+            "a botched rewrite"
+        )
+        assert list((machine.pa / "logs").glob("daily-sync-shrink-*.log"))
+
+    def test_a_bulk_trailer_in_the_range_still_publishes(
+        self, world: SyncWorld
+    ) -> None:
+        """A deliberate archive run must still reach origin, or the
+        monthly rewrite wedges the sync every time."""
+        machine = world.add_machine("a")
+        machine.append_memory("2026-09-08-one")
+        machine.append_memory("2026-09-08-two")
+        machine.commit_data("real captures", "memories/memories.jsonl")
+        git("push", "-q", "origin", "main", cwd=machine.data)
+
+        machine.memories.write_text('{"id": "kept"}\n', encoding="utf-8")
+        machine.commit_data("archive", "memories/memories.jsonl")
+        git("commit", "-q", "--amend", "-m",
+            "chore(memories): monthly archive\n\nRewrite-Class: bulk\n",
+            cwd=machine.data)
+
+        result = world.run_sync(machine)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert world.published_data_file("memories/memories.jsonl") == (
+            '{"id": "kept"}\n'
+        )

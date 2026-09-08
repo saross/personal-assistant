@@ -2008,6 +2008,62 @@ abort_on_jsonl_shrink() {
     fail "data submodule: unexpected shrink detected at the $context (see $shrink_report). Push aborted. If intentional, commit with 'Rewrite-Class: bulk' trailer and retry." 4
 }
 
+abort_on_published_shrink() {
+    # abort_on_published_shrink <context>
+    #
+    # The same invariant, one step further out: nothing this script PUSHES
+    # may shrink the corpus against what origin already holds, whoever
+    # made the commit.
+    #
+    # audit M4 (eleventh re-audit): abort_on_jsonl_shrink covers the two
+    # commits this script makes. It says nothing about a commit made by
+    # commit-data.sh, by monthly-archive.py, or by hand — and the
+    # ahead-of-origin push below publishes whatever is on the branch. A
+    # truncation committed by anything else therefore reached origin
+    # unexamined, which is the same data loss by another door.
+    #
+    # Trailer-aware over the WHOLE unpushed range: a deliberate bulk
+    # rewrite is one commit in it carrying `Rewrite-Class: bulk`. Nothing
+    # is reset here — these commits are not necessarily ours to undo — so
+    # the run stops with the branch intact and the gate says what to look
+    # at.
+    #
+    # Must be called from inside the data submodule, immediately before a
+    # push.
+    local context="$1" lines_before lines_after shrink_report
+    local target="memories/memories.jsonl"
+    [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
+    # No origin/main means the S1 guard has already withheld the bump and
+    # there is nothing to compare against.
+    git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || return 0
+    lines_before=$(git show "origin/main:$target" 2>/dev/null | wc -l) || lines_before=0
+    lines_after=$(git show "HEAD:$target" 2>/dev/null | wc -l) || lines_after=0
+    [[ "$lines_after" -lt "$lines_before" ]] || return 0
+    if git log --format=%B origin/main..HEAD 2>/dev/null \
+            | grep -q "^Rewrite-Class: bulk"; then
+        log "corpus shrank against origin/main but the range carries a Rewrite-Class: bulk trailer — allowed"
+        return 0
+    fi
+    shrink_report="$LOG_DIR/daily-sync-shrink-$(date +'%Y-%m-%d-%H%M%S').log"
+    {
+        echo "Refusing to publish: memories.jsonl is shorter than origin's copy."
+        echo "Push site:            $context"
+        echo "origin/main:          $lines_before lines"
+        echo "HEAD:                 $lines_after lines"
+        echo "Delta:                $((lines_after - lines_before))"
+        echo ""
+        echo "Unpushed commits (git log --oneline origin/main..HEAD):"
+        git log --oneline origin/main..HEAD
+        echo ""
+        echo "git diff --stat origin/main..HEAD -- $target:"
+        git diff --stat "origin/main..HEAD" -- "$target"
+    } > "$shrink_report" 2>&1
+    log "SHRINK DETECTED against origin ($context): $lines_before -> $lines_after lines. Report: $shrink_report"
+    add_sync_gate_detail \
+        "daily-sync STOPPED: the unpushed commits in $DATA_DIR would publish a memories.jsonl SHORTER than origin's ($lines_before -> $lines_after lines) and none of them carries a 'Rewrite-Class: bulk' trailer. Nothing has been pushed and nothing was undone — the commits are still on the branch. Read $shrink_report, then either fix the history or re-commit the rewrite with the trailer."
+    fail "data submodule: refusing to publish a corpus shorter than origin's (see $shrink_report)" 4
+}
+
 # Commit the append-only memory files BEFORE considering a stash. They are
 # dirty on nearly every run, so this usually empties the tree and no stash
 # is taken at all — which removes the failure mode rather than handling it.
@@ -2219,6 +2275,7 @@ if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git status --porcelain)" ]]; then
     git commit -m "chore(auto-sync): daily sync from $HOST $(date +'%Y-%m-%d')" \
         >>"$LOG_FILE" 2>&1 || fail "data commit failed"
     abort_on_jsonl_shrink "auto-sync commit"
+    abort_on_published_shrink "auto-sync commit"
     push_with_retry "data submodule"
 else
     log "data submodule: nothing to commit"
@@ -2242,6 +2299,9 @@ if [[ $DRY_RUN -eq 0 ]]; then
         unpushed="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
         if [[ "$unpushed" -gt 0 ]]; then
             log "data submodule: $unpushed commit(s) ahead of origin/main — pushing"
+            # audit M4: this push publishes commits nothing in this run
+            # made or inspected.
+            abort_on_published_shrink "ahead-of-origin push"
             push_with_retry "data submodule"
         fi
     else
