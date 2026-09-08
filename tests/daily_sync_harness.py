@@ -265,6 +265,37 @@ class Machine:
         where = self.data if repo == "data" else self.pa
         return git("rev-parse", "--abbrev-ref", "HEAD", cwd=where).stdout.strip()
 
+    def self_dropping_resolver(self) -> None:
+        """
+        Replace the resolver with one that drops the stash being resolved.
+
+        That leaves the run having APPLIED an entry it then cannot drop —
+        the state whose advice must be "delete the entry", never "pop it"
+        (audit M2), because the work is already in the tree.
+        """
+        target = self.pa / "scripts" / "resolve-merge-conflicts.py"
+        real = REAL_SCRIPTS / "resolve-merge-conflicts.py"
+        target.unlink()
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""Test stub: drops the entry the caller is about to drop."""\n'
+            "import runpy\n"
+            "import subprocess\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            'data = Path(__file__).resolve().parent.parent / "data"\n'
+            'if "--check" not in sys.argv:\n'
+            '    subprocess.run(["git", "-C", str(data), "stash", "drop", "-q"],\n'
+            "                   check=False)\n"
+            f'sys.argv[0] = "{real}"\n'
+            f'runpy.run_path("{real}", run_name="__main__")\n',
+            encoding="utf-8",
+        )
+        target.chmod(0o755)
+        git("add", "--", "scripts/resolve-merge-conflicts.py", cwd=self.pa)
+        git("commit", "-q", "-m", "self-dropping resolver", "--",
+            "scripts/resolve-merge-conflicts.py", cwd=self.pa)
+
     def racing_resolver(self, drop_selector: str = "stash@{0}") -> None:
         """
         Replace the resolver with one that drops a stash while it runs.

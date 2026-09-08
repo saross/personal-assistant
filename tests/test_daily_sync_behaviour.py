@@ -736,6 +736,40 @@ class TestDetachedHeadGuard:
         ), "the parent stash was stranded and settings.json left reverted"
         assert not git("stash", "list", cwd=machine.pa).stdout.strip()
 
+    def test_an_applied_stash_is_never_called_unrecovered(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit M2 (fifth re-audit): applied work is not lost work.
+
+        A drop that fails after a successful apply left an entry on the
+        stack, and the stranded-stash line called it "UNRECOVERED work in
+        no commit; recover with stash pop". Popping it would duplicate
+        every record in it — the contents are already in the tree and
+        published. The advice has to be "delete the entry".
+        """
+        machine = world.add_machine("a")
+        machine.self_dropping_resolver()
+        git("checkout", "-q", "--detach", "HEAD", cwd=machine.data)
+        machine.append_memory("2026-09-08-m2-ours")
+        world.publish_memory_append("2026-09-08-m2-theirs")
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, combined
+
+        published = world.published_data_file("memories/memories.jsonl")
+        assert "2026-09-08-m2-ours" in published
+        assert "2026-09-08-m2-theirs" in published
+
+        joined = "\n".join(gate_details(world))
+        assert "could not drop" in joined, joined
+        assert "ALREADY in the working tree" in joined, joined
+        assert "UNRECOVERED" not in joined, (
+            "applied work was reported as lost, and popping it would "
+            "duplicate every record: " + joined
+        )
+        assert "Do NOT pop" in joined, joined
+
     def test_a_concurrent_drop_mid_resolve_does_not_strand_our_stash(
         self, world: SyncWorld
     ) -> None:

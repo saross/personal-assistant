@@ -634,6 +634,67 @@ drop_stash_by_sha() {
     return 0
 }
 
+# audit M2 (fifth re-audit): every stash whose contents reached the working
+# tree, whether the apply was clean or conflicted-then-resolved. A drop that
+# fails afterwards leaves an entry on the stack whose work is NOT lost — and
+# telling the operator to pop it, as the stranded-stash line did, duplicates
+# every record in it.
+applied_stash_shas=()
+
+stash_was_applied() {
+    # stash_was_applied <sha>
+    local sha="$1" applied
+    for applied in ${applied_stash_shas[@]+"${applied_stash_shas[@]}"}; do
+        [[ "$applied" == "$sha" ]] && return 0
+    done
+    return 1
+}
+
+drop_applied_stash() {
+    # drop_applied_stash <repo> <sha> <label>
+    # The entry's contents are in the working tree; the entry itself has to
+    # go, or the next run applies it again and duplicates those records.
+    local repo="$1" sha="$2" label="$3"
+    applied_stash_shas+=("$sha")
+    if drop_stash_by_sha "$repo" "$sha"; then
+        return 0
+    fi
+    log "$label: applied ${sha:0:8} but could not drop it"
+    add_sync_gate_detail \
+        "daily-sync applied stash ${sha:0:8} in $repo and could not drop it. Its contents are ALREADY in the working tree — delete the entry (git -C $repo stash list, then stash drop <ref>). Do NOT pop it: that would duplicate every record in it."
+    return 1
+}
+
+apply_then_drop() {
+    # apply_then_drop <repo> <sha> <label>
+    # Returns non-zero only if the APPLY failed; the caller decides what a
+    # conflicted apply means. A failed drop is reported by the helper above.
+    local repo="$1" sha="$2" label="$3"
+    apply_stash_by_sha "$repo" "$sha" || return 1
+    drop_applied_stash "$repo" "$sha" "$label" || true
+    return 0
+}
+
+stranded_stashes() {
+    # stranded_stashes <repo> <sha>...
+    # Print "<state> <sha8> <stash@{n}> <message>" per recorded stash still
+    # on <repo>'s stack, where <state> is `applied` (its work is in the
+    # tree) or `unrecovered` (its work is in no commit and no tree).
+    local repo="$1"
+    shift
+    local sha ref subject state
+    for sha in "$@"; do
+        ref="$(stash_ref_for "$repo" "$sha")" || continue
+        subject="$(git -C "$repo" log -1 --format=%s "$sha" 2>/dev/null || true)"
+        if stash_was_applied "$sha"; then
+            state=applied
+        else
+            state=unrecovered
+        fi
+        printf '%s %s %s %s\n' "$state" "${sha:0:8}" "$ref" "$subject"
+    done
+}
+
 # Recorded stashes are never removed from these lists: a popped entry
 # disappears from the stack, so "still resolvable by SHA" is exactly "still
 # unrecovered". That is what the EXIT handler below checks.
@@ -709,16 +770,12 @@ reconcile_orphaned_stashes() {
         # single command wide and applying the wrong entry is no longer
         # possible.
         if apply_stash_by_sha "$DATA_DIR" "$sha"; then
-            if drop_stash_by_sha "$DATA_DIR" "$sha"; then
+            # audit (low, fourth re-audit): applied is not recovered. An
+            # entry still on the stack is applied again next run and
+            # duplicates every record in it, so drop_applied_stash reports
+            # a failed drop and only a clean one earns the word.
+            if drop_applied_stash "$DATA_DIR" "$sha" "orphan recovery"; then
                 log "  recovered ${sha:0:8}"
-            else
-                # audit (low, fourth re-audit): applied but still on the
-                # stack. Saying "recovered" would be a lie, and the next
-                # run would apply it again and duplicate every record.
-                log "  APPLIED ${sha:0:8} but could not drop it — it will be"
-                log "  applied again next run unless dropped by hand"
-                add_sync_gate_detail \
-                    "daily-sync applied orphaned stash ${sha:0:8} in $DATA_DIR but could not drop it; drop it by hand (git -C $DATA_DIR stash list) or the next run will apply it again and duplicate those records"
             fi
         else
             # A conflicted pop leaves the tree half-merged and preserves the
@@ -764,19 +821,6 @@ reconcile_orphaned_stashes
 # trip over "local changes would be overwritten".
 
 
-stranded_stashes() {
-    # stranded_stashes <repo> <sha>...
-    # Print one "<sha8> <stash@{n}> <message>" line per recorded stash that
-    # is STILL on <repo>'s stack, i.e. still holding unrecovered work.
-    local repo="$1"
-    shift
-    local sha ref subject
-    for sha in "$@"; do
-        ref="$(stash_ref_for "$repo" "$sha")" || continue
-        subject="$(git -C "$repo" log -1 --format=%s "$sha" 2>/dev/null || true)"
-        printf '%s %s %s\n' "${sha:0:8}" "$ref" "$subject"
-    done
-}
 
 # If any step between a `git stash push` and its explicit pop below aborts
 # (e.g. pull fails in any non-interactive env without an SSH agent),
@@ -791,7 +835,8 @@ stranded_stashes() {
 # pushed is still on the stack without saying so, by SHA and message, where
 # session start will show it.
 restore_stash_on_exit() {
-    local _i _ref _sha _repo _line _stranded=()
+    local _i _ref _sha _repo _line _entry _stranded=()
+    local -a _shas=()
     if [[ $stash_restore_allowed -eq 1 ]]; then
         for _repo in "$DATA_DIR" "$PA_DIR"; do
             local -a _shas=()
@@ -805,8 +850,8 @@ restore_stash_on_exit() {
                 _sha="${_shas[_i]}"
                 stash_ref_for "$_repo" "$_sha" >/dev/null || continue
                 log "WARNING: aborting before stash pop — restoring ${_sha:0:8} in $_repo"
-                if apply_stash_by_sha "$_repo" "$_sha"; then
-                    drop_stash_by_sha "$_repo" "$_sha" || true
+                if apply_then_drop "$_repo" "$_sha" "restore"; then
+                    :
                 else
                     log "ERROR: automatic stash restore raised conflicts; stash left in place (see 'git stash list')"
                 fi
@@ -814,18 +859,38 @@ restore_stash_on_exit() {
         done
     fi
 
-    # The invariant. Anything of ours still on a stack is unrecovered work.
-    while IFS= read -r _line; do
-        [[ -n "$_line" ]] && _stranded+=("data submodule: $_line")
-    done < <(stranded_stashes "$DATA_DIR" ${data_stash_shas[@]+"${data_stash_shas[@]}"})
-    while IFS= read -r _line; do
-        [[ -n "$_line" ]] && _stranded+=("parent repo: $_line")
-    done < <(stranded_stashes "$PA_DIR" ${parent_stash_shas[@]+"${parent_stash_shas[@]}"})
+    # The invariant. Anything of ours still on a stack needs saying — but
+    # the advice depends on whether its work reached the tree (audit M2).
+    local _applied=()
+    for _repo in "$DATA_DIR" "$PA_DIR"; do
+        if [[ "$_repo" == "$DATA_DIR" ]]; then
+            _shas=(${data_stash_shas[@]+"${data_stash_shas[@]}"})
+            _line="data submodule"
+        else
+            _shas=(${parent_stash_shas[@]+"${parent_stash_shas[@]}"})
+            _line="parent repo"
+        fi
+        [[ ${#_shas[@]} -gt 0 ]] || continue
+        while IFS= read -r _entry; do
+            [[ -n "$_entry" ]] || continue
+            if [[ "$_entry" == applied\ * ]]; then
+                _applied+=("$_line: ${_entry#applied }")
+            else
+                _stranded+=("$_line: ${_entry#unrecovered }")
+            fi
+        done < <(stranded_stashes "$_repo" "${_shas[@]}")
+    done
     if [[ ${#_stranded[@]} -gt 0 ]]; then
-        log "STRANDED STASH: ${#_stranded[@]} stash(es) this run pushed are still on a stack:"
+        log "STRANDED STASH: ${#_stranded[@]} stash(es) this run pushed hold unrecovered work:"
         for _i in "${_stranded[@]}"; do log "  $_i"; done
         add_sync_gate_detail \
             "daily-sync left ${#_stranded[@]} of its own stash(es) UNRECOVERED — they hold work that is in no commit: ${_stranded[*]}. Recover with: git -C <repo> stash pop <ref> (inspect first: git -C <repo> stash show -p <ref>)"
+    fi
+    if [[ ${#_applied[@]} -gt 0 ]]; then
+        log "APPLIED STASH: ${#_applied[@]} stash(es) were applied but not dropped:"
+        for _i in "${_applied[@]}"; do log "  $_i"; done
+        add_sync_gate_detail \
+            "daily-sync applied ${#_applied[@]} of its own stash(es) and could not drop them: ${_applied[*]}. Their contents are ALREADY in the working tree — delete the entries (git stash drop <ref>). Do NOT pop them: that would duplicate every record in them."
     fi
 
     # audit C1 (fifth re-audit): the gate is rendered here, once, after
@@ -1048,7 +1113,8 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
             # audit C1: drop the entry we actually applied, and audit C2:
             # resolve its selector NOW, not before the resolver ran. A
             # stale selector here destroyed a concurrent session's stash.
-            drop_stash_by_sha "$DATA_DIR" "$_sha" || true
+            # Its contents are in the tree either way (audit M2).
+            drop_applied_stash "$DATA_DIR" "$_sha" "data submodule" || true
             # audit M1 (third re-audit): the conflict is resolved, staged,
             # and its stash dropped, so the tree is no longer half-merged
             # and later stashes are safe to restore again. Without this
@@ -1060,7 +1126,7 @@ if [[ ${#data_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
         else
             # A clean apply. `git stash pop` used to drop the entry for us;
             # apply does not, so drop it explicitly — by SHA, resolved now.
-            drop_stash_by_sha "$DATA_DIR" "$_sha" || true
+            drop_applied_stash "$DATA_DIR" "$_sha" "data submodule" || true
         fi
     done
 fi
@@ -1241,7 +1307,7 @@ if [[ ${#parent_stash_shas[@]} -gt 0 ]] && [[ $DRY_RUN -eq 0 ]]; then
                 "daily-sync STOPPED: parent-repo stash pop conflicted in $PA_DIR; conflict markers and the stash are preserved, and every session start will fail here until it is resolved by hand (git -C $PA_DIR status)"
             fail "parent repo: stash pop raised conflicts — manual resolution required"
         else
-            drop_stash_by_sha "$PA_DIR" "$_sha" || true
+            drop_applied_stash "$PA_DIR" "$_sha" "parent repo" || true
         fi
     done
 fi
