@@ -42,6 +42,41 @@ DEFAULT_SCHEMA_VERSION = "3"
 
 _AND_OR = re.compile(r"\s+(AND|OR)\s+")
 
+#: The columns of the memories table / active_memories view that these
+#: queries may select. Declared rather than inferred from the seeded rows,
+#: so an unknown column is caught even when a test seeds nothing.
+_MEMORY_COLUMNS = frozenset({
+    "id", "category", "content", "summary", "confidence", "verified",
+    "research_tags", "source_context", "created_at", "project",
+    "embedding", "is_active",
+})
+
+#: SQL this fake does not implement. Meeting any of these means the test is
+#: asking a question the fake cannot answer, and answering it anyway would
+#: be worse than failing: a DELETE that "succeeds" is the dangerous case
+#: (audit L-7), since a mutation turning a read into a write would look
+#: like a pass.
+_UNSUPPORTED = (
+    "DELETE ", "INSERT ", "UPDATE ", "TRUNCATE ", "DROP ", "ALTER ",
+    "CREATE ", "COPY ", "GRANT ", "MERGE ",
+)
+
+#: Clauses a SELECT may not contain, because the evaluator ignores them and
+#: would therefore return the wrong rows rather than no rows.
+_UNSUPPORTED_CLAUSES = (
+    " GROUP BY ", " HAVING ", " UNION ", " INTERSECT ", " EXCEPT ",
+    " JOIN ", " OFFSET ", " WINDOW ", " DISTINCT ", " FETCH ",
+)
+
+
+class UnsupportedSQL(AssertionError):
+    """The fake was handed SQL it does not fully implement.
+
+    Deliberately an ``AssertionError``: this is a test-harness defect or a
+    genuine behaviour change in the code under test, and either way the
+    test must fail loudly rather than receive a plausible-looking answer.
+    """
+
 
 def _parse_dt(value: Any) -> datetime:
     """Parse a seeded ``created_at`` into an aware datetime."""
@@ -127,10 +162,37 @@ class FakeMemoryDB:
 
     # -- the cursor's entry point ----------------------------------------
 
+    def _reject_unsupported(self, flat: str) -> None:
+        """Raise unless this statement is one the evaluator fully implements.
+
+        Silence is the failure mode that matters here. Before audit L-7 a
+        ``DELETE FROM memories`` was parsed as though ``DELETE`` were the
+        select list and answered with ``[(None,)]`` — a write that looked
+        like a successful read — and an unrecognised column or an ignored
+        ``GROUP BY`` produced confidently wrong rows.
+        """
+        upper = flat.upper()
+        for statement in _UNSUPPORTED:
+            if upper.startswith(statement):
+                raise UnsupportedSQL(
+                    f"fake db: refusing to emulate {statement.strip()}; this "
+                    f"harness is read-only. SQL: {flat[:120]!r}"
+                )
+        if not upper.startswith("SELECT "):
+            raise UnsupportedSQL(f"fake db: not a SELECT: {flat[:120]!r}")
+        for clause in _UNSUPPORTED_CLAUSES:
+            if clause in f" {upper} ":
+                raise UnsupportedSQL(
+                    f"fake db: {clause.strip()} is not implemented, and "
+                    f"ignoring it would return the wrong rows. "
+                    f"SQL: {flat[:120]!r}"
+                )
+
     def run(self, sql: str, params: list[Any]):
         """Execute *sql* and return ``(rows, description)``."""
         self.calls.append((sql, list(params)))
         flat = " ".join(sql.split())
+        self._reject_unsupported(flat)
 
         if "FROM meta" in flat:
             return [(self.schema_version,)], [("value",)]
@@ -147,14 +209,20 @@ class FakeMemoryDB:
         head, _, rest = flat.partition(" FROM ")
         select_list = head[len("SELECT "):]
         table = rest.split()[0]
-        where = ""
+
+        # Peel the clauses off the FROM tail in SQL order. ORDER BY used to
+        # be looked for inside the WHERE text, so a statement with an
+        # ORDER BY and no WHERE was returned unsorted -- the same
+        # answer-anyway failure as the rest of audit L-7. Every production
+        # query happens to carry a WHERE, which is why it never bit.
+        tail = rest
         order = ""
-        if " WHERE " in rest:
-            where = rest.split(" WHERE ", 1)[1]
-        tail_order = ""
-        if " ORDER BY " in where:
-            where, tail_order = where.split(" ORDER BY ", 1)
-            order = tail_order
+        if " ORDER BY " in tail:
+            tail, order = tail.split(" ORDER BY ", 1)
+        where = tail.split(" WHERE ", 1)[1] if " WHERE " in tail else ""
+        if " LIMIT " in where:
+            # No ORDER BY, so the LIMIT is still attached to the WHERE.
+            where = where.split(" LIMIT ", 1)[0]
         limit = None
         cursor = iter(params)
         # Placeholders bind in textual order: select list, WHERE, ORDER BY,
@@ -212,6 +280,15 @@ class FakeMemoryDB:
             rows = rows[:limit]
 
         columns = [c.strip() for c in select_list.split(",")]
+        for col in columns:
+            # An unknown column used to come back as None for every row
+            # (audit L-7), so a typo or a genuinely new column read as "the
+            # value is null" rather than "this fake cannot answer that".
+            if not col.startswith("1 - (embedding") and col not in _MEMORY_COLUMNS:
+                raise UnsupportedSQL(
+                    f"fake db: unknown column {col!r} in the select list; "
+                    f"add it to _MEMORY_COLUMNS if it is real"
+                )
         out: list[tuple[Any, ...]] = []
         for row in rows:
             values: list[Any] = []

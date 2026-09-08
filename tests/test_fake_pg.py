@@ -2,13 +2,17 @@
 Self-tests for ``tests/_fake_pg.py`` — the harness the retrieval tests trust.
 
 A fake database is only worth having if a wrong answer from it fails a
-test, and the harness itself had no tests at all.
+test. Two audit findings came from it answering confidently instead:
 
-Audit L-1: the ``COUNT(*) FILTER`` branch hard-coded ``active_memories``,
-so ``fetch-memories``' coverage query could be mutated to count over the
-base table and the test whose docstring claimed to kill that still passed.
-Round 4b-2 fixed the derivation but nothing pinned it — reverting it left
-the whole suite green. It must now fail something.
+* **L-1** — the ``COUNT(*) FILTER`` branch hard-coded ``active_memories``,
+  so ``fetch-memories``' coverage query could be mutated to count over the
+  base table and the test whose docstring claimed to kill that still
+  passed. Reverting the derivation must now fail something.
+* **L-7** — the fake silently mis-answered three shapes. A ``DELETE`` was
+  parsed as though ``DELETE`` were the select list and answered
+  ``[(None,)]`` — a write that looked like a successful read. An unknown
+  column came back as ``None`` for every row. A ``GROUP BY`` tail was
+  ignored, so the fake returned ungrouped rows as though they were groups.
 
 These tests pin the harness's own contract, so a future simplification of
 it cannot quietly re-weaken every test that depends on it.
@@ -20,8 +24,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _fake_pg import CannedDB, FakeMemoryDB, connect_factory  # noqa: E402
+from _fake_pg import (  # noqa: E402
+    CannedDB, FakeMemoryDB, UnsupportedSQL, connect_factory,
+)
 
 _COLUMNS = "id, category, content, created_at"
 
@@ -65,6 +73,74 @@ class TestCountBranchDerivesItsTable:
         assert view_rows == [(1, 2)]
         assert base_rows == [(3, 4)]
         assert view_rows != base_rows, "the two tables must be distinguishable"
+
+
+class TestRefusesWhatItCannotEmulate:
+    """Audit L-7: silence is the failure mode that matters."""
+
+    @pytest.mark.parametrize("sql", [
+        "DELETE FROM memories",
+        "DELETE FROM memories WHERE id = %s",
+        "INSERT INTO memories (id) VALUES (%s)",
+        "UPDATE memories SET is_active = %s WHERE id = %s",
+        "TRUNCATE memories",
+        "DROP TABLE memories",
+    ])
+    def test_writes_are_refused_never_answered(self, sql: str) -> None:
+        """Kills: parsing a write as a read.
+
+        ``DELETE FROM memories`` used to partition on " FROM " and treat
+        ``DELETE`` as the select list, returning ``[(None,)]``. A mutation
+        that turned a read path into a destructive write would have looked
+        like a passing test.
+        """
+        db = FakeMemoryDB(_rows())
+        with pytest.raises(UnsupportedSQL, match="read-only|not a SELECT"):
+            db.run(sql, [])
+
+    def test_the_refusal_is_an_assertion_error(self) -> None:
+        """So an unexpected shape fails the test rather than being caught
+        by a production ``except Exception`` and degrading silently."""
+        assert issubclass(UnsupportedSQL, AssertionError)
+
+    @pytest.mark.parametrize("clause", [
+        "GROUP BY category", "HAVING COUNT(*) > 1", "OFFSET 10",
+    ])
+    def test_ignored_clauses_are_refused(self, clause: str) -> None:
+        """Kills: parsing on and ignoring the tail.
+
+        An ignored GROUP BY returns ungrouped rows as though they were
+        groups — wrong rows, confidently.
+        """
+        db = FakeMemoryDB(_rows())
+        with pytest.raises(UnsupportedSQL):
+            db.run(f"SELECT {_COLUMNS} FROM active_memories {clause}", [])
+
+    def test_unknown_select_column_is_refused(self) -> None:
+        """Kills: ``row.get(col)`` answering None for a column that is not
+        there — a typo, or a real new column, read as "the value is null"."""
+        db = FakeMemoryDB(_rows())
+        with pytest.raises(UnsupportedSQL, match="unknown column"):
+            db.run("SELECT id, nonexistent_column FROM active_memories", [])
+
+    def test_unknown_table_is_refused(self) -> None:
+        db = FakeMemoryDB(_rows())
+        with pytest.raises(AssertionError, match="unknown table"):
+            db.run(f"SELECT {_COLUMNS} FROM sessions", [])
+
+    def test_unknown_where_condition_is_refused(self) -> None:
+        """A new filter must be implemented, not silently dropped."""
+        db = FakeMemoryDB(_rows())
+        with pytest.raises(AssertionError, match="unhandled condition"):
+            db.run(
+                f"SELECT {_COLUMNS} FROM active_memories WHERE licence = %s",
+                ["CC-BY"],
+            )
+
+    def test_unknown_order_by_is_refused(self) -> None:
+        db = FakeMemoryDB(_rows())
+        with pytest.raises(AssertionError, match="unhandled ORDER BY"):
+            db.run(f"SELECT {_COLUMNS} FROM active_memories ORDER BY id DESC", [])
 
 
 class TestSupportedShapesStillWork:
@@ -125,3 +201,34 @@ class TestConnectRecorder:
         assert conn.closed is False
         conn.close()
         assert connect.connections[0].closed is True
+
+
+class TestOrderByWithoutWhere:
+    """Audit L-7: the clauses are peeled off the FROM tail, in SQL order.
+
+    ORDER BY used to be looked for inside the WHERE text, so a statement
+    with an ORDER BY and no WHERE came back unsorted — the harness
+    answering rather than refusing, again. No production query has that
+    shape today, which is exactly why it went unnoticed.
+    """
+
+    def test_order_by_applies_without_a_where_clause(self) -> None:
+        db = FakeMemoryDB(_rows())
+        rows, _ = db.run(
+            f"SELECT {_COLUMNS} FROM active_memories "
+            "ORDER BY created_at DESC", [],
+        )
+        assert [r[0] for r in rows] == ["live-b", "live-a"]
+
+    def test_order_by_and_limit_without_a_where_clause(self) -> None:
+        db = FakeMemoryDB(_rows())
+        rows, _ = db.run(
+            f"SELECT {_COLUMNS} FROM active_memories "
+            "ORDER BY created_at ASC LIMIT %s", [1],
+        )
+        assert [r[0] for r in rows] == ["live-a"]
+
+    def test_limit_without_where_or_order_by(self) -> None:
+        db = FakeMemoryDB(_rows())
+        rows, _ = db.run(f"SELECT {_COLUMNS} FROM memories LIMIT %s", [2])
+        assert len(rows) == 2
