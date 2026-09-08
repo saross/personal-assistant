@@ -377,30 +377,34 @@ is_memory_append_file() {
 }
 
 memory_files_with_markers() {
-    # Print each MEMORY_APPEND_FILES path whose CONTENT holds a git
-    # conflict-marker line. Must be called from inside the data submodule.
+    # Print one line per MEMORY_APPEND_FILES path that must not be staged:
     #
-    # Content, not index state (audit C2, second re-audit): the previous
-    # check read the porcelain code, so a marker-laden memories.jsonl that
-    # somebody had `git add`ed read as a plain modification and was
-    # committed and pushed — and the advice this script printed told them
-    # to run exactly that `git add`.
-    local f
+    #     <path><TAB>resolvable|manual<TAB><detail>
+    #
+    # Must be called from inside the data submodule.
+    #
+    # Content, not index state (audit C2, second re-audit): reading the
+    # porcelain code meant a marker-laden memories.jsonl that somebody had
+    # `git add`ed looked like a plain modification and was committed and
+    # pushed.
+    #
+    # audit C2 (fifth re-audit): the classification is the RESOLVER's, via
+    # `--check`, not a regex maintained separately here. The two used to
+    # disagree — the guard refused a lone `=======`, the resolver required
+    # an opener and declined to touch it — so the sync wedged permanently
+    # behind gate advice to run a resolver that printed "no conflict
+    # markers — skipping". One predicate, one source of truth, and the
+    # detail below carries the resolver's own line numbers.
+    local f detail rc
     for f in "${MEMORY_APPEND_FILES[@]}"; do
         [[ -f "$f" ]] || continue
-        # audit C1 (third re-audit): `||||||| <ref>` too — under
-        # merge.conflictStyle=diff3/zdiff3 git emits it and a whole
-        # merge-base section, and a corpus carrying `||||||| parent of
-        # <sha>` reached the bare remote with exit 0 and a clean gate.
-        #
-        # audit C1 (fourth re-audit): the LABELLED form only. git never
-        # emits a bare `|||||||` (measured across merge, both diff3
-        # styles, and stash pop), so matching one refused a file the
-        # resolver would then decline to touch — leaving the operator
-        # circling between a gate and a no-op.
-        if grep -qE '^(<<<<<<< |>>>>>>> |\|\|\|\|\|\|\| )|^=======$' -- "$f"; then
-            printf '%s\n' "$f"
-        fi
+        rc=0
+        detail="$("$PA_DIR/venv/bin/python3" "$RESOLVER" --check "$f" 2>&1)" || rc=$?
+        case "$rc" in
+            0) ;;
+            1) printf '%s\tresolvable\t%s\n' "$f" "$detail" ;;
+            *) printf '%s\tmanual\t%s\n' "$f" "$detail" ;;
+        esac
     done
 }
 
@@ -418,16 +422,35 @@ refuse_memory_markers() {
     # refusal that re-scanned after the abort found nothing, returned 0,
     # and let control fall through to `git add` and `git rebase
     # --continue` with no rebase in progress.
-    local context="$1" listing="$2" marked=() f
-    while IFS= read -r f; do
-        [[ -n "$f" ]] && marked+=("$f")
+    local context="$1" listing="$2" line path state detail
+    local -a resolvable=() manual=() details=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        path="${line%%$'\t'*}"
+        state="${line#*$'\t'}"; state="${state%%$'\t'*}"
+        detail="${line##*$'\t'}"
+        if [[ "$state" == "resolvable" ]]; then
+            resolvable+=("$path")
+        else
+            manual+=("$path")
+            details+=("$detail")
+        fi
     done <<<"$listing"
-    if [[ ${#marked[@]} -eq 0 ]]; then
+    if [[ ${#resolvable[@]} -eq 0 ]] && [[ ${#manual[@]} -eq 0 ]]; then
         return 0
     fi
-    add_sync_gate_detail \
-        "daily-sync STOPPED: ${marked[*]} contain git conflict markers and must not be committed. Resolve with: $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py ${marked[*]/#/$DATA_DIR/} — then just run the sync again. Do NOT 'git add' them by hand: staging markers is how they reach origin."
-    fail "$context: ${marked[*]} contain conflict markers; refusing to stage or commit them"
+    # audit C2 (fifth re-audit): the advice has to match what the resolver
+    # will actually do. Telling the operator to run it on a file it refuses
+    # is what wedged a sync permanently.
+    if [[ ${#manual[@]} -gt 0 ]]; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: ${manual[*]} hold marker-shaped lines the resolver will NOT touch — ${details[*]}. Edit those LINES by hand in $DATA_DIR, then run the sync again. Do NOT run resolve-merge-conflicts.py on them (it refuses, by design) and do NOT 'git add' them."
+    fi
+    if [[ ${#resolvable[@]} -gt 0 ]]; then
+        add_sync_gate_detail \
+            "daily-sync STOPPED: ${resolvable[*]} hold unresolved conflict blocks. Resolve with: $PA_DIR/venv/bin/python3 $SCRIPT_DIR/resolve-merge-conflicts.py ${resolvable[*]/#/$DATA_DIR/} — then run the sync again. Do NOT 'git add' them by hand: staging markers is how they reach origin."
+    fi
+    fail "$context: ${manual[*]-}${resolvable[*]-} hold conflict markers; refusing to stage or commit them"
 }
 
 refuse_if_memory_markers() {

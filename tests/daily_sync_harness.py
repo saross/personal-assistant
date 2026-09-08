@@ -286,8 +286,11 @@ class Machine:
             "import sys\n"
             "from pathlib import Path\n\n"
             f'data = Path(__file__).resolve().parent.parent / "data"\n'
-            f'subprocess.run(["git", "-C", str(data), "stash", "drop", "-q",\n'
-            f'                "{drop_selector}"], check=False)\n'
+            "# Only when actually resolving: --check is the guard's own\n"
+            "# predicate and runs several times a sync.\n"
+            'if "--check" not in sys.argv:\n'
+            f'    subprocess.run(["git", "-C", str(data), "stash", "drop", "-q",\n'
+            f'                    "{drop_selector}"], check=False)\n'
             f'sys.argv[0] = "{real}"\n'
             f'runpy.run_path("{real}", run_name="__main__")\n',
             encoding="utf-8",
@@ -308,10 +311,18 @@ class Machine:
         """
         target = self.pa / "scripts" / "resolve-merge-conflicts.py"
         target.unlink()
+        real = REAL_SCRIPTS / "resolve-merge-conflicts.py"
         target.write_text(
             "#!/usr/bin/env python3\n"
-            '"""Test stub: claims success without touching the files."""\n'
+            '"""Test stub: classifies correctly, cleans nothing."""\n'
+            "import runpy\n"
             "import sys\n\n"
+            "# --check is the guard's shared predicate: it must keep working,\n"
+            "# or this stops modelling a broken resolver and starts modelling\n"
+            "# a broken guard.\n"
+            'if "--check" in sys.argv:\n'
+            f'    sys.argv[0] = "{real}"\n'
+            f'    runpy.run_path("{real}", run_name="__main__")\n'
             "sys.exit(0)\n",
             encoding="utf-8",
         )

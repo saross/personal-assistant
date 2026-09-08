@@ -33,6 +33,9 @@ def _load_resolver():
     spec = importlib.util.spec_from_file_location("resolve_merge_conflicts", RESOLVER)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    # Register before executing: @dataclass resolves annotations through
+    # sys.modules[cls.__module__], which is None for an unregistered module.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -183,6 +186,52 @@ class TestDiff3ConflictStyle:
         assert "from-amd-tower" in text
         assert "from-zbook" in text
 
+    def test_a_base_holding_a_separator_line_is_dropped_whole(
+        self, tmp_path: Path
+    ) -> None:
+        """Audit M1 (fifth re-audit): where the base ENDS.
+
+        Stopping at the first `=======` inside the block ends the base
+        early when the base itself contains a line reading `=======`, and
+        unions the real base content after it back in — resurrecting
+        records both machines had deleted. Built by a real diff3 merge.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        _git("config", "merge.conflictStyle", "diff3", cwd=repo)
+        vocab = repo / "tag-vocabulary.txt"
+        # The base holds a line that is itself the separator shape, and a
+        # tag after it that both sides delete.
+        vocab.write_text(
+            "keep-me\n=======\ndeleted-on-both\n", encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+
+        _git("checkout", "--quiet", "-b", "other", cwd=repo)
+        vocab.write_text("keep-me\nfrom-zbook\n", encoding="utf-8")
+        _git("commit", "--quiet", "-am", "zbook", cwd=repo)
+
+        _git("checkout", "--quiet", "main", cwd=repo)
+        vocab.write_text("keep-me\nfrom-amd-tower\n", encoding="utf-8")
+        _git("commit", "--quiet", "-am", "amd-tower", cwd=repo)
+
+        assert _git("merge", "other", cwd=repo).returncode != 0
+        conflicted = vocab.read_text(encoding="utf-8")
+        assert "|||||||" in conflicted, conflicted
+
+        result = _run_resolver(str(vocab))
+        assert result.returncode == 0, result.stderr
+        text = vocab.read_text(encoding="utf-8")
+        assert "deleted-on-both" not in text, (
+            "the base was cut short at its own '=======' line and the rest "
+            "of it unioned back in:\n" + text
+        )
+        assert "from-zbook" in text
+        assert "from-amd-tower" in text
+        assert "|||||||" not in text
+
     def test_the_base_marker_is_always_labelled(self) -> None:
         """git never emits a bare `|||||||`.
 
@@ -222,12 +271,25 @@ class TestStrayMarkersOutsideBlocks:
     """
 
     @pytest.mark.parametrize("name", ["memories.jsonl", "tag-vocabulary.txt"])
-    @pytest.mark.parametrize("stray", ["|||||||", "||||||| looks like a base", "======="])
+    @pytest.mark.parametrize(
+        ("stray", "expected_rc"),
+        [
+            ("|||||||", 0),  # git never emits this: it is content
+            ("||||||| looks like a base", 3),
+            ("=======", 3),
+            (">>>>>>> a branch", 3),
+        ],
+    )
     def test_a_stray_marker_leaves_the_file_byte_identical(
-        self, tmp_path: Path, name: str, stray: str
+        self, tmp_path: Path, name: str, stray: str, expected_rc: int
     ) -> None:
         """Kept verbatim, with everything after it, and not even the
-        trailing newline changed — the file is written without one."""
+        trailing newline changed — the file is written without one.
+
+        A marker-shaped stray is refused (exit 3) so the sync's guard and
+        this script agree; one that only looks like a marker to a careless
+        eye is simply content.
+        """
         target = tmp_path / name
         original = (
             "first line\n"
@@ -238,7 +300,7 @@ class TestStrayMarkersOutsideBlocks:
         target.write_bytes(original.encode("utf-8"))
 
         result = _run_resolver(str(target))
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == expected_rc, result.stderr
         assert target.read_bytes() == original.encode("utf-8"), (
             "the resolver rewrote a file that holds no conflict block"
         )
@@ -246,13 +308,15 @@ class TestStrayMarkersOutsideBlocks:
     def test_a_stray_marker_is_reported_to_the_operator(
         self, tmp_path: Path
     ) -> None:
-        """Silence would leave them circling: the sync's gate points here."""
+        """By LINE NUMBER: the operator has to edit those lines by hand,
+        and the sync's gate quotes this at them."""
         target = tmp_path / "memories.jsonl"
         target.write_text(
             '{"id": "a"}\n||||||| looks like a base\n{"id": "b"}\n', encoding="utf-8"
         )
         result = _run_resolver("--quiet-if-clean", str(target))
-        assert result.returncode == 0
+        assert result.returncode == 3
+        assert "line 2" in result.stderr
         assert "outside any conflict block" in result.stderr
         assert "needs a human" in result.stderr
 
@@ -277,6 +341,123 @@ class TestStrayMarkersOutsideBlocks:
         assert any('"after"' in ln for ln in lines), "the file's tail was swallowed"
         assert any('"ours"' in ln for ln in lines)
         assert any('"theirs"' in ln for ln in lines)
+
+
+# ============================================================================
+# Unbalanced structure, and the shared predicate (audit C3 / C2)
+# ============================================================================
+
+
+class TestUnbalancedStructure:
+    """When the block structure does not balance there is no way to know
+    which side a line belongs to. Nothing is written and the exit code
+    says so, rather than a rewrite that leaves live markers behind."""
+
+    @pytest.mark.parametrize(
+        ("body", "expected_in_stderr"),
+        [
+            (
+                # Two openers before a closer: rewritten into a file that
+                # still held a live `=======` and `>>>>>>> `, and reported
+                # as "resolved 2 blocks", exit 0 (audit C3).
+                "<<<<<<< HEAD\na\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> x\n",
+                "opener inside the block opened at line 1",
+            ),
+            ("<<<<<<< HEAD\na\n=======\nb\n", "never closed"),
+            ("a\n>>>>>>> x\n", "closer with no opener"),
+            ("a\n=======\nb\n", "outside any conflict block"),
+            ("<<<<<<< HEAD\na\n>>>>>>> x\n", "no '=======' separator"),
+        ],
+    )
+    def test_nothing_is_written_and_the_exit_code_says_so(
+        self, tmp_path: Path, body: str, expected_in_stderr: str
+    ) -> None:
+        """Exit 3, file untouched, and the reason names a line."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(body, encoding="utf-8")
+        result = _run_resolver(str(target))
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert expected_in_stderr in result.stderr, result.stderr
+        assert target.read_text(encoding="utf-8") == body, "the file was rewritten"
+
+    def test_a_resolvable_file_is_still_resolved(self, tmp_path: Path) -> None:
+        """The refusal must not swallow the ordinary case."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(
+            "<<<<<<< HEAD\n" + _record("a") + "\n=======\n"
+            + _record("b") + "\n>>>>>>> x\n",
+            encoding="utf-8",
+        )
+        assert _run_resolver(str(target)).returncode == 0
+        text = target.read_text(encoding="utf-8")
+        assert '"a"' in text and '"b"' in text
+        assert "<<<<<<<" not in text and "=======" not in text
+
+
+class TestCheckMode:
+    """`--check` is the predicate daily-sync.sh's guard calls, so the two
+    cannot disagree about what a conflict is (audit C2)."""
+
+    def test_clean_file_is_zero_and_silent(self, tmp_path: Path) -> None:
+        """Nothing marker-shaped anywhere."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(_record("a") + "\n", encoding="utf-8")
+        result = _run_resolver("--check", str(target))
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_resolvable_conflict_is_one(self, tmp_path: Path) -> None:
+        """A well-formed block: the sync may run the resolver on it."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(
+            "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> x\n", encoding="utf-8"
+        )
+        result = _run_resolver("--check", str(target))
+        assert result.returncode == 1
+        assert "1 conflict block" in result.stdout
+        assert target.read_text(encoding="utf-8").startswith("<<<<<<<"), "check wrote"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "a\n=======\nb\n",
+            "a\n||||||| base\nb\n",
+            "a\n>>>>>>> x\n",
+            "<<<<<<< HEAD\na\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> x\n",
+        ],
+    )
+    def test_needs_a_human_is_three(self, tmp_path: Path, body: str) -> None:
+        """Every shape the resolver refuses is reported as manual."""
+        target = tmp_path / "memories.jsonl"
+        target.write_text(body, encoding="utf-8")
+        result = _run_resolver("--check", str(target))
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "line " in result.stdout
+
+    def test_check_and_resolve_agree_on_every_shape(self, tmp_path: Path) -> None:
+        """The invariant: one predicate. What --check calls resolvable,
+        resolve resolves; what it calls manual, resolve refuses; what it
+        calls clean, resolve leaves alone."""
+        shapes = {
+            "clean": "a\nb\n",
+            "resolvable": "<<<<<<< H\na\n=======\nb\n>>>>>>> x\n",
+            "stray-separator": "a\n=======\nb\n",
+            "stray-closer": "a\n>>>>>>> x\n",
+            "stray-base": "a\n||||||| b\nc\n",
+            "nested": "<<<<<<< H\na\n<<<<<<< H\nb\n=======\nc\n>>>>>>> x\n",
+            "unclosed": "<<<<<<< H\na\n=======\nb\n",
+            "no-separator": "<<<<<<< H\na\n>>>>>>> x\n",
+            "pipe-content": "a\n|||||||\nb\n",
+        }
+        for name, body in shapes.items():
+            target = tmp_path / f"{name}-memories.jsonl"
+            target.write_text(body, encoding="utf-8")
+            checked = _run_resolver("--check", str(target)).returncode
+            resolved = _run_resolver("--quiet-if-clean", str(target)).returncode
+            expected = {0: 0, 1: 0, 3: 3}[checked]
+            assert resolved == expected, (
+                f"{name}: --check said {checked} but resolve exited {resolved}"
+            )
 
 
 # ============================================================================

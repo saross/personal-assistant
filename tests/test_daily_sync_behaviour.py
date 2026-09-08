@@ -977,6 +977,47 @@ class TestStashPopConflictPartitioning:
         assert "|||||||" in published
         assert "another-tag" in published, "the file's tail was swallowed"
 
+    def test_a_lone_separator_is_refused_with_hand_edit_advice(
+        self, world: SyncWorld
+    ) -> None:
+        """Audit C2 (fifth re-audit): guard and resolver, one predicate.
+
+        The guard refused a lone `=======` while the resolver required an
+        opener and declined to touch it, so the sync wedged permanently
+        behind gate advice to run a resolver that printed "no conflict
+        markers — skipping". The refusal must now name the LINES and must
+        not send the operator to the resolver.
+        """
+        machine = world.add_machine("a")
+        machine.memories.write_text(
+            '{"id": "a"}\n=======\n{"id": "b"}\n', encoding="utf-8"
+        )
+        published_before = world.published_data_head()
+
+        result = world.run_sync(machine)
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined
+        assert world.published_data_head() == published_before
+
+        joined = "\n".join(gate_details(world))
+        assert "line 2" in joined, joined
+        assert "Edit those LINES by hand" in joined, joined
+        assert "Do NOT run resolve-merge-conflicts.py" in joined, joined
+
+    def test_a_resolvable_conflict_is_sent_to_the_resolver(
+        self, world: SyncWorld
+    ) -> None:
+        """And a well-formed block still gets the advice that works."""
+        machine = world.add_machine("a")
+        machine.memories.write_text(
+            '<<<<<<< HEAD\n{"id": "a"}\n=======\n{"id": "b"}\n>>>>>>> x\n',
+            encoding="utf-8",
+        )
+        assert world.run_sync(machine).returncode == 2
+        joined = "\n".join(gate_details(world))
+        assert "resolve-merge-conflicts.py" in joined, joined
+        assert "Edit those LINES by hand" not in joined, joined
+
     def test_markers_in_the_tag_vocabulary_are_refused(
         self, world: SyncWorld
     ) -> None:
