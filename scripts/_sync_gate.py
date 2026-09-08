@@ -88,10 +88,15 @@ The same shape as every other gate in ``~/.cache`` (``cc-archives-gate``,
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 # ============================================================================
 # Cycle outcomes
@@ -175,6 +180,14 @@ class GateState:
 
     problems: dict[str, Problem] = field(default_factory=dict)
     outage_streak: int = 0
+    #: ``{"acked_at": ISO, "acked_count": N}`` from the last
+    #: ``--ack-quarantine``, so the record of who dismissed what survives
+    #: the problem itself.
+    acked: dict[str, object] = field(default_factory=dict)
+    #: The archive root the indexer's refusal memory was built against.
+    #: Pruning against a *different* root would forget every entry
+    #: because none of its directories exist there (sixth re-audit).
+    archive_root: str | None = None
 
 
 @dataclass(frozen=True)
@@ -203,9 +216,9 @@ class GateEvent:
     ack_quarantine: bool = False
     #: Indexer only: outstanding refusals across the whole memory.
     refusals: int | None = None
-    #: Indexer only: whether this run scanned the whole archive root, and
-    #: so may lower the refusals problem rather than only raise it.
-    refusals_authoritative: bool = True
+    #: Indexer only: the archive root this run scanned, recorded so the
+    #: refusal memory is never pruned against a different one.
+    archive_root: str | None = None
     #: The script's name, for the problem text.
     script: str = ""
 
@@ -241,6 +254,16 @@ def refusals_detail(script: str, count: int) -> str:
     )
 
 
+def _has_text(detail: str | None) -> bool:
+    """Is this a problem someone could actually read?
+
+    A blank or whitespace-only detail would raise a problem whose line
+    says nothing: the count reports something wrong and the text reports
+    nothing at all, which is worse than silence (sixth re-audit, low).
+    """
+    return bool(detail and detail.strip())
+
+
 def next_state(state: GateState, event: GateEvent) -> GateState:
     """
     Apply one run's observations to the gate state. Pure, and total.
@@ -255,8 +278,11 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
     problems = dict(state.problems)
     streak = state.outage_streak
 
-    if event.outcome == CYCLE_CONTENDED and not event.fault_detail:
-        return GateState(problems, streak)
+    # A contended run did nothing whatsoever, so it changes nothing —
+    # not even the streak. Callers skip apply_gate entirely for this case;
+    # the guard is here so the rule holds wherever it is called from.
+    if event.outcome == CYCLE_CONTENDED:
+        return GateState(problems, streak, state.acked, state.archive_root)
 
     # -- outage: connectivity is its own evidence, and touches nothing else
     if event.connected is True:
@@ -271,8 +297,10 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
 
     # -- quarantine: acknowledged first, so this run's own refusals are
     #    not silently acked along with the ones a human actually read.
+    acked_count = 0
     if event.ack_quarantine:
-        problems.pop(PROBLEM_QUARANTINE, None)
+        standing = problems.pop(PROBLEM_QUARANTINE, None)
+        acked_count = standing.count if standing else 0
     if event.quarantined:
         standing = problems.get(PROBLEM_QUARANTINE)
         running = (standing.count if standing else 0) + event.quarantined
@@ -282,40 +310,56 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
         )
 
     # -- degraded: raised by a reason, lowered by finding the inputs again
-    if event.degraded_detail:
+    if _has_text(event.degraded_detail):
         problems[PROBLEM_DEGRADED] = Problem(event.degraded_detail)
     elif event.outcome in (CYCLE_COMPLETED, CYCLE_IDLE):
         problems.pop(PROBLEM_DEGRADED, None)
 
     # -- fault and correlated: raised by a stop, lowered by real work
-    if event.fault_detail:
+    if _has_text(event.fault_detail):
         problems[PROBLEM_FAULT] = Problem(event.fault_detail)
-    if event.correlated_detail:
+    if _has_text(event.correlated_detail):
         problems[PROBLEM_CORRELATED] = Problem(event.correlated_detail)
 
+    # A completed run lowers fault and correlated whatever else it did.
+    # Requiring zero quarantines meant a run that processed fifty rows
+    # and refused one left a standing fault untouched — the quarantine
+    # raises its own problem, and conflating the two hid the first
+    # (sixth re-audit, finding M1).
     completed_cleanly = (
         event.outcome == CYCLE_COMPLETED
         and event.connected is True
         and event.processed >= 1
-        and not event.quarantined
-        and not event.fault_detail
-        and not event.correlated_detail
+        and not _has_text(event.fault_detail)
+        and not _has_text(event.correlated_detail)
     )
     if completed_cleanly:
         problems.pop(PROBLEM_FAULT, None)
         problems.pop(PROBLEM_CORRELATED, None)
 
     # -- refusals: about the whole memory, not this run's slice
+    # ``refusals`` is already a count of the WHOLE memory, not this run's
+    # slice, so an empty memory is an empty index-refusal problem whoever
+    # observed it. The scope flag that used to guard this inverted the
+    # rule: a scoped run that cleared the last refusal could not lower it
+    # (sixth re-audit, finding M7).
     if event.refusals is not None:
         if event.refusals > 0:
             problems[PROBLEM_REFUSALS] = Problem(
                 refusals_detail(event.script, event.refusals),
                 event.refusals,
             )
-        elif event.refusals_authoritative:
+        else:
             problems.pop(PROBLEM_REFUSALS, None)
 
-    return GateState(problems, streak)
+    acked = state.acked
+    if event.ack_quarantine:
+        acked = {
+            "acked_at": datetime.now(timezone.utc).isoformat(),
+            "acked_count": acked_count,
+        }
+    root = event.archive_root or state.archive_root
+    return GateState(problems, streak, acked, root)
 
 
 # ============================================================================
@@ -326,6 +370,66 @@ def next_state(state: GateState, event: GateEvent) -> GateState:
 def state_path_for(gate_path: Path) -> Path:
     """Return the sidecar state path beside a gate file."""
     return gate_path.with_name(gate_path.name + ".state.json")
+
+
+def lock_path_for(gate_path: Path) -> Path:
+    """Return the lock file guarding one gate and its sidecar."""
+    return gate_path.with_name(gate_path.name + ".lock")
+
+
+@contextmanager
+def gate_lock(gate_path: Path) -> Iterator[None]:
+    """
+    Hold an exclusive lock over one gate's read-modify-write cycle.
+
+    Without it, a cron tick and an ``--ack-quarantine`` can interleave:
+    the ack reads a state containing the quarantine, the tick reads the
+    same state, the ack writes it out without the problem, and the tick
+    writes it back WITH the problem — resurrecting something a human had
+    just dismissed (sixth re-audit, finding C2).
+
+    A sidecar lock file, never renamed, because the state and the gate are
+    both replaced by rename and a lock on either inode would be stale the
+    moment it mattered.
+    """
+    lock_file = lock_path_for(gate_path)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_file, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:  # pragma: no cover — the fd is still open
+                pass
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """
+    Replace ``path`` with ``text`` atomically: temp, fsync, rename, fsync.
+
+    A reader — the trigger, or the next run — sees either the whole
+    previous file or the whole new one. A kill part-way through leaves
+    the previous one, rather than a truncated gate that reads as "no
+    problems" (sixth re-audit, finding C2).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def read_state(
@@ -377,9 +481,13 @@ def read_state(
                 count if isinstance(count, int) and count > 0 else 1,
             )
     streak = raw.get("outage_streak", 0)
+    acked = raw.get("acked")
+    root = raw.get("archive_root")
     return GateState(
         problems=problems,
         outage_streak=streak if isinstance(streak, int) and streak >= 0 else 0,
+        acked=acked if isinstance(acked, dict) else {},
+        archive_root=root if isinstance(root, str) else None,
     )
 
 
@@ -397,17 +505,15 @@ def write_state(
     """
     path = state_path_for(gate_path)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({
-                "problems": {
-                    key: {"detail": problem.detail, "count": problem.count}
-                    for key, problem in state.problems.items()
-                },
-                "outage_streak": state.outage_streak,
-            }, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        _atomic_write(path, json.dumps({
+            "problems": {
+                key: {"detail": problem.detail, "count": problem.count}
+                for key, problem in state.problems.items()
+            },
+            "outage_streak": state.outage_streak,
+            "acked": state.acked,
+            "archive_root": state.archive_root,
+        }, indent=2) + "\n")
     except OSError as exc:
         if logger is not None:
             logger.error(
@@ -441,10 +547,8 @@ def render_gate(
     )
     body = "\n".join(" ".join(problem.detail.split()) for problem in standing)
     try:
-        gate_path.parent.mkdir(parents=True, exist_ok=True)
-        gate_path.write_text(
-            f"{len(standing)}\n" + (body + "\n" if body else ""),
-            encoding="utf-8",
+        _atomic_write(
+            gate_path, f"{len(standing)}\n" + (body + "\n" if body else ""),
         )
     except OSError as exc:
         if logger is not None:
@@ -466,10 +570,15 @@ def apply_gate(
     Read, transition, persist, render. The one entry point for a script.
 
     Returns the new state so a caller can log or assert on it.
+
+    The whole read-modify-write happens under :func:`gate_lock`, so a
+    cron tick cannot interleave with an acknowledgement and resurrect a
+    problem a human has just dismissed (finding C2).
     """
-    state = next_state(read_state(gate_path, logger), event)
-    write_state(gate_path, state, logger)
-    render_gate(gate_path, state, logger)
+    with gate_lock(gate_path):
+        state = next_state(read_state(gate_path, logger), event)
+        write_state(gate_path, state, logger)
+        render_gate(gate_path, state, logger)
     if state.problems:
         logger.info(
             "Gate: %d standing problem(s) — %s",

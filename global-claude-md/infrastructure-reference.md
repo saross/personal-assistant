@@ -280,16 +280,18 @@ list, and read the gate line, which names the remedy.
 
 - **0** — ran to completion.
 - **2** — psycopg2 missing, a schema-version mismatch, **or an archive
-  root that exists but contains no `session.meta.json` at all**. The
-  last is a missing mount or the wrong path, and the indexer refuses to
-  run on it rather than concluding that every archive was deleted.
-  A schema mismatch raises no problem (it stops before learning anything
-  about the index); an empty root raises `degraded`, because a missing
-  mount is exactly what someone needs to be told about.
+  root that is absent, or exists but contains no `session.meta.json`**.
+  The last two are a missing mount or the wrong path, and the indexer
+  refuses to run on them rather than concluding that every archive was
+  deleted. Every variant raises a problem: a missing psycopg2 or a schema
+  mismatch raises `fault`, an absent or empty root raises `degraded`.
 - **3** — PostgreSQL unreachable, at connect time or mid-run. Not
   critical: the archive tree is canonical and the index is rebuildable.
-  Raises the gate.
-- **4** — environment fault, as above. Raises the gate.
+  Feeds the `outage` streak, so three in a row raise a problem that the
+  next connected run lowers — a `fault` here could never be lowered,
+  because the run after an outage usually finds everything already
+  indexed and processes nothing.
+- **4** — environment fault, as above. Raises `fault`.
 - **5** — one or more transcripts were refused **this run**. A transcript
   refused on an earlier run does not fail later runs; it is reported once
   at WARNING and through the gate.
@@ -324,16 +326,24 @@ The problems, and what lowers each — the rules live in
 |---|---|---|
 | `fault` | any non-zero exit (1, 2, 4, 6, 7, 8) | a later run of the same script that completed: connected, lock taken, ≥1 row processed, none refused |
 | `correlated` | a wholly-refused batch held rather than quarantined | the same as `fault` |
-| `quarantine` | any run that quarantined ≥1 row (running total) | **only** `--ack-quarantine` on that script — later rows are not evidence about the rows that were dropped |
+| `quarantine` | any run that quarantined ≥1 row (running total of rows actually written to the quarantine file) | **only** `--ack-quarantine` on that script — later rows are not evidence about the rows that were dropped |
 | `degraded` | a missing canonical, an absent or unpopulated archive root, ids dropped with the cursor held | a later run that completes, or that is idle without being degraded again |
 | `outage` | three consecutive runs that could not reach PostgreSQL | any run that connected — and lowering it touches nothing else |
-| `refusals` | transcripts the indexer could not index (whole memory, not this run's scope) | a full-root run whose refusal memory ends empty; `--project X` may raise it but never lower it |
+| `refusals` | transcripts the indexer could not index (whole memory, not this run's scope) | any run after which the memory is empty — the count is already whole-memory, so the run's scope is irrelevant |
 
 **A PostgreSQL outage is not an exit code.** Both syncs exit 0 when the
 database is unreachable: the JSONL and the archive tree are canonical, so
 an outage is not a failure of the sync, and failing loudly every five
 minutes would train everyone to ignore it. The `outage` problem is what
 surfaces it, after about fifteen minutes.
+
+`--ack-quarantine` is a **state-only** operation: it runs no sync, takes
+no advisory lock, and opens no database connection, so a busy cron tick
+can never stop you dismissing something you have read. It records
+`{acked_at, acked_count}` in the sidecar and exits non-zero if it could
+not write. Every read-modify-write of a gate — including that one — is
+serialised by `<gate>.lock` and written atomically, so a tick and an
+acknowledgement cannot interleave to resurrect a dismissed problem.
 
 To clear a quarantine problem once the rows have been dealt with:
 

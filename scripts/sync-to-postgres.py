@@ -24,6 +24,8 @@ from typing import Any, Iterator, NamedTuple
 # Shared quarantine helper (audit IC2 — quarantine-on-skip).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sync_cursor import (  # noqa: E402
+    QUARANTINE_FAILED,
+    QUARANTINE_WRITTEN,
     CursorKeyVanished,
     quarantine_record,
     read_cursor_file,
@@ -40,6 +42,7 @@ from _sync_gate import (  # noqa: E402
     CYCLE_DEGRADED,
     CYCLE_IDLE,
     CYCLE_OUTAGE,
+    PROBLEM_QUARANTINE,
     MEMORIES_GATE as _DEFAULT_GATE_FILE,
     GateEvent,
     apply_gate,
@@ -486,9 +489,17 @@ class InsertResult(NamedTuple):
 
 
 @contextmanager
-def _sync_advisory_lock(logger: logging.Logger) -> Iterator[bool]:
+def _sync_advisory_lock(
+    logger: logging.Logger,
+) -> Iterator[tuple[bool, bool | None]]:
     """
     Acquire a PostgreSQL session-scoped advisory lock for the sync cycle.
+
+    Yields ``(proceed, connected)``. ``connected`` is None when psycopg2
+    is missing, False when the connection failed, and True when the lock
+    was taken over a live connection — which is the only honest way for
+    an idle cycle to know whether the database was reachable (sixth
+    re-audit, finding M3).
 
     Yields True when the sync should proceed, False when another sync
     already holds the lock and this run should defer to the next cron
@@ -505,13 +516,16 @@ def _sync_advisory_lock(logger: logging.Logger) -> Iterator[bool]:
     try:
         import psycopg2
     except ImportError:
-        yield True
+        yield True, None
         return
 
     try:
         conn = psycopg2.connect(dbname=DB_NAME)
     except psycopg2.OperationalError:
-        yield True
+        # Could not connect; the insert path reports the outage. The
+        # second element says so, because an idle cycle otherwise has no
+        # way to know whether the database was reachable (finding M3).
+        yield True, False
         return
 
     # Schema-version guard (audit IC5). On mismatch we exit non-zero
@@ -536,9 +550,9 @@ def _sync_advisory_lock(logger: logging.Logger) -> Iterator[bool]:
                 "this cycle. Will retry on next tick.",
                 ADVISORY_LOCK_KEY,
             )
-            yield False
+            yield False, True
             return
-        yield True
+        yield True, True
     finally:
         conn.close()  # releases the lock if we hold it
 
@@ -658,7 +672,7 @@ def _quarantine_refused_records(
     quarantined: list[str] = []
     for memory_id, message in poison:
         record = records_by_id.get(memory_id)
-        written = quarantine_record(
+        status = quarantine_record(
             QUARANTINE_FILE,
             {
                 "id": memory_id,
@@ -670,7 +684,7 @@ def _quarantine_refused_records(
             "postgres_refused_row",
             logger=logger,
         )
-        if written:
+        if status != QUARANTINE_FAILED:
             quarantined.append(memory_id)
         else:
             logger.error(
@@ -1165,16 +1179,19 @@ def sync(
 
     check_canonical_for_duplicates(logger)
 
-    with _sync_advisory_lock(logger) as acquired:
+    with _sync_advisory_lock(logger) as (acquired, connected):
         if not acquired:
-            return CycleResult(CYCLE_CONTENDED, connected=True)
-        return _sync_locked(logger, quarantine_cap, quarantine_anyway)
+            return CycleResult(CYCLE_CONTENDED, connected=connected)
+        return _sync_locked(
+            logger, quarantine_cap, quarantine_anyway, connected,
+        )
 
 
 def _sync_locked(
     logger: logging.Logger,
     quarantine_cap: int | None = None,
     quarantine_anyway: bool = False,
+    lock_connected: bool | None = None,
 ) -> CycleResult:
     """Core sync cycle, executed under the advisory lock.
 
@@ -1234,7 +1251,7 @@ def _sync_locked(
         # Nothing to do. NOT "completed": this run has learnt nothing
         # about any standing gate, and calling it complete cleared a
         # quarantine warning on the next five-minute tick (finding C1).
-        return CycleResult(CYCLE_IDLE)
+        return CycleResult(CYCLE_IDLE, connected=lock_connected)
 
     new_lines = lines[cursor_line:]
     logger.info(
@@ -1250,6 +1267,7 @@ def _sync_locked(
     records: list[tuple] = []
     parsed_by_id: dict[str, dict[str, Any]] = {}
     poison_count = 0
+    poison_written = 0
     for offset, line in enumerate(new_lines):
         line_number = cursor_line + offset + 1  # 1-based for logging
         parsed, failure_reason = classify_jsonl_line(line, line_number, logger)
@@ -1259,7 +1277,7 @@ def _sync_locked(
         elif failure_reason is not None:
             # Poison record: quarantine the raw line + line number so an
             # operator can repair the canonical and replay if needed.
-            quarantine_record(
+            status = quarantine_record(
                 QUARANTINE_FILE,
                 {
                     "line_number": line_number,
@@ -1269,6 +1287,13 @@ def _sync_locked(
                 logger=logger,
             )
             poison_count += 1
+            if status == QUARANTINE_WRITTEN:
+                # Count what actually reached the file, so the gate's
+                # number matches it (sixth re-audit, finding M4). A
+                # halted cursor re-reads the same poison line every tick
+                # and quarantine_record dedups it; tallying attempts
+                # inflated the count once per tick for ever.
+                poison_written += 1
         # else: blank line — legitimate skip, no quarantine.
 
     if not records:
@@ -1288,7 +1313,10 @@ def _sync_locked(
         # Poison lines were quarantined at the parse layer, before any
         # database contact — nothing was processed and nothing is known
         # about connectivity.
-        return CycleResult(CYCLE_IDLE, quarantined=poison_count)
+        return CycleResult(
+            CYCLE_IDLE, quarantined=poison_written,
+            connected=lock_connected,
+        )
 
     # Insert into PostgreSQL (returns InsertResult with full accounting).
     result = insert_memories(
@@ -1363,6 +1391,45 @@ def _sync_locked(
     )
 
 
+def _acknowledge_quarantine(logger: logging.Logger) -> int:
+    """
+    Lower the quarantine problem, and do nothing else. Returns an exit code.
+
+    A STATE-ONLY operation (sixth re-audit, finding C1). It runs no sync,
+    takes no advisory lock, and touches no database — so a contended cron
+    tick cannot stop a human dismissing something they have read, which is
+    exactly what used to happen: the ack ran a full cycle, returned at the
+    contended branch before the acknowledgement was applied, and main
+    logged "cleared by hand" over a problem that still stood.
+
+    Reports failure plainly instead of claiming success.
+    """
+    state = apply_gate(
+        GateEvent(
+            outcome=CYCLE_IDLE,
+            ack_quarantine=True,
+            script=SCRIPT_NAME,
+        ),
+        gate_path=GATE_FILE,
+        logger=logger,
+    )
+    if PROBLEM_QUARANTINE in state.problems:
+        logger.error(
+            "--ack-quarantine did NOT clear the quarantine problem — the "
+            "gate state could not be written. Nothing has changed; see the "
+            "errors above."
+        )
+        return 9
+    acked = state.acked.get("acked_count", 0)
+    logger.warning(
+        "--ack-quarantine: cleared a quarantine problem covering %s row(s). "
+        "The rows themselves are still in %s and still absent from "
+        "PostgreSQL; this only dismisses the session-start warning.",
+        acked, QUARANTINE_FILE,
+    )
+    return 0
+
+
 def _gate_fault(
     args: argparse.Namespace,
     logger: logging.Logger,
@@ -1380,7 +1447,6 @@ def _gate_fault(
         GateEvent(
             outcome=CYCLE_DEGRADED,
             connected=connected,
-            ack_quarantine=getattr(args, "ack_quarantine", False),
             correlated_detail=detail if correlated else None,
             fault_detail=None if correlated else detail,
             script=SCRIPT_NAME,
@@ -1434,6 +1500,9 @@ def main() -> None:
     args = parser.parse_args()
 
     logger = setup_logging()
+    if args.ack_quarantine:
+        # State only: no sync, no advisory lock, no database (finding C1).
+        sys.exit(_acknowledge_quarantine(logger))
     logger.info("Starting sync")
     try:
         cycle = sync(
@@ -1447,7 +1516,7 @@ def main() -> None:
             args, logger,
             f"[sync-to-postgres.py] exit 7 — {exc} Raise the ceiling with "
             f"$PA_PG_QUARANTINE_CAP or --quarantine-cap once you have "
-            f"looked at why so many memorys are being refused.",
+            f"looked at why so many memories are being refused.",
             connected=True,
         )
         sys.exit(7)
@@ -1538,6 +1607,12 @@ def main() -> None:
         )
         sys.exit(8)
 
+    if cycle.outcome == CYCLE_CONTENDED:
+        # A contended run did nothing: it must not so much as read the
+        # gate state, let alone write it (finding C2).
+        logger.info("Another instance holds the lock — gate untouched.")
+        return
+
     apply_gate(
         GateEvent(
             outcome=cycle.outcome,
@@ -1546,18 +1621,11 @@ def main() -> None:
             quarantined=cycle.quarantined,
             quarantine_file=QUARANTINE_FILE,
             degraded_detail=cycle.degraded_detail,
-            ack_quarantine=args.ack_quarantine,
             script="sync-to-postgres.py",
         ),
         gate_path=GATE_FILE,
         logger=logger,
     )
-    if args.ack_quarantine:
-        logger.warning(
-            "--ack-quarantine: the standing quarantine problem has been "
-            "cleared by hand. The quarantined rows themselves are still "
-            "in %s and still absent from PostgreSQL.", QUARANTINE_FILE,
-        )
     logger.info("sync complete (outcome=%s)", cycle.outcome)
 
 

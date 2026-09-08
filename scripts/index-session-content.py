@@ -75,9 +75,11 @@ from _sync_gate import (  # noqa: E402
     CYCLE_COMPLETED,
     CYCLE_DEGRADED,
     CYCLE_IDLE,
+    CYCLE_OUTAGE,
     INDEXER_GATE as _DEFAULT_GATE_FILE,
     GateEvent,
     apply_gate,
+    read_state,
 )
 from _schema_version import (  # noqa: E402
     SchemaVersionError,
@@ -496,6 +498,19 @@ def index_archive(archive_root: Path, project: str | None,
     known_refusals = load_refusals(refusal_file)
     consult_memory = not force
     refusals_changed = False
+    # The memory's keys are paths RELATIVE to an archive root, so they say
+    # nothing about which root they came from: the same key names a
+    # different file under a copy, a restore, or another machine's mirror.
+    # Against a root the memory was not built for, it is read-only — no
+    # consulting, no forgetting, no recording, no pruning (sixth
+    # re-audit, low).
+    recorded_root = read_state(GATE_FILE, logger).archive_root
+    memory_is_ours = recorded_root in (None, str(archive_root))
+    if not memory_is_ours:
+        logger.warning(
+            "The refusal memory was built against %s and this run scans "
+            "%s — leaving it untouched.", recorded_root, archive_root)
+        consult_memory = False
     try:
         with conn.cursor() as cur:
             for transcript_path, proj_name, session_dir in discover(
@@ -518,8 +533,8 @@ def index_archive(archive_root: Path, project: str | None,
                 # gzipped it: the key never matched again, the entry was
                 # never revisited, and the only documented remedy
                 # (--force) could not reach it (fifth re-audit).
-                forgotten = _forget_transcript(known_refusals, rel_path)
-                if forgotten:
+                if memory_is_ours and _forget_transcript(
+                        known_refusals, rel_path):
                     refusals_changed = True
 
                 # Incremental skip: already indexed at this mtime?
@@ -598,8 +613,9 @@ def index_archive(archive_root: Path, project: str | None,
                             f"{type(exc).__name__}: {str(exc).strip()}",
                         ) from exc
                     refused_now += 1
-                    known_refusals[rel_path] = mtime
-                    refusals_changed = True
+                    if memory_is_ours:
+                        known_refusals[rel_path] = mtime
+                        refusals_changed = True
                     logger.error(
                         "  REFUSED %-22s %-45s — %s. Skipping this file; it "
                         "is remembered and not retried until the file "
@@ -617,13 +633,15 @@ def index_archive(archive_root: Path, project: str | None,
         conn.close()
         # Prune entries whose archive has since been moved or deleted, so
         # the memory cannot accumulate for ever and report unindexed files
-        # that no longer exist (finding C2). Two guards, both from the
-        # fourth re-audit's finding C3: only ever on a populated root (an
-        # unmounted disk must not read as "everything was deleted"), and
-        # only when the session DIRECTORY is verifiably absent — a
-        # transcript swapped between its .gz and raw forms still has its
-        # directory, and is not gone.
-        for stale in [
+        # that no longer exist (finding C2). Three guards now: only on a
+        # populated root (an unmounted disk must not read as "everything
+        # was deleted"); only when the session DIRECTORY is verifiably
+        # absent (a transcript swapped between .gz and raw still has its
+        # directory); and only when this run's root is the one the memory
+        # was built against — running against a *different* populated
+        # root would find none of its directories and forget the lot
+        # (sixth re-audit, low).
+        for stale in [] if not memory_is_ours else [
             key for key in known_refusals
             if not (archive_root / key).parent.exists()
         ]:
@@ -681,7 +699,25 @@ def main(argv: list[str] | None = None) -> int:
 
     archive_root = Path(args.archive_root).expanduser()
     if not archive_root.is_dir():
-        parser.error(f"archive root not found: {archive_root}")
+        # A degraded return rather than parser.error (sixth re-audit,
+        # finding C3): argparse exits 2 straight past every gate, so a
+        # mistyped or unmounted root said nothing at session start while
+        # the index quietly stopped growing.
+        logger.error("Archive root not found: %s", archive_root)
+        apply_gate(
+            GateEvent(
+                outcome=CYCLE_DEGRADED,
+                degraded_detail=(
+                    f"[{SCRIPT_NAME}] the archive root {archive_root} does "
+                    f"not exist. No transcript can be indexed — check the "
+                    f"mount or the --archive-root path."
+                ),
+                script=SCRIPT_NAME,
+            ),
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
+        return 2
 
     logger.info("Indexing session content from %s%s ...", archive_root,
                 f" (project={args.project})" if args.project else "")
@@ -690,46 +726,55 @@ def main(argv: list[str] | None = None) -> int:
             archive_root, args.project, args.include_subagents, args.force)
     except ImportError:
         logger.error("psycopg2 is required; install it in the venv.")
+        apply_gate(
+            GateEvent(
+                outcome=CYCLE_DEGRADED,
+                fault_detail=(
+                    f"[{SCRIPT_NAME}] exit 2 — psycopg2 is not installed, "
+                    f"so no transcript can be indexed. Run: "
+                    f"~/personal-assistant/venv/bin/pip install "
+                    f"psycopg2-binary"
+                ),
+                script=SCRIPT_NAME,
+            ),
+            gate_path=GATE_FILE,
+            logger=logger,
+        )
         return 2
     except IndexerAbort as exc:
         # Reported in full by index_archive; the code carries the reason.
         logger.error("Index run aborted (exit %d): %s", exc.exit_code, exc)
-        if exc.exit_code in (3, 4):
-            # An unreachable or misconfigured database stopped the run,
-            # and nothing said so at session start (fourth re-audit, M1).
-            apply_gate(
-                GateEvent(
-                    outcome=CYCLE_DEGRADED,
-                    connected=exc.exit_code != 3,
-                    fault_detail=(
-                        f"[{SCRIPT_NAME}] exit {exc.exit_code} — the "
-                        f"transcript indexer stopped: {exc} Newly "
-                        f"archived sessions are not searchable until "
-                        f"this is fixed."
-                    ),
-                    script=SCRIPT_NAME,
-                ),
-                gate_path=GATE_FILE,
-                logger=logger,
+        # EVERY non-zero exit raises a problem (finding C3), and an
+        # outage goes through the streak rather than raising a fault that
+        # a later all-indexed run could never lower (finding M2).
+        if exc.exit_code == 3:
+            event = GateEvent(
+                outcome=CYCLE_OUTAGE,
+                connected=False,
+                script=SCRIPT_NAME,
             )
         elif exc.exit_code == 2 and "is empty" in str(exc):
-            # An absent or unpopulated archive root is a degraded run for
-            # the indexer too (fifth re-audit): it is a missing mount, and
-            # saying nothing about it was how "every archive is gone" came
-            # to look like a clean sweep.
-            apply_gate(
-                GateEvent(
-                    outcome=CYCLE_DEGRADED,
-                    degraded_detail=(
-                        f"[{SCRIPT_NAME}] {exc} No transcript can be "
-                        f"indexed — check the mount or the "
-                        f"--archive-root path."
-                    ),
-                    script=SCRIPT_NAME,
+            event = GateEvent(
+                outcome=CYCLE_DEGRADED,
+                degraded_detail=(
+                    f"[{SCRIPT_NAME}] {exc} No transcript can be "
+                    f"indexed — check the mount or the --archive-root "
+                    f"path."
                 ),
-                gate_path=GATE_FILE,
-                logger=logger,
+                script=SCRIPT_NAME,
             )
+        else:
+            event = GateEvent(
+                outcome=CYCLE_DEGRADED,
+                connected=True,
+                fault_detail=(
+                    f"[{SCRIPT_NAME}] exit {exc.exit_code} — the "
+                    f"transcript indexer stopped: {exc} Newly archived "
+                    f"sessions are not searchable until this is fixed."
+                ),
+                script=SCRIPT_NAME,
+            )
+        apply_gate(event, gate_path=GATE_FILE, logger=logger)
         return exc.exit_code
     logger.info(
         "Done: %d file(s) indexed, %d skipped (unchanged), %d chunks, "
@@ -741,8 +786,7 @@ def main(argv: list[str] | None = None) -> int:
     # scoped to one project has seen only part of the picture.
     outstanding = len(load_refusals())
     _apply_indexer_gate(
-        outstanding, result.files_indexed,
-        full_scope=args.project is None, logger=logger,
+        outstanding, result.files_indexed, archive_root, logger=logger,
     )
 
     if result.refused_now:
@@ -761,16 +805,18 @@ def main(argv: list[str] | None = None) -> int:
 def _apply_indexer_gate(
     outstanding: int,
     indexed: int,
-    full_scope: bool,
+    archive_root: Path,
     logger: logging.Logger,
 ) -> None:
     """
     Report this script's problems through the shared state machine.
 
     ``outstanding`` counts the WHOLE refusal memory, not this run's scope
-    (fourth re-audit, finding C3): ``--project X`` has not looked at
-    project Y, so it may raise the problem but not lower it. The state
-    machine enforces that through ``refusals_authoritative``.
+    (fourth re-audit, finding C3), which is what makes the scope
+    irrelevant here: if the memory is empty then no transcript is
+    missing from the index, whoever observed it. An earlier scope flag
+    inverted that and stopped a ``--project`` run from lowering the
+    problem it had just resolved (sixth re-audit, finding M7).
     """
     apply_gate(
         GateEvent(
@@ -780,7 +826,7 @@ def _apply_indexer_gate(
             connected=True,
             processed=indexed,
             refusals=outstanding,
-            refusals_authoritative=full_scope,
+            archive_root=str(archive_root),
             script=SCRIPT_NAME,
         ),
         gate_path=GATE_FILE,

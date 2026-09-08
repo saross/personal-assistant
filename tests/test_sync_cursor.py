@@ -67,12 +67,17 @@ class TestQuarantineDedup:
         quarantine = tmp_path / "quarantine.jsonl"
         record = {"line_number": 42, "raw_line": '{"id": "broken"'}
 
-        for _ in range(12):  # one hour of five-minute cron ticks
-            assert _sync_cursor.quarantine_record(
-                quarantine, record, "parse_failure",
-            ) is True
+        statuses = [
+            _sync_cursor.quarantine_record(quarantine, record, "parse_failure")
+            for _ in range(12)  # one hour of five-minute cron ticks
+        ]
 
         assert len(_entries(quarantine)) == 1
+        # The first call wrote; the rest reported the duplicate, which is
+        # what lets a caller count what actually reached the file rather
+        # than what it attempted (sixth re-audit, finding M4).
+        assert statuses[0] == _sync_cursor.QUARANTINE_WRITTEN
+        assert set(statuses[1:]) == {_sync_cursor.QUARANTINE_DUPLICATE}
 
     def test_dedup_survives_a_fresh_process_cache(self, tmp_path: Path) -> None:
         """
@@ -429,3 +434,31 @@ class TestLockedRead:
         assert observed["locked"] is True, (
             "the cursor was read without holding the lock"
         )
+
+
+class TestQuarantineStatuses:
+    """
+    Finding M4 — a caller counting quarantined rows must count what
+    reached the file, and only ``quarantine_record`` knows which is which.
+    """
+
+    def test_a_failed_write_is_distinguishable(self, tmp_path: Path) -> None:
+        """
+        Failure is not a duplicate and not a success: the caller must be
+        able to hold its cursor on one and advance on the other. The
+        mutation this kills: collapsing the three statuses to a boolean.
+        """
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        status = _sync_cursor.quarantine_record(
+            blocker / "q.jsonl", {"x": 1}, "parse_failure",
+        )
+        assert status == _sync_cursor.QUARANTINE_FAILED
+
+    def test_the_three_statuses_are_distinct(self) -> None:
+        """They are compared by value all over the sync scripts."""
+        assert len({
+            _sync_cursor.QUARANTINE_WRITTEN,
+            _sync_cursor.QUARANTINE_DUPLICATE,
+            _sync_cursor.QUARANTINE_FAILED,
+        }) == 3

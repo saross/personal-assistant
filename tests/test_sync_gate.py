@@ -15,7 +15,9 @@ problem in front of Shawn at his next session start.
 from __future__ import annotations
 
 import ast
+import fcntl
 import logging
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -28,6 +30,28 @@ TRIGGER = SCRIPTS_DIR / "daily-sync-trigger.sh"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _sync_gate  # noqa: E402
+
+
+def _ack_worker(gate_path: str) -> None:
+    """Acknowledge the quarantine, as `--ack-quarantine` does."""
+    _sync_gate.apply_gate(
+        _sync_gate.GateEvent(
+            outcome=_sync_gate.CYCLE_IDLE, ack_quarantine=True,
+            script="test",
+        ),
+        gate_path=Path(gate_path), logger=logging.getLogger("ack-worker"),
+    )
+
+
+def _tick_worker(gate_path: str) -> None:
+    """A cron tick that quarantines two more rows."""
+    _sync_gate.apply_gate(
+        _sync_gate.GateEvent(
+            outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+            processed=1, quarantined=2, script="test",
+        ),
+        gate_path=Path(gate_path), logger=logging.getLogger("tick-worker"),
+    )
 
 
 class TestGateFormat:
@@ -503,6 +527,9 @@ class TestTheTransitionMatrix:
         ("fault", _sync_gate.CYCLE_DEGRADED, True, 0, True),
         ("fault", _sync_gate.CYCLE_COMPLETED, True, 0, True),
         ("fault", _sync_gate.CYCLE_COMPLETED, True, 1, False),
+        # M1: quarantines raise their own problem and must not stop a
+        # completed run lowering a fault.
+        ("fault", _sync_gate.CYCLE_COMPLETED, True, 50, False),
         # correlated: the same rule.
         ("correlated", _sync_gate.CYCLE_IDLE, None, 0, True),
         ("correlated", _sync_gate.CYCLE_CONTENDED, True, 0, True),
@@ -522,7 +549,10 @@ class TestTheTransitionMatrix:
         ("degraded", _sync_gate.CYCLE_OUTAGE, False, 0, True),
         ("degraded", _sync_gate.CYCLE_DEGRADED, True, 0, True),
         ("degraded", _sync_gate.CYCLE_COMPLETED, True, 1, False),
-        # outage: connecting lowers it, whatever else the run did.
+        # outage: connecting lowers it, whatever else the run did. An
+        # idle run now reports connected=True when the advisory lock was
+        # taken over a live connection (M3), which is the common case;
+        # connected=None is a run that never tried at all.
         ("outage", _sync_gate.CYCLE_IDLE, True, 0, False),
         ("outage", _sync_gate.CYCLE_IDLE, None, 0, True),
         ("outage", _sync_gate.CYCLE_CONTENDED, True, 0, True),
@@ -594,14 +624,15 @@ class TestTheTransitionMatrix:
         )
 
     def test_the_matrix_covers_every_problem(self):
-        """A new problem kind must arrive with its own rules and rows."""
+        """
+        A new problem kind must arrive with its own rules and its own
+        rows. Derived from ``PROBLEM_ORDER`` rather than a hard-coded set
+        (sixth re-audit, finding M5): a list written out by hand is
+        updated by the same edit that adds the problem, and so proves
+        nothing.
+        """
         covered = {row[0] for row in self.MATRIX}
-        known = {
-            _sync_gate.PROBLEM_FAULT, _sync_gate.PROBLEM_CORRELATED,
-            _sync_gate.PROBLEM_QUARANTINE, _sync_gate.PROBLEM_DEGRADED,
-            _sync_gate.PROBLEM_OUTAGE, _sync_gate.PROBLEM_REFUSALS,
-        }
-        assert covered == known
+        assert covered == set(_sync_gate.PROBLEM_ORDER)
 
     def test_the_rendered_count_is_the_number_of_standing_problems(
         self, tmp_path,
@@ -699,4 +730,280 @@ def test_this_module_did_not_lose_tests_to_an_edit():
     assert len(tests) >= 20, (
         f"only {len(tests)} test functions remain in this module — an "
         f"edit has removed some"
+    )
+
+
+class TestQuarantinesDoNotBlockAFaultLowering:
+    """
+    Sixth re-audit, finding M1 — ``completed_cleanly`` required zero
+    quarantines, so a run that processed fifty rows and refused one left
+    a standing fault untouched. The two are independent problems.
+    """
+
+    def test_a_run_with_a_quarantine_still_lowers_a_fault(self, tmp_path):
+        """The mutation this kills: restoring ``not event.quarantined``."""
+        gate = tmp_path / "g"
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="f",
+                script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-m1"),
+        )
+        state = _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                processed=50, quarantined=1, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-m1"),
+        )
+        assert _sync_gate.PROBLEM_FAULT not in state.problems
+        assert _sync_gate.PROBLEM_QUARANTINE in state.problems
+
+
+class TestTheOutageThresholdIsPinned:
+    """
+    Low: the streak's threshold was only ever exercised at its current
+    value by tests that hard-coded 3.
+    """
+
+    def _outage(self, gate):
+        """One unreachable run."""
+        return _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_OUTAGE, connected=False,
+                script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-streak"),
+        )
+
+    def test_one_outage_does_not_raise_the_problem(self, tmp_path):
+        """A restart is not an outage worth waking anyone for."""
+        state = self._outage(tmp_path / "g")
+        assert _sync_gate.PROBLEM_OUTAGE not in state.problems
+        assert state.outage_streak == 1
+
+    def test_the_threshold_is_where_the_constant_says(self, tmp_path):
+        """
+        Derived from ``OUTAGE_STREAK_THRESHOLD``, so changing the constant
+        changes the test with it rather than leaving it lying.
+        """
+        gate = tmp_path / "g"
+        for run in range(1, _sync_gate.OUTAGE_STREAK_THRESHOLD):
+            state = self._outage(gate)
+            assert _sync_gate.PROBLEM_OUTAGE not in state.problems, (
+                f"the problem stood after only {run} outage(s)"
+            )
+        state = self._outage(gate)
+        assert _sync_gate.PROBLEM_OUTAGE in state.problems
+        assert state.problems[
+            _sync_gate.PROBLEM_OUTAGE
+        ].count == _sync_gate.OUTAGE_STREAK_THRESHOLD
+
+
+class TestWhitespaceOnlyDetails:
+    """Low: a problem whose text is blank must not render an empty line."""
+
+    def test_a_blank_detail_is_not_raised(self, tmp_path):
+        """
+        A problem nobody can read is worse than none: the count says
+        something is wrong and the line says nothing at all.
+        """
+        gate = tmp_path / "g"
+        state = _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="   \n\t ",
+                script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-blank"),
+        )
+        assert _sync_gate.PROBLEM_FAULT not in state.problems
+        assert gate.read_text(encoding="utf-8").strip() == "0"
+
+
+class TestConcurrencyAroundTheAcknowledgement:
+    """
+    Finding C2 — a cron tick and an ack interleaving used to resurrect a
+    dismissed problem: both read the same state, and the tick wrote last.
+    """
+
+    def test_an_ack_is_not_undone_by_a_concurrent_tick(self, tmp_path):
+        """
+        Two real processes, the real flock. The mutation this kills:
+        dropping ``gate_lock`` from ``apply_gate``.
+        """
+        gate = tmp_path / "g"
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                processed=1, quarantined=5, script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-race"),
+        )
+
+        ctx = multiprocessing.get_context("fork")
+        for _ in range(20):
+            _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                    processed=1, quarantined=5, script="test",
+                ),
+                gate_path=gate, logger=logging.getLogger("test-race"),
+            )
+            procs = [
+                ctx.Process(target=_ack_worker, args=(str(gate),)),
+                ctx.Process(target=_tick_worker, args=(str(gate),)),
+            ]
+            for proc in procs:
+                proc.start()
+            for proc in procs:
+                proc.join(timeout=30)
+
+            state = _sync_gate.read_state(gate)
+            quarantine = state.problems.get(_sync_gate.PROBLEM_QUARANTINE)
+            # Either order is legal; what is not legal is a torn state in
+            # which the tick's count survives the ack that followed it.
+            assert quarantine is None or quarantine.count == 2, (
+                f"interleaved ack and tick left {quarantine}"
+            )
+
+    def test_a_kill_mid_write_leaves_the_previous_gate(
+        self, tmp_path, monkeypatch,
+    ):
+        """
+        Atomic replacement: an interrupted render must not truncate the
+        gate into "no problems". The mutation this kills: writing the
+        gate or the sidecar with a plain ``write_text``.
+        """
+        gate = tmp_path / "g"
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="standing",
+                script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-atomic"),
+        )
+        before = gate.read_bytes()
+
+        def _boom(src, dst):
+            raise KeyboardInterrupt("killed mid-write")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_COMPLETED, connected=True,
+                    processed=1, script="test",
+                ),
+                gate_path=gate, logger=logging.getLogger("test-atomic"),
+            )
+
+        assert gate.read_bytes() == before
+
+
+#: Any of these names in a write target's source text means the write is
+#: aimed at a gate, its sidecar, or the cache directory they live in.
+GATE_TARGET_HINTS = (
+    "GATE_FILE", "gate_path", "gate", ".cache", "state_path", "_DEFAULT_GATE",
+)
+
+
+@pytest.mark.parametrize("script_name", GATED_SCRIPTS)
+def test_no_script_writes_a_gate_path_directly(script_name):
+    """
+    Name-based checking is not enough (sixth re-audit, finding M6): a
+    script could bypass the whole state machine with
+    ``some_gate_path.write_text(...)`` and the call-name test would not
+    see it, because the call is named ``write_text``.
+
+    So: no ``.write_text``, ``.open``, ``open(...)`` or ``os.replace``
+    anywhere in these scripts whose target expression so much as mentions
+    a gate or the cache directory. Only ``_sync_gate.py`` writes those
+    files, and it does it atomically under a lock.
+    """
+    source = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    offenders = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else (
+            func.id if isinstance(func, ast.Name) else None
+        )
+        if name not in ("write_text", "write_bytes", "open", "replace"):
+            continue
+        # The whole call, as written, including what it is called on.
+        rendered = ast.unparse(node)
+        if any(hint in rendered for hint in GATE_TARGET_HINTS):
+            offenders.append(f"{script_name}:{node.lineno}: {rendered[:90]}")
+
+    assert not offenders, (
+        "these write directly to a gate or its sidecar instead of going "
+        "through the state machine:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_only_the_gate_module_writes_gate_files():
+    """
+    The companion check on the module itself: ``_sync_gate.py`` is
+    allowed to write these paths, and is the only file that may.
+    """
+    source = (SCRIPTS_DIR / "_sync_gate.py").read_text(encoding="utf-8")
+    assert "_atomic_write" in source
+    # And every write inside it goes through that one helper.
+    tree = ast.parse(source)
+    direct = [
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("write_text", "write_bytes")
+    ]
+    assert not direct, (
+        f"_sync_gate.py writes without _atomic_write at lines {direct}"
+    )
+
+
+def test_the_gate_lock_is_held_across_the_read_modify_write(tmp_path):
+    """
+    Finding C2, deterministically. A race test can pass by luck; this
+    asserts from inside the transition that the lock is actually held,
+    which no interleaving can fake.
+
+    ``flock`` is per open file description, so a second ``open`` in this
+    same process conflicts with the one ``apply_gate`` holds. The
+    mutation this kills: dropping ``gate_lock`` from ``apply_gate``.
+    """
+    gate = tmp_path / "g"
+    lock_file = _sync_gate.lock_path_for(gate)
+    observed = {"held": None}
+    real_next_state = _sync_gate.next_state
+
+    def _probe(state, event):
+        """Check, mid-cycle, that nobody else could be doing this too."""
+        with open(lock_file, "a", encoding="utf-8") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                observed["held"] = True
+            else:
+                observed["held"] = False
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        return real_next_state(state, event)
+
+    _sync_gate.next_state = _probe
+    try:
+        _sync_gate.apply_gate(
+            _sync_gate.GateEvent(
+                outcome=_sync_gate.CYCLE_DEGRADED, fault_detail="x",
+                script="test",
+            ),
+            gate_path=gate, logger=logging.getLogger("test-lock"),
+        )
+    finally:
+        _sync_gate.next_state = real_next_state
+
+    assert observed["held"] is True, (
+        "the gate state was read and written without holding the lock"
     )

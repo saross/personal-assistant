@@ -101,6 +101,14 @@ from typing import Any, Iterator
 # ---------------------------------------------------------------------------
 
 
+#: ``quarantine_record`` appended a new line.
+QUARANTINE_WRITTEN = "written"
+#: An identical entry was already on disk; nothing was appended.
+QUARANTINE_DUPLICATE = "duplicate"
+#: The write raised; the entry is NOT on disk.
+QUARANTINE_FAILED = "failed"
+
+
 def _iso_now() -> str:
     """Return an ISO 8601 UTC timestamp for quarantine entries."""
     return datetime.now(timezone.utc).isoformat()
@@ -211,12 +219,16 @@ def quarantine_record(
 
     Returns
     -------
-    bool
-        ``True`` when the entry is on disk — whether this call wrote it
-        or a previous one did; ``False`` if the underlying I/O operation
-        raised. The caller can use the return to decide whether to
-        advance the cursor anyway (poison-record case) or halt and retry
-        next cycle.
+    str
+        One of :data:`QUARANTINE_WRITTEN` (this call appended a line),
+        :data:`QUARANTINE_DUPLICATE` (an identical entry was already
+        there), or :data:`QUARANTINE_FAILED` (the write raised).
+
+        The first two both mean "the entry is on disk", which is what a
+        cursor advance needs. The distinction matters to the caller's
+        *count*: a gate that says "7 rows quarantined" must match the
+        file, and tallying attempted writes counted the same poison line
+        once per cron tick (sixth re-audit, finding M4).
     """
     fingerprint = _entry_fingerprint(reason, record)
     if dedup and fingerprint in _existing_fingerprints(quarantine_path):
@@ -226,7 +238,7 @@ def quarantine_record(
                 "not appending a duplicate",
                 reason, quarantine_path,
             )
-        return True
+        return QUARANTINE_DUPLICATE
 
     entry = {
         "reason": reason,
@@ -243,7 +255,7 @@ def quarantine_record(
                 "Could not write quarantine entry to %s (reason=%r): %s",
                 quarantine_path, reason, exc,
             )
-        return False
+        return QUARANTINE_FAILED
 
     # Keep the cache in step with our own append so a second call in the
     # same process dedups even where the filesystem's mtime granularity
@@ -264,7 +276,7 @@ def quarantine_record(
             "Quarantined record (reason=%r) to %s",
             reason, quarantine_path,
         )
-    return True
+    return QUARANTINE_WRITTEN
 
 
 def advance_or_quarantine(

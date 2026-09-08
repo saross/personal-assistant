@@ -1102,18 +1102,14 @@ class TestIndexerAbortsGate:
         )
         return tmp_path
 
-    @pytest.mark.parametrize("exc,expected", [
-        (_OperationalError("server closed the connection"), 3),
-        (_ProgrammingError("permission denied", "42501"), 4),
-    ])
-    def test_an_abort_raises_the_gate(
+    def test_an_environment_abort_raises_a_fault(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
-        pinned_gate_file, exc, expected,
+        pinned_gate_file,
     ):
         """
         A stopped indexer means newly archived sessions are not
         searchable, and nothing said so. The mutation this kills:
-        removing the write_gate call from the IndexerAbort handler.
+        removing the apply_gate call from the IndexerAbort handler.
         """
         archive = self._archive(tmp_path)
         _install_fake_psycopg2(monkeypatch)
@@ -1121,16 +1117,110 @@ class TestIndexerAbortsGate:
         monkeypatch.setattr(os, "nice", lambda increment: 0)
 
         def _raise(cur, sql, values, page_size=None, fetch=False):
-            raise exc
+            raise _ProgrammingError("permission denied", "42501")
 
         sys.modules["psycopg2.extras"].execute_values.side_effect = _raise
 
         code = indexer.main(["--archive-root", str(archive), "--force"])
 
-        assert code == expected
+        assert code == 4
         gate = pinned_gate_file.read_text(encoding="utf-8")
-        assert f"exit {expected}" in gate
+        assert "exit 4" in gate
         assert "not searchable" in gate
+
+    def test_an_outage_goes_through_the_streak_not_a_fault(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        Sixth re-audit, finding M2: an outage raised a ``fault``, which
+        only a completed run could lower — but the run that follows an
+        outage usually finds everything already indexed and processes
+        nothing, so the fault stood for ever. It is a streak now, and
+        connecting lowers it. The mutation this kills: routing exit 3
+        back to ``fault_detail``.
+        """
+        import _sync_gate
+
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        def _gone(cur, sql, values, page_size=None, fetch=False):
+            raise _OperationalError("server closed the connection")
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _gone
+        for _ in range(_sync_gate.OUTAGE_STREAK_THRESHOLD):
+            assert indexer.main([
+                "--archive-root", str(archive), "--force",
+            ]) == 3
+
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_OUTAGE in state.problems
+        assert _sync_gate.PROBLEM_FAULT not in state.problems
+
+        # The database comes back and everything is already indexed:
+        # nothing is processed, and the problem must still lower.
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        assert indexer.main(["--archive-root", str(archive)]) == 0
+        state = _sync_gate.read_state(pinned_gate_file)
+        assert _sync_gate.PROBLEM_OUTAGE not in state.problems
+
+    def test_a_schema_mismatch_raises_a_fault(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        Finding C3: exit 2 from a schema mismatch gated nothing, so the
+        indexer could be wholly stopped and silent.
+        """
+        archive = self._archive(tmp_path)
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        def _mismatch(conn):
+            raise indexer.SchemaVersionError("expected 3, found 4")
+
+        monkeypatch.setattr(indexer, "assert_schema_version", _mismatch)
+
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == 2
+        assert "exit 2" in pinned_gate_file.read_text(encoding="utf-8")
+
+    def test_a_missing_psycopg2_raises_a_fault(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """Finding C3: ImportError returned 2 and gated nothing."""
+        archive = self._archive(tmp_path)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+        monkeypatch.setitem(sys.modules, "psycopg2", None)
+
+        code = indexer.main(["--archive-root", str(archive), "--force"])
+
+        assert code == 2
+        assert "psycopg2" in pinned_gate_file.read_text(encoding="utf-8")
+
+    def test_an_absent_root_is_degraded_not_an_argparse_error(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        Finding C3: ``parser.error`` exits 2 straight past every gate, so
+        a mistyped or unmounted root said nothing at session start.
+        """
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        code = indexer.main([
+            "--archive-root", str(tmp_path / "not-mounted"),
+        ])
+
+        assert code == 2
+        gate = pinned_gate_file.read_text(encoding="utf-8")
+        assert "does not exist" in gate
+        assert "check the mount" in gate
 
     def test_an_empty_root_raises_the_degraded_problem(
         self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
@@ -1155,3 +1245,105 @@ class TestIndexerAbortsGate:
         assert "is empty" in gate
         assert "check the mount" in gate
 
+
+
+class TestPruningIsScopedToTheRecordedRoot:
+    """
+    Sixth re-audit, low: the prune loop asked only "does this directory
+    exist under the root I am scanning?". Run against a different but
+    populated root — a copy, a restore, a second machine's mirror — none
+    of the recorded directories are there and the whole memory is
+    forgotten, silently.
+    """
+
+    def _archive(self, tmp_path: Path, name: str) -> Path:
+        """A populated archive root with one session."""
+        root = tmp_path / name
+        session_dir = root / "alpha" / "sess"
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "sess"},
+                "project": {"name": "alpha"},
+            }),
+            encoding="utf-8",
+        )
+        (session_dir / "session.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "hello"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return root
+
+    def test_a_different_root_prunes_nothing(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """
+        The mutation this kills: dropping the recorded-root check, so a
+        run against another populated root forgets every refusal.
+        """
+        first = self._archive(tmp_path, "archive-one")
+        second = self._archive(tmp_path, "archive-two")
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        # A refusal recorded against the first root.
+        def _refuse(cur, sql, values, page_size=None, fetch=False):
+            raise _DataError("value too long", "22001")
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _refuse
+        indexer.main(["--archive-root", str(first), "--force"])
+        assert indexer.load_refusals(pinned_refusal_file)
+
+        # Now index a different, equally populated root.
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        indexer.main(["--archive-root", str(second), "--force"])
+
+        assert indexer.load_refusals(pinned_refusal_file), (
+            "a run against a different root forgot the first root's "
+            "refusals"
+        )
+
+    def test_the_same_root_still_prunes(
+        self, indexer, monkeypatch, tmp_path, pinned_refusal_file,
+        pinned_gate_file,
+    ):
+        """The guard must not disable pruning on the ordinary path."""
+        import shutil
+
+        root = self._archive(tmp_path, "archive-one")
+        (root / "beta" / "other").mkdir(parents=True)
+        (root / "beta" / "other" / "session.meta.json").write_text(
+            json.dumps({
+                "session": {"id": "other"},
+                "project": {"name": "beta"},
+            }),
+            encoding="utf-8",
+        )
+        (root / "beta" / "other" / "session.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "hi"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        _install_fake_psycopg2(monkeypatch)
+        monkeypatch.setattr(indexer, "assert_schema_version", lambda conn: None)
+        monkeypatch.setattr(os, "nice", lambda increment: 0)
+
+        def _refuse(cur, sql, values, page_size=None, fetch=False):
+            raise _DataError("value too long", "22001")
+
+        sys.modules["psycopg2.extras"].execute_values.side_effect = _refuse
+        indexer.main(["--archive-root", str(root), "--force"])
+        assert len(indexer.load_refusals(pinned_refusal_file)) == 2
+
+        shutil.rmtree(root / "alpha")
+        sys.modules["psycopg2.extras"].execute_values.side_effect = None
+        indexer.main(["--archive-root", str(root), "--force"])
+
+        assert indexer.load_refusals(pinned_refusal_file) == {}
