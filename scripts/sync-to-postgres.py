@@ -175,21 +175,16 @@ def load_cursor(cursor_key: str = "postgres_sync_line") -> int:
     Load the last synced line number from the cursor file.
 
     Returns 0 if the file doesn't exist or the key is missing.
+
+    The sync cycle itself does NOT use this: it needs the position and
+    the key's presence from one atomic observation, so it reads the whole
+    object once under the lock (low finding L1). This remains for
+    diagnostics and for callers that only want the number.
     """
     try:
         return int(read_cursor_file(CURSOR_FILE).get(cursor_key, 0))
     except (ValueError, TypeError):
         return 0
-
-
-def cursor_key_present(cursor_key: str = "postgres_sync_line") -> bool:
-    """Return whether ``cursor_key`` is currently in the cursor file.
-
-    Read at the start of a cycle so :func:`save_cursor` can refuse to
-    write a position back if a rebuild removed the key in the meantime
-    (re-audit finding M3).
-    """
-    return cursor_key in read_cursor_file(CURSOR_FILE)
 
 
 def save_cursor(
@@ -208,8 +203,9 @@ def save_cursor(
     the file and reset every cursor at once.
 
     ``expect_present`` makes the write a compare-and-set (re-audit
-    finding M3). Pass the value :func:`cursor_key_present` returned at the
-    start of the cycle: if the key was there then and is gone now, a
+    finding M3). Pass whether the key was in the snapshot
+    :func:`_sync_locked` read at the start of the cycle: if it was there
+    then and is gone now, a
     rebuild cleared it, and writing this position back would tell the
     next run that rows the rebuild destroyed are already synced. Raises
     :class:`CursorKeyVanished` instead.

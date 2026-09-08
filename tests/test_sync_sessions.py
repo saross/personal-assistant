@@ -5,6 +5,7 @@ cursor management, and row conversion.
 Tests pure functions only; does not require a running PostgreSQL instance.
 """
 
+import fcntl
 import importlib.util
 import json
 import logging
@@ -1747,4 +1748,64 @@ class TestCorrelatedRefusalAtTheSyncLevel:
         assert quarantined == 5
         assert "sessions_sync_timestamp" in json.loads(
             cursor_file.read_text(encoding="utf-8")
+        )
+
+
+class TestTheCycleReadsTheCursorUnderTheLock:
+    """Low finding L1 at the sessions call site — see the memories twin."""
+
+    def test_the_first_cursor_read_holds_the_lock(
+        self, monkeypatch, tmp_path, archive_tree, test_logger,
+    ):
+        """
+        The mutation this kills: calling ``read_cursor_file`` instead of
+        ``read_cursor_file_locked`` in the sessions ``_sync_locked``.
+        """
+        import _sync_cursor
+
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"sessions_sync_timestamp": "2026-01-01T00:00:00Z"}),
+            encoding="utf-8",
+        )
+        lock_path = cursor_file.with_name(cursor_file.name + ".lock")
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        _install_fake_psycopg2(
+            monkeypatch,
+            returned_ids=[
+                "abc12345-6789-0000-aaaa-bbbbccccdddd",
+                "def67890-1234-0000-aaaa-bbbbccccdddd",
+            ],
+        )
+
+        observations = []
+        real_read = _sync_cursor.read_cursor_file
+
+        def _probe(path):
+            """Record whether the cursor lock is held during this read."""
+            held = False
+            if lock_path.exists():
+                with open(lock_path, "a", encoding="utf-8") as probe:
+                    try:
+                        fcntl.flock(
+                            probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        )
+                    except BlockingIOError:
+                        held = True
+                    else:
+                        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+            observations.append(held)
+            return real_read(path)
+
+        monkeypatch.setattr(_sync_cursor, "read_cursor_file", _probe)
+        monkeypatch.setattr(sync_mod, "read_cursor_file", _probe)
+
+        sync_mod.sync(archive_tree, full_resync=False, logger=test_logger)
+
+        assert observations, "the cursor file was never read"
+        assert observations[0] is True, (
+            "the cycle's first cursor read was taken without the lock"
         )

@@ -142,20 +142,15 @@ def load_cursor() -> str:
     Load the last sync timestamp from the cursor file.
 
     Returns ISO timestamp string. Defaults to epoch if no cursor exists.
+
+    The sync cycle itself does NOT use this: it needs the timestamp and
+    the key's presence from one atomic observation, so it reads the whole
+    object once under the lock (low finding L1). This remains for
+    diagnostics.
     """
     return str(read_cursor_file(CURSOR_FILE).get(
         CURSOR_KEY, "2000-01-01T00:00:00Z",
     ))
-
-
-def cursor_key_present() -> bool:
-    """Return whether this sync's cursor key is currently in the file.
-
-    Read at the start of a cycle so :func:`save_cursor` can refuse to
-    write a timestamp back if a rebuild removed the key in the meantime
-    (re-audit finding M3).
-    """
-    return CURSOR_KEY in read_cursor_file(CURSOR_FILE)
 
 
 def save_cursor(timestamp: str, *, expect_present: bool = False) -> None:
@@ -169,8 +164,9 @@ def save_cursor(timestamp: str, *, expect_present: bool = False) -> None:
     interleave with the memories sync and lose one of the two advances.
 
     ``expect_present`` makes the write a compare-and-set against a
-    concurrent rebuild — see :func:`cursor_key_present` and re-audit
-    finding M3.
+    concurrent rebuild: pass whether the key was in the snapshot
+    :func:`_sync_locked` read at the start of the cycle (re-audit
+    finding M3).
     """
     update_cursor_file(
         CURSOR_FILE, {CURSOR_KEY: timestamp},

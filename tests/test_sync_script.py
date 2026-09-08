@@ -5,6 +5,7 @@ and record-to-tuple conversion.
 Tests pure functions only; does not require a running PostgreSQL instance.
 """
 
+import fcntl
 import importlib.util
 import json
 import logging
@@ -1799,3 +1800,76 @@ class TestQuarantineDedupSeesBothShapes:
         monkeypatch.setattr(sync_mod, "QUARANTINE_FILE", quarantine)
         sync_mod._write_quarantine([{"id": "m-y", "content": "c"}], test_logger)
         assert sync_mod._load_quarantined_ids() == {"m-y"}
+
+
+class TestTheCycleReadsTheCursorUnderTheLock:
+    """
+    Low finding L1, at the call site. The helper being correct is not
+    enough: the sync must actually use it, and
+    ``read_cursor_file_locked`` → ``read_cursor_file`` survived as a
+    mutation until this test existed.
+    """
+
+    def test_the_first_cursor_read_holds_the_lock(
+        self, monkeypatch, tmp_path, test_logger,
+    ):
+        """
+        Observed from inside the read itself: the first time the cycle
+        looks at the cursor file, the sidecar lock must already be held,
+        or a rebuild can land between the position and the key-presence
+        check. The mutation this kills: calling ``read_cursor_file``
+        instead of ``read_cursor_file_locked`` in ``_sync_locked``.
+        """
+        import _sync_cursor
+
+        memories = tmp_path / "memories.jsonl"
+        memories.write_text(
+            json.dumps({
+                "id": "m1", "category": "progress", "content": "c",
+                "created_at": "2026-09-01T00:00:00+00:00",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cursor_file = tmp_path / "sync-cursors.json"
+        cursor_file.write_text(
+            json.dumps({"postgres_sync_line": 0}), encoding="utf-8",
+        )
+        lock_path = cursor_file.with_name(cursor_file.name + ".lock")
+        monkeypatch.setattr(sync_mod, "MEMORIES_FILE", memories)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", cursor_file)
+        monkeypatch.setattr(
+            sync_mod, "QUARANTINE_FILE", tmp_path / "quarantine.jsonl",
+        )
+        monkeypatch.setattr(sync_mod, "HAS_EMBED", False)
+        _install_fake_psycopg2(
+            monkeypatch, present_before_ids=[], returned_ids=["m1"],
+        )
+
+        observations = []
+        real_read = _sync_cursor.read_cursor_file
+
+        def _probe(path):
+            """Record whether the cursor lock is held during this read."""
+            held = False
+            if lock_path.exists():
+                with open(lock_path, "a", encoding="utf-8") as probe:
+                    try:
+                        fcntl.flock(
+                            probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        )
+                    except BlockingIOError:
+                        held = True
+                    else:
+                        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+            observations.append(held)
+            return real_read(path)
+
+        monkeypatch.setattr(_sync_cursor, "read_cursor_file", _probe)
+        monkeypatch.setattr(sync_mod, "read_cursor_file", _probe)
+
+        sync_mod.sync(test_logger)
+
+        assert observations, "the cursor file was never read"
+        assert observations[0] is True, (
+            "the cycle's first cursor read was taken without the lock"
+        )

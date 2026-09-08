@@ -246,10 +246,11 @@ retries next session on failure). It carries the git sync, the
 cc-archives convergence passes, the R2 push, the symlink refresh, and
 both drift checks.
 
-### Sync exit codes (audit round two, 2026-09-08)
+### Sync exit codes and gates (audit round two, 2026-09-08)
 
-The PostgreSQL sync scripts distinguish "retry later" from "a human must
-do something". Non-zero is not automatically an emergency — read the list.
+The PostgreSQL pipeline scripts distinguish "retry later" from "a human
+must do something". Non-zero is not automatically an emergency — read the
+list, and read the gate line, which names the remedy.
 
 `sync-to-postgres.py` and `sync-sessions-to-postgres.py`:
 
@@ -257,13 +258,20 @@ do something". Non-zero is not automatically an emergency — read the list.
 - **1** — unexpected error.
 - **2** — schema-version mismatch: the script is older or newer than the
   database.
-- **4** — *environment fault.* PostgreSQL is reachable but not in the
-  expected state: a revoked grant, a missing table or column, an aborted
-  transaction, a full disk. Nothing was quarantined and the cursor did
-  not move. Retrying will not help until someone changes something.
+- **4** — the run stopped and the cursor did not move, for one of two
+  reasons the gate distinguishes. An *environment fault*: PostgreSQL is
+  reachable but not in the expected state — a revoked grant, a missing
+  table or column, a full disk. Or a *correlated refusal*: five or more
+  rows refused with the same SQLSTATE and none accepted, which is either
+  correlated poison or a schema fault (a migration adding a NOT NULL
+  column, a unique index the upsert does not name). Nothing was
+  quarantined in either case.
 - **6** — a rebuild cleared this sync's cursor key mid-run, so the
   position was deliberately not written back. Confirm the rebuild was
   intended; the next run replays from the canonical.
+- **7** — more rows were refused in one run than `PA_PG_QUARANTINE_CAP`
+  allows (default 200). The database is fine and the rows may genuinely
+  be poison; there are simply too many to skip without someone looking.
 
 `index-session-content.py`:
 
@@ -272,10 +280,9 @@ do something". Non-zero is not automatically an emergency — read the list.
 - **3** — PostgreSQL unreachable, at connect time or mid-run. Not
   critical: the archive tree is canonical and the index is rebuildable.
 - **4** — environment fault, as above.
-- **5** — completed, but one or more transcripts were REFUSED and are not
-  searchable. Remembered in
-  `~/.cache/index-session-content-refusals.json`, and retried when the
-  file changes or with `--force`.
+- **5** — one or more transcripts were refused **this run**. A transcript
+  refused on an earlier run does not fail later runs; it is reported once
+  at WARNING and through the gate.
 
 `backfill-embeddings.py`:
 
@@ -284,16 +291,45 @@ do something". Non-zero is not automatically an emergency — read the list.
 - **2** — schema-version mismatch.
 - **3** — the endpoint returned wrong-width vectors. Nothing was written.
 
-Exit 4 and exit 6 also raise `~/.cache/postgres-sync-gate`, which
-`daily-sync-trigger.sh` prints at session start under the "Infra gates —
-RELAY THESE TO SHAWN" header; the next clean run lowers it. An exit code
-that reaches only a log file is a signal nobody sees — that is how the
-sessions table came to sit three weeks stale in September 2026.
+#### Session-start gates
 
-Two environment variables tune the syncs: `PA_PG_QUARANTINE_CAP`
-(default 200) caps how many rows one run may quarantine before it stops
-and reports instead, and `OLLAMA_BASE_URL` selects the embedding
-endpoint (an empty value falls back to localhost).
+Three gate files, one per script, all relayed by
+`daily-sync-trigger.sh` under the "Infra gates — RELAY THESE TO SHAWN"
+header:
+
+- `~/.cache/postgres-sync-memories-gate`
+- `~/.cache/postgres-sync-sessions-gate`
+- `~/.cache/index-session-content-gate`
+
+One file per script, deliberately: a shared file meant a clean run of one
+script erased another's alarm on the next cron tick. A gate is raised on
+any exit of 4, 5, 6, or 7, and also by a run that merely *quarantined*
+rows — data leaving the pipeline is worth knowing about even at exit 0.
+It is lowered only by a later run of the **same** script that completed a
+full cycle with nothing outstanding; a run that deferred to another
+instance, or never reached the database, leaves it standing, because it
+has learnt nothing.
+
+#### Refusal memory (`index-session-content.py`)
+
+`~/.cache/index-session-content-refusals.json` maps an archive path to
+the mtime it had when PostgreSQL refused it. A refused transcript is
+skipped until its mtime changes — i.e. until the file is repaired — or
+until `--force` retries it. `--force` forgets the verdict for every file
+it visits, so `--force --project X` leaves other projects' entries alone.
+Entries whose archive no longer exists are pruned automatically. To retry
+everything, delete the file.
+
+#### Environment variables
+
+- `PA_PG_QUARANTINE_CAP` (default 200) — how many rows one run may
+  quarantine before it stops and reports instead. `0` stops at the first
+  refusal. A negative or non-numeric value is warned about and ignored.
+- `PA_PG_QUARANTINE_ANYWAY=1` — for one run, quarantine a wholly-refused
+  batch instead of holding the cursor. Use after checking the schema.
+  Equivalent to `--quarantine-anyway`.
+- `OLLAMA_BASE_URL` — the embedding endpoint; an empty value falls back
+  to localhost.
 
 ### Test Suite
 
