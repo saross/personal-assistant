@@ -915,3 +915,391 @@ class TestMain:
         _run_main(monkeypatch, ["--env", str(env)])
         assert seen == [env]
         assert str(env) in capsys.readouterr().out
+
+
+# ============================================================================
+# check_zotero and check_osf — pass 3, with http_json substituted (no network)
+# ============================================================================
+
+
+def _stub_http_json(monkeypatch, handler):
+    """Replace ``cc.http_json`` with *handler*, recording the URLs it sees.
+
+    *handler* takes a URL and returns ``(status, body)``. Any URL it does
+    not recognise must raise, so a real request cannot slip through.
+    """
+    calls: list[str] = []
+
+    def _json(url: str, headers: dict[str, str]):
+        calls.append(url)
+        return handler(url)
+
+    monkeypatch.setattr(cc, "http_json", _json)
+    return calls
+
+
+def _zotero_key_body(user_id: int = 4242, groups: dict | None = None) -> dict:
+    """A ``/keys/current`` body in the shape the Zotero API returns."""
+    return {
+        "userID": user_id,
+        "access": {
+            "user": {"library": True, "write": True},
+            "groups": groups if groups is not None else {"9001": {"write": False}},
+        },
+    }
+
+
+class TestCheckOsf:
+    """Audit round two M5: check_osf had no tests at all."""
+
+    def test_an_absent_key_is_a_finding(self, monkeypatch, capsys):
+        """Kills ``if not token: note(...); return`` -> a silent return.
+
+        Two scripts depend on the OSF token; a missing one must not read as
+        a clean bill of health.
+        """
+        _stub_http_json(
+            monkeypatch, lambda url: pytest.fail(f"requested {url} with no token")
+        )
+        cc.check_osf({})
+        assert len(cc.findings) == 1
+        assert "OSF_API_KEY absent" in cc.findings[0]
+
+    def test_a_successful_authentication_reports_the_account(
+        self, monkeypatch, capsys
+    ):
+        """Kills ``if status == 200 …`` -> ``if False:`` (every run a finding).
+
+        Also pins that the account, not the token, is what gets printed.
+        """
+        body = {"data": {"attributes": {"full_name": "Fake User"}, "id": "aa11"}}
+        _stub_http_json(monkeypatch, lambda url: (200, body))
+        cc.check_osf({"OSF_API_KEY": FAKE_SECRET})
+        out = capsys.readouterr().out
+        assert cc.findings == []
+        assert "'Fake User'" in out
+        assert "aa11" in out
+        assert FAKE_SECRET not in out
+
+    def test_an_authentication_failure_is_a_finding(self, monkeypatch, capsys):
+        """Kills ``if status == 200 …`` -> ``if True:``.
+
+        A revoked or expired token would otherwise be reported as OK, and
+        the failure would surface only when a publish run died.
+        """
+        _stub_http_json(monkeypatch, lambda url: (401, "Unauthorized"))
+        cc.check_osf({"OSF_API_KEY": FAKE_SECRET})
+        assert len(cc.findings) == 1
+        assert "OSF_API_KEY: authentication failed (401)" in cc.findings[0]
+        assert FAKE_SECRET not in capsys.readouterr().out
+
+    def test_the_bearer_header_carries_the_token(self, monkeypatch):
+        """Kills sending the token in the wrong header (or not at all).
+
+        The check would then fail for every token and the finding would be
+        about the checker, not the credential.
+        """
+        seen: list[dict] = []
+
+        def _json(url: str, headers: dict[str, str]):
+            seen.append(headers)
+            return 200, {"data": {"attributes": {"full_name": "F"}, "id": "i"}}
+
+        monkeypatch.setattr(cc, "http_json", _json)
+        cc.check_osf({"OSF_API_KEY": "abcfake"})
+        assert seen[0]["Authorization"] == "Bearer abcfake"
+
+
+class TestCheckZotero:
+    """Audit round two M5: check_zotero had no tests at all."""
+
+    def test_no_keys_present_is_not_a_finding(self, monkeypatch, capsys):
+        """Kills ``if not key_vars: … return`` -> falling through.
+
+        A machine with no Zotero keys is a normal state, not a fault, and
+        falling through would issue requests with no key at all.
+        """
+        calls = _stub_http_json(monkeypatch, lambda url: (200, {}))
+        cc.check_zotero({"OSF_API_KEY": "x"})
+        assert cc.findings == []
+        assert calls == []
+        assert "none present" in capsys.readouterr().out
+
+    def test_an_authentication_failure_is_a_finding(self, monkeypatch):
+        """Kills ``if status != 200 …`` -> ``if False:``.
+
+        A dead Zotero key must be named; the /cite and /read commands fail
+        opaquely without it.
+        """
+        _stub_http_json(monkeypatch, lambda url: (403, "Forbidden"))
+        cc.check_zotero({"ZOTERO_API_KEY_READ": FAKE_SECRET})
+        assert len(cc.findings) == 1
+        assert "ZOTERO_API_KEY_READ: authentication failed (403)" in cc.findings[0]
+
+    def test_the_key_scope_is_reported_without_the_key(self, monkeypatch, capsys):
+        """Kills printing the key alongside its scope.
+
+        The scope report is the reason this pass exists — it is also the
+        place a key value would most naturally be interpolated.
+        """
+        _stub_http_json(
+            monkeypatch,
+            lambda url: (200, _zotero_key_body())
+            if url.endswith("/keys/current")
+            else (200, []),
+        )
+        cc.check_zotero({"ZOTERO_API_KEY_READ": FAKE_SECRET})
+        out = capsys.readouterr().out
+        assert "ZOTERO_API_KEY_READ: OK (user 4242)" in out
+        assert "personal: read+write" in out
+        assert FAKE_SECRET not in out
+
+    def test_write_access_to_all_groups_is_a_finding(self, monkeypatch):
+        """Kills ``if "all" in writable:`` -> ``if False:``.
+
+        A key named for one group that can write to every group is the
+        over-scoping this pass exists to surface.
+        """
+        body = _zotero_key_body(groups={"all": {"write": True}})
+        _stub_http_json(
+            monkeypatch,
+            lambda url: (200, body) if url.endswith("/keys/current") else (200, []),
+        )
+        cc.check_zotero({"ZOTERO_API_KEY_GROUP": "abcfake"})
+        assert len(cc.findings) == 1
+        assert "write access to ALL groups" in cc.findings[0]
+
+    def test_a_library_id_mismatch_is_a_finding(self, monkeypatch):
+        """Kills the ``str(body.get("userID")) != library_id`` comparison.
+
+        A key belonging to a different Zotero account reads every request
+        against the wrong library, silently.
+        """
+
+        def _handler(url: str):
+            if url.endswith("/keys/current"):
+                return 200, _zotero_key_body(user_id=4242)
+            if "/items?limit=1" in url:
+                return 200, []
+            return 200, []
+
+        _stub_http_json(monkeypatch, _handler)
+        cc.check_zotero(
+            {"ZOTERO_API_KEY_READ": "abcfake", "ZOTERO_LIBRARY_ID": "9999"}
+        )
+        assert any("userID 4242 != ZOTERO_LIBRARY_ID 9999" in f for f in cc.findings)
+
+    def test_an_unresolvable_collection_key_is_a_finding(self, monkeypatch):
+        """Kills ``if where is None: note(...)`` -> a silent skip.
+
+        A stale collection key sends every filed reference into nothing;
+        the failure is otherwise invisible until a citation goes missing.
+        """
+
+        def _handler(url: str):
+            if url.endswith("/keys/current"):
+                return 200, _zotero_key_body()
+            if "/items?limit=1" in url:
+                return 200, []
+            if "/groups?limit=100" in url:
+                return 200, []
+            if "/collections/" in url:
+                return 404, "Not Found"
+            raise AssertionError(f"unexpected URL: {url}")
+
+        _stub_http_json(monkeypatch, _handler)
+        cc.check_zotero(
+            {
+                "ZOTERO_API_KEY_READ": "abcfake",
+                "ZOTERO_LIBRARY_ID": "4242",
+                "PAPER_COLLECTION": "ABCD1234",
+            }
+        )
+        assert any(
+            "PAPER_COLLECTION=ABCD1234: not found" in f for f in cc.findings
+        )
+
+    def test_a_collection_key_found_in_a_group_is_reported(
+        self, monkeypatch, capsys
+    ):
+        """Kills the group-search fallback in the collection loop.
+
+        Most collection keys live in shared groups rather than the personal
+        library; without the fallback every one of them is a false finding.
+        """
+        collection = {
+            "data": {"name": "Fake Collection"},
+            "meta": {"numItems": 7},
+        }
+
+        def _handler(url: str):
+            if url.endswith("/keys/current"):
+                return 200, _zotero_key_body()
+            if "/items?limit=1" in url:
+                return 200, []
+            if "/groups?limit=100" in url:
+                return 200, [{"id": 5150, "data": {"name": "Fake Group"}}]
+            if "/users/4242/collections/" in url:
+                return 404, "Not Found"
+            if "/groups/5150/collections/" in url:
+                return 200, collection
+            raise AssertionError(f"unexpected URL: {url}")
+
+        _stub_http_json(monkeypatch, _handler)
+        cc.check_zotero(
+            {
+                "ZOTERO_API_KEY_READ": "abcfake",
+                "ZOTERO_LIBRARY_ID": "4242",
+                "PAPER_COLLECTION": "ABCD1234",
+            }
+        )
+        out = capsys.readouterr().out
+        assert cc.findings == []
+        assert "'Fake Collection'" in out
+        assert "7 items" in out
+        assert "group 5150 (Fake Group)" in out
+
+
+class TestMainWiring:
+    """Audit round two M5: whole passes were deletable from main().
+
+    Nothing asserted that ``main()`` calls ``check_shell_source``,
+    ``check_zotero``, ``check_osf``, ``check_github``, or ``check_grants``,
+    so any one of them could be removed and the checker would report a
+    clean bill of health for the credential it no longer examined.
+    """
+
+    #: One distinctive marker per pass, chosen so no other pass can produce
+    #: it. If a call is deleted from main(), its marker disappears.
+    MARKERS = {
+        "parse_env": "not a plain shell identifier",
+        "check_shell_source": "line(s) of output",
+        "check_zotero": "ZOTERO_API_KEY_READ: authentication failed",
+        "check_osf": "OSF_API_KEY: authentication failed",
+        "check_github": "GH_TOKEN: authentication failed",
+        "check_grants": "absent or empty in .env",
+    }
+
+    @staticmethod
+    def _stage(tmp_path, monkeypatch):
+        """Build an env, grants file, and stubs that make every pass speak."""
+        env = _env_file(
+            tmp_path,
+            "bad-name=abcfake\n"
+            "ZOTERO_API_KEY_READ=abcfake\n"
+            "OSF_API_KEY=abcfake\n"
+            "GH_TOKEN=ghp_abcfake\n",
+        )
+        grants = tmp_path / "credential-grants.toml"
+        grants.write_text(
+            'schema_version = 2\n\n'
+            '[[grants]]\n'
+            'id = "g1"\n'
+            'source_name = "ABSENT_VAR"\n'
+            'inject_as = "GH_TOKEN"\n'
+            'expires_on = "none"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cc, "GRANTS_FILE", grants)
+
+        def _json(url: str, headers: dict[str, str]):
+            if "api.zotero.org" in url:
+                return 401, "Unauthorized"
+            if "api.osf.io" in url:
+                return 401, "Unauthorized"
+            raise AssertionError(f"unexpected URL: {url}")
+
+        def _get(url: str, headers: dict[str, str]):
+            if "api.github.com" in url:
+                return 401, "Bad credentials", {}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        monkeypatch.setattr(cc, "http_json", _json)
+        monkeypatch.setattr(cc, "http_get", _get)
+        return env
+
+    def test_every_pass_is_wired_into_main(self, tmp_path, monkeypatch, capsys):
+        """Kills deleting any one of the five pass calls from main().
+
+        Each pass is given exactly one thing to complain about, and each
+        complaint is unique to it, so a missing call shows up as a missing
+        marker rather than as a smaller total.
+        """
+        env = self._stage(tmp_path, monkeypatch)
+        code = _run_main(monkeypatch, ["--env", str(env)])
+        out = capsys.readouterr().out
+
+        assert code == 1
+        combined = out + "\n".join(cc.findings)
+        missing = [
+            pass_name
+            for pass_name, marker in self.MARKERS.items()
+            if marker not in combined
+        ]
+        assert not missing, f"these passes did not run: {missing}\n{out}"
+        assert len(cc.findings) == len(self.MARKERS)
+
+    def test_the_summary_lists_every_finding_and_counts_them(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills dropping the ``for f in findings: print(...)`` summary loop.
+
+        The inline FINDING lines are interleaved with pass output; the
+        summary is what the operator actually reads, and a count without
+        the list is not actionable.
+        """
+        env = self._stage(tmp_path, monkeypatch)
+        _run_main(monkeypatch, ["--env", str(env)])
+        out = capsys.readouterr().out
+
+        assert f"{len(cc.findings)} finding(s):" in out
+        summary = out.split("finding(s):", 1)[1]
+        for marker in self.MARKERS.values():
+            assert marker in summary, f"{marker!r} missing from the summary"
+
+    def test_the_github_expiries_reach_the_grant_cross_check(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Kills ``check_grants(env, expiries)`` -> ``check_grants(env, {})``.
+
+        The cross-check's whole purpose is comparing the recorded expiry
+        with the live one; handed an empty map it silently degrades to
+        "present (N chars)" for every grant and never disagrees with the
+        record.
+        """
+        live = dt.date.today() + dt.timedelta(days=90)
+        env = _env_file(tmp_path, "GPT_GH_TOKEN=github_pat_abcfake\n")
+        grants = tmp_path / "credential-grants.toml"
+        grants.write_text(
+            'schema_version = 2\n\n'
+            '[[grants]]\n'
+            'id = "g1"\n'
+            'source_name = "GPT_GH_TOKEN"\n'
+            'inject_as = "GH_TOKEN"\n'
+            'expires_on = "2020-01-01"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cc, "GRANTS_FILE", grants)
+        monkeypatch.setattr(
+            cc, "http_json", lambda url, headers: pytest.fail(f"requested {url}")
+        )
+
+        def _get(url: str, headers: dict[str, str]):
+            if url.endswith("/user"):
+                return (
+                    200,
+                    {"login": "saross"},
+                    {
+                        "github-authentication-token-expiration":
+                            f"{live.isoformat()} 03:14:07 UTC"
+                    },
+                )
+            return 200, {"permissions": {"push": True, "pull": True}}, {}
+
+        monkeypatch.setattr(cc, "http_get", _get)
+        code = _run_main(monkeypatch, ["--env", str(env)])
+        out = capsys.readouterr().out
+
+        assert code == 1
+        assert any("update the record" in f for f in cc.findings), out
+        assert live.isoformat() in out
