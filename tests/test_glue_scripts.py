@@ -547,3 +547,82 @@ class TestSyncSymlinksRetargetsDirectoryLinks:
         )
 
 
+# ----------------------------------------------------------------------------
+# S13 — compose-global-claude-md.sh must not truncate the target before writing
+# ----------------------------------------------------------------------------
+
+
+class TestComposeGlobalClaudeMdIsAtomic:
+    """``compose > "$TARGET"`` truncated ~/.claude/CLAUDE.md before the first
+    byte was written, so a failure inside ``compose`` left the global
+    instruction file partial — silently dropping the outbound-message rule and
+    the ownership boundaries — and ``set -e`` aborted without restoring it.
+    """
+
+    @pytest.fixture()
+    def fake_pa_tree(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A minimal tree with the composer's three sources. Returns
+        ``(pa_dir, home)``."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "compose-global-claude-md.sh").symlink_to(
+            COMPOSE_SCRIPT
+        )
+        (pa_dir / "global-agent-guidance").mkdir()
+        (pa_dir / "global-agent-guidance" / "common.md").write_text(
+            "# Shared guidance\n\nCOMMON-SECTION\n", encoding="utf-8"
+        )
+        (pa_dir / "global-claude-md").mkdir()
+        (pa_dir / "global-claude-md" / "claude.md").write_text(
+            "# Claude overlay\n\nOVERLAY-SECTION\n", encoding="utf-8"
+        )
+        (pa_dir / "data" / "global-claude-md").mkdir(parents=True)
+        (pa_dir / "data" / "global-claude-md" / "local.md").write_text(
+            "# Local\n\nLOCAL-SECTION\n", encoding="utf-8"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        return pa_dir, home
+
+    def test_composes_all_three_sections(
+        self, fake_pa_tree: tuple[Path, Path]
+    ) -> None:
+        pa_dir, home = fake_pa_tree
+        result = _run_script(
+            pa_dir / "scripts" / "compose-global-claude-md.sh", home=home
+        )
+        assert result.returncode == 0, result.stderr
+        composed = (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+        for marker in ("COMMON-SECTION", "OVERLAY-SECTION", "LOCAL-SECTION"):
+            assert marker in composed
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root ignores the unreadable-source setup"
+    )
+    def test_failed_compose_leaves_the_previous_file_intact(
+        self, fake_pa_tree: tuple[Path, Path]
+    ) -> None:
+        pa_dir, home = fake_pa_tree
+        script = pa_dir / "scripts" / "compose-global-claude-md.sh"
+        assert _run_script(script, home=home).returncode == 0
+        target = home / ".claude" / "CLAUDE.md"
+        previous = target.read_text(encoding="utf-8")
+
+        # A source that passes the -f existence check but cannot be read: the
+        # shape a mid-compose failure takes (submodule unmounted, ENOSPC).
+        local = pa_dir / "data" / "global-claude-md" / "local.md"
+        local.chmod(0o000)
+        (pa_dir / "global-agent-guidance" / "common.md").write_text(
+            "# Shared guidance\n\nCHANGED-COMMON\n", encoding="utf-8"
+        )
+        try:
+            result = _run_script(script, home=home)
+        finally:
+            local.chmod(0o644)
+
+        assert result.returncode != 0, "a failed compose must not exit 0"
+        assert target.read_text(encoding="utf-8") == previous, (
+            "the previous global CLAUDE.md was truncated by a failed compose"
+        )
+
+
