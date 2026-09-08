@@ -34,6 +34,18 @@ eh = importlib.import_module("extraction-hook")
 # ============================================================================
 
 
+def _cursor_state(cursor_file: Path, session_id: str) -> tuple[str | None, bool]:
+    """Read ``(uuid, skip_pending)`` from a cursor FILE, as main() wrote it.
+
+    Cursor records are ``{"uuid": …, "skip_pending": …}`` since audit round
+    four; going through ``cursor_entry`` keeps the shape stated in one place
+    and reads legacy plain-string rows too.
+    """
+    if not cursor_file.exists():
+        return None, False
+    return eh.cursor_entry(json.loads(cursor_file.read_text()), session_id)
+
+
 class TestNormaliseTag:
     """Tests for normalise_tag() — the core folksonomy normaliser."""
 
@@ -122,7 +134,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 3
         assert last_uuid == "uuid-3"
 
@@ -137,7 +149,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), "uuid-2")
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), "uuid-2")
         assert len(messages) == 1
         assert messages[0]["content"] == "New message"
         assert last_uuid == "uuid-3"
@@ -153,7 +165,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid, _, _ = eh.parse_transcript(
+        messages, last_uuid, _ = eh.parse_transcript(
             str(transcript), "nonexistent-uuid"
         )
         assert len(messages) == 2
@@ -169,7 +181,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
@@ -194,7 +206,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 3  # uuid-1, uuid-2, uuid-5
         contents = [m["content"] for m in messages]
         assert "Normal question" in contents
@@ -220,7 +232,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert messages[0]["content"] == "Normal"
 
@@ -249,7 +261,7 @@ class TestParseTranscript:
         with open(transcript, "w") as f:
             f.write(json.dumps(entry) + "\n")
 
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages) == 1
         assert "[THINKING]:" in messages[0]["content"]
         assert "Here is my answer." in messages[0]["content"]
@@ -258,7 +270,7 @@ class TestParseTranscript:
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text("")
 
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert messages == []
         assert last_uuid is None
 
@@ -269,7 +281,7 @@ class TestParseTranscript:
         with open(transcript, "w") as f:
             f.write(json.dumps(entry) + "\n")
 
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         assert len(messages[0]["content"]) == eh.MAX_MESSAGE_CHARS
 
     def test_command_skip_flag_persists_across_user_entries(
@@ -319,7 +331,7 @@ class TestParseTranscript:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
 
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         contents = [m["content"] for m in messages]
         # The /remember response must not appear.
         assert not any(
@@ -969,7 +981,7 @@ class TestExtractMemoriesTransientErrors:
         # Empty list → cursor advances to the last seen UUID.
         assert cursor_file.exists()
         saved = json.loads(cursor_file.read_text())
-        assert saved.get("sess-Y") == "uuid-A"
+        assert eh.cursor_entry(saved, "sess-Y") == ("uuid-A", False)
 
 
 # ============================================================================
@@ -1145,7 +1157,7 @@ class TestAuditRoundTwo:
             make_transcript_entry("assistant", "an ordinary answer that must survive", "a2"),
         ]
         transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "Here is the command response text" not in texts
         assert "an ordinary answer that must survive" in texts
@@ -1505,7 +1517,7 @@ class TestMainPersistsAndAdvances:
         )
         assert record["session_id"] == "sess-P"
         # Cursor advanced only because the append succeeded.
-        assert json.loads(cursor_file.read_text())["sess-P"] == "uuid-A"
+        assert _cursor_state(cursor_file, "sess-P") == ("uuid-A", False)
 
     def test_main_holds_the_cursor_when_the_append_fails(self, tmp_path, monkeypatch):
         """Kills moving the cursor advance ABOVE ``append_memories(memories)``.
@@ -1612,7 +1624,7 @@ class TestConcurrentMainInvocations:
             f"the window was persisted {len(records)} times — the second run "
             "was not serialised behind the first"
         )
-        assert json.loads(cursor_file.read_text())["sess-R"] == "uuid-A"
+        assert _cursor_state(cursor_file, "sess-R") == ("uuid-A", False)
 
 
 class TestTranscriptShapeFidelity:
@@ -1636,7 +1648,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
             ],
         )
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "harness injection, not something Shawn said" not in texts
         assert texts == ["a real question from Shawn", "an ordinary answer"]
@@ -1664,7 +1676,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("user", "the real turn", "u-real"),
             ],
         )
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert [m["content"] for m in messages] == ["the real turn"]
         assert last_uuid == "u-real"
 
@@ -1694,7 +1706,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("assistant", "an ordinary answer", "a-real"),
             ],
         )
-        messages, _, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, _, _ = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in messages]
         assert "the slash-command response" not in texts
         assert texts == ["an unrelated real question", "an ordinary answer"]
@@ -1714,7 +1726,7 @@ class TestTranscriptShapeFidelity:
                 make_live_shape_entry("user", "injection two", "u2", is_meta=True),
             ],
         )
-        messages, last_uuid, _, _ = eh.parse_transcript(str(transcript), None)
+        messages, last_uuid, _ = eh.parse_transcript(str(transcript), None)
         assert messages == []
         assert last_uuid == "u2"
 
@@ -1756,7 +1768,7 @@ class TestTranscriptShapeFidelity:
 
         assert exc.value.code == 0
         assert cursor_file.exists(), "the cursor file was never written"
-        assert json.loads(cursor_file.read_text())["sess-M"] == "uuid-M2"
+        assert _cursor_state(cursor_file, "sess-M") == ("uuid-M2", False)
         # Nothing was persisted — the entries really were dropped.
         assert not store.exists()
 
@@ -1791,6 +1803,7 @@ class TestTranscriptShapeFidelity:
 
         assert cursor_file.stat().st_mtime_ns == before
         assert json.loads(cursor_file.read_text()) == {"sess-N": "uuid-A"}
+        assert _cursor_state(cursor_file, "sess-N") == ("uuid-A", False)
 
 
 class TestImportSideEffects:
@@ -1854,406 +1867,6 @@ class TestImportSideEffects:
         )
 
 
-class TestSplitCommandWindow:
-    """Audit round two M1: a window that ends mid-slash-command.
-
-    The skip flag exists so a ``/remember`` (or ``/forget``, or
-    ``/update``) response is never extracted — the command has already
-    written the record itself, and re-extracting it duplicates the memory
-    with a fresh id that dedup-by-id cannot catch.
-
-    The flag lives inside one ``parse_transcript`` call, so it survives
-    only as long as the cursor does not move past the command. A window
-    ending between the command and its response looks all-dropped, which
-    is why advancing there destroyed the skip. The split is reachable:
-    PreCompact fires before the model call, and an interrupt mid-tool-use
-    leaves ``[command, tool-use-only assistant]``.
-    """
-
-    @staticmethod
-    def _command_marker() -> str:
-        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
-
-    def test_a_window_ending_mid_command_holds_the_cursor(
-        self, tmp_path, monkeypatch
-    ):
-        """Kills ``and not skip_pending`` in the empty-window cursor advance.
-
-        With the guard gone the cursor steps past the command entry, and
-        the next window starts after it — so the response arrives with no
-        flag set and goes straight to Haiku.
-        """
-        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry(
-                    "user", self._command_marker() + "\nsave that", "uuid-cmd",
-                    is_meta=True,
-                ),
-                # The interrupt shape: a tool-use-only assistant entry, which
-                # deliberately does NOT consume the flag (audit H11).
-                {
-                    "type": "assistant",
-                    "uuid": "uuid-tool",
-                    "isMeta": False,
-                    "isSidechain": False,
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "tool_use", "name": "Write", "input": {}}
-                        ],
-                    },
-                },
-            ],
-        )
-        payload = json.dumps(
-            {"transcript_path": str(transcript), "session_id": "sess-SC"}
-        )
-        monkeypatch.setattr("sys.stdin", _StringIO(payload))
-
-        with patch("anthropic.Anthropic") as mock_cls:
-            with pytest.raises(SystemExit) as exc:
-                eh.main()
-            mock_cls.assert_not_called()
-
-        assert exc.value.code == 0
-        saved = json.loads(cursor_file.read_text()) if cursor_file.exists() else {}
-        assert "sess-SC" not in saved, (
-            "the cursor advanced past a pending command skip; the response "
-            f"will be extracted next firing. Cursor: {saved!r}"
-        )
-        assert not store.exists()
-
-    def test_the_response_is_still_skipped_on_the_next_firing(
-        self, tmp_path, monkeypatch
-    ):
-        """Kills the same guard, at the consequence rather than the cursor.
-
-        Second firing, with the response now present alongside a real
-        exchange: the response must not reach Haiku. If the first firing
-        had advanced the cursor, this window would begin after the command
-        and the response would be an ordinary assistant turn.
-        """
-        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
-        marker = self._command_marker()
-        response = "THE COMMAND RESPONSE THAT MUST NEVER BE EXTRACTED"
-
-        # Firing one: the window ends mid-command.
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry(
-                    "user", marker + "\nsave that", "uuid-cmd", is_meta=True
-                ),
-            ],
-        )
-        payload = json.dumps(
-            {"transcript_path": str(transcript), "session_id": "sess-SC2"}
-        )
-        monkeypatch.setattr("sys.stdin", _StringIO(payload))
-        with patch("anthropic.Anthropic"):
-            with pytest.raises(SystemExit):
-                eh.main()
-
-        # Firing two: the response has landed, and a real exchange follows.
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry(
-                    "user", marker + "\nsave that", "uuid-cmd", is_meta=True
-                ),
-                make_live_shape_entry("assistant", response, "uuid-resp"),
-                make_live_shape_entry(
-                    "user", "a genuine question " + "q" * 800, "uuid-user"
-                ),
-                make_live_shape_entry(
-                    "assistant", "a genuine answer " + "a" * 800, "uuid-ans"
-                ),
-            ],
-        )
-        monkeypatch.setattr("sys.stdin", _StringIO(payload))
-        with patch("anthropic.Anthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_client.messages.create.return_value = _mock_extraction_response(
-                _ONE_MEMORY_JSON
-            )
-            mock_cls.return_value = mock_client
-            eh.main()
-            assert mock_client.messages.create.call_count == 1
-            sent = mock_client.messages.create.call_args.kwargs["messages"][0][
-                "content"
-            ]
-
-        assert response not in sent, (
-            "the slash-command response was sent to the model — the skip "
-            "flag did not survive the window split"
-        )
-        assert "a genuine question" in sent
-        # The real exchange was extracted and the cursor now moves.
-        assert json.loads(cursor_file.read_text())["sess-SC2"] == "uuid-ans"
-        assert store.exists()
-
-    def test_a_completed_command_window_still_advances(self, tmp_path, monkeypatch):
-        """Kills widening the hold to every window carrying a command.
-
-        When the response HAS been seen the flag is spent, so holding the
-        cursor would re-parse the same window forever — the failure M1's
-        fix was meant to remove, reintroduced from the other side.
-        """
-        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry(
-                    "user", self._command_marker() + "\nsave that", "uuid-cmd",
-                    is_meta=True,
-                ),
-                make_live_shape_entry(
-                    "assistant", "the command response", "uuid-resp"
-                ),
-            ],
-        )
-        payload = json.dumps(
-            {"transcript_path": str(transcript), "session_id": "sess-SC3"}
-        )
-        monkeypatch.setattr("sys.stdin", _StringIO(payload))
-        with patch("anthropic.Anthropic") as mock_cls:
-            with pytest.raises(SystemExit):
-                eh.main()
-            mock_cls.assert_not_called()
-
-        assert json.loads(cursor_file.read_text())["sess-SC3"] == "uuid-resp"
-
-    def test_parse_transcript_reports_the_pending_flag(self, tmp_path):
-        """Kills ``return ParsedWindow(..., skip_next_assistant)`` -> ``False``.
-
-        The unit-level statement of the same contract: the third field is
-        the live flag at end of window, not a constant.
-        """
-        marker = self._command_marker()
-        pending = tmp_path / "pending.jsonl"
-        _write_transcript(
-            pending,
-            [make_live_shape_entry("user", marker + "\nx", "u1", is_meta=True)],
-        )
-        assert eh.parse_transcript(str(pending), None).skip_pending is True
-
-        spent = tmp_path / "spent.jsonl"
-        _write_transcript(
-            spent,
-            [
-                make_live_shape_entry("user", marker + "\nx", "u1", is_meta=True),
-                make_live_shape_entry("assistant", "the response", "u2"),
-            ],
-        )
-        assert eh.parse_transcript(str(spent), None).skip_pending is False
-
-        plain = tmp_path / "plain.jsonl"
-        _write_transcript(
-            plain, [make_live_shape_entry("user", "an ordinary turn", "u1")]
-        )
-        assert eh.parse_transcript(str(plain), None).skip_pending is False
-
-
-class TestSafeAdvancePosition:
-    """Audit round three C1: where the cursor stops when a command is pending.
-
-    Two invariants have to hold at once:
-
-    1. a slash-command response is never sent to the model (it duplicates
-       what the command itself wrote); and
-    2. a real message is never extracted twice.
-
-    Holding the cursor outright satisfies (1) and breaks (2) — the real
-    messages before the command are re-read every firing. Advancing to the
-    last uuid satisfies (2) and breaks (1). ``safe_uuid`` — the position
-    just before the command — is the only answer that satisfies both.
-    """
-
-    @staticmethod
-    def _command_marker() -> str:
-        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
-
-    def test_both_invariants_hold_across_the_split(self, tmp_path, monkeypatch):
-        """Kills advancing to ``new_last_uuid`` when a skip is pending, and
-        kills holding the cursor instead of advancing to ``safe_uuid``.
-
-        Firing one extracts the two real messages and stops at the
-        assistant, NOT at the command. Firing two therefore sees the
-        command and its response together, sends nothing to the model, and
-        steps past both — with the real messages still behind the cursor.
-        """
-        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
-        marker = self._command_marker()
-        response = "THE COMMAND RESPONSE THAT MUST NEVER BE EXTRACTED"
-        real_user = "a genuine question " + "q" * 800
-        real_assistant = "a genuine answer " + "a" * 800
-
-        # Firing one: real exchange, then the command, with no response yet.
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry("user", real_user, "uuid-1"),
-                make_live_shape_entry("assistant", real_assistant, "uuid-2"),
-                make_live_shape_entry(
-                    "user", marker + "\nsave that", "uuid-3", is_meta=True
-                ),
-            ],
-        )
-        payload = json.dumps(
-            {"transcript_path": str(transcript), "session_id": "sess-SA"}
-        )
-        monkeypatch.setattr("sys.stdin", _StringIO(payload))
-        with patch("anthropic.Anthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_client.messages.create.return_value = _mock_extraction_response(
-                _ONE_MEMORY_JSON
-            )
-            mock_cls.return_value = mock_client
-            eh.main()
-            assert mock_client.messages.create.call_count == 1
-            first_prompt = mock_client.messages.create.call_args.kwargs[
-                "messages"
-            ][0]["content"]
-
-        assert "a genuine question" in first_prompt
-        assert "a genuine answer" in first_prompt
-        after_first = json.loads(cursor_file.read_text())["sess-SA"]
-        assert after_first == "uuid-2", (
-            "the cursor should stop at the entry before the command, not at "
-            f"the command itself; it is at {after_first!r}"
-        )
-        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
-
-        # Firing two: the response has landed.
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry("user", real_user, "uuid-1"),
-                make_live_shape_entry("assistant", real_assistant, "uuid-2"),
-                make_live_shape_entry(
-                    "user", marker + "\nsave that", "uuid-3", is_meta=True
-                ),
-                make_live_shape_entry("assistant", response, "uuid-4"),
-            ],
-        )
-        monkeypatch.setattr("sys.stdin", _StringIO(payload))
-        with patch("anthropic.Anthropic") as mock_cls:
-            with pytest.raises(SystemExit) as exc:
-                eh.main()
-            mock_cls.assert_not_called()
-
-        assert exc.value.code == 0
-        # Invariant 1: nothing was sent, so the response never reached Haiku.
-        # Invariant 2: the store still holds exactly the first firing's record.
-        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
-        assert json.loads(cursor_file.read_text())["sess-SA"] == "uuid-4"
-
-    def test_safe_uuid_stops_before_the_command(self, tmp_path):
-        """Kills settling ``safe_uuid`` after the command instead of before.
-
-        The unit-level statement: with a pending skip, the safe position is
-        the entry preceding the command, never the command's own uuid.
-        """
-        transcript = tmp_path / "t.jsonl"
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry("user", "real one", "u1"),
-                make_live_shape_entry("assistant", "real two", "u2"),
-                make_live_shape_entry(
-                    "user", self._command_marker() + "\nx", "u3", is_meta=True
-                ),
-            ],
-        )
-        window = eh.parse_transcript(str(transcript), None)
-        assert window.skip_pending is True
-        assert window.last_uuid == "u3"
-        assert window.safe_uuid == "u2"
-
-    def test_skip_pending_is_reported_even_with_real_messages(self, tmp_path):
-        """Kills computing ``skip_pending`` only for all-dropped windows (M3).
-
-        A window can carry perfectly good messages and still end mid-command;
-        that is precisely the case C1 exists for.
-        """
-        transcript = tmp_path / "t.jsonl"
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry("user", "a real question", "u1"),
-                make_live_shape_entry(
-                    "user", self._command_marker() + "\nx", "u2", is_meta=True
-                ),
-            ],
-        )
-        window = eh.parse_transcript(str(transcript), None)
-        assert window.messages, "the real message must still be extracted"
-        assert window.skip_pending is True
-        assert window.safe_uuid == "u1"
-
-    def test_back_to_back_commands_keep_the_skip_pending(self, tmp_path):
-        """Kills clearing the flag on a second command entry (mutation M-b2).
-
-        Two commands in a row leave one response still owed. If the second
-        entry cleared the flag rather than re-setting it, the cursor would
-        advance past both and that response would be extracted.
-        """
-        marker = self._command_marker()
-        transcript = tmp_path / "t.jsonl"
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry("user", "real one", "u1"),
-                make_live_shape_entry("user", marker + "\nfirst", "u2", is_meta=True),
-                make_live_shape_entry("user", marker + "\nsecond", "u3", is_meta=True),
-            ],
-        )
-        window = eh.parse_transcript(str(transcript), None)
-        assert window.skip_pending is True
-        assert window.safe_uuid == "u1"
-
-    def test_safe_uuid_is_the_last_entry_when_nothing_is_pending(self, tmp_path):
-        """Kills freezing ``safe_uuid`` when no skip was ever pending.
-
-        With the flag clear at end of window the cursor may go all the way,
-        so ``safe_uuid`` must equal ``last_uuid`` — otherwise the ordinary
-        case silently stops short and re-reads entries every firing.
-        """
-        transcript = tmp_path / "t.jsonl"
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry("user", "real one", "u1"),
-                make_live_shape_entry("assistant", "real two", "u2"),
-            ],
-        )
-        window = eh.parse_transcript(str(transcript), None)
-        assert window.skip_pending is False
-        assert window.safe_uuid == "u2" == window.last_uuid
-
-    def test_a_spent_command_lets_the_cursor_run_to_the_end(self, tmp_path):
-        """Kills leaving ``safe_uuid`` frozen after the response arrives.
-
-        Once the response has been seen the flag is spent, so the whole
-        window is behind us and the cursor may pass the response too.
-        """
-        transcript = tmp_path / "t.jsonl"
-        _write_transcript(
-            transcript,
-            [
-                make_live_shape_entry(
-                    "user", self._command_marker() + "\nx", "u1", is_meta=True
-                ),
-                make_live_shape_entry("assistant", "the response", "u2"),
-            ],
-        )
-        window = eh.parse_transcript(str(transcript), None)
-        assert window.skip_pending is False
-        assert window.safe_uuid == "u2"
-
-
 class TestSidechainAndTheSkipFlag:
     """Audit round three M4: subagent turns must not touch the skip flag."""
 
@@ -2314,4 +1927,343 @@ class TestSidechainAndTheSkipFlag:
         window = eh.parse_transcript(str(transcript), None)
         texts = [m["content"] for m in window.messages]
         assert "AN ORDINARY ANSWER THAT MUST SURVIVE" in texts
+        assert window.skip_pending is False
+
+
+class TestPersistedSkipState:
+    """Audit round four C1: the cursor carries position AND pending skip.
+
+    Four invariants, all asserted through ``main()`` with the API mocked:
+
+    1. a slash-command response is never sent to the model;
+    2. no real message is read twice;
+    3. the cursor never moves backwards;
+    4. a session that ends on a command pins nothing.
+
+    Two earlier attempts made one pointer carry both facts. Holding the
+    cursor broke (2) — the real messages before the command were re-read
+    every firing. Stopping at a "safe" position broke (2) differently: on
+    ``[real, /cmd, real]`` the cursor stalled behind the trailing message,
+    which was then extracted on every firing (three firings at session
+    close, three duplicate records).
+    """
+
+    @staticmethod
+    def _marker() -> str:
+        return next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+
+    @staticmethod
+    def _fire(monkeypatch, transcript, session_id, *, expect_call):
+        """Run main() once; return the prompt sent, or None if none was."""
+        payload = json.dumps(
+            {"transcript_path": str(transcript), "session_id": session_id}
+        )
+        monkeypatch.setattr("sys.stdin", _StringIO(payload))
+        with patch("anthropic.Anthropic") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.messages.create.return_value = _mock_extraction_response(
+                _ONE_MEMORY_JSON
+            )
+            mock_cls.return_value = mock_client
+            try:
+                eh.main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main exited {exc.code}"
+            if not expect_call:
+                mock_cls.assert_not_called()
+                return None
+            assert mock_client.messages.create.call_count == 1
+            return mock_client.messages.create.call_args.kwargs["messages"][0][
+                "content"
+            ]
+
+    def test_a_follow_up_typed_before_the_response(self, tmp_path, monkeypatch):
+        """The regression that killed the safe-advance position.
+
+        ``[real, /cmd, real-user]``: the trailing message is extracted once
+        and the cursor moves PAST it, so the next firing does not see it
+        again. Kills any scheme that parks the cursor behind messages[-1].
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker, follow_up = self._marker(), "a follow-up typed straight away"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "first question " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("user", follow_up + " " + "f" * 800, "u3"),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-A", expect_call=True)
+        assert "first question" in sent and follow_up in sent
+        assert _cursor_state(cursor_file, "sess-A") == ("u3", True)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+        # Second firing: the response lands. It must not be sent, the
+        # follow-up must not be re-read, and the cursor must move on.
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "first question " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("user", follow_up + " " + "f" * 800, "u3"),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4"),
+            ],
+        )
+        assert self._fire(monkeypatch, transcript, "sess-A", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-A") == ("u4", False)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_a_command_at_the_end_of_a_window(self, tmp_path, monkeypatch):
+        """``[real, real, /cmd]`` then ``[response]``.
+
+        The window ends on the command, so the cursor stores the pending
+        skip; the response arrives in the next window and is dropped.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", "question " + "q" * 800, "u1"),
+            make_live_shape_entry("assistant", "answer " + "a" * 800, "u2"),
+            make_live_shape_entry("user", marker + "\nsave", "u3", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        sent = self._fire(monkeypatch, transcript, "sess-B", expect_call=True)
+        assert "question" in sent
+        assert _cursor_state(cursor_file, "sess-B") == ("u3", True)
+
+        entries.append(
+            make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-B", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-B") == ("u4", False)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_a_command_alone_then_an_idle_firing_then_the_response(
+        self, tmp_path, monkeypatch
+    ):
+        """``[/cmd]``, nothing, ``[response]`` — invariant 4.
+
+        A session that ends on a command must not pin the cursor: it
+        advances past the command carrying the flag, an idle firing in
+        between changes nothing, and the flag survives to drop the
+        response whenever it turns up.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True)
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-C") == ("u1", True)
+
+        # An idle firing: nothing new, nothing changes.
+        assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-C") == ("u1", True)
+
+        entries.append(
+            make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-C", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-C") == ("u2", False)
+        assert not store.exists()
+
+    def test_a_complete_command_exchange_inside_one_window(
+        self, tmp_path, monkeypatch
+    ):
+        """``[real, /cmd, response, real]`` in a single window.
+
+        The response is dropped, both real messages are extracted, and the
+        window closes with no skip owed.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "question " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u3"),
+                make_live_shape_entry("user", "later question " + "l" * 800, "u4"),
+            ],
+        )
+        sent = self._fire(monkeypatch, transcript, "sess-D", expect_call=True)
+        assert "THE COMMAND RESPONSE" not in sent
+        assert "question" in sent and "later question" in sent
+        assert _cursor_state(cursor_file, "sess-D") == ("u4", False)
+
+    def test_a_second_command_after_a_spent_one(self, tmp_path, monkeypatch):
+        """``[/cmd, response, /cmd]`` then ``[response]``.
+
+        The first command's response spends the flag; the second re-arms it,
+        and that state has to persist too.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        entries = [
+            make_live_shape_entry("user", marker + "\nfirst", "u1", is_meta=True),
+            make_live_shape_entry("assistant", "FIRST RESPONSE", "u2"),
+            make_live_shape_entry("user", marker + "\nsecond", "u3", is_meta=True),
+        ]
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-E", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-E") == ("u3", True)
+
+        entries.append(
+            make_live_shape_entry("assistant", "SECOND RESPONSE", "u4")
+        )
+        _write_transcript(transcript, entries)
+        assert self._fire(monkeypatch, transcript, "sess-E", expect_call=False) is None
+        assert _cursor_state(cursor_file, "sess-E") == ("u4", False)
+        assert not store.exists()
+
+    def test_a_legacy_plain_uuid_cursor_row_still_works(
+        self, tmp_path, monkeypatch
+    ):
+        """Kills dropping the ``isinstance(record, str)`` branch.
+
+        Every cursor row on disk today is a bare uuid string. Reading one
+        as "no skip pending" is the safe default; failing to read it at all
+        would reprocess every live session's whole transcript.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "old turn", "u1"),
+                make_live_shape_entry("user", "new question " + "q" * 800, "u2"),
+            ],
+        )
+        cursor_file.write_text(json.dumps({"sess-F": "u1"}), encoding="utf-8")
+        sent = self._fire(monkeypatch, transcript, "sess-F", expect_call=True)
+        assert "new question" in sent
+        assert "old turn" not in sent, "a legacy row must still position the cursor"
+        assert _cursor_state(cursor_file, "sess-F") == ("u2", False)
+
+    def test_a_cursor_sitting_on_a_command_entry(self, tmp_path, monkeypatch):
+        """Audit round four L-2: the cursor entry itself carries a marker.
+
+        Code before this round could write exactly that row. The entry is
+        consumed by the found_cursor skip BEFORE the marker test, so
+        without the check in that branch the response leaks into the next
+        window and is extracted.
+        """
+        transcript, cursor_file, store = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u2"),
+                make_live_shape_entry("user", "later " + "l" * 800, "u3"),
+            ],
+        )
+        # A legacy-shaped row parked on the command itself.
+        cursor_file.write_text(json.dumps({"sess-G": "u1"}), encoding="utf-8")
+        sent = self._fire(monkeypatch, transcript, "sess-G", expect_call=True)
+        assert "THE COMMAND RESPONSE" not in sent, (
+            "the response leaked because the cursor sat on the command entry"
+        )
+        assert "later" in sent
+        assert _cursor_state(cursor_file, "sess-G") == ("u3", False)
+        assert len(store.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_the_cursor_never_moves_backwards(self, tmp_path, monkeypatch):
+        """Invariant 3, stated directly: position is monotonic per firing.
+
+        Kills any scheme that rewinds to an earlier entry to preserve skip
+        state — the cursor must never fall behind the last message it just
+        handed to the model.
+        """
+        transcript, cursor_file, _ = _stage_main_paths(tmp_path, monkeypatch)
+        marker = self._marker()
+        order = ["u1", "u2", "u3", "u4"]
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", "one " + "q" * 800, "u1"),
+                make_live_shape_entry("user", marker + "\nsave", "u2", is_meta=True),
+                make_live_shape_entry("user", "two " + "w" * 800, "u3"),
+                make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u4"),
+            ],
+        )
+        seen = []
+        for firing in range(3):
+            # Only the first firing has anything extractable in it; the
+            # later two must find nothing and still not rewind.
+            self._fire(
+                monkeypatch, transcript, "sess-H", expect_call=(firing == 0)
+            )
+            uuid, _skip = _cursor_state(cursor_file, "sess-H")
+            seen.append(uuid)
+        positions = [order.index(u) for u in seen]
+        assert positions == sorted(positions), f"cursor went backwards: {seen}"
+        assert seen[-1] == "u4"
+
+    def test_the_stored_flag_seeds_the_next_parse(self, tmp_path):
+        """Kills ``skip_next_assistant = skip_pending`` -> ``= False``.
+
+        The unit-level statement of the whole mechanism: without the seed
+        the response in the next window is an ordinary assistant turn.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [make_live_shape_entry("assistant", "THE COMMAND RESPONSE", "u1")],
+        )
+        seeded = eh.parse_transcript(str(transcript), None, True)
+        assert seeded.messages == []
+        assert seeded.skip_pending is False
+
+        unseeded = eh.parse_transcript(str(transcript), None, False)
+        assert [m["content"] for m in unseeded.messages] == [
+            "THE COMMAND RESPONSE"
+        ]
+
+    def test_the_cursor_record_round_trips(self, tmp_path, monkeypatch):
+        """Kills writing the position without its flag.
+
+        ``set_cursor_entry`` and ``cursor_entry`` are the only two places
+        that know the record shape; a bare uuid written by either loses the
+        pending skip, which is the bug this round fixed.
+        """
+        monkeypatch.setattr(eh, "CURSOR_FILE", tmp_path / "cursor.json")
+        cursor = {}
+        eh.set_cursor_entry(cursor, "s1", "u9", True)
+        eh.save_cursor(cursor)
+        reloaded = eh.load_cursor()
+        assert eh.cursor_entry(reloaded, "s1") == ("u9", True)
+        assert eh.cursor_entry(reloaded, "absent") == (None, False)
+        assert eh.cursor_entry({"s2": "legacy-uuid"}, "s2") == ("legacy-uuid", False)
+
+
+class TestMetaAssistantAndTheSkipFlag:
+    """Audit round four: the isMeta-non-user drop was unpinned."""
+
+    def test_a_meta_assistant_does_not_consume_the_skip_flag(self, tmp_path):
+        """Kills deleting ``if entry.get("isMeta") and type != "user"``.
+
+        A harness-written assistant entry can land between a command and
+        its real response. It is not the response, so it must not spend the
+        flag — otherwise the genuine response is extracted, duplicating
+        what the command wrote.
+        """
+        marker = next(m for m in eh.COMMAND_MARKERS if m.startswith("# /"))
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                make_live_shape_entry("user", marker + "\nsave", "u1", is_meta=True),
+                make_live_shape_entry(
+                    "assistant", "a harness-written assistant note", "u2",
+                    is_meta=True,
+                ),
+                make_live_shape_entry("assistant", "THE REAL RESPONSE", "u3"),
+            ],
+        )
+        window = eh.parse_transcript(str(transcript), None)
+        assert [m["content"] for m in window.messages] == []
         assert window.skip_pending is False

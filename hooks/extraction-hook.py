@@ -387,6 +387,37 @@ def update_vocabulary(new_tags: list[str]) -> None:
 # ============================================================================
 
 
+def cursor_entry(cursor: dict, session_id: str) -> tuple[str | None, bool]:
+    """Read a session's cursor record as ``(uuid, skip_pending)``.
+
+    A record is ``{"uuid": …, "skip_pending": …}``. A bare string is a
+    legacy row written before audit round four and reads as "no skip
+    pending", which is the safe default: at worst one command response is
+    extracted once, exactly as it would have been before.
+    """
+    record = cursor.get(session_id)
+    if isinstance(record, str):
+        return record, False
+    if isinstance(record, dict):
+        uuid = record.get("uuid")
+        return (
+            uuid if isinstance(uuid, str) else None,
+            bool(record.get("skip_pending")),
+        )
+    return None, False
+
+
+def set_cursor_entry(
+    cursor: dict, session_id: str, uuid: str, skip_pending: bool
+) -> None:
+    """Write a session's cursor record, position and pending skip together.
+
+    They are written as one unit deliberately: a position saved without its
+    flag is the bug audit round four C1 fixed.
+    """
+    cursor[session_id] = {"uuid": uuid, "skip_pending": skip_pending}
+
+
 def load_cursor() -> dict:
     """Load cursor tracking last processed position per session."""
     if CURSOR_FILE.exists():
@@ -472,36 +503,64 @@ class ParsedWindow(NamedTuple):
     """What one pass over a transcript window yielded.
 
     ``skip_pending`` is True when the window ended with a slash-command
-    exchange whose response has NOT yet been seen (audit round two M1), so
-    the skip flag would have to survive into the next window to do its job.
+    exchange whose response has NOT yet been seen, so the skip must survive
+    into the next window to do its job.
 
-    ``safe_uuid`` is where the cursor may stop when that happens (audit
-    round three C1): the uuid of the last entry after which NO skip was
-    pending — i.e. the entry just before the command that set the flag.
-    Advancing there instead of to ``last_uuid`` keeps both invariants at
-    once: the command and its response are seen together next firing, so
-    the response is still dropped, and the real messages before the command
-    are never re-read. A plain "hold the cursor" guard satisfies only the
-    first and re-extracts the second.
+    It is PERSISTED in the cursor record rather than being worked around by
+    moving the cursor (audit round four C1). Two earlier attempts tried to
+    make one pointer carry both facts — hold the cursor (which re-extracted
+    the real messages before the command) and stop at a "safe" position
+    (which stalled on ``[real, /cmd, real]``, re-extracting the trailing
+    message on every firing). The cursor answers "how far have we read"; a
+    separate flag answers "is a response still owed". Splitting them lets
+    the cursor always move forward to the last entry actually read.
     """
 
     messages: list[dict]
     last_uuid: str | None
     skip_pending: bool
-    safe_uuid: str | None
+
+
+def _entry_text(entry: dict) -> str:
+    """Flatten one transcript entry's message content to plain text.
+
+    Structured content arrives as a list of blocks; only ``text`` and
+    ``thinking`` carry prose. Shared by the cursor-position check and the
+    main parse so the two cannot disagree about what an entry says.
+    """
+    msg = entry.get("message", {})
+    content = msg.get("content", "") if isinstance(msg, dict) else ""
+    if isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "thinking":
+                    # Include thinking for LLM research value
+                    thinking = block.get("thinking", "")
+                    if MAX_THINKING_CHARS:
+                        thinking = thinking[:MAX_THINKING_CHARS]
+                    text_parts.append(f"[THINKING]: {thinking}")
+            elif isinstance(block, str):
+                text_parts.append(block)
+        content = " ".join(text_parts)
+    return content if isinstance(content, str) else ""
 
 
 def parse_transcript(
     transcript_path: str,
     last_uuid: str | None,
+    skip_pending: bool = False,
 ) -> ParsedWindow:
     """
     Parse a Claude Code transcript JSONL file.
 
+    ``skip_pending`` seeds the slash-command skip from the cursor record, so
+    a command in one window still suppresses its response in the next.
+
     Returns new messages since last_uuid, the UUID of the last entry seen,
-    whether a slash-command skip is still pending at the end of the window,
-    and the last UUID at which no skip was pending (where the cursor may
-    stop when one is).
+    and whether a skip is still pending at the end of the window.
 
     If last_uuid is set but not found in the transcript (stale cursor
     from a rotated/truncated file), falls back to processing the entire
@@ -509,12 +568,10 @@ def parse_transcript(
     """
     messages = []
     last_seen_uuid = None
-    # The last position after which no command skip was pending. It trails
-    # ``last_seen_uuid`` by one entry and freezes the moment a command sets
-    # the flag, so it names the entry BEFORE the command (audit C1).
-    safe_uuid = None
     found_cursor = last_uuid is None  # If no cursor, start from beginning
-    skip_next_assistant = False  # Flag to skip assistant response to a command
+    # Seeded from the cursor record, so a command in a previous window still
+    # suppresses its response here (audit round four C1).
+    skip_next_assistant = skip_pending
 
     with open(transcript_path, encoding="utf-8") as f:
         for line in f:
@@ -529,15 +586,21 @@ def parse_transcript(
             if not found_cursor:
                 if entry_uuid == last_uuid:
                     found_cursor = True
+                    # The cursor can sit ON a command entry — code before
+                    # audit round four wrote exactly that. The entry is
+                    # consumed here, before the marker test below ever runs,
+                    # so without this its response would leak into the next
+                    # window (audit round four L-2). Sidechain entries are
+                    # excluded for the same reason they are below.
+                    if entry.get("type") == "user" and not entry.get(
+                        "isSidechain"
+                    ):
+                        if any(
+                            marker in _entry_text(entry)
+                            for marker in COMMAND_MARKERS
+                        ):
+                            skip_next_assistant = True
                 continue
-
-            # Settle the PREVIOUS entry before touching this one: if no
-            # skip was pending after it, the cursor may stop there. Doing
-            # this at the top of the next iteration (rather than at the end
-            # of each one) keeps it correct through every ``continue``
-            # below, of which there are many.
-            if not skip_next_assistant:
-                safe_uuid = last_seen_uuid
 
             if entry_uuid:
                 last_seen_uuid = entry_uuid
@@ -563,25 +626,7 @@ def parse_transcript(
             if entry.get("isMeta") and entry.get("type") != "user":
                 continue
 
-            msg = entry.get("message", {})
-            content = msg.get("content", "")
-
-            # Handle structured content blocks
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif block.get("type") == "thinking":
-                            # Include thinking for LLM research value
-                            thinking = block.get("thinking", "")
-                            if MAX_THINKING_CHARS:
-                                thinking = thinking[:MAX_THINKING_CHARS]
-                            text_parts.append(f"[THINKING]: {thinking}")
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                content = " ".join(text_parts)
+            content = _entry_text(entry)
 
             # Skip slash command exchanges — these are handled by the
             # commands themselves (e.g., /remember writes to JSONL
@@ -596,6 +641,14 @@ def parse_transcript(
             # command response, producing sporadic double-extractions.
             # The flag is cleared only by the first assistant turn that
             # follows.
+            #
+            # Known limit, recorded not fixed (audit round four L-4): the
+            # test is a substring match on the entry's text, so a NON-meta
+            # user entry that merely quotes a command header — a tool result
+            # echoing ``commands/*.md``, say — sets the flag too, and the
+            # next genuine assistant turn is dropped. Narrowing it needs a
+            # position-anchored match against the harness's real expansion
+            # shape, which is a separate change.
             if entry.get("type") == "user":
                 if any(marker in content for marker in COMMAND_MARKERS):
                     skip_next_assistant = True
@@ -652,20 +705,12 @@ def parse_transcript(
         )
         return parse_transcript(transcript_path, None)
 
-    # Settle the final entry the same way the loop settles each previous
-    # one: with no skip pending at end of window, the last entry is itself
-    # a safe stopping place.
-    if not skip_next_assistant:
-        safe_uuid = last_seen_uuid
-
     # ``skip_next_assistant`` still set at end of window means the command's
     # response has not arrived yet (PreCompact fires before the model call,
     # and an interrupt mid-tool-use leaves [command, tool-use-only
-    # assistant]). The caller advances to ``safe_uuid`` instead, so the
-    # command is re-read next firing and its response is still skipped.
-    return ParsedWindow(
-        messages, last_seen_uuid, skip_next_assistant, safe_uuid
-    )
+    # assistant]). The caller stores it alongside the position, so the next
+    # window resumes with the skip still owed.
+    return ParsedWindow(messages, last_seen_uuid, skip_next_assistant)
 
 
 # ============================================================================
@@ -1216,22 +1261,20 @@ def main() -> None:
     with cursor_file_lock():
         # Load cursor to find where we left off in this session's transcript
         cursor = load_cursor()
-        last_uuid = cursor.get(session_id)
+        last_uuid, stored_skip = cursor_entry(cursor, session_id)
 
-        # Parse new content from transcript
-        window = parse_transcript(transcript_path, last_uuid)
+        # Parse new content from transcript, resuming any owed skip.
+        window = parse_transcript(transcript_path, last_uuid, stored_skip)
         messages, new_last_uuid = window.messages, window.last_uuid
 
-        # Where the cursor may move to. When the window ends mid-command the
-        # answer is NOT the last uuid: stopping at ``safe_uuid`` — the entry
-        # just before the command — puts the command and its response in the
-        # SAME next window, where the existing skip logic drops the
-        # response, while leaving the real messages before the command
-        # behind the cursor so they are never extracted twice (audit round
-        # three C1). Every cursor write below uses this, not new_last_uuid.
-        advance_uuid = (
-            window.safe_uuid if window.skip_pending else new_last_uuid
-        )
+        # The cursor always advances to the last entry actually read, and
+        # carries the pending skip with it (audit round four C1). Position
+        # and skip state are two different facts; making one pointer serve
+        # both is what produced the two earlier regressions — holding the
+        # cursor re-extracted the real messages before a command, and
+        # stopping at a "safe" position stalled forever on
+        # ``[real, /cmd, real]``.
+        advance_uuid = new_last_uuid
 
         if not messages:
             # A window can hold entries and still yield no messages: every
@@ -1260,7 +1303,9 @@ def main() -> None:
             # model call, and an interrupt mid-tool-use leaves
             # [command, tool-use-only assistant].
             if advance_uuid and advance_uuid != last_uuid:
-                cursor[session_id] = advance_uuid
+                set_cursor_entry(
+                    cursor, session_id, advance_uuid, window.skip_pending
+                )
                 save_cursor(cursor)
                 logger.debug(
                     "No extractable messages in session %s; cursor advanced "
@@ -1343,7 +1388,9 @@ def main() -> None:
 
                 # Only advance cursor AFTER successful append
                 if advance_uuid:
-                    cursor[session_id] = advance_uuid
+                    set_cursor_entry(
+                        cursor, session_id, advance_uuid, window.skip_pending
+                    )
                     save_cursor(cursor)
 
                 logger.info(
@@ -1362,7 +1409,9 @@ def main() -> None:
             # No memories extracted, but still advance cursor so we don't
             # reprocess the same content
             if advance_uuid:
-                cursor[session_id] = advance_uuid
+                set_cursor_entry(
+                    cursor, session_id, advance_uuid, window.skip_pending
+                )
                 save_cursor(cursor)
             logger.info(
                 "No memories extracted from %d messages (session %s)",
