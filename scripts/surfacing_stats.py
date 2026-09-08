@@ -6,8 +6,9 @@ Stage 1 reader for the earned-utility value signal (item 16;
 append-only log written by ``surfacing_log.py`` and produces, per memory
 ID:
 
-- ``active_retrievals`` — count of ``fetch`` + ``recall`` lines. The
-  intent-driven signal: the model or Shawn *chose* to fetch this memory.
+- ``active_retrievals`` — count of ``fetch`` + ``recall`` + ``mcp`` lines.
+  The intent-driven signal: the model or Shawn *chose* to fetch this
+  memory.
 - ``digest_exposures`` — count of ``digest`` lines. Passive exposure,
   drawn only from the verified-true pool, so it largely re-derives the
   anchor signal (proposal §3.2) — reported separately and weighted below
@@ -43,8 +44,10 @@ DEFAULT_LOG_PATH = PA_DIR / "logs" / "surfaced.log"
 
 # Paths that count as *active* (intent-driven) retrieval, as opposed to
 # passive ``digest`` exposure. Kept as a set so the weighting is explicit
-# and testable rather than buried in a string comparison.
-ACTIVE_PATHS = frozenset({"fetch", "recall"})
+# and testable rather than buried in a string comparison. ``mcp`` joined
+# them in audit R5 (2026-09-08): an MCP tool call is a model or a person
+# deliberately asking for memories, the same intent ``fetch`` records.
+ACTIVE_PATHS = frozenset({"fetch", "recall", "mcp"})
 
 
 def parse_surfacing_line(line: str) -> dict | None:

@@ -954,3 +954,115 @@ class TestSoftDeleteInJsonlFallbacks:
         for note in (search_note, get_note):
             assert "is_active: false) ARE excluded" in note
             assert "decay is NOT applied" in note
+
+
+# -------------------------------------------------------------------------
+# Audit R5 (2026-09-08): MCP retrieval feeds the earned-utility signal
+# -------------------------------------------------------------------------
+
+class TestSurfacingInstrumentation:
+    """Every tool that returns memory content logs the ids it served.
+
+    The MCP server was the one retrieval surface writing nothing to
+    ``surfaced.log``, so memories served to Claude Desktop or claude.ai were
+    invisible to the aggregator a future archival decision rests on.
+    """
+
+    @staticmethod
+    def _ids_logged(mock_log) -> list[list[str]]:
+        """The id lists passed to ``log_surfaced``, call by call."""
+        return [
+            [m["id"] for m in call.args[0]]
+            for call in mock_log.call_args_list
+        ]
+
+    def test_search_memories_postgres_logs_exactly_what_it_returns(self) -> None:
+        """Kills: deleting the ``_log_surfaced(results)`` call in the PG branch."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=SAMPLE_RESULTS),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            out = _run(memory_mcp.search_memories(query="database"))
+        returned = [r["id"] for r in json.loads(out)["results"]]
+        assert self._ids_logged(mock_log) == [returned]
+
+    def test_search_memories_jsonl_logs_the_truncated_list(self) -> None:
+        """The logged ids are the ones actually served, not the pre-limit set."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=None),
+            patch.object(memory_mcp.fetch_memories, "load_jsonl_memories",
+                         return_value=SAMPLE_RESULTS),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            out = _run(memory_mcp.search_memories(
+                project="-home-shawn-personal-assistant", limit=1))
+        returned = [r["id"] for r in json.loads(out)["results"]]
+        assert len(returned) == 1
+        assert self._ids_logged(mock_log) == [returned]
+
+    def test_semantic_search_logs_after_the_similarity_filter(self) -> None:
+        """Only the memories that survive min_similarity are logged."""
+        scored = [
+            {**SAMPLE_RESULTS[0], "similarity": 0.91},
+            {**SAMPLE_RESULTS[1], "similarity": 0.20},
+        ]
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_semantic",
+                         return_value=scored),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            out = _run(memory_mcp.semantic_search(query="x", min_similarity=0.5))
+        returned = [r["id"] for r in json.loads(out)["results"]]
+        assert self._ids_logged(mock_log) == [returned]
+
+    def test_get_memory_logs_the_single_record(self) -> None:
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_postgres",
+                         return_value=[SAMPLE_RESULTS[0]]),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            _run(memory_mcp.get_memory(memory_id=SAMPLE_RESULTS[0]["id"]))
+        assert self._ids_logged(mock_log) == [[SAMPLE_RESULTS[0]["id"]]]
+
+    def test_list_recent_logs_its_rows(self) -> None:
+        columns = [
+            "id", "category", "content", "summary", "confidence",
+            "research_tags", "source_context", "created_at", "project",
+        ]
+        row = tuple(SAMPLE_RESULTS[0][c] for c in columns)
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [row]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        with (
+            patch.object(memory_mcp, "_pg_connect", return_value=(conn, None)),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            _run(memory_mcp.list_recent(days=7))
+        assert self._ids_logged(mock_log) == [[SAMPLE_RESULTS[0]["id"]]]
+
+    def test_tools_log_under_a_path_the_aggregator_counts(self) -> None:
+        """``path=mcp`` must be a label the writer accepts and the reader counts.
+
+        Kills: logging under an unknown label (the line would be written but
+        never counted as active retrieval).
+        """
+        import importlib
+
+        sys.path.insert(0, str(MODULE_PATH.parent))
+        surfacing_log = importlib.import_module("surfacing_log")
+        surfacing_stats = importlib.import_module("surfacing_stats")
+        assert memory_mcp.SURFACING_PATH in surfacing_log.VALID_PATHS
+        assert memory_mcp.SURFACING_PATH in surfacing_stats.ACTIVE_PATHS
+
+    def test_error_paths_log_nothing(self) -> None:
+        """A tool that returns no memories must not write a surfacing line."""
+        with (
+            patch.object(memory_mcp.fetch_memories, "try_semantic",
+                         return_value=None),
+            patch.object(memory_mcp.surfacing_log, "log_surfaced") as mock_log,
+        ):
+            _run(memory_mcp.semantic_search(query="x"))
+        mock_log.assert_not_called()
