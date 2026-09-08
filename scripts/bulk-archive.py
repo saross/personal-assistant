@@ -40,6 +40,7 @@ from typing import Any
 # machine, so the variable name carries a host suffix.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _openai_key import resolve_openai_key  # noqa: E402
+from _batch_state import load_state, save_state  # noqa: E402
 # The ONE substantive-session predicate, shared with check-archive-drift.py so
 # that the drift gate's remediation command archives exactly what it reported
 # (audit 2026-09-08, finding AR1). See scripts/_archive_substance.py.
@@ -62,6 +63,10 @@ LOG_FILE = LOG_DIR / "bulk-archive.log"
 MANIFEST_FILE = LOG_DIR / "bulk-archive-manifest.json"
 CHECKPOINT_FILE = LOG_DIR / "bulk-archive-progress.json"
 BATCH_STATE_FILE = LOG_DIR / "bulk-enrich-batch-state.json"
+# One state file per batch id (audit AR18): the Batch API takes up to 24
+# hours, so a second submit before the first is applied used to overwrite the
+# only map that says which archive entry each reply belongs to.
+BATCH_STATE_DIR = LOG_DIR / "bulk-enrich-batch-state"
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "cc-archives"
@@ -2228,16 +2233,14 @@ def _enrich_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         "n_requests": len(requests),
         "session_id_map": session_id_map,
     }
-    BATCH_STATE_FILE.write_text(
-        json.dumps(state, indent=2), encoding="utf-8"
-    )
+    state_file = save_state(state, BATCH_STATE_DIR, BATCH_STATE_FILE)
 
     logger.info(
         "Batch submitted: %s | %d requests | Status: %s",
         batch_id, len(requests), batch_job.processing_status,
     )
     print(f"\nBatch ID: {batch_id}")
-    print(f"State saved: {BATCH_STATE_FILE}")
+    print(f"State saved: {state_file}")
     print(
         f"\nNext: python3 scripts/bulk-archive.py "
         f"enrich --batch-apply {batch_id}"
@@ -2252,12 +2255,19 @@ def _enrich_apply(batch_id: str, logger: logging.Logger) -> None:
         logger.error("anthropic package not installed — pip install anthropic")
         sys.exit(1)
 
-    # Load state to get session_id_map
-    if not BATCH_STATE_FILE.exists():
-        logger.error("No batch state file found: %s", BATCH_STATE_FILE)
+    # Load the state that describes THIS batch. session_id_map is what turns
+    # a custom_id back into an archive directory; applying one batch's
+    # results through another's map writes each session's metadata into some
+    # other session's entry (audit AR18). A slot naming a different batch is
+    # therefore a refusal, not a fallback.
+    state = load_state(batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    if state is None:
+        logger.error(
+            "No batch state describing %s (looked in %s and %s) — without "
+            "its session map, results cannot be applied to the right entries",
+            batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE,
+        )
         sys.exit(1)
-
-    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
     session_id_map = state.get("session_id_map", {})
 
     client = anthropic.Anthropic()

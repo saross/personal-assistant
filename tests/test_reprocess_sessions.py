@@ -268,6 +268,9 @@ class TestCustomIdUniqueness:
         monkeypatch.setattr(reprocess, "ARCHIVE_ROOT", archive_root)
         monkeypatch.setattr(reprocess, "MEMORIES_FILE", memories)
         monkeypatch.setattr(reprocess, "BATCH_STATE_FILE", state_file)
+        monkeypatch.setattr(
+            reprocess, "BATCH_STATE_DIR", tmp_path / "batch-state"
+        )
         monkeypatch.setattr(reprocess, "load_env", lambda: None)
         monkeypatch.setattr(reprocess, "load_seed_tags", lambda n: [])
         monkeypatch.setattr("builtins.input", lambda prompt="": "y")
@@ -350,6 +353,9 @@ class TestApplyRefusesTheWrongBatch:
             },
         }), encoding="utf-8")
         monkeypatch.setattr(reprocess, "BATCH_STATE_FILE", state_file)
+        monkeypatch.setattr(
+            reprocess, "BATCH_STATE_DIR", tmp_path / "batch-state"
+        )
         monkeypatch.setattr(reprocess, "MEMORIES_FILE", tmp_path / "mem.jsonl")
         monkeypatch.setattr(reprocess, "load_env", lambda: None)
         monkeypatch.setattr(

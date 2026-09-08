@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bulk_rewrite_guard import ensure_safe_to_rewrite, release_lock  # noqa: E402
 # Shared writer helpers — keep COMMAND_MARKERS and timestamp shape in
 # lockstep with hooks/extraction-hook.py (audit IC1, IC4).
+from _batch_state import load_state, save_state  # noqa: E402
 from _command_markers import COMMAND_MARKERS  # noqa: E402
 from _timestamps import coerce_to_iso, now_iso  # noqa: E402
 from typing import Any
@@ -53,6 +54,10 @@ ENV_FILE = PA_DIR / ".env"
 LOG_DIR = PA_DIR / "logs"
 LOG_FILE = LOG_DIR / "reprocess-sessions.log"
 BATCH_STATE_FILE = LOG_DIR / "reprocess-batch-state.json"
+# One state file per batch id (audit AR18): the Batch API takes up to 24
+# hours, so a second submit before the first is applied used to overwrite the
+# only map that says which session each reply belongs to.
+BATCH_STATE_DIR = LOG_DIR / "reprocess-batch-state"
 MEMORIES_FILE = PA_DIR / "memories" / "memories.jsonl"
 TAG_VOCAB_FILE = PA_DIR / "memories" / "tag-vocabulary.txt"
 ARCHIVE_ROOT = Path.home() / "cc-archives"
@@ -748,9 +753,7 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         "n_sessions": len(sessions),
         "request_map": request_map,
     }
-    BATCH_STATE_FILE.write_text(
-        json.dumps(state, indent=2), encoding="utf-8"
-    )
+    state_file = save_state(state, BATCH_STATE_DIR, BATCH_STATE_FILE)
 
     logger.info(
         "Batch submitted: %s | %d requests (%d sessions) | Status: %s",
@@ -758,7 +761,7 @@ def cmd_submit(args: argparse.Namespace, logger: logging.Logger) -> None:
         batch_job.processing_status,
     )
     print(f"\nBatch ID: {batch_job.id}")
-    print(f"State: {BATCH_STATE_FILE}")
+    print(f"State: {state_file}")
     print(f"\nNext: venv/bin/python3 scripts/reprocess-sessions.py status {batch_job.id}")
 
 
@@ -795,23 +798,21 @@ def cmd_apply(args: argparse.Namespace, logger: logging.Logger) -> None:
         logger.error("anthropic package not installed")
         sys.exit(1)
 
-    if not BATCH_STATE_FILE.exists():
-        logger.error("No batch state file: %s", BATCH_STATE_FILE)
-        sys.exit(1)
-
-    state = json.loads(BATCH_STATE_FILE.read_text(encoding="utf-8"))
-    if state.get("batch_id") != args.batch_id:
-        # The request_map is what turns a custom_id back into a session id.
-        # Applying batch A's results through batch B's map attributes every
-        # extracted memory to whichever session happens to sit at the same
-        # position — memories filed under the wrong session, with no signal
-        # that anything went wrong (audit finding AR8). Checked BEFORE the
-        # rewrite guard, so a refusal costs no lock and no git fetch.
+    # The request_map is what turns a custom_id back into a session id.
+    # Applying batch A's results through batch B's map attributes every
+    # extracted memory to whichever session happens to sit at the same
+    # position — memories filed under the wrong session, with no signal that
+    # anything went wrong (audit finding AR8). ``load_state`` returns a state
+    # only when it names THIS batch, so a stale slot is a refusal, not a
+    # fallback. Checked BEFORE the rewrite guard, so a refusal costs no lock
+    # and no git fetch.
+    state = load_state(args.batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE)
+    if state is None:
         logger.error(
-            "Batch state at %s describes batch %s, not %s. Refusing: "
-            "applying one batch's results through another's request map "
-            "files every memory under the wrong session.",
-            BATCH_STATE_FILE, state.get("batch_id"), args.batch_id,
+            "No batch state describing %s (looked in %s and %s). Refusing: "
+            "without its request map, results cannot be attributed to the "
+            "sessions they came from.",
+            args.batch_id, BATCH_STATE_DIR, BATCH_STATE_FILE,
         )
         sys.exit(1)
 
