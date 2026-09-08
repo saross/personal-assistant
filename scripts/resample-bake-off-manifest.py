@@ -14,8 +14,10 @@ This script regenerates the manifest:
    - Per-project archives at ``~/Code/*/archive/cc-sessions/*/*/session.jsonl(.gz)``
    - Live transcripts at ``~/.claude/projects/*/<session-id>.jsonl``
    - Live sub-agent transcripts at ``~/.claude/projects/*/subagents/*.jsonl``
-2. Skips git-LFS pointer stubs and transcripts that distil to fewer than 100
-   tokens (matching the original >100-token floor).
+2. Skips git-LFS pointer stubs and transcripts that distil to fewer than
+   ``MIN_TOKENS`` (1,000) tokens. The original floor was >100; it was raised
+   because the live sub-agent pool is dominated by tiny prompts that would
+   otherwise crowd substantive sessions out of the short bin.
 3. Estimates distilled-text token count using the existing extractor
    (``scripts/extract-transcript-text.py``).
 4. Caps inclusion at **190,000 distilled tokens** — 200K Haiku window minus
@@ -25,22 +27,43 @@ This script regenerates the manifest:
    - short:  <50,000 tokens     (target n=4)
    - medium: 50K–119,999 tokens (target n=3)
    - long:   120K–190,000 tokens (target n=3)
-6. Stratified random selection with ``random.seed(42)``.
+6. Stratified random selection with a seeded RNG (``--seed``, default 42).
 
 Output
 ------
-Overwrites ``data/experiments/bake-off-metadata-2026-05-18/sample-manifest.json``.
+The manifest path is an explicit ``--out`` argument with no default. It used
+to be a module constant pointing straight at the canonical manifest in the
+private data submodule, which meant *any* invocation — from any copy of the
+script, from any working directory — overwrote the manifest the committed
+bake-off responses were generated against. The write is now temp-plus-replace
+and refuses an existing file unless ``--force`` is given.
+
+Usage
+-----
+::
+
+    venv/bin/python3 scripts/resample-bake-off-manifest.py --dry-run
+    venv/bin/python3 scripts/resample-bake-off-manifest.py \\
+        --out /path/to/sample-manifest.json --seed 42
+
+``--dry-run`` enumerates, scores, samples, and prints the plan without
+writing anything. ``--archive-root`` and ``--live-root`` (both defaulting to
+``Path.home()``) relocate the two candidate pools, which is what makes the
+script testable against a synthetic tree.
 """
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import glob
 import importlib.util
 import json
+import os
 import random
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
@@ -49,11 +72,10 @@ from typing import Optional
 # Configuration
 # ---------------------------------------------------------------------------
 
-PA_DIR = Path("/home/shawn/personal-assistant")
-MANIFEST_PATH = (
-    PA_DIR
-    / "data/experiments/bake-off-metadata-2026-05-18/sample-manifest.json"
-)
+# Derived from ``__file__`` rather than hardcoded: a copy of the repository
+# (a git worktree, a clone on another machine) must resolve its OWN sibling
+# scripts, not the operator's checkout.
+PA_DIR = Path(__file__).resolve().parent.parent
 
 # Token floor — raised from the original >100 to >1,000 per Shawn's
 # suggestion ("raise to 1,000 if it helps weed out noise"). The live
@@ -73,28 +95,46 @@ BINS = {
 }
 TARGET_COUNTS = {"short": 4, "medium": 3, "long": 3}
 
-RNG_SEED = 42
+DEFAULT_RNG_SEED = 42
 
 # Git-LFS pointer stubs start with this line; we detect them and skip.
 LFS_POINTER_RE = re.compile(rb"^version https://git-lfs\.github\.com/spec/")
 
-# Live-transcript glob patterns (live transcripts have no meta.json).
-# Note: sub-agent transcripts live at depth 4
-# (~/.claude/projects/<proj>/<session-id>/subagents/<agent>.jsonl).
-LIVE_GLOBS = [
-    "/home/shawn/.claude/projects/*/*.jsonl",
-    "/home/shawn/.claude/projects/*/*/subagents/*.jsonl",
-]
+# Glob patterns are stored RELATIVE to a root so the two pools can be
+# redirected (``--live-root`` / ``--archive-root``). Both default to
+# ``Path.home()``, which reproduces the previous hardcoded absolute paths on
+# the operator's machine while letting a test point them at a tmp tree.
+#
+# Live transcripts have no meta.json. Sub-agent transcripts live one level
+# deeper: ``.claude/projects/<proj>/<session-id>/subagents/<agent>.jsonl``.
+LIVE_GLOB_TEMPLATES = (
+    ".claude/projects/*/*.jsonl",
+    ".claude/projects/*/*/subagents/*.jsonl",
+)
 
-# Archive glob patterns (these typically have a session.meta.json sibling).
-ARCHIVE_GLOBS = [
-    "/home/shawn/cc-archives/*/*/session.jsonl",
-    "/home/shawn/cc-archives/*/*/session.jsonl.gz",
-    "/home/shawn/Code/*/archive/cc-sessions/*/*/session.jsonl",
-    "/home/shawn/Code/*/archive/cc-sessions/*/*/session.jsonl.gz",
-    "/home/shawn/personal-assistant/archive/cc-sessions/*/*/session.jsonl",
-    "/home/shawn/personal-assistant/archive/cc-sessions/*/*/session.jsonl.gz",
-]
+# Archive patterns (these typically have a session.meta.json sibling).
+ARCHIVE_GLOB_TEMPLATES = (
+    "cc-archives/*/*/session.jsonl",
+    "cc-archives/*/*/session.jsonl.gz",
+    "Code/*/archive/cc-sessions/*/*/session.jsonl",
+    "Code/*/archive/cc-sessions/*/*/session.jsonl.gz",
+    "personal-assistant/archive/cc-sessions/*/*/session.jsonl",
+    "personal-assistant/archive/cc-sessions/*/*/session.jsonl.gz",
+)
+
+
+def archive_globs(root: Path) -> list[str]:
+    """Return the archive glob patterns rooted at ``root``."""
+    return [str(root / template) for template in ARCHIVE_GLOB_TEMPLATES]
+
+
+def live_globs(root: Path) -> list[str]:
+    """Return the live-transcript glob patterns rooted at ``root``."""
+    return [str(root / template) for template in LIVE_GLOB_TEMPLATES]
+
+
+class ManifestExistsError(RuntimeError):
+    """The requested ``--out`` path already holds a manifest."""
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +143,8 @@ ARCHIVE_GLOBS = [
 
 
 def _load_extractor():
-    """Import scripts/extract-transcript-text.py as a module."""
-    path = PA_DIR / "scripts" / "extract-transcript-text.py"
+    """Import the sibling scripts/extract-transcript-text.py as a module."""
+    path = Path(__file__).with_name("extract-transcript-text.py")
     spec = importlib.util.spec_from_file_location(
         "extract_transcript_text", str(path)
     )
@@ -212,18 +252,21 @@ def _meta_project_name(meta: dict) -> Optional[str]:
     return project.get("name")
 
 
-def enumerate_archive_candidates() -> list[Candidate]:
-    """Walk all archive globs; return one Candidate per non-LFS transcript.
+def enumerate_archive_candidates(patterns: list[str]) -> list[Candidate]:
+    """Walk the given archive globs; one Candidate per non-LFS transcript.
 
     ``glob.glob`` returns filesystem-order results, which differ across
     machines, so each call is wrapped in ``sorted(...)`` to make the
     enumeration order deterministic. This matters because the downstream
-    ``random.seed(42)`` shuffle is only reproducible if the input list
-    is identical across runs.
+    seeded shuffle is only reproducible if the input list is identical
+    across runs.
+
+    Args:
+        patterns: absolute glob patterns, normally from ``archive_globs``.
     """
     seen_paths: set[str] = set()
     out: list[Candidate] = []
-    for pattern in ARCHIVE_GLOBS:
+    for pattern in patterns:
         for path_str in sorted(glob.glob(pattern)):
             if path_str in seen_paths:
                 continue
@@ -257,15 +300,18 @@ def enumerate_archive_candidates() -> list[Candidate]:
     return out
 
 
-def enumerate_live_candidates() -> list[Candidate]:
-    """Walk live globs under ~/.claude/projects/.
+def enumerate_live_candidates(patterns: list[str]) -> list[Candidate]:
+    """Walk the given live-transcript globs (normally under ``.claude/``).
 
     Wraps ``glob.glob`` in ``sorted(...)`` for deterministic order across
     machines — see ``enumerate_archive_candidates`` for the rationale.
+
+    Args:
+        patterns: absolute glob patterns, normally from ``live_globs``.
     """
     seen_paths: set[str] = set()
     out: list[Candidate] = []
-    for pattern in LIVE_GLOBS:
+    for pattern in patterns:
         is_subagent = "/subagents/" in pattern
         for path_str in sorted(glob.glob(pattern)):
             if path_str in seen_paths:
@@ -285,6 +331,62 @@ def enumerate_live_candidates() -> list[Candidate]:
                 started_at=None,
             ))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+#: Which copy of a dual-resident session wins. The archive tier is first
+#: because it is the only tier that ships a ``session.meta.json``, and that
+#: file is where ``started_at``, the authoritative project name, and the
+#: ``three_ps`` state come from. A sub-agent transcript is last: Shawn's spec
+#: flags those as "typically less substantive".
+SOURCE_PREFERENCE: dict[str, int] = {"archive": 0, "live": 1, "subagent": 2}
+
+
+def deduplicate_candidates(
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], int]:
+    """Keep one Candidate per session id, preferring the archived copy.
+
+    The previous sort key was ``(session_id, transcript_path)``, which put
+    ``/home/shawn/.claude/...`` before ``/home/shawn/cc-archives/...``
+    because ``'.' < 'c'``. Every session resident in both pools therefore
+    entered the sample as ``source="live"`` with ``meta_path=None`` and
+    ``three_ps_state="unknown"`` — the opposite of the documented intent,
+    and enough to drop it out of both the empty and the populated tier of
+    the stratified sampler.
+
+    Sorting by ``(session_id, source_rank, transcript_path)`` is also what
+    makes the downstream seeded shuffle reproducible: neither dict insertion
+    order nor filesystem traversal order can reach it.
+
+    Args:
+        candidates: the combined archive and live pools, in any order.
+
+    Returns:
+        ``(unique_candidates, n_removed)``.
+    """
+    ordered = sorted(
+        candidates,
+        key=lambda c: (
+            c.session_id or "",
+            SOURCE_PREFERENCE.get(c.source, len(SOURCE_PREFERENCE)),
+            c.transcript_path,
+        ),
+    )
+    seen_keys: set[str] = set()
+    unique: list[Candidate] = []
+    for candidate in ordered:
+        # A session_id of None or empty string falls back to a path-based
+        # key, so duplicate paths are still collapsed.
+        key = candidate.session_id or candidate.transcript_path
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique.append(candidate)
+    return unique, len(ordered) - len(unique)
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +460,9 @@ def extract_and_score(candidates: list[Candidate], extractor) -> list[Scored]:
 # ---------------------------------------------------------------------------
 
 
-def stratified_sample(scored: list[Scored]) -> list[Scored]:
+def stratified_sample(
+    scored: list[Scored], *, seed: int = DEFAULT_RNG_SEED
+) -> list[Scored]:
     """Pick TARGET_COUNTS per bin, prioritising empty-state archived sessions.
 
     Within each bin, the selection prefers:
@@ -368,8 +472,12 @@ def stratified_sample(scored: list[Scored]) -> list[Scored]:
 
     This is deliberately not pure random across the whole bin — Shawn asked
     for best-effort empty inclusion, and empties are rarer in the live pool.
+
+    Args:
+        scored: every scored candidate, in any order.
+        seed: the RNG seed, recorded in the manifest so a run is repeatable.
     """
-    rng = random.Random(RNG_SEED)
+    rng = random.Random(seed)
     picks: list[Scored] = []
 
     # Bucket by bin.
@@ -381,7 +489,10 @@ def stratified_sample(scored: list[Scored]) -> list[Scored]:
     for bin_label, target in TARGET_COUNTS.items():
         pool = by_bin[bin_label]
         if not pool:
-            print(f"  WARNING: bin {bin_label} has 0 candidates")
+            print(
+                f"  SHORTFALL: bin {bin_label} filled 0 of {target} "
+                "(0 candidates in the pool)"
+            )
             continue
 
         # Within a bin, build a per-bin mix that balances:
@@ -427,6 +538,15 @@ def stratified_sample(scored: list[Scored]) -> list[Scored]:
         while len(bin_picks) < target and remaining:
             bin_picks.append(remaining.pop(0))
 
+        # An under-filled stratum used to pass in silence: the counts in the
+        # manifest were honest, but nothing said the design had not been
+        # met, so a bin that came up short looked like a deliberate choice.
+        if len(bin_picks) < target:
+            print(
+                f"  SHORTFALL: bin {bin_label} filled {len(bin_picks)} of "
+                f"{target} ({len(pool)} candidate(s) in the pool)"
+            )
+
         picks.extend(bin_picks)
 
     return picks
@@ -437,8 +557,47 @@ def stratified_sample(scored: list[Scored]) -> list[Scored]:
 # ---------------------------------------------------------------------------
 
 
-def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
-    """Write the manifest JSON and return the in-memory object."""
+def write_json_atomic(path: Path, payload: dict) -> None:
+    """Serialise ``payload`` to a sibling temp file, then ``os.replace`` it.
+
+    A crash (or a full disk) part-way through a plain ``write_text`` leaves a
+    truncated manifest where a valid one used to be. Writing beside the
+    target and renaming makes the replacement atomic on POSIX: readers see
+    either the old file or the new one, never half of either.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2) + "\n")
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def build_manifest(
+    picks: list[Scored],
+    pool_stats: dict,
+    *,
+    seed: int,
+    generated_at: datetime.datetime,
+) -> dict:
+    """Assemble the manifest object without touching the filesystem.
+
+    Split out from the writer so a dry run can print exactly what a real run
+    would have persisted, and so a test can compare two runs byte for byte.
+
+    Args:
+        picks: the sampled sessions, in selection order.
+        pool_stats: the candidate-pool counts recorded in the header.
+        seed: the RNG seed actually used, recorded for reproducibility.
+        generated_at: a single timestamp used for both the ``generated_at``
+            field and the date in ``notes`` — one clock reading, so a run
+            that straddles midnight cannot disagree with itself.
+    """
     sessions_out = []
     for s in picks:
         c = s.candidate
@@ -467,10 +626,8 @@ def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
         # Stamp the moment of generation. Hardcoding a date (the previous
         # value was "2026-05-17") makes the provenance trail dishonest the
         # next time the script runs.
-        "generated_at": datetime.datetime.now(
-            tz=datetime.timezone.utc
-        ).isoformat(),
-        "rng_seed": RNG_SEED,
+        "generated_at": generated_at.isoformat(),
+        "rng_seed": seed,
         "extractor": "scripts/extract-transcript-text.py",
         "token_estimator": "chars / 4",
         "haiku_context_cap_tokens": HAIKU_CAP_TOKENS,
@@ -488,13 +645,12 @@ def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
         },
         "pool_stats": pool_stats,
         "notes": (
-            f"Re-sampled "
-            f"{datetime.datetime.now(tz=datetime.timezone.utc).date().isoformat()} "
+            f"Re-sampled {generated_at.date().isoformat()} "
             "to cap distilled-text tokens at 190K so "
             "every session fits Haiku 4.5's 200K context window (200K minus "
             "~3K for prompt + header + output budget, plus safety buffer for "
             "the chars/4 heuristic's known under-counting of dense content). "
-            "Stratified random with random.seed(42); >1,000-token floor "
+            f"Stratified random with random.seed({seed}); >1,000-token floor "
             "applied (raised from the original >100 floor to weed out tiny "
             "live sub-agent invocations). Within each bin the algorithm "
             "first takes one archived empty-state session (best-effort empty "
@@ -515,7 +671,36 @@ def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
         "sessions": sessions_out,
     }
 
-    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2) + "\n")
+    return manifest
+
+
+def write_manifest(
+    picks: list[Scored],
+    pool_stats: dict,
+    out_path: Path,
+    *,
+    seed: int,
+    generated_at: datetime.datetime,
+    force: bool = False,
+) -> dict:
+    """Build the manifest and persist it to ``out_path``; return the object.
+
+    Raises:
+        ManifestExistsError: ``out_path`` exists and ``force`` is False. The
+            committed bake-off responses were generated against a particular
+            manifest, so silently replacing one destroys the only link
+            between those responses and the sessions that produced them.
+    """
+    if out_path.exists() and not force:
+        raise ManifestExistsError(
+            f"{out_path} already exists. Re-sampling would break the link "
+            "between the existing manifest and any responses generated "
+            "against it; pass --force to replace it deliberately."
+        )
+    manifest = build_manifest(
+        picks, pool_stats, seed=seed, generated_at=generated_at
+    )
+    write_json_atomic(out_path, manifest)
     return manifest
 
 
@@ -524,45 +709,116 @@ def write_manifest(picks: list[Scored], pool_stats: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def parse_as_of(value: str) -> datetime.datetime:
+    """Parse ``--as-of`` as an ISO date or datetime; naive values are UTC.
+
+    Raises:
+        argparse.ArgumentTypeError: the value is not ISO 8601.
+    """
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--as-of must be an ISO 8601 date or datetime, not {value!r}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Return the command-line parser.
+
+    ``--out`` deliberately has no default: the previous module-level constant
+    pointed at the canonical manifest, so running the script at all — even
+    from a scratch copy, even to see what it would pick — destroyed it.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Re-sample the bake-off manifest with a 190K-token, "
+            "Haiku-compatible cap."
+        )
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "Where to write the manifest JSON. Required unless --dry-run; "
+            "refuses to replace an existing file unless --force."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Enumerate, score, and sample, then print the plan. Writes nothing.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow --out to replace an existing manifest.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_RNG_SEED,
+        help=(
+            f"RNG seed for the stratified sample (default {DEFAULT_RNG_SEED}); "
+            "recorded in the manifest as rng_seed."
+        ),
+    )
+    parser.add_argument(
+        "--as-of",
+        type=parse_as_of,
+        default=None,
+        help=(
+            "Pin the generation timestamp (ISO date or datetime, UTC when "
+            "naive) instead of reading the clock. With the same --seed and "
+            "the same candidate pool, two runs then produce byte-identical "
+            "manifests, which is what makes a re-sample auditable."
+        ),
+    )
+    parser.add_argument(
+        "--archive-root",
+        type=Path,
+        default=Path.home(),
+        help="Root the archive globs are resolved against (default: ~).",
+    )
+    parser.add_argument(
+        "--live-root",
+        type=Path,
+        default=Path.home(),
+        help="Root the live-transcript globs are resolved against (default: ~).",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Enumerate, score, sample, and either print the plan or write it."""
+    args = build_arg_parser().parse_args(argv)
+    if args.out is None and not args.dry_run:
+        print(
+            "--out is required unless --dry-run is given (there is no default "
+            "output path: the previous default overwrote the canonical "
+            "manifest on every run).",
+            file=sys.stderr,
+        )
+        return 2
+
     extractor = _load_extractor()
 
     print("Enumerating archive candidates …")
-    arch = enumerate_archive_candidates()
+    arch = enumerate_archive_candidates(archive_globs(args.archive_root))
     print(f"  archive transcripts (non-LFS): {len(arch)}")
 
     print("Enumerating live candidates …")
-    live = enumerate_live_candidates()
+    live = enumerate_live_candidates(live_globs(args.live_root))
     print(f"  live transcripts (non-LFS): {len(live)}")
     n_subagent = sum(1 for c in live if c.source == "subagent")
     n_main = len(live) - n_subagent
     print(f"    main: {n_main}   sub-agent: {n_subagent}")
 
-    # Deduplicate by session_id. When the same session_id appears in both
-    # the archive and the live pool (or any other duplication), keep the
-    # archived copy first because it ships with a session.meta.json. Falling
-    # back to the live copy only if no archive copy exists.
-    #
-    # Sort the combined list by (session_id, transcript_path) before
-    # bucketing so the ``random.seed(42)`` shuffle downstream is
-    # reproducible regardless of dict-key insertion order or filesystem
-    # traversal order across machines.
-    raw_combined = sorted(
-        arch + live,
-        key=lambda c: (c.session_id or "", c.transcript_path),
-    )
-    n_before_dedup = len(raw_combined)
-    seen_ids: set[str] = set()
-    all_candidates: list[Candidate] = []
-    for c in raw_combined:
-        # session_id of None or empty string falls back to a path-based key
-        # so we still dedup duplicate paths.
-        key = c.session_id or c.transcript_path
-        if key in seen_ids:
-            continue
-        seen_ids.add(key)
-        all_candidates.append(c)
-    n_dedup_removed = n_before_dedup - len(all_candidates)
+    all_candidates, n_dedup_removed = deduplicate_candidates(arch + live)
     total_pool = len(all_candidates)
     print(f"  deduplicated by session_id (removed {n_dedup_removed} copies)")
     print(f"Total unique candidate pool: {total_pool}")
@@ -610,11 +866,32 @@ def main() -> int:
     }
 
     print("\nStratified sampling …")
-    picks = stratified_sample(scored)
+    picks = stratified_sample(scored, seed=args.seed)
     print(f"  selected {len(picks)} sessions")
 
-    manifest = write_manifest(picks, pool_stats)
-    print(f"\nManifest written to {MANIFEST_PATH}")
+    # One clock reading for the whole manifest — see ``build_manifest`` —
+    # or the pinned value, which makes the whole run reproducible.
+    generated_at = args.as_of or datetime.datetime.now(tz=datetime.timezone.utc)
+    if args.dry_run:
+        manifest = build_manifest(
+            picks, pool_stats, seed=args.seed, generated_at=generated_at
+        )
+        print(
+            f"\nDRY RUN — nothing written. A real run would write "
+            f"{len(manifest['sessions'])} sessions "
+            f"({manifest['totals']['content_tokens']:,} distilled tokens) "
+            f"to {args.out if args.out else '<--out>'}."
+        )
+    else:
+        try:
+            write_manifest(
+                picks, pool_stats, args.out,
+                seed=args.seed, generated_at=generated_at, force=args.force,
+            )
+        except ManifestExistsError as exc:
+            print(f"Refused: {exc}", file=sys.stderr)
+            return 2
+        print(f"\nManifest written to {args.out}")
 
     print("\nSelected sessions:")
     for s in picks:
