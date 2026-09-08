@@ -209,7 +209,7 @@ dies at line 618 before the sync body and the test passes anyway).
 | S19 | Unchecked `exec` redirect and `cd` misreported as lock contention | **round 2** (branch `claude/audit-sync-writers`) |
 | S20 (B) | Explicit-pathspec contract untested for the data-submodule committers; `commit-data.sh` lock and branch guard removable | **round 2** (branch `claude/audit-sync-helpers`) |
 | S21 (B) | The end-to-end fixture would, if repaired, run `sync-symlinks.sh` against the real `~/.claude/settings.json` and rsync/R2 against real archives; pin `HOME` first | **round 2** (branch `claude/audit-sync-writers`) (before any fixture repair) |
-| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (CONFIRMED by two round-two agents; `rebuild.log` grew during today's runs) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
+| S22 | The suite writes into the live private submodule through the `logs → data/logs` symlink: `scripts/_bulk_rewrite_guard.py:76` and `scripts/rebuild-postgres.py:204` (fixed on PR #117) (CONFIRMED by three round-two agents; `rebuild.log` grew during today's runs; the guard opens its file handler at import) | **next** (pin both log paths in tests; `rebuild.log` on the Postgres branch) |
 | S23 | `daily-sync.sh` shrink detector checks only the auto-sync commit; a truncation already on disk is committed by the earlier append-only block unguarded (SUSPECTED, round-two agent) | **next** (round 3) |
 | S24 | The parent repository has S1's hole: an unpushed parent commit with an unchanged data pointer is never pushed (CONFIRMED) | **decision** (pushing would publish another session's parent commits; see D5) |
 | S25 | `resolve_rebase_conflicts`'s submodule branch is unreachable (only called for the data repository, which holds no gitlink) | deferred (dead code, harmless) |
@@ -253,6 +253,7 @@ callers.
 | P14 | Poison lines re-quarantined every 5 minutes while the cursor is halted | **round 2** (branch `claude/audit-postgres`) (dedup before append) |
 | P15 | Drift recovery pulls the whole table to filter in Python | deferred |
 | P16 | Three processes read-modify-write `sync-cursors.json` without lock or atomic rename | **round 2** (branch `claude/audit-postgres`) (atomic write; the memories sync already has the flock pattern) |
+| P17 | `scripts/sync-to-zotero.py:129` is the third writer of `sync-cursors.json` and still writes unlocked and non-atomically; P16 protects the other two (CONFIRMED, round-two agent) | **next** (external-services tranche, or round 3) |
 
 Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
 0` stored as NULL; 235 MB steady-state RSS per 5-minute tick; `split()` vs
@@ -302,12 +303,12 @@ Lows recorded: three constant f-string SQL sites; handler stacking; `tool_calls:
   the checker's tests and two fixes (PR #115, `claude/audit-hook-tests`);
   sync helpers S8, S11, S13–S16, S20 (PR #114, `claude/audit-sync-helpers`);
   sync core S1, S3–S7, S9, S10, S12, S17, S19, S21 (PR #116,
-  `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16
-  (`claude/audit-postgres`, in progress). PR #114's re-audit found a
+  `claude/audit-sync-writers`); Postgres P1–P10, P12, P14, P16 and the
+  `rebuild.log` half of S22 (PR #117, `claude/audit-postgres`). PR #114's re-audit found a
   critical in the new `commit-data.sh` staging logic (latches into a silent
   no-op after a failed run) and glob pathspecs; being fixed on the branch
   before merge.
-- Round 3 (queued, on main after the branches merge): H25, H26, S22, S23,
-  S26.
+- Round 3 (queued, on main after the branches merge): H25, H26, S22 (the
+  guard's import-time handler), S23, S26, P17.
 - Remaining tranches (3b, 3c, 4a, 4b, 5a, 5b, 6) run after round 2 lands, so
   their findings arrive against corrected code.
