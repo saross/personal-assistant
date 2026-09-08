@@ -1970,3 +1970,64 @@ class TestShrinkIsNotStaleness:
             "SHRUNK" in record.getMessage() or "manifest records" in
             record.getMessage() for record in caplog.records
         )
+
+
+class TestMixedRootIsRefused:
+    """Round 4c-3 finding L-2 — `all(` must not weaken to `any(`.
+
+    The empty-live-store branch requires that EVERY child look like a
+    project key. With `any(`, a root holding project keys AND session-UUID
+    directories reads as live: the UUID directories then become project
+    keys, and the run proceeds under a wrong idea of the tree — the same
+    silent misreading AR10 exists to prevent, reached through the branch
+    added to reconcile the probe with the drift gate.
+    """
+
+    def test_project_keys_beside_a_session_uuid_are_refused(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / "-home-tester-Zenodo-uploads").mkdir(parents=True)
+        # A session directory left behind beside them.
+        (root / SID_A / "subagents").mkdir(parents=True)
+
+        with caplog.at_level(logging.ERROR, logger=LOGGER.name):
+            with pytest.raises(SystemExit) as exit_info:
+                bulk_archive.detect_source_layout(root, LOGGER)
+
+        assert exit_info.value.code != 0
+        assert any(
+            "session-UUID" in record.getMessage() for record in caplog.records
+        )
+
+    def test_project_keys_beside_an_unrecognised_directory_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Any child that is not a project key makes the root ambiguous."""
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / "scratch-notes").mkdir(parents=True)
+
+        with pytest.raises(SystemExit):
+            bulk_archive.detect_source_layout(root, LOGGER)
+
+    def test_a_uniformly_keyed_root_is_still_live(
+        self, tmp_path: Path
+    ) -> None:
+        """The control: the finding-13 branch must still do its job."""
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / "-home-tester-Zenodo-uploads").mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(root, LOGGER) == "live"
+
+    def test_an_explicit_layout_still_overrides_a_mixed_root(
+        self, tmp_path: Path
+    ) -> None:
+        """The refusal is a default, not a wall."""
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / SID_A).mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(root, LOGGER, "live") == "live"
