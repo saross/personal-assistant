@@ -2125,3 +2125,136 @@ class TestPopulatedRootIsPinnedToMetadata:
         deep.mkdir(parents=True)
         (deep / "session.meta.json").write_text("{}", encoding="utf-8")
         assert sync_mod.archive_root_is_populated(root) is True
+
+
+# ============================================================================
+# Eighth re-audit, finding M1 — the degraded returns dropped the one fact
+# the run DID learn: whether PostgreSQL answered
+# ============================================================================
+
+
+class TestConnectivitySurvivesAnUnmountedRoot:
+    """
+    The advisory lock is taken before the archive root is inspected, so a
+    run that finds no root has still proved PostgreSQL is reachable.
+    Returning that fact is what lets a standing outage be lowered; two
+    of the degraded returns omitted it, so an outage raised while the
+    database was down could never be lowered again once the archive also
+    went missing.
+    """
+
+    def _standing_outage(self, gate: Path, logger: logging.Logger) -> None:
+        """Raise an outage the honest way — three unreachable ticks."""
+        import _sync_gate
+
+        for _ in range(_sync_gate.OUTAGE_STREAK_THRESHOLD):
+            _sync_gate.apply_gate(
+                _sync_gate.GateEvent(
+                    outcome=_sync_gate.CYCLE_DEGRADED,
+                    connected=False,
+                    script="sync-sessions-to-postgres.py",
+                ),
+                gate_path=gate,
+                logger=logger,
+            )
+        assert "unreachable" in gate.read_text(encoding="utf-8").lower(), (
+            "the fixture failed to raise an outage to begin with"
+        )
+
+    def _relay(self, cycle, gate: Path, logger: logging.Logger) -> str:
+        """Feed a cycle result to the gate exactly as ``main`` does."""
+        sync_mod.apply_gate(
+            sync_mod.GateEvent(
+                outcome=cycle.outcome,
+                connected=cycle.connected,
+                processed=cycle.processed,
+                degraded_detail=cycle.degraded_detail,
+                script="sync-sessions-to-postgres.py",
+            ),
+            gate_path=gate, logger=logger,
+        )
+        return gate.read_text(encoding="utf-8")
+
+    def test_a_missing_root_still_reports_the_database_answered(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        The mutation this kills: dropping ``connected=lock_connected``
+        from the "archive root does not exist" return.
+        """
+        self._standing_outage(pinned_gate_file, test_logger)
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+
+        cycle = sync_mod.sync(
+            tmp_path / "not-mounted", full_resync=True, logger=test_logger,
+        )
+
+        assert cycle.outcome == sync_mod.CYCLE_DEGRADED
+        assert cycle.connected is True, (
+            "the lock was taken, so PostgreSQL answered — the cycle must "
+            "say so even though it found no sessions to sync"
+        )
+        gate = self._relay(cycle, pinned_gate_file, test_logger)
+        assert "unreachable" not in gate.lower(), (
+            "connectivity was proved, so the outage must be lowered"
+        )
+        assert "archive root" in gate, "the real problem stopped being shown"
+
+    def test_an_empty_root_still_reports_the_database_answered(
+        self, monkeypatch, tmp_path, test_logger, pinned_gate_file,
+    ):
+        """
+        Same mutation on the sibling return — the root exists but holds
+        no ``session.meta.json`` at all.
+        """
+        self._standing_outage(pinned_gate_file, test_logger)
+        empty_root = tmp_path / "empty-archive"
+        empty_root.mkdir()
+        monkeypatch.setattr(sync_mod, "CURSOR_FILE", tmp_path / "cursors.json")
+        _install_fake_psycopg2(monkeypatch, returned_ids=[])
+
+        cycle = sync_mod.sync(
+            empty_root, full_resync=True, logger=test_logger,
+        )
+
+        assert cycle.outcome == sync_mod.CYCLE_DEGRADED
+        assert cycle.connected is True
+        gate = self._relay(cycle, pinned_gate_file, test_logger)
+        assert "unreachable" not in gate.lower()
+        assert "session.meta.json" in gate
+
+    def test_every_cycle_return_carries_what_it_learnt(self):
+        """
+        Structural guard over both syncs: any ``return CycleResult(...)``
+        reached after the advisory lock has been taken must pass
+        ``connected``. Written after two returns were found to have
+        dropped it (eighth re-audit, M1); a grep-by-hand does not scale
+        to the next return someone adds.
+        """
+        import ast
+
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        for name in ("sync-to-postgres.py", "sync-sessions-to-postgres.py"):
+            source = (scripts / name).read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            locked = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef)
+                and node.name == "_sync_locked"
+            ]
+            assert locked, f"{name} has no _sync_locked to check"
+            for node in ast.walk(locked[0]):
+                if not isinstance(node, ast.Return):
+                    continue
+                call = node.value
+                if not (
+                    isinstance(call, ast.Call)
+                    and getattr(call.func, "id", "") == "CycleResult"
+                ):
+                    continue
+                names = {kw.arg for kw in call.keywords}
+                assert "connected" in names, (
+                    f"{name}:{node.lineno} returns a cycle result without "
+                    f"saying whether PostgreSQL answered"
+                )

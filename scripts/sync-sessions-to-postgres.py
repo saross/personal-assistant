@@ -974,6 +974,7 @@ def _sync_locked(
                     f"{archive_root} does not exist. No session can be "
                     f"synced — check the mount or the --archive-root path."
                 ),
+                connected=lock_connected,
             )
         if not archive_root_is_populated(archive_root):
             logger.warning(
@@ -989,6 +990,7 @@ def _sync_locked(
                     f"all — a missing mount or the wrong path, not an "
                     f"empty week. No session can be synced."
                 ),
+                connected=lock_connected,
             )
         logger.info("No new sessions to sync")
         return CycleResult(CYCLE_IDLE, connected=lock_connected)
