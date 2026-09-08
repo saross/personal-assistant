@@ -82,6 +82,9 @@ if git rev-parse -q --verify MERGE_HEAD >/dev/null \
     echo "    git -C data status" >&2
     echo "    git -C data merge --continue   # or --abort" >&2
     echo "    git -C data rebase --continue  # or --abort" >&2
+    echo "    git -C data bisect reset       # after a bisect" >&2
+    echo "  Unmerged paths with no merge in progress (a conflicted stash pop or" >&2
+    echo "  apply): resolve each path by hand, then 'git -C data add -- <path>'." >&2
     exit 2
 fi
 
@@ -186,20 +189,51 @@ fi
 
 cd "$PA_DIR"
 
-# Second re-audit, medium: a previous run may have committed and pushed the
-# data submodule and died before the pointer bump below, leaving the parent
-# with a stale pointer and every later run saying "nothing to do". If this
-# run committed nothing, bump anyway when the pointer is stale and data's
-# HEAD is already on origin; refuse (never silently succeed) when it is not.
+# A parent with no commit yet has no pointer to update (and the branch query
+# below would die on an unborn HEAD after the data was already pushed).
+if ! git rev-parse -q --verify HEAD >/dev/null; then
+    echo "NOTE: parent repository has no commit yet; no submodule pointer to update."
+    exit 0
+fi
+
+# Third re-audit: `data` must be a gitlink (mode 160000) in the parent index,
+# or absent. If it is tracked as ordinary files, `git add -- data` would
+# commit the private submodule's CONTENTS into the public parent.
+DATA_MODES="$(git ls-files -s -- data | cut -c1-6 | sort -u | tr '\n' ' ')"
+if [[ -n "$DATA_MODES" && "$DATA_MODES" != "160000 " ]]; then
+    echo "ERROR: data is tracked in the parent as ordinary files (modes: $DATA_MODES)," >&2
+    echo "  not as a submodule. Refusing to commit its contents into the parent." >&2
+    exit 2
+fi
+
+# Second and third re-audits: a previous run may have committed and pushed
+# the data submodule and died before the pointer bump below, leaving the
+# parent with a stale pointer and every later run saying "nothing to do".
+# If this run committed nothing, bump when — and only when — the recorded
+# pointer is BEHIND data's HEAD and that HEAD is already on origin. The
+# recorded SHA and the checkout's HEAD are read directly: `git diff` is
+# silenced by diff.ignoreSubmodules or submodule.<name>.ignore.
+RECORDED="$(git rev-parse -q --verify HEAD:data 2>/dev/null || true)"
+DATA_HEAD="$(git -C data rev-parse HEAD)"
 if [[ $DATA_COMMITTED -eq 0 ]]; then
-    # A parent with no commit yet has no pointer to be stale.
-    if ! git rev-parse -q --verify HEAD >/dev/null || git diff HEAD --quiet -- data; then
-        exit 0                      # pointer current: genuinely nothing to do
+    if [[ -z "$RECORDED" || "$RECORDED" == "$DATA_HEAD" ]]; then
+        exit 0                      # nothing recorded yet, or pointer current
     fi
-    if ! git -C data merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
-        echo "ERROR: the parent's data pointer is stale and data's HEAD is not on" >&2
-        echo "  origin/main (a previous run died before its push?). Push it first:" >&2
-        echo "    git -C data push origin HEAD:main" >&2
+    # Direction matters. The parent being AHEAD (pulled without
+    # `git submodule update`) shows the same inequality, and bumping then
+    # rolled the pointer back for every other machine (third re-audit).
+    if ! git -C data merge-base --is-ancestor "$RECORDED" "$DATA_HEAD" 2>/dev/null; then
+        echo "NOTE: the parent's data pointer (${RECORDED:0:7}) is not behind the data"
+        echo "  checkout (${DATA_HEAD:0:7}): the checkout is behind the parent"
+        echo "  (git submodule update) or they diverged. Nothing committed."
+        exit 0
+    fi
+    git -C data fetch --quiet origin main 2>/dev/null || true    # honest tracking ref
+    if ! git -C data merge-base --is-ancestor "$DATA_HEAD" origin/main 2>/dev/null; then
+        echo "ERROR: the parent's data pointer is stale and data's HEAD (${DATA_HEAD:0:7})" >&2
+        echo "  is not on origin/main. If that commit is this machine's own dead run," >&2
+        echo "  push it and re-run; if it is another session's, leave it to that" >&2
+        echo "  session. Nothing committed." >&2
         exit 3
     fi
     echo "Parent pointer is stale but data's HEAD is already on origin — bumping it."
@@ -227,5 +261,9 @@ $MSG
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>" -- data
 
 echo ""
-echo "Done. Data committed and submodule reference updated."
+if [[ $DATA_COMMITTED -eq 1 ]]; then
+    echo "Done. Data committed and submodule reference updated."
+else
+    echo "Done. Submodule reference updated to the already-pushed data commit."
+fi
 echo "Run 'git push origin main' to push the parent repo."

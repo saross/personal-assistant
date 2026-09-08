@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -945,23 +946,26 @@ class TestCommitDataSafetyContracts:
         run stage the conflict markers, commit them, push, and exit 0."""
         pa_dir = pa_with_data_remote
         data_dir = pa_dir / "data"
-        (data_dir / "memories.jsonl").write_text("seed\n")
-        _git("add", "memories.jsonl", cwd=data_dir)
+        (data_dir / "notes.md").write_text("seed\n")            # not the usual fixture name
+        _git("add", "notes.md", cwd=data_dir)
         _git("commit", "--quiet", "-m", "base", cwd=data_dir)
-        (data_dir / "memories.jsonl").write_text("seed\nstashed\n")
+        (data_dir / "notes.md").write_text("seed\nstashed\n")
         _git("stash", "push", "--quiet", cwd=data_dir)
-        (data_dir / "memories.jsonl").write_text("seed\nother\n")
+        (data_dir / "notes.md").write_text("seed\nother\n")
         _git("commit", "--quiet", "-am", "other", cwd=data_dir)
         pop = subprocess.run(["git", "stash", "pop"], cwd=data_dir,
                              capture_output=True, text=True)
         assert pop.returncode != 0 and not (data_dir / ".git" / "MERGE_HEAD").exists()
+        # Would be staged if the guard leaked:
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
 
         result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
                              home=pa_dir)
 
         assert result.returncode == 2, result.stdout + result.stderr
         assert "unmerged" in result.stderr
-        assert "<<<<<<<" in (data_dir / "memories.jsonl").read_text()   # untouched
+        assert "<<<<<<<" in (data_dir / "notes.md").read_text()          # untouched
+        assert "?? memories.jsonl" in _git("status", "--porcelain", cwd=data_dir).stdout
         assert self._commit_count(data_dir) == 3                        # seed, base, other
         remote = pa_dir.parent / "data.git"
         assert _git("rev-list", "--count", "main", cwd=remote).stdout.strip() == "1"
@@ -982,8 +986,8 @@ class TestCommitDataSafetyContracts:
 
         assert result.returncode == 3
         assert "reset -- <path>" in result.stderr
-        assert "'git -C data reset'" not in result.stderr
-        assert "never a bare reset" in result.stderr
+        assert not re.search(r"reset(?!\s+--\s)", result.stderr.replace("bare reset", "")), (
+            result.stderr)
 
     def test_stale_parent_pointer_is_bumped_when_data_is_already_pushed(
         self, pa_with_data_remote: Path
@@ -1008,6 +1012,8 @@ class TestCommitDataSafetyContracts:
         assert "stale" in result.stdout
         assert _git("log", "-1", "--format=%s", cwd=pa_dir).stdout.strip() == (
             "chore: update data submodule reference")
+        assert _git("rev-parse", "HEAD:data", cwd=pa_dir).stdout.strip() == (
+            _git("rev-parse", "HEAD", cwd=data_dir).stdout.strip())
         assert _git("status", "--porcelain", "--", "data", cwd=pa_dir).stdout.strip() == ""
 
     def test_stale_pointer_with_unpushed_data_refuses(
@@ -1027,5 +1033,83 @@ class TestCommitDataSafetyContracts:
                              home=pa_dir)
 
         assert result.returncode == 3
-        assert "not on" in result.stderr and "push origin HEAD:main" in result.stderr
+        assert "not on origin/main" in result.stderr
         assert "record pointer" == _git("log", "-1", "--format=%s", cwd=pa_dir).stdout.strip()
+        remote = pa_dir.parent / "data.git"
+        assert _git("rev-list", "--count", "main", cwd=remote).stdout.strip() == "1"
+
+    # ---- third re-audit of PR #114 (2026-09-08) ----
+
+    def test_parent_ahead_of_the_data_checkout_is_never_rolled_back(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        """CRITICAL (third re-audit). A parent pulled without `git submodule
+        update` records a NEWER pointer than the checkout; the bump rewrote it
+        backwards, rolling every other machine's data back a commit."""
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "c2", cwd=data_dir)
+        _git("push", "--quiet", "origin", "HEAD:main", cwd=data_dir)
+        _git("-c", "advice.addEmbeddedRepo=false", "add", "data", cwd=pa_dir)
+        _git("commit", "--quiet", "-m", "parent records c2", cwd=pa_dir)
+        newer = _git("rev-parse", "HEAD", cwd=data_dir).stdout.strip()
+        _git("reset", "--quiet", "--hard", "HEAD~1", cwd=data_dir)   # checkout behind
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "not behind" in result.stdout
+        assert _git("rev-parse", "HEAD:data", cwd=pa_dir).stdout.strip() == newer
+        assert _git("log", "-1", "--format=%s", cwd=pa_dir).stdout.strip() == "parent records c2"
+
+    def test_data_tracked_as_plain_files_is_never_committed_into_the_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """MEDIUM (third re-audit): with data/ tracked as ordinary files, the
+        bump committed the private submodule's contents into the parent. The
+        state arises when the parent tracked data/ BEFORE it became a
+        repository (git ignores paths inside a nested repository afterwards,
+        so the fixture builds it in that order)."""
+        pa_dir = tmp_path / "pa"
+        (pa_dir / "scripts").mkdir(parents=True)
+        (pa_dir / "scripts" / "commit-data.sh").symlink_to(COMMIT_DATA_SCRIPT)
+        data_dir = pa_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+        _git("init", "--quiet", "--initial-branch=main", cwd=pa_dir)
+        _git("add", "data/memories.jsonl", cwd=pa_dir)           # plain file, pre-repository
+        _git("commit", "--quiet", "-m", "wrongly tracked", cwd=pa_dir)
+        data_remote = tmp_path / "data.git"
+        data_remote.mkdir()
+        _git("init", "--bare", "--quiet", "--initial-branch=main", cwd=data_remote)
+        _git("init", "--quiet", "--initial-branch=main", cwd=data_dir)
+        _git("add", "memories.jsonl", cwd=data_dir)
+        _git("commit", "--quiet", "-m", "data", cwd=data_dir)
+        _git("remote", "add", "origin", str(data_remote), cwd=data_dir)
+        _git("push", "--quiet", "origin", "main", cwd=data_dir)
+        assert _git("ls-files", "-s", "--", "data", cwd=pa_dir).stdout.startswith("100644")
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n{"id": "m2"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "ordinary files" in result.stderr
+        assert _git("log", "-1", "--format=%s", cwd=pa_dir).stdout.strip() == "wrongly tracked"
+
+    def test_bisect_in_progress_is_refused_before_staging(
+        self, pa_with_data_remote: Path
+    ) -> None:
+        pa_dir = pa_with_data_remote
+        data_dir = pa_dir / "data"
+        _git("bisect", "start", cwd=data_dir)
+        (data_dir / "memories.jsonl").write_text('{"id": "m1"}\n')
+
+        result = _run_script(pa_dir / "scripts" / "commit-data.sh", "test-msg",
+                             home=pa_dir)
+
+        assert result.returncode == 2
+        assert "?? memories.jsonl" in _git("status", "--porcelain", cwd=data_dir).stdout
