@@ -110,6 +110,54 @@ def note_unusable_repo(repo: Path, reason: str) -> None:
               f"({reason})", file=sys.stderr)
 
 
+def probe_repos(repos: Iterable[Path]) -> list[Path]:
+    """Ask each repository ONCE whether it can be consulted, and return the
+    ones that can.
+
+    Exclusion is otherwise discovered lazily: :func:`verify_file` returns on
+    the first repository that says "true", so a repository at the end of the
+    set is registered unusable only if some ref forces resolution to reach
+    it. A sweep whose anchors all resolve early therefore reported an empty
+    exclusion list beside an emptied mount (round 4f-5, finding M1) — the
+    report said "6 repositories" and meant five.
+
+    One ``git rev-parse --git-dir`` per repository, classified exactly as the
+    resolvers classify their probes: a permanent error or a non-zero exit
+    excludes the repository with the usual once-per-process warning, while a
+    timeout or a transient error leaves it in the set for resolution to
+    retry per ref. Cheap enough to run at the start of every sweep — it is
+    one process per repository, against thousands of anchor probes.
+    """
+    usable: list[Path] = []
+    for repo in repos:
+        if repo_is_unusable(repo):
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--git-dir"],
+                capture_output=True,
+                timeout=_GIT_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            # Slow, not broken: leave it in and let per-ref probing decide.
+            usable.append(repo)
+            continue
+        except _PERMANENT_REPO_ERRORS as exc:
+            note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
+            continue
+        except OSError:
+            usable.append(repo)     # transient; see _PERMANENT_REPO_ERRORS
+            continue
+        if result.returncode != 0:
+            reason = (result.stderr or b"").decode("utf-8", "replace").strip()
+            note_unusable_repo(
+                repo, reason[:120] or f"git exit {result.returncode}",
+            )
+            continue
+        usable.append(repo)
+    return usable
+
+
 def repo_is_unusable(repo: Path) -> bool:
     """Has *repo* already been found unusable in this process?"""
     return str(repo) in _UNUSABLE_REPOS

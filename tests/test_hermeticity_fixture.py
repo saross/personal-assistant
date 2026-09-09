@@ -636,21 +636,6 @@ def test_the_store_guard_watches_the_log_directory(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def isolated_report(monkeypatch):
-    """Give the test its own ``_DEFERRED_REPORT``, not the session's.
-
-    ``report_source_tree_changes`` QUEUES into that module-level dict, so a
-    test driving it directly leaves its throwaway paths in the queue and the
-    real run's terminal summary then reports them as if the suite had
-    touched the checkout. Caught when this file's own new test made the
-    outer run print a warning about a path under pytest's basetemp — the
-    exact class of defect this round is about, in a test rather than in the
-    guard.
-    """
-    monkeypatch.setattr(conftest, "_DEFERRED_REPORT", {})
-    return conftest._DEFERRED_REPORT
-
-@pytest.fixture
 def strict_hermeticity(monkeypatch):
     """Run the source-tree half of the guard in fail-fast mode.
 
@@ -1989,7 +1974,8 @@ def test_a_new_non_log_file_under_logs_is_still_a_violation(tmp_path,
 
 @pytest.mark.parametrize("rotated", [
     "extraction.log.1", "extraction.log.gz", "extraction.log.1.gz",
-    "extraction.log.2.bz2", "extraction.log.zst",
+    "extraction.log.2.bz2", "extraction.log.zst", "extraction.log.xz",
+    "extraction.log.3.xz", "extraction.log.Z",
 ])
 def test_a_compressed_rotation_is_tolerated(tmp_path, monkeypatch, rotated):
     """logrotate compresses what it rotates; the digit-only rule missed that.
@@ -2443,7 +2429,14 @@ def test_a_partial_trailing_line_is_tolerated_in_advisory_mode(tmp_path,
             "content": "A complete record.",
             "created_at": "2031-01-02T00:00:00+00:00",
         }) + "\n")
-        handle.write('{"id": "2031-01-03-999988887777", "cont')  # cut off
+        # A COMPLETE record whose terminating newline has not landed yet —
+        # the shape a short write leaves behind. Anything less than a
+        # complete record is judged as content and refused (finding M2).
+        handle.write(json.dumps({
+            "id": "2031-01-03-999988887777",
+            "content": "Written, but the newline has not landed.",
+            "created_at": "2031-01-03T00:00:00+00:00",
+        }))
 
     _appended, tolerated = conftest.assert_canonical_store_untouched(
         before, conftest._canonical_store_snapshot())
@@ -2457,7 +2450,11 @@ def test_a_partial_trailing_line_is_fatal_under_strict(tmp_path, monkeypatch):
 
     before = conftest._canonical_store_snapshot()
     with corpus.open("a", encoding="utf-8") as handle:
-        handle.write('{"id": "2031-01-03-999988887777", "cont')
+        handle.write(json.dumps({
+            "id": "2031-01-03-999988887777",
+            "content": "Written, but the newline has not landed.",
+            "created_at": "2031-01-03T00:00:00+00:00",
+        }))
 
     with pytest.raises(AssertionError, match="not terminated"):
         conftest.assert_canonical_store_untouched(
@@ -2611,3 +2608,336 @@ def test_a_run_with_both_kinds_of_violation_reports_both(tmp_path):
     assert "memories.jsonl" in combined, "the store violation was not reported"
     assert "source trees" in combined
     assert "canonical memory store" in combined
+
+
+# ===========================================================================
+# Round 4a-6
+# ===========================================================================
+
+
+def test_the_report_queue_is_isolated_for_every_test(isolated_report):
+    """The isolation is AUTOMATIC, not opt-in (finding M3).
+
+    It used to be a fixture a test had to remember: removing it from the one
+    test that used it left 117 tests green while the run's terminal summary
+    warned about a path under pytest's basetemp. Nothing failed; the guard
+    just cried wolf. Kills a mutation that drops ``autouse=True``.
+    """
+    import ast
+
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    fixture = next(
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "isolated_report"
+    )
+    decorators = [ast.unparse(d) for d in fixture.decorator_list]
+    assert any("autouse=True" in d for d in decorators), (
+        f"isolated_report is not autouse: {decorators}")
+
+    # And it really is a different dict from the session's.
+    isolated_report["source_changes"] = ["a throwaway path"]
+    assert conftest._DEFERRED_REPORT is isolated_report
+
+
+def test_a_test_cannot_leak_a_basetemp_path_into_the_summary(tmp_path,
+                                                             monkeypatch):
+    """The counterfactual, run for real: queue a path, and it stays local.
+
+    Drives ``report_source_tree_changes`` exactly as the leaking test did.
+    With the autouse isolation the entry lands in this test's own dict and
+    the session's queue is untouched, so the terminal summary cannot report
+    it.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    root = _throwaway_checkout(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (root / "wiki" / "someone-elses-note.md").write_text("theirs\n",
+                                                         encoding="utf-8")
+    conftest.report_source_tree_changes(
+        before, conftest._canonical_store_snapshot())
+
+    queued = conftest._DEFERRED_REPORT.get("source_changes", [])
+    assert queued, "the call should have queued into THIS test's dict"
+    assert all(str(tmp_path) in path for path in queued), queued
+
+
+def test_the_session_queue_holds_no_basetemp_path(request):
+    """A belt-and-braces net: nothing under a tmp root may reach the summary.
+
+    If a future test ever escapes the isolation, this names it rather than
+    letting the run print a warning about a path nobody owns.
+    """
+    basetemp = request.config.getoption("basetemp") or "/tmp/pytest-of-"
+    for key, entries in conftest._DEFERRED_REPORT.items():
+        for entry in entries:
+            assert str(basetemp) not in entry, (
+                f"a test leaked a basetemp path into the {key} queue: {entry}")
+
+
+# --------------------------------------------------------------------------
+# M2 — an unterminated fragment is content too
+# --------------------------------------------------------------------------
+
+
+def test_an_unterminated_garbage_fragment_is_a_violation(tmp_path,
+                                                         monkeypatch):
+    """With no complete lines the content loop never ran.
+
+    ``handle.write("not json at all")`` with no newline left the loop empty
+    and ``partial.strip()`` short-circuited straight to "an append in
+    progress", so a garbage fragment was tolerated in advisory mode and the
+    run exited 0. Kills the mutation that skips ``_line_problem(kind,
+    partial)``.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write("not json at all")
+
+    with pytest.raises(AssertionError, match="not JSON"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_an_unterminated_garbage_fragment_is_a_violation_under_strict(
+    tmp_path, monkeypatch,
+):
+    """And the same in a clean copy."""
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write("not json at all")
+
+    with pytest.raises(AssertionError, match="not JSON"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_an_unterminated_vocabulary_fragment_is_judged_too(tmp_path,
+                                                           monkeypatch):
+    """The vocabulary's shape rule applies to a partial line as well."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with vocabulary.open("a", encoding="utf-8") as handle:
+        handle.write("a sentence, not a tag")
+
+    with pytest.raises(AssertionError, match="not a bare tag"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+# --------------------------------------------------------------------------
+# L4/L5 — what the live logs/ directory really grows
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [
+    "drift-sweep.jsonl", "bulk-archive-manifest.json", "surfacing.log",
+])
+def test_the_shapes_the_real_logs_directory_holds_are_tolerated(
+    tmp_path, monkeypatch, name,
+):
+    """``.log`` alone was too narrow for the directory it describes.
+
+    The real ``data/logs/`` holds ``drift-sweep.jsonl`` and
+    ``bulk-archive-manifest.json``; either appearing mid-run failed a
+    shared-checkout suite. Kills the mutation that narrows the suffix list
+    back to ``.log``.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / name).write_text("{}\n", encoding="utf-8")
+
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert tolerated == [str((logs / name).resolve())]
+
+
+def test_a_new_directory_under_logs_is_tolerated(tmp_path, monkeypatch):
+    """``data/logs/`` really does grow subtrees (terra-enrich-responses).
+
+    A directory carries no content of its own, and the first file written
+    into it is judged on its own merits. Kills the mutation that tolerates
+    files only.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "terra-enrich-responses").mkdir()
+
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert tolerated == [str((logs / "terra-enrich-responses").resolve())]
+
+
+def test_a_file_in_a_new_logs_subdirectory_is_still_judged(tmp_path,
+                                                           monkeypatch):
+    """Tolerating the directory does not tolerate what goes into it."""
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    subtree = logs / "terra-enrich-responses"
+    subtree.mkdir()
+    (subtree / "written-by-a-test.txt").write_text("oops\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_new_logs_shapes_are_fatal_under_strict(tmp_path, monkeypatch):
+    """In a clean copy nothing else is writing, so they are the suite's."""
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    (logs / "drift-sweep.jsonl").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_a_created_store_file_is_never_noise(tmp_path, monkeypatch):
+    """``memories.jsonl`` ends with .jsonl but is not under logs/.
+
+    Kills the mutation that drops the ``_under_logs`` test from the
+    new-suffix branch: the suite creating a corpus where there was none
+    would then read as ordinary log output. This is also what makes
+    ``_under_logs`` reachable-False at its call site (finding L7).
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    _corpus, _vocabulary, logs = _throwaway_store(tmp_path, monkeypatch)
+    store_dir = logs.parent / "memories"
+    corpus = store_dir / "memories.jsonl"
+    corpus.unlink()
+
+    before = conftest._canonical_store_snapshot()
+    corpus.write_text('{"id": "invented-by-a-test"}\n', encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="canonical memory store"):
+        conftest.assert_canonical_store_untouched(
+            before, conftest._canonical_store_snapshot())
+
+
+def test_under_logs_is_anchored_on_the_separator(tmp_path, monkeypatch):
+    """``/logs-old/x`` is not inside ``/logs``.
+
+    Kills the mutation that drops the ``+ os.sep`` from the prefix test.
+    """
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", (logs,))
+
+    assert conftest._under_logs(str(logs / "extraction.log"))
+    assert conftest._under_logs(str(logs / "sub" / "x.log"))
+    assert not conftest._under_logs(str(tmp_path / "logs-old" / "x.log"))
+    assert not conftest._under_logs(str(logs))
+
+
+# --------------------------------------------------------------------------
+# L6 — each tolerated entry is labelled by its class
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("entry,expected", [
+    ("/x/logs/daily-sync.lock", "a lock file"),
+    ("/x/logs/extraction.log.1", "a log rotation"),
+    ("/x/logs/extraction.log.gz", "a log rotation"),
+    ("/x/logs/extraction.log.1.gz", "a log rotation"),
+    ("/x/logs/surfacing.log", "a new log file"),
+    ("/x/logs/drift-sweep.jsonl", "a new log file"),
+    ("/x/memories/memories.jsonl (the final appended line is not "
+     "terminated — an append in progress)", "an append in progress"),
+])
+def test_each_tolerated_entry_is_named_by_its_class(entry, expected):
+    """"a lock file or a rotation" was printed for a half-written append too.
+
+    Kills the mutation that returns one fixed label for every class.
+    """
+    assert conftest.describe_tolerated_kind(entry) == expected
+
+
+def test_the_inert_banner_names_a_missing_directory(tmp_path, monkeypatch):
+    """A dangling logs/ is as inert as a missing store file.
+
+    Kills the mutation that drops the ``_APPEND_TOLERANT_DIRS`` half of the
+    coverage check: with the files present but logs/ gone, the banner said
+    nothing and the run looked fully strict.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    store = tmp_path / "memories"
+    store.mkdir()
+    corpus = store / "memories.jsonl"
+    corpus.write_text("", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (corpus,))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS",
+                        (tmp_path / "absent-logs",))
+
+    message = conftest.strict_store_coverage_warning()
+
+    assert message is not None, "a missing watched DIRECTORY must be named"
+    assert "absent-logs" in message
+    assert str(corpus) not in message, "a present file must not be listed"
+
+
+def test_a_watched_log_path_that_is_a_file_is_not_a_directory(tmp_path,
+                                                              monkeypatch):
+    """``is_dir()``, not ``exists()``: a dangling symlink is not a directory.
+
+    Kills the mutation ``not path.is_dir()`` -> ``not path.exists()``: a
+    symlink whose target is gone still "exists" for ``exists()`` only when
+    it resolves, but a plain FILE where a directory belongs passes
+    ``exists()`` and fails ``is_dir()`` — and the store half is inert
+    either way.
+    """
+    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    store = tmp_path / "memories"
+    store.mkdir()
+    corpus = store / "memories.jsonl"
+    corpus.write_text("", encoding="utf-8")
+    not_a_directory = tmp_path / "logs"
+    not_a_directory.write_text("", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (corpus,))
+    monkeypatch.setattr(conftest, "_APPEND_TOLERANT_DIRS", (not_a_directory,))
+
+    message = conftest.strict_store_coverage_warning()
+
+    assert message is not None
+    assert "logs" in message
+
+
+def test_a_partial_line_of_only_whitespace_is_not_a_violation(tmp_path,
+                                                              monkeypatch):
+    """``partial.strip()`` — a trailing blank is not an in-progress line.
+
+    Kills the mutation ``partial.strip()`` -> ``partial``: a trailing run of
+    spaces would then be reported as an append in progress on every
+    otherwise-clean append.
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "id": "2031-01-02-ddddeeeeffff",
+            "content": "A complete record.",
+            "created_at": "2031-01-02T00:00:00+00:00",
+        }) + "\n   ")
+
+    appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert appended == [str(corpus.resolve())]
+    assert tolerated == []

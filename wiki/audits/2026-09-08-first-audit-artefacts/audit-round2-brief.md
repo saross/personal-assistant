@@ -45,7 +45,10 @@ commit 1a546ab; verify against the current file before editing.
 - Do not push. Commit on your branch with explicit pathspecs
   (`git add <paths>` then `git commit -- <paths>`), one focused commit per
   logical change, conventional-commit subject <= 50 chars, body wrapped at
-  72 explaining WHY, and end every message with exactly these two lines:
+  72 explaining WHY, and end every message with exactly these two lines.
+  Before writing the message, run `git diff --cached --stat` and describe
+  what is actually staged: three times in this series a commit's message
+  described less than it contained (added 2026-09-09 after round 3c-8).
 
       Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
       Claude-Session: https://claude.ai/code/session_01EskLWHYW5b4jmqL5yWgNiS

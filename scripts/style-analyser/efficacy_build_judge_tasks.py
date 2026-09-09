@@ -63,13 +63,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
 EXTRACTED = REPO_ROOT / "data/style-corpus/extracted"
 PASSAGES = EXP / "passages"
-JUDGE_DIR = EXP / "judge-tasks"
-#: The unblinding key lives under a directory nobody hands to a judge. A
-#: sibling of judge-tasks/ was still one `ls ..` from the blind material and
-#: sat beside the analysis outputs an operator opens routinely; `private/`
-#: says what it is, and README_DO_NOT_SHARE.md says it again inside.
-PRIVATE_DIR = EXP / "private"
-KEY_DIR = PRIVATE_DIR / "judge-key"
+#: The judge and key locations come from `style_support`, which is also where
+#: `efficacy_score_judges.py` reads them: one description of the layout, so a
+#: move cannot leave the writer and the reader disagreeing (round 4g-3 item 1;
+#: round 4g-4 item L2). The unblinding key lives under a directory nobody
+#: hands to a judge — a sibling of judge-tasks/ was still one `ls ..` from the
+#: blind material — and README_DO_NOT_SHARE.md says so inside it.
+JUDGE_DIR = style_support.judge_dir()
+PRIVATE_DIR = style_support.private_dir()
+KEY_DIR = style_support.judge_key_dir()
 
 #: Dropped into the private directory so the reason survives the person who
 #: knows it.
@@ -298,9 +300,12 @@ def emit_tasks(plan: list[dict], passages_dir: Path, judge_dir: Path,
 def main(argv: list[str] | None = None) -> int:
     """Build the judge tasks; returns 0 on success, non-zero on refusal."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--judge-dir", type=Path, default=JUDGE_DIR,
+    # Resolved at call time from the shared base, not from the constants
+    # frozen at import, so one repointed root moves both scripts together.
+    ap.add_argument("--judge-dir", type=Path, default=style_support.judge_dir(),
                     help="directory handed to the judges")
-    ap.add_argument("--key-dir", type=Path, default=KEY_DIR,
+    ap.add_argument("--key-dir", type=Path,
+                    default=style_support.judge_key_dir(),
                     help="directory for the unblinding key (never the judge's)")
     ap.add_argument("--passages-dir", type=Path, default=PASSAGES)
     ap.add_argument("--extracted-dir", type=Path, default=EXTRACTED)

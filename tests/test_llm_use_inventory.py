@@ -325,6 +325,51 @@ class TestProjectIsContainedToTheArchive:
         assert excinfo.value.code == 2
         assert not out.exists(), "a report was written for a refused project"
 
+    def test_the_archive_root_itself_is_a_valid_project(
+        self, inventory: Any, archive: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """L4 — the `project_dir != root` disjunct has to be there.
+
+        ``--project .`` resolves to the archive root, and a root is never
+        among its OWN parents, so without that disjunct the containment
+        test refuses the one path that is trivially contained. Nothing
+        exercised it, so dropping it survived.
+        """
+        # A root that is itself a project directory: sessions directly
+        # under it, which is what `--project .` addresses.
+        flat = tmp_path / "flat-archive"
+        session = flat / "20310204-101500_flat-session"
+        session.mkdir(parents=True)
+        (session / "session.meta.json").write_text(
+            json.dumps(
+                {
+                    "session": {
+                        "id": "session_synthetic_flat",
+                        "started_at": "2031-02-04T09:00:00Z",
+                        "duration_minutes": 30,
+                    },
+                    "model": {"model_id": "synthetic-model-1"},
+                    "statistics": {"turns": 3, "tokens": {"output": 1000}},
+                    "thinking_blocks": {"count": 0},
+                    "tags": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        out = tmp_path / "flat-report.md"
+
+        status, report = _run(
+            inventory, monkeypatch,
+            "--project", ".",
+            "--archive-root", str(flat),
+            "--generated", "2031-02-06",
+            "--out", str(out),
+        )
+
+        assert status == 0
+        assert "flat session" in report or "flat-session" in report
+
     def test_a_normal_project_still_works(
         self, inventory: Any, archive: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,

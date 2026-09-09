@@ -256,7 +256,10 @@ class TestDriftTrend:
     """§H — anchor drift trend parsing (item 8)."""
 
     def test_no_runs(self) -> None:
-        assert mhr.drift_trend([]) == {"runs": 0, "latest": None, "history": []}
+        assert mhr.drift_trend([]) == {
+            "runs": 0, "latest": None, "history": [],
+            "latest_unusable": [], "degraded_in_window": 0,
+        }
         assert mhr.drift_trend(["", "  "])["runs"] == 0
 
     def test_parses_and_keeps_latest_plus_history(self) -> None:
@@ -1216,3 +1219,86 @@ def test_a_schema_mismatch_ends_the_transaction(report_paths, fake_pg) -> None:
     assert mhr.pg_snapshot(logging.getLogger("test-mhr")) is None
     assert conn.rollbacks >= 1
     assert conn.closed
+
+
+class TestTheDriftSectionSurfacesExclusions:
+    """[H] is the only standing surface for a degraded sweep (finding M2).
+
+    The sweep writes `unusable` to every row, [F] renders it only under
+    --tier-c (which /weekly-review does not pass), and the sweep's own stdout
+    goes to a cron that discards it. [H] reads the trend log unconditionally,
+    so this is where an operator finds out.
+    """
+
+    LOG = [
+        '{"run_at": "2031-01-01T00:00:00+00:00", "fail_pct": 18.0, '
+        '"total_anchored": 1500, "fail": 270, "repos": 9, "degraded": false, '
+        '"unusable": []}',
+        '{"run_at": "2031-01-08T00:00:00+00:00", "fail_pct": 41.0, '
+        '"total_anchored": 1500, "fail": 615, "repos": 9, "degraded": true, '
+        '"unusable": ["/mnt/archive-repo"]}',
+    ]
+
+    def test_the_latest_exclusions_are_named(self) -> None:
+        """Kills the mutation dropping latest_unusable from drift_trend."""
+        out = mhr.drift_trend(self.LOG)
+        assert out["latest_unusable"] == ["/mnt/archive-repo"]
+        assert out["degraded_in_window"] == 1
+
+    def test_the_report_renders_them(self) -> None:
+        """Kills the mutation dropping the EXCLUDED block from [H]."""
+        report = {
+            "generated_at": "2031-01-09T00:00:00+00:00",
+            "corpus": {"total_records": 1, "distinct_ids": 1,
+                       "duplicate_id_groups": 0, "duplicate_id_excess_lines": 0,
+                       "by_category": {}, "by_source": {}, "active_records": 1,
+                       "inactive_records": 0},
+            "postgres": None, "growth": {},
+            "archival": {"total_archived": 0, "archival_runs": 0,
+                         "last_run_at": None},
+            "cold_partition_records": 0,
+            "anchors": {"anchored": 0, "unanchored": 1, "anchored_any": 0,
+                        "anchored_pct": 0.0, "verified_breakdown": {},
+                        "malformed_anchors": 0,
+                        "records_with_malformed_anchor": 0,
+                        "malformed_anchor_fields": 0},
+            "integrity": {"clean": True, "duplicate_id_groups": 0,
+                          "quarantine_count": 0,
+                          "quarantine_state": mhr.QUARANTINE_ABSENT,
+                          "only_in_canonical": "n/a",
+                          "only_in_postgres": "n/a", "archive_parity": None},
+            "confab": {"rows": 0},
+            "surfacing": {"distinct_memories_surfaced": 0},
+            "drift_trend": mhr.drift_trend(self.LOG),
+        }
+        rendered = "\n".join(mhr.render_report(report))
+        assert "repositories EXCLUDED   : 1 in the latest run" in rendered
+        assert "/mnt/archive-repo" in rendered
+        assert "1 of the last 2 run(s) were DEGRADED" in rendered
+        assert "18.0% → 41.0%*" in rendered, "the degraded point is marked"
+
+    def test_a_clean_history_says_nothing(self) -> None:
+        """The control: no exclusions, no extra lines."""
+        out = mhr.drift_trend(self.LOG[:1])
+        assert out["latest_unusable"] == []
+        assert out["degraded_in_window"] == 0
+
+
+def test_tier_c_clears_stale_exclusions(
+    report_paths, fake_pg, monkeypatch, tmp_path,
+) -> None:
+    """[F] must describe THIS run, not one inherited from an earlier call.
+
+    Kills the mutation removing av.reset_unusable_repos() from build_report's
+    tier-C block (round 4f-5, finding L11).
+    """
+    good = _init_git_repo(tmp_path / "good-repo")
+    monkeypatch.setattr(mhr.ta, "broad_repo_set", lambda: [good])
+    monkeypatch.setattr(mhr.ta, "build_basename_index", lambda repos: {})
+    mhr.av.reset_unusable_repos()
+    mhr.av.note_unusable_repo(Path("/some/earlier/run"), "stale")
+    _write_corpus(report_paths, [_anchored(id="m-1")])
+    fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+
+    report, _clean = _build(run_tier_c=True)
+    assert report["tier_c"]["unusable_repos"] == []
