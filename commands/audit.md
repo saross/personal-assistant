@@ -187,14 +187,20 @@ to patch its path and **appends a shape-correct record to the real
 `memories.jsonl` is not caught, in either mode**. The guard cannot tell such an
 append apart from the extraction hook's, because they are the same operation
 with the same result. What it does catch is everything else — a rewrite, a
-shrink, a deletion, a file created where none was, and appended text that is
-not a well-formed record or a bare tag.
+shrink, a deletion, appended text that is not a well-formed record or a bare
+tag, and a file created where none was. That last one has exceptions in
+advisory mode, all under `logs/` and all reported: a `*.lock` file, a log
+rotation (including a compressed one), a new `.log`/`.json`/`.jsonl`, and a
+new subdirectory. Under `PA_HERMETICITY_STRICT` none of those is excused.
 
 Two things narrow the exposure. The append is always REPORTED, so a run that
 appends unexpectedly says so and a reader who was not expecting a live append
-can act on it. And the shape check means the appended line must be a complete,
-valid record with `id`, `content` and `created_at` — a test writing anything
-looser fails. Closing the hole properly needs a way to distinguish the
+can act on it. And the shape check means each appended LINE must be a
+complete, valid record with `id`, `content` and `created_at`. Note what that
+does not say: a blank or whitespace-only line passes the check, and so does an
+unterminated tail that opens a JSON object (reported as an append in progress
+in advisory mode, fatal under STRICT). A test writing a malformed record, or a
+fragment that does not start one, fails. Closing the hole properly needs a way to distinguish the
 suite's writes from the machine's; nothing available inside pytest does that
 reliably, and a wrong answer here fails every run in a live checkout, which is
 worse than the hole.

@@ -33,8 +33,12 @@ defined; the one thing a reader needs up front is the environment switch:
     append — the earlier bytes must still hash to what they hashed at
     session start, and the appended text must be the shape that writer
     produces — and then tolerated, WITH ITS PATH AND BYTE COUNT
-    REPORTED. A shrink, a rewritten prefix, a deletion, a new file, or
-    appended text of the wrong shape is a failure either way.
+    REPORTED. A shrink, a rewritten prefix, a deletion, or appended text
+    of the wrong shape is a failure either way. A new FILE is a failure
+    either way EXCEPT for the shared-checkout shapes advisory mode
+    tolerates and STRICT does not — a ``*.lock``, a rotation, a new
+    ``.log``/``.json``/``.jsonl`` under ``logs/``, and a new directory
+    under ``logs/``.
 
     What that leaves uncaught, stated plainly: a test that forgets to
     patch its path and appends a SHAPE-CORRECT record to the real
@@ -368,6 +372,74 @@ Last updated: 2024-02-08
 
 
 
+#: Set by :func:`pytest_sessionfinish` when a test leaked a temporary path
+#: into the report queue, and printed by :func:`pytest_terminal_summary`.
+_QUEUE_LEAK: list[str] = []
+
+
+def _basetemp_roots(config) -> list[str]:
+    """Every directory pytest hands tests for temporary files, resolved.
+
+    Both the explicit ``--basetemp`` and the factory's own root, because a
+    run may use either, and both are resolved through symlinks so a
+    ``/tmp`` that is really ``/private/tmp`` still matches.
+    """
+    roots: list[str] = []
+    explicit = getattr(config.option, "basetemp", None)
+    if explicit:
+        roots.append(str(Path(explicit)))
+    factory = getattr(config, "_tmp_path_factory", None)
+    if factory is not None:
+        try:
+            roots.append(str(factory.getbasetemp()))
+        except Exception:  # pragma: no cover — factory not yet built
+            pass
+    resolved = []
+    for root in roots:
+        resolved.append(root)
+        try:
+            resolved.append(str(Path(root).resolve()))
+        except OSError:  # pragma: no cover
+            pass
+    return sorted(set(resolved))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the session if a test leaked a temporary path into the queue.
+
+    ``isolated_report`` is FUNCTION-scoped, so a session- or module-scoped
+    fixture that queues into :data:`_DEFERRED_REPORT` writes to the real
+    dict and the terminal summary then warns about a path under pytest's
+    own basetemp — the exact symptom round 4a-6 set out to remove, reached
+    by a different route (round 4a-7, finding M-a1).
+
+    This runs after every fixture of every scope has been torn down, so the
+    queue it inspects is the one the summary is about to print. The check
+    the round 4a-6 net attempted could not work as an ordinary test: the
+    autouse isolation applied to it too, so it always inspected an empty
+    monkeypatched dict, and two thirds of the suite was collected after it.
+    """
+    roots = _basetemp_roots(session.config)
+    if not roots:
+        return
+    leaked = [
+        f"{key}: {entry}"
+        for key, entries in _DEFERRED_REPORT.items()
+        for entry in entries
+        if any(root in entry for root in roots)
+    ]
+    if not leaked:
+        return
+    _QUEUE_LEAK.extend(leaked)
+    # Drop them, so the summary cannot go on to report a temporary path as
+    # though the checkout had changed.
+    for key, entries in list(_DEFERRED_REPORT.items()):
+        _DEFERRED_REPORT[key] = [
+            entry for entry in entries
+            if not any(root in entry for root in roots)
+        ]
+    session.exitstatus = 1
+
 def describe_tolerated_kind(entry: str) -> str:
     """Name the class of one tolerated entry.
 
@@ -378,24 +450,24 @@ def describe_tolerated_kind(entry: str) -> str:
     if "not terminated" in entry:
         return "an append in progress"
     path = entry.split(" (")[0]
+    # A directory first: it is decided by what it IS, not by its name, so a
+    # subtree called ``run.2`` is not a rotation (round 4a-7, L-e1).
+    if Path(path).is_dir():
+        return "a new directory"
     if path.endswith(".lock"):
         return "a lock file"
     if path.endswith(_TOLERATED_NEW_LOG_SUFFIXES):
-        stem = path
-        for suffix in _COMPRESSION_SUFFIXES:
-            if stem.endswith(suffix):
-                stem = stem[: -len(suffix)]
-                break
-        base, _, tail = stem.rpartition(".")
-        if tail.isdigit() or stem != path:
-            return "a log rotation"
+        # Nothing ending in a tolerated suffix can be a rotation: a rotated
+        # file gains a digit or a compression suffix AFTER that extension,
+        # so it no longer ends with one (round 4a-7, L-f2 — the arm that
+        # tested for it here was dead).
         return "a new log file"
     if any(path.endswith(suffix) for suffix in _COMPRESSION_SUFFIXES):
         return "a log rotation"
-    stem, _, tail = path.rpartition(".")
+    _stem, _, tail = path.rpartition(".")
     if tail.isdigit():
         return "a log rotation"
-    return "a new directory or a rotated file"
+    return "a rotated file"
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -410,9 +482,21 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """
     coverage = strict_store_coverage_warning()
     report = dict(_DEFERRED_REPORT)
-    if not report and not coverage:
+    if not report and not coverage and not _QUEUE_LEAK:
         return
     terminalreporter.write_sep("=", "hermeticity", yellow=True)
+    for entry in _QUEUE_LEAK:
+        terminalreporter.write_line(
+            f"ERROR: a test leaked a temporary path into the hermeticity "
+            f"report queue, so this run would have warned about a path "
+            f"nobody owns: {entry}", red=True,
+        )
+    if _QUEUE_LEAK:
+        terminalreporter.write_line(
+            "  A fixture wider than function scope queued into "
+            "_DEFERRED_REPORT; the autouse isolation only covers function "
+            "scope. The session has been failed.", red=True,
+        )
     if coverage:
         terminalreporter.write_line(coverage, yellow=True)
     for path in report.get("source_changes", []):
@@ -430,9 +514,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         terminalreporter.write_line(
             f"note: the live system appended to {line}", yellow=True)
     for path in report.get("tolerated", []):
+        # Under STRICT this same entry FAILED the run, so calling it
+        # "tolerated" contradicts the error the operator just read
+        # (round 4a-7, L-g1).
+        prefix = (
+            f"would be tolerated in advisory mode; fatal under "
+            f"{STRICT_ENV_VAR}"
+            if hermeticity_is_strict()
+            else "tolerated shared-checkout noise"
+        )
         terminalreporter.write_line(
-            f"note: tolerated shared-checkout noise "
-            f"({describe_tolerated_kind(path)}): {path}", yellow=True,
+            f"note: {prefix} ({describe_tolerated_kind(path)}): {path}",
+            yellow=True,
         )
 
 # ---------------------------------------------------------------------------
@@ -1169,12 +1262,25 @@ def _appended_content_problem(
     """Why the bytes appended to ``path`` are not what its writer emits.
 
     Returns ``(problem, in_progress)``. ``problem`` is ``None`` when the
-    appended text is plausible. ``in_progress`` is true when the ONLY thing
-    wrong is that the last appended line has no terminating newline — a
-    writer caught mid-line, or a crash-truncated tail. That is a normal
-    sight in a live checkout and is tolerated in advisory mode, but it stays
-    fatal under STRICT, where nothing should be writing at all (round 4a-5,
-    finding 5).
+    appended text is plausible.
+
+    ``in_progress`` is true when every COMPLETE appended line is valid and
+    the unterminated tail is a plausible START of one. For
+    ``memories.jsonl`` that means the tail begins with ``{`` — a truncated
+    JSON object, which is what a short write actually leaves behind. The
+    writer (``hooks/extraction-hook.py``) builds
+    ``json.dumps(mem) + "\n"`` and issues ONE ``os.write`` under
+    ``LOCK_SH``, so a partial write cuts the record mid-JSON and the newline
+    is the last byte to arrive; requiring the tail to PARSE (round 4a-6,
+    M2) therefore tolerated only the one state a short write almost never
+    produces, and a real truncated append failed an advisory run (round
+    4a-7, M-b1). A tail that does not start with ``{`` is not a prefix of
+    any record the writer emits, so it stays a violation. For the
+    vocabulary the tail must be a bare-tag prefix, judged by the same rule
+    as a complete line.
+
+    ``in_progress`` is advisory-only: under STRICT nothing should be
+    writing at all, so the caller fails on it either way.
 
     Growth alone used to be enough to call an append benign, so a test that
     appended a garbage line to the real ``memories.jsonl`` was classified as
@@ -1208,13 +1314,35 @@ def _appended_content_problem(
         # Judge it too: with NO complete lines the loop above never ran, so
         # a lone unterminated garbage fragment used to be waved through as
         # "an append in progress" (round 4a-6, finding M2). A fragment is
-        # only in-progress if what there is of it is still the right shape.
-        problem = _line_problem(kind, partial)
+        # in-progress only if it is a plausible START of a record.
+        problem = _partial_line_problem(kind, partial)
         if problem is not None:
             return f"{problem} (and the line is unterminated)", False
         return ("the final appended line is not terminated — an append in "
                 "progress, or a crash-truncated tail"), True
     return None, False
+
+
+def _partial_line_problem(kind: str, partial: str) -> str | None:
+    """Why an UNTERMINATED tail is not the start of a line ``kind`` emits.
+
+    A complete line must parse; a partial one cannot, because no proper
+    prefix of a JSON object is valid JSON. So the test is structural: for
+    ``memories.jsonl`` the tail must open a JSON object and contain no
+    newline of its own; for the vocabulary it must satisfy the same
+    bare-tag rule a complete line does (a partial tag is still a tag).
+    Anything else — prose, a stray log line, a fragment that never started
+    a record — is a violation (round 4a-7, finding M-b1).
+    """
+    stripped = partial.strip()
+    if kind == "memories.jsonl":
+        if not stripped.startswith("{"):
+            return "an appended fragment does not start a JSON record"
+        # No newline test here: ``partial`` is the last element of a "\n"
+        # split, so it cannot contain one. A fragment that spans a break is
+        # caught as a malformed COMPLETE line before this is reached.
+        return None
+    return _line_problem(kind, partial)
 
 
 def _line_problem(kind: str, line: str) -> str | None:
