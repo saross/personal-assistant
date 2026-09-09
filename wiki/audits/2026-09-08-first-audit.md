@@ -932,8 +932,9 @@ Open, each with its verdict so far:
   status; `*.tmp` symlinks judged by their own age and removed as links
   (a dangling one was invisible for ever); the sizeless warning once per
   run with a count. The round 4c-4 report's claim that its test pinned
-  the filter is corrected. Merged with main (1286407); coordinator suite,
-  PR, and re-audit pending.
+  the filter is corrected. Merged with main (1286407), coordinator suite
+  4318 passed, 2 skipped, 19 deselected, exit 0; **PR #147**; re-audit
+  running.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
