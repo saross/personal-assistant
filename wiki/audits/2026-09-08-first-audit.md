@@ -746,14 +746,14 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (eighteen PRs): #114, #115, #116, #117, #118
+Merged from this audit (nineteen PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #129, #140
 (memory readers and anchors); #132, #135 (daily-sync lows); #136 (archive
-follow-ups).
+follow-ups); #128 (style-analyser scripts, three re-audits).
 
 Open, each with its verdict so far:
 
@@ -767,9 +767,23 @@ Open, each with its verdict so far:
   untracked-files `dirty` case, and the error marker now cleared only after
   the bundle's outputs exist (seven commits 916e223-33a5159; clean-copy
   suite 4009 passed, exit 0). Merged with main and pushed as 6330be4
-  (coordinator suite 4228 passed, 2 skipped, 19 deselected, exit 0); the
-  third re-audit is running. Merging it makes every phase-1 consumer refuse
-  the live results until phase 1 is re-run — by design.
+  (coordinator suite 4228 passed, 2 skipped, 19 deselected, exit 0).
+  Third re-audit verdict merge: the key location fixed at the constant,
+  every fix survived its worst single-line mutation, the six consumers
+  confirmed exactly six. **Merged 7ee29c9** 2026-09-09 12:0x. LIVE NOW:
+  the re-auditor verified at source that
+  `data/style-corpus/phase1-results-clean.json` carries no `metric_schema`,
+  so all six consumers exit 2 until `phase1_pipeline.py --clean-corpus`,
+  then `phase3_promotion.py`, then the downstream stages are re-run
+  (operator action 1); and the live experiment has neither key directory,
+  so the scorer takes the legacy fallback and warns until `--migrate-key`
+  is run (intended). Follow-ups are round 4g-4 (`claude/audit-round4g-4`):
+  the phase-3 stamp checks pinned by membership not position (moving
+  either check below the consuming load survives); the two end-to-end
+  judge tests monkeypatch both defaults so only the constant test catches
+  a reverted default; `provenance_block` never passes a path hint so its
+  tracked-ness branch is unreachable; bundle atomicity is per-file (an
+  interruption on a never-failed paper leaves no marker).
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
