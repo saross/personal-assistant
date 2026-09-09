@@ -1241,3 +1241,90 @@ class TestResolvesInside:
         outside = tmp_path / "outside.txt"
         outside.write_text("x\n", encoding="utf-8")
         assert av._resolves_inside(repo, outside) is False
+
+
+class TestTheHistoryProbeHasItsOwnErrorClasses:
+    """Probe 2's handlers are reached only when probe 1 SUCCEEDS.
+
+    The M-d tests patch subprocess.run to raise on every call, so only the
+    cat-file probe's handlers ran and the history probe's could be mutated
+    freely (round 4f-5, finding M3). These drive probe 1 to a clean miss
+    first, so probe 2 is the one that fails.
+    """
+
+    @staticmethod
+    def _probe_one_misses_then(raiser):
+        """cat-file returns 1 (a clean miss), then the history probe raises."""
+        results = [MagicMock(returncode=1), raiser]
+
+        def run(*_a, **_kw):
+            item = results.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        return run
+
+    def test_a_transient_error_in_the_history_probe_is_pending(self):
+        """Kills the mutation ``except OSError: return "false"`` at probe 2.
+
+        This is the AN3 class: an ENOMEM spike mid-sweep would report the
+        path absent from a repository that never answered.
+        """
+        run = self._probe_one_misses_then(OSError(12, "Cannot allocate memory"))
+        with patch("subprocess.run", side_effect=run):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+        assert not av.repo_is_unusable(Path("/repo"))
+
+    def test_a_permanent_error_in_the_history_probe_excludes(self):
+        """The other branch of the same try, for contrast."""
+        run = self._probe_one_misses_then(PermissionError("denied"))
+        with patch("subprocess.run", side_effect=run):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "unusable"
+        assert av.repo_is_unusable(Path("/repo"))
+
+    def test_a_timeout_in_the_history_probe_is_pending(self):
+        import subprocess as _sp
+        run = self._probe_one_misses_then(_sp.TimeoutExpired("git", 3))
+        with patch("subprocess.run", side_effect=run):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "pending"
+
+    def test_a_clean_miss_in_both_probes_is_false(self):
+        """The control: two completed probes, neither knows the path."""
+        results = [MagicMock(returncode=1),
+                   MagicMock(returncode=0, stdout="", stderr="")]
+        with patch("subprocess.run", side_effect=results):
+            assert av._git_knows_path(Path("/repo"), "a.py") == "false"
+
+
+class TestVerifyCommitPermanentErrorWithholds:
+    """The commit path's permanent-error branch also contributes unknown."""
+
+    def test_a_vanished_repository_mid_scan_withholds_the_verdict(
+        self, tmp_path,
+    ):
+        """Kills the mutation deleting ``unknown_seen = True`` at the
+        permanent-error branch of verify_commit (round 4f-5, finding M4).
+
+        Only the pre-loop skip and the exit-128 branch were pinned. Here the
+        repository is healthy when the scan starts and raises on the probe,
+        so exclusion happens INSIDE the loop: the good repository's honest
+        "not in mine" must not become the whole answer.
+        """
+        good = _throwaway_repo(tmp_path / "good")
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        calls = {"n": 0}
+        real_run = subprocess.run
+
+        def flaky(argv, *a, **kw):
+            if str(gone) in argv:
+                calls["n"] += 1
+                raise PermissionError("denied")
+            return real_run(argv, *a, **kw)
+
+        with patch("subprocess.run", side_effect=flaky):
+            verdict = av.verify_commit("abc1234def", [good, gone])
+        assert calls["n"] == 1, "the repository is probed once, then excluded"
+        assert verdict == "pending"
+        assert av.repo_is_unusable(gone)
