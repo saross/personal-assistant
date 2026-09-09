@@ -746,14 +746,15 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (nineteen PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-two PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #129, #140
-(memory readers and anchors); #132, #135 (daily-sync lows); #136 (archive
-follow-ups); #128 (style-analyser scripts, three re-audits).
+(memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
+(archive follow-ups); #128 (style-analyser scripts, three re-audits);
+#142 (bake-off round 4e-5).
 
 Open, each with its verdict so far:
 
@@ -837,7 +838,20 @@ Open, each with its verdict so far:
   every unmeasurable merge is logged; the quiet-grep lint tokenises
   statements; the vacuity guard names the allowed set; `render_sync_gate`
   driven directly; record paths escaped on both sides. Merged with main,
-  coordinator suite 3913 passed, exit 0; **PR #139**; re-audit running.
+  coordinator suite 3913 passed, exit 0; **PR #139, merged d07c174**
+  2026-09-09 12:3x: the re-audit found all nine span-rule decisions
+  correct and order-independent, every unmeasurable merge logged without
+  touching the gate, and the upgrade path safe (status records are never
+  persisted, so the round report's "in-flight comparison" risk cannot
+  arise). Follow-ups are round 3c-8 (`claude/audit-round3c-8`), all
+  coverage and lint-reach gaps: the span check's second condition is
+  untested (a one-token mutation republishes an unaccounted shrink); the
+  heredoc skip is dead (the opener regex is anchored before the script's
+  only heredoc's redirections, so the embedded Python is linted as
+  shell); the quiet-grep pattern misses `grep -E -q`, `--silent`,
+  `egrep`, `zgrep`; the vacuity set is per-function not per-site; the
+  rename branch of the path escaping is untested; the gate-render tests
+  assert membership not the exact list.
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
@@ -862,8 +876,17 @@ Open, each with its verdict so far:
   found while testing — the R2 push's failure classifier grepped a log
   slice that included the script's own lines, so any store path containing
   "immutable" would have made every transport failure a corruption abort.
-  Merged with main, coordinator suite 3916 passed, exit 0; **PR #141**;
-  re-audit running.
+  Merged with main, coordinator suite 3916 passed, exit 0; **PR #141,
+  merged aa39a70** 2026-09-09 12:2x: the re-audit confirmed all eight
+  items and the classifier fix (rclone is not piped; all thirteen log
+  call sites carry the prefix; the sandbox exit-code matrix holds).
+  Follow-ups are round 4c-5 (`claude/audit-round4c-5`): the new
+  classifier test is inert (its rename round-trips and pytest truncates
+  the tmp basename, so the filter is covered only by two older tests'
+  directory names); rclone's own INFO lines can still carry the word in a
+  path element; an unremovable temporary is counted nowhere and exits 0;
+  `*.tmp` symlinks are followed or skipped forever; the sizeless warning
+  is unbounded per run.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -871,7 +894,14 @@ Open, each with its verdict so far:
   names the probable session, says it was paid for, counts the skip, and
   prints the repair, with a new `--rebuild-map` that reconstructs the
   mapping from the manifest. Merged with main, coordinator suite 3939
-  passed, exit 0; **PR #142**; re-audit running.
+  passed, exit 0; **PR #142, merged a20f5e6** 2026-09-09 12:1x: the
+  re-audit reproduced every claim and confirmed recovery can never name
+  the wrong session. Follow-ups are round 4e-6 (`claude/audit-round4e-6`):
+  a regression assertion on the retired message wording is now
+  unfalsifiable; the remedy line's `<manifest>` placeholder is a shell
+  redirection; "existing entries win" and the atomic rebuild write are
+  unpinned; a third `and` fence uncovered; a 40-hex session id is wrongly
+  declared unrecoverable; a malformed manifest tracebacks.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
