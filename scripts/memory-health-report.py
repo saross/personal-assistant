@@ -888,9 +888,14 @@ def render_report(report: dict[str, Any]) -> list[str]:
     else:
         lat = dt["latest"]
         run_day = str(lat.get("run_at", "?"))[:10]
+        # The headline carries the marker too. With a single logged run, and
+        # that run degraded, the series line does not print at all — so the
+        # only number on screen was an unmarked one, under a legend with
+        # nothing to explain (round 4f-6, finding L-c).
+        latest_mark = "*" if lat.get("degraded") else ""
         out.append(
             f"  latest ({run_day})    : {lat.get('fail')}/{lat.get('total_anchored')} "
-            f"fail = {lat.get('fail_pct')}%"
+            f"fail = {lat.get('fail_pct')}%{latest_mark}"
         )
         if len(dt["history"]) > 1:
             # A degraded run measured a smaller repository set; mark it in
@@ -910,10 +915,17 @@ def render_report(report: dict[str, Any]) -> list[str]:
                 out.append(f"    - {path}")
         degraded = dt.get("degraded_in_window", 0)
         if degraded:
+            # The legend prints only when something wears the marker, and it
+            # describes what actually happens: the sweep does not compare a
+            # degraded run against its alert threshold, and the run is marked
+            # here rather than dropped. The repository floor reads these rows
+            # like any other — the count it takes is what discovery FOUND
+            # (drift-sweep's finding M-b).
             out.append(
                 f"  * {degraded} of the last {len(dt['history'])} run(s) were "
-                "DEGRADED — a repository could not be consulted, so the floor "
-                "and the fail% comparison skip them"
+                "DEGRADED — a repository could not be consulted, so those "
+                "fail% figures are not comparable and the sweep raised no "
+                "alert on them"
             )
 
     out.append("\n" + "=" * 72)

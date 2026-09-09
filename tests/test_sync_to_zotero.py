@@ -85,7 +85,7 @@ class TestIsValidZoteroKey:
         """Real Zotero keys (8 uppercase alphanumeric) are accepted."""
         assert sync_to_zotero.is_valid_zotero_key("AAAA1111")
         assert sync_to_zotero.is_valid_zotero_key("BBBB2222")
-        assert sync_to_zotero.is_valid_zotero_key("9B2FJ6SL")
+        assert sync_to_zotero.is_valid_zotero_key("CCCC3333")
 
     def test_rejects_citation_slugs(self) -> None:
         """Author-year slugs are rejected."""
