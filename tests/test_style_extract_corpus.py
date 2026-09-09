@@ -1446,7 +1446,13 @@ def test_an_interruption_with_no_prior_failure_still_leaves_evidence(
     # No prior failure, so no extraction-error.txt — but the bundle is partial
     # and must say so.
     assert not (paper_dir / "extraction-error.txt").exists()
-    assert (paper_dir / "extraction-incomplete.txt").exists()
+    marker = paper_dir / "extraction-incomplete.txt"
+    assert marker.exists()
+    # The marker has to be readable by whoever finds it: an empty file says
+    # nothing about which paper, or how far the run got.
+    text = marker.read_text(encoding="utf-8")
+    assert "AAAA1111" in text, "the marker must name the paper"
+    assert "re-run" in text.lower(), "the marker must say what to do"
     assert (paper_dir / "body.md").exists(), "the partial bundle is the point"
     assert not (paper_dir / "qa.json").exists()
 
@@ -1478,6 +1484,38 @@ def test_a_reported_failure_leaves_only_the_error_marker(tmp_path, monkeypatch):
     assert result["status"] == "error"
     assert (output_dir / "AAAA1111" / "extraction-error.txt").exists()
     assert not (output_dir / "AAAA1111" / "extraction-incomplete.txt").exists()
+
+
+def test_a_crashing_extractor_leaves_only_the_error_marker(tmp_path,
+                                                          monkeypatch):
+    """The OTHER failure return: an exception inside the extractor.
+
+    Only the PDF-not-found path was covered, so neutering the unlink on the
+    exception path left both markers behind on a crash with all 82 tests
+    green — and a paper that had reported its failure looked partial as well.
+    The mutation this kills: dropping the unlink from the exception return.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    paper_dir = output_dir / "AAAA1111"
+
+    class ExplodingExtractor:
+        """Stands in for a PDF the real extractor cannot parse."""
+
+        config: dict = {}
+        stats: dict = {}
+
+        def extract(self, path):
+            raise RuntimeError("simulated extractor failure")
+
+    monkeypatch.setattr(extract_corpus, "load_extractor",
+                        lambda: (ExplodingExtractor, lambda text: text))
+
+    result = extract_corpus.extract_one(entry, output_dir)
+
+    assert result["status"] == "error"
+    assert (paper_dir / "extraction-error.txt").exists()
+    assert not (paper_dir / "extraction-incomplete.txt").exists()
 
 
 def test_a_dry_run_writes_no_incomplete_marker(tmp_path, monkeypatch):
