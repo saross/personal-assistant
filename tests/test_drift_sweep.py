@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -619,3 +620,44 @@ def test_the_warning_names_where_the_floor_came_from(
                    encoding="utf-8")
     assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
     assert "came from the last logged sweep" in capsys.readouterr().err
+
+
+def test_the_exclusion_list_is_complete_however_anchors_resolve(
+    tmp_path, monkeypatch,
+) -> None:
+    """Six repositories, one emptied mount, every anchor resolving early.
+
+    Resolution returns on the first repository that says "true", so without
+    an eager probe the emptied mount is never reached and the row claims six
+    repositories while meaning five (round 4f-5, finding M1).
+
+    Kills the mutation removing ``av.probe_repos(repos)`` from run_sweep.
+    """
+    good = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+            for i in range(5)]
+    gone = _init_repo(tmp_path / "gone", "wiki/notes.md")
+    shutil.rmtree(gone)
+    gone.mkdir()                       # an emptied mount point
+    _pin_repos(monkeypatch, good + [gone], discovered=6)
+    ds.av.reset_unusable_repos()
+
+    # Twenty anchors that all resolve in the FIRST repository.
+    records = [_record(f"m-{i}", "wiki/notes.md", OLD) for i in range(20)]
+    result = ds.run_sweep(records, as_of=FIXED_NOW)
+
+    assert result["verdicts"]["true"] == 20, "every anchor resolved early"
+    assert result["unusable_repos"] == [str(gone)]
+
+
+def test_the_eager_probe_leaves_healthy_repositories_alone(
+    tmp_path, monkeypatch,
+) -> None:
+    """The control: nothing excluded when every repository answers."""
+    repos = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+             for i in range(3)]
+    _pin_repos(monkeypatch, repos, discovered=3)
+    ds.av.reset_unusable_repos()
+    result = ds.run_sweep(
+        [_record("m-1", "wiki/notes.md", OLD)], as_of=FIXED_NOW,
+    )
+    assert result["unusable_repos"] == []

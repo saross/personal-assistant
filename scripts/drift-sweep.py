@@ -120,6 +120,12 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     # Start from a clean exclusion registry so the row below describes THIS
     # sweep, not one inherited from an earlier call in the same process.
     av.reset_unusable_repos()
+    # Ask every repository once, before any anchor is resolved. Resolution
+    # short-circuits on the first hit, so without this a repository is
+    # registered unusable only if some ref happens to reach it — and a sweep
+    # whose anchors resolve early reports an empty exclusion list beside an
+    # emptied mount (finding M1).
+    av.probe_repos(repos)
     basename_index = ta.build_basename_index(repos)
     # Memoise both ref-level resolvers: verify_file walks every repository and
     # spawns up to two git processes per repository, and the same ref recurs

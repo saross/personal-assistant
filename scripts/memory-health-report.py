@@ -1035,8 +1035,11 @@ def build_report(
             report["tier_c_skipped"] = f"repository discovery failed ({exc})"
             return report, clean
         # Clean registry: [F] below reports the repositories THIS run had to
-        # leave out (finding M-b).
+        # leave out (finding M-b), and every repository is asked once up
+        # front so that list is complete however the anchors resolve
+        # (finding M1).
         av.reset_unusable_repos()
+        av.probe_repos(repos)
         basename_index = ta.build_basename_index(repos)
         # Memoised per (resolver, ref): verify_file walks every repository and
         # spawns up to two git processes each, and tier_c_audit re-resolves
