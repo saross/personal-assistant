@@ -746,11 +746,12 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-three PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-four PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
-and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
+and glue); #138 (machine glue, two re-audits); #126, #131, #134
+(bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140
 (memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
@@ -856,7 +857,20 @@ Open, each with its verdict so far:
   composer consultation, and the empty-`data/` case pinned; the Zotero
   trim comment recounted to 22; worktree detection reads the `.git`
   pointer's shape. Merged with main (259d4fe), coordinator suite 3957
-  passed, exit 0, pushed; second re-audit running.
+  passed, exit 0, pushed. Second re-audit verdict approve: the destructive
+  advice reachable only for an uninitialised submodule (every other
+  state, an absent line, and a failing git all get the non-destructive
+  message), the stub matches real git, the fresh-clone path genuinely
+  succeeds, the 22-character count recomputed, all prior survivors dead.
+  **Merged 8eb78c3** 2026-09-09 13:2x. Nine lows are round 4d-6
+  (`claude/audit-round4d-6`): the trim-set count test counts only
+  whitespace so a non-whitespace addition is invisible; a worktree
+  preview could print the wrong note; the dry-run branch never prints the
+  remedy it previews; the composed file's content unasserted; the `--
+  data` pathspec and the composer's `-e` breadth unpinned; and three
+  notes (pointer regex needs a literal `/.git/`; `$submodule_state` read
+  before assignment under `set -u` if ever called early; a status that
+  prints `-` and fails is treated as authoritative).
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
