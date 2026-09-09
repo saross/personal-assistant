@@ -523,6 +523,12 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+            # Flush to the device before the rename. os.replace is atomic
+            # with respect to readers, but on a crash the rename can reach
+            # the disk before the contents do, leaving a file that is
+            # present, named correctly, and empty.
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
@@ -781,32 +787,50 @@ def known_session_ids(
     }
 
 
+def custom_id_lookup(session_ids: set[str] | frozenset[str]) -> dict[str, str]:
+    """Map ``custom_id -> session id`` for a set of known session ids.
+
+    Built once per retrieval rather than re-hashing every known id for
+    every unmatched result. Where two ids collide the lexicographically
+    first wins, which is what the previous linear scan did; the rebuild
+    refuses such a manifest outright, so this only matters for a state
+    whose manifest was never validated.
+    """
+    lookup: dict[str, str] = {}
+    for session_id in sorted(session_ids):
+        lookup.setdefault(build_custom_id(session_id), session_id)
+    return lookup
+
+
 def recover_session_id_from_custom_id(
-    custom_id: str, known: set[str] | frozenset[str] = frozenset()
+    custom_id: str, lookup: dict[str, str] | None = None
 ) -> str | None:
     """Return the session id a custom_id was built from, if it is readable.
 
-    Order matters. The manifest, where one is available, is checked FIRST
-    and answers both forms: ``build_custom_id`` is a pure function, so
-    hashing each known session id and comparing reverses even the digest
-    form. Only with no manifest does shape decide, and then a 40-character
-    hex suffix is read as a digest.
+    The manifest, where one is available, is authoritative and answers both
+    forms: ``build_custom_id`` is a pure function, so a lookup keyed on it
+    reverses even the digest form. Shape is the fallback, and reads a
+    40-character hex suffix as a digest.
 
-    That ordering is not a nicety. A session id can ITSELF be 40 hex
-    characters, in which case ``build_custom_id`` emits it verbatim and the
-    shape test alone would tell the operator the id was "not recoverable"
-    while it sat in plain sight in the custom_id.
+    The manifest is consulted first only because it is the better answer,
+    not because the order changes the result: the two agree wherever both
+    speak. What matters is that shape is NOT consulted alone. A session id
+    can ITSELF be 40 hex characters, in which case ``build_custom_id``
+    emits it verbatim, and shape would tell the operator the id was "not
+    recoverable" while it sat in plain sight in the custom_id.
 
     Args:
         custom_id: the id to reverse.
-        known: session ids from the manifest, when one could be read.
+        lookup: ``custom_id -> session id`` from ``custom_id_lookup``, when
+            a manifest could be read.
 
     Returns:
         The session id, or None when it genuinely cannot be determined.
     """
-    for session_id in sorted(known):
-        if build_custom_id(session_id) == custom_id:
-            return session_id
+    if lookup:
+        found = lookup.get(custom_id)
+        if found is not None:
+            return found
     if not custom_id.startswith("sess-"):
         return None
     suffix = custom_id[len("sess-"):]
@@ -1098,7 +1122,7 @@ def haiku_apply(
 
     # Read once, before the loop: it turns a guessed session id into a
     # confirmed one, and it is a file read.
-    manifest_session_ids = known_session_ids(state, manifest_path)
+    manifest_lookup = custom_id_lookup(known_session_ids(state, manifest_path))
     effective_manifest = (
         str(manifest_path) if manifest_path else state_manifest_path(state)
     )
@@ -1124,7 +1148,7 @@ def haiku_apply(
             # already spent, and print the remedy once at the end.
             n_unmapped += 1
             recovered = recover_session_id_from_custom_id(
-                result.custom_id, manifest_session_ids
+                result.custom_id, manifest_lookup
             )
             which = (
                 f"probably session {recovered}" if recovered

@@ -2021,7 +2021,7 @@ class TestStrandedResults:
         assert custom_id == f"sess-{session_id}"
         assert bom.recover_session_id_from_custom_id(custom_id) is None
         assert bom.recover_session_id_from_custom_id(
-            custom_id, {session_id}
+            custom_id, bom.custom_id_lookup({session_id})
         ) == session_id
 
     def test_a_hashed_custom_id_is_reversed_through_the_manifest(self):
@@ -2031,8 +2031,24 @@ class TestStrandedResults:
         assert custom_id != f"sess-{session_id}"
         assert bom.recover_session_id_from_custom_id(custom_id) is None
         assert bom.recover_session_id_from_custom_id(
-            custom_id, {session_id, "an-unrelated-session"}
+            custom_id, bom.custom_id_lookup({session_id, "an-unrelated-session"})
         ) == session_id
+
+    def test_the_lookup_is_built_once_and_keeps_first_wins(self):
+        """One dict per retrieval, not a rescan per unmatched result.
+
+        Where two session ids collide the lexicographically first wins,
+        matching the linear scan this replaced. The rebuild refuses such a
+        manifest, so this only arises for a state whose manifest was never
+        validated.
+        """
+        long_id = "subagent-explore-" + "z" * 80
+        digest = hashlib.sha256(long_id.encode("utf-8")).hexdigest()[:40]
+        lookup = bom.custom_id_lookup({long_id, digest})
+        assert len(lookup) == 1
+        assert lookup[bom.build_custom_id(long_id)] == min(long_id, digest)
+        assert bom.custom_id_lookup(set()) == {}
+        assert bom.recover_session_id_from_custom_id("sess-x", {}) == "x"
 
     def test_known_session_ids_survives_a_missing_or_broken_manifest(
         self, tmp_path, capsys
