@@ -1169,24 +1169,41 @@ class TestBatchSubmitIsNotRepeatable:
         ]) == 0
         assert (out_dir / "haiku" / "noargs-aaaa-1111.json").exists()
 
-    def test_a_live_run_still_demands_manifest_and_prompt(self, tmp_path, capsys):
-        """Relaxing the parser must not let a billed run start without them."""
-        code = bom.main([
-            "--provider", "gemini",
-            "--out-dir", str(tmp_path / "out"),
-            "--yes",
-        ])
-        assert code == 2
+    @pytest.mark.parametrize("supplied", ["neither", "manifest", "prompt"])
+    def test_a_live_run_still_demands_manifest_and_prompt(
+        self, tmp_path, capsys, supplied
+    ):
+        """Relaxing the parser must not let a billed run start without them.
+
+        All three shapes are exercised because the fence is an ``and``:
+        with only one of the two supplied, an ``or`` there passes the check
+        and the run crashes further in with an AttributeError on None
+        instead of exiting 2.
+        """
+        argv = ["--provider", "gemini", "--out-dir", str(tmp_path / "out"), "--yes"]
+        if supplied == "manifest":
+            argv += ["--manifest", str(_one_session_manifest(tmp_path))]
+        elif supplied == "prompt":
+            argv += ["--prompt", str(_prompt_file(tmp_path))]
+        assert bom.main(argv) == 2
         assert "requires --manifest and --prompt" in capsys.readouterr().err
 
-    def test_build_rubric_still_demands_manifest_and_prompt(self, tmp_path, capsys):
-        code = bom.main([
+    @pytest.mark.parametrize("supplied", ["neither", "manifest", "prompt"])
+    def test_build_rubric_still_demands_manifest_and_prompt(
+        self, tmp_path, capsys, supplied
+    ):
+        """Same ``and`` fence, same three shapes — see the live-run test."""
+        argv = [
             "--build-rubric",
             "--out-dir", str(tmp_path / "out"),
             "--rubric-in", str(tmp_path / "in.md"),
             "--rubric-out", str(tmp_path / "out.md"),
-        ])
-        assert code == 2
+        ]
+        if supplied == "manifest":
+            argv += ["--manifest", str(_one_session_manifest(tmp_path))]
+        elif supplied == "prompt":
+            argv += ["--prompt", str(_prompt_file(tmp_path))]
+        assert bom.main(argv) == 2
         assert "requires --manifest and --prompt" in capsys.readouterr().err
 
     def test_the_refusal_repeats_that_exact_line(
