@@ -746,14 +746,14 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-nine PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #138 (machine glue, two re-audits); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
-(hermeticity round 4a-6); #129, #140, #145
+(hermeticity round 4a-6); #129, #140, #145, #152
 (memory readers and anchors); #132, #135, #139, #148 (daily-sync lows);
 #136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
@@ -1043,7 +1043,23 @@ Open, each with its verdict so far:
   recorded count; `[H]`'s headline marked and its wording matched to
   behaviour; the alert comparison skipped for a degraded row with a
   NOTE. Merged with main (f5a2a6b), coordinator suite 4454 passed, 2
-  skipped, 19 deselected, exit 0; **PR #152**; re-audit running.
+  skipped, 19 deselected, exit 0; **PR #152, merged 9737c3e** 2026-09-09
+  16:2x: the re-audit confirmed the predicate, the shared denominator,
+  all four cells, the probe matrix (one subprocess per repository), the
+  floor's WARN-then-refuse, `[H]`, and re-killed all eleven named
+  mutations. **DEFERRED follow-ups** (stop point): two stale messages
+  still say "the floor and the fail-rate trend skip it"
+  (`drift-sweep.py:304`, `:422`, comment at `:410`); a sub-threshold
+  exclusion is alert-tested on a rate deflated by up to the 10 % pending
+  bound (document the bound); four surviving mutations — the symlink
+  `resolve()` at `anchor_verify.py:190` unpinned, the `>` at
+  `drift-sweep.py:229` duplicated from `:418` so exactly 10.0 % disagrees,
+  the degraded early-return's log-failure exit untested (`:454`), and
+  `[H]`'s `degraded` key co-varying with `unusable` in every fixture
+  (`memory-health-report.py:895`); `build_basename_index` never consults
+  `repo_is_unusable`; six real Zotero keys remain in five style-analyser
+  scripts as operational configuration (not fixtures; `tests/` is
+  clean).
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
