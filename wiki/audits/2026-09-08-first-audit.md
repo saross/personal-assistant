@@ -792,7 +792,7 @@ Open, each with its verdict so far:
   script; an `extraction-incomplete.txt` marker written before any bundle
   output and removed after the last. Merged with main (b071f4d),
   coordinator suite 4318 passed, 2 skipped, 19 deselected, exit 0;
-  pushed; PR and re-audit pending.
+  **PR #144**; re-audit running.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -888,8 +888,9 @@ Open, each with its verdict so far:
   population); `MIN_DISCOVERED_REPOS = 3` when the log offers no count;
   the refusal says it has no override; `consulted` beside `repos`;
   eleven real Zotero keys replaced; resets and the history-probe
-  handlers tested. Merged with main (1b1a4aa); coordinator suite, PR, and
-  re-audit pending.
+  handlers tested. Merged with main (1b1a4aa), coordinator suite 4330
+  passed, 2 skipped, 19 deselected, exit 0; **PR #145**; re-audit
+  running.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
@@ -905,7 +906,17 @@ Open, each with its verdict so far:
   directory names); rclone's own INFO lines can still carry the word in a
   path element; an unremovable temporary is counted nowhere and exits 0;
   `*.tmp` symlinks are followed or skipped forever; the sizeless warning
-  is unbounded per run.
+  is unbounded per run. Round 4c-5 delivered (f78bacb, 3fa6b85, 2a5c81e):
+  the classifier matches rclone's own ERROR/NOTICE refusal wording
+  (verified against the installed v1.74.2 binary with `strings`; a future
+  phrasing fails safe to exit 2) and the now-unreachable `grep -v` was
+  removed rather than kept as a dead guard; the fixture HOME carries the
+  word deliberately; sweep failures counted in `errors` and the exit
+  status; `*.tmp` symlinks judged by their own age and removed as links
+  (a dangling one was invisible for ever); the sizeless warning once per
+  run with a count. The round 4c-4 report's claim that its test pinned
+  the filter is corrected. Merged with main (1286407); coordinator suite,
+  PR, and re-audit pending.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -928,8 +939,7 @@ Open, each with its verdict so far:
   quote kept and pinned; the rubric fence covered; session-id recovery
   consults the manifest first (reversing both forms); a malformed
   manifest raises `ManifestFormatError` and exits 2 before anything is
-  written. Merged with main (f8a0489); coordinator suite, PR, and
-  re-audit pending.
+  written. Merged with main (f8a0489); coordinator suite running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
