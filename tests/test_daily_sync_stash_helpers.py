@@ -3442,11 +3442,12 @@ class TestRenderSyncGateSupersession:
         descriptions of one entry stand side by side again.
         """
         rendered = self._render(tmp_path, self._STALE_OTHER, [self._BINARY])
-        assert self._BINARY in rendered, rendered
-        assert self._STALE_OTHER not in rendered, (
-            "a stale free-text line about the same stash outlived this "
-            "run's word on it: " + str(rendered)
-        )
+        # audit L5 (seventh re-audit): the EXACT list, not membership.
+        # Membership let `tail -n +2` become `cat` (which leaks the count
+        # line into the details, inflating the next run's header) and
+        # `grep -qxF` become `-qF` (which retires a line on a substring)
+        # both pass.
+        assert rendered == [self._BINARY], rendered
 
     def test_a_listing_line_never_erases_a_specific_claim(
         self, tmp_path: Path
@@ -3456,11 +3457,10 @@ class TestRenderSyncGateSupersession:
         that listing must not retire what an earlier run knew about one
         of them."""
         rendered = self._render(tmp_path, self._BLOCKED, [self._LISTING])
-        assert self._BLOCKED in rendered, (
-            "a line that could attribute nothing erased a specific claim: "
-            + str(rendered)
+        assert rendered == [self._BLOCKED, self._LISTING], (
+            "a line that could attribute nothing erased a specific claim, "
+            "or the order the reader depends on changed: " + str(rendered)
         )
-        assert self._LISTING in rendered, rendered
 
     def test_a_completed_run_replaces_rather_than_appends(
         self, tmp_path: Path
@@ -3616,3 +3616,97 @@ class TestSpanRuleNeedsBothEnds:
         result = self._guard(repo, logs)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+
+class TestRenameRecordsAreEncodedToo:
+    """A rename carries a SECOND path, and it goes through the same
+    encoding -- or a newline in the original path splits that record and
+    the fragment answers for a real file."""
+
+    _FUNCTIONS = ("status_records", "status_lines_for", "encode_record_path")
+
+    def test_a_rename_from_a_newline_path_stays_one_record(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L4: emitting the rename's original path raw.
+
+        Only the destination went through the encoder in the first fix.
+        The source is written by a different `printf`, and a newline in
+        it splits the record exactly as it did before.
+        """
+        repo = tmp_path / "rename-newline"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        source = "notes/two\nlines.md"
+        (repo / source).write_text("content that stays\n", encoding="utf-8")
+        # A real file whose name is the tail of the source path.
+        (repo / "lines.md").write_text("untouched\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", source, "notes/renamed.md", cwd=repo)
+
+        result = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert result.returncode == 0, result.stderr
+        rows = result.stdout.splitlines()
+        assert len(rows) == 2, ("a rename from a path with a newline split "
+                               f"into more than its two records: {rows}")
+        assert "notes/two\\nlines.md" in result.stdout, result.stdout
+
+    def test_the_fragment_of_a_rename_source_answers_for_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The consequence, and the one that matters: the tail of a split
+        source must not be matched as though it were a path of its own."""
+        repo = tmp_path / "rename-impersonate"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        (repo / "notes" / "decoy\nlines.md").write_text("stays\n", encoding="utf-8")
+        (repo / "lines.md").write_text("a real file, untouched\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", "notes/decoy\nlines.md", "notes/renamed.md", cwd=repo)
+
+        result = _run_shell(
+            f'records="$(status_records "{repo}")"\n'
+            'status_lines_for "$records" "lines.md"\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "", (
+            "the tail of a split rename source answered for a file nothing "
+            "touched: " + repr(result.stdout)
+        )
+
+    def test_the_query_path_is_encoded_before_it_is_compared(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the other half: the query goes through the same encoder.
+
+        Leaving it raw fails SAFE -- a real path with a newline stops
+        matching its own record -- but silently, and a guard that has
+        quietly stopped seeing a path is how an entry gets called
+        unmeasurable for ever.
+        """
+        repo = tmp_path / "query-encoded"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        awkward = "notes/two\nlines.md"
+        (repo / awkward).write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / awkward).write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'records="$(status_records "{repo}")"\n'
+            'status_lines_for "$records" "$PA_TEST_PATH"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_PATH": awkward},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == " M\tnotes/two\\nlines.md\n", (
+            "a path with a newline no longer matches its own record: "
+            + repr(result.stdout)
+        )
