@@ -305,6 +305,29 @@ class TestTheDivergenceCommentIsTrue:
             "_SQL_TRIMMED_DOI", 1
         )[0]
 
+    def test_every_trimmed_character_is_whitespace(self) -> None:
+        """L1 — the trim set may contain nothing but whitespace.
+
+        The count test above only looks at whitespace code points ABSENT
+        from the shipped set, so adding a non-whitespace character to the
+        expression was invisible to it: ``char(8239) || char(48)`` --
+        which strips ASCII "0" off a stored DOI on the SQL side while the
+        Python side keeps it -- survived the whole suite. That is not a
+        cosmetic divergence; it silently changes which DOIs are considered
+        the same, in the direction of false matches.
+        """
+        shipped = self._shipped_set()
+        assert shipped, "no char() entries found in the expression"
+        offenders = [
+            f"char({c}) = {chr(c)!r}"
+            for c in sorted(shipped)
+            if not chr(c).isspace()
+        ]
+        assert offenders == [], (
+            "the SQL trim set strips characters Python's str.strip keeps: "
+            + ", ".join(offenders)
+        )
+
     def test_the_stated_count_matches_the_shipped_set(self) -> None:
         """Recompute the divergence over the whole of Unicode."""
         shipped = self._shipped_set()
