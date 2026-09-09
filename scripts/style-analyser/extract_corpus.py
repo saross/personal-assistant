@@ -671,6 +671,23 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
 
     written: list[str] = []
 
+    # An "I started and did not finish" marker, written before any output and
+    # removed after the last one. Atomicity is per-FILE: every write lands
+    # whole or not at all, but a run interrupted between them still leaves a
+    # partial bundle, and only the two explicit failure returns below wrote
+    # anything to say so. A paper that had never failed and was interrupted
+    # mid-bundle left a directory that looked complete to anything grepping
+    # for a marker (round 4g-4, item L4). This marker is that evidence: if it
+    # survives a run, the bundle beside it is incomplete.
+    incomplete_marker = paper_dir / "extraction-incomplete.txt"
+    if not dry_run:
+        atomic_write_text(
+            incomplete_marker,
+            f"Extraction of {key} started and has not finished.\n"
+            "If this file is still here, the outputs beside it are partial: "
+            "re-run extract_corpus.py for this key.\n",
+        )
+
     def emit_text(path: Path, text: str) -> None:
         """Write one text output atomically, or record it under ``--dry-run``."""
         atomic_write_text(path, text, dry_run=dry_run)
@@ -684,6 +701,10 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
     if not pdf_path.exists():
         msg = f"PDF not found: {pdf_path}"
         emit_text(paper_dir / "extraction-error.txt", msg)
+        if not dry_run:
+            # A deliberate, reported failure: extraction-error.txt says more
+            # than "incomplete" does, so only one marker is left behind.
+            incomplete_marker.unlink(missing_ok=True)
         return {"key": key, "status": "error", "error": msg,
                 "dry_run": dry_run, "outputs": written}
 
@@ -694,6 +715,8 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
     except Exception as exc:
         tb = traceback.format_exc()
         emit_text(paper_dir / "extraction-error.txt", f"{exc}\n\n{tb}")
+        if not dry_run:
+            incomplete_marker.unlink(missing_ok=True)
         return {"key": key, "status": "error", "error": str(exc),
                 "dry_run": dry_run, "outputs": written}
 
@@ -771,6 +794,8 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
     # writes.
     if not dry_run:
         (paper_dir / "extraction-error.txt").unlink(missing_ok=True)
+        # The bundle is complete, so the start-of-run marker has done its job.
+        incomplete_marker.unlink(missing_ok=True)
 
     return {
         "key": key,
