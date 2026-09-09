@@ -784,7 +784,15 @@ Open, each with its verdict so far:
   judge tests monkeypatch both defaults so only the constant test catches
   a reverted default; `provenance_block` never passes a path hint so its
   tracked-ness branch is unreachable; bundle atomicity is per-file (an
-  interruption on a never-failed paper leaves no marker).
+  interruption on a never-failed paper leaves no marker). Round 4g-4
+  delivered (325d5a1-2a9034e): the stamp checks pinned by position; the
+  judge layout described once in `style_support` with both scripts'
+  defaults derived at call time (the round 4g-3 report's "exercised, not
+  just asserted" claim corrected); `provenance_block` records the calling
+  script; an `extraction-incomplete.txt` marker written before any bundle
+  output and removed after the last. Merged with main (b071f4d),
+  coordinator suite 4318 passed, 2 skipped, 19 deselected, exit 0;
+  pushed; PR and re-audit pending.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -870,7 +878,18 @@ Open, each with its verdict so far:
   broken repository; one flaky mount makes every sweep a refusal with the
   gap invisible; one repository counts as a set on a first run; the
   refusal names no override; the real key `MPZHXY3P` remains in
-  `tests/test_sync_to_zotero.py`; both registry resets untested.
+  `tests/test_sync_to_zotero.py`; both registry resets untested. Round
+  4f-5 delivered (fb46317-97632e4): `probe_repos` asks every repository
+  once before resolving; `[H]` names exclusions and marks degraded runs;
+  a degraded sweep (pending rate over the floor AND known exclusions)
+  writes a row flagged `degraded: true` that the floor and `[H]` skip
+  rather than refusing (option b; dropping unknown-blocked refs from the
+  denominator rejected as a fail rate over a silently smaller
+  population); `MIN_DISCOVERED_REPOS = 3` when the log offers no count;
+  the refusal says it has no override; `consulted` beside `repos`;
+  eleven real Zotero keys replaced; resets and the history-probe
+  handlers tested. Merged with main (1b1a4aa); coordinator suite, PR, and
+  re-audit pending.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
@@ -901,7 +920,16 @@ Open, each with its verdict so far:
   unfalsifiable; the remedy line's `<manifest>` placeholder is a shell
   redirection; "existing entries win" and the atomic rebuild write are
   unpinned; a third `and` fence uncovered; a 40-hex session id is wrongly
-  declared unrecoverable; a malformed manifest tracebacks.
+  declared unrecoverable; a malformed manifest tracebacks. Round 4e-6
+  delivered (6c2d347-d98c14c): the live wording asserted; the repair line
+  names the manifest path recorded in the state (shell-quoted) or a
+  paste-safe placeholder; "existing entries win" and the atomic write
+  pinned by a disagreeing state and a crash on `os.replace`; the batch id
+  quote kept and pinned; the rubric fence covered; session-id recovery
+  consults the manifest first (reversing both forms); a malformed
+  manifest raises `ManifestFormatError` and exits 2 before anything is
+  written. Merged with main (f8a0489); coordinator suite, PR, and
+  re-audit pending.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
