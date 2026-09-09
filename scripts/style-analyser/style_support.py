@@ -42,6 +42,7 @@ call.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import subprocess
@@ -278,11 +279,31 @@ def git_commit(path_hint: Path | str | None = None) -> str | None:
     return git_state(path_hint)["commit"]
 
 
+def _calling_script() -> Path | None:
+    """Return the ``__file__`` of the caller's caller, if it has one.
+
+    Used so ``provenance_block`` describes the repository state of the SCRIPT
+    that is producing the output, rather than of ``style_support`` itself.
+    Returns ``None`` for a caller with no file (an interactive session, or
+    code exec'd from a string), which the caller treats as "no path hint".
+    """
+    frame = inspect.currentframe()
+    try:
+        # currentframe -> _calling_script's caller (provenance_block) -> the
+        # script that called it.
+        outer = frame.f_back.f_back if frame and frame.f_back else None
+        path = outer.f_globals.get("__file__") if outer else None
+        return Path(path) if path else None
+    finally:
+        del frame
+
+
 def provenance_block(script: str,
                      inputs: Iterable[Path | str] = (),
                      *,
                      seed: int | None = None,
                      spacy_model: str | None = None,
+                     script_path: Path | str | None = None,
                      extra: Mapping[str, Any] | None = None) -> dict:
     """Assemble the ``provenance`` block embedded in every output file.
 
@@ -296,11 +317,21 @@ def provenance_block(script: str,
 
     Contains no wall-clock field, on purpose: see the module docstring.
 
+``script_path`` is the file whose repository state is recorded. It
+    defaults to the CALLER's ``__file__``, because the commit that matters is
+    the one containing the script that produced the output. This used to call
+    ``git_state()`` with no argument, which always described *this* module —
+    so the "the file must be tracked by the repository whose commit is
+    recorded" branch was unreachable for every caller, and a brand-new,
+    uncommitted script recorded a clean commit that does not contain it
+    (round 4g-4, item L3).
+
     Raises ValueError if ``extra`` would overwrite a field the block itself
     owns — silently replacing ``inputs`` or ``git_commit`` with a caller's
     value would make provenance say something the writer did not mean.
     """
-    state = git_state()
+    state = git_state(script_path if script_path is not None
+                      else _calling_script())
     record: dict[str, Any] = {
         "script": script,
         "git_commit": state["commit"],
