@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-eight PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-nine PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -758,7 +758,7 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 #136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
-#142, #146 (bake-off rounds 4e-5, 4e-6).
+#142, #146, #150 (bake-off rounds 4e-5 to 4e-7).
 
 Open, each with its verdict so far:
 
@@ -829,7 +829,23 @@ Open, each with its verdict so far:
   explicit-path test builds its own repository; `extract_corpus` warns on
   leftover markers and the agent definition skips marked bundles.
   Merged with main (7f146ad), coordinator suite 4431 passed, 2 skipped,
-  19 deselected, exit 0; **PR #151**; re-audit running.
+  19 deselected, exit 0; **PR #151**. Re-audit verdict **do not merge**
+  — C1: `efficacy_score.py:105-109` discards the loader's return and
+  builds its list with a conditional comprehension, then
+  `load_corpus_space` re-reads all three files, so the scorer is still
+  check-then-reload and the one-word mutation `is not None` → `is None`
+  skips every stamp check with 183 passed (the PR #144 finding
+  re-entered; phase 5 is genuinely by construction). M1: the phase-5
+  "both inputs" assertion was deleted and not replaced (`[args.phase1,
+  args.phase1]` survives). M2: four of the five root-derivation
+  assertions compare values, so a reverted literal survives. Lows: dead
+  `EXP`/`PASSAGES`/`REPO_ROOT`; one remaining layout literal; the agent
+  document's example command lacks two required flags; no test ties the
+  marker names in the document to the code. **DEFERRED** (stop point
+  2026-09-09 15:5x): the fix is two lines in the scorer (feed the
+  returned payloads into `load_corpus_space`, an explicit list, an AST
+  non-emptiness assertion) plus the phase-5 argument-set assertion; PR
+  #151 stays open on `claude/audit-round4g-5` in the 4g worktree.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -958,7 +974,19 @@ Open, each with its verdict so far:
   indented `<<-` terminator unpinned; and four pre-existing script
   weaknesses exposed by mutation (a `bulk-anything` trailer passes the
   gate; a copy record desynchronises the status stream; the last rather
-  than the first unmeasurable merge named; `--reverse` unpinned).
+  than the first unmeasurable merge named; `--reverse` unpinned). Round
+  3c-9 delivered (4a9793c, ef8e29f; tests only, the script byte-identical
+  to PR #148): a quote-state tokeniser replaces the comment heuristic
+  (the opener must start outside quotes; its delimiter may be quoted);
+  fixtures indented; every quiet grep on a statement judged by whether IT
+  is downstream of a pipe; the `<<-` terminator and the here-string
+  lookbehind pinned; four script guards pinned (a `bulk-extra` trailer
+  refused, the copy record keeps the field stream aligned, the first
+  shortening commit and the first unmeasurable merge named). The agent
+  records two fixture traps its own earlier tests caught. Merged with
+  main (92fc79e), coordinator suite 4468 passed, 2 skipped, 19
+  deselected, exit 0; **PR #153, open, re-audit DEFERRED** (stop
+  point).
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
@@ -1014,8 +1042,8 @@ Open, each with its verdict so far:
   unless `--min-repos` is passed that run, with a WARN naming a low
   recorded count; `[H]`'s headline marked and its wording matched to
   behaviour; the alert comparison skipped for a degraded row with a
-  NOTE. Merged with main (f5a2a6b); coordinator suite, PR, and re-audit
-  pending.
+  NOTE. Merged with main (f5a2a6b), coordinator suite 4454 passed, 2
+  skipped, 19 deselected, exit 0; **PR #152**; re-audit running.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
@@ -1114,8 +1142,19 @@ Open, each with its verdict so far:
   an empty session list and a self-colliding manifest refused with exit
   2; the lookup built once; `fsync` before `os.replace` (its mutation
   survives by nature, stated). Merged with main (06aff0f), coordinator
-  suite 4422 passed, 2 skipped, 19 deselected, exit 0; **PR #150**;
-  re-audit running.
+  suite 4422 passed, 2 skipped, 19 deselected, exit 0; **PR #150, merged
+  1c6b598** 2026-09-09 15:3x: the re-audit confirmed the threading, the
+  collision handling, the empty-list refusal, the once-per-run messages,
+  and the write paths (15 of 17 mutations killed). Follow-ups are round
+  4e-8 (`claude/audit-round4e-8`): the `--manifest` help still says
+  "unused by --haiku-apply"; a supplied-but-unreadable `--manifest`
+  defeats a good recorded one (a regression against main, mitigated by
+  the new warning); the non-string recorded path is the one unreadable
+  case still silent; the strip guard is rebuild-only and the id is used
+  unstripped downstream (validate once, in one helper, at both entry
+  points); the rebuild's summary names neither manifest when they
+  differ; first-wins pinned only probabilistically; the parent directory
+  not `fsync`ed and a failing `fsync` aborts a retrieval mid-loop.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
