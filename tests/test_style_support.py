@@ -458,3 +458,19 @@ def test_the_temporary_file_is_created_beside_its_destination(tmp_path,
     style_support.atomic_write_text(target, "payload\n")
 
     assert recorded["dir"] == str(target.parent)
+
+
+def test_a_stamp_without_a_version_is_refused(tmp_path):
+    """A `metric_schema` block that carries no version is not a version.
+
+    ``stamp.get("version")`` returning None for a version-less dict is what
+    makes this refusal work, and nothing asserted it: changing the call to
+    ``stamp.get("version", METRIC_SCHEMA_VERSION)`` — a plausible "sensible
+    default" edit — makes an unversioned block pass as current. The mutation
+    this kills is exactly that default.
+    """
+    message = style_support.metric_schema_error(
+        {"metric_schema": {"definitions": "unstated"}}, "vague.json")
+
+    assert message is not None
+    assert "version is absent" in message
