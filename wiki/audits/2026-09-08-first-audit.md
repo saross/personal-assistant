@@ -1001,7 +1001,21 @@ Open, each with its verdict so far:
   `--min-repos` override silently becomes the standing floor; `[H]`
   over-claims and under-marks; a degraded row's deflated fail rate is
   still alert-tested; a nested emptied directory probes usable. Round
-  4f-6 (`claude/audit-round4f-6`) takes all of them.
+  4f-6 (`claude/audit-round4f-6`) takes all of them. Round 4f-6
+  delivered (bc7e1f0, 5360da1, 5ea690c): `degraded` is the judgement
+  (exclusions AND a pending rate over the floor) with `unusable` the
+  fact; the `last_repo_count` skip removed; `probe_repos` tested per
+  branch on both the return and the registry, and it now compares
+  `--show-toplevel` with the path it asked about so a nested emptied
+  directory is excluded rather than answering for its parent; the tier-C
+  probe pinned; the third real key replaced (two remaining occurrences in
+  the style-analyser scripts are operational configuration naming the
+  operator's reference papers, noted); the floor is `max(recorded, 3)`
+  unless `--min-repos` is passed that run, with a WARN naming a low
+  recorded count; `[H]`'s headline marked and its wording matched to
+  behaviour; the alert comparison skipped for a degraded row with a
+  NOTE. Merged with main (f5a2a6b); coordinator suite, PR, and re-audit
+  pending.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
