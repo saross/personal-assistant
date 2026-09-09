@@ -251,14 +251,27 @@ classify_failure_and_exit() {
     # which in an append-only archive is a corruption signal that a retry
     # cannot fix and that a human has to look at.
     #
-    # Matched on rclone's ERROR-level lines carrying its own refusal
+    # Matched on rclone's ERROR/NOTICE lines carrying its own refusal
     # wording, NOT on the bare word "immutable" anywhere in the output.
     # This one test is what keeps every other source of that word out of the
     # decision: the paths in rclone's own INFO lines, and the paths this
-    # script logs (CANON derives from $HOME, so our lines carry it too — an
-    # earlier revision filtered our lines separately, which this narrowing
-    # subsumes; a second filter no test could fail is the dead guard round
-    # 4c-3 L-1 removed elsewhere).
+    # script logs (CANON derives from $HOME, so our lines carry it too).
+    #
+    # A separate filter for our own lines is NOT needed and is deliberately
+    # absent: log() writes `[YYYY-MM-DD HH:MM:SS] r2-push: …`, which carries
+    # no level marker, so no line this script writes can satisfy the match
+    # below. A second guard that no test could fail is the dead guard round
+    # 4c-3 L-1 removed elsewhere.
+    #
+    # The level marker is matched as a TOKEN, not at the line start.
+    # rclone's --log-format defaults to `date,time`, so every line it writes
+    # to --log-file is `YYYY/MM/DD HH:MM:SS LEVEL : …` and an anchored
+    # `^(ERROR|NOTICE)` matches nothing it ever emits — verified on the
+    # deployed log, where 9,314 lines carry a level and zero match the
+    # anchor, and against the binary, whose strings hold the layout
+    # `2006/01/02 15:04:05` and the level format `%-6s: %s` (audit round
+    # 4c-6, finding C1). That padding is also why the marker may be
+    # `ERROR :` with a space but `NOTICE:` without one.
     # rclone logs one INFO line per transferred object naming its relative
     # path, so a single project slug containing the word — say
     # `-home-shawn-immutable-notes` — turned every transport failure into a
@@ -286,7 +299,7 @@ classify_failure_and_exit() {
     # 2 ("safe to retry") rather than 3, so the mistake is a retry, not a
     # missed corruption signal that was silently called an abort.
     if printf '%s\n' "$this_run_output" \
-            | grep -E '^(ERROR|NOTICE)' \
+            | grep -E '(^|[[:space:]])(ERROR|NOTICE)[[:space:]]*:' \
             | grep -qiE 'immutable file modified|immutable objects'; then
         log "r2-push: ABORTED — rclone refused to modify an object already" \
             "in R2 (--immutable). The archive is append-only, so a" \

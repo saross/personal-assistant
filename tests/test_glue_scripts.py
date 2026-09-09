@@ -1378,8 +1378,9 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR : session.jsonl.gz: Source and destination exist '
-            'but do not match: immutable file modified" >> '
+            'echo "2026/09/09 12:00:00 ERROR : session.jsonl.gz: Source and '
+            'destination exist but do not match: immutable file '
+            'modified" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
@@ -1418,13 +1419,13 @@ class TestR2PushSafety:
         # A real abort happens first, and writes its own ABORTED line.
         self._rclone_writing(
             sandbox,
-            "ERROR : session.jsonl.gz: Source and destination exist but do "
-            "not match: immutable file modified",
+            "2026/09/09 12:00:00 ERROR : session.jsonl.gz: Source and "
+            "destination exist but do not match: immutable file modified",
         )
         assert self._run(sandbox).returncode == 3
 
         # A later, unrelated network failure must be classified on its own.
-        self._rclone_writing(sandbox, "ERROR : dial tcp: lookup failed")
+        self._rclone_writing(sandbox, "2026/09/09 12:00:00 ERROR : Failed to copy: dial tcp: lookup failed")
         result = self._run(sandbox)
 
         assert result.returncode == 2, (
@@ -1437,13 +1438,13 @@ class TestR2PushSafety:
         self, sandbox
     ) -> None:
         """Reading only this run's bytes must not blind the check."""
-        self._rclone_writing(sandbox, "ERROR : dial tcp: lookup failed")
+        self._rclone_writing(sandbox, "2026/09/09 12:00:00 ERROR : Failed to copy: dial tcp: lookup failed")
         assert self._run(sandbox).returncode == 2
 
         self._rclone_writing(
             sandbox,
-            "ERROR : session.jsonl.gz: Source and destination exist but do "
-            "not match: immutable file modified",
+            "2026/09/09 12:00:00 ERROR : session.jsonl.gz: Source and "
+            "destination exist but do not match: immutable file modified",
         )
         result = self._run(sandbox)
 
@@ -1461,7 +1462,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR : dial tcp: lookup failed" >> '
+            'echo "2026/09/09 12:00:00 ERROR : Failed to copy: dial tcp: lookup failed" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 7\n",
             encoding="utf-8",
@@ -1488,7 +1489,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR : dial tcp: lookup failed" >> '
+            'echo "2026/09/09 12:00:00 ERROR : Failed to copy: dial tcp: lookup failed" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
@@ -1511,8 +1512,9 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR : session.jsonl.gz: Source and destination exist '
-            'but do not match: immutable file modified" >> '
+            'echo "2026/09/09 12:00:00 ERROR : session.jsonl.gz: Source and '
+            'destination exist but do not match: immutable file '
+            'modified" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
@@ -1549,7 +1551,7 @@ class TestR2PushSafety:
         assert "immutable" in str(sandbox.home), (
             "the fixture must put the word in the path under test"
         )
-        self._rclone_writing(sandbox, "ERROR : dial tcp: lookup failed")
+        self._rclone_writing(sandbox, "2026/09/09 12:00:00 ERROR : Failed to copy: dial tcp: lookup failed")
 
         result = self._run(sandbox)
 
@@ -1575,7 +1577,8 @@ class TestR2PushSafety:
         """
         self._rclone_writing(
             sandbox,
-            "INFO  : projects/-home-shawn-immutable-notes/session.jsonl.gz: "
+            "2026/09/09 12:00:00 INFO  : "
+            "projects/-home-shawn-immutable-notes/session.jsonl.gz: "
             "Copied (new)",
             exit_code=7,
         )
@@ -1591,10 +1594,10 @@ class TestR2PushSafety:
     @pytest.mark.parametrize("refusal", [
         # rclone's own wording, verified against the installed binary
         # (v1.74.2) with `strings $(command -v rclone) | grep -i immutable`.
-        "ERROR : session.jsonl.gz: Source and destination exist but do not "
-        "match: immutable file modified",
-        "ERROR : session.jsonl.gz: Timestamp mismatch between immutable "
-        "objects!",
+        "2026/09/09 12:00:00 ERROR : session.jsonl.gz: Source and destination "
+        "exist but do not match: immutable file modified",
+        "2026/09/09 12:00:00 NOTICE: session.jsonl.gz: Timestamp mismatch between "
+        "immutable objects!",
     ])
     def test_a_genuine_refusal_is_still_classified(
         self, sandbox, refusal: str
@@ -1609,13 +1612,57 @@ class TestR2PushSafety:
         )
         assert "ABORTED" in result.stdout + result.stderr
 
+    #: rclone's real line shape. --log-format defaults to `date,time`, so
+    #: every line it writes to --log-file is `YYYY/MM/DD HH:MM:SS LEVEL : …`.
+    #: The level is rendered with `%-6s: %s`, which is why ERROR carries a
+    #: padding space before its colon and NOTICE does not.
+    RCLONE_DATE = "2026/09/09 12:00:00 "
+
+    @pytest.mark.parametrize("line,expected", [
+        # The two refusals, in the form rclone actually emits.
+        (RCLONE_DATE + "ERROR : CATALOG.json: Source and destination exist "
+         "but do not match: immutable file modified", 3),
+        (RCLONE_DATE + "NOTICE: CATALOG.json: Timestamp mismatch between "
+         "immutable objects!", 3),
+        # A transport failure whose INFO line names a path containing the
+        # word must stay retryable.
+        (RCLONE_DATE + "INFO  : projects/-home-shawn-immutable-notes/"
+         "session.jsonl.gz: Copied (new)", 2),
+        # The wording below ERROR/NOTICE level is not a refusal.
+        (RCLONE_DATE + "DEBUG : x: would be immutable file modified", 2),
+        # An ordinary transport failure at ERROR level.
+        (RCLONE_DATE + "ERROR : x: Failed to copy: dial tcp: lookup failed",
+         2),
+        # One un-prefixed case, in case --log-format is ever set to none.
+        ("ERROR : x: Source and destination exist but do not match: "
+         "immutable file modified", 3),
+    ])
+    def test_the_classification_matrix_on_rclone_s_real_log_format(
+        self, sandbox, line: str, expected: int
+    ) -> None:
+        """The level marker is a TOKEN, not the start of the line.
+
+        `^(ERROR|NOTICE)` matched nothing rclone ever writes: on the
+        deployed log, 9,314 lines carry a level and zero match that anchor.
+        So a genuine --immutable refusal classified as "safe to retry" --
+        the corruption signal lost, silently, by the narrowing that was
+        supposed to sharpen it (round 4c-6, finding C1).
+        """
+        self._rclone_writing(sandbox, line, exit_code=7)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == expected, (
+            f"{line!r} classified {result.returncode}, expected {expected}"
+        )
+
     def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
         """The positive control: an ordinary failure stays retryable."""
         sandbox.rclone.write_text(
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR : dial tcp: lookup failed" >> '
+            'echo "2026/09/09 12:00:00 ERROR : Failed to copy: dial tcp: lookup failed" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
