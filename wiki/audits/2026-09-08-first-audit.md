@@ -1275,6 +1275,51 @@ Operator actions pending, in order of consequence:
    nominalisation stop-list; `data/.gitignore` for `logs/*.json` (AR26);
    whether the dedup journal stays committed.
 
+## Stop point 2026-09-09 16:5x (resume here)
+
+Shawn stopped the audit at this juncture for cost (about ten million
+subagent tokens since the 08:00 resume; every re-audit was still finding
+one to four mediums, almost all test-adequacy or diagnostic). Thirty PRs
+from the audit are merged (#114-#127, #129-#146, #148, #150, #152). No
+further fix rounds were launched after 15:5x. What remains, per branch,
+with the exact next action:
+
+| PR | Branch / worktree | State | Next action |
+|---|---|---|---|
+| **#147** | `claude/audit-round4c-5` in `claude-audit-round4c` | Refused twice; round 4c-6 fixed the log-line anchor, then the second re-audit found `\| grep -q` under `pipefail` (SIGPIPE) dropping a real refusal to exit 2 past ~64 KB of output | Round 4c-7: the single here-string `grep -qE` (verified by the re-auditor), a test with 1,000+ marker-level lines after the refusal, the attested-level comment (M-1), `--log-format date,time` pinned (M-2), the three lows; then a third re-audit; then merge |
+| **#149** | `claude/audit-round4d-6` in `claude-audit-round4d` | Re-audit running at the stop | Merge on a merge verdict; defer any follow-ups |
+| **#151** | `claude/audit-round4g-5` in `claude-audit-round4g` | Refused: the scorer discards the checked loader's return and re-reads the files (one word disables the interlock); the phase-5 "both inputs" assertion lost; four root-derivation assertions compare values | Round 4g-6: feed the returned payloads into `load_corpus_space`, explicit list, AST non-emptiness assertion; restore the phase-5 argument-set assertion; derivation checks by AST or monkeypatch; the lows (dead constants, the agent document's example command, a doc-to-code marker-name test); then re-audit; then merge |
+| **#153** | `claude/audit-round3c-9` in `claude-audit-round3c` | Delivered, suite green, pushed; NOT re-audited | Fresh-context re-audit (tests only: the quote-state tokeniser, per-match pipe judgement, four pinned script guards); merge on a clean verdict |
+| **#154** | `claude/audit-round4e-8` in `claude-audit-round4e` | Delivered, suite green, pushed; NOT re-audited | Fresh-context re-audit (manifest fallback, single session-id rule at both entry points, directory `fsync`, path in write errors); merge on a clean verdict |
+| **4a-7** | `claude/audit-round4a-7` in `claude-audit-round4a` | Delivered; coordinator suite running at the stop; PR to open as #155 | Fresh-context re-audit with attention to the permanent `sys.addaudithook` (guard path, cost, `PosixPath`/`os.open` routes, archive-copy inertness); merge on a clean verdict |
+
+Deferred follow-ups already recorded in the tranche sections (search the
+report for "DEFERRED"): PR #152's six (two stale "the floor skips it"
+messages; the sub-threshold alert on a deflated rate; four surviving
+mutations; recovery candidates from an excluded repository); PR #150's
+were taken by round 4e-8; PR #146's by 4e-7; PR #148's by 3c-9; PR
+#145's by 4f-6; PR #144's by 4g-5 (now #151); PR #143's by 4a-7; PR
+#138's by 4d-6 (now #149).
+
+Two patterns worth a standing rule, recorded in the scratchpad: tests
+that certify a regime the deployment does not occupy (un-prefixed rclone
+lines; one-line logs; a rename that round-trips; a comment at column 0)
+passed green through three rounds while the shipped classifier could not
+fire — fixtures must be built from an attested live shape and the test
+must fail when the shape is wrong; and `| grep -q` under `pipefail`
+recurred in a second script after the daily-sync lint was written for
+it, so the lint belongs at repository scope, not per script.
+
+Housekeeping for the resuming session: the seven audit worktrees under
+`~/worktrees/personal-assistant/claude-audit-round{3c,4a,4c,4d,4e,4f,4g}`
+are on the branches named above (4f is on `claude/audit-round4f-6`,
+merged — remove it or move it to the next round); `/tmp` filled twice
+more today (once by inodes, once by a re-auditor's 12 GB real-HOME
+basetemp) — one suite at a time per agent, `--basetemp` under the
+agent's own `mktemp -d`; the venv's `pytest` is
+`~/personal-assistant/venv/bin/pytest` (not on a background shell's
+PATH).
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
