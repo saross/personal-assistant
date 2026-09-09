@@ -2196,6 +2196,55 @@ class TestStrandedResults:
         ]
         assert "<" not in line and ">" not in line
 
+    def test_the_remedy_quotes_a_manifest_path_with_a_space(self, tmp_path):
+        """Pin the literal quoted form, as for the retrieve line.
+
+        A manifest under a directory with a space would otherwise split
+        into two arguments when the remedy is pasted, and the repair the
+        operator was told to run would exit 2 instead.
+        """
+        manifest = tmp_path / "bake off runs" / "sample-manifest.json"
+        expected = (
+            "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
+            "--haiku-apply batch_009 --out-dir /tmp/out "
+            f"--manifest '{manifest}' --rebuild-map"
+        )
+        assert bom.rebuild_map_command(
+            "batch_009", Path("/tmp/out/haiku"), str(manifest)
+        ) == expected
+
+    def test_the_printed_remedy_survives_a_manifest_with_a_space(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """End to end: the emitted line splits back into the same path."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "spaced.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "bake off runs" / "manifest.json",
+            [fx.manifest_row("spaced-session", transcript)],
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": str(manifest),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("spaced-session"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        line = next(
+            line.strip() for line in capsys.readouterr().out.splitlines()
+            if "--rebuild-map" in line
+        )
+        command = shlex.split(line)
+        assert command[-3:] == ["--manifest", str(manifest), "--rebuild-map"]
+
     def test_a_placeholder_manifest_is_refused_not_crashed(self, tmp_path, capsys):
         """Running the line unedited must fail cleanly, not traceback."""
         out_dir, _manifest = self._old_format_state(tmp_path, record_manifest=False)
@@ -2322,6 +2371,11 @@ class TestRebuildMapRejectsABadManifest:
             ("entry-not-an-object.json", '{"sessions": ["just-a-string"]}'),
             ("entry-without-id.json", '{"sessions": [{"project": "p"}]}'),
             ("entry-with-null-id.json", '{"sessions": [{"session_id": null}]}'),
+            # An empty or blank id passes isinstance but names no session:
+            # build_custom_id would turn it into "sess-" or "sess-   ".
+            ("entry-with-empty-id.json", '{"sessions": [{"session_id": ""}]}'),
+            ("entry-with-blank-id.json", '{"sessions": [{"session_id": "   "}]}'),
+            ("entry-with-tab-id.json", '{"sessions": [{"session_id": "\\t"}]}'),
         ],
     )
     def test_a_malformed_manifest_is_refused(self, tmp_path, name, content):

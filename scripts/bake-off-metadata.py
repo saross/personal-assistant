@@ -842,9 +842,12 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
         )
     for position, entry in enumerate(sessions, 1):
         session_id = entry.get("session_id") if isinstance(entry, dict) else None
-        if not isinstance(session_id, str) or not session_id:
+        # ``strip()``: a whitespace-only id is as unusable as an empty one.
+        # It would name a response file "   .json" and hash to a custom_id
+        # nothing could ever be matched back to.
+        if not isinstance(session_id, str) or not session_id.strip():
             raise ManifestFormatError(
-                f"{manifest_path}: session {position} has no string "
+                f"{manifest_path}: session {position} has no usable string "
                 "'session_id'; no mapping was written"
             )
         mapping.setdefault(build_custom_id(session_id), session_id)
