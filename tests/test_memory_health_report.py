@@ -1201,3 +1201,18 @@ class TestTierCNamesTheExcludedRepositories:
         report, _clean = _build(run_tier_c=True)
         assert report["tier_c"]["unusable_repos"] == []
         assert "EXCLUDED" not in "\n".join(mhr.render_report(report))
+
+
+def test_a_schema_mismatch_ends_the_transaction(report_paths, fake_pg) -> None:
+    """pg_snapshot must not leave an open transaction behind.
+
+    Kills the mutation dropping ``conn.rollback()`` from the schema-mismatch
+    path: the connection is closed with a transaction still open, which on a
+    pooled or long-lived connection holds a snapshot the server cannot
+    discard.
+    """
+    import logging
+    conn = fake_pg(FakeDatabase(memories=[], schema_version="999"))
+    assert mhr.pg_snapshot(logging.getLogger("test-mhr")) is None
+    assert conn.rollbacks >= 1
+    assert conn.closed

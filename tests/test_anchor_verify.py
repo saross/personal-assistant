@@ -1194,3 +1194,48 @@ class TestTheAbsoluteBranchWithholdsToo:
         repo = _throwaway_repo(tmp_path / "repo")
         with patch("pathlib.Path.exists", side_effect=PermissionError("denied")):
             assert av.verify_file("scripts/ghost.py", [repo]) == "pending"
+
+
+class TestResolvesInside:
+    """The symlink guard's own edges (round 4f-3 L1, round 4f-4 mutations)."""
+
+    def test_a_path_that_cannot_be_resolved_is_not_inside(self, tmp_path):
+        """Kills the mutation ``except (OSError, RuntimeError): return True``.
+
+        A permission wall on an intermediate directory, a filesystem that
+        errors mid-walk: we could not show the path is inside the
+        repository, so we must not claim it is. ``resolve`` is patched
+        because a non-strict resolve tolerates most broken shapes without
+        raising, and the branch still has to hold when it does raise.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        candidate = repo / "scripts" / "real.py"
+        with patch.object(Path, "resolve", side_effect=OSError("boom")):
+            assert av._resolves_inside(repo, candidate) is False
+
+    def test_a_symlink_loop_does_not_verify(self, tmp_path):
+        """A loop resolves to nothing usable; it must not read as a hit."""
+        repo = _throwaway_repo(tmp_path / "repo")
+        loop = repo / "loop"
+        loop.symlink_to(loop)          # points at itself
+        assert av.verify_file("loop", [repo]) == "false"
+
+    def test_the_repository_root_itself_counts_as_inside(self, tmp_path):
+        """Kills the mutation dropping the ``real == root`` disjunct.
+
+        A symlink inside the repository that points AT the repository root
+        resolves to the root exactly; ``startswith(root + sep)`` alone is
+        false for it, so the guard would reject a path that never left.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        assert av._resolves_inside(repo, repo) is True
+        alias = repo / "self"
+        alias.symlink_to(repo, target_is_directory=True)
+        assert av._resolves_inside(repo, alias) is True
+
+    def test_a_path_outside_is_rejected(self, tmp_path):
+        """The control."""
+        repo = _throwaway_repo(tmp_path / "repo")
+        outside = tmp_path / "outside.txt"
+        outside.write_text("x\n", encoding="utf-8")
+        assert av._resolves_inside(repo, outside) is False
