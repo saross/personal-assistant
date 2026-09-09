@@ -283,6 +283,30 @@ def sync_sandbox(tmp_path: Path) -> dict[str, Path]:
     }
 
 
+def assert_composed(claude_md: Path, local_marker: str) -> None:
+    """
+    Assert the composed CLAUDE.md carries all three layers, in order.
+
+    Round 4d-6 (L7): the M-b tests asserted only that the file EXISTS. A
+    composer that wrote an empty file, or dropped the private local layer,
+    would have satisfied them -- and the local layer is the whole reason
+    step 7 needs data/ at all.
+
+    Args:
+        claude_md: The composed file.
+        local_marker: Which local-layer marker to expect -- the sandbox's
+            own ``LOCAL-SECTION``, or ``MARKER-LOCAL`` where the stub git
+            populated the submodule.
+    """
+    assert claude_md.is_file(), f"{claude_md} was not composed"
+    composed = claude_md.read_text(encoding="utf-8")
+    markers = ("COMMON-SECTION", "OVERLAY-SECTION", local_marker)
+    for marker in markers:
+        assert marker in composed, f"{marker} missing from {claude_md}"
+    positions = [composed.index(marker) for marker in markers]
+    assert positions == sorted(positions), (markers, positions)
+
+
 def _make_worktree(pa_dir: Path) -> None:
     """Turn an ordinary-clone sandbox into a LINKED WORKTREE.
 
@@ -516,9 +540,11 @@ class TestSubmoduleUpdateIsGated:
         # used to exit 1 at the step-7 pre-check for the very file the
         # init should have produced, and nothing noticed.
         assert result.returncode == 0, result.stdout + result.stderr
-        assert (
-            sync_sandbox["home"] / ".claude" / "CLAUDE.md"
-        ).is_file()
+        # The local layer here comes from the stub git's submodule
+        # checkout, so its marker is the stub's.
+        assert_composed(
+            sync_sandbox["home"] / ".claude" / "CLAUDE.md", "MARKER-LOCAL"
+        )
 
     def test_quiet_suppresses_the_submodule_ready_line(
         self, sync_sandbox: dict[str, Path]
@@ -538,6 +564,9 @@ class TestSubmoduleUpdateIsGated:
         )
 
         assert quiet.returncode == 0, quiet.stdout + quiet.stderr
+        assert_composed(
+            sync_sandbox["home"] / ".claude" / "CLAUDE.md", "MARKER-LOCAL"
+        )
         assert "Submodule ready." not in quiet.stdout, quiet.stdout
 
     def test_without_quiet_the_submodule_ready_line_is_printed(
@@ -551,6 +580,9 @@ class TestSubmoduleUpdateIsGated:
         loud = _run_sync(sync_sandbox, submodule_status="-1234abcd data")
 
         assert loud.returncode == 0, loud.stdout + loud.stderr
+        assert_composed(
+            sync_sandbox["home"] / ".claude" / "CLAUDE.md", "MARKER-LOCAL"
+        )
         assert "Submodule ready." in loud.stdout, loud.stdout
 
     def test_a_non_empty_data_reports_rather_than_attempting_the_init(
@@ -633,7 +665,9 @@ class TestSubmoduleUpdateIsGated:
         # The whole run has to succeed, not merely reach the init (M-b).
         assert result.returncode == 0, result.stdout + result.stderr
         assert "[8/8]" in result.stdout, result.stdout
-        assert (sync_sandbox["home"] / ".claude" / "CLAUDE.md").is_file()
+        assert_composed(
+            sync_sandbox["home"] / ".claude" / "CLAUDE.md", "MARKER-LOCAL"
+        )
 
     def test_the_worktree_skip_reads_the_checkout_not_the_flag(
         self, sync_sandbox: dict[str, Path]
@@ -730,7 +764,8 @@ class TestSubmoduleUpdateIsGated:
         assert (claude / "skills" / "tally-sherds").is_symlink()
         assert (claude / "agents" / "trench-scribe.md").is_symlink()
         assert (claude / "output-styles" / "terse.md").is_symlink()
-        assert (claude / "CLAUDE.md").is_file()
+        # No init ran here, so the local layer is the sandbox's own.
+        assert_composed(claude / "CLAUDE.md", "LOCAL-SECTION")
         assert "submodule update" not in sync_sandbox["log"].read_text(
             encoding="utf-8"
         )
