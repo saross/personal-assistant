@@ -746,14 +746,15 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (nineteen PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-one PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #129, #140
-(memory readers and anchors); #132, #135 (daily-sync lows); #136 (archive
-follow-ups); #128 (style-analyser scripts, three re-audits).
+(memory readers and anchors); #132, #135 (daily-sync lows); #136, #141
+(archive follow-ups); #128 (style-analyser scripts, three re-audits);
+#142 (bake-off round 4e-5).
 
 Open, each with its verdict so far:
 
@@ -862,8 +863,17 @@ Open, each with its verdict so far:
   found while testing — the R2 push's failure classifier grepped a log
   slice that included the script's own lines, so any store path containing
   "immutable" would have made every transport failure a corruption abort.
-  Merged with main, coordinator suite 3916 passed, exit 0; **PR #141**;
-  re-audit running.
+  Merged with main, coordinator suite 3916 passed, exit 0; **PR #141,
+  merged aa39a70** 2026-09-09 12:2x: the re-audit confirmed all eight
+  items and the classifier fix (rclone is not piped; all thirteen log
+  call sites carry the prefix; the sandbox exit-code matrix holds).
+  Follow-ups are round 4c-5 (`claude/audit-round4c-5`): the new
+  classifier test is inert (its rename round-trips and pytest truncates
+  the tmp basename, so the filter is covered only by two older tests'
+  directory names); rclone's own INFO lines can still carry the word in a
+  path element; an unremovable temporary is counted nowhere and exits 0;
+  `*.tmp` symlinks are followed or skipped forever; the sizeless warning
+  is unbounded per run.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -871,7 +881,14 @@ Open, each with its verdict so far:
   names the probable session, says it was paid for, counts the skip, and
   prints the repair, with a new `--rebuild-map` that reconstructs the
   mapping from the manifest. Merged with main, coordinator suite 3939
-  passed, exit 0; **PR #142**; re-audit running.
+  passed, exit 0; **PR #142, merged a20f5e6** 2026-09-09 12:1x: the
+  re-audit reproduced every claim and confirmed recovery can never name
+  the wrong session. Follow-ups are round 4e-6 (`claude/audit-round4e-6`):
+  a regression assertion on the retired message wording is now
+  unfalsifiable; the remedy line's `<manifest>` placeholder is a shell
+  redirection; "existing entries win" and the atomic rebuild write are
+  unpinned; a third `and` fence uncovered; a 40-hex session id is wrongly
+  declared unrecoverable; a malformed manifest tracebacks.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
