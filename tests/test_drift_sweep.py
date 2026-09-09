@@ -56,6 +56,7 @@ def test_trend_line_maps_all_fields() -> None:
         "recoverable": 95,
         "ambiguous": 65,
         "repos": 36,
+        "unusable": [],
     }
 
 
@@ -550,3 +551,45 @@ def test_the_floor_skips_a_degraded_row_already_in_the_log(tmp_path) -> None:
         encoding="utf-8",
     )
     assert ds.last_repo_count(log) == 7
+
+
+def test_the_trend_row_names_the_repositories_left_out(
+    tmp_path, monkeypatch,
+) -> None:
+    """A run that excluded a repository has to say so (finding M-b).
+
+    Kills the mutation dropping ``unusable_repos`` from the sweep result:
+    the row would record the full discovered count as though every
+    repository had answered, and the only trace of the exclusion would be a
+    stderr WARN that a cron run discards.
+    """
+    good = _init_repo(tmp_path / "good", "wiki/notes.md")
+    broken = tmp_path / "broken"          # a directory, not a repository
+    broken.mkdir()
+    _pin_repos(monkeypatch, [good, broken], discovered=2)
+    ds.av.reset_unusable_repos()
+
+    result = ds.run_sweep(
+        [_record("m-1", "wiki/gone.md", OLD)], as_of=FIXED_NOW,
+    )
+    assert result["unusable_repos"] == [str(broken)]
+
+    row = ds.trend_line(result, as_of=FIXED_NOW)
+    assert row["unusable"] == [str(broken)]
+    assert row["repos"] == 2, "the discovered count is unchanged by exclusion"
+    rendered = ds._render(row)
+    assert "Repositories EXCLUDED (1)" in rendered
+    assert str(broken) in rendered
+
+
+def test_a_clean_sweep_records_no_exclusions(tmp_path, monkeypatch) -> None:
+    """The control: nothing excluded, nothing to report."""
+    good = _init_repo(tmp_path / "good", "wiki/notes.md")
+    _pin_repos(monkeypatch, [good], discovered=1)
+    ds.av.reset_unusable_repos()
+    row = ds.trend_line(
+        ds.run_sweep([_record("m-1", "wiki/notes.md", OLD)], as_of=FIXED_NOW),
+        as_of=FIXED_NOW,
+    )
+    assert row["unusable"] == []
+    assert "EXCLUDED" not in ds._render(row)

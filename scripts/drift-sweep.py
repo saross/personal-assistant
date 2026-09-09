@@ -117,6 +117,9 @@ def run_sweep(records: list[dict], *, as_of: datetime,
             "shrank (a repository archived or removed), or --min-repos 0 to "
             "drop the floor entirely",
         )
+    # Start from a clean exclusion registry so the row below describes THIS
+    # sweep, not one inherited from an earlier call in the same process.
+    av.reset_unusable_repos()
     basename_index = ta.build_basename_index(repos)
     # Memoise both ref-level resolvers: verify_file walks every repository and
     # spawns up to two git processes per repository, and the same ref recurs
@@ -143,6 +146,11 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     )
     # Discovery-only, for the reason in the docstring above.
     result["repo_count"] = discovered
+    # Which repositories anchor resolution had to leave out. Until now the
+    # only trace was one stderr WARN, which a cron run discards, while the
+    # row recorded the full discovered count as though every repository had
+    # answered (round 4f-4, finding M-b).
+    result["unusable_repos"] = sorted(av.unusable_repos())
     return result
 
 
@@ -168,6 +176,10 @@ def trend_line(result: dict, *, as_of: datetime) -> dict:
         # Recorded so the NEXT sweep can refuse to run against a smaller
         # repository set than this one saw (finding AN7).
         "repos": result.get("repo_count", 0),
+        # Repositories resolution could not consult. A run with a non-empty
+        # list resolved against fewer repositories than ``repos`` claims, and
+        # a reader comparing rows needs to know that (finding M-b).
+        "unusable": list(result.get("unusable_repos", [])),
     }
 
 
@@ -215,16 +227,24 @@ def append_trend(record: dict, *, log_path: Path = LOG_PATH) -> bool:
 
 def _render(record: dict) -> str:
     """A short human-readable summary of one sweep."""
-    return (
-        "# Anchor drift-sweep (item 8 — full back-set)\n\n"
-        f"Anchored swept:   {record['total_anchored']}\n"
-        f"Resolve (pass):   {record['pass']}\n"
-        f"Fail:             {record['fail']}  ({record['fail_pct']} %)\n"
-        f"Pending:          {record['pending']}\n"
-        f"No valid anchor:  {record['no_valid_anchor']}\n"
+    lines = [
+        "# Anchor drift-sweep (item 8 — full back-set)\n",
+        f"Anchored swept:   {record['total_anchored']}",
+        f"Resolve (pass):   {record['pass']}",
+        f"Fail:             {record['fail']}  ({record['fail_pct']} %)",
+        f"Pending:          {record['pending']}",
+        f"No valid anchor:  {record['no_valid_anchor']}",
         f"Failing file-ref split — absent {record['absent']} / "
-        f"recoverable {record['recoverable']} / ambiguous {record['ambiguous']}"
-    )
+        f"recoverable {record['recoverable']} / ambiguous {record['ambiguous']}",
+    ]
+    unusable = record.get("unusable") or []
+    if unusable:
+        lines.append(
+            f"Repositories EXCLUDED ({len(unusable)}) — resolution could not "
+            "consult these, so their anchors read pending:"
+        )
+        lines.extend(f"  - {path}" for path in unusable)
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:

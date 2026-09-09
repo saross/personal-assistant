@@ -1133,3 +1133,71 @@ class TestTheNonListAnchorsCountIsShown:
         line = next(ln for ln in mhr.render_report(report)
                     if "malformed anchors" in ln)
         assert "non-list anchors field" in line
+
+
+def _init_git_repo(path: Path, relpath: str = "wiki/notes.md") -> Path:
+    """Create a throwaway git repository at *path* tracking one file."""
+    import os
+    import subprocess
+    target = path / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# seeded\n", encoding="utf-8")
+    env = {
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "PATH": os.environ.get("PATH", ""), "HOME": str(path.parent),
+    }
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-qm", "seed"], check=True, env=env,
+    )
+    return path
+
+
+class TestTierCNamesTheExcludedRepositories:
+    """[F]'s fail rate is computed against fewer repositories than it looks.
+
+    Finding M-b: a repository anchor resolution could not consult left no
+    trace in the report at all — only a stderr WARN, which the weekly review
+    never sees.
+    """
+
+    def test_the_section_lists_them(
+        self, report_paths, fake_pg, monkeypatch, tmp_path,
+    ) -> None:
+        """Kills the mutation dropping unusable_repos from the tier-C dict."""
+        good = _init_git_repo(tmp_path / "good-repo")
+        broken = tmp_path / "broken-repo"     # a directory, not a repository
+        broken.mkdir()
+        monkeypatch.setattr(mhr.ta, "broad_repo_set", lambda: [good, broken])
+        monkeypatch.setattr(
+            mhr.ta, "build_basename_index", lambda repos: {},
+        )
+        mhr.av.reset_unusable_repos()
+        _write_corpus(report_paths, [
+            _rec(id="m-1", anchors=[{"type": "file", "ref": "wiki/gone.md"}]),
+        ])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+
+        report, _clean = _build(run_tier_c=True)
+        assert report["tier_c"]["unusable_repos"] == [str(broken)]
+        assert report["tier_c"]["repos_consulted"] == 2
+        rendered = "\n".join(mhr.render_report(report))
+        assert "repositories EXCLUDED   : 1 of 2" in rendered
+        assert str(broken) in rendered
+
+    def test_a_clean_run_says_nothing(
+        self, report_paths, fake_pg, monkeypatch, tmp_path,
+    ) -> None:
+        """The control: no exclusions, no line."""
+        good = _init_git_repo(tmp_path / "good-repo")
+        monkeypatch.setattr(mhr.ta, "broad_repo_set", lambda: [good])
+        monkeypatch.setattr(mhr.ta, "build_basename_index", lambda repos: {})
+        mhr.av.reset_unusable_repos()
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[{"id": "m-1", "is_active": True}]))
+        report, _clean = _build(run_tier_c=True)
+        assert report["tier_c"]["unusable_repos"] == []
+        assert "EXCLUDED" not in "\n".join(mhr.render_report(report))
