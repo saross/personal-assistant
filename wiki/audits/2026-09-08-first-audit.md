@@ -796,7 +796,8 @@ Open, each with its verdict so far:
   only; entries labelled by kind; `_under_logs` load-bearing; all
   survivors killed. Its clean-copy run with a populated synthetic store:
   3951 passed, exit 0, no banner, store byte-identical. Merged with main
-  (7741d84); coordinator suite, PR, and re-audit pending.
+  (7741d84), coordinator suite 3952 passed, exit 0; **PR #143**; re-audit
+  running.
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
