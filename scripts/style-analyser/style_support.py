@@ -87,6 +87,37 @@ METRIC_SCHEMA_DEFINITIONS = (
 )
 
 
+#: The efficacy experiment's root. Every path below is derived from it at
+#: CALL time, not frozen at import, so a test (or an operator with a second
+#: experiment) repoints one base and both the writer and the reader follow.
+#: They did not, once: the builder moved the unblinding key under `private/`
+#: and the scorer's default stayed a directory up, so a run at the defaults
+#: could not find a key that was exactly where it belonged.
+EXPERIMENT_DEFAULT = (
+    PA_ROOT / "data" / "experiments" / "style-efficacy-2026-05-31"
+)
+
+
+def experiment_root(root: Path | str | None = None) -> Path:
+    """Return the experiment root, defaulting to ``EXPERIMENT_DEFAULT``."""
+    return Path(root) if root is not None else EXPERIMENT_DEFAULT
+
+
+def judge_dir(root: Path | str | None = None) -> Path:
+    """The directory handed to the judges. Nothing else may live here."""
+    return experiment_root(root) / "judge-tasks"
+
+
+def private_dir(root: Path | str | None = None) -> Path:
+    """The directory no judge is ever pointed at."""
+    return experiment_root(root) / "private"
+
+
+def judge_key_dir(root: Path | str | None = None) -> Path:
+    """Where the unblinding key is written, and where it is read from."""
+    return private_dir(root) / "judge-key"
+
+
 def metric_schema_stamp() -> dict:
     """Return the stamp phase 1 writes into its results file."""
     return {

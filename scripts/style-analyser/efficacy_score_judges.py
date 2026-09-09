@@ -57,13 +57,13 @@ import style_support  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
-JUDGE_DIR_DEFAULT = EXP / "judge-tasks"
-#: Must track `efficacy_build_judge_tasks.KEY_DIR`. The builder moved the key
-#: under `private/` and this default did not follow, so after --migrate-key a
-#: scorer run at the defaults reported "No judge-mapping.json found" and
-#: exited 2 — the key was exactly where it belonged and the reader was
-#: looking one directory up.
-KEY_DIR_DEFAULT = EXP / "private" / "judge-key"
+#: Both locations come from `style_support`, which is also where the builder
+#: reads them: one description of the layout, so the writer and the reader
+#: cannot disagree. They did once — the builder moved the key under `private/`
+#: and this default did not follow, so a run at the defaults reported "No
+#: judge-mapping.json found" with the key exactly where it belonged.
+JUDGE_DIR_DEFAULT = style_support.judge_dir()
+KEY_DIR_DEFAULT = style_support.judge_key_dir()
 
 #: Stratum per topic prefix: A-topics are on the corpus's own domain,
 #: B-topics are deliberately outside it. Derived from the topic id rather
@@ -401,9 +401,12 @@ def check_judgement_ids(judgements: list[Judgement],
 def main(argv: list[str] | None = None) -> int:
     """Score the judge run; see the module docstring for the exit codes."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--judge-dir", type=Path, default=JUDGE_DIR_DEFAULT,
+    # Resolved at call time from the shared base (see the constants above).
+    ap.add_argument("--judge-dir", type=Path,
+                    default=style_support.judge_dir(),
                     help="directory the judges read (holds judgments.jsonl)")
-    ap.add_argument("--key-dir", type=Path, default=KEY_DIR_DEFAULT,
+    ap.add_argument("--key-dir", type=Path,
+                    default=style_support.judge_key_dir(),
                     help="directory holding the unblinding key")
     ap.add_argument("--mapping", type=Path, default=None,
                     help="explicit path to judge-mapping.json")
