@@ -1527,3 +1527,55 @@ def test_a_dry_run_writes_no_incomplete_marker(tmp_path, monkeypatch):
     extract_corpus.extract_one(entry, output_dir, dry_run=True)
 
     assert not output_dir.exists()
+
+
+def test_leftover_markers_are_reported_before_a_run(tmp_path):
+    """Nothing consumed either marker: they were written and read by no one.
+
+    A partial or failed bundle sat in the corpus looking like any other. The
+    mutation this kills: dropping the pre-run scan (or narrowing it to one of
+    the two filenames), after which a leftover marker is silent again.
+    """
+    output_dir = tmp_path / "extracted"
+    (output_dir / "AAAA1111").mkdir(parents=True)
+    (output_dir / "AAAA1111" / "extraction-incomplete.txt").write_text(
+        "half a bundle\n", encoding="utf-8")
+    (output_dir / "BBBB2222").mkdir()
+    (output_dir / "BBBB2222" / "extraction-error.txt").write_text(
+        "it went wrong\n", encoding="utf-8")
+    (output_dir / "CCCC3333").mkdir()
+    (output_dir / "CCCC3333" / "body.md").write_text("clean\n",
+                                                     encoding="utf-8")
+
+    report = "\n".join(extract_corpus.leftover_marker_report(output_dir))
+
+    assert "AAAA1111" in report and "extraction-incomplete.txt" in report
+    assert "BBBB2222" in report and "extraction-error.txt" in report
+    assert "CCCC3333" not in report, "a complete bundle must not be named"
+
+
+def test_a_clean_tree_reports_nothing(tmp_path):
+    """The warning must not fire on every run, or it stops being read."""
+    output_dir = tmp_path / "extracted"
+    (output_dir / "AAAA1111").mkdir(parents=True)
+    (output_dir / "AAAA1111" / "body.md").write_text("clean\n",
+                                                     encoding="utf-8")
+
+    assert extract_corpus.leftover_marker_report(output_dir) == []
+    assert extract_corpus.leftover_marker_report(tmp_path / "absent") == []
+
+
+def test_the_run_warns_about_leftovers_before_extracting(tmp_path, capsys,
+                                                         monkeypatch):
+    """The scan runs at the START, so an operator sees it before the work."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([]), encoding="utf-8")
+    output_dir = tmp_path / "extracted"
+    (output_dir / "AAAA1111").mkdir(parents=True)
+    (output_dir / "AAAA1111" / "extraction-incomplete.txt").write_text(
+        "half a bundle\n", encoding="utf-8")
+
+    _run_main(monkeypatch, ["--manifest", str(manifest),
+                            "--output-dir", str(output_dir)])
+
+    assert "AAAA1111" in capsys.readouterr().err
