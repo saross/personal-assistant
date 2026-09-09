@@ -2226,3 +2226,82 @@ class TestCheckpointRepairsAreReported:
 
         assert checkpoint["archived_ids"] == [SID_A]
         assert caplog.records == []
+
+
+class TestMissingManifestSizeIsAnnounced:
+    """Round 4c-4 finding 3 — a guard that cannot run must say so.
+
+    A manifest entry written before discovery recorded sizes carries no
+    size_bytes, so both the shrink refusal and the growth warning are
+    unreachable and the completeness guard degrades to the grace check
+    alone. That happened at debug level, where nobody sees it.
+    """
+
+    def test_a_sizeless_manifest_entry_warns(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = pipeline.add_session(SID_A)
+        manifest = pipeline.discover()
+        del manifest[0]["size_bytes"]          # a legacy manifest entry
+        pipeline.manifest.write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "records no size" in messages, messages
+        assert "re-run discover" in messages
+        # It still archives: a missing size is a degraded guard, not a
+        # refusal — the grace window and the during-copy check still apply.
+        assert len(pipeline.entries()) == 1
+
+    def test_a_sized_manifest_entry_does_not_warn(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: an ordinary run must stay quiet."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert not any(
+            "records no size" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_the_retry_help_states_the_unbounded_policy(self) -> None:
+        """Finding 4: the policy was documented only at the constant.
+
+        --help is where an operator deciding whether to pass the flag looks.
+        """
+        parser_help = _archive_parser_help()
+
+        assert "NO attempt cap" in parser_help, parser_help
+        assert str(bulk_archive.FAILED_RETRY_AFTER_DAYS) in parser_help
+
+
+def _archive_parser_help() -> str:
+    """Render ``bulk-archive.py archive --help`` through the real parser."""
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    original_cmd = bulk_archive.cmd_archive
+    original_logging = bulk_archive.setup_logging
+    argv = sys.argv
+    sys.argv = ["bulk-archive.py", "archive", "--help"]
+    bulk_archive.cmd_archive = lambda args, logger: None
+    bulk_archive.setup_logging = lambda: LOGGER
+    try:
+        with contextlib.redirect_stdout(buffer):
+            bulk_archive.main()
+    except SystemExit:
+        pass
+    finally:
+        bulk_archive.cmd_archive = original_cmd
+        bulk_archive.setup_logging = original_logging
+        sys.argv = argv
+    return buffer.getvalue()
