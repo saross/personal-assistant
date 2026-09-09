@@ -121,12 +121,18 @@ def probe_repos(repos: Iterable[Path]) -> list[Path]:
     exclusion list beside an emptied mount (round 4f-5, finding M1) — the
     report said "6 repositories" and meant five.
 
-    One ``git rev-parse --git-dir`` per repository, classified exactly as the
-    resolvers classify their probes: a permanent error or a non-zero exit
-    excludes the repository with the usual once-per-process warning, while a
-    timeout or a transient error leaves it in the set for resolution to
-    retry per ref. Cheap enough to run at the start of every sweep — it is
+    One ``git rev-parse --show-toplevel`` per repository, classified exactly
+    as the resolvers classify their probes: a permanent error or a non-zero
+    exit excludes the repository with the usual once-per-process warning,
+    while a timeout or a transient error leaves it in the set for resolution
+    to retry per ref. Cheap enough to run at the start of every sweep — it is
     one process per repository, against thousands of anchor probes.
+
+    ``--show-toplevel`` rather than ``--git-dir`` because git walks UP: an
+    emptied directory nested inside another repository answers happily, about
+    the parent. Comparing the answer with the path we asked about catches
+    that (finding L-e). Returns the repositories that answered for
+    themselves; callers may use the list or read the registry.
     """
     usable: list[Path] = []
     for repo in repos:
@@ -134,7 +140,7 @@ def probe_repos(repos: Iterable[Path]) -> list[Path]:
             continue
         try:
             result = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "--git-dir"],
+                ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
                 capture_output=True,
                 timeout=_GIT_TIMEOUT_S,
             )
@@ -154,8 +160,36 @@ def probe_repos(repos: Iterable[Path]) -> list[Path]:
                 repo, reason[:120] or f"git exit {result.returncode}",
             )
             continue
+        if not _is_own_toplevel(repo, result.stdout):
+            # git answered about a DIFFERENT repository: an emptied directory
+            # nested inside one walks up to the parent's .git and reports it
+            # as though it were its own (round 4f-6, finding L-e). The
+            # resolvers would do the same, so this is a tightening, not a
+            # regression they already avoid — and the honest answer for a
+            # discovered path that is no longer a repository root is that we
+            # cannot consult IT.
+            note_unusable_repo(
+                repo, "not a repository root (git answered for a parent)",
+            )
+            continue
         usable.append(repo)
     return usable
+
+
+def _is_own_toplevel(repo: Path, stdout: bytes) -> bool:
+    """Is *stdout* from ``rev-parse --show-toplevel`` this repository's root?
+
+    Compared through ``resolve`` so a discovered path reached by symlink
+    still matches the physical path git prints. A blank or unreadable answer
+    is treated as a mismatch: we could not show it is the root.
+    """
+    text = (stdout or b"").decode("utf-8", "replace").strip()
+    if not text:
+        return False
+    try:
+        return Path(text).resolve() == repo.resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def repo_is_unusable(repo: Path) -> bool:
