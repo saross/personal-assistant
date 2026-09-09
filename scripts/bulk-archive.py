@@ -1549,6 +1549,18 @@ def refuse_incomplete_source(
             f"written within the {GRACE_HOURS}h grace window "
             "(may still be growing)"
         )
+    if expected_size is None:
+        # A manifest entry written before discovery recorded sizes. Both the
+        # shrink refusal and the growth warning below are then unreachable,
+        # so the completeness guard silently degrades to the grace check
+        # alone — and says so only at debug level, where nobody sees it
+        # (audit round 4c-4, finding 3). Re-running discover repairs it.
+        logger.warning(
+            "%s: manifest entry records no size (it predates size "
+            "recording), so the shrink and growth checks cannot run for "
+            "this session — re-run discover to restore them",
+            session_path.name,
+        )
     if expected_size is not None and stat.st_size < expected_size:
         return (
             f"source has SHRUNK since discovery ({expected_size} -> "
@@ -3125,7 +3137,11 @@ def main() -> int:
             "Clear every recorded failure and try all of them again. Rarely "
             "needed: failures whose reason was transient, whose session is "
             f"now on disk, or which are older than {FAILED_RETRY_AFTER_DAYS} "
-            "days are retried automatically."
+            "days are retried automatically — and there is NO attempt cap, "
+            "so a session that keeps failing is retried once every "
+            f"{FAILED_RETRY_AFTER_DAYS} days indefinitely rather than being "
+            "written off (a permanent-failure state would silence the drift "
+            "gate about a session that really is not archived)."
         ),
     )
     p_archive.add_argument(

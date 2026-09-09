@@ -32,6 +32,12 @@ Usage:
         [--include-excluded]        # also re-extract the manifest's EXCLUDED items
                                     # (SXC9W525, I3IDESQN) — useful to verify
                                     # whether a better extractor recovers them
+        [--dry-run]                 # report what would be written; write nothing
+
+The corpus-level summary is written to ``<output-dir>/corpus-manifest.json``.
+It used to land in ``<output-dir>/../corpus-manifest.json`` — outside the
+directory the operator named — which audit finding STT-M7(a) corrected; see
+the note in :func:`main`.
 """
 
 from __future__ import annotations
@@ -44,17 +50,84 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
-# Bring the canonical extractor into scope. Per the user's "import in place"
+# Location of the canonical extractor. Per the user's "import in place"
 # decision (2026-05-24), the cleaner module is not vendored — fixes flow back
 # to llm-reproducibility upstream.
-_LLM_REPRO_PDF = Path.home() / "Code" / "llm-reproducibility" / "extraction-system" / "scripts" / "pdf_processing"
-if not _LLM_REPRO_PDF.is_dir():
-    sys.exit(f"FATAL: expected canonical extractor at {_LLM_REPRO_PDF} (not found)")
-sys.path.insert(0, str(_LLM_REPRO_PDF))
+#
+# Audit finding STT-M7(c): this used to be a module-level ``sys.path``
+# insertion, two module-level imports, and a bare ``sys.exit`` when the
+# upstream checkout was missing. A ``sys.exit`` at import time makes the
+# module impossible to import — and therefore impossible to test — on any
+# machine without llm-reproducibility, and turns a missing optional
+# dependency into an un-catchable process exit for every importer. The import
+# is now deferred to :func:`load_extractor`, called by the one function that
+# needs it (:func:`extract_one`), and a missing checkout raises a catchable
+# :class:`ExtractorUnavailableError` instead.
+_LLM_REPRO_PDF = (
+    Path.home() / "Code" / "llm-reproducibility" / "extraction-system"
+    / "scripts" / "pdf_processing"
+)
 
-from extract_pdf_text import PDFExtractor  # noqa: E402
-from pdf_cleaner import clean_reference_section  # noqa: E402
+# ``style_support`` is a sibling module in this directory. Running this script
+# directly puts its directory on ``sys.path`` automatically; importing it as a
+# module (as the test suite does) may not, so the path is made explicit.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from style_support import (  # noqa: E402
+    atomic_write_json,
+    atomic_write_text,
+    provenance_block,
+)
+
+
+class ExtractorUnavailableError(RuntimeError):
+    """The canonical upstream PDF extractor could not be imported.
+
+    Raised rather than exiting, so a caller — the driver below, a test, or
+    another script importing this module — can catch it, record it against
+    the paper being extracted, and decide for itself whether to carry on.
+    """
+
+
+def load_extractor() -> tuple[type, Callable[[str], str]]:
+    """Import and return ``(PDFExtractor, clean_reference_section)`` on demand.
+
+    The upstream modules live in a sibling checkout that is not installed as
+    a package, so its directory goes on ``sys.path`` here — once, at the
+    point of first use, rather than at import time.
+
+    Returns:
+        A ``(PDFExtractor class, clean_reference_section function)`` pair.
+
+    Raises:
+        ExtractorUnavailableError: if the checkout is absent, or present but
+            unimportable (a missing PyMuPDF or pdfplumber, say). The message
+            names the path that was tried, so the operator can fix it.
+    """
+    if not _LLM_REPRO_PDF.is_dir():
+        raise ExtractorUnavailableError(
+            f"expected the canonical PDF extractor at {_LLM_REPRO_PDF} "
+            "(directory not found); clone llm-reproducibility alongside this "
+            "repository to extract PDFs"
+        )
+    upstream = str(_LLM_REPRO_PDF)
+    if upstream not in sys.path:
+        sys.path.insert(0, upstream)
+    try:
+        from extract_pdf_text import PDFExtractor
+        from pdf_cleaner import clean_reference_section
+    except ImportError as exc:
+        # Narrow on purpose: a genuine bug inside the upstream modules must
+        # still surface as itself, not be relabelled "extractor unavailable".
+        raise ExtractorUnavailableError(
+            f"the canonical PDF extractor at {_LLM_REPRO_PDF} could not be "
+            f"imported: {exc}"
+        ) from exc
+    return PDFExtractor, clean_reference_section
 
 
 # ---------------------------------------------------------------------------
@@ -63,10 +136,18 @@ from pdf_cleaner import clean_reference_section  # noqa: E402
 
 # Match an opening markdown heading whose text is a references-section label.
 # The extractor's section detector ALL-CAPS headings get formatted as `## TEXT`
-# while Title-Case headings get `## Text` — both supported here. We deliberately
-# accept `Acknowledgements` / `Acknowledgments` too because in some journals the
-# acknowledgements block sits between the body and the references and contains
-# author-affiliation prose that should not enter the body metrics.
+# while Title-Case headings get `## Text` — both supported here.
+#
+# Audit round 4g: this comment used to claim that `Acknowledgements` /
+# `Acknowledgments` were "deliberately accepted too". They never were, and the
+# COMMENT has been corrected rather than the pattern widened. Cutting the body
+# at an acknowledgements heading would also amputate every section a journal
+# places after it — author contributions, data-availability statements,
+# appendices — none of which is bibliography. Acknowledgements is instead one
+# of the end-of-body markers in ``_END_OF_BODY_MARKERS_RE``, which cuts only
+# when a dense author-year run follows it. The accepted consequence:
+# acknowledgements prose counts towards the body metrics.
+# ``test_an_acknowledgements_heading_does_not_split_the_body`` pins this.
 _REF_HEADING_RE = re.compile(
     r"^\s{0,3}(#{1,4})\s+("
     r"REFERENCES?|References?|"
@@ -163,10 +244,60 @@ PER_KEY_MANIFEST_OVERRIDES = {
 
 
 def apply_manifest_overrides(entry: dict) -> dict:
+    """Return ``entry`` with any per-key manifest corrections merged in.
+
+    A new dict is returned rather than mutating the caller's entry, so the
+    manifest loaded from disk stays the record of what Zotero actually said.
+    Keys without an override are returned unchanged.
+    """
     key = entry.get("key")
     if key in PER_KEY_MANIFEST_OVERRIDES:
         return {**entry, **PER_KEY_MANIFEST_OVERRIDES[key]}
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Exclusion predicate (audit finding ST21)
+# ---------------------------------------------------------------------------
+
+#: Whole-word "exclude"/"excluded" in an ``extraction_notes`` string.
+#: Deliberately does NOT match "excludes", "excluding", "exclusionary" or
+#: "exclusive": the old test was the bare substring ``"exclude" in notes``,
+#: which fired on "this note excludes nothing" and dropped a perfectly good
+#: paper from the run without saying so.
+_EXCLUSION_WORD_RE = re.compile(r"\bexcluded?\b", re.IGNORECASE)
+
+#: A negated exclusion — "not excluded", "never excluded", "no longer
+#: excluded". The substring test also fired on these, i.e. on notes stating
+#: the exact opposite of exclusion.
+_NEGATED_EXCLUSION_RE = re.compile(
+    r"\b(?:not|never|no\s+longer|isn'?t|was\s*n'?t|were\s*n'?t)\s+excluded?\b",
+    re.IGNORECASE,
+)
+
+
+def is_excluded(entry: dict) -> bool:
+    """Whether a manifest entry is marked EXCLUDED from the analysis corpus.
+
+    Two tests, in order of authority:
+
+    1. An explicit boolean ``excluded`` field on the entry, if the manifest
+       carries one, wins outright — no prose parsing at all.
+    2. Otherwise ``extraction_notes`` must contain the whole word "exclude"
+       or "excluded" (case-insensitive), and that word must not be negated by
+       an immediately preceding "not" / "never" / "no longer".
+
+    Returns ``False`` for an entry with neither signal.
+    """
+    flag = entry.get("excluded")
+    if flag is not None:
+        return bool(flag)
+    notes = entry.get("extraction_notes") or ""
+    if not _EXCLUSION_WORD_RE.search(notes):
+        return False
+    # Every occurrence negated ⇒ the note says the paper is *in*, not out.
+    negated = len(_NEGATED_EXCLUSION_RE.findall(notes))
+    return len(_EXCLUSION_WORD_RE.findall(notes)) > negated
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +547,16 @@ def split_body_references(markdown: str) -> tuple[str, str, str]:
 # QA flag computation
 # ---------------------------------------------------------------------------
 
+#: A promoted ``Abstract`` heading, at any heading level and in any case.
+#: The test used to be the literal ``"## Abstract" not in body_md``, so a
+#: correctly promoted ``# Abstract`` (the extractor's H1 for a short paper) or
+#: ``### ABSTRACT`` (an ALL-CAPS source heading) was reported as unpromoted —
+#: a QA flag on a paper with nothing wrong with it (audit round 4g, Low 2).
+_ABSTRACT_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+ABSTRACT\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
 # Unicode-aware word regex for the per-paper word counts. Matches a letter
 # token in any script (Latin with diacritics, Greek, Cyrillic) — important
 # for an archaeology corpus that routinely cites Müller, Sobotková,
@@ -463,7 +604,7 @@ def compute_qa_flags(
         flags.append("zero_body_words")
     if abs(delta_pct) > 25:
         flags.append(f"word_count_delta_{delta_pct:+.0f}pct")
-    if "## Abstract" not in body_md and "Abstract" in body_md[:2000]:
+    if not _ABSTRACT_HEADING_RE.search(body_md) and "Abstract" in body_md[:2000]:
         flags.append("abstract_present_but_not_promoted")
     if extractor_stats.get("sections_detected", 0) < 3:
         flags.append("few_sections_detected")
@@ -488,11 +629,23 @@ def compute_qa_flags(
 # Per-paper extraction
 # ---------------------------------------------------------------------------
 
-def extract_one(manifest_entry: dict, output_dir: Path) -> dict:
+def extract_one(manifest_entry: dict, output_dir: Path, *,
+                dry_run: bool = False) -> dict:
     """Extract a single paper and write its output bundle.
 
-    Returns a dict summarising the outcome (key, status, qa_flags, paths).
-    Captures exceptions so that a single bad PDF doesn't abort the whole run.
+    Returns a dict summarising the outcome (key, status, qa flags, and the
+    output paths under ``outputs``). Captures exceptions from the extractor so
+    that a single bad PDF doesn't abort the whole run.
+
+    With ``dry_run`` set, nothing at all is created — not the per-paper
+    directory, not the files — and ``outputs`` reports what the run *would*
+    have written. The extraction itself still runs, so the reported word
+    counts and QA flags are the real ones.
+
+    Raises:
+        ExtractorUnavailableError: if the upstream extractor cannot be
+            imported. Deliberately not swallowed: it is a broken installation,
+            not a bad PDF, and every subsequent paper would fail the same way.
 
     Pipeline order:
       1. Apply per-key manifest overrides (e.g. correct ``has_references``).
@@ -504,25 +657,45 @@ def extract_one(manifest_entry: dict, output_dir: Path) -> dict:
       6. Try the body/refs split detector chain.
       7. Strip any author-affiliation tail block from the body.
       8. Clean reference-section formatting.
+      9. On success, clear any ``extraction-error.txt`` a previous, failed
+         run left in this paper's directory (a live run only).
     """
     manifest_entry = apply_manifest_overrides(manifest_entry)
     key = manifest_entry["key"]
     pdf_path = Path(manifest_entry["pdf_path"])
     paper_dir = output_dir / key
-    paper_dir.mkdir(parents=True, exist_ok=True)
+    # Under --dry-run not even the directory is created; the atomic writers
+    # below make their own parents when they are allowed to write at all.
+    if not dry_run:
+        paper_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[str] = []
+
+    def emit_text(path: Path, text: str) -> None:
+        """Write one text output atomically, or record it under ``--dry-run``."""
+        atomic_write_text(path, text, dry_run=dry_run)
+        written.append(str(path))
+
+    def emit_json(path: Path, payload: dict) -> None:
+        """Write one JSON output atomically, or record it under ``--dry-run``."""
+        atomic_write_json(path, payload, dry_run=dry_run)
+        written.append(str(path))
 
     if not pdf_path.exists():
         msg = f"PDF not found: {pdf_path}"
-        (paper_dir / "extraction-error.txt").write_text(msg)
-        return {"key": key, "status": "error", "error": msg}
+        emit_text(paper_dir / "extraction-error.txt", msg)
+        return {"key": key, "status": "error", "error": msg,
+                "dry_run": dry_run, "outputs": written}
 
-    extractor = PDFExtractor()
+    pdf_extractor_cls, clean_reference_section = load_extractor()
+    extractor = pdf_extractor_cls()
     try:
         markdown = extractor.extract(pdf_path)
     except Exception as exc:
         tb = traceback.format_exc()
-        (paper_dir / "extraction-error.txt").write_text(f"{exc}\n\n{tb}")
-        return {"key": key, "status": "error", "error": str(exc)}
+        emit_text(paper_dir / "extraction-error.txt", f"{exc}\n\n{tb}")
+        return {"key": key, "status": "error", "error": str(exc),
+                "dry_run": dry_run, "outputs": written}
 
     sliced_md, slice_method = apply_chapter_slice(key, markdown)
 
@@ -545,10 +718,12 @@ def extract_one(manifest_entry: dict, output_dir: Path) -> dict:
     body_md, n_affiliation_chars = strip_affiliation_tail(body_md)
     references_md = clean_reference_section(references_md) if references_md else ""
 
-    # Paper outputs
-    (paper_dir / "body.md").write_text(body_md, encoding="utf-8")
-    (paper_dir / "references.md").write_text(references_md, encoding="utf-8")
-    (paper_dir / "full.md").write_text(markdown, encoding="utf-8")  # forensic copy
+    # Paper outputs. Every write goes through the atomic helper: an
+    # interrupted run used to leave a truncated body.md or metadata.json that
+    # the next pipeline stage parsed as if it were complete.
+    emit_text(paper_dir / "body.md", body_md)
+    emit_text(paper_dir / "references.md", references_md)
+    emit_text(paper_dir / "full.md", markdown)  # forensic copy
 
     # Metadata — Zotero manifest fields + extraction provenance
     metadata = {
@@ -570,7 +745,7 @@ def extract_one(manifest_entry: dict, output_dir: Path) -> dict:
             "config": extractor.config,
         },
     }
-    (paper_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    emit_json(paper_dir / "metadata.json", metadata)
 
     qa = compute_qa_flags(body_md, references_md, split_method, extractor.stats, manifest_entry)
     qa["slice_method"] = slice_method
@@ -579,7 +754,23 @@ def extract_one(manifest_entry: dict, output_dir: Path) -> dict:
         "fragment_h2_dropped": n_fragment_h2_dropped,
         "affiliation_chars_stripped": n_affiliation_chars,
     }
-    (paper_dir / "qa.json").write_text(json.dumps(qa, indent=2))
+    emit_json(paper_dir / "qa.json", qa)
+
+    # Only now: a previous run may have failed on this paper and left an
+    # ``extraction-error.txt`` behind (see the two failure returns above), and
+    # this run has succeeded, so that file describes a failure that no longer
+    # exists — a QA sweep grepping the output tree for the filename would
+    # report it as current (audit round 4g, Low 1).
+    #
+    # Clearing it BEFORE the bundle writes, as this first did, opened a window
+    # in which an interrupted run left neither the error marker nor a complete
+    # bundle: the directory then looked like a paper nobody had tried
+    # (round 4g-3, item 8). The marker is removed once the outputs that
+    # supersede it are on disk. Never under ``--dry-run``, which must leave
+    # the tree byte-for-byte untouched and so must not delete any more than it
+    # writes.
+    if not dry_run:
+        (paper_dir / "extraction-error.txt").unlink(missing_ok=True)
 
     return {
         "key": key,
@@ -590,6 +781,8 @@ def extract_one(manifest_entry: dict, output_dir: Path) -> dict:
         "slice_method": slice_method,
         "needs_review": qa["needs_review"],
         "flags": qa["flags"],
+        "dry_run": dry_run,
+        "outputs": written,
     }
 
 
@@ -628,6 +821,11 @@ def main() -> int:
         action="store_true",
         help="also extract manifest entries marked EXCLUDED from analysis",
     )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be written, and write nothing at all",
+    )
     args = ap.parse_args()
 
     with args.manifest.open() as f:
@@ -635,15 +833,11 @@ def main() -> int:
 
     # Filter — by default skip EXCLUDED items, but the user opted in to the
     # 18-paper scope (2026-05-24 scoping question), so the excluded ones stay
-    # out unless --include-excluded is passed. Match is case-insensitive on
-    # "exclude" so "EXCLUDED", "Excluded", "excluded" all hit.
-    def is_excluded(entry):
-        notes = (entry.get("extraction_notes") or "").lower()
-        return "exclude" in notes
-
+    # out unless --include-excluded is passed. See :func:`is_excluded` for
+    # what counts as a marking (audit finding ST21).
     if args.keys:
         # Strip whitespace and drop empty tokens — natural CLI spacing
-        # (e.g. "--keys SP2R6FF9, 5INAFTVT") and trailing commas would
+        # (e.g. "--keys AAAA1111, BBBB2222") and trailing commas would
         # otherwise silently fail to match any entry.
         wanted = {k.strip() for k in args.keys.split(",") if k.strip()}
         entries = [e for e in manifest if e.get("key") in wanted]
@@ -653,12 +847,28 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        # Audit finding STT-M7(b): --keys used to short-circuit the EXCLUDED
+        # filter entirely, so naming an excluded paper silently re-extracted
+        # it into the corpus the analysis then treats as the 18-paper scope.
+        # Refuse instead, naming the keys; the operator has to say
+        # --include-excluded to mean it.
+        if not args.include_excluded:
+            blocked = sorted(str(e.get("key")) for e in entries if is_excluded(e))
+            if blocked:
+                print(
+                    "ERROR: --keys named manifest entries marked EXCLUDED: "
+                    f"{', '.join(blocked)}. Pass --include-excluded to extract "
+                    "them anyway.",
+                    file=sys.stderr,
+                )
+                return 3
     elif args.include_excluded:
         entries = manifest
     else:
         entries = [e for e in manifest if not is_excluded(e)]
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
     for entry in entries:
@@ -669,7 +879,7 @@ def main() -> int:
             continue
         print(f"\n=== {key} ({entry.get('typeName', '?')}, {entry.get('date', '?')}) ===")
         try:
-            result = extract_one(entry, args.output_dir)
+            result = extract_one(entry, args.output_dir, dry_run=args.dry_run)
         except Exception as exc:
             tb = traceback.format_exc()
             print(f"  UNHANDLED ERROR: {exc}", file=sys.stderr)
@@ -687,11 +897,30 @@ def main() -> int:
                     print(f"    flag: {flag}")
         else:
             print(f"  ERROR: {result.get('error', 'unknown')}")
+        if args.dry_run and result.get("outputs"):
+            for path in result["outputs"]:
+                print(f"    [dry-run] would write {path}")
 
-    # Corpus-level manifest
+    # Corpus-level manifest.
+    #
+    # Audit finding STT-M7(a): this file used to be written to
+    # ``args.output_dir.parent`` — OUTSIDE the directory the operator named,
+    # so ``--output-dir /tmp/x/extracted`` dropped it in ``/tmp/x``. It now
+    # lands INSIDE --output-dir. OPERATOR NOTE: this moves the file; anything
+    # that reads the old sibling location must be repointed.
+    manifest_path = args.output_dir / "corpus-manifest.json"
     corpus_manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_manifest": str(args.manifest),
+        # Provenance ties this summary to the code and the exact input bytes
+        # that produced it. Deliberately carries no timestamp of its own (see
+        # style_support.provenance_block); ``generated_at_utc`` above remains
+        # the wall-clock field for anyone who wants one.
+        "provenance": provenance_block(
+            "extract_corpus.py",
+            [args.manifest],
+            extra={"extractor_versions": _tool_versions()},
+        ),
         "n_papers_extracted": sum(1 for r in results if r["status"] == "ok"),
         "n_errors": sum(1 for r in results if r["status"] == "error"),
         "n_needs_review": sum(
@@ -699,10 +928,10 @@ def main() -> int:
         ),
         "results": results,
     }
-    (args.output_dir.parent / "corpus-manifest.json").write_text(
-        json.dumps(corpus_manifest, indent=2)
-    )
-    print(f"\nWrote {args.output_dir.parent / 'corpus-manifest.json'}")
+    if atomic_write_json(manifest_path, corpus_manifest, dry_run=args.dry_run):
+        print(f"\nWrote {manifest_path}")
+    else:
+        print(f"\n[dry-run] would write {manifest_path}; nothing was written")
     print(
         f"Extracted: {corpus_manifest['n_papers_extracted']}  "
         f"Errors: {corpus_manifest['n_errors']}  "

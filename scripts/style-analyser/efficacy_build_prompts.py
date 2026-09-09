@@ -36,7 +36,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import style_support  # noqa: E402  (after the sys.path insertion above)
 
 # --------------------------------------------------------------------------
 # Citation stripping (2026-05-31). Citation format is venue-determined, NOT
@@ -44,23 +48,65 @@ from pathlib import Path
 # demonstrate citations. The canonical guide's §3/§9.4 now carry exclusion
 # notes and the Appendix F reverse-prompts have had their citation directives
 # removed, but the verbatim exemplar SENTENCES still contain citation tokens —
-# this strips any parenthetical containing a 4-digit year (e.g. "(Niven 2011a;
-# Whitmore and Dennis 2019)", "(cf. Fish and Kowalewski 1990)", integrated
-# "(2012)") from the injected context. Year-free parentheticals such as
-# "(FAIR)" or "(12 articles)" are left untouched.
+# this strips citations (e.g. "(Niven 2011a; Whitmore and Dennis 2019)",
+# "(cf. Fish and Kowalewski 1990)", and the integrated "Smith (2012)") from
+# the injected context. Year-free parentheticals such as "(FAIR)" or
+# "(12 articles)", and year-bearing ones that are not citations such as
+# "(Bulgaria in 2019)", are left untouched.
 # --------------------------------------------------------------------------
-_CITATION_PAREN_RE = re.compile(
-    r"\s*\([^()]*\b[A-Z][a-z]{2,}\b[^()]*\b(?:18|19|20)\d{2}[a-z]?\b[^()]*\)")
+# Finding ST17: "any parenthetical holding a capitalised word and a year"
+# was too loose in one direction and too tight in the other. It deleted
+# "(Bulgaria in 2019)" — a place and a date, not a citation — while leaving
+# the integrated form "Smith (2012)" untouched, because the author's name sits
+# OUTSIDE the brackets. The shape of a citation is matched instead: an
+# optional signal phrase, an author (or two, or "et al."), a year, and an
+# optional locator, repeated for a multi-work citation.
+_NAME = r"[A-Z][\w'’\-]+"
+_AUTHORS = rf"{_NAME}(?:\s+(?:and|&)\s+{_NAME})?(?:\s+et\s+al\.?)?"
+_YEAR = r"(?:18|19|20)\d{2}[a-z]?"
+_LOCATOR = r"(?:\s*[:,]\s*\d+(?:[–—-]\d+)?)?"
+_SIGNAL = r"(?:cf\.\s*|see\s+(?:also\s+)?|e\.g\.,?\s*|i\.e\.,?\s*)?"
+_ENTRY = rf"{_SIGNAL}{_AUTHORS},?\s+{_YEAR}{_LOCATOR}"
+_CITATION_PAREN_RE = re.compile(rf"\s*\({_ENTRY}(?:\s*;\s*{_ENTRY})*\)")
+#: The integrated form: "Smith (2012) argues" -> "Smith argues".
+_INTEGRATED_CITE_RE = re.compile(rf"(?<=\w)\s*\({_YEAR}{_LOCATOR}\)")
 _FIX_SPACE_PUNCT_RE = re.compile(r"\s+([,.;:])")
-_FIX_DOUBLE_SPACE_RE = re.compile(r"  +")
+# Finding ST16: a bare `  +` collapsed the indentation of nested lists and the
+# interior alignment of code blocks in the injected guide. The lookbehind
+# confines it to runs of spaces AFTER visible text, and fenced blocks are
+# skipped entirely.
+_FIX_DOUBLE_SPACE_RE = re.compile(r"(?<=\S)  +")
+_FENCE_RE = re.compile(r"^\s*```")
+
+
+def _tidy_spacing(text: str) -> str:
+    """Collapse interior space runs in prose lines, leaving structure alone.
+
+    Leading indentation carries meaning in Markdown (nested list items,
+    indented code), and a fenced block may be aligned deliberately, so
+    neither is touched.
+    """
+    lines: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        lines.append(line if in_fence else _FIX_DOUBLE_SPACE_RE.sub(" ", line))
+    return "\n".join(lines)
 
 
 def strip_citations(text: str) -> str:
-    """Remove year-bearing parenthetical citations and tidy the residue."""
+    """Remove parenthetical and integrated citations, and tidy the residue.
+
+    Year-free parentheticals ("(FAIR)", "(12 articles)") and year-bearing
+    ones that are not citations ("(Bulgaria in 2019)") are left alone.
+    """
     text = _CITATION_PAREN_RE.sub("", text)
+    text = _INTEGRATED_CITE_RE.sub("", text)
     text = _FIX_SPACE_PUNCT_RE.sub(r"\1", text)
-    text = _FIX_DOUBLE_SPACE_RE.sub(" ", text)
-    return text
+    return _tidy_spacing(text)
 
 
 # Prepended to the C2 task wrapper: an explicit, belt-and-braces no-citation
@@ -229,9 +275,16 @@ def build_manifest(c2_context: str) -> dict:
                 "topic_text": topic["text"],
                 "prompt": prompt,
             })
+    # Record the guide's path relative to the repository when it lies inside
+    # it, and absolutely when it does not: `relative_to` RAISES on an outside
+    # path, which made the manifest unbuildable for a guide anywhere else.
+    try:
+        guide_reference = str(GUIDE_PATH.relative_to(REPO_ROOT))
+    except ValueError:
+        guide_reference = str(GUIDE_PATH)
     return {
         "experiment": "style-efficacy-2026-05-31",
-        "guide": str(GUIDE_PATH.relative_to(REPO_ROOT)),
+        "guide": guide_reference,
         "guide_block_markers": GUIDE_BLOCK_MARKERS,
         "citations_stripped": True,
         "conditions": {
@@ -247,25 +300,43 @@ def build_manifest(c2_context: str) -> dict:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Assemble every prompt; 0 on success, 2 when the guide cannot be read."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pilot", action="store_true",
                     help="also print the pilot subset (topic_ids x conditions)")
-    args = ap.parse_args()
+    ap.add_argument("--dry-run", action="store_true",
+                    help="assemble the prompts and report them, but write "
+                         "nothing")
+    args = ap.parse_args(argv)
 
-    EXPERIMENT_DIR.mkdir(parents=True, exist_ok=True)
-    c2_context = extract_guide_block()
-    C2_CONTEXT_PATH.write_text(c2_context, encoding="utf-8")
+    # Finding STT-M4: the experiment directory was created BEFORE the guide
+    # was read, so a missing guide or a renamed section marker left an empty
+    # directory behind as the only trace of a failed run. Read first; create
+    # only once there is something to put in it.
+    try:
+        c2_context = extract_guide_block()
+    except (OSError, ValueError) as exc:
+        print(f"Could not extract the guide block: {exc}", file=sys.stderr)
+        return 2
 
     manifest = build_manifest(c2_context)
-    MANIFEST_PATH.write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    # Which code and which guide produced these prompts.
+    manifest["provenance"] = style_support.provenance_block(
+        Path(__file__).name, [GUIDE_PATH])
+    wrote = style_support.atomic_write_text(C2_CONTEXT_PATH, c2_context,
+                                            dry_run=args.dry_run)
+    style_support.atomic_write_json(MANIFEST_PATH, manifest,
+                                    dry_run=args.dry_run)
 
     n_c2_words = len(c2_context.split())
-    print(f"Wrote {C2_CONTEXT_PATH.relative_to(REPO_ROOT)} "
-          f"({n_c2_words} words of C2 context)")
-    print(f"Wrote {MANIFEST_PATH.relative_to(REPO_ROOT)} "
+    if not wrote:
+        print(f"--dry-run: nothing written to {EXPERIMENT_DIR} "
+              f"({n_c2_words} words of C2 context, "
+              f"{len(manifest['records'])} prompt records)")
+        return 0
+    print(f"Wrote {C2_CONTEXT_PATH} ({n_c2_words} words of C2 context)")
+    print(f"Wrote {MANIFEST_PATH} "
           f"({len(manifest['records'])} prompt records: "
           f"{manifest['n_topics']} topics x {manifest['n_conditions']} conds)")
 

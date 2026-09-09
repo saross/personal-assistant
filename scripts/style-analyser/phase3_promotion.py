@@ -36,6 +36,9 @@ import statistics
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import style_support  # noqa: E402  (after the sys.path insertion above)
+
 # Paths are resolved against the repository root derived from ``__file__``,
 # not against the current working directory. The documented invocation gives
 # this script an absolute path and no ``cd``, so relative defaults meant the
@@ -63,6 +66,27 @@ N_PAPERS_FLOOR = 3
 BIMODALITY_GAP_FRACTION = 0.25
 BIMODALITY_MIN_PER_SIDE = 3  # gap must leave >=3 papers on EACH side
 BIMODALITY_MIN_PAPERS = 2 * BIMODALITY_MIN_PER_SIDE  # 6
+
+# Metrics that are continuous and structurally positive: every paper that was
+# measured at all has a non-zero value, so "n_papers with rate > 0" is a count
+# of papers measured, not evidence that a feature is attested (finding ST26).
+# Mean sentence length is present in every paper ever written; promoting it to
+# `attested` "because 18/18 papers have it" says nothing.
+#
+# For these the presence rule does not apply. The verdict rests on measurement
+# coverage (how many papers carry a value at all) and on dispersion (CV and
+# the bimodality detector), and the rationale says so, so a reader of
+# phase3-promotion-clean.json can tell the two rules apart.
+CONTINUOUS_METRICS = frozenset({
+    "mattr_100",
+    "hapax_ratio",
+    "hapax_per_token",
+    "mean_dep_depth",
+    "sentence_mean",
+    "sentence_median",
+    "paragraph_mean_words",
+    "paragraph_median_words",
+})
 
 
 def detect_bimodal(rates: list[float]) -> tuple[bool, float, float]:
@@ -111,9 +135,29 @@ def promote(metric: str,
         not" lists. Required for the confabulation guard.
     `n_occ`: corpus-wide total occurrences when known; if None, the
         verdict can still resolve on n_papers + CV alone.
+
+    Raises ValueError when `paper_keys` is given but does not line up with
+    `per_paper_rates` (finding ST25): the two are zipped to build the
+    `papers_present` / `papers_absent` lists the style-guide agent copies
+    verbatim, so a mismatch means those lists pair the wrong key with the
+    wrong rate. The old code silently emitted EMPTY lists instead, which
+    disarmed the confabulation guard exactly when it was most needed.
     """
+    if paper_keys is not None and len(paper_keys) != len(per_paper_rates):
+        raise ValueError(
+            f"{metric}: {len(paper_keys)} paper keys for "
+            f"{len(per_paper_rates)} rates. The two lists are zipped to build "
+            "the papers_present/papers_absent evidence, so an unaligned pair "
+            "would attribute a rate to the wrong paper."
+        )
     n_total = len(per_paper_rates)
     n_present = sum(1 for r in per_paper_rates if r > 0)
+    # Finding ST26: for a continuous, structurally positive metric, "papers
+    # with rate > 0" is just "papers measured", so the presence floor tests
+    # nothing. Those metrics are judged on coverage and dispersion instead.
+    is_continuous = metric in CONTINUOUS_METRICS
+    n_qualifying = n_total if is_continuous else n_present
+    basis = ("papers measured" if is_continuous else "papers with the feature")
     mean = statistics.mean(per_paper_rates) if per_paper_rates else 0.0
     stdev = (
         statistics.stdev(per_paper_rates) if len(per_paper_rates) > 1 else 0.0
@@ -136,18 +180,18 @@ def promote(metric: str,
     is_bimodal, max_gap, gap_frac = detect_bimodal(per_paper_rates)
 
     # Decide promotion
-    if n_present >= N_PAPERS_FLOOR:
+    if n_qualifying >= N_PAPERS_FLOOR:
         if n_occ is None or n_occ >= N_OCC_FLOOR:
             if cv > CV_THRESHOLD:
                 status = "attested-concentrated"
                 rationale = (
-                    f"n_papers={n_present} >= {N_PAPERS_FLOOR}"
+                    f"n_papers={n_qualifying} ({basis}) >= {N_PAPERS_FLOOR}"
                     f" AND CV={cv:.3f} > {CV_THRESHOLD}"
                 )
             elif is_bimodal:
                 status = "attested-concentrated"
                 rationale = (
-                    f"n_papers={n_present} >= {N_PAPERS_FLOOR}"
+                    f"n_papers={n_qualifying} ({basis}) >= {N_PAPERS_FLOOR}"
                     f" AND bimodality detected (max consecutive gap"
                     f" {max_gap:.3f} = {gap_frac:.1%} of range,"
                     f" >= {BIMODALITY_GAP_FRACTION:.0%} threshold);"
@@ -156,7 +200,7 @@ def promote(metric: str,
             else:
                 status = "attested"
                 rationale = (
-                    f"n_papers={n_present} >= {N_PAPERS_FLOOR}"
+                    f"n_papers={n_qualifying} ({basis}) >= {N_PAPERS_FLOOR}"
                     + (f" AND n_occ={n_occ} >= {N_OCC_FLOOR}"
                        if n_occ is not None else "")
                     + f" AND CV={cv:.3f} <= {CV_THRESHOLD}"
@@ -165,18 +209,18 @@ def promote(metric: str,
         else:
             status = "attested-rarely"
             rationale = (
-                f"n_papers={n_present} >= {N_PAPERS_FLOOR}"
+                f"n_papers={n_qualifying} ({basis}) >= {N_PAPERS_FLOOR}"
                 f" but n_occ={n_occ} < {N_OCC_FLOOR}"
             )
-    elif n_present >= 1:
+    elif n_qualifying >= 1:
         status = "attested-rarely"
-        rationale = f"n_papers={n_present} < {N_PAPERS_FLOOR}"
+        rationale = f"n_papers={n_qualifying} ({basis}) < {N_PAPERS_FLOOR}"
     else:
-        # n_present == 0; deliberate-search flag determines absent-when-
+        # n_qualifying == 0; deliberate-search flag determines absent-when-
         # searched vs not-searched. Caller may post-process.
         status = "absent-when-searched-candidate"
         rationale = (
-            f"n_papers={n_present} == 0; "
+            f"n_papers={n_qualifying} ({basis}) == 0; "
             "external deliberate-search flag required to promote to "
             "`absent-when-searched`"
         )
@@ -186,6 +230,10 @@ def promote(metric: str,
         "section": section,
         "n_papers_total": n_total,
         "n_papers_present": n_present,
+        # Which rule decided this verdict: presence across papers, or
+        # coverage plus dispersion for an always-positive metric (ST26).
+        "presence_rule_applies": not is_continuous,
+        "promotion_basis": basis,
         "n_occ": n_occ,
         "mean_rate": round(mean, 4),
         "stdev_rate": round(stdev, 4),
@@ -227,12 +275,17 @@ def pp_count(per_paper: list[dict], path: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Apply the promotion rules to the Phase 1 output and write the verdicts."""
+    """Apply the promotion rules to the Phase 1 output and write the verdicts.
+
+    Returns 0 on success and 2 when the phase 1 input is missing.
+    """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--phase1", type=Path, default=PHASE1,
                         help=f"Phase 1 results JSON (default: {PHASE1})")
     parser.add_argument("--out", type=Path, default=OUT,
                         help=f"where to write the promotions (default: {OUT})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="compute and print the verdicts, but write no file")
     args = parser.parse_args(argv)
     phase1_path, out_path = args.phase1, args.out
 
@@ -240,7 +293,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Phase 1 input not found: {phase1_path}", file=sys.stderr)
         return 2
 
-    data = json.load(open(phase1_path))
+    data = json.loads(phase1_path.read_text(encoding="utf-8"))
+    stale = style_support.metric_schema_error(data, phase1_path)
+    if stale:
+        print(stale, file=sys.stderr)
+        return 2
     per_paper = data["per_paper"]
     agg_reg = data["aggregate"]["regression"]
 
@@ -361,6 +418,9 @@ def main(argv: list[str] | None = None) -> int:
 
     out = {
         "phase1_input": str(phase1_path),
+        # Propagated, so the verifier can check this file's provenance too
+        # without re-reading phase 1.
+        "metric_schema": style_support.metric_schema_stamp(),
         "thresholds": {
             "cv_threshold": CV_THRESHOLD,
             "n_occ_floor": N_OCC_FLOOR,
@@ -383,16 +443,24 @@ def main(argv: list[str] | None = None) -> int:
             "n_uncovered": len(sections_not_covered),
         },
     }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    print(f"Wrote {out_path}")
+    # Which code and which input produced these verdicts. The atomic writer
+    # creates the parent directory itself, and only on a real write.
+    out["provenance"] = style_support.provenance_block(
+        Path(__file__).name, [phase1_path])
+    wrote = style_support.atomic_write_json(out_path, out,
+                                            dry_run=args.dry_run)
+    print(f"Wrote {out_path}" if wrote
+          else f"--dry-run: nothing written to {out_path}")
     print(f"\nMetrics promoted: {len(promotions)}")
     print(f"Sections covered:   {sections_covered}")
     print(f"\n{'§':5} {'metric':32} {'n_pres':>6} {'n_occ':>6} {'mean':>8} {'CV':>7}  promotion")
     print("-" * 95)
     for p in promotions:
+        # `p['n_occ'] or '?'` printed a measured ZERO as "?" — a metric found
+        # nowhere in the corpus looked like a metric nobody counted.
+        n_occ = "?" if p["n_occ"] is None else str(p["n_occ"])
         print(f"{p['section']:5} {p['metric']:32} "
-              f"{p['n_papers_present']:>6} {str(p['n_occ'] or '?'):>6} "
+              f"{p['n_papers_present']:>6} {n_occ:>6} "
               f"{p['mean_rate']:>8.3f} {p['cv']:>7.3f}  {p['promotion']}")
     return 0
 

@@ -1439,6 +1439,114 @@ class TestR2PushSafety:
         assert result.returncode == 3
         assert "ABORTED" in result.stdout + result.stderr
 
+    def test_the_logged_status_is_rclone_s_own(self, sandbox) -> None:
+        """`rc=$?` after `fi` reads the IF's status, which is always 0.
+
+        So the transport message said "exited non-zero (rc=0)" every time --
+        the one number in it that could have told an operator what actually
+        went wrong (round 4c-4, finding 5).
+        """
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: dial tcp: lookup failed" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 7\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2
+        combined = result.stdout + result.stderr
+        assert "rc=7" in combined, (
+            f"the logged status is not rclone's own: {combined}"
+        )
+        assert "rc=0" not in combined
+
+    def test_a_failing_dry_run_is_classified_not_raw(self, sandbox) -> None:
+        """The dry-run rclone ran bare under `set -e` (finding 6).
+
+        So a failing dry run exited with rclone's raw status, and rclone's
+        exit 1 would read as this script's own "precondition not met,
+        skipped" -- a failed preview reported as a healthy skip.
+        """
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: dial tcp: lookup failed" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox, "--dry-run")
+
+        assert result.returncode == 2, (
+            "a failed dry run exited with rclone's raw status; exit 1 reads "
+            "as this script's 'precondition not met, skipped'"
+        )
+        combined = result.stdout + result.stderr
+        assert "safe to retry" in combined
+        assert "rc=1" in combined
+
+    def test_a_dry_run_immutable_refusal_exits_three(self, sandbox) -> None:
+        """Both branches must classify the same way."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            'echo "ERROR: session.jsonl.gz: immutable file modified" >> '
+            f'{sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox, "--dry-run")
+
+        assert result.returncode == 3
+        assert "ABORTED" in result.stdout + result.stderr
+
+    def test_a_successful_dry_run_still_exits_zero(self, sandbox) -> None:
+        """The control: the ordinary preview must not have changed."""
+        result = self._run(sandbox, "--dry-run")
+
+        assert result.returncode == 0
+        assert "dry-run complete" in result.stdout + result.stderr
+
+    def test_a_canonical_path_containing_the_word_does_not_misclassify(
+        self, sandbox, tmp_path: Path
+    ) -> None:
+        """Only rclone's own output is matched, not this script's log lines.
+
+        The log helper's lines embed the canonical and destination paths, so
+        a store whose path contains "immutable" made every transport failure
+        report a corruption abort. (Found because a test whose NAME contains
+        the word created exactly such a path.)
+        """
+        canonical = (
+            sandbox.home / "mnt" / "rpi-shares" / "cc-archives-consolidated"
+        )
+        marked = canonical.parent / "immutable-archive-store"
+        canonical.rename(marked)
+        marked.rename(canonical)
+        # The pytest tmp path itself carries the word, which is what the log
+        # line will contain; assert the classification ignores it.
+        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2, (
+            "the script's own log line, not rclone's output, decided the "
+            "classification"
+        )
+        assert "safe to retry" in result.stdout + result.stderr
+
     def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
         """The positive control: an ordinary failure stays retryable."""
         sandbox.rclone.write_text(
@@ -1457,16 +1565,20 @@ class TestR2PushSafety:
         assert result.returncode == 2
         assert "safe to retry" in result.stdout + result.stderr
 
+    @pytest.mark.parametrize("args", [(), ("--dry-run",)])
     def test_staged_temporaries_are_excluded_from_the_push(
-        self, sandbox
+        self, sandbox, args
     ) -> None:
         """L-10's other half: never upload a half-written file.
 
         The push is --immutable and never deletes, so a partial `.tmp`
         uploaded once becomes a permanent object in R2 that cannot be
-        replaced or removed.
+        replaced or removed. Parametrised over both branches like the
+        copy/--delete assertions: a dry run that previews a different set of
+        files from the run it previews is not a preview (round 4c-4,
+        finding 8).
         """
-        assert self._run(sandbox).returncode == 0
+        assert self._run(sandbox, *args).returncode == 0
 
         argv = self._argv(sandbox)
         assert "--exclude" in argv, f"no exclusion passed to rclone: {argv}"
