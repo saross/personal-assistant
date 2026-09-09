@@ -923,7 +923,8 @@ Open, each with its verdict so far:
   vacuity guard counts per function; three rename fixtures; two of three
   gate-render tests assert the exact list (`-qxF`→`-qF` is equivalent
   under the present key vocabulary and recorded as such). Merged with
-  main (fcca012); coordinator suite, PR, and re-audit pending.
+  main (fcca012), coordinator suite 4384 passed, 2 skipped, 19
+  deselected, exit 0; **PR #148**; re-audit running.
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
