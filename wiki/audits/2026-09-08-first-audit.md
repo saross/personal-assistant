@@ -766,9 +766,10 @@ Open, each with its verdict so far:
   efficacy scorer, `--migrate-key` isolation, the version-less stamp, the
   untracked-files `dirty` case, and the error marker now cleared only after
   the bundle's outputs exist (seven commits 916e223-33a5159; clean-copy
-  suite 4009 passed, exit 0). Awaiting the third re-audit. Merging it makes
-  every phase-1 consumer refuse the live results until phase 1 is re-run —
-  by design.
+  suite 4009 passed, exit 0). Merged with main and pushed as 6330be4
+  (coordinator suite 4228 passed, 2 skipped, 19 deselected, exit 0); the
+  third re-audit is running. Merging it makes every phase-1 consumer refuse
+  the live results until phase 1 is re-run — by design.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -802,22 +803,30 @@ Open, each with its verdict so far:
   trailered commit whose own transition spans the whole observed drop, and
   every unmeasurable merge is logged; the quiet-grep lint tokenises
   statements; the vacuity guard names the allowed set; `render_sync_gate`
-  driven directly; record paths escaped on both sides. Suite, PR, and
-  re-audit pending.
+  driven directly; record paths escaped on both sides. Merged with main,
+  coordinator suite 3913 passed, exit 0; **PR #139**; re-audit running.
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
   repository answers "unknown" and blocks a committal verdict; only
   permanent `OSError`s exclude; the confidence write-back keeps the
-  record's spelling. Suite, PR, and re-audit pending.
+  record's spelling. Merged with main, coordinator suite 3930 passed, exit
+  0; **PR #140**; re-audit running.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
   slice that included the script's own lines, so any store path containing
   "immutable" would have made every transport failure a corruption abort.
-  Suite, PR, and re-audit pending.
-- Round **4e-5** (five lows from #134) in progress on
-  `claude/audit-round4e-5`.
+  Merged with main, coordinator suite 3916 passed, exit 0; **PR #141**;
+  re-audit running.
+- Round **4e-5** delivered (five commits 7a67844-bb5143a on
+  `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
+  fences covered one-of-two; `n_requests` pinned apart from the map; the
+  vocabulary threshold pinned from both sides; a stranded batch result
+  names the probable session, says it was paid for, counts the skip, and
+  prints the repair, with a new `--rebuild-map` that reconstructs the
+  mapping from the manifest. Merged with main, coordinator suite 3939
+  passed, exit 0; **PR #142**; re-audit running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
