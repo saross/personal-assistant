@@ -912,8 +912,9 @@ Open, each with its verdict so far:
   silent; STRICT with a truncated append exit 1; worktree with the real
   HOME 4351 passed (a first attempt failed with 338 `test_zotero` errors
   under concurrent suite load and passed on re-run — the round 4a-3
-  transient). Merged with main (72177ca); coordinator suite and PR
-  pending; **re-audit DEFERRED** (stop point).
+  transient). Merged with main (72177ca), coordinator suite 4504 passed,
+  2 skipped, 19 deselected, exit 0; **PR #155, open, re-audit DEFERRED**
+  (stop point).
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
@@ -1291,7 +1292,7 @@ with the exact next action:
 | **#151** | `claude/audit-round4g-5` in `claude-audit-round4g` | Refused: the scorer discards the checked loader's return and re-reads the files (one word disables the interlock); the phase-5 "both inputs" assertion lost; four root-derivation assertions compare values | Round 4g-6: feed the returned payloads into `load_corpus_space`, explicit list, AST non-emptiness assertion; restore the phase-5 argument-set assertion; derivation checks by AST or monkeypatch; the lows (dead constants, the agent document's example command, a doc-to-code marker-name test); then re-audit; then merge |
 | **#153** | `claude/audit-round3c-9` in `claude-audit-round3c` | Delivered, suite green, pushed; NOT re-audited | Fresh-context re-audit (tests only: the quote-state tokeniser, per-match pipe judgement, four pinned script guards); merge on a clean verdict |
 | **#154** | `claude/audit-round4e-8` in `claude-audit-round4e` | Delivered, suite green, pushed; NOT re-audited | Fresh-context re-audit (manifest fallback, single session-id rule at both entry points, directory `fsync`, path in write errors); merge on a clean verdict |
-| **4a-7** | `claude/audit-round4a-7` in `claude-audit-round4a` | Delivered; coordinator suite running at the stop; PR to open as #155 | Fresh-context re-audit with attention to the permanent `sys.addaudithook` (guard path, cost, `PosixPath`/`os.open` routes, archive-copy inertness); merge on a clean verdict |
+| **#155** | `claude/audit-round4a-7` in `claude-audit-round4a` | Delivered, suite green (4504 passed), pushed; NOT re-audited | Fresh-context re-audit with attention to the permanent `sys.addaudithook` (guard path, cost, `PosixPath`/`os.open` routes, archive-copy inertness); merge on a clean verdict |
 
 Deferred follow-ups already recorded in the tranche sections (search the
 report for "DEFERRED"): PR #152's six (two stale "the floor skips it"
