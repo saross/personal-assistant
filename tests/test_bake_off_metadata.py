@@ -1085,8 +1085,8 @@ class TestBatchSubmitIsNotRepeatable:
         """
         return (
             "venv/bin/python3 scripts/bake-off-metadata.py "
-            f"--provider haiku --haiku-apply {batch_id} "
-            f"--out-dir {root_out_dir}"
+            f"--provider haiku --haiku-apply {shlex.quote(batch_id)} "
+            f"--out-dir {shlex.quote(str(root_out_dir))}"
         )
 
     def test_retrieve_command_is_exact(self, tmp_path):
@@ -1124,7 +1124,9 @@ class TestBatchSubmitIsNotRepeatable:
         """
         manifest = _one_session_manifest(tmp_path, "roundtrip-aaaa-1111")
         prompt = _prompt_file(tmp_path)
-        out_dir = tmp_path / "out"
+        # A directory whose name contains a space: unquoted interpolation
+        # splits it into separate arguments and the pasted line exits 2.
+        out_dir = tmp_path / "bake off runs"
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
         line = next(
             line for line in capsys.readouterr().out.splitlines()
@@ -1139,6 +1141,10 @@ class TestBatchSubmitIsNotRepeatable:
             self._succeeded(
                 bom.build_custom_id("roundtrip-aaaa-1111"), fx.RESPONSE_BARE
             )
+        ]
+        assert command[2:] == [
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
         ]
         assert bom.main(command[2:]) == 0
         written = out_dir / "haiku" / "roundtrip-aaaa-1111.json"

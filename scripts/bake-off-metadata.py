@@ -77,6 +77,7 @@ import json
 import os
 import random
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -694,10 +695,18 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
     ``out_dir`` is the provider subdirectory; ``--haiku-apply`` takes the
     *root* output directory and navigates into it itself, so the printed
     command names the parent and copy-pastes as it stands.
+
+    Every interpolated value goes through ``shlex.quote``. An output
+    directory containing a space would otherwise split into separate
+    arguments when the line is pasted back into a shell, and the operator
+    would see "unrecognised arguments" at the one moment they are trying to
+    collect a batch they have already paid for. Quoting a value that needs
+    no quoting is a no-op, so the common case reads exactly as before.
     """
     return (
         "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
-        f"--haiku-apply {batch_id} --out-dir {out_dir.parent}"
+        f"--haiku-apply {shlex.quote(batch_id)} "
+        f"--out-dir {shlex.quote(str(out_dir.parent))}"
     )
 
 
