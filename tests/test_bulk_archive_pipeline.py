@@ -51,6 +51,45 @@ bulk_archive = importlib.import_module("bulk-archive")
 LOGGER = logging.getLogger("bulk-archive-pipeline-test")
 
 
+
+def _function_body(name: str) -> str:
+    """Return the source of one top-level function, and nothing after it.
+
+    ``source.split("def name(")[1]`` keeps everything to the end of the
+    file, which quietly turns "is this string in the function" into "is it
+    anywhere below it".
+    """
+    source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+    start = source.index(f"\ndef {name}(")
+    remainder = source[start + 1:]
+    # The next top-level definition, if any, ends the body.
+    ends = [
+        remainder.index(marker, 1)
+        for marker in ("\ndef ", "\nclass ")
+        if marker in remainder[1:]
+    ]
+    return remainder[: min(ends)] if ends else remainder
+
+
+def _comment_block_above(assignment: str) -> str:
+    """Return the contiguous ``#:``/``#`` comment lines above *assignment*."""
+    source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+    lines = source[: source.index(assignment)].splitlines()
+    block: list[str] = []
+    for line in reversed(lines):
+        if line.startswith("#"):
+            block.append(line)
+            continue
+        if not line.strip():
+            # A blank line inside a comment block ends it only if nothing
+            # has been collected yet (trailing blank before the constant).
+            if block:
+                break
+            continue
+        break
+    return "\n".join(reversed(block))
+
+
 class Pipeline:
     """A synthetic store pair plus the namespaces the commands expect."""
 
@@ -2050,14 +2089,18 @@ class TestFailureBookkeepingSaysWhatHappened:
         Completeness-guard refusals go to skipped_incomplete and are never
         written to failed_ids, so listing their wording here described a
         path that does not exist.
+
+        The window is cmd_archive's body ALONE. Searching the rest of the
+        file from `def cmd_archive(` onwards also swept every function
+        defined after it, so a marker matching text anywhere below — a
+        docstring, an unrelated log line — passed (round 4c-4, finding 7).
         """
-        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
-        recorded = source.split("def cmd_archive(")[1]
+        recorded = _function_body("cmd_archive")
 
         for marker in bulk_archive._TRANSIENT_FAILURE_MARKERS:
             assert marker in recorded, (
                 f"{marker!r} is listed as a transient failure but no "
-                "_record_failure call in cmd_archive can produce it"
+                "_record_failure call in cmd_archive's body can produce it"
             )
 
     def test_a_during_copy_failure_is_not_called_already_archived(
@@ -2131,12 +2174,18 @@ class TestFailureBookkeepingSaysWhatHappened:
         assert binding == {}
 
     def test_the_no_cap_policy_is_documented_where_it_is_set(self) -> None:
-        """A policy nobody can find is a policy nobody can review."""
-        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
-        constant_block = source.split("FAILED_RETRY_AFTER_DAYS = ")[0]
-        assert "no attempt cap" in constant_block.lower(), (
-            "the unbounded-retry decision is not stated beside the constant "
-            "that implements it"
+        """A policy nobody can find is a policy nobody can review.
+
+        The window is the constant's own comment block. Searching everything
+        BEFORE the assignment swept the module docstring and every constant
+        above it, so the words could have been anywhere in the first
+        thousand lines (round 4c-4, finding 7).
+        """
+        comment = _comment_block_above("FAILED_RETRY_AFTER_DAYS = ")
+
+        assert "no attempt cap" in comment.lower(), (
+            "the unbounded-retry decision is not stated in the comment block "
+            f"attached to the constant that implements it; got:\n{comment}"
         )
 
 
@@ -2226,3 +2275,82 @@ class TestCheckpointRepairsAreReported:
 
         assert checkpoint["archived_ids"] == [SID_A]
         assert caplog.records == []
+
+
+class TestMissingManifestSizeIsAnnounced:
+    """Round 4c-4 finding 3 — a guard that cannot run must say so.
+
+    A manifest entry written before discovery recorded sizes carries no
+    size_bytes, so both the shrink refusal and the growth warning are
+    unreachable and the completeness guard degrades to the grace check
+    alone. That happened at debug level, where nobody sees it.
+    """
+
+    def test_a_sizeless_manifest_entry_warns(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = pipeline.add_session(SID_A)
+        manifest = pipeline.discover()
+        del manifest[0]["size_bytes"]          # a legacy manifest entry
+        pipeline.manifest.write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "records no size" in messages, messages
+        assert "re-run discover" in messages
+        # It still archives: a missing size is a degraded guard, not a
+        # refusal — the grace window and the during-copy check still apply.
+        assert len(pipeline.entries()) == 1
+
+    def test_a_sized_manifest_entry_does_not_warn(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: an ordinary run must stay quiet."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert not any(
+            "records no size" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_the_retry_help_states_the_unbounded_policy(self) -> None:
+        """Finding 4: the policy was documented only at the constant.
+
+        --help is where an operator deciding whether to pass the flag looks.
+        """
+        parser_help = _archive_parser_help()
+
+        assert "NO attempt cap" in parser_help, parser_help
+        assert str(bulk_archive.FAILED_RETRY_AFTER_DAYS) in parser_help
+
+
+def _archive_parser_help() -> str:
+    """Render ``bulk-archive.py archive --help`` through the real parser."""
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    original_cmd = bulk_archive.cmd_archive
+    original_logging = bulk_archive.setup_logging
+    argv = sys.argv
+    sys.argv = ["bulk-archive.py", "archive", "--help"]
+    bulk_archive.cmd_archive = lambda args, logger: None
+    bulk_archive.setup_logging = lambda: LOGGER
+    try:
+        with contextlib.redirect_stdout(buffer):
+            bulk_archive.main()
+    except SystemExit:
+        pass
+    finally:
+        bulk_archive.cmd_archive = original_cmd
+        bulk_archive.setup_logging = original_logging
+        sys.argv = argv
+    return buffer.getvalue()
