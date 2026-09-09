@@ -2406,9 +2406,18 @@ every round with its re-audit outcome, six decisions for Shawn).
   `PA_HERMETICITY_STRICT=1` — plus the midnight flake, 282e6b3, after three
   re-audits), #133 (external-services follow-ups, 96650de), #129 (memory
   readers and anchors, 31b585c, after two re-audits), #135 (daily-sync
-  lows, 6504b46). Open with re-audits or fix rounds in flight: #128
-  (style-analyser scripts, round 4g-3 for one default-path mismatch), #137 (hermeticity follow-ups), #138 (machine-glue follow-ups); #134
-  (bake-off follow-ups) and #136 (archive follow-ups) merged; rounds 3c-7 and 4f-4 running. Main suite about 3,850. At 02:5x AEST a session rate
+  lows, 6504b46), #134 (bake-off follow-ups, 68dbc66), #136 (archive
+  follow-ups, 93d7d4a), #137 (hermeticity follow-ups, 927cff1, after a
+  strict run against a populated synthetic store). Seventeen PRs merged.
+  Open at 11:1x AEST, each with a fresh re-audit running: #128
+  (style-analyser scripts, third re-audit after round 4g-3 fixed the
+  `--key-dir` default), #139 (daily-sync round 3c-7), #140 (anchors round
+  4f-4), #141 (archive round 4c-4), #142 (bake-off round 4e-5); #138
+  (machine-glue) refused — its new remedy would tell the operator to delete
+  an initialised `data/` submodule — and round 4d-5 is fixing it; round
+  4a-6 (hermeticity follow-ups: an unguarded warning queue, an unterminated
+  garbage fragment tolerated in advisory mode) running. Main suite about
+  3,900. At 02:5x AEST a session rate
   limit (reset 04:50) killed all seven running agents at once; every branch
   was already pushed or committed, two worktrees held uncommitted edits, and
   all nine agents were resumed at 07:45 from their own transcripts — and
