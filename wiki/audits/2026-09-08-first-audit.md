@@ -890,7 +890,18 @@ Open, each with its verdict so far:
   shell); the quiet-grep pattern misses `grep -E -q`, `--silent`,
   `egrep`, `zgrep`; the vacuity set is per-function not per-site; the
   rename branch of the path escaping is untested; the gate-render tests
-  assert membership not the exact list.
+  assert membership not the exact list. Round 3c-8 delivered (8d2d208-
+  b222df1, tests only plus a comment recording the two deliberate
+  span-rule edges): both span conditions pinned by a linear-chain fixture
+  (the agent's first fixture built the merge off to one side and did not
+  kill the mutant — rebuilt); the heredoc skip made real and instrumented
+  (a planted quiet grep inside the embedded Python must not trip the
+  lint, and restoring the old anchor makes it trip); openers honoured only
+  in command position; the pattern widened to eight spellings; the
+  vacuity guard counts per function; three rename fixtures; two of three
+  gate-render tests assert the exact list (`-qxF`→`-qF` is equivalent
+  under the present key vocabulary and recorded as such). Merged with
+  main (fcca012); coordinator suite, PR, and re-audit pending.
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
