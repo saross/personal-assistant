@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-five PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-six PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -757,7 +757,7 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 (memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
-#142 (bake-off round 4e-5).
+#142, #146 (bake-off rounds 4e-5, 4e-6).
 
 Open, each with its verdict so far:
 
@@ -1005,7 +1005,20 @@ Open, each with its verdict so far:
   consults the manifest first (reversing both forms); a malformed
   manifest raises `ManifestFormatError` and exits 2 before anything is
   written. Merged with main (f8a0489), coordinator suite 4333 passed, 2
-  skipped, 19 deselected, exit 0; **PR #146**; re-audit running.
+  skipped, 19 deselected, exit 0; **PR #146, merged de5ab68** 2026-09-09
+  13:5x: the re-audit confirmed the reverse matching, the write ordering,
+  and the atomic pin, and found the round's headline claim unreachable
+  from the route the tool prints — `--rebuild-map` neither records
+  `manifest_path` nor threads `--manifest` into the same invocation's
+  `haiku_apply`, so on the old-format state the remedy still reports
+  "not recoverable without a manifest" and prints the placeholder again.
+  Follow-ups are round 4e-7 (`claude/audit-round4e-7`): that threading;
+  the new `shlex.quote` and the `or` guard unpinned (a third `and`/`or`
+  fence); the quiet manifest fallback prints nothing; an asymmetric
+  `isinstance` guard that raises at the end of `haiku_apply`; an empty
+  session list "restores 0"; a constructed custom-id collision handled
+  three different ways; the reverse map re-hashed per result; an
+  over-claiming comment; no `fsync` before `os.replace`.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
