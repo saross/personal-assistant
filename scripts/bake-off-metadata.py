@@ -710,6 +710,66 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
     )
 
 
+#: A hashed custom_id is exactly the 40 hex characters build_custom_id
+#: takes from the SHA-256 of the session id. Anything else after the prefix
+#: is the session id itself, so it can be read straight back out.
+_HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def recover_session_id_from_custom_id(custom_id: str) -> str | None:
+    """Return the session id a custom_id was built from, if it is readable.
+
+    ``build_custom_id`` uses the session id verbatim when it fits the API's
+    restricted alphabet, and a digest otherwise. The verbatim form can be
+    reversed; the digest cannot. Used only for diagnostics — a recovered id
+    is a strong guess, not an authority.
+    """
+    if not custom_id.startswith("sess-"):
+        return None
+    suffix = custom_id[len("sess-"):]
+    if not suffix or _HASHED_CUSTOM_ID_RE.match(suffix):
+        return None
+    return suffix
+
+
+def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
+    """Restore ``custom_id_to_session`` entries from a manifest.
+
+    State files written before the map began accumulating lost the entries
+    for a superseded batch the moment a top-up was submitted, which strands
+    results that were already paid for. Every custom_id is a pure function
+    of a session id, so the mapping can be rebuilt from any manifest that
+    lists those sessions.
+
+    Existing entries win: they were written by a real submission, whereas
+    these are reconstructed.
+
+    Args:
+        out_dir: the provider subdirectory holding ``batch-state.json``.
+        manifest_path: a manifest listing the sessions to restore.
+
+    Returns:
+        How many entries were added.
+
+    Raises:
+        FileNotFoundError: there is no batch state to repair.
+    """
+    state = read_batch_state(out_dir)
+    if state is None:
+        raise FileNotFoundError(
+            f"no batch-state.json in {out_dir} — nothing to rebuild"
+        )
+    mapping = dict(state.get("custom_id_to_session", {}))
+    before = len(mapping)
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest.get("sessions", []):
+        session_id = entry["session_id"]
+        mapping.setdefault(build_custom_id(session_id), session_id)
+    state["custom_id_to_session"] = mapping
+    write_json_atomic(out_dir / "batch-state.json", state)
+    return len(mapping) - before
+
+
 def batch_state_conflict(out_dir: Path, manifest_path: Path) -> str | None:
     """Explain why submitting into ``out_dir`` again would lose money.
 
@@ -874,13 +934,28 @@ def haiku_apply(
     n_ok = 0
     n_fail = 0
     n_kept = 0
+    n_already = 0
+    n_unmapped = 0
     for result in client.messages.batches.results(batch_id):
         session_id = custom_to_session.get(result.custom_id)
         if not session_id:
-            print(f"[haiku] unknown custom_id {result.custom_id} — skipping")
+            # The result exists and was billed; only the mapping is missing.
+            # Say which session it probably belongs to, say the money is
+            # already spent, and print the remedy once at the end.
+            n_unmapped += 1
+            recovered = recover_session_id_from_custom_id(result.custom_id)
+            which = (
+                f"probably session {recovered}" if recovered
+                else "session id not recoverable from a hashed custom_id"
+            )
+            print(
+                f"[haiku] no session mapped to custom_id {result.custom_id} "
+                f"({which}) — skipping a result that was ALREADY PAID FOR"
+            )
             continue
         if not force and response_is_complete(out_dir / f"{session_id}.json"):
             print(f"[haiku] {session_id} already complete — skipping")
+            n_already += 1
             continue
         if result.result.type != "succeeded":
             if record_failure(
@@ -927,6 +1002,23 @@ def haiku_apply(
             write_json_atomic(out_dir / f"{session_id}.json", parsed)
             n_ok += 1
     print(f"[haiku] wrote {n_ok} successes and {n_fail} failures to {out_dir}")
+    if n_already or n_unmapped:
+        print(
+            f"[haiku] skipped {n_already} already-complete and {n_unmapped} "
+            "unmapped result(s)"
+        )
+    if n_unmapped:
+        # State files written before the custom_id map began accumulating
+        # lose a superseded batch's entries as soon as a top-up is sent.
+        print(
+            f"[haiku] {n_unmapped} result(s) could not be matched to a "
+            "session. This usually means the state file predates the "
+            "accumulating custom_id map, so a later top-up replaced the "
+            "entries for this batch. Restore them from the manifest and "
+            "retrieve again:\n"
+            f"  {haiku_retrieve_command(batch_id, out_dir)} "
+            "--manifest <manifest> --rebuild-map"
+        )
     report_kept(n_kept, tag="haiku")
 
 
@@ -1855,6 +1947,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--rebuild-map",
+        action="store_true",
+        help=(
+            "Batch arm only, with --haiku-apply and --manifest: restore the "
+            "custom_id -> session entries in batch-state.json from the "
+            "manifest before retrieving. Use it when a retrieval reports "
+            "results it cannot match to a session."
+        ),
+    )
+    parser.add_argument(
         "--haiku-apply",
         metavar="BATCH_ID",
         help=(
@@ -1911,6 +2013,14 @@ def main(argv: list[str] | None = None) -> int:
         print("--provider is required unless --build-rubric is set")
         return 2
 
+    if args.rebuild_map and not args.haiku_apply:
+        print(
+            "--rebuild-map repairs the state a retrieval reads; use it with "
+            "--haiku-apply",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.resubmit and args.provider != "haiku":
         # Silently ignoring it would let an operator believe they had asked
         # for a top-up on an arm that has no batch state to top up.
@@ -1924,6 +2034,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.haiku_apply:
         if args.provider != "haiku":
             print("--haiku-apply is only valid with --provider haiku")
+            return 2
+        if args.rebuild_map and not args.manifest:
+            print(
+                "--rebuild-map needs --manifest: the sessions to restore are "
+                "read from it",
+                file=sys.stderr,
+            )
             return 2
         if args.resubmit:
             # Retrieval submits nothing, so there is no second submission
@@ -1949,6 +2066,16 @@ def main(argv: list[str] | None = None) -> int:
             "— retrieval is free and therefore ungated (the submission was "
             "the billed step)."
         )
+        if args.rebuild_map:
+            try:
+                restored = rebuild_custom_id_map(target_dir, args.manifest)
+            except FileNotFoundError as exc:
+                print(f"--rebuild-map refused: {exc}", file=sys.stderr)
+                return 2
+            print(
+                f"[haiku] --rebuild-map restored {restored} custom_id "
+                f"mapping(s) in {target_dir / 'batch-state.json'}"
+            )
         load_env()
         # submit persists batch-state.json under the provider subdir
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
