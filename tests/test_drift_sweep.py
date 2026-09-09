@@ -717,22 +717,24 @@ def test_a_flaky_mount_writes_a_degraded_row_instead_of_refusing(
     assert "logging a DEGRADED row" in capsys.readouterr().err
 
 
-def test_a_degraded_row_sets_no_floor(tmp_path) -> None:
-    """The flag has to be honoured by the reader, not just written.
+def test_a_degraded_row_still_carries_its_discovery_count(tmp_path) -> None:
+    """``repos`` is what discovery FOUND, not what could be consulted.
 
-    Kills the mutation dropping the ``degraded`` skip in last_repo_count: a
-    run that could not consult every repository would set the yardstick for
-    the next one.
+    Kills the mutation reinstating the ``degraded`` skip in last_repo_count:
+    three consecutive degraded rows carrying repos: 10 then collapse the
+    floor to the built-in minimum, which is the opposite of what the floor
+    is for (round 4f-6, finding M-b).
     """
     log = tmp_path / "d.jsonl"
     log.write_text(
-        json.dumps({"run_at": "2031-01-01", "repos": 9, "degraded": False})
-        + "\n"
-        + json.dumps({"run_at": "2031-01-08", "repos": 4, "degraded": True})
-        + "\n",
+        "".join(
+            json.dumps({"run_at": f"2031-01-0{i}", "repos": 10,
+                        "degraded": True}) + "\n"
+            for i in (1, 2, 3)
+        ),
         encoding="utf-8",
     )
-    assert ds.last_repo_count(log) == 9
+    assert ds.last_repo_count(log) == 10
 
 
 def test_an_unexplained_pending_rate_still_refuses(tmp_path, monkeypatch) -> None:
@@ -851,3 +853,117 @@ def test_the_exclusion_list_is_sorted() -> None:
         as_of=FIXED_NOW,
     )
     assert row["unusable"] == ["/aaa-first", "/zzz-last"]
+
+
+# ============================================================================
+# `degraded` is a judgement about THIS run's numbers (round 4f-6, M-a)
+# ============================================================================
+
+
+def _sweep_with(monkeypatch, *, pending: int, total: int, unusable: list[str]):
+    """A stubbed sweep result with a chosen pending rate and exclusion list."""
+    _fixed_sweep(monkeypatch, dict(
+        SAMPLE_RESULT,
+        verdicts={"true": total - pending, "pending": pending},
+        anchored_in_window=total, fail_count=0, fail_rate_pct=0.0,
+        unusable_repos=unusable, repo_count=6, repos_consulted=6,
+    ))
+
+
+def test_an_exclusion_with_a_low_pending_rate_is_an_ordinary_row(
+    tmp_path, monkeypatch,
+) -> None:
+    """One stale directory must not mark every row for ever.
+
+    Kills the mutation ``"degraded": bool(unusable)``: with one chronic
+    stale directory under ~/Code every future row would be degraded, [H]
+    would asterisk every point, and the alert threshold would never apply
+    again.
+    """
+    _sweep_with(monkeypatch, pending=1, total=100, unusable=["/mnt/stale"])
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log), "--min-repos", "0"]) == 0
+    row = json.loads(log.read_text(encoding="utf-8").strip())
+    assert row["unusable"] == ["/mnt/stale"], "the fact is still recorded"
+    assert row["degraded"] is False, "but the run's numbers are sound"
+
+
+def test_an_exclusion_with_a_high_pending_rate_is_degraded(
+    tmp_path, monkeypatch,
+) -> None:
+    """The other cell: the exclusion did spoil the numbers."""
+    _sweep_with(monkeypatch, pending=25, total=100, unusable=["/mnt/gone"])
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log), "--min-repos", "0"]) == 0
+    row = json.loads(log.read_text(encoding="utf-8").strip())
+    assert row["degraded"] is True
+
+
+def test_a_high_pending_rate_with_no_exclusion_still_refuses(
+    tmp_path, monkeypatch,
+) -> None:
+    """The third cell, unchanged: unexplained means unreliable."""
+    _sweep_with(monkeypatch, pending=25, total=100, unusable=[])
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log), "--min-repos", "0"]) == 2
+    assert not log.exists()
+
+
+def test_a_degraded_run_does_not_trip_the_alert_threshold(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """A deflated fail rate must not be compared with the threshold (L-d).
+
+    Kills the mutation dropping the degraded early return before the alert:
+    refs nobody could check count as pending, not failed, so the rate is
+    LOW — and an alert computed on it answers a question about the mount.
+    """
+    _fixed_sweep(monkeypatch, dict(
+        SAMPLE_RESULT,
+        verdicts={"true": 50, "pending": 25}, anchored_in_window=100,
+        fail_count=25, fail_rate_pct=99.0,
+        unusable_repos=["/mnt/gone"], repo_count=6, repos_consulted=6,
+    ))
+    log = tmp_path / "d.jsonl"
+    rc = ds.main(["--log-path", str(log), "--min-repos", "0",
+                  "--alert-threshold", "25"])
+    assert rc == 0, "no alert on a degraded run"
+    assert "not applied to a degraded run" in capsys.readouterr().err
+
+
+def test_a_clean_run_still_alerts(tmp_path, monkeypatch) -> None:
+    """The control: the threshold is unchanged for a sound run."""
+    _fixed_sweep(monkeypatch, dict(
+        SAMPLE_RESULT, fail_rate_pct=99.0, unusable_repos=[],
+        repo_count=6, repos_consulted=6,
+    ))
+    assert ds.main(["--log-path", str(tmp_path / "d.jsonl"),
+                    "--min-repos", "0", "--alert-threshold", "25"]) == 1
+
+
+def test_a_recorded_count_below_the_minimum_does_not_become_the_floor(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """`--min-repos 1` once must not lower the floor for ever (L-b).
+
+    Kills the mutation making MIN_DISCOVERED_REPOS a first-run-only default:
+    a clean row saying `repos: 1` is then read as the floor in silence by
+    every later run.
+    """
+    only = _init_repo(tmp_path / "only", "wiki/notes.md")
+    _pin_repos(monkeypatch, [only], discovered=1)
+    ds.av.reset_unusable_repos()
+    log = tmp_path / "d.jsonl"
+    log.write_text(
+        json.dumps({"run_at": "2031-01-01", "repos": 1, "degraded": False})
+        + "\n", encoding="utf-8",
+    )
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
+    err = capsys.readouterr().err
+    assert f"below the built-in minimum of {ds.MIN_DISCOVERED_REPOS}" in err
+    assert "--min-repos 1" in err, "and it says how to accept that count"
