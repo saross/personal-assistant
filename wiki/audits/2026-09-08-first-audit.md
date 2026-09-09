@@ -829,7 +829,23 @@ Open, each with its verdict so far:
   explicit-path test builds its own repository; `extract_corpus` warns on
   leftover markers and the agent definition skips marked bundles.
   Merged with main (7f146ad), coordinator suite 4431 passed, 2 skipped,
-  19 deselected, exit 0; **PR #151**; re-audit running.
+  19 deselected, exit 0; **PR #151**. Re-audit verdict **do not merge**
+  — C1: `efficacy_score.py:105-109` discards the loader's return and
+  builds its list with a conditional comprehension, then
+  `load_corpus_space` re-reads all three files, so the scorer is still
+  check-then-reload and the one-word mutation `is not None` → `is None`
+  skips every stamp check with 183 passed (the PR #144 finding
+  re-entered; phase 5 is genuinely by construction). M1: the phase-5
+  "both inputs" assertion was deleted and not replaced (`[args.phase1,
+  args.phase1]` survives). M2: four of the five root-derivation
+  assertions compare values, so a reverted literal survives. Lows: dead
+  `EXP`/`PASSAGES`/`REPO_ROOT`; one remaining layout literal; the agent
+  document's example command lacks two required flags; no test ties the
+  marker names in the document to the code. **DEFERRED** (stop point
+  2026-09-09 15:5x): the fix is two lines in the scorer (feed the
+  returned payloads into `load_corpus_space`, an explicit list, an AST
+  non-emptiness assertion) plus the phase-5 argument-set assertion; PR
+  #151 stays open on `claude/audit-round4g-5` in the 4g worktree.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
