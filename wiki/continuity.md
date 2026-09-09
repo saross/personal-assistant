@@ -2408,9 +2408,8 @@ every round with its re-audit outcome, six decisions for Shawn).
   readers and anchors, 31b585c, after two re-audits), #135 (daily-sync
   lows, 6504b46). Open with re-audits or fix rounds in flight: #128
   (style-analyser scripts, round 4g-3 for one default-path mismatch), #134
-  (bake-off follow-ups, second re-audit), #136 (archive follow-ups), #137
-  (hermeticity follow-ups), #138 (machine-glue follow-ups); rounds 3c-7
-  and 4f-4 running. Main suite about 3,850. At 02:5x AEST a session rate
+  (bake-off follow-ups, second re-audit), #137 (hermeticity follow-ups), #138 (machine-glue follow-ups); #136
+  (archive follow-ups) merged; rounds 3c-7 and 4f-4 running. Main suite about 3,850. At 02:5x AEST a session rate
   limit (reset 04:50) killed all seven running agents at once; every branch
   was already pushed or committed, two worktrees held uncommitted edits, and
   all nine agents were resumed at 07:45 from their own transcripts — and
