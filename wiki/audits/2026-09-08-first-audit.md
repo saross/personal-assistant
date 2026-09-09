@@ -912,8 +912,9 @@ Open, each with its verdict so far:
   shaped `data/.git` case; the destructive remedy additionally requires
   `git submodule status` exit 0 (a failed query gets its own "state is
   unknown" message); safe defaults declared near the top; the pointer
-  regex's limits recorded. Merged with main (c4cc548); coordinator
-  suite, PR, and re-audit pending.
+  regex's limits recorded. Merged with main (c4cc548), coordinator suite
+  4409 passed, 2 skipped, 19 deselected, exit 0; **PR #149**; re-audit
+  running.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
