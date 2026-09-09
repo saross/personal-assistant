@@ -372,9 +372,14 @@ if [ ! -f "$COMPOSER_LOCAL" ]; then
         # must not fail, and it must run to the end — a preview that
         # stops two thirds of the way through is not a preview. It says
         # plainly that the real run would refuse, then narrates the rest.
+        #
+        # Round 4d-6 (L5): and it prints the SAME remedy the real run
+        # would. A preview whose whole job is to show what would happen
+        # was withholding the one line the operator needs to act on.
         say "  NOTE: $COMPOSER_LOCAL is missing, so a REAL run would"
         say "    refuse at step 1. This preview continues, and step 7"
         say "    will be skipped."
+        say_data_remedy
         SKIP_COMPOSE=1
     else
         say "ERROR: $COMPOSER_LOCAL is missing, so step 7 cannot succeed."

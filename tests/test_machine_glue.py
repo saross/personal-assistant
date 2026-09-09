@@ -975,6 +975,98 @@ class TestDryRunNeverFailsWhereARealRunSucceeds:
         assert "[8/8]" in result.stdout, result.stdout
         assert snapshot(sync_sandbox["home"]) == before
 
+    def test_a_preview_prints_the_remedy_it_is_previewing(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L5 — the preview withheld the one line worth acting on.
+
+        A dry run on an initialised-but-incomplete submodule said "a REAL
+        run would refuse" and stopped there, while the real run printed
+        the full "Do NOT delete" diagnosis. Previewing a refusal without
+        its reason is the least useful half of the message.
+        """
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / ".git").write_text(
+            "gitdir: ../.git/modules/data\n", encoding="utf-8"
+        )
+
+        preview = _run_sync(
+            sync_sandbox,
+            "--dry-run",
+            submodule_status=" 1234abcd data (heads/main)",
+        )
+
+        assert preview.returncode == 0, preview.stdout + preview.stderr
+        assert "a REAL run would" in preview.stdout
+        assert "Do NOT delete" in preview.stdout, preview.stdout
+        assert "remove" not in preview.stdout.lower(), preview.stdout
+
+    def test_the_preview_and_the_real_run_give_the_same_remedy(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """Whatever the state, the two must agree on what to do about it."""
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / "stray.md").write_text("x\n", encoding="utf-8")
+
+        preview = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+        real = _run_sync(
+            sync_sandbox, submodule_status="-1234abcd data"
+        )
+
+        assert preview.returncode == 0
+        assert real.returncode == 1
+        for output in (preview.stdout, real.stdout):
+            assert "Remedy: remove" in output, output
+            assert "will not clone into a non-empty directory" in output
+
+    def test_the_worktree_note_is_not_the_broken_clone_note(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L4 — swapping the two dry-run branches survived the suite.
+
+        Exit 0, SKIPPED and [8/8] hold for both, so nothing noticed which
+        NOTE was printed — and a worktree preview claiming "a REAL run
+        would refuse at step 1" is simply false: the real worktree run
+        exits 0.
+        """
+        _make_worktree(sync_sandbox["pa_dir"])
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+
+        result = _run_sync(
+            sync_sandbox,
+            "--allow-worktree",
+            "--dry-run",
+            submodule_status="-1234abcd data",
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "belongs to the main" in result.stdout, result.stdout
+        assert "a REAL run would" not in result.stdout, result.stdout
+
+    def test_the_broken_clone_note_is_not_the_worktree_note(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The other direction of the same swap."""
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+
+        result = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "a REAL run would" in result.stdout, result.stdout
+        assert "belongs to the main" not in result.stdout, result.stdout
+
     def test_a_healthy_dry_run_actually_consults_the_composer(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
