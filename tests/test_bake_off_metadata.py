@@ -2632,3 +2632,117 @@ class TestTheRepairRunIsSelfSufficient:
         printed = capsys.readouterr().out
         assert f"probably session {session_ids[1]}" in printed
         assert str(manifest) in printed
+
+
+class TestRebuildRefusesUnusableManifests:
+    """Two shapes that used to be accepted quietly."""
+
+    def _state(self, tmp_path: Path) -> Path:
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "custom_id_to_session": {"sess-kept": "kept-session"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir
+
+    def test_an_empty_session_list_is_refused(self, tmp_path):
+        """It cannot repair anything, so it must not rewrite the state.
+
+        Accepting it rewrote batch-state.json and printed "restored 0",
+        leaving the operator to work out for themselves that the file they
+        named was the wrong one.
+        """
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "empty.json"
+        manifest.write_text('{"sessions": []}', encoding="utf-8")
+        before = (out_dir / "batch-state.json").read_bytes()
+        with pytest.raises(bom.ManifestFormatError, match="lists no sessions"):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert (out_dir / "batch-state.json").read_bytes() == before
+
+    def test_the_entry_point_exits_2_on_an_empty_manifest(self, tmp_path, capsys):
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "empty.json"
+        manifest.write_text('{"sessions": []}', encoding="utf-8")
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]) == 2
+        assert "lists no sessions" in capsys.readouterr().err
+
+    @staticmethod
+    def _colliding_pair() -> tuple[str, str]:
+        """A long id and the id equal to its own digest prefix.
+
+        build_custom_id hashes the first to 40 hex characters; the second
+        IS those characters and is short and safe, so it is used verbatim.
+        Both therefore produce the same custom_id.
+        """
+        long_id = "subagent-explore-" + "z" * 80
+        digest = hashlib.sha256(long_id.encode("utf-8")).hexdigest()[:40]
+        assert bom.build_custom_id(long_id) == bom.build_custom_id(digest)
+        return long_id, digest
+
+    def test_a_collision_within_the_manifest_is_refused(self, tmp_path):
+        """Match haiku_submit: refuse, naming both, rather than drop one.
+
+        setdefault kept whichever came first and discarded the other, so a
+        later retrieval would write one session's answers under the other
+        session's name -- silently.
+        """
+        out_dir = self._state(tmp_path)
+        long_id, digest = self._colliding_pair()
+        manifest = tmp_path / "colliding.json"
+        manifest.write_text(
+            json.dumps({"sessions": [
+                {"session_id": long_id}, {"session_id": digest},
+            ]}),
+            encoding="utf-8",
+        )
+        before = (out_dir / "batch-state.json").read_bytes()
+        with pytest.raises(bom.ManifestFormatError) as excinfo:
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        message = str(excinfo.value)
+        assert long_id in message
+        assert digest in message
+        assert (out_dir / "batch-state.json").read_bytes() == before
+
+    def test_a_repeated_session_id_is_not_a_collision(self, tmp_path):
+        """The same session listed twice maps to itself; that is harmless."""
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "repeated.json"
+        manifest.write_text(
+            json.dumps({"sessions": [
+                {"session_id": "twice-listed"}, {"session_id": "twice-listed"},
+            ]}),
+            encoding="utf-8",
+        )
+        assert bom.rebuild_custom_id_map(out_dir, manifest) == 1
+
+    def test_an_existing_entry_is_not_treated_as_a_collision(self, tmp_path):
+        """A stored entry that differs is the documented "existing wins"."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        custom_id = bom.build_custom_id("session-from-manifest")
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "custom_id_to_session": {custom_id: "session-as-submitted"},
+            }),
+            encoding="utf-8",
+        )
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(
+            json.dumps({"sessions": [{"session_id": "session-from-manifest"}]}),
+            encoding="utf-8",
+        )
+        assert bom.rebuild_custom_id_map(out_dir, manifest) == 0
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert state["custom_id_to_session"][custom_id] == "session-as-submitted"

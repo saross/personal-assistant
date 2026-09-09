@@ -850,6 +850,10 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
         )
     mapping = dict(state.get("custom_id_to_session", {}))
     before = len(mapping)
+    #: What THIS manifest maps, used only to detect a collision within it.
+    #: Conflicts against the stored map are not collisions: an existing
+    #: entry was written by a real submission and deliberately wins.
+    from_manifest: dict[str, str] = {}
     try:
         manifest = json.loads(manifest_path.read_text())
     except OSError as exc:
@@ -863,6 +867,16 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
         raise ManifestFormatError(
             f"{manifest_path} has no 'sessions' list — is it a manifest?"
         )
+    if not sessions:
+        # Refused rather than reported. An empty manifest cannot repair
+        # anything, so proceeding would rewrite batch-state.json, print
+        # "restored 0", and leave the operator to work out that the file
+        # they named was the wrong one -- most likely a manifest that has
+        # itself been regenerated, or a placeholder path they edited badly.
+        raise ManifestFormatError(
+            f"{manifest_path} lists no sessions, so there is nothing to "
+            "rebuild from; the batch state was left unchanged"
+        )
     for position, entry in enumerate(sessions, 1):
         session_id = entry.get("session_id") if isinstance(entry, dict) else None
         # ``strip()``: a whitespace-only id is as unusable as an empty one.
@@ -873,7 +887,23 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
                 f"{manifest_path}: session {position} has no usable string "
                 "'session_id'; no mapping was written"
             )
-        mapping.setdefault(build_custom_id(session_id), session_id)
+        custom_id = build_custom_id(session_id)
+        clash = from_manifest.get(custom_id)
+        if clash is not None and clash != session_id:
+            # Two session ids in one manifest that produce one custom_id.
+            # Reachable: build_custom_id hashes a long id to 40 hex
+            # characters, and a session id that IS those 40 characters maps
+            # to the same string. haiku_submit refuses this before paying
+            # for a batch; a repair must refuse it too rather than pick one
+            # with setdefault and write the other session's answers under
+            # the wrong name.
+            raise ManifestFormatError(
+                f"{manifest_path}: sessions {clash!r} and {session_id!r} "
+                f"both map to custom_id {custom_id!r}; no mapping was "
+                "written"
+            )
+        from_manifest[custom_id] = session_id
+        mapping.setdefault(custom_id, session_id)
     state["custom_id_to_session"] = mapping
     # Record the manifest so the NEXT retrieval can reverse a custom_id
     # without being handed it again. An existing record wins: it is the
