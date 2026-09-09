@@ -1154,7 +1154,21 @@ Open, each with its verdict so far:
   unstripped downstream (validate once, in one helper, at both entry
   points); the rebuild's summary names neither manifest when they
   differ; first-wins pinned only probabilistically; the parent directory
-  not `fsync`ed and a failing `fsync` aborts a retrieval mid-loop.
+  not `fsync`ed and a failing `fsync` aborts a retrieval mid-loop. Round
+  4e-8 delivered (6b7cd19, a11bc0f, 1679b7d, d743873): the help text
+  corrected and pinned per flag (the agent's first assertion matched
+  another flag's entry and was amended); `resolve_manifest` prefers a
+  readable supplied manifest, falls back to the recorded one naming both,
+  and yields the placeholder when neither is readable; a malformed
+  recorded path named by type; `validate_session_id` is the single rule
+  at submit (before the billed call) and rebuild, refusing rather than
+  stripping whitespace so the id round-trips byte-for-byte; the summary
+  names both manifests when they differ; first-wins pinned
+  deterministically; the parent directory `fsync`ed after the rename and
+  write failures re-raised with the path. The agent's shell died on a
+  full /tmp after its green clean-copy run (4486 passed); its work
+  directory was removed by hand. Merged with main (dd046f8); coordinator
+  suite and PR pending; **re-audit DEFERRED** (stop point).
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
