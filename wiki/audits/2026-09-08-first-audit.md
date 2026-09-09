@@ -1132,7 +1132,31 @@ Open, each with its verdict so far:
   disabled what it sharpened; the dead conjunct, the id count, the
   required collector, the labels, and the dry-run `KeyError` fixed.
   Merged with main (fe9c570), coordinator suite 4438 passed, 2 skipped,
-  19 deselected, exit 0; pushed; second re-audit of PR #147 running.
+  19 deselected, exit 0; pushed. Second re-audit verdict **do not merge**
+  — C-1 (new, confirmed end to end): the classifier at
+  `push-archives-to-r2.sh:301-303` pipes `grep -E` into `grep -q` under
+  `set -o pipefail`; `grep -q` exits at the first match, the upstream
+  grep dies on SIGPIPE, the matched pipeline returns 141, and a real
+  refusal is reported "safe to retry" (exit 2) whenever more than one
+  pipe buffer (~64 KB) of ERROR/NOTICE output follows it — N=1000
+  trailing lines → 2,2,2; the deployed log holds 4,658 `ERROR :` lines
+  in 2.5 MB, so the regime is ordinary. Every stub writes one line, the
+  same certify-the-wrong-regime shape as C1; and it is the exact
+  `| grep -q` class the daily-sync lint forbids. The one-line fix is
+  verified by the re-auditor: a single `grep -qE '(^|[[:space:]])(ERROR|
+  NOTICE)[[:space:]]*:.*(immutable file modified|immutable objects)'`
+  fed by a here-string, plus a test with at least 1,000 marker-level
+  lines after the refusal. Also M-1 (the comment attributes "Timestamp
+  mismatch" to ERROR level and the parametrisation pairs it with NOTICE
+  — neither attested; `strings` verified wording, never level), M-2
+  (`--log-format date,time` should be pinned in `RCLONE_FLAGS`, since
+  `RCLONE_LOG_FORMAT`/`--use-json-log` would make every refusal exit 2),
+  and three lows (the dry run still never shows the "re-run discover"
+  remedy; `entry.get("turns", "?")` untested; the shown-id constant is
+  pinned by the pre-existing test, not the new one). **DEFERRED** (stop
+  point 2026-09-09 16:4x): PR #147 stays open on `claude/audit-round4c-5`
+  in the 4c worktree; round 4c-7 takes C-1, M-1, M-2, then a third
+  re-audit.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
