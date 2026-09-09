@@ -746,14 +746,14 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-six PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-seven PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #138 (machine glue, two re-audits); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
-(hermeticity round 4a-6); #129, #140
+(hermeticity round 4a-6); #129, #140, #145
 (memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
@@ -816,7 +816,19 @@ Open, each with its verdict so far:
   without `__file__` falls back silently to `style_support`'s own state;
   the explicit-path test is vacuous in an export; nothing consumes either
   marker (the style-analyser agent definition still reads a partial
-  bundle silently).
+  bundle silently). Round 4g-5 delivered (4d5d314-3fd442f), correction
+  first (the agent re-ran both mutations one line at a time and confirmed
+  the re-auditor's account): `style_support.load_checked_payloads` makes
+  the stamp check a runtime guarantee (no payload is returned on any
+  failure; both mains call it first; the AST assertions reduced to
+  "called once, given every input, before any consumer"); the builder
+  run at its own defaults; the crashing-extractor path and the marker's
+  content tested; one experiment root derived in all six scripts with
+  `passages_dir()`; a caller without `__file__` records a note; the
+  explicit-path test builds its own repository; `extract_corpus` warns on
+  leftover markers and the agent definition skips marked bundles.
+  Merged with main (7f146ad); coordinator suite, PR, and re-audit
+  pending.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -963,8 +975,20 @@ Open, each with its verdict so far:
   the refusal says it has no override; `consulted` beside `repos`;
   eleven real Zotero keys replaced; resets and the history-probe
   handlers tested. Merged with main (1b1a4aa), coordinator suite 4330
-  passed, 2 skipped, 19 deselected, exit 0; **PR #145**; re-audit
-  running.
+  passed, 2 skipped, 19 deselected, exit 0; **PR #145, merged 07a69d1**
+  2026-09-09 14:4x: the re-audit confirmed the probe's classification
+  for every constructed shape and the shared registry, and found four
+  mediums, all follow-up — `degraded` fires on ANY exclusion rather than
+  on the pending rate (one chronic stale directory would mark every
+  future row for ever); the `last_repo_count` skip guards a field
+  degradation cannot touch (three degraded rows collapse the floor);
+  `probe_repos`'s error branches are untested (five surviving
+  mutations, including inverting the permanent-error classification);
+  the tier-C call site is unpinned. Plus a third real Zotero key; one
+  `--min-repos` override silently becomes the standing floor; `[H]`
+  over-claims and under-marks; a degraded row's deflated fail rate is
+  still alert-tested; a nested emptied directory probes usable. Round
+  4f-6 (`claude/audit-round4f-6`) takes all of them.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
@@ -1004,6 +1028,16 @@ Open, each with its verdict so far:
   every stub write the date-prefixed form; plus a dead `not is_link`, an
   unpinned id count, a silent-by-default parameter, a label, and a
   pre-existing `KeyError` on a sizeless manifest in the dry-run listing.
+  Round 4c-6 delivered (3775a0a, e06c5a2): the level marker matched as a
+  token, every stub date-prefixed, a six-way classification matrix
+  (restoring the old anchor fails eight tests); the agent reproduced the
+  three-way evidence itself (0 of 9,314 level-carrying lines in the
+  deployed log match the old anchor) and records that this was its own
+  regression, the second time in this pipeline a narrowing silently
+  disabled what it sharpened; the dead conjunct, the id count, the
+  required collector, the labels, and the dry-run `KeyError` fixed.
+  Merged with main (fe9c570); coordinator suite, push, and second
+  re-audit pending.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
