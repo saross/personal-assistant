@@ -245,17 +245,28 @@ class TestRubricRefusalWritesNothing:
         assert rubric_out.exists()
         assert rubric_out.with_name(rubric_out.stem + ".blind-key.json").exists()
 
-    def test_build_rubric_without_paths_exits_2(self, tmp_path):
-        """``--build-rubric`` needs both rubric paths before it does anything."""
-        manifest = _one_session_manifest(tmp_path)
-        code = bom.main([
+    @pytest.mark.parametrize("supplied", ["neither", "rubric_in", "rubric_out"])
+    def test_build_rubric_without_paths_exits_2(self, tmp_path, supplied):
+        """``--build-rubric`` needs BOTH rubric paths before it does anything.
+
+        Parametrised over one-of-two because the fence is an ``and``: with
+        only one path supplied an ``or`` there passes the check and
+        build_rubric is handed a None, crashing on an attribute of it
+        instead of exiting 2.
+        """
+        argv = [
             "--build-rubric",
-            "--manifest", str(manifest),
+            "--manifest", str(_one_session_manifest(tmp_path)),
             "--prompt", str(_prompt_file(tmp_path)),
             "--out-dir", str(tmp_path / "out"),
-        ])
-        assert code == 2
+        ]
+        if supplied == "rubric_in":
+            argv += ["--rubric-in", str(tmp_path / "template.md")]
+        elif supplied == "rubric_out":
+            argv += ["--rubric-out", str(tmp_path / "populated.md")]
+        assert bom.main(argv) == 2
         assert not (tmp_path / "out").exists()
+        assert not (tmp_path / "populated.md").exists()
 
 
 # ---------------------------------------------------------------------------
