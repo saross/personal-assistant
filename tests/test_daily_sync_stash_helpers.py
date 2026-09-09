@@ -17,6 +17,7 @@ extraction below would break loudly on.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -2544,55 +2545,119 @@ class TestMergeWithNoCorpusInAnyParent:
         assert "none of its parents holds the corpus" in written, written
 
 
+#: The functions that are allowed to run a quiet grep, and the reason
+#: each is safe: none of them has a producer on the far side of a pipe.
+#: Asserted as a SET rather than a count (audit 3, sixth re-audit): a
+#: decorative fifth site would restore vacuity to a count, and a correct
+#: refactor that moves one would fail it for no reason.
+_QUIET_GREP_SITES = {
+    "render_sync_gate",              # gate supersession, here-string
+    "previously_recorded_stashes",   # sidecar path matching, here-string
+    "has_bulk_rewrite_trailer",      # the trailer, here-string
+}
+
+#: `grep -q`, `grep -Fqx`, `grep --quiet` — every spelling of "tell me
+#: yes or no and stop reading" (audit 2, sixth re-audit).
+_QUIET_GREP = re.compile(r"\bgrep\s+(?:-[A-Za-z]*q|--quiet)")
+
+
+def _script_statements() -> list[tuple[int, str, str]]:
+    """
+    The script as `(line number, enclosing function, statement)` triples.
+
+    Continuation lines and lines ending in a pipe are joined, so a
+    pipeline written across several lines is one statement — the shape
+    that walked through the previous line-at-a-time scan. Heredoc bodies
+    are skipped entirely: the embedded Python in this script is not shell
+    and must not be linted as though it were. A trailing inline comment
+    is dropped, so prose about the rule cannot satisfy or violate it.
+    """
+    lines = DAILY_SYNC.read_text(encoding="utf-8").splitlines()
+    statements: list[tuple[int, str, str]] = []
+    function = ""
+    heredoc = ""
+    pending = ""
+    pending_at = 0
+    for number, raw in enumerate(lines, start=1):
+        if heredoc:
+            if raw.strip() == heredoc:
+                heredoc = ""
+            continue
+        opener = re.search(r"<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?\s*$", raw)
+        if opener:
+            heredoc = opener.group(1)
+        name = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", raw)
+        if name:
+            function = name.group(1)
+        elif raw == "}":
+            function = ""
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            continue
+        # A trailing comment on a code line: drop it, but only when the
+        # `#` is not inside a quoted string.
+        if " #" in stripped and stripped.count("'") % 2 == 0 \
+                and stripped.count('"') % 2 == 0:
+            head, _, tail = stripped.partition(" #")
+            if not re.search(r"[\"\']", tail):
+                stripped = head.strip()
+        if not stripped:
+            continue
+        if not pending:
+            pending_at = number
+        pending += (" " if pending else "") + stripped
+        if stripped.endswith("\\") or stripped.endswith("|"):
+            pending = pending.rstrip("\\").rstrip()
+            continue
+        statements.append((pending_at, function, pending))
+        pending = ""
+    if pending:
+        statements.append((pending_at, function, pending))
+    return statements
+
+
 class TestGuardsDoNotPipeIntoGrepQ:
-    """`grep -q` exits on its first match; the upstream then dies of
+    """A quiet grep exits on its first match; the upstream then dies of
     SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. Any
     match on the far side of a pipe can therefore read as its opposite --
     a real trailer as "no trailer", a binary path as "no binary paths" --
     on a race decided by how much the upstream had written."""
 
-    def test_no_grep_q_sits_on_the_far_side_of_a_pipe(self) -> None:
-        """Kills DS-L1: the previous form of this test read the bodies of
-        two FUNCTIONS while the defect lived in their CALLERS, so putting
-        the old pipe shape back at either call site passed everything.
+    def test_no_quiet_grep_sits_on_the_far_side_of_a_pipe(self) -> None:
+        """Kills DS-item-2: a line-at-a-time scan.
 
-        The whole file is held to the rule now. There is no allow-list:
-        every `grep -q` here takes a here-string or a `$( )`, and the
-        four bounded survivors -- the gate-supersession key match, the
-        two sidecar path matches, and the cc-archives mount probes --
-        were converted rather than excused, because "bounded today" is
-        not a property anyone re-checks.
+        The previous form asked whether ONE line held both a pipe and a
+        `grep -q`, so writing the pipe as a trailing operator --
+        `printf ... |` then `grep -qE ...` on the next line -- put the
+        push-gate defect back with the suite green. It also matched the
+        literal `grep -q`, so `grep -Fqx` and `grep --quiet` walked past
+        it.
         """
         offenders = []
-        for number, line in enumerate(
-            DAILY_SYNC.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue          # prose about the rule is not the rule
-            if "grep -q" in stripped and "|" in stripped.split("grep -q")[0]:
-                offenders.append(f"{number}: {stripped}")
+        for number, _function, statement in _script_statements():
+            match = _QUIET_GREP.search(statement)
+            if match and "|" in statement[: match.start()]:
+                offenders.append(f"{number}: {statement}")
         assert not offenders, (
-            "these pipe into `grep -q`, whose match reads as a failure "
+            "these pipe into a quiet grep, whose match reads as a failure "
             "under `set -o pipefail`:\n" + "\n".join(offenders)
         )
 
-    def test_the_rule_is_being_checked_against_real_greps(self) -> None:
-        """The scan above passes trivially if the greps ever go away, so
-        say out loud that they are still there and still matter.
+    def test_the_quiet_greps_are_exactly_where_they_are_expected(self) -> None:
+        """Audit 3: the SET, not a count.
 
-        Counted the same way the scan counts -- CODE lines only. Counting
-        the whole file would include the prose about the rule, which is
-        exactly what makes the check vacuous while looking healthy.
+        A count is satisfied by a decorative fifth site and broken by a
+        correct refactor. Naming the functions says what is actually
+        being protected, and a new one has to be added here deliberately.
         """
-        greps = [
-            line.strip()
-            for line in DAILY_SYNC.read_text(encoding="utf-8").splitlines()
-            if "grep -q" in line and not line.strip().startswith("#")
-        ]
-        assert len(greps) >= 4, (
-            "the guards this rule protects no longer grep; the scan above "
-            "is now checking nothing: " + str(greps)
+        found = {
+            function
+            for _number, function, statement in _script_statements()
+            if _QUIET_GREP.search(statement)
+        }
+        assert found == _QUIET_GREP_SITES, (
+            f"the quiet greps have moved: found {sorted(found)}, "
+            f"expected {sorted(_QUIET_GREP_SITES)}"
         )
 
 
