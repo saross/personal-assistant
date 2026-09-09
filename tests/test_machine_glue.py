@@ -101,7 +101,23 @@ def write_git_stub(bin_dir: Path, log: Path) -> None:
         f'for a in "$@"; do printf " %s" "$a" >> {shlex.quote(str(log))}; done\n'
         f'printf "\\n" >> {shlex.quote(str(log))}\n'
         'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
-        '    printf "%s\\n" "${STUB_SUBMODULE_STATUS:-}"\n'
+        "    # Honour the pathspec, as real git does (round 4d-6, L2):\n"
+        "    # without it every declared submodule is listed, and the\n"
+        "    # caller reads only the FIRST line's prefix.\n"
+        '    want=""\n'
+        '    for ((i = 1; i <= $#; i++)); do\n'
+        '        if [[ "${!i}" == "--" ]]; then\n'
+        "            j=$((i + 1))\n"
+        '            want="${!j:-}"\n'
+        "        fi\n"
+        "    done\n"
+        '    while IFS= read -r line; do\n'
+        '        [[ -z "$line" ]] && continue\n'
+        "        read -r -a fields <<< \"$line\"\n"
+        '        if [[ -z "$want" || "${fields[1]:-}" == "$want" ]]; then\n'
+        '            printf "%s\\n" "$line"\n'
+        "        fi\n"
+        '    done <<< "${STUB_SUBMODULE_STATUS:-}"\n'
         'elif [[ "${1:-}" == "submodule" && "${2:-}" == "update" ]]; then\n'
         "    # Real git clones the submodule here, leaving a checkout with\n"
         "    # a .git file in it. Reproduce enough of that for the steps\n"
@@ -683,6 +699,55 @@ class TestSubmoduleUpdateIsGated:
         assert "submodule update" not in sync_sandbox["log"].read_text(
             encoding="utf-8"
         )
+
+    def test_the_pathspec_selects_data_among_several_submodules(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L2 — dropping `-- data` survived, because there is only one.
+
+        Only the FIRST line's prefix is read, so the moment a second
+        submodule is declared the gate starts answering about whichever
+        one git lists first. Here an uninitialised `vendor` is listed
+        ahead of an initialised `data`: without the pathspec the script
+        would see "-" and try to initialise a submodule that is already
+        checked out -- the exact thing E10 exists to prevent.
+        """
+        result = _run_sync(
+            sync_sandbox,
+            submodule_status=(
+                "-aaaaaaaa vendor\n 1234abcd data (heads/main)"
+            ),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Submodule already initialised" in result.stdout, result.stdout
+        assert "uninitialised but not empty" not in result.stdout, (
+            "vendor's state was read as data's"
+        )
+        assert "submodule update" not in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        ), "an initialised data/ was re-initialised"
+
+    def test_the_pathspec_ignores_another_submodules_state(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The other direction: data uninitialised behind an initialised one."""
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(
+            sync_sandbox,
+            "--quiet",
+            submodule_status=(
+                " bbbbbbbb vendor (heads/main)\n-1234abcd data"
+            ),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "git submodule update --init" in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        ), "an uninitialised data/ was left alone"
 
     def test_a_submodule_checkout_is_not_a_worktree(
         self, sync_sandbox: dict[str, Path]
