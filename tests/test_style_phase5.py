@@ -901,6 +901,64 @@ def _schema_checked_arguments(main_fn: ast.FunctionDef) -> set[str]:
     return checked
 
 
+#: Calls in ``main`` that CONSUME a phase-1 or phase-3 payload. A stamp check
+#: that runs after any of them is not an interlock: the corpus has already
+#: been used to build the feature space, fit the model, or score the input by
+#: the time the file is pronounced stale.
+_PHASE_CONSUMING_CALLS = (
+    "build_validation_report",
+    "resolve_feature_space",
+    "build_corpus_matrix",
+    "evaluate_text",
+    "build_gate",
+)
+
+
+def _called_name(call: ast.Call) -> str | None:
+    """Return the name a call resolves to, for `f()` and for `mod.f()` alike."""
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _stamp_check_line(main_fn: ast.FunctionDef) -> int:
+    """Line of the loop that performs the metric_schema check."""
+    for node in ast.walk(main_fn):
+        if isinstance(node, ast.For) and _attribute_calls(
+                node, "metric_schema_error"):
+            return node.lineno
+    raise AssertionError("main() no longer checks metric_schema at all")
+
+
+def _first_consumer(main_fn: ast.FunctionDef) -> tuple[str, int]:
+    """Return the earliest (name, line) among the phase-consuming calls."""
+    found = [(_called_name(node), node.lineno) for node in ast.walk(main_fn)
+             if isinstance(node, ast.Call)
+             and _called_name(node) in _PHASE_CONSUMING_CALLS]
+    assert found, "no phase-consuming call found; the guard has lost its point"
+    return min(found, key=lambda pair: pair[1])
+
+
+def test_the_stamp_check_runs_before_anything_consumes_the_corpus():
+    """Membership is not enough: the check must come FIRST.
+
+    Collecting which arguments are checked says nothing about when. Moving
+    the whole stamp loop below the validate branch's ``return`` left the
+    suite green while the report was produced from a corpus the check never
+    reached. The mutation this kills: moving the loop below
+    ``build_validation_report`` (or any other consumer).
+    """
+    main_fn = _function_def(_module_ast(), "main")
+    consumer, consumer_line = _first_consumer(main_fn)
+
+    assert _stamp_check_line(main_fn) < consumer_line, (
+        f"the metric_schema check runs after {consumer}() has already used "
+        "the corpus"
+    )
+
+
 def test_both_phase_inputs_have_their_stamp_checked():
     """Phase 3 defines the feature space, so a stale one is as bad as phase 1.
 
