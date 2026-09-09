@@ -1330,8 +1330,8 @@ class TestBatchSubmitIsNotRepeatable:
 
         The state file holds one custom_id map. A top-up carries only the
         missing sessions, so replacing that map left --haiku-apply on the
-        earlier batch id printing "unknown custom_id ... skipping" for
-        every session it had paid for.
+        earlier batch id skipping every session it had paid for, with the
+        "no session mapped to custom_id ..." diagnostic.
         """
         manifest = self._three_session_manifest(tmp_path)
         prompt = _prompt_file(tmp_path)
@@ -1361,7 +1361,10 @@ class TestBatchSubmitIsNotRepeatable:
             "--out-dir", str(out_dir),
         ]) == 0
         printed = capsys.readouterr().out
-        assert "unknown custom_id" not in printed
+        # The live wording, not a retired one: a stale phrase here can never
+        # appear, so the assertion would hold however badly the code broke.
+        assert "no session mapped to custom_id" not in printed
+        assert "skipping a result that was ALREADY PAID FOR" not in printed
         assert (provider_dir / "topup-1-aaaa-bbbb.json").exists()
 
         state = json.loads((provider_dir / "batch-state.json").read_text())

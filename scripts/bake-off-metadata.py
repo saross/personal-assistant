@@ -875,8 +875,9 @@ def haiku_submit(
     # The custom_id map ACCUMULATES across submissions. A top-up carries
     # only the sessions still missing, so replacing the map would strand
     # every session from the superseded batch: `--haiku-apply <old id>`
-    # would look each one up, find nothing, print "unknown custom_id" and
-    # skip it -- discarding results that were already paid for. Both ids
+    # would look each one up, find nothing, report "no session mapped to
+    # custom_id" and skip it -- discarding results that were already paid
+    # for (see the unmapped branch in haiku_apply). Both ids
     # are retrievable, so both maps must remain resolvable. The new
     # submission wins any key it shares, though it cannot disagree:
     # build_custom_id is a function of the session id.
