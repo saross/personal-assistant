@@ -3903,3 +3903,227 @@ class TestRenameRecordsAreEncodedToo:
             "a path with a newline no longer matches its own record: "
             + repr(result.stdout)
         )
+
+
+class TestScriptWeaknessesThisSeriesLeft:
+    """Four mutations that survived every round of this series. None is a
+    live defect; each is a guard that would not notice if it became one."""
+
+    def test_a_bulk_anything_trailer_is_not_a_bulk_trailer(self) -> None:
+        """Kills: `^Rewrite-Class: bulk[[:space:]]*$` -> `^Rewrite-Class: bulk`.
+
+        The trailer is what an operator writes to say "this shrink is
+        deliberate", and it is the only thing that gets a truncation past
+        the gate. Unanchored at the end, `Rewrite-Class: bulk-extra` --
+        or `bulkish`, or a sentence beginning with the phrase -- would
+        pass for one.
+        """
+        for message, expected in (
+            ("chore: archive\n\nRewrite-Class: bulk\n", 0),
+            ("chore: archive\n\nRewrite-Class: bulk   \n", 0),
+            ("chore: archive\n\nRewrite-Class: bulk-extra\n", 1),
+            ("chore: archive\n\nRewrite-Class: bulkish\n", 1),
+            ("chore: archive\n\nRewrite-Class: bulk rewrite of the corpus\n", 1),
+        ):
+            result = _run_shell(
+                'if has_bulk_rewrite_trailer "$PA_TEST_MESSAGE"; then\n'
+                "  exit 0\nelse\n  exit 1\nfi\n",
+                ("has_bulk_rewrite_trailer",),
+                {"PA_TEST_MESSAGE": message},
+            )
+            assert result.returncode == expected, (
+                f"{message!r} was read as "
+                + ("a trailer" if result.returncode == 0 else "no trailer")
+            )
+
+    def test_a_copy_record_keeps_the_status_stream_aligned(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: `*[RC]*` -> `*R*` in status_records.
+
+        Porcelain `-z` gives a rename OR A COPY its original path as an
+        extra field. Consuming that field only for `R` leaves a copy's
+        source in the stream, where the next iteration reads it as though
+        it were a whole record -- so the source loses its encoding and
+        every record after it is off by one.
+
+        `git status` will not produce a copy record without copy
+        detection enabled and a source it likes, so the stream is fed in
+        directly: what is under test is how the fields are consumed, not
+        how git decides to report them.
+        """
+        stream = "\\0".join(
+            ["C  after.md", "before.md", " M notes/plain.md", ""]
+        )
+        result = _run_shell(
+            "\n".join(
+                [
+                    "git() {",
+                    f'    printf \'{stream}\'',
+                    "}",
+                    'status_records /nonexistent',
+                ]
+            ),
+            ("status_records", "encode_record_path"),
+        )
+        assert result.returncode == 0, result.stderr
+        rows = result.stdout.splitlines()
+        assert rows == [
+            "C \tafter.md",
+            "C \tbefore.md",
+            " M\tnotes/plain.md",
+        ], ("a copy's source field was not consumed, so the stream "
+            f"desynchronised: {rows}")
+
+    def test_the_first_offending_commit_is_the_one_named(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: dropping `--reverse` from the `git rev-list`.
+
+        Without it the scan runs newest-first and names the LAST commit
+        that shortened the corpus. The operator is sent to the wrong one
+        -- and it is the earliest that explains how the range began going
+        wrong.
+        """
+        repo = tmp_path / "first-offender"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(6)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main",
+             _git("rev-parse", "HEAD", cwd=repo).stdout.strip(), cwd=repo)
+        # Two untrailered truncations, one after the other.
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "r0"}\n{"id": "r1"}\n{"id": "r2"}\n{"id": "r3"}\n',
+            encoding="utf-8",
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the first botched rewrite", cwd=repo)
+        first = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "r0"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the second botched rewrite", cwd=repo)
+        second = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        logs = tmp_path / "logs-first"
+        logs.mkdir()
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert first in written, ("the earliest shortening commit was not "
+                                 "named: " + written)
+        assert second not in written, (
+            "the LAST shortening commit was named instead of the first: "
+            + written
+        )
+
+    def test_the_first_unmeasurable_merge_is_the_one_named(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills: dropping `[[ -n "$unjudgeable_merge" ]] ||`.
+
+        Without it each unmeasurable merge overwrites the last, so the
+        report names the most recent rather than the one where the range
+        stopped being measurable.
+        """
+        repo = tmp_path / "first-merge"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(5)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main",
+             _git("rev-parse", "HEAD", cwd=repo).stdout.strip(), cwd=repo)
+        # A trailered rewrite that does NOT span the drop -- it ends at 3
+        # while HEAD will end at 1 -- so nothing dismisses the merges by
+        # the span rule, which is what this fixture is about.
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "r0"}\n{"id": "r1"}\n{"id": "r2"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): partial archive\n\nRewrite-Class: bulk\n", cwd=repo)
+        # …and retiring it from 3, which does not span either.
+        _git("rm", "--quiet", "--", "memories/memories.jsonl", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): retire the corpus\n\nRewrite-Class: bulk\n",
+             cwd=repo)
+
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        merges = []
+        for round_number in (1, 2):
+            head = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+            stranger = _git("commit-tree", empty, "-m", f"stranger {round_number}",
+                            cwd=repo).stdout.strip()
+            tree = _git("write-tree", cwd=repo).stdout.strip()
+            merge = _git("commit-tree", tree, "-p", head, "-p", stranger,
+                         "-m", f"Merge stranger {round_number}",
+                         cwd=repo).stdout.strip()
+            _git("reset", "--quiet", "--hard", merge, cwd=repo)
+            merges.append(merge)
+        # Only the LAST commit reintroduces a corpus, so both merges have
+        # parents that hold none.
+        (repo / "memories").mkdir(exist_ok=True)
+        (repo / "memories" / "memories.jsonl").write_text(
+            '{"id": "one record"}\n', encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "reintroduce a corpus", cwd=repo)
+        logs = tmp_path / "logs-first-merge"
+        logs.mkdir()
+
+        result = _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert merges[0] in written, (
+            "the earliest unmeasurable merge was not the one named: " + written
+        )
+        assert merges[1] not in written, (
+            "the LAST unmeasurable merge was named instead of the first: "
+            + written
+        )
