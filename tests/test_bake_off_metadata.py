@@ -2131,3 +2131,60 @@ class TestStrandedResults:
             "--rebuild-map",
         ]) == 2
         assert "nothing to rebuild" in capsys.readouterr().err
+
+
+class TestRebuildMapIsConservative:
+    """Repairing a map must not overwrite it, or destroy it on failure."""
+
+    def _state_with_conflicting_entry(self, tmp_path: Path):
+        """A state whose recorded mapping disagrees with the reconstruction.
+
+        Only a real submission knows which session a custom_id was sent
+        under. A reconstruction is a good guess from the manifest, so where
+        the two differ the stored value must survive -- otherwise repairing
+        the map could point an existing, correct entry at the wrong session
+        and write one session's answer under another's name.
+        """
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "conflict.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json",
+            [fx.manifest_row("session-from-manifest", transcript)],
+        )
+        custom_id = bom.build_custom_id("session-from-manifest")
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "custom_id_to_session": {custom_id: "session-as-submitted"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir, manifest, custom_id
+
+    def test_an_existing_entry_wins_over_the_reconstruction(self, tmp_path):
+        out_dir, manifest, custom_id = self._state_with_conflicting_entry(tmp_path)
+        added = bom.rebuild_custom_id_map(out_dir, manifest)
+        assert added == 0
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert state["custom_id_to_session"][custom_id] == "session-as-submitted"
+
+    def test_a_failed_rebuild_leaves_the_state_intact(self, tmp_path, monkeypatch):
+        """Crash injection: the state file is the only handle on the batch."""
+        out_dir, manifest, _custom_id = self._state_with_conflicting_entry(tmp_path)
+        state_path = out_dir / "batch-state.json"
+        before = state_path.read_bytes()
+
+        import os as os_module
+
+        def refuse_replace(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(os_module, "replace", refuse_replace)
+        with pytest.raises(OSError):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert state_path.read_bytes() == before
+        # And no debris beside it.
+        assert sorted(p.name for p in out_dir.iterdir()) == ["batch-state.json"]
