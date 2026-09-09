@@ -673,6 +673,10 @@ class BatchStateExistsError(RuntimeError):
     """A batch has already been submitted into this output directory."""
 
 
+class ManifestFormatError(RuntimeError):
+    """A manifest could not be read, or is not shaped like a manifest."""
+
+
 def file_sha256(path: Path) -> str:
     """Return the hex SHA-256 of a file's bytes."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -796,6 +800,12 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
 
     Raises:
         FileNotFoundError: there is no batch state to repair.
+        ManifestFormatError: the manifest is missing, unreadable, or not
+            shaped like a manifest. This runs after a batch has been paid
+            for, on a state file that is the only handle on it, so a
+            half-understood manifest must stop the repair rather than write
+            a partial map — and the operator has almost certainly just
+            pasted a placeholder path.
     """
     state = read_batch_state(out_dir)
     if state is None:
@@ -804,9 +814,26 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
         )
     mapping = dict(state.get("custom_id_to_session", {}))
     before = len(mapping)
-    manifest = json.loads(manifest_path.read_text())
-    for entry in manifest.get("sessions", []):
-        session_id = entry["session_id"]
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except OSError as exc:
+        raise ManifestFormatError(f"cannot read {manifest_path}: {exc}") from exc
+    except ValueError as exc:
+        raise ManifestFormatError(
+            f"{manifest_path} is not valid JSON: {exc}"
+        ) from exc
+    sessions = manifest.get("sessions") if isinstance(manifest, dict) else None
+    if not isinstance(sessions, list):
+        raise ManifestFormatError(
+            f"{manifest_path} has no 'sessions' list — is it a manifest?"
+        )
+    for position, entry in enumerate(sessions, 1):
+        session_id = entry.get("session_id") if isinstance(entry, dict) else None
+        if not isinstance(session_id, str) or not session_id:
+            raise ManifestFormatError(
+                f"{manifest_path}: session {position} has no string "
+                "'session_id'; no mapping was written"
+            )
         mapping.setdefault(build_custom_id(session_id), session_id)
     state["custom_id_to_session"] = mapping
     write_json_atomic(out_dir / "batch-state.json", state)
@@ -2141,7 +2168,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.rebuild_map:
             try:
                 restored = rebuild_custom_id_map(target_dir, args.manifest)
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, ManifestFormatError) as exc:
                 print(f"--rebuild-map refused: {exc}", file=sys.stderr)
                 return 2
             print(

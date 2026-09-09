@@ -2295,3 +2295,77 @@ class TestRebuildMapIsConservative:
         assert state_path.read_bytes() == before
         # And no debris beside it.
         assert sorted(p.name for p in out_dir.iterdir()) == ["batch-state.json"]
+
+
+class TestRebuildMapRejectsABadManifest:
+    """The repair runs on the only handle on a paid-for batch."""
+
+    def _state(self, tmp_path: Path) -> Path:
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "custom_id_to_session": {"sess-kept": "kept-session"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir
+
+    @pytest.mark.parametrize(
+        "name,content",
+        [
+            ("not-json.json", "{ this is not json"),
+            ("not-an-object.json", '["a", "list"]'),
+            ("no-sessions.json", '{"generated_at": "2026-01-06T00:00:00+00:00"}'),
+            ("sessions-not-a-list.json", '{"sessions": {"session_id": "x"}}'),
+            ("entry-not-an-object.json", '{"sessions": ["just-a-string"]}'),
+            ("entry-without-id.json", '{"sessions": [{"project": "p"}]}'),
+            ("entry-with-null-id.json", '{"sessions": [{"session_id": null}]}'),
+        ],
+    )
+    def test_a_malformed_manifest_is_refused(self, tmp_path, name, content):
+        """The finding: each of these was a traceback, not a refusal."""
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / name
+        manifest.write_text(content, encoding="utf-8")
+        before = (out_dir / "batch-state.json").read_bytes()
+        with pytest.raises(bom.ManifestFormatError):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert (out_dir / "batch-state.json").read_bytes() == before
+
+    def test_a_missing_manifest_is_refused(self, tmp_path):
+        out_dir = self._state(tmp_path)
+        with pytest.raises(bom.ManifestFormatError):
+            bom.rebuild_custom_id_map(out_dir, tmp_path / "absent.json")
+
+    def test_a_partly_valid_manifest_writes_nothing(self, tmp_path):
+        """A good entry before a bad one must not be half-applied."""
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "half.json"
+        manifest.write_text(
+            json.dumps({
+                "sessions": [
+                    {"session_id": "good-session"},
+                    {"project": "no session id here"},
+                ]
+            }),
+            encoding="utf-8",
+        )
+        with pytest.raises(bom.ManifestFormatError, match="session 2"):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert state["custom_id_to_session"] == {"sess-kept": "kept-session"}
+
+    def test_the_entry_point_exits_2_on_a_bad_manifest(self, tmp_path, capsys):
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "not-json.json"
+        manifest.write_text("{ nope", encoding="utf-8")
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]) == 2
+        assert "--rebuild-map refused" in capsys.readouterr().err
