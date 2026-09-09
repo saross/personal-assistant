@@ -1374,3 +1374,42 @@ def test_the_word_counter_counts_non_ascii_names_as_words():
              has_references=False)
 
     assert qa["body_words"] == 4
+
+
+def test_an_interrupted_bundle_leaves_the_error_marker_in_place(tmp_path,
+                                                                monkeypatch):
+    """A crash mid-bundle must not leave a directory that looks untouched.
+
+    The stale marker was cleared BEFORE the bundle writes, so a run
+    interrupted between the two left neither an error marker nor a complete
+    bundle: the paper's directory then looked like one nobody had ever tried,
+    and the QA sweep that greps for the marker reported nothing wrong.
+    Clearing it after the writes closes that window. The mutation this kills:
+    moving the ``unlink`` back above ``emit_text(paper_dir / "body.md", ...)``.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    stale = output_dir / "AAAA1111" / "extraction-error.txt"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("PDF not found: /nonexistent/invented/AAAA1111.pdf\n",
+                     encoding="utf-8")
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    # Fail on the last write of the bundle, standing in for any interruption
+    # after the clearing point and before the outputs are complete.
+    real_write = extract_corpus.atomic_write_json
+
+    def fail_on_qa(path, *args, **kwargs):
+        if Path(path).name == "qa.json":
+            raise OSError("simulated crash mid-bundle")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(extract_corpus, "atomic_write_json", fail_on_qa)
+
+    with pytest.raises(OSError):
+        extract_corpus.extract_one(entry, output_dir)
+
+    assert stale.exists(), (
+        "the failure marker was cleared before the bundle was complete, so "
+        "this half-extracted paper now looks like one nobody attempted"
+    )

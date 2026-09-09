@@ -718,16 +718,6 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
     body_md, n_affiliation_chars = strip_affiliation_tail(body_md)
     references_md = clean_reference_section(references_md) if references_md else ""
 
-    # A previous run may have failed on this paper and left an
-    # ``extraction-error.txt`` behind (see the two failure returns above).
-    # This run succeeded, so that file now describes a failure that no longer
-    # exists, and a QA sweep grepping the output tree for the filename would
-    # report it as current (audit round 4g, Low 1). Clear it — but never under
-    # ``--dry-run``, which must leave the tree byte-for-byte untouched, and so
-    # must not delete any more than it writes.
-    if not dry_run:
-        (paper_dir / "extraction-error.txt").unlink(missing_ok=True)
-
     # Paper outputs. Every write goes through the atomic helper: an
     # interrupted run used to leave a truncated body.md or metadata.json that
     # the next pipeline stage parsed as if it were complete.
@@ -765,6 +755,22 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
         "affiliation_chars_stripped": n_affiliation_chars,
     }
     emit_json(paper_dir / "qa.json", qa)
+
+    # Only now: a previous run may have failed on this paper and left an
+    # ``extraction-error.txt`` behind (see the two failure returns above), and
+    # this run has succeeded, so that file describes a failure that no longer
+    # exists — a QA sweep grepping the output tree for the filename would
+    # report it as current (audit round 4g, Low 1).
+    #
+    # Clearing it BEFORE the bundle writes, as this first did, opened a window
+    # in which an interrupted run left neither the error marker nor a complete
+    # bundle: the directory then looked like a paper nobody had tried
+    # (round 4g-3, item 8). The marker is removed once the outputs that
+    # supersede it are on disk. Never under ``--dry-run``, which must leave
+    # the tree byte-for-byte untouched and so must not delete any more than it
+    # writes.
+    if not dry_run:
+        (paper_dir / "extraction-error.txt").unlink(missing_ok=True)
 
     return {
         "key": key,
