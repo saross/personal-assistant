@@ -2413,7 +2413,12 @@ every round with its re-audit outcome, six decisions for Shawn).
   and 4f-4 running. Main suite about 3,850. At 02:5x AEST a session rate
   limit (reset 04:50) killed all seven running agents at once; every branch
   was already pushed or committed, two worktrees held uncommitted edits, and
-  all nine agents were resumed at 07:45 from their own transcripts. Two operational lessons recorded in the
+  all nine agents were resumed at 07:45 from their own transcripts — and
+  then a MONTHLY spend limit stopped them again (weekly window resets
+  2026-09-10 12:00 Sydney; or raise the limit). The audit report now opens
+  with a "State at 2026-09-09 08:00" resume section, and the briefs, lens
+  reports, and round reports are committed under
+  `wiki/audits/2026-09-08-first-audit-artefacts/`. Two operational lessons recorded in the
   scratchpad: concurrent agents need private scratch directories, and
   concurrent suites need isolated `--basetemp` and a bounded /tmp
   footprint (the 16 GB tmpfs filled and ran out of inodes twice). Decisions

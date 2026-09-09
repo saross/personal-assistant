@@ -744,6 +744,71 @@ or prompt hash) in any output. Verified correct: MATTR windows; genuine
 leave-one-out; zero-variance guard; the exact sign-flip test; pairing by
 topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
+## State at 2026-09-09 08:00 (resume point)
+
+Merged from this audit (fourteen PRs): #114, #115, #116, #117, #118 (round
+two); #119 (daily sync, four re-audit rounds); #120 (round 3b); #121, #123
+(memory-store writers and the hermeticity guards); #122, #130 (retrieval);
+#124 (session archive pipeline); #125, #133 (external services and glue);
+#126, #131 (bake-off tooling); #127 (concurrency-tolerant guard, midnight
+flake); #129 (memory readers and anchors); #132, #135 (daily-sync lows).
+
+Open, each with its verdict so far:
+
+- **#128** (style-analyser scripts, round 4g): refused twice, the second
+  time on one two-line mismatch (`efficacy_score_judges.py` defaults
+  `--key-dir` to the old location). Round 4g-3 was in progress in
+  `~/worktrees/personal-assistant/claude-audit-round4g` with uncommitted
+  edits when the spend limit hit. Merging it makes every phase-1 consumer
+  refuse the live results until phase 1 is re-run — by design.
+- **#134** (bake-off follow-ups, round 4e-4): fixes pushed; second re-audit
+  not yet delivered.
+- **#136** (archive follow-ups, round 4c-3): pushed; re-audit mostly done,
+  report not delivered.
+- **#137** (hermeticity follow-ups, round 4a-5): pushed; re-audit had
+  finished (a)-(h) and was starting the strict run against a populated
+  synthetic store.
+- **#138** (machine-glue follow-ups, round 4d-4): pushed; re-audit not
+  delivered.
+- Rounds **3c-7** (`claude/audit-round3c-7`, item 5 in progress) and
+  **4f-4** (`claude/audit-round4f-4`, M-c in progress) hold uncommitted
+  edits in their worktrees; neither has a PR yet.
+
+Blocked on: the monthly spend limit (raise at claude.ai/settings/usage, or
+the weekly window resets 2026-09-10 12:00 Sydney). Everything needed to
+resume is in `2026-09-08-first-audit-artefacts/` (briefs, lens reports,
+round reports); a fresh session re-spawns each round's agent with the
+shared brief, the round brief, and the round report's last paragraph.
+
+Operator actions pending, in order of consequence:
+
+1. Re-run phase 1 (`phase1_pipeline.py --clean-corpus`), then promotion,
+   then re-derive the guide — required after #128 merges (metric
+   definitions changed; the interlock refuses the old results).
+2. Run `sync-to-postgres.py` before any `archive-memories --apply` or
+   `dedup-memories` (both refuse while the cursor is behind or unreadable).
+3. Agree an `ENV_FINGERPRINT_SALT` out of band before the next cross-machine
+   `.env` comparison (the tool refuses without it; old fingerprints are not
+   comparable).
+4. Expect the first `audit-postgres-sync` and `/memory-health` after #129 to
+   FAIL on content divergence and Postgres-only orphans (real, not noise).
+5. Expect the first drift sweep to refuse once with a `--min-repos` line if
+   the last trend row came from a worktree.
+6. `push-archives-to-r2.sh` now refuses to overwrite; `.tmp` objects already
+   in R2 need a manual delete; run `normalise-archive-storage.py --dry-run`
+   on the canonical mount before `--apply` (it now sweeps stale
+   temporaries).
+7. `PA_HERMETICITY_STRICT=1` is the contract for audit and clean-copy runs
+   (see `commands/audit.md`); shared checkouts warn instead of failing on
+   concurrent edits.
+8. The stale `data/style-corpus/corpus-manifest.json` should be deleted (the
+   extractor now writes it inside the output directory); the judge key can
+   be moved out of the live `judge-tasks/` with `--migrate-key`.
+9. Decisions D1-D8 below; the dependency additions for the style analyser
+   (`numpy`, `scipy`, `scikit-learn`, `spacy` + `en_core_web_sm==3.8.0`); the
+   nominalisation stop-list; `data/.gitignore` for `logs/*.json` (AR26);
+   whether the dedup journal stays committed.
+
 ## Decisions for Shawn
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
