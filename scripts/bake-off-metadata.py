@@ -523,6 +523,12 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+            # Flush to the device before the rename. os.replace is atomic
+            # with respect to readers, but on a crash the rename can reach
+            # the disk before the contents do, leaving a file that is
+            # present, named correctly, and empty.
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
@@ -720,23 +726,59 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
 _HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def known_session_ids(state: dict[str, Any]) -> set[str]:
-    """Best-effort set of session ids the state's manifest lists.
+def state_manifest_path(state: dict[str, Any]) -> str | None:
+    """Return the manifest path a batch state records, if it is usable.
+
+    One guard for every reader. The state is a JSON file an operator can
+    edit, so ``manifest_path`` may be a number, a list, or absent; without
+    this, ``rebuild_map_command`` interpolated whatever it found and raised
+    TypeError at the END of a retrieval, after the responses were written.
+    """
+    path = state.get("manifest_path")
+    return path if isinstance(path, str) and path else None
+
+
+def known_session_ids(
+    state: dict[str, Any], manifest_path: Path | None = None
+) -> set[str]:
+    """Best-effort set of session ids a manifest lists.
+
+    Args:
+        state: the batch state, which may record the manifest it was
+            submitted against.
+        manifest_path: a manifest supplied on THIS invocation, which wins.
+            Without it a repair run could not see the manifest it had just
+            been given: the state's own record may be absent (an old-format
+            file) or stale.
 
     The manifest is not required to exist — the state may name a path that
     has since moved, and older states name none at all. Every failure is a
     quiet empty set: this feeds a diagnostic, and a diagnostic that raises
     is worse than one that is vague.
     """
-    path = state.get("manifest_path")
-    if not isinstance(path, str) or not path:
+    path = str(manifest_path) if manifest_path is not None else state_manifest_path(state)
+    if path is None:
         return set()
     try:
         manifest = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        # Say so. Falling back in silence let the operator read "session id
+        # not recoverable" and conclude the id was a digest, when in fact
+        # the manifest that would have named it simply could not be read.
+        print(
+            f"[haiku] could not read the manifest at {path}: {exc}. Session "
+            "ids will be guessed from the custom_id shape; pass --manifest "
+            "with a readable copy to name them exactly.",
+            file=sys.stderr,
+        )
         return set()
     sessions = manifest.get("sessions") if isinstance(manifest, dict) else None
     if not isinstance(sessions, list):
+        print(
+            f"[haiku] {path} has no 'sessions' list, so it cannot name any "
+            "session; ids will be guessed from the custom_id shape.",
+            file=sys.stderr,
+        )
         return set()
     return {
         entry["session_id"]
@@ -745,32 +787,50 @@ def known_session_ids(state: dict[str, Any]) -> set[str]:
     }
 
 
+def custom_id_lookup(session_ids: set[str] | frozenset[str]) -> dict[str, str]:
+    """Map ``custom_id -> session id`` for a set of known session ids.
+
+    Built once per retrieval rather than re-hashing every known id for
+    every unmatched result. Where two ids collide the lexicographically
+    first wins, which is what the previous linear scan did; the rebuild
+    refuses such a manifest outright, so this only matters for a state
+    whose manifest was never validated.
+    """
+    lookup: dict[str, str] = {}
+    for session_id in sorted(session_ids):
+        lookup.setdefault(build_custom_id(session_id), session_id)
+    return lookup
+
+
 def recover_session_id_from_custom_id(
-    custom_id: str, known: set[str] | frozenset[str] = frozenset()
+    custom_id: str, lookup: dict[str, str] | None = None
 ) -> str | None:
     """Return the session id a custom_id was built from, if it is readable.
 
-    Order matters. The manifest, where one is available, is checked FIRST
-    and answers both forms: ``build_custom_id`` is a pure function, so
-    hashing each known session id and comparing reverses even the digest
-    form. Only with no manifest does shape decide, and then a 40-character
-    hex suffix is read as a digest.
+    The manifest, where one is available, is authoritative and answers both
+    forms: ``build_custom_id`` is a pure function, so a lookup keyed on it
+    reverses even the digest form. Shape is the fallback, and reads a
+    40-character hex suffix as a digest.
 
-    That ordering is not a nicety. A session id can ITSELF be 40 hex
-    characters, in which case ``build_custom_id`` emits it verbatim and the
-    shape test alone would tell the operator the id was "not recoverable"
-    while it sat in plain sight in the custom_id.
+    The manifest is consulted first only because it is the better answer,
+    not because the order changes the result: the two agree wherever both
+    speak. What matters is that shape is NOT consulted alone. A session id
+    can ITSELF be 40 hex characters, in which case ``build_custom_id``
+    emits it verbatim, and shape would tell the operator the id was "not
+    recoverable" while it sat in plain sight in the custom_id.
 
     Args:
         custom_id: the id to reverse.
-        known: session ids from the manifest, when one could be read.
+        lookup: ``custom_id -> session id`` from ``custom_id_lookup``, when
+            a manifest could be read.
 
     Returns:
         The session id, or None when it genuinely cannot be determined.
     """
-    for session_id in sorted(known):
-        if build_custom_id(session_id) == custom_id:
-            return session_id
+    if lookup:
+        found = lookup.get(custom_id)
+        if found is not None:
+            return found
     if not custom_id.startswith("sess-"):
         return None
     suffix = custom_id[len("sess-"):]
@@ -814,6 +874,10 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
         )
     mapping = dict(state.get("custom_id_to_session", {}))
     before = len(mapping)
+    #: What THIS manifest maps, used only to detect a collision within it.
+    #: Conflicts against the stored map are not collisions: an existing
+    #: entry was written by a real submission and deliberately wins.
+    from_manifest: dict[str, str] = {}
     try:
         manifest = json.loads(manifest_path.read_text())
     except OSError as exc:
@@ -827,15 +891,49 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
         raise ManifestFormatError(
             f"{manifest_path} has no 'sessions' list — is it a manifest?"
         )
+    if not sessions:
+        # Refused rather than reported. An empty manifest cannot repair
+        # anything, so proceeding would rewrite batch-state.json, print
+        # "restored 0", and leave the operator to work out that the file
+        # they named was the wrong one -- most likely a manifest that has
+        # itself been regenerated, or a placeholder path they edited badly.
+        raise ManifestFormatError(
+            f"{manifest_path} lists no sessions, so there is nothing to "
+            "rebuild from; the batch state was left unchanged"
+        )
     for position, entry in enumerate(sessions, 1):
         session_id = entry.get("session_id") if isinstance(entry, dict) else None
-        if not isinstance(session_id, str) or not session_id:
+        # ``strip()``: a whitespace-only id is as unusable as an empty one.
+        # It would name a response file "   .json" and hash to a custom_id
+        # nothing could ever be matched back to.
+        if not isinstance(session_id, str) or not session_id.strip():
             raise ManifestFormatError(
-                f"{manifest_path}: session {position} has no string "
+                f"{manifest_path}: session {position} has no usable string "
                 "'session_id'; no mapping was written"
             )
-        mapping.setdefault(build_custom_id(session_id), session_id)
+        custom_id = build_custom_id(session_id)
+        clash = from_manifest.get(custom_id)
+        if clash is not None and clash != session_id:
+            # Two session ids in one manifest that produce one custom_id.
+            # Reachable: build_custom_id hashes a long id to 40 hex
+            # characters, and a session id that IS those 40 characters maps
+            # to the same string. haiku_submit refuses this before paying
+            # for a batch; a repair must refuse it too rather than pick one
+            # with setdefault and write the other session's answers under
+            # the wrong name.
+            raise ManifestFormatError(
+                f"{manifest_path}: sessions {clash!r} and {session_id!r} "
+                f"both map to custom_id {custom_id!r}; no mapping was "
+                "written"
+            )
+        from_manifest[custom_id] = session_id
+        mapping.setdefault(custom_id, session_id)
     state["custom_id_to_session"] = mapping
+    # Record the manifest so the NEXT retrieval can reverse a custom_id
+    # without being handed it again. An existing record wins: it is the
+    # provenance of the submission, whereas this is the file someone
+    # happened to repair with.
+    state.setdefault("manifest_path", str(manifest_path))
     write_json_atomic(out_dir / "batch-state.json", state)
     return len(mapping) - before
 
@@ -1001,6 +1099,7 @@ def haiku_apply(
     out_dir: Path,
     *,
     force: bool = False,
+    manifest_path: Path | None = None,
 ) -> None:
     """Retrieve a completed Haiku batch and write per-session response files.
 
@@ -1008,6 +1107,11 @@ def haiku_apply(
         batch_id: the batch to fetch.
         out_dir: the provider subdirectory holding ``batch-state.json``.
         force: overwrite responses that are already complete on disk.
+        manifest_path: the manifest supplied on this invocation, if any. It
+            is what makes the printed repair command work in ONE run: the
+            same invocation that rebuilds the map then uses that manifest
+            to name any session the rebuild did not cover, and repeats it
+            in any remedy line it still has to print.
     """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
@@ -1018,7 +1122,10 @@ def haiku_apply(
 
     # Read once, before the loop: it turns a guessed session id into a
     # confirmed one, and it is a file read.
-    manifest_session_ids = known_session_ids(state)
+    manifest_lookup = custom_id_lookup(known_session_ids(state, manifest_path))
+    effective_manifest = (
+        str(manifest_path) if manifest_path else state_manifest_path(state)
+    )
 
     batch_job = client.messages.batches.retrieve(batch_id)
     if batch_job.processing_status != "ended":
@@ -1041,7 +1148,7 @@ def haiku_apply(
             # already spent, and print the remedy once at the end.
             n_unmapped += 1
             recovered = recover_session_id_from_custom_id(
-                result.custom_id, manifest_session_ids
+                result.custom_id, manifest_lookup
             )
             which = (
                 f"probably session {recovered}" if recovered
@@ -1116,7 +1223,7 @@ def haiku_apply(
             "accumulating custom_id map, so a later top-up replaced the "
             "entries for this batch. Restore them from the manifest and "
             "retrieve again:\n"
-            f"  {rebuild_map_command(batch_id, out_dir, state.get('manifest_path'))}"
+            f"  {rebuild_map_command(batch_id, out_dir, effective_manifest)}"
         )
     report_kept(n_kept, tag="haiku")
 
@@ -2178,7 +2285,12 @@ def main(argv: list[str] | None = None) -> int:
         load_env()
         # submit persists batch-state.json under the provider subdir
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
-        haiku_apply(args.haiku_apply, target_dir, force=args.force)
+        # --manifest is threaded through so a repair run can reverse a
+        # custom_id in the same invocation that rebuilt the map.
+        haiku_apply(
+            args.haiku_apply, target_dir,
+            force=args.force, manifest_path=args.manifest,
+        )
         return 0
 
     if not (args.manifest and args.prompt):
