@@ -735,30 +735,28 @@ def state_manifest_path(state: dict[str, Any]) -> str | None:
     TypeError at the END of a retrieval, after the responses were written.
     """
     path = state.get("manifest_path")
-    return path if isinstance(path, str) and path else None
+    if isinstance(path, str) and path:
+        return path
+    if path is not None:
+        # Not silence: a state whose manifest_path is a number or a list
+        # behaves exactly like one that records nothing, and the operator
+        # would otherwise have no way to tell those apart.
+        print(
+            f"[haiku] the batch state records manifest_path as "
+            f"{type(path).__name__} ({path!r}), which is not a usable path; "
+            "treating it as unrecorded.",
+            file=sys.stderr,
+        )
+    return None
 
 
-def known_session_ids(
-    state: dict[str, Any], manifest_path: Path | None = None
-) -> set[str]:
-    """Best-effort set of session ids a manifest lists.
+def _read_manifest_session_ids(path: str) -> set[str] | None:
+    """Return the session ids ``path`` lists, or None if it cannot be used.
 
-    Args:
-        state: the batch state, which may record the manifest it was
-            submitted against.
-        manifest_path: a manifest supplied on THIS invocation, which wins.
-            Without it a repair run could not see the manifest it had just
-            been given: the state's own record may be absent (an old-format
-            file) or stale.
-
-    The manifest is not required to exist — the state may name a path that
-    has since moved, and older states name none at all. Every failure is a
-    quiet empty set: this feeds a diagnostic, and a diagnostic that raises
-    is worse than one that is vague.
+    None and the empty set are deliberately different: a manifest that
+    cannot be read must not look like one that lists nothing, because the
+    caller falls back on the first and not on the second.
     """
-    path = str(manifest_path) if manifest_path is not None else state_manifest_path(state)
-    if path is None:
-        return set()
     try:
         manifest = json.loads(Path(path).read_text())
     except (OSError, ValueError) as exc:
@@ -766,25 +764,73 @@ def known_session_ids(
         # not recoverable" and conclude the id was a digest, when in fact
         # the manifest that would have named it simply could not be read.
         print(
-            f"[haiku] could not read the manifest at {path}: {exc}. Session "
-            "ids will be guessed from the custom_id shape; pass --manifest "
-            "with a readable copy to name them exactly.",
+            f"[haiku] could not read the manifest at {path}: {exc}.",
             file=sys.stderr,
         )
-        return set()
+        return None
     sessions = manifest.get("sessions") if isinstance(manifest, dict) else None
     if not isinstance(sessions, list):
         print(
             f"[haiku] {path} has no 'sessions' list, so it cannot name any "
-            "session; ids will be guessed from the custom_id shape.",
+            "session.",
             file=sys.stderr,
         )
-        return set()
+        return None
     return {
         entry["session_id"]
         for entry in sessions
         if isinstance(entry, dict) and isinstance(entry.get("session_id"), str)
     }
+
+
+def resolve_manifest(
+    state: dict[str, Any], manifest_path: Path | None = None
+) -> tuple[set[str], str | None]:
+    """Return the session ids to recover with, and the manifest they came from.
+
+    A manifest supplied on this invocation wins — a repair run must be able
+    to see the file it was just handed, since the state's own record may be
+    absent or stale. But winning is conditional on being READABLE: a typo'd
+    ``--manifest`` used to defeat a perfectly good recorded one, so the run
+    reported ids as unrecoverable that it could have named, and printed a
+    remedy line repeating the typo. An unusable supplied path now falls
+    back, and both paths are named.
+
+    Returns:
+        ``(session_ids, manifest_used)``. ``manifest_used`` is None when
+        nothing readable was found, so a remedy line names the placeholder
+        rather than a path already known to be broken.
+    """
+    recorded = state_manifest_path(state)
+    supplied = str(manifest_path) if manifest_path is not None else None
+
+    if supplied is not None:
+        found = _read_manifest_session_ids(supplied)
+        if found is not None:
+            return found, supplied
+        if recorded is not None and recorded != supplied:
+            print(
+                f"[haiku] falling back to the manifest recorded in the batch "
+                f"state ({recorded}) because the supplied --manifest "
+                f"({supplied}) could not be used.",
+                file=sys.stderr,
+            )
+            found = _read_manifest_session_ids(recorded)
+            if found is not None:
+                return found, recorded
+        return set(), None
+
+    if recorded is None:
+        return set(), None
+    found = _read_manifest_session_ids(recorded)
+    return (found, recorded) if found is not None else (set(), None)
+
+
+def known_session_ids(
+    state: dict[str, Any], manifest_path: Path | None = None
+) -> set[str]:
+    """The session ids ``resolve_manifest`` finds; kept for callers wanting only those."""
+    return resolve_manifest(state, manifest_path)[0]
 
 
 def custom_id_lookup(session_ids: set[str] | frozenset[str]) -> dict[str, str]:
@@ -1122,10 +1168,10 @@ def haiku_apply(
 
     # Read once, before the loop: it turns a guessed session id into a
     # confirmed one, and it is a file read.
-    manifest_lookup = custom_id_lookup(known_session_ids(state, manifest_path))
-    effective_manifest = (
-        str(manifest_path) if manifest_path else state_manifest_path(state)
+    manifest_session_ids, effective_manifest = resolve_manifest(
+        state, manifest_path
     )
+    manifest_lookup = custom_id_lookup(manifest_session_ids)
 
     batch_job = client.messages.batches.retrieve(batch_id)
     if batch_job.processing_status != "ended":

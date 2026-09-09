@@ -2071,7 +2071,9 @@ class TestStrandedResults:
         assert "no 'sessions' list" in capsys.readouterr().err
 
     @pytest.mark.parametrize("recorded", [123, ["a"], {"p": 1}, None, ""])
-    def test_a_non_string_manifest_path_is_ignored_everywhere(self, recorded):
+    def test_a_non_string_manifest_path_is_ignored_everywhere(
+        self, recorded, capsys
+    ):
         """The state is an editable JSON file; every reader must survive it.
 
         rebuild_map_command interpolated whatever it found, so a numeric
@@ -2086,6 +2088,110 @@ class TestStrandedResults:
             "batch_001", Path("/tmp/out/haiku"), bom.state_manifest_path(state)
         )
         assert bom.MANIFEST_PLACEHOLDER in command
+        # A malformed value is not the same as no value, and the operator
+        # cannot see the difference unless we say so. None and "" record
+        # nothing and are correctly silent.
+        printed = capsys.readouterr().err
+        if recorded is None:
+            # Absent is not malformed: nothing was claimed, so say nothing.
+            assert printed == ""
+        else:
+            # An empty string is malformed too — something was recorded and
+            # it cannot be used, which is exactly the case worth naming.
+            assert type(recorded).__name__ in printed
+            assert "not a usable path" in printed
+
+    def test_an_unreadable_supplied_manifest_falls_back_to_the_recorded_one(
+        self, tmp_path, capsys
+    ):
+        """A typo must not defeat a manifest the state already names.
+
+        The supplied path used to win unconditionally, so a mistyped
+        --manifest made ids unrecoverable that omitting the flag entirely
+        would have named -- and the remedy line then repeated the typo.
+        """
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "recorded.jsonl", n_records=6
+        )
+        good = fx.write_manifest(
+            tmp_path / "recorded.json",
+            [fx.manifest_row("recorded-session", transcript)],
+        )
+        typo = tmp_path / "recorded.jsonn"
+        state = {"batch_id": "batch_001", "manifest_path": str(good)}
+
+        found, used = bom.resolve_manifest(state, typo)
+        assert found == {"recorded-session"}
+        assert used == str(good)
+        printed = capsys.readouterr().err
+        assert str(typo) in printed
+        assert str(good) in printed
+        assert "falling back" in printed
+
+    def test_a_readable_supplied_manifest_still_wins(self, tmp_path, capsys):
+        """The fallback must not undo the point of supplying one."""
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "supplied.jsonl", n_records=6
+        )
+        supplied = fx.write_manifest(
+            tmp_path / "supplied.json",
+            [fx.manifest_row("supplied-session", transcript)],
+        )
+        recorded = fx.write_manifest(
+            tmp_path / "recorded.json",
+            [fx.manifest_row("recorded-session", transcript)],
+        )
+        found, used = bom.resolve_manifest(
+            {"manifest_path": str(recorded)}, supplied
+        )
+        assert found == {"supplied-session"}
+        assert used == str(supplied)
+        assert capsys.readouterr().err == ""
+
+    def test_nothing_readable_leaves_the_remedy_on_the_placeholder(
+        self, tmp_path, capsys
+    ):
+        """Never repeat a path already known to be broken."""
+        state = {"manifest_path": str(tmp_path / "also-missing.json")}
+        found, used = bom.resolve_manifest(state, tmp_path / "missing.json")
+        assert found == set()
+        assert used is None
+        capsys.readouterr()
+
+    def test_a_typo_does_not_defeat_recovery_end_to_end(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """The regression, at the entry point that would have shown it."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        session_id = "subagent-explore-" + "w" * 80
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "typo.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row(session_id, transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": str(manifest),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+        )
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(tmp_path / "manifest.jsonn"),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert f"probably session {session_id}" in printed
+        assert "not recoverable" not in printed
+        assert "manifest.jsonn" not in printed  # the typo is not repeated
 
     def test_a_numeric_manifest_path_does_not_crash_a_retrieval(
         self, tmp_path, capsys, anthropic_stub
