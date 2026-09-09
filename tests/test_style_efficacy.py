@@ -380,86 +380,72 @@ def test_scoring_no_passage_at_all_exits_two(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Round 4g-3 item 4 — efficacy_score must check phase 3's stamp too
+# The scorer's phase inputs (round 4g-3 item 4; round 4g-5 item M-a1)
 # ---------------------------------------------------------------------------
 
-def test_the_scorer_checks_every_phase_input_it_reads():
-    """--phase3 was the one input whose stamp went unchecked.
+def _score_main_ast():
+    """Return the AST of ``efficacy_score.main`` without importing it.
 
-    ``efficacy_score`` imports the Phase 5 evaluator, and so numpy, at module
-    scope; the stdlib-reachable way to assert what its ``main`` checks is to
-    read the source. The mutation this kills: dropping ``args.phase3`` from
-    the candidates loop, which lets a feature space built from superseded
-    measurements decide which metrics are scored.
+    The module imports the Phase 5 evaluator, and so numpy, at module scope,
+    and numpy is deliberately absent here.
     """
     import ast
 
     from style_test_helpers import SCRIPTS_DIR
 
     source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
-    main_fn = next(node for node in ast.parse(source).body
-                   if isinstance(node, ast.FunctionDef) and node.name == "main")
-
-    checked: set[str] = set()
-    for node in ast.walk(main_fn):
-        if not isinstance(node, ast.For):
-            continue
-        calls = [c for c in ast.walk(node)
-                 if isinstance(c, ast.Call)
-                 and isinstance(c.func, ast.Attribute)
-                 and c.func.attr == "metric_schema_error"]
-        if not calls:
-            continue
-        checked |= {element.attr for element in ast.walk(node.iter)
-                    if isinstance(element, ast.Attribute)
-                    and isinstance(element.value, ast.Name)
-                    and element.value.id == "args"}
-
-    assert {"phase1", "phase3", "reference_phase1"} <= checked
+    return ast.parse(source), next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "main")
 
 
-#: Calls in ``efficacy_score.main`` that CONSUME a phase-1 or phase-3 payload.
-_PHASE_CONSUMING_CALLS = ("load_corpus_space", "evaluate_text",
-                          "evaluation_to_dict")
+def _call_name(call) -> str | None:
+    """The name a call resolves to, for `f()` and `mod.f()` alike."""
+    import ast
+
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
 
 
-def test_the_scorer_checks_the_stamps_before_it_uses_the_corpus():
-    """A check that runs after ``load_corpus_space`` is not an interlock.
+def test_the_scorer_loads_every_phase_input_through_the_checked_loader():
+    """One call, before anything reads a corpus, covering all three inputs.
 
-    The feature space, the fitted model and the leave-one-out envelope are all
-    built inside that call. Moving the stamp loop below it left the suite
-    green while every one of those was built from a corpus the check had not
-    seen. The mutation this kills: moving the loop below
-    ``load_corpus_space(...)``.
+    ``load_checked_payloads`` refuses before returning any payload — tested
+    directly, without numpy, in ``tests/test_style_support.py`` — so what
+    matters here is that ``main`` obtains its phase files from it, passes
+    every one of them, and does so before ``load_corpus_space`` builds the
+    feature space, fits the model, and computes the envelope.
+
+    The mutation this kills: reverting to the hand-rolled loop, whose
+    ordering could only be asserted by reading the source and whose guard
+    ``if candidate is None or candidate.exists(): continue`` — one word
+    changed — skipped every file that existed with all 24 tests green.
     """
     import ast
 
-    from style_test_helpers import SCRIPTS_DIR
+    _module, main_fn = _score_main_ast()
+    loader_calls = [node for node in ast.walk(main_fn)
+                    if isinstance(node, ast.Call)
+                    and _call_name(node) == "load_checked_payloads"]
 
-    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
-    main_fn = next(node for node in ast.parse(source).body
-                   if isinstance(node, ast.FunctionDef) and node.name == "main")
+    assert len(loader_calls) == 1
 
-    def called_name(call: ast.Call) -> str | None:
-        if isinstance(call.func, ast.Name):
-            return call.func.id
-        if isinstance(call.func, ast.Attribute):
-            return call.func.attr
-        return None
+    # Every phase input this script reads must be in the list it hands over.
+    passed = {element.attr for element in ast.walk(loader_calls[0])
+              if isinstance(element, ast.Attribute)
+              and isinstance(element.value, ast.Name)
+              and element.value.id == "args"}
+    assert {"phase1", "phase3", "reference_phase1"} <= passed
 
-    stamp_line = min(
-        node.lineno for node in ast.walk(main_fn)
-        if isinstance(node, ast.For)
-        and any(called_name(c) == "metric_schema_error"
-                for c in ast.walk(node) if isinstance(c, ast.Call))
-    )
-    consumers = [(called_name(node), node.lineno) for node in ast.walk(main_fn)
+    consumers = [(_call_name(node), node.lineno) for node in ast.walk(main_fn)
                  if isinstance(node, ast.Call)
-                 and called_name(node) in _PHASE_CONSUMING_CALLS]
+                 and _call_name(node) in ("load_corpus_space", "evaluate_text",
+                                          "evaluation_to_dict")]
     assert consumers, "no phase-consuming call found in main()"
     first_name, first_line = min(consumers, key=lambda pair: pair[1])
-
-    assert stamp_line < first_line, (
-        f"the metric_schema check runs after {first_name}() has already used "
-        "the corpus"
+    assert loader_calls[0].lineno < first_line, (
+        f"the phase files are loaded after {first_name}() has already run"
     )

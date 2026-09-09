@@ -119,6 +119,44 @@ def judge_key_dir(root: Path | str | None = None) -> Path:
     return private_dir(root) / "judge-key"
 
 
+def load_checked_payloads(
+        paths: Sequence[Path | str]) -> tuple[list[dict] | None, str | None]:
+    """Load every phase file, refusing BEFORE returning any of them.
+
+    Returns ``(payloads, None)`` when every path exists, parses, and carries
+    the current metric-definition stamp, and ``(None, message)`` otherwise —
+    never a partial list. A caller that holds payloads therefore holds
+    checked ones, by construction.
+
+    This exists because the check's position was previously enforced only by
+    reading the source: an assertion that the stamp loop appears before the
+    first consuming call passes just as happily when the loop is hoisted into
+    a nested function called afterwards, wrapped in an environment-variable
+    condition, or given an empty iterable. None of those could be caught by
+    running the code either, because both consumers import numpy at module
+    scope and neither executes in this repository's virtual environment. The
+    sequence is a single stdlib-only call instead, so it is testable here on
+    its own terms, and a consumer cannot reach a payload around it.
+    """
+    payloads: list[dict] = []
+    for path in paths:
+        path = Path(path)
+        if not path.exists():
+            return None, f"Input not found: {path}"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"{path}: could not be read as JSON ({exc})"
+        if not isinstance(payload, dict):
+            return None, (f"{path}: expected a JSON object, found "
+                          f"{type(payload).__name__}")
+        stale = metric_schema_error(payload, path)
+        if stale:
+            return None, stale
+        payloads.append(payload)
+    return payloads, None
+
+
 def metric_schema_stamp() -> dict:
     """Return the stamp phase 1 writes into its results file."""
     return {
@@ -317,7 +355,7 @@ def provenance_block(script: str,
 
     Contains no wall-clock field, on purpose: see the module docstring.
 
-``script_path`` is the file whose repository state is recorded. It
+    ``script_path`` is the file whose repository state is recorded. It
     defaults to the CALLER's ``__file__``, because the commit that matters is
     the one containing the script that produced the output. This used to call
     ``git_state()`` with no argument, which always described *this* module —

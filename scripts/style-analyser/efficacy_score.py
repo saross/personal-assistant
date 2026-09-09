@@ -92,6 +92,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="score the passages and report, but write no file")
     args = ap.parse_args(argv)
 
+    # FIRST, before anything reads a corpus: every phase file this run will
+    # use, loaded through the checked loader, which refuses before returning
+    # any of them. --phase3 is in the list because it defines the feature
+    # space (which metrics are bimodal, and so excluded from the distance),
+    # and a promotion file built from superseded measurements answers that
+    # about different metrics than the ones being scored (round 4g-5, M-a1).
+    _payloads, problem = style_support.load_checked_payloads(
+        [p for p in (args.phase1, args.phase3, args.reference_phase1)
+         if p is not None]
+    )
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+
     passages_dir = args.experiment_dir / "passages"
     if not passages_dir.is_dir():
         print(f"No passages dir: {passages_dir}", file=sys.stderr)
@@ -105,18 +119,6 @@ def main(argv: list[str] | None = None) -> int:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         for rec in manifest.get("records", []):
             stratum_by_topic[rec["topic_id"]] = rec["stratum"]
-
-    # --phase3 with them: it defines the feature space (which metrics are
-    # bimodal, and so excluded from the distance), and a promotion file built
-    # from superseded measurements answers that about different metrics.
-    for candidate in (args.phase1, args.phase3, args.reference_phase1):
-        if candidate is None or not candidate.exists():
-            continue
-        stale = style_support.metric_schema_error(
-            json.loads(candidate.read_text(encoding="utf-8")), candidate)
-        if stale:
-            print(stale, file=sys.stderr)
-            return 2
 
     phase1, phase3, fs, X, loo, nlp, matrix_source = load_corpus_space(
         args.phase1, args.phase3, args.spacy_model, args.reference_phase1

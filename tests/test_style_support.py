@@ -556,3 +556,82 @@ def test_an_explicit_script_path_wins(tmp_path):
 
     assert block["git_commit"] is None
     assert block["git_note"] == "not inside a git repository"
+
+
+# ---------------------------------------------------------------------------
+# load_checked_payloads (round 4g-5, item M-a1)
+# ---------------------------------------------------------------------------
+
+def _phase_file(path: Path, *, stamped: bool = True, extra: dict | None = None):
+    """Write a minimal phase-shaped JSON file, stamped unless told otherwise."""
+    payload: dict = {"per_paper": [], "aggregate": {}}
+    if stamped:
+        payload["metric_schema"] = style_support.metric_schema_stamp()
+    payload.update(extra or {})
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_checked_payloads_come_back_only_when_every_file_passes(tmp_path):
+    """The happy path: two stamped files, returned in the order asked for."""
+    first = _phase_file(tmp_path / "phase1.json", extra={"which": "one"})
+    second = _phase_file(tmp_path / "phase3.json", extra={"which": "three"})
+
+    payloads, problem = style_support.load_checked_payloads([first, second])
+
+    assert problem is None
+    assert [p["which"] for p in payloads] == ["one", "three"]
+
+
+def test_one_stale_file_withholds_every_payload(tmp_path):
+    """Nothing is returned when anything fails — not even the file that passed.
+
+    This is the property the AST assertions could only approximate: a caller
+    holding payloads is holding checked ones, so no arrangement of the code
+    around the call can reach an unchecked corpus. The mutation this kills:
+    returning the payloads accumulated so far alongside the error.
+    """
+    good = _phase_file(tmp_path / "phase1.json")
+    stale = _phase_file(tmp_path / "phase3.json", stamped=False)
+
+    payloads, problem = style_support.load_checked_payloads([good, stale])
+
+    assert payloads is None
+    assert "metric_schema version is absent" in problem
+    assert str(stale) in problem
+
+
+def test_a_missing_file_is_reported_rather_than_raised(tmp_path):
+    """The loader subsumes the existence check its callers used to do."""
+    payloads, problem = style_support.load_checked_payloads(
+        [tmp_path / "absent.json"])
+
+    assert payloads is None
+    assert "Input not found" in problem
+
+
+def test_unreadable_json_is_reported_rather_than_raised(tmp_path):
+    """A truncated file is a diagnostic, not a traceback out of a consumer."""
+    broken = tmp_path / "phase1.json"
+    broken.write_text('{"per_paper": [', encoding="utf-8")
+
+    payloads, problem = style_support.load_checked_payloads([broken])
+
+    assert payloads is None
+    assert "could not be read as JSON" in problem
+
+
+def test_a_json_document_that_is_not_an_object_is_refused(tmp_path):
+    """`[]` has no metric_schema to check and must not pass as a payload."""
+    listy = tmp_path / "phase1.json"
+    listy.write_text("[]", encoding="utf-8")
+
+    payloads, problem = style_support.load_checked_payloads([listy])
+
+    assert payloads is None
+    assert "expected a JSON object" in problem
+
+
+def test_no_paths_is_no_payloads_and_no_error():
+    """An empty list is a legitimate call (a consumer with nothing optional)."""
+    assert style_support.load_checked_payloads([]) == ([], None)
