@@ -892,7 +892,16 @@ Open, each with its verdict so far:
   data` pathspec and the composer's `-e` breadth unpinned; and three
   notes (pointer regex needs a literal `/.git/`; `$submodule_state` read
   before assignment under `set -u` if ever called early; a status that
-  prints `-` and fails is treated as authoritative).
+  prints `-` and fails is treated as authoritative). Round 4d-6
+  delivered (734a28d-7fc6dd6): the trim set asserted whitespace-only;
+  the preview prints the remedy it previews; both dry-run notes pinned in
+  both directions; the composed file's three layers asserted in order;
+  the stub honours the pathspec (two-submodule cases); the directory-
+  shaped `data/.git` case; the destructive remedy additionally requires
+  `git submodule status` exit 0 (a failed query gets its own "state is
+  unknown" message); safe defaults declared near the top; the pointer
+  regex's limits recorded. Merged with main (c4cc548); coordinator
+  suite, PR, and re-audit pending.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -1031,7 +1040,20 @@ Open, each with its verdict so far:
   `isinstance` guard that raises at the end of `haiku_apply`; an empty
   session list "restores 0"; a constructed custom-id collision handled
   three different ways; the reverse map re-hashed per result; an
-  over-claiming comment; no `fsync` before `os.replace`.
+  over-claiming comment; no `fsync` before `os.replace`. Round 4e-7
+  delivered (71072fb-df9ec6e): `--rebuild-map` records `manifest_path`
+  and `main` threads `--manifest` into the same invocation's
+  `haiku_apply` (a stale-path test pins the threading, which the
+  end-to-end test could not see once the rebuild recorded the path — the
+  agent's first draft claimed a kill it did not have and was amended);
+  the remedy's manifest quoted and pinned; empty, blank, and tab-only
+  session ids refused (a whitespace-only id was truthy and would have
+  named a response file `   .json`); the unreadable-manifest fallback
+  explains itself on stderr; one helper guards the recorded path's type;
+  an empty session list and a self-colliding manifest refused with exit
+  2; the lookup built once; `fsync` before `os.replace` (its mutation
+  survives by nature, stated). Merged with main; coordinator suite, PR,
+  and re-audit pending.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
