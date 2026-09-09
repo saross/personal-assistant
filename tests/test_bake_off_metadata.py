@@ -433,7 +433,7 @@ class TestUngatedRetrieval:
         )
         retrieved: list[str] = []
 
-        def fake_apply(batch_id, out_dir, *, force=False):
+        def fake_apply(batch_id, out_dir, *, force=False, manifest_path=None):
             retrieved.append(batch_id)
 
         monkeypatch.setattr(bom, "haiku_apply", fake_apply)
@@ -2369,3 +2369,164 @@ class TestRebuildMapRejectsABadManifest:
             "--rebuild-map",
         ]) == 2
         assert "--rebuild-map refused" in capsys.readouterr().err
+
+
+class TestTheRepairRunIsSelfSufficient:
+    """The printed remedy must work in ONE invocation, on the state it targets."""
+
+    @pytest.fixture
+    def anthropic_stub(self, monkeypatch):
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return results
+
+    @staticmethod
+    def _succeeded(custom_id: str, text: str):
+        block = type("Block", (), {"type": "text", "text": text})()
+        message = type("Message", (), {"content": [block]})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def _old_format_state_without_manifest(self, tmp_path: Path):
+        """The exact shape --rebuild-map exists for: no manifest recorded.
+
+        A digest-form session id is included deliberately: the rebuild
+        covers it, but if the manifest is not also threaded into the same
+        run, anything the rebuild missed falls back to shape and is
+        reported unrecoverable.
+        """
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        session_ids = ["stranded-0", "subagent-explore-" + "y" * 80]
+        rows = []
+        for index, session_id in enumerate(session_ids):
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"s{index}.jsonl", n_records=6
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_002", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        return out_dir, manifest, session_ids
+
+    def test_the_printed_remedy_recovers_everything_in_one_run(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """The finding: the repair could not see the manifest it was given."""
+        out_dir, manifest, session_ids = self._old_format_state_without_manifest(
+            tmp_path
+        )
+        anthropic_stub.extend(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+            for session_id in session_ids
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        first = capsys.readouterr().out
+        line = next(
+            line.strip() for line in first.splitlines() if "--rebuild-map" in line
+        )
+        command = shlex.split(line)
+        # The state records no manifest, so the operator supplies one.
+        command = [
+            str(manifest) if part == bom.MANIFEST_PLACEHOLDER else part
+            for part in command
+        ]
+
+        anthropic_stub.extend(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+            for session_id in session_ids
+        )
+        assert bom.main(command[2:]) == 0
+        printed = capsys.readouterr().out
+        for session_id in session_ids:
+            assert json.loads((out_dir / f"{session_id}.json").read_text()) == (
+                fx.RESPONSE_OBJECT
+            )
+        assert "not recoverable" not in printed
+        assert "PATH-TO-MANIFEST" not in printed
+
+    def test_the_rebuild_records_the_manifest_for_next_time(self, tmp_path):
+        out_dir, manifest, _ids = self._old_format_state_without_manifest(tmp_path)
+        bom.rebuild_custom_id_map(out_dir, manifest)
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert state["manifest_path"] == str(manifest)
+
+    def test_an_existing_manifest_record_is_not_overwritten(self, tmp_path):
+        """The recorded path is submission provenance, not a repair detail."""
+        out_dir, manifest, _ids = self._old_format_state_without_manifest(tmp_path)
+        state_path = out_dir / "batch-state.json"
+        state = json.loads(state_path.read_text())
+        state["manifest_path"] = "/invented/original-manifest.json"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        bom.rebuild_custom_id_map(out_dir, manifest)
+        assert json.loads(state_path.read_text())["manifest_path"] == (
+            "/invented/original-manifest.json"
+        )
+
+    def test_the_entry_point_threads_manifest_without_rebuild_map(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """Isolate the threading from the state record.
+
+        Once the rebuild records manifest_path, a repair run finds the
+        manifest through the state whether or not main passed it on — so
+        that test cannot see the threading. Here the state's record is
+        STALE and --rebuild-map is not used, which leaves the argument as
+        the only route from the command line to the recovery, and the
+        session id is the digest form that shape can never reverse.
+        """
+        out_dir, manifest, session_ids = self._old_format_state_without_manifest(
+            tmp_path
+        )
+        digest_form_id = session_ids[1]
+        state_path = out_dir / "batch-state.json"
+        state = json.loads(state_path.read_text())
+        state["manifest_path"] = str(tmp_path / "moved-away.json")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(digest_form_id), fx.RESPONSE_BARE)
+        )
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert f"probably session {digest_form_id}" in printed
+        assert "not recoverable" not in printed
+
+    def test_the_supplied_manifest_beats_a_stale_recorded_one(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """A recorded path that has since moved must not defeat the repair."""
+        out_dir, manifest, session_ids = self._old_format_state_without_manifest(
+            tmp_path
+        )
+        state_path = out_dir / "batch-state.json"
+        state = json.loads(state_path.read_text())
+        state["manifest_path"] = str(tmp_path / "moved-away.json")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(session_ids[1]), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir, manifest_path=manifest)
+        printed = capsys.readouterr().out
+        assert f"probably session {session_ids[1]}" in printed
+        assert str(manifest) in printed

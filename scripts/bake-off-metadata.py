@@ -720,15 +720,28 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
 _HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def known_session_ids(state: dict[str, Any]) -> set[str]:
-    """Best-effort set of session ids the state's manifest lists.
+def known_session_ids(
+    state: dict[str, Any], manifest_path: Path | None = None
+) -> set[str]:
+    """Best-effort set of session ids a manifest lists.
+
+    Args:
+        state: the batch state, which may record the manifest it was
+            submitted against.
+        manifest_path: a manifest supplied on THIS invocation, which wins.
+            Without it a repair run could not see the manifest it had just
+            been given: the state's own record may be absent (an old-format
+            file) or stale.
 
     The manifest is not required to exist — the state may name a path that
     has since moved, and older states name none at all. Every failure is a
     quiet empty set: this feeds a diagnostic, and a diagnostic that raises
     is worse than one that is vague.
     """
-    path = state.get("manifest_path")
+    if manifest_path is not None:
+        path: Any = str(manifest_path)
+    else:
+        path = state.get("manifest_path")
     if not isinstance(path, str) or not path:
         return set()
     try:
@@ -836,6 +849,11 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
             )
         mapping.setdefault(build_custom_id(session_id), session_id)
     state["custom_id_to_session"] = mapping
+    # Record the manifest so the NEXT retrieval can reverse a custom_id
+    # without being handed it again. An existing record wins: it is the
+    # provenance of the submission, whereas this is the file someone
+    # happened to repair with.
+    state.setdefault("manifest_path", str(manifest_path))
     write_json_atomic(out_dir / "batch-state.json", state)
     return len(mapping) - before
 
@@ -1001,6 +1019,7 @@ def haiku_apply(
     out_dir: Path,
     *,
     force: bool = False,
+    manifest_path: Path | None = None,
 ) -> None:
     """Retrieve a completed Haiku batch and write per-session response files.
 
@@ -1008,6 +1027,11 @@ def haiku_apply(
         batch_id: the batch to fetch.
         out_dir: the provider subdirectory holding ``batch-state.json``.
         force: overwrite responses that are already complete on disk.
+        manifest_path: the manifest supplied on this invocation, if any. It
+            is what makes the printed repair command work in ONE run: the
+            same invocation that rebuilds the map then uses that manifest
+            to name any session the rebuild did not cover, and repeats it
+            in any remedy line it still has to print.
     """
     from anthropic import Anthropic  # type: ignore[import-not-found]
 
@@ -1018,7 +1042,10 @@ def haiku_apply(
 
     # Read once, before the loop: it turns a guessed session id into a
     # confirmed one, and it is a file read.
-    manifest_session_ids = known_session_ids(state)
+    manifest_session_ids = known_session_ids(state, manifest_path)
+    effective_manifest = (
+        str(manifest_path) if manifest_path else state.get("manifest_path")
+    )
 
     batch_job = client.messages.batches.retrieve(batch_id)
     if batch_job.processing_status != "ended":
@@ -1116,7 +1143,7 @@ def haiku_apply(
             "accumulating custom_id map, so a later top-up replaced the "
             "entries for this batch. Restore them from the manifest and "
             "retrieve again:\n"
-            f"  {rebuild_map_command(batch_id, out_dir, state.get('manifest_path'))}"
+            f"  {rebuild_map_command(batch_id, out_dir, effective_manifest)}"
         )
     report_kept(n_kept, tag="haiku")
 
@@ -2178,7 +2205,12 @@ def main(argv: list[str] | None = None) -> int:
         load_env()
         # submit persists batch-state.json under the provider subdir
         # (<out-dir>/haiku/), so apply must navigate to the same subdir.
-        haiku_apply(args.haiku_apply, target_dir, force=args.force)
+        # --manifest is threaded through so a repair run can reverse a
+        # custom_id in the same invocation that rebuilt the map.
+        haiku_apply(
+            args.haiku_apply, target_dir,
+            force=args.force, manifest_path=args.manifest,
+        )
         return 0
 
     if not (args.manifest and args.prompt):
