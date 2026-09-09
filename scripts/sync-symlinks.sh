@@ -250,12 +250,29 @@ non-empty directory), then re-run this script."
 say_data_remedy() {
     # Print the remedy that fits the submodule's ACTUAL state. The
     # destructive one is reachable only when git says the submodule has no
-    # checkout at all, so nothing of the operator's can be inside it.
+    # checkout at all, so nothing of the operator's can be inside it —
+    # and only when git SUCCEEDED in saying so (round 4d-6, L9).
+    #
+    # Recorded, not fixed (L9, second half): this script asks GIT what
+    # state data/ is in, while compose-global-claude-md.sh asks the
+    # FILESYSTEM (does data/.git exist). The two agree in every state
+    # either script can reach on a healthy machine, but an inconsistent
+    # one — a .git left behind after a de-initialisation, say — would draw
+    # opposite advice from them. Reconciling them means giving the
+    # composer a git dependency it does not otherwise have, which is a
+    # worse trade than the divergence, and the composer's answer is the
+    # conservative one: it says "do not delete" whenever data/.git exists.
     if [ -z "$submodule_state" ]; then
         say "  Remedy: no data submodule is declared in this checkout, so"
         say "    $COMPOSER_LOCAL cannot appear. Check .gitmodules."
-    elif [ "${submodule_state#-}" != "$submodule_state" ]; then
+    elif [ "${submodule_state#-}" != "$submodule_state" ] &&
+         [ "$SUBMODULE_STATUS_OK" -eq 1 ]; then
         say "  Remedy: $DATA_REMEDY"
+    elif [ "$SUBMODULE_STATUS_OK" -eq 0 ]; then
+        say "  Remedy: git could not report on the data submodule, so its"
+        say "    state is unknown. Run 'git -C $PA_DIR submodule status'"
+        say "    and resolve what it reports before re-running. Do NOT"
+        say "    delete $PA_DIR/data on the strength of a failed query."
     else
         say "  Remedy: data/ IS initialised, so this is a missing file"
         say "    inside the submodule, not a missing submodule. Look there:"
@@ -267,6 +284,14 @@ say_data_remedy() {
 #: The composer's only data/-borne source; step 7 fails without it.
 COMPOSER_LOCAL="$PA_DIR/data/global-claude-md/local.md"
 SKIP_COMPOSE=0
+#: What `git submodule status -- data` reported, and whether it succeeded.
+#: Declared here rather than at the call site (round 4d-6, L8):
+#: say_data_remedy() reads both, and under `set -u` a future call placed
+#: above the assignment would abort the script instead of printing advice.
+#: An empty state with status 0 reads as "no submodule declared", which is
+#: the safe default — it never selects the destructive remedy.
+submodule_state=""
+SUBMODULE_STATUS_OK=1
 # Audit round 4d (E10): run this ONLY when data/ is uninitialised. On an
 # already-initialised submodule `git submodule update` checks out the
 # gitlink SHA recorded in the superproject, which detaches data/ from its
@@ -310,13 +335,29 @@ SKIP_COMPOSE=0
 # worktree and ".git/modules/<name>" for a submodule. Matching on that is
 # exact, and needs no git binary, which matters because this step runs
 # before anything has verified git works.
+#
+# Round 4d-6 (L6), recorded rather than fixed: the pattern requires a
+# literal "/.git/" component, so a RELATIVE pointer ("gitdir:
+# .git/worktrees/x") and a bare-repo worktree pointer (whose admin
+# directory is not called ".git") would not match, and such a checkout
+# would be treated as an ordinary clone. All ten worktree pointers on
+# this machine are absolute and match. Widening the pattern would also
+# widen what counts as a worktree, and the cost of the false NEGATIVE
+# here is small — the submodule init is attempted and git declines —
+# whereas a false positive skips an init that was needed.
 IS_WORKTREE=0
 if [ -f "$PA_DIR/.git" ] &&
    grep -qE '^gitdir:.*/\.git/worktrees/' "$PA_DIR/.git" 2>/dev/null; then
     IS_WORKTREE=1
 fi
 
-submodule_state="$(git submodule status -- data 2>/dev/null || true)"
+# Round 4d-6 (L9): keep git's EXIT STATUS as well as its output. `$( … ||
+# true )` retains whatever was printed before a failure, so a status that
+# emitted a "-" line and then failed would otherwise be treated as
+# authoritative — and "-" is the one answer that unlocks the destructive
+# remedy. The remedy requires both: git said "-", AND git succeeded.
+submodule_state="$(git submodule status -- data 2>/dev/null)" \
+    && SUBMODULE_STATUS_OK=1 || SUBMODULE_STATUS_OK=0
 if [ -z "$submodule_state" ]; then
     say_verbose "  No data submodule declared — nothing to initialise."
 elif [ "${submodule_state#-}" = "$submodule_state" ]; then

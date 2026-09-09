@@ -1266,6 +1266,41 @@ class TestTheRemedyNeverSaysDeleteALiveSubmodule:
         assert "Remedy: remove" in result.stdout, result.stdout
         assert "will not clone into a non-empty directory" in result.stdout
 
+    def test_a_failed_status_query_never_unlocks_the_removal(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L9 — `$( … || true )` keeps whatever was printed before a failure.
+
+        A `git submodule status` that emitted a "-" line and THEN failed
+        would otherwise be taken as authoritative, and "-" is the one
+        answer that unlocks "remove data/ entirely". The remedy now needs
+        git to have both said it and succeeded.
+        """
+        # A stub git that prints the uninitialised line and then fails.
+        stub = sync_sandbox["bin"] / "git"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
+            '    printf -- "-1234abcd data\\n"\n'
+            "    exit 128\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / "memories").mkdir()
+
+        result = _run_sync(sync_sandbox)
+
+        assert result.returncode == 1, result.stdout
+        assert "state is unknown" in result.stdout, result.stdout
+        assert "Remedy: remove" not in result.stdout, result.stdout
+        assert "Do NOT" in result.stdout
+        assert (data / "memories").is_dir()
+
     def test_no_declared_submodule_gets_its_own_remedy(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
@@ -1289,6 +1324,33 @@ class TestTheRemedyNeverSaysDeleteALiveSubmodule:
         (data / "global-claude-md").rmdir()
         (data / ".git").write_text(
             "gitdir: ../.git/modules/data\n", encoding="utf-8"
+        )
+        (data / "memories").mkdir()
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 1
+        assert "Remove" not in result.stderr, result.stderr
+        assert "Do NOT delete" in result.stderr
+
+    def test_a_directory_shaped_git_also_counts_as_initialised(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """L3 — `-e` versus `-f` on data/.git, made deliberate.
+
+        A submodule checked out the old way, or one converted by hand,
+        has a .git DIRECTORY rather than a gitdir: file. It is just as
+        initialised, and just as much not-to-be-deleted, so the test is
+        `-e`. Nothing exercised that breadth, so tightening it to `-f`
+        survived -- and would have met such a checkout with "Remove
+        $PA_DIR/data".
+        """
+        data = compose_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / ".git").mkdir()
+        (data / ".git" / "HEAD").write_text(
+            "ref: refs/heads/main\n", encoding="utf-8"
         )
         (data / "memories").mkdir()
 
