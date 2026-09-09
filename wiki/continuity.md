@@ -2422,12 +2422,14 @@ every round with its re-audit outcome, six decisions for Shawn).
   audit is getting rather expensive"); no fix rounds launched after
   15:5x. Open at the stop: #147 (archive — refused twice, the second time
   on `| grep -q` under `pipefail` dropping a real R2 refusal to exit 2;
-  one-line fix recorded), #149 (machine-glue lows, re-audit running),
+  one-line fix recorded), #149 (machine-glue lows — refused: the destructive remedy is still
+  printed from a second, unguarded site; one-line fix recorded),
   #151 (style-analyser — refused: the scorer still re-reads the files
   after the checked loader; two-line fix recorded), #153 and #154
   (daily-sync 3c-9, bake-off 4e-8 — delivered, green, NOT re-audited),
   and 4a-7 (hermeticity — ships a `sys.addaudithook` that catches an
-  in-process write to the real store; PR to open, not re-audited). The
+  in-process write to the real store; PR #155, not re-audited). All
+  agents finished by 17:1x; /tmp clean; every worktree on its branch. The
   report's "Stop point 2026-09-09 16:5x" section lists every branch's
   exact next action. Live issue found by a re-auditor reading the
   deployed log: the R2 push has been refusing on `CATALOG.json`
