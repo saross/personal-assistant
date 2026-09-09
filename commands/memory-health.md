@@ -37,16 +37,29 @@ snapshot).
 venv/bin/python3 ~/personal-assistant/scripts/memory-health-report.py [flags]
 ```
 
-2. **Relay** the report. The script prints a six-section text report (or JSON
-   with `--json`); show it to the user as-is — the figures are already
-   formatted and each is re-derivable at source.
+2. **Relay** the report. The script prints an eight-section text report (or
+   JSON with `--json`); show it to the user as-is — the figures are already
+   formatted and each is re-derivable at source. Section `[A]` reports two
+   populations (every JSONL line, and the active subset); `[B]`, `[C]` and
+   `[F]` describe the **active** records only, because those are what recall
+   can return. `[C]`'s "anchored" counts records with at least one anchor the
+   system can mechanically re-check — `zotero` and `url` anchors never resolve
+   locally, so they are counted separately.
 
 3. **Surface the verdict.** The script exits `0` when all integrity checks are
    clean and `1` when an integrity check failed (a recall leak — an archived id
-   still `is_active=TRUE`; a duplicate-id tripwire; or quarantined PG-drops).
-   If it exits `1`, call that out prominently: it is a real corpus-integrity
-   finding, not a cosmetic one. Exit `2` means the report could not run (the
-   canonical JSONL is missing) — report that plainly.
+   still `is_active=TRUE`; a PostgreSQL row with no canonical line; a
+   duplicate-id tripwire; quarantined PG-drops; or a
+   quarantine count of **UNKNOWN**, meaning the quarantine file exists and
+   could not be read — an unreadable standing alarm is not a quiet one. A
+   quarantine file that does not exist at all is normal: the sync writes it
+   only on its first dropped row, so it counts 0 and passes. The unsynced
+   tail — canonical records not yet in PostgreSQL — does NOT fail: the cron
+   drains it every 5 minutes). If it exits `1`,
+   call that out prominently: it is a real corpus-integrity finding, not a
+   cosmetic one. Exit `2` means the report could not run (the canonical JSONL
+   is missing) — report that plainly. A PostgreSQL schema mismatch is not
+   fatal: the PG-dependent sections are skipped and the rest still print.
 
 4. **Interpret lightly, do not over-read.** The confab-flag rate is only
    meaningful once enough verifier rows have accrued (a 2/2 rate on n=2 is

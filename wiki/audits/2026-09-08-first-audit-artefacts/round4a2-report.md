@@ -1,0 +1,16 @@
+# Round 4a-2 report (branch claude/audit-round4a-2; 10 commits a0a461a..76a15b8) — follow-ups from the PR #121 re-audit plus the hermeticity addendum
+M1 fixed check-memory-drift.py:340 json.dumps(record) — test_separator_in_recovered_content_is_escaped, test_recovered_line_survives_a_newline_split (backfill-summaries.py:234 left to round 4c)
+M2 fixed _sync_cursor.py:852 split_jsonl_lines used at sync-to-postgres.py:1358; fail-closed UnusableCursor (:890/:930/:960) caught at dedup-memories.py:449, archive-memories.py:556 — 8 tests. No migration: live file count_jsonl_lines 42,860 == splitlines 42,860, raw separators 0 (read-only). Absent key / other-cursors-only / {} still mean "no PostgreSQL here".
+M3 tests: test_journal_is_fsynced_before_the_corpus_rename (fsync attributed by inode), test_journal_lives_beside_the_store, test_journal_names_the_run_date
+M4 test: test_a_tag_appended_while_the_lock_is_awaited_survives (deterministic via a go signal)
+M5 conftest.py:555 assert_canonical_store_untouched extracted; 5 tests incl. AST check that the session fixture calls it
+M6 decision: refuse before the lock (tag-gardening.py:928); _bulk_rewrite_guard untouched — 2 tests
+M7 tag-gardening.py:781 case-insensitive both sides + guarded winner insert — 2 tests
+M8 conftest.py:95 PGHOST → empty socket dir in the suite home, PGHOSTADDR popped, PGPORT=1, PGSERVICE/PGSERVICEFILE popped; :106 stub psql first on PATH — 4 tests
+Lows: rewrite_vocabulary de-dup pinned; CRLF → LF (machine-owned file, newline="\n" at :170); empty keep + empty file writes zero bytes (:167); recover_anchors tmp.unlink pinned
+Addendum (1): conftest.py:332 no_network wraps socket.connect/connect_ex/create_connection; default deny; @pytest.mark.local_socket (pytest.ini + pytest_configure) permits loopback only; no current users; bind/listen unguarded; 7 tests incl. a real loopback listener refused
+Addendum (2): _CANONICAL_DIRS (conftest.py:480) widened to tasks/, global-claude-md/, global-agent-guidance/, wiki/, commands/, hooks/, scripts/ + logs/; stat-only; __pycache__/.git/.pytest_cache skipped; ZOTERO_DATA_DIR popped (:51) — 3 tests
+NEW: (1) _bulk_rewrite_guard.lock_jsonl_for_rewrite (:415, no O_CREAT) raises bare FileNotFoundError after the flock for any caller whose target may be absent — guard itself lacks a "target missing" refusal. (2) Neither the AST scan nor the connect patch sees `from psycopg2 import connect`; the PGHOST repoint is the only cover (environmental, not structural). (3) SUSPECTED: a hard kill leaves pa-test-home-* dirs in /tmp with the stub psql (harmless).
+Caveat: reverting a mutation with cp can reuse a stale .pyc (same size, same second) — clear __pycache__ and set PYTHONDONTWRITEBYTECODE=1 per cycle.
+Suite: env -i clean archive 2510 passed, 1 skipped, 3 deselected, exit 0; worktree 2511 passed.
+Live risks: stubs contained in the pytest process env and the session temp home only; archive/dedup refuse on an UNREADABLE cursor too; orphans clean exits 1 when the vocabulary is missing; the next merge removes mixed-case losers and normalises CRLF; psql-shelling scripts inside the suite get the stub; sockets refused unless local_socket + loopback; writes under the watched checkout dirs fail the run.

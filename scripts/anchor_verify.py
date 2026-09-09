@@ -48,18 +48,130 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 
 # Subprocess timeout in seconds. Tuned for warm git repos on local
 # filesystems; cold cache or NFS-backed repos may need a higher value.
 _GIT_TIMEOUT_S = 3
 
+# Characters that make git read a pathspec as a PATTERN rather than a literal
+# path. ``git log -- '*.md'`` matches every markdown file in history, so a junk
+# anchor whose ref carries one of these would mint ``verified=true`` for a file
+# that never existed (audit 2026-09-08, finding AN1). Every git invocation here
+# passes ``--literal-pathspecs`` as well; this gate is the write-side half, so
+# such a ref never reaches the resolver in the first place.
+_PATHSPEC_MAGIC = ("*", "?", "[")
+
+# The one git error text that means "checked, and absent" rather than "could
+# not check". Any other non-zero exit from the history probe is treated as a
+# failure to check and reported as "pending" (finding AN3).
+_UNMATCHED_PATHSPEC = "did not match any file"
+
+#: Repositories that cannot be consulted AT ALL — git is missing, the path is
+#: not a repository, the volume is unmounted. Keyed by path, value is the
+#: reason; the warning is printed once per process.
+#:
+#: A repository-level failure is a property of the repository, not of the ref
+#: being checked, so it must not make every ref in the corpus "pending". One
+#: unmounted checkout out of thirty-six did exactly that: every absent ref
+#: read pending, the drift sweep's pending rate went to 100 %, and the 10 %
+#: floor refused every sweep from then on (round 4f-3, finding M6). Such a
+#: repository is EXCLUDED with a warning; only a ref-level failure — a
+#: timeout, an unreadable object — still yields pending, and only for the
+#: repositories that could hold the ref.
+_UNUSABLE_REPOS: dict[str, str] = {}
+
+
+def note_unusable_repo(repo: Path, reason: str) -> None:
+    """Record *repo* as unusable, warning once per process."""
+    key = str(repo)
+    if key not in _UNUSABLE_REPOS:
+        _UNUSABLE_REPOS[key] = reason
+        print(f"[anchor_verify] WARN: excluding {key} from anchor resolution "
+              f"({reason})", file=sys.stderr)
+
+
+def repo_is_unusable(repo: Path) -> bool:
+    """Has *repo* already been found unusable in this process?"""
+    return str(repo) in _UNUSABLE_REPOS
+
+
+def unusable_repos() -> dict[str, str]:
+    """A copy of the exclusion registry, for reporting."""
+    return dict(_UNUSABLE_REPOS)
+
+
+def reset_unusable_repos() -> None:
+    """Clear the registry. For tests and long-lived callers."""
+    _UNUSABLE_REPOS.clear()
+
+# Minimum hex characters that can be a commit reference AT ALL. Four is
+# git's own minimum abbreviation, and the corpus carries eight anchors in the
+# 4-6 range written before the tooling settled on seven. The shape gate must
+# accept them or ``recover_anchors`` strips them as malformed and the memory
+# loses its only anchor (round 4f-3, finding L8).
+_MIN_COMMIT_HEX = 4
+
+# Length at or above which a single repository's hit is trusted on its own.
+# Below it, ~36 repositories give a short prefix real odds of colliding with
+# an unrelated object (finding AN12), so :func:`verify_commit` requires the
+# ref to resolve in EXACTLY ONE repository and otherwise withholds a verdict
+# rather than minting a false positive or condemning the anchor.
+_UNAMBIGUOUS_COMMIT_HEX = 7
+
+# Minimum hex characters before a separator-free, extension-free ref is read as
+# a mis-typed object id rather than a short filename (``cafe`` stays a file).
+_MIN_ID_HEX = 6
+
 
 # ============================================================================
 # verify_file — does this file exist anywhere we can see?
 # ============================================================================
+
+
+def _under_repo(repo: Path, relpath: str) -> Path | None:
+    """Lexically join *relpath* onto *repo*, refusing anything that escapes it.
+
+    Purely lexical (``normpath``; no ``resolve``) for the same reason as
+    :func:`_relpath_in_repo` — the file may have been deleted since the memory
+    was written, and stat-ing it would follow symlinks out of the repository.
+
+    ``(repo / "../outside.txt").exists()`` was true for a file that lived in no
+    repository at all, so a ref that walked out of every checkout verified
+    ``true`` (audit 2026-09-08, finding AN11). Returns ``None`` when the
+    joined path is not inside *repo*, and the caller then skips that
+    repository entirely rather than probing outside it.
+    """
+    repo_str = os.path.normpath(str(repo))
+    joined = os.path.normpath(os.path.join(repo_str, relpath))
+    if joined == repo_str:
+        return None
+    return Path(joined) if joined.startswith(repo_str + os.sep) else None
+
+
+def _resolves_inside(repo: Path, candidate: Path) -> bool:
+    """Does *candidate*, followed through symlinks, still live inside *repo*?
+
+    :func:`_under_repo` is lexical and must stay that way — it also guards the
+    git probes, where the file may have been deleted and ``resolve`` would
+    touch the filesystem. But a lexical check alone lets a SYMLINK inside the
+    repository stand in for a path outside it: ``<repo>/link/secret.txt``
+    passes the prefix test while the bytes live anywhere at all (round 4f-3,
+    finding L1). This second check runs only where a file was actually found,
+    so it costs a ``resolve`` on the hit path and nothing on the miss path.
+
+    A resolve that raises (a broken symlink, a permission wall, a symlink
+    loop) is treated as "not inside": we could not show that it is.
+    """
+    try:
+        real = candidate.resolve()
+        root = repo.resolve()
+    except (OSError, RuntimeError):
+        return False
+    return real == root or str(real).startswith(str(root) + os.sep)
 
 
 def _git_knows_path(repo: Path, relpath: str) -> str:
@@ -73,13 +185,35 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
          memory whose file was deleted after the memory was written still
          resolves ``"true"`` here, because the path exists in history.
 
-    Returns ``"true"`` / ``"false"`` / ``"pending"`` (the last only on a
-    subprocess timeout). A missing git binary or a vanished repo path
-    yields ``"false"`` for *this* repo — the caller tries the next one.
+    Both probes run under ``--literal-pathspecs``. Without it git reads the
+    second probe's argument as a *pattern*: ``*.md`` matched the whole
+    markdown history of the repository and ``:(exclude)zzz`` matched
+    everything else, so junk anchors minted ``verified=true`` and then
+    ``confidence=high`` (audit 2026-09-08, finding AN1). A ref that walks out
+    of the repository (``../outside``) is refused outright (finding AN11).
+
+    Returns ``"true"`` / ``"false"`` / ``"pending"``. ``"false"`` is reserved
+    for a *completed* check that found nothing: git ran, answered, and the path
+    was absent from HEAD and from every ref's history. Anything that stopped us
+    checking — a missing git binary, an unreadable or unmounted repository, a
+    timeout, or an exit code we do not recognise — returns ``"pending"``, per
+    the module contract above. Returning ``"false"`` there was finding AN3: the
+    drift sweep wrote the fabricated failure to its append-only trend log, and
+    ``recover_anchors`` treated the anchor as a recovery candidate and rewrote
+    it.
     """
     if not relpath:
         return "false"
-    # 1. Present at the current tip?
+    if _under_repo(repo, relpath) is None:
+        # Escapes the repository (or names the root itself): nothing for git
+        # to resolve here, and probing it would ask about a path outside the
+        # checkout entirely.
+        return "false"
+    if repo_is_unusable(repo):
+        return "unusable"
+    # 1. Present at the current tip? A non-zero exit here is inconclusive on
+    #    its own (an empty repository has no HEAD), so fall through to the
+    #    history probe rather than deciding.
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{relpath}"],
@@ -89,26 +223,44 @@ def _git_knows_path(repo: Path, relpath: str) -> str:
         if result.returncode == 0:
             return "true"
     except subprocess.TimeoutExpired:
+        # Ref-level: this repository is alive, this probe was slow.
         return "pending"
-    except (FileNotFoundError, OSError):
-        # git not installed, or repo path vanished mid-check
-        return "false"
+    except (FileNotFoundError, OSError) as exc:
+        # Repository-level: git is missing, or the checkout vanished. It will
+        # fail identically for every other ref, so exclude it rather than
+        # mark the whole corpus unchecked.
+        note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
+        return "unusable"
     # 2. Ever in history (any ref)? Covers deleted-since + renames.
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--all",
+            ["git", "-C", str(repo), "--literal-pathspecs", "log", "--all",
              "--max-count=1", "--", relpath],
             capture_output=True,
             timeout=_GIT_TIMEOUT_S,
             text=True,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return "true"
     except subprocess.TimeoutExpired:
         return "pending"
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError) as exc:
+        note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
+        return "unusable"
+    if result.returncode == 0:
+        # git answered: output means the path is in history, no output means
+        # it never was. This is the only path that may return "false".
+        return "true" if (result.stdout or "").strip() else "false"
+    if result.returncode == 1:
         return "false"
-    return "false"
+    if result.returncode == 128 and _UNMATCHED_PATHSPEC in (result.stderr or ""):
+        # "did not match any file(s) known to git" — a completed check whose
+        # answer is "absent", not a broken repository.
+        return "false"
+    if result.returncode == 128:
+        # Any other 128 is the repository itself: not a git repository, a
+        # corrupt object store, no commits at all. Same for every ref.
+        note_unusable_repo(repo, (result.stderr or "git exit 128").strip()[:120])
+        return "unusable"
+    return "pending"
 
 
 def _relpath_in_repo(abspath: str, repo: Path) -> str | None:
@@ -143,8 +295,11 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
       * **Repo-relative** — ``stat`` against each repo as a prefix, then the
         same HEAD + history probe per repo.
 
-    Returns ``"true"`` on first hit, ``"false"`` if no path resolves,
-    ``"pending"`` on subprocess timeout.
+    Returns ``"true"`` on first hit, ``"false"`` only when every repository
+    was actually consulted and none of them knew the path, and ``"pending"``
+    whenever some check could not complete — a timeout, an unreadable or
+    unmounted repository, a missing git binary, or (for a relative ref) an
+    empty repo set, where nothing was checked at all (finding AN3/AN7).
 
     Note: a path-prefix *mismatch* (e.g. a bare ``continuity.md`` anchor for
     a file that lives at ``wiki/continuity.md``) is NOT rescued here — the
@@ -158,11 +313,17 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
     expanded = os.path.expanduser(path)
     repos = list(repo_set)
     pending_seen = False
+    checked_any = False
 
     if os.path.isabs(expanded):
-        # Absolute (or expanded-tilde): stat directly first.
-        if Path(expanded).exists():
-            return "true"
+        # Absolute (or expanded-tilde): stat directly first. A stat that
+        # RAISES (an unmounted mount, a permission wall) told us nothing.
+        try:
+            if Path(expanded).exists():
+                return "true"
+            checked_any = True
+        except OSError:
+            pending_seen = True
         # Miss — the file may have been deleted since the memory was
         # written. Fall back to git history for any repo containing it.
         for repo in repos:
@@ -172,27 +333,105 @@ def verify_file(path: str, repo_set: Iterable[Path]) -> str:
             status = _git_knows_path(repo, rel)
             if status == "true":
                 return "true"
+            if status == "unusable":
+                # Excluded, not unchecked: this repository fails identically
+                # for every ref, so it must not colour this verdict (M6).
+                continue
             if status == "pending":
                 pending_seen = True
-        return "pending" if pending_seen else "false"
+            else:
+                checked_any = True
+        return "false" if checked_any and not pending_seen else "pending"
 
-    # Repo-relative: working-tree stat against each repo as a prefix.
+    # Repo-relative: working-tree stat against each repo as a prefix. The
+    # candidate is normalised first, so ``../outside.txt`` cannot stat a file
+    # that lives in no repository at all (finding AN11).
     for repo in repos:
-        if (repo / expanded).exists():
-            return "true"
+        candidate = _under_repo(repo, expanded)
+        if candidate is None:
+            continue
+        try:
+            if candidate.exists() and _resolves_inside(repo, candidate):
+                return "true"
+        except OSError:
+            # The stat itself failed: an unmounted volume, a permission wall.
+            # We did not check, so we must not later say "absent".
+            pending_seen = True
 
     # Filesystem miss — try HEAD + history in each repo.
     for repo in repos:
+        if _under_repo(repo, expanded) is None:
+            # The ref escapes this repository: not absent from it, just not
+            # a question about it. An escaping ref that fits no repository
+            # therefore ends up "false" via the empty-checked branch below.
+            checked_any = True
+            continue
         status = _git_knows_path(repo, expanded)
         if status == "true":
             return "true"
+        if status == "unusable":
+            continue      # excluded with a warning; see finding M6
         if status == "pending":
             pending_seen = True
+        else:
+            checked_any = True
 
-    return "pending" if pending_seen else "false"
+    # "false" is committal, so it requires a completed check. An empty repo
+    # set (a degraded machine, an unpopulated ~/Code) checks nothing and must
+    # not condemn every anchor in the corpus.
+    return "false" if checked_any and not pending_seen else "pending"
 
 
-def unique_suffix_match(ref: str, tracked_paths: Iterable[str]) -> str | None:
+class TrackedPath(NamedTuple):
+    """One tracked file, and the repository it belongs to.
+
+    ``repo`` is the repository root as a string (empty when the caller has no
+    attribution to offer). Recovery needs it because a bare basename recurs
+    across repositories: pooling ~36 checkouts into one namespace let project
+    A's dead ``src/util.py`` "recover" to project B's ``pkg/src/util.py``
+    (audit 2026-09-08, finding AN2).
+    """
+
+    repo: str
+    path: str
+
+
+class SuffixMatch(NamedTuple):
+    """A recovered path plus where it came from.
+
+    ``scope`` is ``"same-project"`` when the match lies inside the memory's
+    own project, and ``"cross-repo"`` when it was found only by searching the
+    union of every repository. A caller that WRITES a recovered ref must
+    refuse ``"cross-repo"`` unless the operator has asked for it: binding a
+    memory to a same-named file in an unrelated repository is worse than
+    leaving the anchor unresolved.
+    """
+
+    path: str
+    scope: str
+
+
+def _as_tracked(candidate: object) -> TrackedPath:
+    """Normalise a candidate into a :class:`TrackedPath`.
+
+    Accepts a :class:`TrackedPath`, a ``(repo, path)`` pair, or a bare
+    repo-relative string (no attribution — such a candidate can never satisfy
+    a project-scoped search).
+    """
+    if isinstance(candidate, TrackedPath):
+        return candidate
+    if isinstance(candidate, (tuple, list)) and len(candidate) == 2:
+        return TrackedPath(str(candidate[0]), str(candidate[1]))
+    return TrackedPath("", str(candidate))
+
+
+def unique_suffix_match(
+    ref: str,
+    tracked_paths: Iterable[object],
+    *,
+    project_repos: Iterable[Path] | None = None,
+    allow_union_fallback: bool = False,
+) -> SuffixMatch | None:
     """Collision-guarded prefix recovery (item 21b core) — I/O-free.
 
     Item-20 triage found ~53 % of the still-false relative `file` anchors are
@@ -209,17 +448,52 @@ def unique_suffix_match(ref: str, tracked_paths: Iterable[str]) -> str | None:
     ``src/cc_session_toolkit/extraction.py`` without colliding with an
     unrelated ``hooks/extraction.py``.
 
-    *tracked_paths* are repo-relative POSIX paths (e.g. from ``git ls-files``).
-    This is a measurement/recovery helper, deliberately **not** wired into
-    :func:`verify_file`: loosening the live resolver to fuzzy matches would
-    erode the very ``verified`` signal we are trying to make trustworthy.
+    *tracked_paths* are repo-relative POSIX paths (e.g. from ``git ls-files``),
+    each optionally carrying the repository it came from (see
+    :class:`TrackedPath`). This is a measurement/recovery helper, deliberately
+    **not** wired into :func:`verify_file`: loosening the live resolver to
+    fuzzy matches would erode the very ``verified`` signal we are trying to
+    make trustworthy.
+
+    *project_repos* scopes the search (finding AN2). When it is given, ONLY
+    candidates inside those repositories are considered, and a unique hit is
+    returned as ``"same-project"``; a memory that names a project must not
+    recover onto a same-named file in someone else's repository. When it is
+    ``None`` — the memory records no project, or none of the discovered
+    repositories matches it — the union is searched and a unique hit is
+    labelled ``"cross-repo"`` for the caller to accept or refuse.
+
+    *allow_union_fallback* is the operator's explicit "search everywhere
+    anyway". With it, a memory whose project holds NO candidate falls back to
+    the union, still labelled ``"cross-repo"``. Without it the flag that
+    promises exactly this was a no-op for every memory with an attributable
+    project, which is most of them (round 4f-3, finding L3). The fallback
+    does not fire when the project holds SEVERAL candidates: an ambiguity
+    inside the memory's own project is not resolved by widening the search.
     """
     ref_norm = ref.rstrip("/")
     if not ref_norm:
         return None
     suffix = "/" + ref_norm
-    matches = [p for p in tracked_paths if p == ref_norm or p.endswith(suffix)]
-    return matches[0] if len(matches) == 1 else None
+    candidates = [_as_tracked(p) for p in tracked_paths]
+
+    def _hits(pool: list[TrackedPath]) -> list[TrackedPath]:
+        return [c for c in pool
+                if c.path == ref_norm or c.path.endswith(suffix)]
+
+    if project_repos is not None:
+        wanted = {os.path.normpath(str(r)) for r in project_repos}
+        scoped = _hits([c for c in candidates
+                        if c.repo and os.path.normpath(c.repo) in wanted])
+        if len(scoped) == 1:
+            return SuffixMatch(scoped[0].path, "same-project")
+        if scoped or not allow_union_fallback:
+            # Ambiguous inside the project, or the operator has not asked for
+            # a wider search: withhold rather than guess.
+            return None
+
+    matches = _hits(candidates)
+    return SuffixMatch(matches[0].path, "cross-repo") if len(matches) == 1 else None
 
 
 # ============================================================================
@@ -235,14 +509,35 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
     hex string). Handles partial hashes (e.g. 7-char) when git is
     configured to disambiguate.
 
-    Returns ``"true"`` on first hit, ``"false"`` if no repo recognises
-    the hash, ``"pending"`` on subprocess timeout.
+    Returns ``"true"`` on first hit, ``"false"`` when every repository was
+    consulted and none recognised the hash, and ``"pending"`` when a check
+    could not complete — a timeout, an unreadable repository, a missing git
+    binary, an exit code other than "no such object", or an empty repo set
+    (finding AN3). A ref that is not hash-shaped is ``"false"`` without any
+    subprocess: that is a completed check of the ref's own shape.
+
+    A SHORT ref — four to six hex characters, git's own minimum abbreviation
+    and the shape of eight anchors written before the tooling settled on
+    seven — is handled differently (finding L8). Across ~36 repositories a
+    short prefix has real odds of colliding with an unrelated object, so one
+    hit is not proof; but the ref is not junk either, and calling it
+    ``"false"`` would feed it to ``recover_anchors``. Such a ref is
+    ``"true"`` only when it resolves in EXACTLY ONE repository, and
+    ``"pending"`` otherwise — zero hits included. It is never ``"false"``,
+    so it is never stripped.
     """
     if not hash_ or not _looks_like_hash(hash_):
         return "false"
+    # Below the unambiguous length, one hit does not settle it: scan every
+    # repository and count.
+    short_ref = len(hash_) < _UNAMBIGUOUS_COMMIT_HEX
+    hits = 0
 
     pending_seen = False
+    checked_any = False
     for repo in repo_set:
+        if repo_is_unusable(repo):
+            continue
         try:
             result = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse",
@@ -250,21 +545,59 @@ def verify_commit(hash_: str, repo_set: Iterable[Path]) -> str:
                 capture_output=True,
                 timeout=_GIT_TIMEOUT_S,
             )
-            if result.returncode == 0:
-                return "true"
         except subprocess.TimeoutExpired:
+            # Ref-level: the repository is alive, this probe was slow.
             pending_seen = True
             continue
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError) as exc:
+            # Repository-level: exclude it with a warning rather than let one
+            # broken checkout make every commit ref in the corpus pending
+            # (finding M6).
+            note_unusable_repo(repo, f"{type(exc).__name__}: {exc}")
             continue
+        if result.returncode == 0:
+            if not short_ref:
+                return "true"
+            hits += 1
+            checked_any = True
+            continue
+        if result.returncode == 1:
+            # rev-parse --verify --quiet: the object is not in this repo.
+            checked_any = True
+        else:
+            # 128 = not a repository, corrupt object store, and so on: a
+            # property of the repository, so exclude it.
+            note_unusable_repo(
+                repo, (result.stderr or b"git exit 128").decode(
+                    "utf-8", "replace").strip()[:120] or "git exit 128",
+            )
 
-    return "pending" if pending_seen else "false"
+    if short_ref:
+        # Exactly one repository knew it → trust it. Otherwise withhold: a
+        # collision across repositories is not proof, and zero hits on a
+        # four-character ref is not proof of absence either.
+        return "true" if hits == 1 else "pending"
+    return "false" if checked_any and not pending_seen else "pending"
 
 
-def _looks_like_hash(s: str) -> bool:
+def _looks_like_hash(s: str, *, min_len: int = _MIN_COMMIT_HEX) -> bool:  # noqa: E501
     """Cheap sanity check before launching git. Avoids spawning a
-    subprocess for obviously non-hash strings."""
-    if not s or len(s) < 4 or len(s) > 40:
+    subprocess for obviously non-hash strings.
+
+    *min_len* defaults to :data:`_MIN_COMMIT_HEX` — four, git's own minimum
+    abbreviation. Four hex characters is also an ordinary word (``face``,
+    ``beef``, ``cafe``) and :func:`verify_commit` searches ~36 repositories,
+    so a short ref is not TRUSTED on one hit; that judgement lives in the
+    resolver, which requires a unique hit below
+    :data:`_UNAMBIGUOUS_COMMIT_HEX` (findings AN12 and L8). Keeping the shape
+    gate permissive matters because a ref it rejects is stripped from the
+    corpus as malformed.
+
+    :func:`_looks_like_file_ref` passes the looser :data:`_MIN_ID_HEX`
+    because it is answering a different question: is this token a mis-typed
+    object id rather than a short filename?
+    """
+    if not s or len(s) < min_len or len(s) > 40:
         return False
     return all(c in "0123456789abcdefABCDEF" for c in s)
 
@@ -298,6 +631,12 @@ def _looks_like_file_ref(ref: str) -> bool:
       * **bare object ids** — ``3825319a``, ``msgbatch_016RZj…`` — no separator,
         no extension, and either all-hex (≥6) or a known id prefix. A hash-shaped
         ref belongs in a ``commit`` anchor, not a ``file`` one.
+      * **pathspec magic** — ``scripts/*.py``, ``docs/?eal.md``,
+        ``scripts/[r]eal.py``, ``:(glob)**/x.py`` — a glob or a leading ``:``
+        magic prefix, which git reads as a *pattern*. Such a ref names a set of
+        files, not a file, so it can never be a legitimate anchor; before
+        ``--literal-pathspecs`` it also verified ``true`` against whatever the
+        pattern happened to match (finding AN1).
 
     Deliberately *not* rejected (shape-valid; the resolver decides whether they
     resolve): extensionless real files (``LICENSE``, ``Makefile``), bare
@@ -305,6 +644,9 @@ def _looks_like_file_ref(ref: str) -> bool:
     concern, item 21b), and directory refs (trailing ``/``).
     """
     if len(ref) > 256 or "\n" in ref or "\t" in ref:
+        return False
+    # Pathspec magic: a pattern, not a path (see the docstring, finding AN1).
+    if ref.startswith(":") or any(c in ref for c in _PATHSPEC_MAGIC):
         return False
     # Single-segment absolute → slash-command shape (/weekly-review, /reflect).
     if ref.startswith("/"):
@@ -317,7 +659,7 @@ def _looks_like_file_ref(ref: str) -> bool:
         return False
     # Bare object id mis-typed as a file: no separator, no extension.
     if not has_sep and "." not in ref:
-        if (_looks_like_hash(ref) and len(ref) >= 6) or any(
+        if _looks_like_hash(ref, min_len=_MIN_ID_HEX) or any(
             ref.startswith(p) for p in _ID_PREFIXES
         ):
             return False
@@ -477,6 +819,7 @@ def bind_confidence(
     has_why: bool = False,
     has_how_to_apply: bool = False,
     is_guidance_category: bool = False,
+    current: str | None = None,
 ) -> str:
     """Map ``verified`` × structural completeness to a confidence level.
 
@@ -489,13 +832,23 @@ def bind_confidence(
       * ``verified == "true"`` and (not guidance category, or both
         ``why`` and ``how_to_apply`` populated) → ``"high"``
       * ``verified == "true"`` but guidance fields incomplete → ``"medium"``
-      * ``verified in {"tier3", "pending"}`` → ``"medium"``
+      * ``verified in {"tier3", "pending"}`` → *current* when the record
+        already carries ``"high"`` or ``"low"`` (case-folded), else
+        ``"medium"``
       * ``verified == "false"`` → ``"low"``
       * ``verified is None`` (no anchors checked) → ``"low"``
 
     ``"tier3"`` is reserved for the Phase 0b transcript-grep fallback —
     not produced by this module yet, but the rubric handles it for
     forward compatibility.
+
+    *current* is the confidence the record already carries, and it exists so
+    that a re-verification pass cannot MOVE a record on the strength of a
+    check that did not complete. ``"pending"`` means "we could not look", not
+    "we looked and found nothing" (finding AN3): an unmounted repository
+    during one sweep must not cost a verified-true memory its ``high``, and
+    must not hand an unverified one a ``medium`` it did not earn (L2).
+    A ``"false"`` verdict still demotes — that one is committal.
     """
     if verified == "true":
         if not is_guidance_category:
@@ -504,6 +857,13 @@ def bind_confidence(
             return "high"
         return "medium"
     if verified in ("tier3", "pending"):
+        # A check that did not complete is not evidence in EITHER direction:
+        # it must not demote a "high" record, and it must not promote a "low"
+        # one to "medium" on the strength of having failed to look (round
+        # 4f-3, finding L2). Case-folded: the corpus carries "High".
+        existing = str(current or "").strip().lower()
+        if existing in ("high", "low"):
+            return existing
         return "medium"
     # 'false' or None — both treated as untrusted.
     return "low"

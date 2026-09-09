@@ -473,9 +473,13 @@ render_sync_gate() {
         while IFS= read -r _previous; do
             [[ -n "$_previous" ]] || continue
             _keys="$(gate_subject_keys "$_previous")"
+            # Fed by here-string, not by pipe: `grep -q` exits on its
+            # first match and the upstream then dies of SIGPIPE, which
+            # `set -o pipefail` reports as a FAILED pipeline — a match
+            # read as its opposite (audit L1, fifth re-audit).
             if [[ -n "$_keys" ]] && [[ -n "$_our_keys" ]] \
-                    && printf '%s\n' "$_keys" \
-                        | grep -qxF -f <(printf '%s' "$_our_keys"); then
+                    && grep -qxF -f <(printf '%s' "$_our_keys") \
+                        <<<"$_keys"; then
                 continue
             fi
             add_sync_gate_detail "$_previous"
@@ -518,7 +522,15 @@ sweep_orphaned_stash_state_temps() {
     base="$(basename "$STASH_STATE_FILE")"
     [[ -d "$dir" ]] || return 0
     marker="$(mktemp "${STASH_STATE_FILE}.XXXXXX" 2>/dev/null)" || return 0
-    find "$dir" -maxdepth 1 -type f -name "${base}.??????" \
+    # audit L7 (fifth re-audit): the legacy marker pattern is collected
+    # too. Before the rename above, the marker was created as
+    # `<sidecar>.sweepmark.XXXXXX`, which no glob of this shape can
+    # match — so any one an older build stranded would sit in ~/.cache
+    # for ever. None exists on this machine, but the migration costs one
+    # predicate and cannot be added later by anyone who has forgotten
+    # the old name.
+    find "$dir" -maxdepth 1 -type f \
+        \( -name "${base}.??????" -o -name "${base}.sweepmark.??????" \) \
         ! -newer "$marker" -delete 2>/dev/null || true
     rm -f "$marker" 2>/dev/null || true
     return 0
@@ -1739,29 +1751,53 @@ apply_before_status=""
 #: And immediately after, so the two can be compared path by path.
 apply_after_status=""
 
-status_lines_for() {
-    # status_lines_for <porcelain text> <path>...
-    # The lines of <porcelain text> that describe one of <path>.
+status_records() {
+    # status_records <repo>
+    # One `XY<TAB><path>` record per PATH the tree has something to say
+    # about, newline-joined, with paths EXACTLY as git names them
+    # elsewhere.
     #
-    # Porcelain v1 puts two status characters and a space before the
-    # path, so the path starts at offset 3. git C-quotes anything exotic,
-    # which then fails the compare and reads as "not mentioned" — the
-    # conservative direction, because an entry whose paths cannot be
-    # matched is never called applied.
+    # audit L5 (fifth re-audit): `--porcelain` without `-z` C-QUOTES any
+    # path holding a space — `"new name.md"` — while the stash's own
+    # diff, read with `-z`, reports it raw. The two never compared equal,
+    # so a path with a space matched nothing here and the tracked half
+    # was silently unmeasurable. `--porcelain=v1 -z` quotes nothing.
+    #
+    # `-z` also gives a rename its two paths as separate FIELDS instead of
+    # an `<old> -> <new>` line, so each path gets its own record and
+    # nothing downstream has to parse an arrow (which is what the
+    # previous form did, on quoted text, for the same reason).
+    local repo="$1" record code path
+    while IFS= read -r -d '' record; do
+        [[ ${#record} -gt 3 ]] || continue
+        code="${record:0:2}"
+        path="${record:3}"
+        printf '%s\t%s\n' "$code" "$path"
+        # A rename or copy carries its ORIGINAL path in the next field.
+        if [[ "$code" == *[RC]* ]]; then
+            IFS= read -r -d '' path || break
+            printf '%s\t%s\n' "$code" "$path"
+        fi
+    done < <(git -C "$repo" status --porcelain=v1 -z 2>/dev/null || true)
+    return 0
+}
+
+status_lines_for() {
+    # status_lines_for <status records> <path>...
+    # The records that describe one of <path>.
+    #
+    # The records come from status_records, so the path is everything
+    # after the first TAB and is compared whole. A path that cannot be
+    # matched reads as "not mentioned" — the conservative direction,
+    # because an entry whose paths cannot be matched is never called
+    # applied.
     local text="$1" line entry path
     shift
     while IFS= read -r line; do
-        [[ ${#line} -gt 3 ]] || continue
-        entry="${line:3}"
+        [[ -n "$line" ]] || continue
+        entry="${line#*$'\t'}"
         for path in "$@"; do
-            # A rename is reported as `R  <old> -> <new>`, and the entry
-            # names BOTH of the paths the tracked half touches (audit
-            # L-d, fourth re-audit). Without this a rename-only stash
-            # matched neither of its own paths, so nothing about it could
-            # ever be called landed and its entry was kept for ever.
-            if [[ "$entry" == "$path" ]] \
-                    || [[ "$entry" == "$path -> "* ]] \
-                    || [[ "$entry" == *" -> $path" ]]; then
+            if [[ "$entry" == "$path" ]]; then
                 printf '%s\n' "$line"
                 break
             fi
@@ -1867,8 +1903,13 @@ stash_tracked_half_is_binary() {
     # Read into a variable rather than piping into `grep -q`: `grep -q`
     # exits the moment it matches, the upstream `git` then dies of
     # SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED —
-    # so the match would read as "no binary paths". Every `grep -q` on
-    # the far side of a pipe in this script has that hazard.
+    # so the match would read as "no binary paths".
+    #
+    # audit L1 (fifth re-audit): that hazard is not local to this
+    # function, and the first fix pinned only this function while the
+    # defect lived in the CALLERS. No `grep -q` in this script now sits
+    # on the far side of a pipe — here-strings and `$( )` throughout —
+    # and TestGuardsDoNotPipeIntoGrepQ holds the whole file to it.
     local repo="$1" sha="$2" numstat
     numstat="$(git -C "$repo" diff --numstat --no-renames "${sha}^1" "$sha" \
         2>/dev/null || true)"
@@ -1880,7 +1921,7 @@ snapshot_before_apply() {
     # Call immediately before every `git stash apply`; classify_apply_failure
     # reads what it records.
     apply_before_unmerged="$(unmerged_paths "$1")"
-    apply_before_status="$(git -C "$1" status --porcelain 2>/dev/null || true)"
+    apply_before_status="$(status_records "$1")"
     return 0
 }
 
@@ -1907,7 +1948,7 @@ classify_apply_failure() {
     # never emit one — the filter was dead from the day it was written.
     new_paths="$(comm -13 <(printf '%s\n' "$apply_before_unmerged") \
         <(printf '%s\n' "$after") || true)"
-    after_status="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
+    after_status="$(status_records "$repo")"
     apply_after_status="$after_status"
     apply_outcome_untracked="$(unrestored_untracked_paths "$repo" "$sha")"
     if [[ -n "$new_paths" ]]; then
@@ -2009,7 +2050,7 @@ previously_recorded_stashes() {
         # is any row whose path field is empty.
         [[ -n "$path" ]] || continue
         stash_ref_for "$repo" "$sha" >/dev/null || continue
-        printf '%s\n' "$current" | grep -qxF -- "$path" || continue
+        grep -qxF -- "$path" <<<"$current" || continue
         for known in ${matched[@]+"${matched[@]}"}; do
             [[ "$known" == "$sha" ]] && continue 2
         done
@@ -2021,7 +2062,7 @@ previously_recorded_stashes() {
             [[ "$sha" == "$candidate" ]] || continue
             [[ "$state" == "$want_state" ]] || continue
             [[ -n "$path" ]] || continue
-            printf '%s\n' "$current" | grep -qxF -- "$path" || continue
+            grep -qxF -- "$path" <<<"$current" || continue
             shared+="$path "
         done < "$STASH_STATE_FILE"
         printf '%s (its markers are in %s); ' \
@@ -2653,7 +2694,7 @@ abort_on_published_shrink() {
     # push.
     local context="$1" lines_before lines_after shrink_report
     local commit parent before after offender="" offender_reason=""
-    local parents parents_with_corpus shortening=0
+    local parents parents_with_corpus shortening=0 unjudgeable_merge=""
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
@@ -2715,9 +2756,15 @@ abort_on_published_shrink() {
             fi
         done < <(git rev-parse "${commit}^@" 2>/dev/null || true)
         if [[ $parents -gt 1 ]] && [[ $parents_with_corpus -eq 0 ]]; then
-            offender="$commit"
-            offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
-            break
+            # audit L4 (fifth re-audit): REMEMBER it and keep scanning.
+            # Breaking here refused a range whose shrink a LATER commit
+            # owned outright — two parentless commits, a merge that
+            # restores the corpus, then a trailered archive commit —
+            # because the merge was met first and nothing after it was
+            # ever looked at. An unjudgeable merge only decides the
+            # verdict when nothing else can.
+            [[ -n "$unjudgeable_merge" ]] || unjudgeable_merge="$commit"
+            continue
         fi
         # One parent and no corpus in it is the commit that added the
         # file: nothing existed to shorten.
@@ -2737,6 +2784,12 @@ abort_on_published_shrink() {
     if [[ -z "$offender" ]] && [[ $shortening -gt 0 ]]; then
         log "corpus is shorter than origin/main, but every commit that shortened it carries a Rewrite-Class: bulk trailer — allowed"
         return 0
+    fi
+    if [[ -z "$offender" ]] && [[ -n "$unjudgeable_merge" ]]; then
+        # Nothing else in the range accounts for the shrink, and this one
+        # commit cannot be measured against anything.
+        offender="$unjudgeable_merge"
+        offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
     fi
     if [[ -z "$offender" ]]; then
         # audit M1 (fourth re-audit): FAIL CLOSED. The outer comparison
@@ -3257,13 +3310,14 @@ if [[ $DRY_RUN -eq 0 ]]; then
     # same sshfs invocation as the `mount-rpi-shares` alias (reconnect
     # keeps it healthy across suspends; leave it mounted afterwards).
     if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]] \
-            || ! df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+            || [[ "$(df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1)" \
+                != *rpi-server* ]]; then
         if command -v sshfs >/dev/null 2>&1 \
                 && ssh -o BatchMode=yes -o ConnectTimeout=5 rpi-server true >/dev/null 2>&1; then
             log "cc-archives sync: rpi-shares not mounted — attempting self-mount"
             # A dead FUSE endpoint (laptop suspended past the reconnect
             # window) blocks a fresh mount — lazily unmount it first.
-            if mount | grep -q "$HOME/mnt/rpi-shares"; then
+            if [[ "$(mount)" == *"$HOME/mnt/rpi-shares"* ]]; then
                 fusermount -uz "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1 || true
             fi
             mkdir -p "$HOME/mnt/rpi-shares"
@@ -3293,7 +3347,8 @@ if [[ $DRY_RUN -eq 0 ]]; then
 
     if [[ ! -d "$CC_ARCHIVES_CANONICAL" ]]; then
         log "cc-archives sync: mount point missing ($CC_ARCHIVES_CANONICAL) — skipped"
-    elif ! df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+    elif [[ "$(df "$CC_ARCHIVES_CANONICAL" 2>/dev/null | tail -1)" \
+            != *rpi-server* ]]; then
         log "cc-archives sync: rpi-shares not mounted (silent-empty-dir state) — skipped"
     elif [[ ! -d "$CC_ARCHIVES_LOCAL" ]]; then
         log "cc-archives sync: $CC_ARCHIVES_LOCAL missing — nothing to push"

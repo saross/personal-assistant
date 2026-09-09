@@ -2404,11 +2404,19 @@ every round with its re-audit outcome, six decisions for Shawn).
   guards — no network, no live Postgres, store snapshots that tolerate live
   appends and warn on concurrent source edits unless
   `PA_HERMETICITY_STRICT=1` — plus the midnight flake, 282e6b3, after three
-  re-audits). Open with re-audits or fix rounds in flight: #128
-  (style-analyser scripts, round 4g-2 fixing two tests), #129 (memory
-  readers and anchors, round 4f-3), #133 (external-services follow-ups),
-  #134 (bake-off follow-ups); rounds 3c-6, 4a-5, and 4c-3 running. Main
-  suite about 3,650. Two operational lessons recorded in the
+  re-audits), #133 (external-services follow-ups, 96650de), #129 (memory
+  readers and anchors, 31b585c, after two re-audits), #135 (daily-sync
+  lows, 6504b46). Open with re-audits or fix rounds in flight: #128
+  (style-analyser scripts, round 4g-3 for one default-path mismatch), #137 (hermeticity follow-ups), #138 (machine-glue follow-ups); #134
+  (bake-off follow-ups) and #136 (archive follow-ups) merged; rounds 3c-7 and 4f-4 running. Main suite about 3,850. At 02:5x AEST a session rate
+  limit (reset 04:50) killed all seven running agents at once; every branch
+  was already pushed or committed, two worktrees held uncommitted edits, and
+  all nine agents were resumed at 07:45 from their own transcripts — and
+  then a MONTHLY spend limit stopped them again (weekly window resets
+  2026-09-10 12:00 Sydney; or raise the limit). The audit report now opens
+  with a "State at 2026-09-09 08:00" resume section, and the briefs, lens
+  reports, and round reports are committed under
+  `wiki/audits/2026-09-08-first-audit-artefacts/`. Two operational lessons recorded in the
   scratchpad: concurrent agents need private scratch directories, and
   concurrent suites need isolated `--basetemp` and a bounded /tmp
   footprint (the 16 GB tmpfs filled and ran out of inodes twice). Decisions
