@@ -1313,6 +1313,13 @@ class TestBatchSubmitIsNotRepeatable:
         state = json.loads((provider_dir / "batch-state.json").read_text())
         assert state["batch_id"] == "batch_002"
         assert state["superseded_batches"] == ["batch_001"]
+        # n_requests describes THIS batch, not the cumulative map. Since the
+        # map now accumulates across submissions (so a superseded batch stays
+        # retrievable), len(custom_id_to_session) is 3 here while the batch
+        # actually submitted carried 1; reporting the map size would overstate
+        # what the top-up cost.
+        assert state["n_requests"] == 1
+        assert len(state["custom_id_to_session"]) == 3
 
     def test_the_superseded_batch_is_still_retrievable(
         self, tmp_path, capsys, submit_stub
