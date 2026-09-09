@@ -779,7 +779,16 @@ class TestTheCrossRepoFlagDoesWhatItSays:
         ]
 
     def test_ambiguity_inside_the_project_is_not_widened(self) -> None:
-        """Two candidates at home is not solved by looking further afield."""
+        """Two candidates at home is not solved by looking further afield.
+
+        An invariant, not a guard: the project's candidates are a subset of
+        the union, so an ambiguity at home is an ambiguity in the union and
+        the fallback cannot return a unique match either. The explicit
+        ``scoped or`` branch that used to assert this was unreachable, and
+        this test could not fail (round 4f-4, finding L-b); it stays as a
+        regression check on the invariant itself, and the dead branch is
+        gone.
+        """
         home = Path("/repo-a")
         tracked = [
             av_module.TrackedPath(str(home), "one/util.py"),

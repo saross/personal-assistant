@@ -107,7 +107,9 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     decision, not a law: ``--min-repos`` overrides it, and the refusal names
     the value to pass.
     """
-    repos, discovered = ta.broad_repo_set_detail()  # raises when empty
+    # Raises RepoSetUnavailable when DISCOVERY is empty — the augmented list
+    # being non-empty is not a substitute (finding M-a).
+    repos, discovered = ta.broad_repo_set_detail()
     if discovered < min_repos:
         raise ta.RepoSetShrunk(
             discovered, min_repos,
@@ -115,6 +117,9 @@ def run_sweep(records: list[dict], *, as_of: datetime,
             "shrank (a repository archived or removed), or --min-repos 0 to "
             "drop the floor entirely",
         )
+    # Start from a clean exclusion registry so the row below describes THIS
+    # sweep, not one inherited from an earlier call in the same process.
+    av.reset_unusable_repos()
     basename_index = ta.build_basename_index(repos)
     # Memoise both ref-level resolvers: verify_file walks every repository and
     # spawns up to two git processes per repository, and the same ref recurs
@@ -141,6 +146,11 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     )
     # Discovery-only, for the reason in the docstring above.
     result["repo_count"] = discovered
+    # Which repositories anchor resolution had to leave out. Until now the
+    # only trace was one stderr WARN, which a cron run discards, while the
+    # row recorded the full discovered count as though every repository had
+    # answered (round 4f-4, finding M-b).
+    result["unusable_repos"] = sorted(av.unusable_repos())
     return result
 
 
@@ -166,6 +176,10 @@ def trend_line(result: dict, *, as_of: datetime) -> dict:
         # Recorded so the NEXT sweep can refuse to run against a smaller
         # repository set than this one saw (finding AN7).
         "repos": result.get("repo_count", 0),
+        # Repositories resolution could not consult. A run with a non-empty
+        # list resolved against fewer repositories than ``repos`` claims, and
+        # a reader comparing rows needs to know that (finding M-b).
+        "unusable": list(result.get("unusable_repos", [])),
     }
 
 
@@ -173,9 +187,14 @@ def last_repo_count(log_path: Path) -> int:
     """The repository count the most recent logged sweep recorded, else 0.
 
     Reads the append-only trend log backwards for the last line carrying a
-    non-zero ``repos``. A missing, unreadable, or pre-``repos`` log yields 0,
+    POSITIVE ``repos``. A missing, unreadable, or pre-``repos`` log yields 0,
     which imposes no floor — the guard can only tighten over time, never
     block a first run.
+
+    Zero is skipped rather than accepted, so a degraded row already in the
+    log (written before the guards in finding M-a) does not mask a real floor
+    recorded before it. Accepting zero would also make the newest such row
+    stop the scan and return "no floor at all".
     """
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -208,16 +227,24 @@ def append_trend(record: dict, *, log_path: Path = LOG_PATH) -> bool:
 
 def _render(record: dict) -> str:
     """A short human-readable summary of one sweep."""
-    return (
-        "# Anchor drift-sweep (item 8 — full back-set)\n\n"
-        f"Anchored swept:   {record['total_anchored']}\n"
-        f"Resolve (pass):   {record['pass']}\n"
-        f"Fail:             {record['fail']}  ({record['fail_pct']} %)\n"
-        f"Pending:          {record['pending']}\n"
-        f"No valid anchor:  {record['no_valid_anchor']}\n"
+    lines = [
+        "# Anchor drift-sweep (item 8 — full back-set)\n",
+        f"Anchored swept:   {record['total_anchored']}",
+        f"Resolve (pass):   {record['pass']}",
+        f"Fail:             {record['fail']}  ({record['fail_pct']} %)",
+        f"Pending:          {record['pending']}",
+        f"No valid anchor:  {record['no_valid_anchor']}",
         f"Failing file-ref split — absent {record['absent']} / "
-        f"recoverable {record['recoverable']} / ambiguous {record['ambiguous']}"
-    )
+        f"recoverable {record['recoverable']} / ambiguous {record['ambiguous']}",
+    ]
+    unusable = record.get("unusable") or []
+    if unusable:
+        lines.append(
+            f"Repositories EXCLUDED ({len(unusable)}) — resolution could not "
+            "consult these, so their anchors read pending:"
+        )
+        lines.extend(f"  - {path}" for path in unusable)
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -260,11 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     # writes no trend row imposes none (there is no series to protect); and
     # otherwise the last logged sweep's discovery-only count.
     if args.min_repos is not None:
-        floor = args.min_repos
+        floor, floor_source = args.min_repos, "--min-repos"
     elif args.no_log:
-        floor = 0
+        floor, floor_source = 0, "--no-log (no floor)"
     else:
-        floor = last_repo_count(args.log_path)
+        floor, floor_source = last_repo_count(args.log_path), "the last logged sweep"
     try:
         result = run_sweep(records, as_of=now, days=args.days, min_repos=floor)
     except ta.RepoSetShrunk as exc:
@@ -272,9 +299,12 @@ def main(argv: list[str] | None = None) -> int:
         # before refusing, and name the override — an archived repository is
         # a legitimate reason for the set to shrink, and the operator must be
         # able to say so without editing an append-only log.
+        # Name where the floor came from: telling an operator who just
+        # passed --min-repos that the number came from the log sends them to
+        # the wrong place (round 4f-4, finding L-d).
         print(f"[drift-sweep] WARN: discovery found {exc.discovered} "
-              f"repositories; the floor from the last logged sweep is "
-              f"{exc.floor}", file=sys.stderr)
+              f"repositories; the floor of {exc.floor} came from "
+              f"{floor_source}", file=sys.stderr)
         print(f"[drift-sweep] ERROR: sweep unreliable — {exc}; no trend row "
               "written", file=sys.stderr)
         return 2
@@ -293,6 +323,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[drift-sweep] ERROR: sweep unreliable — {pending_pct}% of "
               f"{total} anchored records could not be checked (limit "
               f"{MAX_PENDING_PCT}%); no trend row written", file=sys.stderr)
+        print(json.dumps(record, indent=2) if args.json else _render(record))
+        return 2
+
+    # A row whose repository count is zero describes a sweep that resolved
+    # against nothing. It cannot be compared with anything, and
+    # last_repo_count deliberately skips it — so it would sit in the
+    # append-only log as a permanent 100 %-failure artefact imposing no floor
+    # (finding M-a). Belt to the discovery guard's braces: never write one.
+    if record["repos"] <= 0:
+        print("[drift-sweep] ERROR: sweep unreliable — resolved against no "
+              "discovered repositories; no trend row written", file=sys.stderr)
         print(json.dumps(record, indent=2) if args.json else _render(record))
         return 2
 

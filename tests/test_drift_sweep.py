@@ -56,6 +56,7 @@ def test_trend_line_maps_all_fields() -> None:
         "recoverable": 95,
         "ambiguous": 65,
         "repos": 36,
+        "unusable": [],
     }
 
 
@@ -491,3 +492,130 @@ def test_main_applies_the_floor_from_the_log(tmp_path, monkeypatch) -> None:
 
     assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
     assert log.read_text(encoding="utf-8").count("\n") == 1
+
+
+# ============================================================================
+# A sweep that discovered nothing must not reach the log at all (M-a)
+# ============================================================================
+
+
+def test_a_degraded_machine_refuses_without_stubbing_discovery(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """No ~/Code, no ~/personal-assistant, but the checkout is a repository.
+
+    broad_repo_set_detail is NOT stubbed here: only project_id.repo_set and
+    PA_DIR are, which is the shape of the real degraded machine. Before the
+    fix the sweep ran against that one checkout and appended a fail_pct
+    100.0 row carrying ``repos: 0``.
+    """
+    worktree = _init_repo(tmp_path / "worktrees" / "pa-copy", "wiki/notes.md")
+    monkeypatch.setattr(ds.ta.project_id, "repo_set", list)
+    monkeypatch.setattr(ds.ta, "PA_DIR", worktree)
+    log = tmp_path / "d.jsonl"
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/gone.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    rc = ds.main(["--memories", str(corpus), "--log-path", str(log)])
+    assert rc == 2
+    assert not log.exists(), "a degraded sweep must append nothing"
+    assert "sweep unreliable" in capsys.readouterr().err
+
+
+def test_a_zero_repo_result_is_never_logged(tmp_path, monkeypatch) -> None:
+    """The second guard, independent of discovery raising.
+
+    Kills the mutation removing the ``record["repos"] <= 0`` refusal: a
+    result carrying no repository count would otherwise be appended, and
+    last_repo_count skips such a row, so it imposes no floor on the next run
+    either.
+    """
+    _fixed_sweep(monkeypatch, dict(SAMPLE_RESULT, repo_count=0))
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log)]) == 2
+    assert not log.exists()
+
+
+def test_the_floor_skips_a_degraded_row_already_in_the_log(tmp_path) -> None:
+    """A ``repos: 0`` row must not mask a real floor recorded before it.
+
+    Kills the mutation ``count > 0`` -> ``count >= 0``: the scan then stops
+    on the newest row and reports "no floor at all".
+    """
+    log = tmp_path / "d.jsonl"
+    log.write_text(
+        json.dumps({"run_at": "2031-01-01T00:00:00+00:00", "repos": 7}) + "\n"
+        + json.dumps({"run_at": "2031-01-08T00:00:00+00:00", "repos": 0}) + "\n",
+        encoding="utf-8",
+    )
+    assert ds.last_repo_count(log) == 7
+
+
+def test_the_trend_row_names_the_repositories_left_out(
+    tmp_path, monkeypatch,
+) -> None:
+    """A run that excluded a repository has to say so (finding M-b).
+
+    Kills the mutation dropping ``unusable_repos`` from the sweep result:
+    the row would record the full discovered count as though every
+    repository had answered, and the only trace of the exclusion would be a
+    stderr WARN that a cron run discards.
+    """
+    good = _init_repo(tmp_path / "good", "wiki/notes.md")
+    broken = tmp_path / "broken"          # a directory, not a repository
+    broken.mkdir()
+    _pin_repos(monkeypatch, [good, broken], discovered=2)
+    ds.av.reset_unusable_repos()
+
+    result = ds.run_sweep(
+        [_record("m-1", "wiki/gone.md", OLD)], as_of=FIXED_NOW,
+    )
+    assert result["unusable_repos"] == [str(broken)]
+
+    row = ds.trend_line(result, as_of=FIXED_NOW)
+    assert row["unusable"] == [str(broken)]
+    assert row["repos"] == 2, "the discovered count is unchanged by exclusion"
+    rendered = ds._render(row)
+    assert "Repositories EXCLUDED (1)" in rendered
+    assert str(broken) in rendered
+
+
+def test_a_clean_sweep_records_no_exclusions(tmp_path, monkeypatch) -> None:
+    """The control: nothing excluded, nothing to report."""
+    good = _init_repo(tmp_path / "good", "wiki/notes.md")
+    _pin_repos(monkeypatch, [good], discovered=1)
+    ds.av.reset_unusable_repos()
+    row = ds.trend_line(
+        ds.run_sweep([_record("m-1", "wiki/notes.md", OLD)], as_of=FIXED_NOW),
+        as_of=FIXED_NOW,
+    )
+    assert row["unusable"] == []
+    assert "EXCLUDED" not in ds._render(row)
+
+
+def test_the_warning_names_where_the_floor_came_from(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """An operator who just passed --min-repos must not be sent to the log.
+
+    Kills the mutation hard-coding "the last logged sweep" into the WARN
+    (finding L-d).
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    _pin_repos(monkeypatch, [repo], discovered=1)
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+    log = tmp_path / "d.jsonl"
+
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log),
+                    "--min-repos", "5"]) == 2
+    assert "came from --min-repos" in capsys.readouterr().err
+
+    log.write_text(json.dumps({"run_at": "2031-01-01", "repos": 5}) + "\n",
+                   encoding="utf-8")
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
+    assert "came from the last logged sweep" in capsys.readouterr().err

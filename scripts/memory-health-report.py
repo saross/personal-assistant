@@ -250,6 +250,7 @@ def archival_summary(archive_runs_lines: list[str]) -> dict[str, Any]:
 #: (audit 2026-09-08, finding AN5).
 VERIFIABLE_ANCHOR_TYPES = frozenset({"file", "commit"})
 
+
 def _has_verifiable_anchor(anchors: Any) -> bool:
     """Does this ``anchors`` value carry at least one resolvable anchor?"""
     if not isinstance(anchors, list):
@@ -815,6 +816,18 @@ def render_report(report: dict[str, Any]) -> list[str]:
                 f"  failing file-ref split  : "
                 f"{_fmt_top(tc['failing_file_ref_recovery'])}"
             )
+        unusable = tc.get("unusable_repos") or []
+        if unusable:
+            # Without this the section reported a fail rate computed against
+            # fewer repositories than it looked, and the only signal was a
+            # stderr line (finding M-b).
+            out.append(
+                f"  repositories EXCLUDED   : {len(unusable)} of "
+                f"{tc.get('repos_consulted', '?')} could not be consulted; "
+                "their anchors read pending"
+            )
+            for path in unusable:
+                out.append(f"    - {path}")
     elif report.get("tier_c_skipped"):
         out.append(f"\n[F] Tier C — skipped: {report['tier_c_skipped']}")
     else:
@@ -1021,6 +1034,9 @@ def build_report(
             logger.warning("[F] Tier C skipped: %s", exc)
             report["tier_c_skipped"] = f"repository discovery failed ({exc})"
             return report, clean
+        # Clean registry: [F] below reports the repositories THIS run had to
+        # leave out (finding M-b).
+        av.reset_unusable_repos()
         basename_index = ta.build_basename_index(repos)
         # Memoised per (resolver, ref): verify_file walks every repository and
         # spawns up to two git processes each, and tier_c_audit re-resolves
@@ -1048,6 +1064,8 @@ def build_report(
                 "recover", lambda ref: ta.recovery_status(ref, basename_index),
             ),
         )
+        report["tier_c"]["repos_consulted"] = len(repos)
+        report["tier_c"]["unusable_repos"] = sorted(av.unusable_repos())
 
     return report, clean
 
