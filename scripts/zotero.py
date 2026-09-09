@@ -421,12 +421,16 @@ def _normalise_doi(doi: str) -> str:
 #: no-break, common in typeset numerals and increasingly in publisher
 #: markup), and U+2007 (figure space).
 #:
-#: It is deliberately NOT the whole of what ``str.strip`` removes, and the
-#: gap is not a short list: 24 characters diverge, among them ``\x0b``,
-#: ``\x0c``, ``\x1c``-``\x1f``, ``\x85``, ``U+1680``, the whole
-#: ``U+2000``-``U+200A`` run, ``U+2028``, ``U+2029``, ``U+205F``, and
-#: ``U+3000``. (Round 4d-3 named three of them and read as exhaustive;
-#: round 4d-4 counted.) A DOI stored with one of those around it is
+#: It is deliberately NOT the whole of what ``str.strip`` removes. Against
+#: the set actually shipped above, 22 characters diverge — counted over
+#: the whole of Unicode, not recalled: ``\x0b``, ``\x0c``,
+#: ``\x1c``-``\x1f``, ``\x85``, ``U+1680``, ``U+2000``-``U+2006``,
+#: ``U+2008``-``U+200A``, ``U+2028``, ``U+2029``, ``U+205F``, and
+#: ``U+3000``. Note the gap in that run: ``U+2007`` is in the expression
+#: and therefore matches. (Round 4d-3 named three and read as exhaustive;
+#: round 4d-4 said 24 and claimed the whole ``U+2000``-``U+200A`` run,
+#: both of which predated adding U+2007 and U+202F; round 4d-5 re-counted
+#: against the shipped set.) A DOI stored with one of the 22 around it is
 #: stripped on the Python side, kept on the SQL side, and goes unmatched.
 #:
 #: Chasing the remainder into this expression is the wrong shape — it is
