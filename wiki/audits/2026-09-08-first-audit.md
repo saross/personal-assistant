@@ -746,15 +746,16 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-six PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-eight PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #138 (machine glue, two re-audits); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
-(hermeticity round 4a-6); #129, #140
-(memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
+(hermeticity round 4a-6); #129, #140, #145
+(memory readers and anchors); #132, #135, #139, #148 (daily-sync lows);
+#136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
 #142, #146 (bake-off rounds 4e-5, 4e-6).
@@ -816,7 +817,19 @@ Open, each with its verdict so far:
   without `__file__` falls back silently to `style_support`'s own state;
   the explicit-path test is vacuous in an export; nothing consumes either
   marker (the style-analyser agent definition still reads a partial
-  bundle silently).
+  bundle silently). Round 4g-5 delivered (4d5d314-3fd442f), correction
+  first (the agent re-ran both mutations one line at a time and confirmed
+  the re-auditor's account): `style_support.load_checked_payloads` makes
+  the stamp check a runtime guarantee (no payload is returned on any
+  failure; both mains call it first; the AST assertions reduced to
+  "called once, given every input, before any consumer"); the builder
+  run at its own defaults; the crashing-extractor path and the marker's
+  content tested; one experiment root derived in all six scripts with
+  `passages_dir()`; a caller without `__file__` records a note; the
+  explicit-path test builds its own repository; `extract_corpus` warns on
+  leftover markers and the agent definition skips marked bundles.
+  Merged with main (7f146ad), coordinator suite 4431 passed, 2 skipped,
+  19 deselected, exit 0; **PR #151**; re-audit running.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -900,8 +913,9 @@ Open, each with its verdict so far:
   shaped `data/.git` case; the destructive remedy additionally requires
   `git submodule status` exit 0 (a failed query gets its own "state is
   unknown" message); safe defaults declared near the top; the pointer
-  regex's limits recorded. Merged with main (c4cc548); coordinator
-  suite, PR, and re-audit pending.
+  regex's limits recorded. Merged with main (c4cc548), coordinator suite
+  4409 passed, 2 skipped, 19 deselected, exit 0; **PR #149**; re-audit
+  running.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -933,7 +947,18 @@ Open, each with its verdict so far:
   gate-render tests assert the exact list (`-qxF`→`-qF` is equivalent
   under the present key vocabulary and recorded as such). Merged with
   main (fcca012), coordinator suite 4384 passed, 2 skipped, 19
-  deselected, exit 0; **PR #148**; re-audit running.
+  deselected, exit 0; **PR #148, merged 33afc07** 2026-09-09 15:1x: the
+  re-audit killed all four span mutations, confirmed the fixture linear
+  and not passing for the wrong reason, and caught sixteen quiet-grep
+  spellings. Follow-ups are round 3c-9 (`claude/audit-round3c-9`): the
+  command-position guard covers only full-line comments (a `<<WORD` in a
+  quoted string or a trailing comment still blinds the scan — latent,
+  the script has one heredoc); the comment fixture sits at column 0;
+  `_quiet_grep_offenders` judges only the first match on a statement; an
+  indented `<<-` terminator unpinned; and four pre-existing script
+  weaknesses exposed by mutation (a `bulk-anything` trailer passes the
+  gate; a copy record desynchronises the status stream; the last rather
+  than the first unmeasurable merge named; `--reverse` unpinned).
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
@@ -963,8 +988,20 @@ Open, each with its verdict so far:
   the refusal says it has no override; `consulted` beside `repos`;
   eleven real Zotero keys replaced; resets and the history-probe
   handlers tested. Merged with main (1b1a4aa), coordinator suite 4330
-  passed, 2 skipped, 19 deselected, exit 0; **PR #145**; re-audit
-  running.
+  passed, 2 skipped, 19 deselected, exit 0; **PR #145, merged 07a69d1**
+  2026-09-09 14:4x: the re-audit confirmed the probe's classification
+  for every constructed shape and the shared registry, and found four
+  mediums, all follow-up — `degraded` fires on ANY exclusion rather than
+  on the pending rate (one chronic stale directory would mark every
+  future row for ever); the `last_repo_count` skip guards a field
+  degradation cannot touch (three degraded rows collapse the floor);
+  `probe_repos`'s error branches are untested (five surviving
+  mutations, including inverting the permanent-error classification);
+  the tier-C call site is unpinned. Plus a third real Zotero key; one
+  `--min-repos` override silently becomes the standing floor; `[H]`
+  over-claims and under-marks; a degraded row's deflated fail rate is
+  still alert-tested; a nested emptied directory probes usable. Round
+  4f-6 (`claude/audit-round4f-6`) takes all of them.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
@@ -1004,6 +1041,16 @@ Open, each with its verdict so far:
   every stub write the date-prefixed form; plus a dead `not is_link`, an
   unpinned id count, a silent-by-default parameter, a label, and a
   pre-existing `KeyError` on a sizeless manifest in the dry-run listing.
+  Round 4c-6 delivered (3775a0a, e06c5a2): the level marker matched as a
+  token, every stub date-prefixed, a six-way classification matrix
+  (restoring the old anchor fails eight tests); the agent reproduced the
+  three-way evidence itself (0 of 9,314 level-carrying lines in the
+  deployed log match the old anchor) and records that this was its own
+  regression, the second time in this pipeline a narrowing silently
+  disabled what it sharpened; the dead conjunct, the id count, the
+  required collector, the labels, and the dry-run `KeyError` fixed.
+  Merged with main (fe9c570), coordinator suite 4438 passed, 2 skipped,
+  19 deselected, exit 0; pushed; second re-audit of PR #147 running.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -1052,8 +1099,9 @@ Open, each with its verdict so far:
   explains itself on stderr; one helper guards the recorded path's type;
   an empty session list and a self-colliding manifest refused with exit
   2; the lookup built once; `fsync` before `os.replace` (its mutation
-  survives by nature, stated). Merged with main; coordinator suite, PR,
-  and re-audit pending.
+  survives by nature, stated). Merged with main (06aff0f), coordinator
+  suite 4422 passed, 2 skipped, 19 deselected, exit 0; **PR #150**;
+  re-audit running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`

@@ -2811,6 +2811,28 @@ abort_on_published_shrink() {
             # unmeasurable merge beside it be dismissed — otherwise the
             # merge may have taken records this commit never touched, and
             # its trailer would be covering for something it never said.
+            #
+            # BOTH ends, and both are load-bearing. The first asks that
+            # this commit started no lower than origin; the second that
+            # it ended no higher than HEAD. Drop the second and a
+            # trailered rewrite that merely STARTED high excuses whatever
+            # came after it — origin 100, a trailered 100→60, then an
+            # unmeasurable merge holding 50, published as though the
+            # trailer had said so.
+            #
+            # Two consequences of this rule are deliberate, and neither
+            # is a defect (audit L6 and L7, seventh re-audit):
+            #
+            #   - A trailered commit that empties the corpus spans every
+            #     drop there could be, so it dismisses any merge beside
+            #     it. That is what declaring a bulk rewrite to nothing
+            #     MEANS; the trailer is the operator saying so.
+            #   - Two consecutive partial rewrites that together cover
+            #     the whole drop do NOT dismiss it, because neither spans
+            #     it alone. That refuses a range this guard could in
+            #     principle have reasoned about — the conservative
+            #     direction, and the only one that stays simple enough to
+            #     be checked.
             if [[ "$before" -ge "$lines_before" ]] \
                     && [[ "$after" -le "$lines_after" ]]; then
                 shrink_fully_owned=1
