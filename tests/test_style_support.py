@@ -22,7 +22,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from style_test_helpers import load_style_module, refuse_sockets  # noqa: E402
+from style_test_helpers import (  # noqa: E402
+    SCRIPTS_DIR, load_style_module, refuse_sockets,
+)
 
 style_support = load_style_module("style_support")
 
@@ -492,3 +494,65 @@ def test_an_untracked_file_does_not_make_the_tree_dirty(tmp_path):
 
     assert state["dirty"] is False
     assert state["commit"] is not None
+
+
+def _script_calling_provenance(repo: Path, name: str) -> Path:
+    """Write a tiny script that reports what provenance_block says about it."""
+    script = repo / name
+    script.write_text(
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(SCRIPTS_DIR)!r})\n"
+        "import style_support\n"
+        "block = style_support.provenance_block(Path(__file__).name)\n"
+        "print(json.dumps({'commit': block['git_commit'],\n"
+        "                  'note': block.get('git_note')}))\n",
+        encoding="utf-8")
+    return script
+
+
+def _run_script(script: Path, env: dict) -> dict:
+    """Run one throwaway script and return the JSON it printed."""
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True,
+                          text=True, check=True, env=env, cwd=str(script.parent))
+    return json.loads(proc.stdout)
+
+
+def test_provenance_describes_the_calling_script_not_this_module(tmp_path):
+    """A tracked script records its own commit; an untracked one records none.
+
+    ``git_state()`` with no argument always described ``style_support.py``,
+    so every caller inherited THIS file's repository state: the "must be
+    tracked" branch was unreachable for all of them, and a brand-new
+    uncommitted script recorded a clean commit that does not contain it. The
+    mutation this kills: dropping the caller's path and calling
+    ``git_state()`` bare again.
+    """
+    repo, run = _throwaway_repo(tmp_path)
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
+           "GIT_CONFIG_SYSTEM": "/dev/null",
+           "PYTHONDONTWRITEBYTECODE": "1"}
+
+    untracked = _script_calling_provenance(repo, "brand-new-script.py")
+    result = _run_script(untracked, env)
+    assert result["commit"] is None
+    assert "not tracked" in result["note"]
+
+    run("add", untracked.name)
+    run("commit", "-qm", "add the script")
+    result = _run_script(untracked, env)
+    assert result["commit"] == run("rev-parse", "HEAD").stdout.strip()
+    assert result["note"] is None
+
+
+def test_an_explicit_script_path_wins(tmp_path):
+    """The inference is a default, not a mandate: callers can be explicit."""
+    repo, _run = _throwaway_repo(tmp_path)
+    stranger = tmp_path / "outside-any-repo.py"
+    stranger.write_text("# not in a repository\n", encoding="utf-8")
+
+    block = style_support.provenance_block("demo.py", script_path=stranger)
+
+    assert block["git_commit"] is None
+    assert block["git_note"] == "not inside a git repository"

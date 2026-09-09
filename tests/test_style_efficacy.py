@@ -416,3 +416,50 @@ def test_the_scorer_checks_every_phase_input_it_reads():
                     and element.value.id == "args"}
 
     assert {"phase1", "phase3", "reference_phase1"} <= checked
+
+
+#: Calls in ``efficacy_score.main`` that CONSUME a phase-1 or phase-3 payload.
+_PHASE_CONSUMING_CALLS = ("load_corpus_space", "evaluate_text",
+                          "evaluation_to_dict")
+
+
+def test_the_scorer_checks_the_stamps_before_it_uses_the_corpus():
+    """A check that runs after ``load_corpus_space`` is not an interlock.
+
+    The feature space, the fitted model and the leave-one-out envelope are all
+    built inside that call. Moving the stamp loop below it left the suite
+    green while every one of those was built from a corpus the check had not
+    seen. The mutation this kills: moving the loop below
+    ``load_corpus_space(...)``.
+    """
+    import ast
+
+    from style_test_helpers import SCRIPTS_DIR
+
+    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
+    main_fn = next(node for node in ast.parse(source).body
+                   if isinstance(node, ast.FunctionDef) and node.name == "main")
+
+    def called_name(call: ast.Call) -> str | None:
+        if isinstance(call.func, ast.Name):
+            return call.func.id
+        if isinstance(call.func, ast.Attribute):
+            return call.func.attr
+        return None
+
+    stamp_line = min(
+        node.lineno for node in ast.walk(main_fn)
+        if isinstance(node, ast.For)
+        and any(called_name(c) == "metric_schema_error"
+                for c in ast.walk(node) if isinstance(c, ast.Call))
+    )
+    consumers = [(called_name(node), node.lineno) for node in ast.walk(main_fn)
+                 if isinstance(node, ast.Call)
+                 and called_name(node) in _PHASE_CONSUMING_CALLS]
+    assert consumers, "no phase-consuming call found in main()"
+    first_name, first_line = min(consumers, key=lambda pair: pair[1])
+
+    assert stamp_line < first_line, (
+        f"the metric_schema check runs after {first_name}() has already used "
+        "the corpus"
+    )

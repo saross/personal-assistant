@@ -42,6 +42,7 @@ call.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import subprocess
@@ -85,6 +86,37 @@ METRIC_SCHEMA_DEFINITIONS = (
     "carrying a passive; nominalisation_per_1000w over alphabetic tokens; "
     "mattr_100 null below its 100-word window; NFC-normalised input"
 )
+
+
+#: The efficacy experiment's root. Every path below is derived from it at
+#: CALL time, not frozen at import, so a test (or an operator with a second
+#: experiment) repoints one base and both the writer and the reader follow.
+#: They did not, once: the builder moved the unblinding key under `private/`
+#: and the scorer's default stayed a directory up, so a run at the defaults
+#: could not find a key that was exactly where it belonged.
+EXPERIMENT_DEFAULT = (
+    PA_ROOT / "data" / "experiments" / "style-efficacy-2026-05-31"
+)
+
+
+def experiment_root(root: Path | str | None = None) -> Path:
+    """Return the experiment root, defaulting to ``EXPERIMENT_DEFAULT``."""
+    return Path(root) if root is not None else EXPERIMENT_DEFAULT
+
+
+def judge_dir(root: Path | str | None = None) -> Path:
+    """The directory handed to the judges. Nothing else may live here."""
+    return experiment_root(root) / "judge-tasks"
+
+
+def private_dir(root: Path | str | None = None) -> Path:
+    """The directory no judge is ever pointed at."""
+    return experiment_root(root) / "private"
+
+
+def judge_key_dir(root: Path | str | None = None) -> Path:
+    """Where the unblinding key is written, and where it is read from."""
+    return private_dir(root) / "judge-key"
 
 
 def metric_schema_stamp() -> dict:
@@ -247,11 +279,31 @@ def git_commit(path_hint: Path | str | None = None) -> str | None:
     return git_state(path_hint)["commit"]
 
 
+def _calling_script() -> Path | None:
+    """Return the ``__file__`` of the caller's caller, if it has one.
+
+    Used so ``provenance_block`` describes the repository state of the SCRIPT
+    that is producing the output, rather than of ``style_support`` itself.
+    Returns ``None`` for a caller with no file (an interactive session, or
+    code exec'd from a string), which the caller treats as "no path hint".
+    """
+    frame = inspect.currentframe()
+    try:
+        # currentframe -> _calling_script's caller (provenance_block) -> the
+        # script that called it.
+        outer = frame.f_back.f_back if frame and frame.f_back else None
+        path = outer.f_globals.get("__file__") if outer else None
+        return Path(path) if path else None
+    finally:
+        del frame
+
+
 def provenance_block(script: str,
                      inputs: Iterable[Path | str] = (),
                      *,
                      seed: int | None = None,
                      spacy_model: str | None = None,
+                     script_path: Path | str | None = None,
                      extra: Mapping[str, Any] | None = None) -> dict:
     """Assemble the ``provenance`` block embedded in every output file.
 
@@ -265,11 +317,21 @@ def provenance_block(script: str,
 
     Contains no wall-clock field, on purpose: see the module docstring.
 
+``script_path`` is the file whose repository state is recorded. It
+    defaults to the CALLER's ``__file__``, because the commit that matters is
+    the one containing the script that produced the output. This used to call
+    ``git_state()`` with no argument, which always described *this* module —
+    so the "the file must be tracked by the repository whose commit is
+    recorded" branch was unreachable for every caller, and a brand-new,
+    uncommitted script recorded a clean commit that does not contain it
+    (round 4g-4, item L3).
+
     Raises ValueError if ``extra`` would overwrite a field the block itself
     owns — silently replacing ``inputs`` or ``git_commit`` with a caller's
     value would make provenance say something the writer did not mean.
     """
-    state = git_state()
+    state = git_state(script_path if script_path is not None
+                      else _calling_script())
     record: dict[str, Any] = {
         "script": script,
         "git_commit": state["commit"],

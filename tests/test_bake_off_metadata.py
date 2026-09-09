@@ -245,17 +245,28 @@ class TestRubricRefusalWritesNothing:
         assert rubric_out.exists()
         assert rubric_out.with_name(rubric_out.stem + ".blind-key.json").exists()
 
-    def test_build_rubric_without_paths_exits_2(self, tmp_path):
-        """``--build-rubric`` needs both rubric paths before it does anything."""
-        manifest = _one_session_manifest(tmp_path)
-        code = bom.main([
+    @pytest.mark.parametrize("supplied", ["neither", "rubric_in", "rubric_out"])
+    def test_build_rubric_without_paths_exits_2(self, tmp_path, supplied):
+        """``--build-rubric`` needs BOTH rubric paths before it does anything.
+
+        Parametrised over one-of-two because the fence is an ``and``: with
+        only one path supplied an ``or`` there passes the check and
+        build_rubric is handed a None, crashing on an attribute of it
+        instead of exiting 2.
+        """
+        argv = [
             "--build-rubric",
-            "--manifest", str(manifest),
+            "--manifest", str(_one_session_manifest(tmp_path)),
             "--prompt", str(_prompt_file(tmp_path)),
             "--out-dir", str(tmp_path / "out"),
-        ])
-        assert code == 2
+        ]
+        if supplied == "rubric_in":
+            argv += ["--rubric-in", str(tmp_path / "template.md")]
+        elif supplied == "rubric_out":
+            argv += ["--rubric-out", str(tmp_path / "populated.md")]
+        assert bom.main(argv) == 2
         assert not (tmp_path / "out").exists()
+        assert not (tmp_path / "populated.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1097,6 +1108,36 @@ class TestBatchSubmitIsNotRepeatable:
             self._expected_retrieve_command("batch_007", tmp_path / "out")
         )
 
+    def test_retrieve_command_quotes_a_directory_with_a_space(self, tmp_path):
+        """Pin the literal text, not a mirror of the implementation.
+
+        _expected_retrieve_command calls shlex.quote itself, so it would
+        follow the implementation wherever it went. This spells the quoted
+        form out.
+        """
+        provider_dir = tmp_path / "bake off runs" / "haiku"
+        expected = (
+            "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
+            f"--haiku-apply batch_007 --out-dir '{tmp_path}/bake off runs'"
+        )
+        assert bom.haiku_retrieve_command("batch_007", provider_dir) == expected
+
+    def test_retrieve_command_quotes_a_hostile_batch_id(self):
+        """A batch id never needs quoting today; quote it anyway.
+
+        Anthropic's ids are msgbatch_ plus base62, so the quote is
+        defensive. It is kept rather than dropped because the value is
+        interpolated into a line an operator pastes into a shell, and the
+        cost of being wrong later is a command that does something other
+        than it reads. Pinned so the defence cannot be removed silently.
+        """
+        assert bom.haiku_retrieve_command(
+            "batch 007; rm -rf /", Path("/tmp/out/haiku")
+        ) == (
+            "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
+            "--haiku-apply 'batch 007; rm -rf /' --out-dir /tmp/out"
+        )
+
     def test_the_printed_recovery_line_is_exact(
         self, tmp_path, capsys, submit_stub
     ):
@@ -1330,8 +1371,8 @@ class TestBatchSubmitIsNotRepeatable:
 
         The state file holds one custom_id map. A top-up carries only the
         missing sessions, so replacing that map left --haiku-apply on the
-        earlier batch id printing "unknown custom_id ... skipping" for
-        every session it had paid for.
+        earlier batch id skipping every session it had paid for, with the
+        "no session mapped to custom_id ..." diagnostic.
         """
         manifest = self._three_session_manifest(tmp_path)
         prompt = _prompt_file(tmp_path)
@@ -1361,7 +1402,10 @@ class TestBatchSubmitIsNotRepeatable:
             "--out-dir", str(out_dir),
         ]) == 0
         printed = capsys.readouterr().out
-        assert "unknown custom_id" not in printed
+        # The live wording, not a retired one: a stale phrase here can never
+        # appear, so the assertion would hold however badly the code broke.
+        assert "no session mapped to custom_id" not in printed
+        assert "skipping a result that was ALREADY PAID FOR" not in printed
         assert (provider_dir / "topup-1-aaaa-bbbb.json").exists()
 
         state = json.loads((provider_dir / "batch-state.json").read_text())
@@ -1928,7 +1972,7 @@ class TestStrandedResults:
         inner = type("Inner", (), {"type": "succeeded", "message": message})()
         return type("Result", (), {"custom_id": custom_id, "result": inner})()
 
-    def _old_format_state(self, tmp_path: Path):
+    def _old_format_state(self, tmp_path: Path, *, record_manifest: bool = True):
         """A state file whose map lost a superseded batch's entries.
 
         This is what a pre-accumulation top-up left behind: the map covers
@@ -1937,15 +1981,6 @@ class TestStrandedResults:
         """
         out_dir = tmp_path / "out" / "haiku"
         out_dir.mkdir(parents=True)
-        (out_dir / "batch-state.json").write_text(
-            json.dumps({
-                "batch_id": "batch_002",
-                "custom_id_to_session": {
-                    bom.build_custom_id("stranded-2"): "stranded-2",
-                },
-            }),
-            encoding="utf-8",
-        )
         rows = []
         for index in range(3):
             session_id = f"stranded-{index}"
@@ -1954,12 +1989,89 @@ class TestStrandedResults:
             )
             rows.append(fx.manifest_row(session_id, transcript))
         manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        state = {
+            "batch_id": "batch_002",
+            "custom_id_to_session": {
+                bom.build_custom_id("stranded-2"): "stranded-2",
+            },
+        }
+        if record_manifest:
+            state["manifest_path"] = str(manifest)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps(state), encoding="utf-8"
+        )
         return out_dir, manifest
 
     def test_recover_session_id_reads_a_verbatim_custom_id(self):
         assert bom.recover_session_id_from_custom_id("sess-abc-123") == "abc-123"
         assert bom.recover_session_id_from_custom_id("sess-" + "a" * 40) is None
         assert bom.recover_session_id_from_custom_id("nonsense") is None
+
+    def test_a_forty_hex_session_id_is_recovered_not_called_a_digest(self):
+        """The shape test alone gets this exactly backwards.
+
+        A session id can itself be 40 hex characters. build_custom_id emits
+        it verbatim -- the same shape a digest has -- so deciding on shape
+        told the operator the id was unrecoverable while it sat in plain
+        sight. The manifest settles it.
+        """
+        session_id = "0123456789abcdef" * 2 + "01234567"
+        assert len(session_id) == 40
+        custom_id = bom.build_custom_id(session_id)
+        assert custom_id == f"sess-{session_id}"
+        assert bom.recover_session_id_from_custom_id(custom_id) is None
+        assert bom.recover_session_id_from_custom_id(
+            custom_id, {session_id}
+        ) == session_id
+
+    def test_a_hashed_custom_id_is_reversed_through_the_manifest(self):
+        """build_custom_id is pure, so the digest form is reversible too."""
+        session_id = "subagent-explore-" + "x" * 80
+        custom_id = bom.build_custom_id(session_id)
+        assert custom_id != f"sess-{session_id}"
+        assert bom.recover_session_id_from_custom_id(custom_id) is None
+        assert bom.recover_session_id_from_custom_id(
+            custom_id, {session_id, "an-unrelated-session"}
+        ) == session_id
+
+    def test_known_session_ids_survives_a_missing_or_broken_manifest(self, tmp_path):
+        assert bom.known_session_ids({}) == set()
+        assert bom.known_session_ids({"manifest_path": str(tmp_path / "gone")}) == set()
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        assert bom.known_session_ids({"manifest_path": str(broken)}) == set()
+        shapeless = tmp_path / "shapeless.json"
+        shapeless.write_text('{"sessions": "not a list"}', encoding="utf-8")
+        assert bom.known_session_ids({"manifest_path": str(shapeless)}) == set()
+
+    def test_the_diagnostic_confirms_the_session_from_the_manifest(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """End to end: a 40-hex session id must be named, not written off."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        session_id = "abcdef0123456789" * 2 + "abcdef01"
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "hexid.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row(session_id, transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": str(manifest),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        printed = capsys.readouterr().out
+        assert f"probably session {session_id}" in printed
+        assert "not recoverable" not in printed
 
     def test_the_diagnostic_names_the_session_and_the_remedy(
         self, tmp_path, capsys, anthropic_stub
@@ -2027,6 +2139,74 @@ class TestStrandedResults:
             fx.RESPONSE_OBJECT
         )
 
+    def test_the_remedy_line_splits_and_runs(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """Paste the printed remedy back in and it must repair and retrieve.
+
+        The placeholder used to be ``<manifest>``, which a shell reads as a
+        redirection: pasting the line produced "bash: manifest: No such file
+        or directory" and did nothing. The state records the manifest it was
+        submitted against, so the line now names it.
+        """
+        out_dir, manifest = self._old_format_state(tmp_path)
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        printed = capsys.readouterr().out
+        line = next(
+            line.strip() for line in printed.splitlines()
+            if "--rebuild-map" in line
+        )
+        assert "<" not in line and ">" not in line  # nothing a shell redirects
+        command = shlex.split(line)
+        assert command[2:] == [
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]
+
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        assert bom.main(command[2:]) == 0
+        assert json.loads((out_dir / "stranded-0.json").read_text()) == (
+            fx.RESPONSE_OBJECT
+        )
+
+    def test_the_placeholder_is_paste_safe_without_a_recorded_manifest(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """An older state file records no manifest; the line must still paste."""
+        out_dir, _manifest = self._old_format_state(tmp_path, record_manifest=False)
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        line = next(
+            line.strip() for line in capsys.readouterr().out.splitlines()
+            if "--rebuild-map" in line
+        )
+        command = shlex.split(line)
+        assert command[-3:] == [
+            "--manifest", bom.MANIFEST_PLACEHOLDER, "--rebuild-map"
+        ]
+        assert "<" not in line and ">" not in line
+
+    def test_a_placeholder_manifest_is_refused_not_crashed(self, tmp_path, capsys):
+        """Running the line unedited must fail cleanly, not traceback."""
+        out_dir, _manifest = self._old_format_state(tmp_path, record_manifest=False)
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", bom.MANIFEST_PLACEHOLDER,
+            "--rebuild-map",
+        ]) == 2
+
     def test_rebuild_map_needs_a_manifest(self, tmp_path, capsys):
         out_dir, _manifest = self._old_format_state(tmp_path)
         assert bom.main([
@@ -2058,3 +2238,134 @@ class TestStrandedResults:
             "--rebuild-map",
         ]) == 2
         assert "nothing to rebuild" in capsys.readouterr().err
+
+
+class TestRebuildMapIsConservative:
+    """Repairing a map must not overwrite it, or destroy it on failure."""
+
+    def _state_with_conflicting_entry(self, tmp_path: Path):
+        """A state whose recorded mapping disagrees with the reconstruction.
+
+        Only a real submission knows which session a custom_id was sent
+        under. A reconstruction is a good guess from the manifest, so where
+        the two differ the stored value must survive -- otherwise repairing
+        the map could point an existing, correct entry at the wrong session
+        and write one session's answer under another's name.
+        """
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "conflict.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json",
+            [fx.manifest_row("session-from-manifest", transcript)],
+        )
+        custom_id = bom.build_custom_id("session-from-manifest")
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "custom_id_to_session": {custom_id: "session-as-submitted"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir, manifest, custom_id
+
+    def test_an_existing_entry_wins_over_the_reconstruction(self, tmp_path):
+        out_dir, manifest, custom_id = self._state_with_conflicting_entry(tmp_path)
+        added = bom.rebuild_custom_id_map(out_dir, manifest)
+        assert added == 0
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert state["custom_id_to_session"][custom_id] == "session-as-submitted"
+
+    def test_a_failed_rebuild_leaves_the_state_intact(self, tmp_path, monkeypatch):
+        """Crash injection: the state file is the only handle on the batch."""
+        out_dir, manifest, _custom_id = self._state_with_conflicting_entry(tmp_path)
+        state_path = out_dir / "batch-state.json"
+        before = state_path.read_bytes()
+
+        import os as os_module
+
+        def refuse_replace(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(os_module, "replace", refuse_replace)
+        with pytest.raises(OSError):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert state_path.read_bytes() == before
+        # And no debris beside it.
+        assert sorted(p.name for p in out_dir.iterdir()) == ["batch-state.json"]
+
+
+class TestRebuildMapRejectsABadManifest:
+    """The repair runs on the only handle on a paid-for batch."""
+
+    def _state(self, tmp_path: Path) -> Path:
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "custom_id_to_session": {"sess-kept": "kept-session"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir
+
+    @pytest.mark.parametrize(
+        "name,content",
+        [
+            ("not-json.json", "{ this is not json"),
+            ("not-an-object.json", '["a", "list"]'),
+            ("no-sessions.json", '{"generated_at": "2026-01-06T00:00:00+00:00"}'),
+            ("sessions-not-a-list.json", '{"sessions": {"session_id": "x"}}'),
+            ("entry-not-an-object.json", '{"sessions": ["just-a-string"]}'),
+            ("entry-without-id.json", '{"sessions": [{"project": "p"}]}'),
+            ("entry-with-null-id.json", '{"sessions": [{"session_id": null}]}'),
+        ],
+    )
+    def test_a_malformed_manifest_is_refused(self, tmp_path, name, content):
+        """The finding: each of these was a traceback, not a refusal."""
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / name
+        manifest.write_text(content, encoding="utf-8")
+        before = (out_dir / "batch-state.json").read_bytes()
+        with pytest.raises(bom.ManifestFormatError):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert (out_dir / "batch-state.json").read_bytes() == before
+
+    def test_a_missing_manifest_is_refused(self, tmp_path):
+        out_dir = self._state(tmp_path)
+        with pytest.raises(bom.ManifestFormatError):
+            bom.rebuild_custom_id_map(out_dir, tmp_path / "absent.json")
+
+    def test_a_partly_valid_manifest_writes_nothing(self, tmp_path):
+        """A good entry before a bad one must not be half-applied."""
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "half.json"
+        manifest.write_text(
+            json.dumps({
+                "sessions": [
+                    {"session_id": "good-session"},
+                    {"project": "no session id here"},
+                ]
+            }),
+            encoding="utf-8",
+        )
+        with pytest.raises(bom.ManifestFormatError, match="session 2"):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert state["custom_id_to_session"] == {"sess-kept": "kept-session"}
+
+    def test_the_entry_point_exits_2_on_a_bad_manifest(self, tmp_path, capsys):
+        out_dir = self._state(tmp_path)
+        manifest = tmp_path / "not-json.json"
+        manifest.write_text("{ nope", encoding="utf-8")
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]) == 2
+        assert "--rebuild-map refused" in capsys.readouterr().err
