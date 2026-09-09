@@ -2580,6 +2580,67 @@ _QUIET_GREP = re.compile(
 )
 
 
+def _split_shell_line(line: str) -> tuple[str, list[bool]]:
+    """
+    Return ``(code, quoted)`` for one shell line.
+
+    ``code`` is the line with any unquoted trailing comment removed,
+    quotes and all. ``quoted[i]`` says whether character ``i`` of ``code``
+    sits inside a quoted span — so a heredoc opener can be required to
+    START outside quotes while the delimiter it names may be quoted, which
+    is exactly the shape this script uses (`<<'PYEOF'`).
+
+    audit M1 (eighth re-audit): the previous guard tested only whether the
+    LINE began with `#`, so a `<<WORD` inside a double-quoted string
+    (`echo "use <<EOF here"`) or after a trailing comment
+    (`true  # see <<NOTES`) was honoured as an opener and swallowed the
+    rest of the file — every later statement invisible, the lint green and
+    the per-function vacuity guard green with it. audit M2: and it tested
+    `raw.lstrip()`, so the fixture's column-0 comment passed either way
+    while every comment in this script is indented.
+
+    A `#` only opens a comment at the start of a word, which is what keeps
+    `${#array[@]}` intact.
+    """
+    code: list[str] = []
+    quoted: list[bool] = []
+    quote = ""
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            code.append(char)
+            quoted.append(True)
+            if char == "\\" and quote == '"' and index + 1 < len(line):
+                code.append(line[index + 1])
+                quoted.append(True)
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(line):
+            code.append(char)
+            quoted.append(False)
+            code.append(line[index + 1])
+            quoted.append(True)          # escaped: never a delimiter
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            code.append(char)
+            quoted.append(False)         # the quote OPENS here
+            index += 1
+            continue
+        if char == "#" and (not code or code[-1].isspace()):
+            break
+        code.append(char)
+        quoted.append(False)
+        index += 1
+    return "".join(code), quoted
+
+
 def _script_statements(
     script: Path = DAILY_SYNC,
 ) -> list[tuple[int, str, str]]:
@@ -2613,29 +2674,26 @@ def _script_statements(
     pending_at = 0
     for number, raw in enumerate(lines, start=1):
         if heredoc:
+            # `.strip()`, not `.rstrip()` (audit L-b, eighth re-audit): a
+            # `<<-` heredoc may indent its terminator, and a skip that
+            # never ends hides every statement after it.
             if raw.strip() == heredoc:
                 heredoc = ""
             continue
-        # Prose is not a command: a `<<X` in a comment opens nothing.
-        code_only = "" if raw.lstrip().startswith("#") else raw
-        opener = _HEREDOC_OPENER.search(code_only)
-        if opener:
+        # Prose and string literals are not commands: a `<<X` in either
+        # opens nothing (audit M1/M2, eighth re-audit).
+        code, quoted = _split_shell_line(raw)
+        opener = _HEREDOC_OPENER.search(code)
+        # The `<<` must itself be outside quotes; the delimiter it names
+        # may be quoted, which is how this script writes its one heredoc.
+        if opener and not quoted[opener.start()]:
             heredoc = next(group for group in opener.groups() if group)
         name = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", raw)
         if name:
             function = name.group(1)
         elif raw == "}":
             function = ""
-        stripped = raw.strip()
-        if stripped.startswith("#"):
-            continue
-        # A trailing comment on a code line: drop it, but only when the
-        # `#` is not inside a quoted string.
-        if " #" in stripped and stripped.count("'") % 2 == 0 \
-                and stripped.count('"') % 2 == 0:
-            head, _, tail = stripped.partition(" #")
-            if not re.search(r"[\"\']", tail):
-                stripped = head.strip()
+        stripped = code.strip()
         if not stripped:
             continue
         if not pending:
@@ -2651,13 +2709,34 @@ def _script_statements(
     return statements
 
 
+def _pipes_before(text: str) -> bool:
+    """True when ``text`` contains a real pipe — `||` is not one."""
+    index = text.find("|")
+    while index != -1:
+        if text[index : index + 2] != "||" and not (
+            index and text[index - 1] == "|"
+        ):
+            return True
+        index = text.find("|", index + 2)
+    return False
+
+
 def _quiet_grep_offenders(script: Path) -> list[str]:
-    """Statements in ``script`` that pipe a producer into a quiet grep."""
+    """
+    Statements in ``script`` that pipe a producer into a quiet grep.
+
+    EVERY quiet grep on the statement is judged, each by whether IT sits
+    downstream of a pipe (audit L-a, eighth re-audit). Looking only at the
+    first match missed `grep -q x <<<"$1" | grep -q y` and
+    `grep -q a b && echo x | grep -q y`, where the leading grep is
+    blameless and the trailing one is the defect.
+    """
     offenders = []
     for number, _function, statement in _script_statements(script):
-        match = _QUIET_GREP.search(statement)
-        if match and "|" in statement[: match.start()]:
-            offenders.append(f"{number}: {statement}")
+        for match in _QUIET_GREP.finditer(statement):
+            if _pipes_before(statement[: match.start()]):
+                offenders.append(f"{number}: {statement}")
+                break
     return offenders
 
 
@@ -2744,34 +2823,148 @@ class TestGuardsDoNotPipeIntoGrepQ:
             "heredoc bodies are being read as shell: " + "\n".join(offenders)
         )
 
-    def test_a_heredoc_word_in_a_comment_does_not_blind_the_scan(
-        self, tmp_path: Path
-    ) -> None:
-        """Kills DS-L2: honouring an opener found in a comment.
+    #: Three ways to write `<<WORD` without opening a heredoc. Each is
+    #: planted INDENTED (audit M2, eighth re-audit: every comment in this
+    #: script is, and a column-0 fixture passed whether or not the guard
+    #: trimmed leading space).
+    _FALSE_OPENERS = [
+        "    true  # see <<NOTES below",
+        '    echo "use <<EOF here"',
+        "    echo 'or <<EOF here'",
+    ]
 
-        A `<<NOTES` in prose after the last real site would swallow the
-        rest of the file -- every later statement invisible, the lint
-        green and blind. Planted before a genuine offence, which must
+    @pytest.mark.parametrize("prose", _FALSE_OPENERS)
+    def test_a_heredoc_word_that_opens_nothing_does_not_blind_the_scan(
+        self, tmp_path: Path, prose: str
+    ) -> None:
+        """Kills DS-M1 and DS-M2: honouring an opener in a trailing
+        comment or inside a quoted string, and testing only column-0
+        comments.
+
+        Any of them swallows the rest of the file -- every later statement
+        invisible, the lint green and the per-function vacuity guard green
+        with it. Each is planted before a genuine offence, which must
         still be found.
         """
         source = DAILY_SYNC.read_text(encoding="utf-8")
         marker = "has_bulk_rewrite_trailer() {"
         assert marker in source, "the anchor this fixture plants against has moved"
-        planted = tmp_path / "with-a-comment-heredoc.sh"
+        planted = tmp_path / f"planted-{abs(hash(prose)) % 10**8}.sh"
         planted.write_text(
             source.replace(
                 marker,
-                "# a note about formats, see <<NOTES below\n"
-                + marker
-                + "\n    printf '%s' \"$1\" | grep -q bulk",
+                prose + "\n" + marker + "\n    printf '%s' \"$1\" | grep -q bulk",
                 1,
             ),
             encoding="utf-8",
         )
         offenders = _quiet_grep_offenders(planted)
         assert offenders, (
-            "a `<<NOTES` in a comment hid every statement after it, so the "
-            "planted offence went unseen"
+            f"`{prose.strip()}` was read as a heredoc opener, so every "
+            "statement after it went unseen"
+        )
+
+    def test_an_indented_terminator_ends_a_dash_heredoc(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L-b: `raw.strip()` -> `raw.rstrip()`.
+
+        A `<<-` heredoc indents its terminator, and a skip that never ends
+        hides everything after it -- here, a genuine offence.
+        """
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        marker = "has_bulk_rewrite_trailer() {"
+        planted = tmp_path / "planted-dash-heredoc.sh"
+        planted.write_text(
+            source.replace(
+                marker,
+                "    cat <<-INDENTED\n"
+                "\tsome text\n"
+                "\tINDENTED\n"
+                + marker
+                + "\n    printf '%s' \"$1\" | grep -q bulk",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert _quiet_grep_offenders(planted), (
+            "an indented `<<-` terminator did not end the skip, so the "
+            "offence after it went unseen"
+        )
+
+    def test_a_bare_word_here_string_opens_nothing(self, tmp_path: Path) -> None:
+        """Kills DS-L-b's second half: dropping the `(?<!<)` guard.
+
+        `<<<word` is a here-STRING. Without the guard the pattern matches
+        from its second `<` and takes `word` for a delimiter, swallowing
+        the file. Inert against this script today, which quotes every
+        here-string -- so it is planted.
+        """
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        marker = "has_bulk_rewrite_trailer() {"
+        planted = tmp_path / "planted-here-string.sh"
+        planted.write_text(
+            source.replace(
+                marker,
+                "    grep -qxF -- x <<<notaheredoc || true\n"
+                + marker
+                + "\n    printf '%s' \"$1\" | grep -q bulk",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert _quiet_grep_offenders(planted), (
+            "a bare-word here-string was read as a heredoc opener"
+        )
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            'grep -q x <<<"$1" | grep -q y',
+            "grep -q a b && echo x | grep -q y",
+        ],
+    )
+    def test_a_later_quiet_grep_on_the_line_is_judged_too(
+        self, tmp_path: Path, shape: str
+    ) -> None:
+        """Kills DS-L-a: judging only the FIRST quiet grep on a statement.
+
+        The leading grep is blameless -- nothing upstream of it -- and the
+        scan stopped there, so the trailing one, which is downstream of a
+        pipe, was never looked at.
+        """
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        planted = tmp_path / f"planted-second-{abs(hash(shape)) % 10**8}.sh"
+        planted.write_text(
+            source.replace(
+                "has_bulk_rewrite_trailer() {",
+                "has_bulk_rewrite_trailer() {\n    " + shape,
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert _quiet_grep_offenders(planted), (
+            f"the second quiet grep in `{shape}` was never judged"
+        )
+
+    def test_a_leading_quiet_grep_alone_is_not_an_offence(
+        self, tmp_path: Path
+    ) -> None:
+        """And the other direction: `||` is not a pipe, and a grep with
+        nothing upstream of it is exactly what the four allowed sites
+        are."""
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        planted = tmp_path / "planted-blameless.sh"
+        planted.write_text(
+            source.replace(
+                "has_bulk_rewrite_trailer() {",
+                'has_bulk_rewrite_trailer() {\n    grep -q x <<<"$1" || echo none',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert not _quiet_grep_offenders(planted), (
+            "a grep with nothing upstream was reported as piped into"
         )
 
     def test_the_quiet_greps_are_exactly_where_they_are_expected(self) -> None:
