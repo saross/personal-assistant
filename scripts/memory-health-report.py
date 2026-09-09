@@ -250,6 +250,7 @@ def archival_summary(archive_runs_lines: list[str]) -> dict[str, Any]:
 #: (audit 2026-09-08, finding AN5).
 VERIFIABLE_ANCHOR_TYPES = frozenset({"file", "commit"})
 
+
 def _has_verifiable_anchor(anchors: Any) -> bool:
     """Does this ``anchors`` value carry at least one resolvable anchor?"""
     if not isinstance(anchors, list):

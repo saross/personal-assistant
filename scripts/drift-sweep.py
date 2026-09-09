@@ -287,11 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     # writes no trend row imposes none (there is no series to protect); and
     # otherwise the last logged sweep's discovery-only count.
     if args.min_repos is not None:
-        floor = args.min_repos
+        floor, floor_source = args.min_repos, "--min-repos"
     elif args.no_log:
-        floor = 0
+        floor, floor_source = 0, "--no-log (no floor)"
     else:
-        floor = last_repo_count(args.log_path)
+        floor, floor_source = last_repo_count(args.log_path), "the last logged sweep"
     try:
         result = run_sweep(records, as_of=now, days=args.days, min_repos=floor)
     except ta.RepoSetShrunk as exc:
@@ -299,9 +299,12 @@ def main(argv: list[str] | None = None) -> int:
         # before refusing, and name the override — an archived repository is
         # a legitimate reason for the set to shrink, and the operator must be
         # able to say so without editing an append-only log.
+        # Name where the floor came from: telling an operator who just
+        # passed --min-repos that the number came from the log sends them to
+        # the wrong place (round 4f-4, finding L-d).
         print(f"[drift-sweep] WARN: discovery found {exc.discovered} "
-              f"repositories; the floor from the last logged sweep is "
-              f"{exc.floor}", file=sys.stderr)
+              f"repositories; the floor of {exc.floor} came from "
+              f"{floor_source}", file=sys.stderr)
         print(f"[drift-sweep] ERROR: sweep unreliable — {exc}; no trend row "
               "written", file=sys.stderr)
         return 2

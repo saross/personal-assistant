@@ -593,3 +593,29 @@ def test_a_clean_sweep_records_no_exclusions(tmp_path, monkeypatch) -> None:
     )
     assert row["unusable"] == []
     assert "EXCLUDED" not in ds._render(row)
+
+
+def test_the_warning_names_where_the_floor_came_from(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """An operator who just passed --min-repos must not be sent to the log.
+
+    Kills the mutation hard-coding "the last logged sweep" into the WARN
+    (finding L-d).
+    """
+    repo = _init_repo(tmp_path / "repo", "wiki/notes.md")
+    _pin_repos(monkeypatch, [repo], discovered=1)
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+    log = tmp_path / "d.jsonl"
+
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log),
+                    "--min-repos", "5"]) == 2
+    assert "came from --min-repos" in capsys.readouterr().err
+
+    log.write_text(json.dumps({"run_at": "2031-01-01", "repos": 5}) + "\n",
+                   encoding="utf-8")
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
+    assert "came from the last logged sweep" in capsys.readouterr().err

@@ -290,7 +290,7 @@ class TestVerifyMemoryAggregation:
             "id": "test",
             "anchors": [
                 {"type": "file", "ref": "a.py"},
-                {"type": "zotero", "ref": "MPZHXY3P"},
+                {"type": "zotero", "ref": "AAAA1111"},
             ],
         }
         with patch.dict(av._VERIFIERS, {"file": lambda r, _: "true"}):
@@ -360,7 +360,7 @@ class TestVerifyZoteroStub:
     """The Zotero verifier is stubbed until Phase 5 — pending always."""
 
     def test_returns_pending(self):
-        assert av.verify_zotero("MPZHXY3P") == "pending"
+        assert av.verify_zotero("AAAA1111") == "pending"
 
     def test_returns_pending_even_for_empty(self):
         # The stub doesn't try to validate the key shape.
@@ -872,9 +872,11 @@ class TestTransientFailureIsPending:
         # ... and must not RAISE one either: failing to look is not evidence
         # for the memory (round 4f-3, finding L2).
         assert av.bind_confidence("pending", current="low") == "low"
-        # Case-folded: the corpus carries "High" as well as "high".
-        assert av.bind_confidence("pending", current="High") == "high"
-        assert av.bind_confidence("pending", current="  LOW ") == "low"
+        # Case-INSENSITIVE, but the record's own spelling comes back: this
+        # value is written to the corpus, and a check that could not complete
+        # must not rewrite "High" as "high" (finding L-e).
+        assert av.bind_confidence("pending", current="High") == "High"
+        assert av.bind_confidence("pending", current="  LOW ") == "LOW"
         # No prior rating (a fresh record) keeps the documented default.
         assert av.bind_confidence("pending") == "medium"
         assert av.bind_confidence("pending", current="nonsense") == "medium"

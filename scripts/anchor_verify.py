@@ -506,9 +506,10 @@ def unique_suffix_match(
     anyway". With it, a memory whose project holds NO candidate falls back to
     the union, still labelled ``"cross-repo"``. Without it the flag that
     promises exactly this was a no-op for every memory with an attributable
-    project, which is most of them (round 4f-3, finding L3). The fallback
-    does not fire when the project holds SEVERAL candidates: an ambiguity
-    inside the memory's own project is not resolved by widening the search.
+    project, which is most of them (round 4f-3, finding L3). An ambiguity
+    inside the memory's own project is not resolved by widening the search
+    either, but that needs no code: the project's candidates are a subset of
+    the union, so two hits at home guarantee at least two in the union.
     """
     ref_norm = ref.rstrip("/")
     if not ref_norm:
@@ -526,9 +527,13 @@ def unique_suffix_match(
                         if c.repo and os.path.normpath(c.repo) in wanted])
         if len(scoped) == 1:
             return SuffixMatch(scoped[0].path, "same-project")
-        if scoped or not allow_union_fallback:
-            # Ambiguous inside the project, or the operator has not asked for
-            # a wider search: withhold rather than guess.
+        if not allow_union_fallback:
+            # The operator has not asked for a wider search: withhold rather
+            # than guess. Ambiguity INSIDE the project needs no separate
+            # test — the project's candidates are a subset of the union, so
+            # two hits at home mean at least two in the union and the
+            # fallback below cannot return a unique match either (round
+            # 4f-4, finding L-b).
             return None
 
     matches = _hits(candidates)
@@ -913,8 +918,12 @@ def bind_confidence(
         # it must not demote a "high" record, and it must not promote a "low"
         # one to "medium" on the strength of having failed to look (round
         # 4f-3, finding L2). Case-folded: the corpus carries "High".
-        existing = str(current or "").strip().lower()
-        if existing in ("high", "low"):
+        existing = str(current or "").strip()
+        if existing.lower() in ("high", "low"):
+            # The record's OWN spelling goes back, not a case-folded copy:
+            # this value is written to the corpus, and a re-verification that
+            # could not complete has no business rewriting "High" as "high"
+            # (round 4f-4, finding L-e).
             return existing
         return "medium"
     # 'false' or None — both treated as untrusted.
