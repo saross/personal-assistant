@@ -984,8 +984,9 @@ Open, each with its verdict so far:
   refused, the copy record keeps the field stream aligned, the first
   shortening commit and the first unmeasurable merge named). The agent
   records two fixture traps its own earlier tests caught. Merged with
-  main (92fc79e); coordinator suite and PR pending; **re-audit DEFERRED**
-  (stop point).
+  main (92fc79e), coordinator suite 4468 passed, 2 skipped, 19
+  deselected, exit 0; **PR #153, open, re-audit DEFERRED** (stop
+  point).
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
