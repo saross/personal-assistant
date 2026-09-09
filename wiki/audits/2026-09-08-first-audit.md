@@ -786,7 +786,17 @@ Open, each with its verdict so far:
   `commands/audit.md:176-180`, to be stated as a limit); new directories
   and `.json`/`.jsonl` files under `logs/` are violations although the real
   `data/logs/` holds both; the tolerated-entry wording; dead `_under_logs`;
-  `.xz`/`.Z` and the missing-directory banner clause unpinned.
+  `.xz`/`.Z` and the missing-directory banner clause unpinned. Round 4a-6
+  delivered (9a60123): `isolated_report` autouse with a session-level net;
+  an unterminated tail judged by `_line_problem` (a truncated JSON record
+  is now a violation in both modes); the well-formed-append allowance
+  documented in `commands/audit.md` and the conftest as a limit, with the
+  three rejected ways of closing it recorded in the round report; new
+  `.json`/`.jsonl` files and directories under `logs/` tolerated advisory
+  only; entries labelled by kind; `_under_logs` load-bearing; all
+  survivors killed. Its clean-copy run with a populated synthetic store:
+  3951 passed, exit 0, no banner, store byte-identical. Merged with main
+  (7741d84); coordinator suite, PR, and re-audit pending.
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
@@ -796,8 +806,16 @@ Open, each with its verdict so far:
   initialisation and has the same defect. Also M-a (`--dry-run` on a
   worktree exits 1 where the real run exits 0), M-b (the `git` stub never
   populates `data/`, so the fresh-clone happy path is inspected but cannot
-  pass), three lows, and three surviving mutations. Round 4d-5 sent to the
-  4d agent on the same branch.
+  pass), three lows, and three surviving mutations. Round 4d-5 delivered
+  (31efd4f, 251d2c4, 24daadd): the remedy is chosen by the submodule state
+  and the destructive advice is reachable only when git reports no
+  checkout; the composer branches on `data/.git`; `--dry-run` sets
+  `SKIP_COMPOSE` and a dry run on a broken clone narrates to step 8 and
+  exits 0; the git stub populates the submodule; the remedy text, the
+  composer consultation, and the empty-`data/` case pinned; the Zotero
+  trim comment recounted to 22; worktree detection reads the `.git`
+  pointer's shape. Merged with main (259d4fe), coordinator suite 3957
+  passed, exit 0, pushed; second re-audit running.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
