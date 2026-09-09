@@ -449,3 +449,52 @@ def test_the_scorer_loads_every_phase_input_through_the_checked_loader():
     assert loader_calls[0].lineno < first_line, (
         f"the phase files are loaded after {first_name}() has already run"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-5 item L-b2 — one base moves the WHOLE experiment
+# ---------------------------------------------------------------------------
+
+def test_every_script_derives_the_experiment_root_from_the_shared_base():
+    """A "second experiment" must not be assembled half in each directory.
+
+    Repointing the base used to move --judge-dir and --key-dir only:
+    --passages-dir and four other scripts kept their own hard-coded copy of
+    the root, so a second experiment would have written its passages,
+    prompts, scores and analysis into the first one. The mutation this kills:
+    restoring any of those hard-coded roots (each assertion below fails
+    against a literal path, since the shared helper is what they are compared
+    with).
+    """
+    style_support = load_style_module("style_support")
+    root = style_support.experiment_root()
+
+    assert load_style_module("efficacy_build_judge_tasks").EXP == root
+    assert load_style_module("efficacy_build_prompts").EXPERIMENT_DIR == root
+    assert load_style_module("efficacy_build_reference").EXPERIMENT_DIR == root
+    assert load_style_module("efficacy_analyse").DEFAULT_EXPERIMENT_DIR == root
+    # efficacy_score imports numpy through the Phase 5 evaluator, so its
+    # constant is read from the source rather than by importing it.
+    import ast
+
+    from style_test_helpers import SCRIPTS_DIR
+
+    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
+    assignment = next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "DEFAULT_EXPERIMENT_DIR"
+                for t in node.targets)
+    )
+    assert isinstance(assignment.value, ast.Call)
+    assert assignment.value.func.attr == "experiment_root"
+
+
+def test_the_passages_directory_moves_with_the_base(monkeypatch, tmp_path):
+    """The path L-b2 found left behind: passages stayed in the old root."""
+    style_support = load_style_module("style_support")
+    monkeypatch.setattr(style_support, "EXPERIMENT_DEFAULT", tmp_path)
+
+    assert style_support.passages_dir() == tmp_path / "passages"
+    assert style_support.judge_dir() == tmp_path / "judge-tasks"
+    assert style_support.judge_key_dir() == tmp_path / "private" / "judge-key"

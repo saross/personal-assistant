@@ -114,6 +114,11 @@ def private_dir(root: Path | str | None = None) -> Path:
     return experiment_root(root) / "private"
 
 
+def passages_dir(root: Path | str | None = None) -> Path:
+    """The generated passages the judge tasks are built from."""
+    return experiment_root(root) / "passages"
+
+
 def judge_key_dir(root: Path | str | None = None) -> Path:
     """Where the unblinding key is written, and where it is read from."""
     return private_dir(root) / "judge-key"

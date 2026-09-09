@@ -590,8 +590,12 @@ def test_a_built_experiment_scores_at_the_defaults(tmp_path, monkeypatch):
         "Invented reference prose for the judge's target voice.\n",
         encoding="utf-8")
 
+    # The passages go where the DEFAULT says they are, so --passages-dir is
+    # left off too: the whole experiment layout is under test, not just the
+    # key (round 4g-5, item L-b2).
+    _passages_for(style_support.passages_dir().parent, topics)
+
     assert builder.main([
-        "--passages-dir", str(_passages_for(tmp_path, topics)),
         "--extracted-dir", str(extracted),
         "--seed", "4",
     ]) == 0

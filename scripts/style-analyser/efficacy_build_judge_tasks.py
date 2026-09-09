@@ -60,9 +60,14 @@ import style_support  # noqa: E402
 from efficacy_build_prompts import strip_citations  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
+#: Derived from style_support so that repointing one base moves EVERY path
+#: in the experiment together (round 4g-5, item L-b2). It did not: the base
+#: moved --judge-dir and --key-dir while --passages-dir and four other
+#: scripts kept their own hard-coded copy, so a "second experiment" would
+#: have been assembled half in one directory and half in another.
+EXP = style_support.experiment_root()
 EXTRACTED = REPO_ROOT / "data/style-corpus/extracted"
-PASSAGES = EXP / "passages"
+PASSAGES = style_support.passages_dir()
 #: The judge and key locations come from `style_support`, which is also where
 #: `efficacy_score_judges.py` reads them: one description of the layout, so a
 #: move cannot leave the writer and the reader disagreeing (round 4g-3 item 1;
@@ -307,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--key-dir", type=Path,
                     default=style_support.judge_key_dir(),
                     help="directory for the unblinding key (never the judge's)")
-    ap.add_argument("--passages-dir", type=Path, default=PASSAGES)
+    ap.add_argument("--passages-dir", type=Path,
+                    default=style_support.passages_dir())
     ap.add_argument("--extracted-dir", type=Path, default=EXTRACTED)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED,
                     help="seed for the pair order and side assignment")

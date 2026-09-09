@@ -35,8 +35,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase5_evaluator as p5  # noqa: E402
 import style_support  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
+#: Derived from style_support so that repointing one base moves EVERY path
+#: in the experiment together (round 4g-5, item L-b2). It did not: the base
+#: moved --judge-dir and --key-dir while --passages-dir and four other
+#: scripts kept their own hard-coded copy, so a "second experiment" would
+#: have been assembled half in one directory and half in another.
+DEFAULT_EXPERIMENT_DIR = style_support.experiment_root()
 
 # {topic_id}__{condition}__rep{n}.md  -> e.g.  A4__C2__rep3.md
 FNAME_RE = re.compile(r"^(?P<topic>[A-Z]\d+)__(?P<cond>C\d)__rep(?P<rep>\d+)$")
