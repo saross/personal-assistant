@@ -2416,8 +2416,24 @@ every round with its re-audit outcome, six decisions for Shawn).
   (machine-glue) refused — its new remedy would tell the operator to delete
   an initialised `data/` submodule — and round 4d-5 is fixing it; round
   4a-6 (hermeticity follow-ups: an unguarded warning queue, an unterminated
-  garbage fragment tolerated in advisory mode) running. Main suite about
-  3,900. At 02:5x AEST a session rate
+  garbage fragment tolerated in advisory mode) running. By 16:5x AEST:
+  **thirty PRs merged** (#114-#127, #129-#146, #148, #150, #152); main
+  suite about 4,490. Shawn stopped the audit for cost at 16:5x ("this
+  audit is getting rather expensive"); no fix rounds launched after
+  15:5x. Open at the stop: #147 (archive — refused twice, the second time
+  on `| grep -q` under `pipefail` dropping a real R2 refusal to exit 2;
+  one-line fix recorded), #149 (machine-glue lows, re-audit running),
+  #151 (style-analyser — refused: the scorer still re-reads the files
+  after the checked loader; two-line fix recorded), #153 and #154
+  (daily-sync 3c-9, bake-off 4e-8 — delivered, green, NOT re-audited),
+  and 4a-7 (hermeticity — ships a `sys.addaudithook` that catches an
+  in-process write to the real store; PR to open, not re-audited). The
+  report's "Stop point 2026-09-09 16:5x" section lists every branch's
+  exact next action. Live issue found by a re-auditor reading the
+  deployed log: the R2 push has been refusing on `CATALOG.json`
+  ("immutable file modified") since 10:28 — operator action 6. Live
+  consequence of #128: phase 1 must be re-run before any style-analyser
+  stage. At 02:5x AEST a session rate
   limit (reset 04:50) killed all seven running agents at once; every branch
   was already pushed or committed, two worktrees held uncommitted edits, and
   all nine agents were resumed at 07:45 from their own transcripts — and
