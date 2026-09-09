@@ -1877,3 +1877,352 @@ def _load_drift_check():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# ---------------------------------------------------------------------------
+# Round 4c-3 finding M-2 — the two directions of a size difference differ
+# ---------------------------------------------------------------------------
+
+
+class TestShrinkIsNotStaleness:
+    """A source that lost bytes was truncated; a source that gained them grew.
+
+    Round 4c-2 made both directions a warning. Archiving a truncated source
+    writes the short version and nothing downstream can tell: the toolkit
+    records the length it actually compressed, so verify's size check
+    compares the truncation against itself and reports clean.
+    """
+
+    def test_a_shrunken_source_is_refused(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = pipeline.add_session(
+            SID_A, records=substantive_records(SID_A, turns=3)
+        )
+        pipeline.discover()
+
+        # An interrupted store sync leaves a whole-line prefix behind: still
+        # comfortably substantive, just missing the end of the session.
+        lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+        source.write_text("".join(lines[:2]), encoding="utf-8")
+        age_file(source, hours=96)
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert pipeline.entries() == [], (
+            "a truncated transcript was archived; the short version is now "
+            "canonical and verify will call it clean"
+        )
+        assert any(
+            "SHRUNK" in record.getMessage() for record in caplog.records
+        )
+
+    def test_a_grown_source_is_still_archived(
+        self, pipeline: Pipeline
+    ) -> None:
+        """The positive control: growth stays a warning, not a refusal."""
+        source = pipeline.add_session(SID_A)
+        pipeline.discover()
+        with source.open("a", encoding="utf-8") as handle:
+            for record in substantive_records(SID_A, turns=1):
+                handle.write(json.dumps(record) + "\n")
+        age_file(source, hours=96)
+
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+
+    def test_verify_cannot_catch_the_truncation_afterwards(
+        self, pipeline: Pipeline, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Why the refusal has to happen at archive time.
+
+        The toolkit records the size it actually compressed, so once a short
+        source is archived the metadata agrees with the transcript and every
+        later check reports clean. There is no second chance.
+        """
+        source = pipeline.add_session(
+            SID_A, records=substantive_records(SID_A, turns=3)
+        )
+        lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+        source.write_text("".join(lines[:2]), encoding="utf-8")
+        age_file(source, hours=96)
+        pipeline.discover()          # discovery records the SHORT length
+        pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+        capsys.readouterr()
+        assert pipeline.verify() == 0
+        assert "Size mismatch" not in capsys.readouterr().out
+
+    def test_an_unchanged_source_is_archived_without_a_warning(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        assert len(pipeline.entries()) == 1
+        assert not any(
+            "SHRUNK" in record.getMessage() or "manifest records" in
+            record.getMessage() for record in caplog.records
+        )
+
+
+class TestMixedRootIsRefused:
+    """Round 4c-3 finding L-2 — `all(` must not weaken to `any(`.
+
+    The empty-live-store branch requires that EVERY child look like a
+    project key. With `any(`, a root holding project keys AND session-UUID
+    directories reads as live: the UUID directories then become project
+    keys, and the run proceeds under a wrong idea of the tree — the same
+    silent misreading AR10 exists to prevent, reached through the branch
+    added to reconcile the probe with the drift gate.
+    """
+
+    def test_project_keys_beside_a_session_uuid_are_refused(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / "-home-tester-Zenodo-uploads").mkdir(parents=True)
+        # A session directory left behind beside them.
+        (root / SID_A / "subagents").mkdir(parents=True)
+
+        with caplog.at_level(logging.ERROR, logger=LOGGER.name):
+            with pytest.raises(SystemExit) as exit_info:
+                bulk_archive.detect_source_layout(root, LOGGER)
+
+        assert exit_info.value.code != 0
+        assert any(
+            "session-UUID" in record.getMessage() for record in caplog.records
+        )
+
+    def test_project_keys_beside_an_unrecognised_directory_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Any child that is not a project key makes the root ambiguous."""
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / "scratch-notes").mkdir(parents=True)
+
+        with pytest.raises(SystemExit):
+            bulk_archive.detect_source_layout(root, LOGGER)
+
+    def test_a_uniformly_keyed_root_is_still_live(
+        self, tmp_path: Path
+    ) -> None:
+        """The control: the finding-13 branch must still do its job."""
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / "-home-tester-Zenodo-uploads").mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(root, LOGGER) == "live"
+
+    def test_an_explicit_layout_still_overrides_a_mixed_root(
+        self, tmp_path: Path
+    ) -> None:
+        """The refusal is a default, not a wall."""
+        root = tmp_path / "projects"
+        (root / "-home-tester-Workshop").mkdir(parents=True)
+        (root / SID_A).mkdir(parents=True)
+
+        assert bulk_archive.detect_source_layout(root, LOGGER, "live") == "live"
+
+
+class TestFailureBookkeepingSaysWhatHappened:
+    """Round 4c-3 findings L-7, L-8, L-9 — the record must describe reality."""
+
+    def _checkpoint(self, pipeline: Pipeline, failed: dict) -> None:
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [], "skipped_trivial_ids": [],
+            "failed_ids": failed,
+            "stats": {"total_archived": 0, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+
+    def test_every_transient_marker_can_actually_be_recorded(self) -> None:
+        """L-7: a marker matching no reachable reason is decoration.
+
+        Completeness-guard refusals go to skipped_incomplete and are never
+        written to failed_ids, so listing their wording here described a
+        path that does not exist.
+        """
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+        recorded = source.split("def cmd_archive(")[1]
+
+        for marker in bulk_archive._TRANSIENT_FAILURE_MARKERS:
+            assert marker in recorded, (
+                f"{marker!r} is listed as a transient failure but no "
+                "_record_failure call in cmd_archive can produce it"
+            )
+
+    def test_a_during_copy_failure_is_not_called_already_archived(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L-8: the entry on disk IS the suspect one, not reassurance."""
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": (
+                "source changed DURING the copy (10 -> 20 bytes); archived "
+                "entry may be truncated — re-archive"
+            ),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive()
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "possibly-truncated" in messages, messages
+        assert "already archived on this machine" not in messages
+
+    def test_an_unrelated_failure_on_disk_still_says_already_archived(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: the ordinary wording must survive for its own case."""
+        make_archive_entry(pipeline.archive_root, SID_A)
+        pipeline.add_session(SID_B)
+        pipeline.discover()
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "no space left on device",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }})
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive()
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "already archived on this machine" in messages
+
+    def test_a_poisoned_session_is_retried_again_after_the_window(
+        self, pipeline: Pipeline
+    ) -> None:
+        """L-9: no attempt cap, deliberately — it keeps asking.
+
+        A permanent-failure state would silence the drift gate's only
+        remaining complaint about a session that is genuinely not archived.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        aged = datetime.now(timezone.utc) - timedelta(
+            days=bulk_archive.FAILED_RETRY_AFTER_DAYS + 1
+        )
+        # A tenth consecutive failure, long past any plausible attempt cap.
+        self._checkpoint(pipeline, {SID_A: {
+            "reason": "cannot parse transcript (attempt 10)",
+            "recorded_at": aged.isoformat(),
+        }})
+
+        binding, retried = bulk_archive._partition_failed_ids(
+            {SID_A: {
+                "reason": "cannot parse transcript (attempt 10)",
+                "recorded_at": aged.isoformat(),
+            }},
+            on_disk=set(),
+        )
+
+        assert SID_A in retried
+        assert binding == {}
+
+    def test_the_no_cap_policy_is_documented_where_it_is_set(self) -> None:
+        """A policy nobody can find is a policy nobody can review."""
+        source = Path(bulk_archive.__file__).read_text(encoding="utf-8")
+        constant_block = source.split("FAILED_RETRY_AFTER_DAYS = ")[0]
+        assert "no attempt cap" in constant_block.lower(), (
+            "the unbounded-retry decision is not stated beside the constant "
+            "that implements it"
+        )
+
+
+class TestCheckpointRepairsAreReported:
+    """Round 4c-3 findings L-5 and L-6 — repair loudly, and repair enough."""
+
+    def test_a_wrongly_typed_key_is_reported_not_silently_dropped(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L-5: "0 already done" must not be indistinguishable from a discard."""
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": "aaaa,bbbb", "failed_ids": 7,
+            "skipped_trivial_ids": [],
+            "stats": {"total_archived": 0, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            checkpoint = bulk_archive._load_checkpoint(LOGGER)
+
+        assert checkpoint["archived_ids"] == []
+        assert checkpoint["failed_ids"] == {}
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "needed repair" in messages
+        assert "archived_ids" in messages and "failed_ids" in messages
+
+    def test_an_empty_stats_object_does_not_break_the_archive_loop(
+        self, pipeline: Pipeline
+    ) -> None:
+        """L-6: `{"stats": {}}` passed isinstance and then raised KeyError.
+
+        Inside the loop's try, so every session was recorded as FAILED
+        although it had been archived correctly -- and the next run then
+        skipped them all.
+        """
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [], "failed_ids": {}, "skipped_trivial_ids": [],
+            "stats": {},
+        }), encoding="utf-8")
+
+        pipeline.archive()
+
+        state = pipeline.checkpoint_state()
+        assert state["archived_ids"] == [SID_A], (
+            "a session that archived correctly was recorded as failed "
+            "because the checkpoint's stats block was empty"
+        )
+        assert state["failed_ids"] == {}
+        assert state["stats"]["total_archived"] == 1
+
+    def test_a_partially_filled_stats_object_is_completed(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [], "failed_ids": {}, "skipped_trivial_ids": [],
+            "stats": {"total_archived": 5},
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            checkpoint = bulk_archive._load_checkpoint(LOGGER)
+
+        assert checkpoint["stats"]["total_archived"] == 5, (
+            "an existing counter was reset instead of being kept"
+        )
+        assert checkpoint["stats"]["total_subagents"] == 0
+        assert checkpoint["stats"]["total_compressed_bytes"] == 0
+        assert any(
+            "stats was missing" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_a_healthy_checkpoint_is_repaired_silently_because_it_is_whole(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: no warning when there is nothing to repair."""
+        pipeline.checkpoint.write_text(json.dumps({
+            "archived_ids": [SID_A], "failed_ids": {},
+            "skipped_trivial_ids": [],
+            "stats": {"total_archived": 1, "total_subagents": 0,
+                      "total_compressed_bytes": 0},
+        }), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            checkpoint = bulk_archive._load_checkpoint(LOGGER)
+
+        assert checkpoint["archived_ids"] == [SID_A]
+        assert caplog.records == []
