@@ -172,10 +172,32 @@ Run this only when **no other session is editing the repository**: strict mode
 makes a concurrent session's wiki edit fatal, which is a false failure. Without
 `PA_HERMETICITY_STRICT` the source-tree half is advisory — a warning naming the
 paths, printed through the terminal reporter so it survives output capture —
-while the store half stays strict either way, with one allowance: an append by
-the live system is verified as an append (unchanged prefix, and for
-`memories.jsonl` and the vocabulary a plausible appended line) and tolerated,
-and its byte count is reported.
+while the store half stays strict either way, with one allowance described
+below.
+
+**The append allowance, and what it leaves uncaught.** An append to the store
+is verified as an append — the bytes before it must still hash to what they
+hashed at session start, and for `memories.jsonl` and the vocabulary the
+appended text must be the shape that writer produces — and is then TOLERATED,
+**including under `PA_HERMETICITY_STRICT=1`**. Its path and byte count are
+printed under the `hermeticity` banner.
+
+That is a deliberate hole, and it is worth stating plainly: a test that forgets
+to patch its path and **appends a shape-correct record to the real
+`memories.jsonl` is not caught, in either mode**. The guard cannot tell such an
+append apart from the extraction hook's, because they are the same operation
+with the same result. What it does catch is everything else — a rewrite, a
+shrink, a deletion, a file created where none was, and appended text that is
+not a well-formed record or a bare tag.
+
+Two things narrow the exposure. The append is always REPORTED, so a run that
+appends unexpectedly says so and a reader who was not expecting a live append
+can act on it. And the shape check means the appended line must be a complete,
+valid record with `id`, `content` and `created_at` — a test writing anything
+looser fails. Closing the hole properly needs a way to distinguish the
+suite's writes from the machine's; nothing available inside pytest does that
+reliably, and a wrong answer here fails every run in a live checkout, which is
+worse than the hole.
 
 ### 2b. Lens B — test adequacy
 

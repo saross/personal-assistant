@@ -109,7 +109,11 @@ resolve_path() {
     # operator's symlink and left the live file stale but present, which
     # is its own quiet failure and is exactly the intent the guard exists
     # to catch.)
-    if [[ -e "$path" ]]; then
+    # `-e` alone is FALSE for a dangling symlink (round 4d-4, L5), so a
+    # link naming the live CLAUDE.md before that file exists slipped past
+    # the guard and was replaced by a regular file. `-L` catches it, and
+    # `readlink -f` canonicalises a link whose target does not exist yet.
+    if [[ -e "$path" || -L "$path" ]]; then
         resolved="$(readlink -f -- "$path" 2>/dev/null || true)"
         if [[ -n "$resolved" ]]; then
             printf '%s\n' "$resolved"
@@ -172,7 +176,32 @@ fi
 
 if [[ ! -f "$LOCAL" ]]; then
     echo "ERROR: Local section not found: $LOCAL" >&2
-    echo "  (Is the data submodule initialised? Run: git submodule update --init)" >&2
+    # Round 4d-4 (M2): this used to advise `git submodule update --init`,
+    # which is the one command that cannot help when data/ exists and is
+    # not empty — git refuses to clone into a non-empty directory
+    # (verified against git 2.48.1).
+    #
+    # Round 4d-5 (C1): "not empty" was the WRONG test for choosing between
+    # the two remedies. An initialised submodule is also non-empty, so a
+    # perfectly healthy data/ that merely lacked this one file was met with
+    # "Remove $PA_DIR/data entirely" — advice that destroys uncommitted
+    # work in the private pa-data submodule. Branch on whether the
+    # submodule has a CHECKOUT (git leaves a .git file inside one) rather
+    # than on whether the directory has bytes in it.
+    if [[ -e "$PA_DIR/data/.git" ]]; then
+        echo "  data/ is initialised, so this is a missing file inside the" >&2
+        echo "  submodule rather than a missing submodule. Look there:" >&2
+        echo "    git -C $PA_DIR/data status -- global-claude-md/" >&2
+        echo "  Do NOT delete $PA_DIR/data: it is the private pa-data" >&2
+        echo "  submodule and may hold uncommitted work." >&2
+    elif [[ -d "$PA_DIR/data" ]] && [[ -n "$(ls -A "$PA_DIR/data" 2>/dev/null)" ]]; then
+        echo "  data/ exists, is not empty, and has no submodule checkout," >&2
+        echo "  so git cannot clone into it. Remove $PA_DIR/data, then run:" >&2
+        echo "    git -C $PA_DIR submodule update --init" >&2
+    else
+        echo "  (Is the data submodule initialised?" \
+             "Run: git -C $PA_DIR submodule update --init)" >&2
+    fi
     exit 1
 fi
 
