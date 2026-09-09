@@ -180,15 +180,38 @@ class TestTranscriptFiltering:
             "A genuine question.", "A genuine answer.",
         ], "a command's output was extracted as conversation"
 
-    def test_an_empty_assistant_entry_does_not_spend_the_skip(
+    def test_a_tool_use_only_assistant_entry_does_not_spend_the_skip(
         self, tmp_path: Path
     ) -> None:
-        """Assistant turns are split; only the text-bearing one is the reply."""
+        """Assistant turns are split; only the text-bearing one is the reply.
+
+        The real discriminator is the empty-content check earlier in the
+        loop, which drops a tool-use-only entry before the counter branch
+        sees it. The previous version of this test used a whitespace string,
+        which that same check also drops — so it passed without exercising
+        the shape production actually produces (round 4c-3, finding L-1).
+        """
         marker = sorted(reprocess.COMMAND_MARKERS)[0]
         path = _write_gz(tmp_path / "session.jsonl.gz", [
             prose_record("user", f"{marker} go", index=1, is_meta=True),
-            # A tool-use-only assistant entry: no text at all.
-            prose_record("assistant", "   ", index=2),
+            # A genuine tool-use-only assistant entry: a content block that
+            # is neither text nor thinking, so the reader distils it to
+            # nothing. (archive_fixtures.tool_use_record carries a thinking
+            # block too, which this reader DOES render — so it would not
+            # exercise the empty path.)
+            {
+                "type": "assistant",
+                "uuid": "00000000-0000-4000-8000-000000000002",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_0002",
+                        "name": "Read",
+                        "input": {"file_path": "/home/tester/notes.md"},
+                    }],
+                },
+            },
             prose_record("assistant", "The command's real output.", index=3),
             prose_record("user", "A genuine question.", index=4),
             prose_record("assistant", "A genuine answer.", index=5),
@@ -196,9 +219,13 @@ class TestTranscriptFiltering:
 
         messages = reprocess.parse_archived_transcript(path)
 
-        assert [message["content"] for message in messages] == [
+        kept = [message["content"] for message in messages]
+        assert kept == [
             "A genuine question.", "A genuine answer.",
-        ]
+        ], (
+            f"the tool-use-only entry spent the command's skip, letting the "
+            f"command's own output through: {kept}"
+        )
 
     def test_an_interleaved_tool_result_does_not_clear_the_skip(
         self, tmp_path: Path
@@ -529,3 +556,79 @@ class TestRewriteGuardIsWired:
             "bulk-rewrite guard"
         )
         assert "msgbatch_guard" in called[0]
+
+
+class TestOwedResponsesAreCapped:
+    """Round 4c-3 finding M-3 — an unspent skip is a debt against real turns.
+
+    The hook caps the counter at MAX_RESPONSES_OWED; this script's copy grew
+    without limit, so a run of marker-bearing isMeta entries owed one skip
+    each and swallowed that many genuine assistant replies afterwards.
+    """
+
+    def test_the_owed_cap_matches_the_hook(self) -> None:
+        """Lockstep with hooks/extraction-hook.py, checked by reading it.
+
+        The literal is duplicated rather than imported, because importing
+        the hook would run its module-level logging setup. This test is what
+        keeps the duplicate honest.
+        """
+        hook_source = (
+            Path(__file__).resolve().parent.parent
+            / "hooks" / "extraction-hook.py"
+        ).read_text(encoding="utf-8")
+
+        assert f"MAX_RESPONSES_OWED = {reprocess.MAX_RESPONSES_OWED}" in (
+            hook_source
+        ), (
+            "the owed-response cap has diverged from the hook's; the two "
+            "readers of the same transcripts would skip different turns"
+        )
+
+    def test_many_commands_swallow_at_most_two_assistant_turns(
+        self, tmp_path: Path
+    ) -> None:
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        records = [
+            prose_record(
+                "user", f"{marker} number {n}", index=n + 1, is_meta=True
+            )
+            for n in range(6)
+        ]
+        # Six commands, then six assistant turns. Only two may be swallowed.
+        records += [
+            prose_record("assistant", f"Reply number {n}", index=10 + n)
+            for n in range(6)
+        ]
+
+        messages = reprocess.parse_archived_transcript(
+            _write_gz(tmp_path / "session.jsonl.gz", records)
+        )
+
+        kept = [message["content"] for message in messages]
+        assert kept == [
+            "Reply number 2", "Reply number 3",
+            "Reply number 4", "Reply number 5",
+        ], (
+            f"expected exactly two replies swallowed, got {kept}"
+        )
+
+    def test_two_commands_still_swallow_two(self, tmp_path: Path) -> None:
+        """The cap must not clip the shape it exists to allow."""
+        marker = sorted(reprocess.COMMAND_MARKERS)[0]
+        records = [
+            prose_record("user", f"{marker} one", index=1, is_meta=True),
+            prose_record("user", f"{marker} two", index=2, is_meta=True),
+            prose_record("assistant", "Output one.", index=3),
+            prose_record("assistant", "Output two.", index=4),
+            prose_record("user", "A genuine question.", index=5),
+            prose_record("assistant", "A genuine answer.", index=6),
+        ]
+
+        messages = reprocess.parse_archived_transcript(
+            _write_gz(tmp_path / "session.jsonl.gz", records)
+        )
+
+        assert [message["content"] for message in messages] == [
+            "A genuine question.", "A genuine answer.",
+        ]
