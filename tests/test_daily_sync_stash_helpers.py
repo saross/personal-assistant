@@ -2558,21 +2558,45 @@ _QUIET_GREP_SITES = {
 
 #: `grep -q`, `grep -Fqx`, `grep --quiet` — every spelling of "tell me
 #: yes or no and stop reading" (audit 2, sixth re-audit).
+#: `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"` — matched wherever it
+#: appears on the line, because a heredoc opener is routinely followed by
+#: redirections (`<<'PYEOF' >>"$LOG" 2>&1`). `<<<` is a here-STRING and
+#: opens nothing, so it is excluded explicitly.
+_HEREDOC_OPENER = re.compile(
+    r"(?<!<)<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'"
+    r'|"([A-Za-z_][A-Za-z0-9_]*)"'
+    r"|([A-Za-z_][A-Za-z0-9_]*))"
+)
+
 _QUIET_GREP = re.compile(r"\bgrep\s+(?:-[A-Za-z]*q|--quiet)")
 
 
-def _script_statements() -> list[tuple[int, str, str]]:
+def _script_statements(
+    script: Path = DAILY_SYNC,
+) -> list[tuple[int, str, str]]:
     """
-    The script as `(line number, enclosing function, statement)` triples.
+    ``script`` as `(line number, enclosing function, statement)` triples.
 
     Continuation lines and lines ending in a pipe are joined, so a
     pipeline written across several lines is one statement — the shape
-    that walked through the previous line-at-a-time scan. Heredoc bodies
-    are skipped entirely: the embedded Python in this script is not shell
-    and must not be linted as though it were. A trailing inline comment
-    is dropped, so prose about the rule cannot satisfy or violate it.
+    that walked through the previous line-at-a-time scan. A trailing
+    inline comment is dropped, so prose about the rule can neither
+    satisfy nor violate it.
+
+    Heredoc bodies are skipped: the embedded Python in this script is not
+    shell and must not be linted as though it were. The opener is matched
+    BEFORE any redirection (audit M2, seventh re-audit) — the previous
+    pattern anchored the delimiter at end of line, and this script's one
+    heredoc is `<<'PYEOF' >>"$LOG_FILE" 2>&1 || log "…"`, so NO opener was
+    ever detected and that Python was linted as shell all along. It
+    passed only because it happens to contain no grep.
+
+    An opener is honoured only in COMMAND POSITION (audit L2): a `<<X`
+    inside a comment is prose, and treating it as an opener would swallow
+    the rest of the file — every site after it invisible, the lint green
+    and blind.
     """
-    lines = DAILY_SYNC.read_text(encoding="utf-8").splitlines()
+    lines = script.read_text(encoding="utf-8").splitlines()
     statements: list[tuple[int, str, str]] = []
     function = ""
     heredoc = ""
@@ -2583,9 +2607,11 @@ def _script_statements() -> list[tuple[int, str, str]]:
             if raw.strip() == heredoc:
                 heredoc = ""
             continue
-        opener = re.search(r"<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?\s*$", raw)
+        # Prose is not a command: a `<<X` in a comment opens nothing.
+        code_only = "" if raw.lstrip().startswith("#") else raw
+        opener = _HEREDOC_OPENER.search(code_only)
         if opener:
-            heredoc = opener.group(1)
+            heredoc = next(group for group in opener.groups() if group)
         name = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", raw)
         if name:
             function = name.group(1)
@@ -2616,6 +2642,16 @@ def _script_statements() -> list[tuple[int, str, str]]:
     return statements
 
 
+def _quiet_grep_offenders(script: Path) -> list[str]:
+    """Statements in ``script`` that pipe a producer into a quiet grep."""
+    offenders = []
+    for number, _function, statement in _script_statements(script):
+        match = _QUIET_GREP.search(statement)
+        if match and "|" in statement[: match.start()]:
+            offenders.append(f"{number}: {statement}")
+    return offenders
+
+
 class TestGuardsDoNotPipeIntoGrepQ:
     """A quiet grep exits on its first match; the upstream then dies of
     SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. Any
@@ -2633,14 +2669,64 @@ class TestGuardsDoNotPipeIntoGrepQ:
         literal `grep -q`, so `grep -Fqx` and `grep --quiet` walked past
         it.
         """
-        offenders = []
-        for number, _function, statement in _script_statements():
-            match = _QUIET_GREP.search(statement)
-            if match and "|" in statement[: match.start()]:
-                offenders.append(f"{number}: {statement}")
+        offenders = _quiet_grep_offenders(DAILY_SYNC)
         assert not offenders, (
             "these pipe into a quiet grep, whose match reads as a failure "
             "under `set -o pipefail`:\n" + "\n".join(offenders)
+        )
+
+    def test_a_heredoc_body_is_not_linted_as_shell(self, tmp_path: Path) -> None:
+        """Kills DS-M2: anchoring the heredoc opener at end of line.
+
+        This script's one heredoc is `<<'PYEOF' >>"$LOG_FILE" 2>&1 || …`,
+        so an end-anchored pattern detected NO opener and the embedded
+        Python was linted as shell all along -- passing only because it
+        contains no grep. Planted here, so the skip is exercised rather
+        than assumed.
+        """
+        planted = tmp_path / "with-a-grep-in-the-heredoc.sh"
+        planted.write_text(
+            DAILY_SYNC.read_text(encoding="utf-8").replace(
+                "import json, sys\n",
+                'import json, sys\nprobe = "cat x | grep -q y"\n',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        offenders = _quiet_grep_offenders(planted)
+        assert not offenders, (
+            "a `| grep -q` inside the embedded Python tripped the lint, so "
+            "heredoc bodies are being read as shell: " + "\n".join(offenders)
+        )
+
+    def test_a_heredoc_word_in_a_comment_does_not_blind_the_scan(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L2: honouring an opener found in a comment.
+
+        A `<<NOTES` in prose after the last real site would swallow the
+        rest of the file -- every later statement invisible, the lint
+        green and blind. Planted before a genuine offence, which must
+        still be found.
+        """
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        marker = "has_bulk_rewrite_trailer() {"
+        assert marker in source, "the anchor this fixture plants against has moved"
+        planted = tmp_path / "with-a-comment-heredoc.sh"
+        planted.write_text(
+            source.replace(
+                marker,
+                "# a note about formats, see <<NOTES below\n"
+                + marker
+                + "\n    printf '%s' \"$1\" | grep -q bulk",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        offenders = _quiet_grep_offenders(planted)
+        assert offenders, (
+            "a `<<NOTES` in a comment hid every statement after it, so the "
+            "planted offence went unseen"
         )
 
     def test_the_quiet_greps_are_exactly_where_they_are_expected(self) -> None:
