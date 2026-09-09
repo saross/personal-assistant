@@ -1328,3 +1328,97 @@ class TestVerifyCommitPermanentErrorWithholds:
         assert calls["n"] == 1, "the repository is probed once, then excluded"
         assert verdict == "pending"
         assert av.repo_is_unusable(gone)
+
+
+class TestProbeRepos:
+    """The eager probe's own branches (round 4f-6, finding M-c).
+
+    Five mutations survived here because nothing tested the function
+    directly and both call sites discard its return value: the
+    permanent-error branch could append instead of excluding, the timeout and
+    transient branches could exclude instead of appending, the
+    already-excluded pre-skip could be deleted, and the return could be
+    replaced with [].
+    """
+
+    def test_a_healthy_repository_is_returned_and_not_excluded(self, tmp_path):
+        repo = _throwaway_repo(tmp_path / "repo")
+        assert av.probe_repos([repo]) == [repo]
+        assert not av.repo_is_unusable(repo)
+
+    def test_a_permanent_error_excludes_and_is_not_returned(self, tmp_path):
+        """Kills the mutation appending the repository on a permanent error."""
+        repo = _throwaway_repo(tmp_path / "repo")
+        with patch("subprocess.run", side_effect=PermissionError("denied")):
+            assert av.probe_repos([repo]) == []
+        assert av.repo_is_unusable(repo)
+
+    def test_a_timeout_leaves_the_repository_in(self, tmp_path):
+        """Slow is not broken: per-ref probing decides.
+
+        Kills the mutation excluding on TimeoutExpired.
+        """
+        import subprocess as _sp
+        repo = _throwaway_repo(tmp_path / "repo")
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired("git", 3)):
+            assert av.probe_repos([repo]) == [repo]
+        assert not av.repo_is_unusable(repo)
+
+    def test_a_transient_error_leaves_the_repository_in(self, tmp_path):
+        """Kills the mutation excluding on a transient OSError.
+
+        An ENOMEM spike at sweep start would otherwise drop a healthy
+        repository for the whole run.
+        """
+        repo = _throwaway_repo(tmp_path / "repo")
+        with patch("subprocess.run",
+                   side_effect=OSError(12, "Cannot allocate memory")):
+            assert av.probe_repos([repo]) == [repo]
+        assert not av.repo_is_unusable(repo)
+
+    def test_a_non_zero_exit_excludes(self, tmp_path):
+        """A directory that is not a repository at all."""
+        not_a_repo = tmp_path / "plain"
+        not_a_repo.mkdir()
+        assert av.probe_repos([not_a_repo]) == []
+        assert av.repo_is_unusable(not_a_repo)
+
+    def test_an_already_excluded_repository_is_not_probed_again(self, tmp_path):
+        """Kills the mutation deleting the repo_is_unusable pre-skip."""
+        repo = _throwaway_repo(tmp_path / "repo")
+        av.note_unusable_repo(repo, "excluded earlier")
+        with patch("subprocess.run") as run:
+            assert av.probe_repos([repo]) == []
+            assert run.call_count == 0
+
+    def test_the_return_value_is_the_usable_subset(self, tmp_path):
+        """Kills the mutation ``return []``: callers may use this list."""
+        good = _throwaway_repo(tmp_path / "good")
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        other = _throwaway_repo(tmp_path / "other")
+        assert av.probe_repos([good, plain, other]) == [good, other]
+
+    def test_an_emptied_directory_inside_a_repository_is_excluded(
+        self, tmp_path,
+    ):
+        """git walks UP, so a nested empty directory answers for its parent.
+
+        Finding L-e: ``git -C child rev-parse`` succeeds inside any
+        repository, so an emptied checkout nested under another one probed
+        "usable" and its own anchors were then judged against the parent.
+        Kills the mutation dropping the toplevel comparison.
+        """
+        parent = _throwaway_repo(tmp_path / "parent")
+        nested = parent / "vendor" / "thing"
+        nested.mkdir(parents=True)          # a mount point with nothing in it
+        assert av.probe_repos([nested]) == []
+        assert av.repo_is_unusable(nested)
+        assert "not a repository root" in av.unusable_repos()[str(nested)]
+
+    def test_a_genuine_nested_repository_is_kept(self, tmp_path):
+        """The control: a real checkout inside another one answers for itself."""
+        parent = _throwaway_repo(tmp_path / "parent")
+        inner = _throwaway_repo(parent / "vendor")
+        assert av.probe_repos([inner]) == [inner]
+        assert not av.repo_is_unusable(inner)
