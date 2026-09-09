@@ -746,13 +746,13 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-one PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-two PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #129, #140
-(memory readers and anchors); #132, #135 (daily-sync lows); #136, #141
+(memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
 (archive follow-ups); #128 (style-analyser scripts, three re-audits);
 #142 (bake-off round 4e-5).
 
@@ -838,7 +838,20 @@ Open, each with its verdict so far:
   every unmeasurable merge is logged; the quiet-grep lint tokenises
   statements; the vacuity guard names the allowed set; `render_sync_gate`
   driven directly; record paths escaped on both sides. Merged with main,
-  coordinator suite 3913 passed, exit 0; **PR #139**; re-audit running.
+  coordinator suite 3913 passed, exit 0; **PR #139, merged d07c174**
+  2026-09-09 12:3x: the re-audit found all nine span-rule decisions
+  correct and order-independent, every unmeasurable merge logged without
+  touching the gate, and the upgrade path safe (status records are never
+  persisted, so the round report's "in-flight comparison" risk cannot
+  arise). Follow-ups are round 3c-8 (`claude/audit-round3c-8`), all
+  coverage and lint-reach gaps: the span check's second condition is
+  untested (a one-token mutation republishes an unaccounted shrink); the
+  heredoc skip is dead (the opener regex is anchored before the script's
+  only heredoc's redirections, so the embedded Python is linted as
+  shell); the quiet-grep pattern misses `grep -E -q`, `--silent`,
+  `egrep`, `zgrep`; the vacuity set is per-function not per-site; the
+  rename branch of the path escaping is untested; the gate-render tests
+  assert membership not the exact list.
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
