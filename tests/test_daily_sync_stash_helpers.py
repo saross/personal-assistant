@@ -589,6 +589,7 @@ class TestPreviouslyRecordedStashes:
 _CLASSIFY_FUNCTIONS = (
     "unmerged_paths",
     "status_records",
+    "encode_record_path",
     "snapshot_before_apply",
     "classify_apply_failure",
     "stash_tracked_half_landed",
@@ -1305,7 +1306,7 @@ class TestStashTrackedHalfLanded:
     asked to land."""
 
     _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
-                  "status_records")
+                  "status_records", "encode_record_path")
 
     def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
         """Run the predicate over two recorded porcelain snapshots."""
@@ -1788,7 +1789,7 @@ class TestTrackedHalfEvidenceIsTheHunks:
     having changed."""
 
     _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
-                  "status_records")
+                  "status_records", "encode_record_path")
 
     def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
         """Run the predicate over two recorded porcelain snapshots."""
@@ -2375,7 +2376,7 @@ class TestRenameOnlyStash:
     the source's deletion."""
 
     _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
-                  "status_records")
+                  "status_records", "encode_record_path")
 
     def _renaming_entry(self, tmp_path: Path) -> tuple[Path, str]:
         """A repo whose stash is a pure rename."""
@@ -2754,7 +2755,7 @@ class TestStatusRecordsAreRaw:
     compared equal and such a path was silently unmeasurable."""
 
     _FUNCTIONS = ("status_records", "status_lines_for",
-                  "stash_tracked_half_landed")
+                  "stash_tracked_half_landed", "encode_record_path")
 
     def test_a_path_with_a_space_is_reported_unquoted(
         self, tmp_path: Path
@@ -3097,3 +3098,77 @@ class TestUnjudgeableMergeBesideATrailer:
             "an unmeasurable merge passed without a word: " + result.stderr
         )
         assert "cannot measure what it kept" in result.stderr, result.stderr
+
+
+class TestRecordPathsSurviveNewlines:
+    """These records are newline-joined into a shell variable, and a shell
+    variable cannot hold a NUL -- so the separator has to be escaped
+    rather than chosen."""
+
+    _FUNCTIONS = ("status_records", "status_lines_for", "encode_record_path")
+
+    def test_a_path_with_a_newline_stays_one_record(self, tmp_path: Path) -> None:
+        """Kills DS-item-5: emitting the raw path.
+
+        A newline in a path used to split one record into two, and the
+        fragment after the break could be matched as though it were a
+        path of its own.
+        """
+        repo = tmp_path / "newline-path"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        awkward = "notes/two\nlines.md"
+        (repo / "notes").mkdir()
+        (repo / awkward).write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / awkward).write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert result.returncode == 0, result.stderr
+        rows = result.stdout.splitlines()
+        assert len(rows) == 1, ("a path with a newline split into several "
+                               f"records: {rows}")
+        assert rows[0] == " M\tnotes/two\\nlines.md", repr(rows[0])
+
+    def test_a_fragment_cannot_impersonate_a_path(self, tmp_path: Path) -> None:
+        """The consequence: the tail of a split path must not answer to a
+        query for a real one."""
+        repo = tmp_path / "impersonate"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        # The tail of this path is exactly the name of a real file.
+        (repo / "notes" / "decoy\nlines.md").write_text("seed\n", encoding="utf-8")
+        (repo / "lines.md").write_text("a real file, untouched\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "notes" / "decoy\nlines.md").write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'records="$(status_records "{repo}")"\n'
+            'status_lines_for "$records" "lines.md"\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "", (
+            "the tail of a split path answered for a file nothing touched: "
+            + repr(result.stdout)
+        )
+
+    def test_a_literal_backslash_n_is_not_a_newline(self, tmp_path: Path) -> None:
+        """Backslash is escaped first, or `a\\nb` and a real newline would
+        encode to the same record and match each other."""
+        result = _run_shell(
+            'encode_record_path "$PA_TEST_LITERAL"\n'
+            'printf "|"\n'
+            'encode_record_path "$PA_TEST_NEWLINE"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LITERAL": "notes/a\\nb.md", "PA_TEST_NEWLINE": "notes/a\nb.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        literal, newline = result.stdout.split("|")
+        assert literal != newline, (
+            "a literal backslash-n and a real newline encode alike: "
+            + repr(result.stdout)
+        )

@@ -1772,14 +1772,34 @@ status_records() {
         [[ ${#record} -gt 3 ]] || continue
         code="${record:0:2}"
         path="${record:3}"
-        printf '%s\t%s\n' "$code" "$path"
+        printf '%s\t%s\n' "$code" "$(encode_record_path "$path")"
         # A rename or copy carries its ORIGINAL path in the next field.
         if [[ "$code" == *[RC]* ]]; then
             IFS= read -r -d '' path || break
-            printf '%s\t%s\n' "$code" "$path"
+            printf '%s\t%s\n' "$code" "$(encode_record_path "$path")"
         fi
     done < <(git -C "$repo" status --porcelain=v1 -z 2>/dev/null || true)
     return 0
+}
+
+encode_record_path() {
+    # encode_record_path <path>
+    # A path with its newlines escaped, so one path is always one record.
+    #
+    # audit 5 (sixth re-audit): these records are newline-joined into a
+    # shell variable, and a shell variable cannot hold a NUL — so a path
+    # containing a newline used to become TWO records, and the fragment
+    # after the break could impersonate a real path. The reverse-apply
+    # conjunction still stood between that and a dropped stash, but a
+    # guard should not be relying on the next guard to catch its own
+    # mis-parse.
+    #
+    # Backslash goes first, or `notes/a\nb` (a literal backslash-n) and
+    # `notes/a<newline>b` would encode to the same thing. Both sides of
+    # every comparison run through here, so nothing is ever decoded.
+    local value="$1"
+    value="${value//\\/\\\\}"
+    printf '%s' "${value//$'\n'/\\n}"
 }
 
 status_lines_for() {
@@ -1791,13 +1811,17 @@ status_lines_for() {
     # matched reads as "not mentioned" — the conservative direction,
     # because an entry whose paths cannot be matched is never called
     # applied.
-    local text="$1" line entry path
+    local text="$1" line entry path wanted
     shift
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         entry="${line#*$'\t'}"
         for path in "$@"; do
-            if [[ "$entry" == "$path" ]]; then
+            # The record's path is encoded (audit 5), so the query is too
+            # — the comparison is between two encodings, never between an
+            # encoding and a raw path.
+            wanted="$(encode_record_path "$path")"
+            if [[ "$entry" == "$wanted" ]]; then
                 printf '%s\n' "$line"
                 break
             fi
