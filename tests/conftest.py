@@ -27,11 +27,24 @@ defined; the one thing a reader needs up front is the environment switch:
     ``hermeticity`` banner at the end. ``commands/audit.md`` carries the
     two invocations that between them cover both halves.
 
-    The canonical memory store and ``logs/`` are strict in BOTH modes, with
-    one allowance: an APPEND by the live system (the extraction hook adding
-    a memory, a script adding a log line) is verified as an append — the old
-    bytes must still be an unchanged prefix — and tolerated. A shrink, a
-    rewritten prefix, a deletion, or a new file is a failure either way.
+    The canonical memory store and ``logs/`` are strict in BOTH modes,
+    with one allowance: an APPEND by the live system (the extraction
+    hook adding a memory, a script adding a log line) is verified as an
+    append — the earlier bytes must still hash to what they hashed at
+    session start, and the appended text must be the shape that writer
+    produces — and then tolerated, WITH ITS PATH AND BYTE COUNT
+    REPORTED. A shrink, a rewritten prefix, a deletion, a new file, or
+    appended text of the wrong shape is a failure either way.
+
+    What that leaves uncaught, stated plainly: a test that forgets to
+    patch its path and appends a SHAPE-CORRECT record to the real
+    memories.jsonl passes in both modes. The guard cannot tell that
+    append apart from the extraction hook's — they are the same
+    operation with the same result. It is reported, and the shape check
+    means the line must be a complete record with id, content and
+    created_at, but a test writing exactly that is not stopped. See
+    commands/audit.md for why closing it is not attempted here.
+
 """
 
 import atexit
@@ -355,6 +368,36 @@ Last updated: 2024-02-08
 
 
 
+def describe_tolerated_kind(entry: str) -> str:
+    """Name the class of one tolerated entry.
+
+    Every entry used to be labelled "a lock file or a rotation", including a
+    half-written append, which told the reader the wrong thing about the one
+    case where knowing which it was actually matters (round 4a-6, L6).
+    """
+    if "not terminated" in entry:
+        return "an append in progress"
+    path = entry.split(" (")[0]
+    if path.endswith(".lock"):
+        return "a lock file"
+    if path.endswith(_TOLERATED_NEW_LOG_SUFFIXES):
+        stem = path
+        for suffix in _COMPRESSION_SUFFIXES:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        base, _, tail = stem.rpartition(".")
+        if tail.isdigit() or stem != path:
+            return "a log rotation"
+        return "a new log file"
+    if any(path.endswith(suffix) for suffix in _COMPRESSION_SUFFIXES):
+        return "a log rotation"
+    stem, _, tail = path.rpartition(".")
+    if tail.isdigit():
+        return "a log rotation"
+    return "a new directory or a rotated file"
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Emit the hermeticity advisories where the operator will see them.
 
@@ -388,8 +431,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"note: the live system appended to {line}", yellow=True)
     for path in report.get("tolerated", []):
         terminalreporter.write_line(
-            f"note: tolerated shared-checkout noise (a lock file or a "
-            f"rotation): {path}", yellow=True,
+            f"note: tolerated shared-checkout noise "
+            f"({describe_tolerated_kind(path)}): {path}", yellow=True,
         )
 
 # ---------------------------------------------------------------------------
@@ -415,6 +458,32 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 #: The marker that exempts a test from the PG-environment comparison.
 PG_ENV_MARKER = "pg_env"
+
+
+@pytest.fixture(autouse=True)
+def isolated_report(monkeypatch):
+    """Give every test its own report queue, not the session's.
+
+    ``report_source_tree_changes`` QUEUES into the module-level
+    :data:`_DEFERRED_REPORT`, so a test driving it directly left its
+    throwaway paths there and the session's terminal summary reported them
+    as though the suite had touched the real checkout. It was an opt-in
+    fixture; removing it from the one test that used it left 117 tests green
+    while the run printed a warning about a path under pytest's basetemp
+    (round 4a-6, finding M3). A guard that cries wolf is a guard that gets
+    ignored, so the isolation is now automatic and a test cannot forget it.
+
+    The session teardown runs after every test's fixtures are torn down, so
+    it writes to the real queue and the terminal summary reports only what
+    the SESSION found.
+    """
+    monkeypatch.setattr(_conftest_module(), "_DEFERRED_REPORT", {})
+    return _DEFERRED_REPORT
+
+
+def _conftest_module():
+    """This module object, for monkeypatching its globals from a fixture."""
+    return sys.modules[__name__]
 
 
 def pg_env_snapshot() -> dict[str, str]:
@@ -795,6 +864,15 @@ _SNAPSHOT_SKIP_DIRS = frozenset({"__pycache__", ".git", ".pytest_cache"})
 #: Filled during session teardown and emitted by
 #: ``pytest_terminal_summary``, which writes through the terminal reporter
 #: and is therefore not swallowed by pytest's output capture.
+#:
+#: A module-level queue that anything calling ``report_source_tree_changes``
+#: writes into — including a TEST driving that function directly, which then
+#: leaves its throwaway paths here for the session's summary to report as
+#: though the suite had touched the real checkout. The autouse
+#: ``isolated_report`` fixture below hands every test its own dict so that
+#: cannot happen; only the session teardown writes to this one (round 4a-6,
+#: finding M3, where removing the opt-in fixture left 117 tests green while
+#: the run cried wolf about a basetemp path).
 _DEFERRED_REPORT: dict[str, list[str]] = {}
 
 #: The keys the extraction hook always writes. An appended memories.jsonl
@@ -1004,6 +1082,14 @@ def classify_store_changes(
 _COMPRESSION_SUFFIXES = (".gz", ".bz2", ".xz", ".zst", ".Z")
 
 
+#: New file extensions the live system creates under ``logs/``. The real
+#: ``data/logs/`` holds ``drift-sweep.jsonl`` and
+#: ``bulk-archive-manifest.json`` beside the ``*.log`` files, so restricting
+#: the allowance to ``.log`` failed a shared-checkout run whenever one of
+#: those appeared (round 4a-6, findings L4/L5).
+_TOLERATED_NEW_LOG_SUFFIXES = (".log", ".json", ".jsonl")
+
+
 def _shared_checkout_noise(
     violations: list[str], created: list[str], before: dict[str, object],
 ) -> list[str]:
@@ -1016,10 +1102,13 @@ def _shared_checkout_noise(
     * a rotation — ``X`` renamed to ``X.1`` (or ``.2``, ...) with a fresh
       ``X`` in its place, which shows up as a new ``X.N`` plus an ``X`` that
       appears to have shrunk. logrotate may also COMPRESS the rotated copy,
-      so ``X.gz`` and ``X.1.gz`` count too (round 4a-5, finding 4);
-    * a new ``*.log`` under ``logs/`` — a log file the live system started
-      writing during the run. Narrow on purpose: only that directory, only
-      that extension.
+      so ``X.gz`` and ``X.1.gz`` count too;
+    * a new ``*.log``, ``*.json`` or ``*.jsonl`` under ``logs/`` — output the
+      live system started writing during the run;
+    * a new DIRECTORY under ``logs/`` — ``data/logs/`` really does grow
+      subtrees (``terra-enrich-responses/terra``), and a directory carries
+      no content of its own; the first file written into it is judged on its
+      own merits.
 
     Every one of these is advisory-only. Under ``PA_HERMETICITY_STRICT``
     nothing else is running, so the caller treats them as violations.
@@ -1048,13 +1137,25 @@ def _shared_checkout_noise(
                 # The fresh file that replaced it reads as a shrink.
                 noise.add(rotated_from)
             continue
-        if path.endswith(".log") and _under_logs(path):
+        if not _under_logs(path):
+            # The two store files are append-tolerant but are NOT under
+            # logs/: a CREATED memories.jsonl or tag-vocabulary.txt is the
+            # suite building a store where there was none, never noise.
+            continue
+        if Path(path).is_dir():
+            noise.add(path)
+            continue
+        if path.endswith(_TOLERATED_NEW_LOG_SUFFIXES):
             noise.add(path)
     return sorted(noise)
 
 
 def _under_logs(path: str) -> bool:
-    """Is ``path`` inside one of the append-tolerant log directories?"""
+    """Is ``path`` inside one of the append-tolerant log directories?
+
+    Anchored on the separator so ``/logs-old/x`` is not read as being
+    inside ``/logs``.
+    """
     for directory in _APPEND_TOLERANT_DIRS:
         root = str(directory.resolve())
         if path.startswith(root + os.sep):
@@ -1103,7 +1204,14 @@ def _appended_content_problem(
         if problem is not None:
             return problem, False
     if partial.strip():
-        # The complete lines are all fine; only the tail is unterminated.
+        # The complete lines are all fine, but the tail is unterminated.
+        # Judge it too: with NO complete lines the loop above never ran, so
+        # a lone unterminated garbage fragment used to be waved through as
+        # "an append in progress" (round 4a-6, finding M2). A fragment is
+        # only in-progress if what there is of it is still the right shape.
+        problem = _line_problem(kind, partial)
+        if problem is not None:
+            return f"{problem} (and the line is unterminated)", False
         return ("the final appended line is not terminated — an append in "
                 "progress, or a crash-truncated tail"), True
     return None, False
