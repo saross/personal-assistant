@@ -19,8 +19,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shlex
 import socket
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -1012,13 +1014,27 @@ class TestBatchSubmitIsNotRepeatable:
 
     @pytest.fixture
     def submit_stub(self, monkeypatch):
-        """Fake ``anthropic`` whose batches.create records and returns an id."""
-        created: list[list[dict]] = []
+        """Fake ``anthropic`` that records submissions and replays results.
+
+        ``.created`` is one entry per ``batches.create`` call; ``.results``
+        is what the next ``--haiku-apply`` will retrieve, so a test can run
+        the real submit -> partial apply -> top-up sequence rather than
+        hand-building a state the code could never have produced.
+        """
+        stub = type("SubmitStub", (), {})()
+        stub.created = []
+        stub.results = []
 
         class FakeBatches:
             def create(self, requests):
-                created.append(requests)
-                return type("Batch", (), {"id": f"batch_{len(created):03d}"})()
+                stub.created.append(requests)
+                return type("Batch", (), {"id": f"batch_{len(stub.created):03d}"})()
+
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(stub.results)
 
         class FakeAnthropic:
             def __init__(self, *args, **kwargs):
@@ -1027,7 +1043,7 @@ class TestBatchSubmitIsNotRepeatable:
         fake_module = type(sys)("anthropic")
         fake_module.Anthropic = FakeAnthropic
         monkeypatch.setitem(sys.modules, "anthropic", fake_module)
-        return created
+        return stub
 
     def _argv(self, manifest, prompt, out_dir, *extra):
         return [
@@ -1047,16 +1063,139 @@ class TestBatchSubmitIsNotRepeatable:
         prompt = _prompt_file(tmp_path)
         out_dir = tmp_path / "out"
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
-        assert len(submit_stub) == 1
+        assert len(submit_stub.created) == 1
         capsys.readouterr()
 
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
-        assert len(submit_stub) == 1  # nothing was created the second time
+        assert len(submit_stub.created) == 1  # nothing created the second time
         message = capsys.readouterr().err
         assert "batch_001" in message
         assert "--haiku-apply batch_001" in message
         assert f"--out-dir {out_dir}" in message
         assert "the SAME manifest" in message
+
+    @staticmethod
+    def _expected_retrieve_command(batch_id: str, root_out_dir: Path) -> str:
+        """The recovery line, spelled out rather than pattern-matched.
+
+        Substring assertions let both halves of this command rot: naming
+        the provider subdirectory instead of its parent, or the wrong
+        --provider, still "contains" the fragments a loose test checks.
+        The operator copy-pastes this line, so it is pinned exactly.
+        """
+        return (
+            "venv/bin/python3 scripts/bake-off-metadata.py "
+            f"--provider haiku --haiku-apply {batch_id} "
+            f"--out-dir {root_out_dir}"
+        )
+
+    def test_retrieve_command_is_exact(self, tmp_path):
+        provider_dir = tmp_path / "out" / "haiku"
+        assert bom.haiku_retrieve_command("batch_007", provider_dir) == (
+            self._expected_retrieve_command("batch_007", tmp_path / "out")
+        )
+
+    def test_the_printed_recovery_line_is_exact(
+        self, tmp_path, capsys, submit_stub
+    ):
+        manifest = _one_session_manifest(tmp_path, "recovery-aaaa-1111")
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, _prompt_file(tmp_path), out_dir)) == 0
+        printed = capsys.readouterr().out
+        line = next(
+            line for line in printed.splitlines()
+            if line.startswith("[haiku] retrieve with: ")
+        )
+        assert line == "[haiku] retrieve with: " + self._expected_retrieve_command(
+            "batch_001", out_dir
+        )
+
+    def test_the_emitted_line_actually_runs(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """Execute the recovery line rather than matching a string.
+
+        The three equality tests above compare against a hand-written
+        expectation, so they pinned a line that could not be run: --manifest
+        and --prompt used to be required at the parser level, and feeding
+        the printed command back in exited 2 with "the following arguments
+        are required". This test splits the emitted line and hands the real
+        argument vector to main(), which must reach the retrieval path.
+        """
+        manifest = _one_session_manifest(tmp_path, "roundtrip-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        line = next(
+            line for line in capsys.readouterr().out.splitlines()
+            if line.startswith("[haiku] retrieve with: ")
+        )
+        command = shlex.split(line[len("[haiku] retrieve with: "):])
+        assert command[0].endswith("python3")
+        assert command[1].endswith("bake-off-metadata.py")
+
+        # The batch comes back with the one session it carried.
+        submit_stub.results = [
+            self._succeeded(
+                bom.build_custom_id("roundtrip-aaaa-1111"), fx.RESPONSE_BARE
+            )
+        ]
+        assert bom.main(command[2:]) == 0
+        written = out_dir / "haiku" / "roundtrip-aaaa-1111.json"
+        assert json.loads(written.read_text()) == fx.RESPONSE_OBJECT
+
+    def test_apply_needs_neither_manifest_nor_prompt(
+        self, tmp_path, submit_stub
+    ):
+        """The retrieval path reads neither, so it must not demand them."""
+        manifest = _one_session_manifest(tmp_path, "noargs-aaaa-1111")
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, _prompt_file(tmp_path), out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(
+                bom.build_custom_id("noargs-aaaa-1111"), fx.RESPONSE_BARE
+            )
+        ]
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
+        ]) == 0
+        assert (out_dir / "haiku" / "noargs-aaaa-1111.json").exists()
+
+    def test_a_live_run_still_demands_manifest_and_prompt(self, tmp_path, capsys):
+        """Relaxing the parser must not let a billed run start without them."""
+        code = bom.main([
+            "--provider", "gemini",
+            "--out-dir", str(tmp_path / "out"),
+            "--yes",
+        ])
+        assert code == 2
+        assert "requires --manifest and --prompt" in capsys.readouterr().err
+
+    def test_build_rubric_still_demands_manifest_and_prompt(self, tmp_path, capsys):
+        code = bom.main([
+            "--build-rubric",
+            "--out-dir", str(tmp_path / "out"),
+            "--rubric-in", str(tmp_path / "in.md"),
+            "--rubric-out", str(tmp_path / "out.md"),
+        ])
+        assert code == 2
+        assert "requires --manifest and --prompt" in capsys.readouterr().err
+
+    def test_the_refusal_repeats_that_exact_line(
+        self, tmp_path, capsys, submit_stub
+    ):
+        manifest = _one_session_manifest(tmp_path, "recovery-bbbb-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        capsys.readouterr()
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
+        message = capsys.readouterr().err
+        assert self._expected_retrieve_command("batch_001", out_dir) in [
+            line.strip() for line in message.splitlines()
+        ]
 
     def test_a_different_manifest_is_still_refused_but_says_so(
         self, tmp_path, capsys, submit_stub
@@ -1088,28 +1227,300 @@ class TestBatchSubmitIsNotRepeatable:
         assert state["batch_id"] == "batch_002"
         assert state["superseded_batches"] == ["batch_001"]
 
-    def test_resumed_submit_tops_up_only_the_missing_sessions(
-        self, tmp_path, capsys, submit_stub
-    ):
-        """A top-up must not pay for sessions already retrieved."""
+    @staticmethod
+    def _succeeded(custom_id: str, text: str):
+        """One batch result object shaped like the SDK's."""
+        block = type("Block", (), {"type": "text", "text": text})()
+        message = type("Message", (), {"content": [block]})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def _three_session_manifest(self, tmp_path):
         rows = []
-        for session_id in ("batch-eeee-1111", "batch-ffff-2222"):
+        for index in range(3):
+            session_id = f"topup-{index}-aaaa-bbbb"
             transcript = fx.write_session_transcript(
                 tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=8
             )
             rows.append(fx.manifest_row(session_id, transcript))
-        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        return fx.write_manifest(tmp_path / "manifest.json", rows)
+
+    def test_resubmit_tops_up_only_the_missing_sessions(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """The reachable sequence: submit, partial apply, top up.
+
+        The previous version of this test hand-built a response file with no
+        batch-state.json beside it — a state a real run cannot produce,
+        because a submit always writes the state first. That hid the fact
+        that the only way past the state check (--force) also re-sent
+        everything, making the advertised top-up unreachable.
+        """
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        assert len(submit_stub.created[0]) == 3
+
+        # A partial retrieval: the batch came back with two of the three.
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in (0, 1)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--manifest", str(manifest), "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ]) == 0
+        provider_dir = out_dir / "haiku"
+        assert (provider_dir / "topup-0-aaaa-bbbb.json").exists()
+        assert not (provider_dir / "topup-2-aaaa-bbbb.json").exists()
+        capsys.readouterr()
+
+        # The top-up: permitted to submit again, still filtered to the gap.
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--resubmit")) == 0
+        assert len(submit_stub.created) == 2
+        assert len(submit_stub.created[1]) == 1
+        assert submit_stub.created[1][0]["custom_id"] == bom.build_custom_id(
+            "topup-2-aaaa-bbbb"
+        )
+        assert "requests:       1" in capsys.readouterr().out
+        state = json.loads((provider_dir / "batch-state.json").read_text())
+        assert state["batch_id"] == "batch_002"
+        assert state["superseded_batches"] == ["batch_001"]
+
+    def test_the_superseded_batch_is_still_retrievable(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A top-up must not strand the sessions of the batch it supersedes.
+
+        The state file holds one custom_id map. A top-up carries only the
+        missing sessions, so replacing that map left --haiku-apply on the
+        earlier batch id printing "unknown custom_id ... skipping" for
+        every session it had paid for.
+        """
+        manifest = self._three_session_manifest(tmp_path)
         prompt = _prompt_file(tmp_path)
         out_dir = tmp_path / "out"
         provider_dir = out_dir / "haiku"
-        provider_dir.mkdir(parents=True)
-        (provider_dir / "batch-eeee-1111.json").write_text(
-            fx.RESPONSE_BARE + "\n", encoding="utf-8"
-        )
+
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
-        assert len(submit_stub[0]) == 1
-        assert submit_stub[0][0]["custom_id"] == bom.build_custom_id("batch-ffff-2222")
-        assert "requests:       1" in capsys.readouterr().out
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id("topup-0-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
+        ]) == 0
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--resubmit")) == 0
+        capsys.readouterr()
+
+        # batch_001 is now superseded — and still holds two paid results.
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in (0, 1)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert "unknown custom_id" not in printed
+        assert (provider_dir / "topup-1-aaaa-bbbb.json").exists()
+
+        state = json.loads((provider_dir / "batch-state.json").read_text())
+        assert set(state["custom_id_to_session"].values()) == {
+            f"topup-{index}-aaaa-bbbb" for index in range(3)
+        }
+
+    def test_the_superseded_chain_survives_two_top_ups(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """Each superseded id must stay in the trail, not just the last one."""
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        for index in (0, 1):
+            submit_stub.results = [
+                self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                                fx.RESPONSE_BARE)
+            ]
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", f"batch_{index + 1:03d}",
+                "--out-dir", str(out_dir),
+            ]) == 0
+            assert bom.main(
+                self._argv(manifest, prompt, out_dir, "--resubmit")
+            ) == 0
+        capsys.readouterr()
+        state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
+        assert state["batch_id"] == "batch_003"
+        assert state["superseded_batches"] == ["batch_001", "batch_002"]
+
+    def test_force_sends_the_whole_manifest_again(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """--force keeps its meaning: everything, not just the gap."""
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in (0, 1)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--manifest", str(manifest), "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ]) == 0
+        capsys.readouterr()
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--force")) == 0
+        assert len(submit_stub.created[1]) == 3
+
+    def test_resubmit_is_rejected_off_the_batch_arm(self, tmp_path, capsys):
+        """The other arms have no batch state, so the flag would be a no-op."""
+        manifest = self._three_session_manifest(tmp_path)
+        code = bom.main([
+            "--provider", "gemini",
+            "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+            "--resubmit", "--yes",
+        ])
+        assert code == 2
+        assert "--resubmit is only valid with --provider haiku" in (
+            capsys.readouterr().err
+        )
+
+    def test_resubmit_cannot_be_combined_with_apply(self, tmp_path, capsys):
+        """Retrieval submits nothing, so there is no top-up to permit."""
+        code = bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_invented",
+            "--out-dir", str(tmp_path / "out"),
+            "--resubmit",
+        ])
+        assert code == 2
+        assert "cannot be combined with --haiku-apply" in capsys.readouterr().err
+        assert not (tmp_path / "out").exists()
+
+    def test_resubmit_still_refuses_when_nothing_is_missing(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A top-up with no gap must not create an empty second batch."""
+        manifest = self._three_session_manifest(tmp_path)
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        submit_stub.results = [
+            self._succeeded(bom.build_custom_id(f"topup-{index}-aaaa-bbbb"),
+                            fx.RESPONSE_BARE)
+            for index in range(3)
+        ]
+        assert bom.main([
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--manifest", str(manifest), "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ]) == 0
+        capsys.readouterr()
+        assert bom.main(self._argv(manifest, prompt, out_dir, "--resubmit")) == 0
+        assert len(submit_stub.created) == 1
+        assert "nothing to send" in capsys.readouterr().out
+
+    def test_the_state_check_fires_before_the_gate(
+        self, tmp_path, capsys, monkeypatch, submit_stub
+    ):
+        """Pin the main-level check independently of the adapter backstop.
+
+        Both layers refuse, so deleting the one in main() left every
+        existing test green -- the adapter simply raised instead. What
+        distinguishes them is WHEN: main refuses before the API Call
+        Review Gate, so an operator is never asked to approve a run that
+        cannot happen. Assert on that, not merely on the exit code.
+        """
+        manifest = _one_session_manifest(tmp_path, "gateorder-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        capsys.readouterr()
+
+        def refuse_input(_prompt=""):
+            raise AssertionError(
+                "an already-submitted directory must be refused before the "
+                "gate, not after it"
+            )
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        # No --yes: reaching the gate at all would call input().
+        code = bom.main([
+            "--provider", "haiku",
+            "--manifest", str(manifest),
+            "--prompt", str(prompt),
+            "--out-dir", str(out_dir),
+        ])
+        assert code == 2
+        captured = capsys.readouterr()
+        assert "API Call Review Gate" not in captured.out
+        assert len(submit_stub.created) == 1
+
+    def test_the_adapter_refuses_on_its_own(self, tmp_path, submit_stub):
+        """Pin the backstop independently of main's check.
+
+        main passes allow_resubmit=args.force or args.resubmit; hardcoding
+        that to True is invisible through main, because main's own check
+        fires first in every case that would differ. The guard is real
+        defence for any other caller, so it is exercised directly.
+        """
+        manifest = _one_session_manifest(tmp_path, "adapter-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        provider_dir = out_dir / "haiku"
+        state_path = provider_dir / "batch-state.json"
+        before = state_path.read_bytes()
+        submitted = len(submit_stub.created)
+
+        requests = bom.assemble_requests(manifest, prompt)
+        with pytest.raises(bom.BatchStateExistsError):
+            bom.haiku_submit(
+                requests, provider_dir, "system prompt",
+                manifest_path=manifest, allow_resubmit=False,
+            )
+        # Nothing sent, nothing written.
+        assert len(submit_stub.created) == submitted
+        assert state_path.read_bytes() == before
+
+    def test_three_colliding_sessions_are_all_reported(
+        self, tmp_path, submit_stub, monkeypatch
+    ):
+        """Truncating the clash list hides a session from the operator."""
+        monkeypatch.setattr(bom, "build_custom_id", lambda _session_id: "sess-same")
+        rows = []
+        for name in ("clash-first", "clash-second", "clash-third"):
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{name}.jsonl", n_records=6
+            )
+            rows.append(fx.manifest_row(name, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(ValueError) as excinfo:
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        message = str(excinfo.value)
+        for name in ("clash-first", "clash-second", "clash-third"):
+            assert name in message, name
+        assert submit_stub.created == []
 
     def test_state_records_the_manifest_fingerprint(self, tmp_path, submit_stub):
         manifest = _one_session_manifest(tmp_path, "batch-gggg-1111")
@@ -1118,6 +1529,30 @@ class TestBatchSubmitIsNotRepeatable:
         state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
         assert state["manifest_sha256"] == bom.file_sha256(manifest)
         assert state["manifest_path"] == str(manifest)
+
+    def test_the_refusal_names_the_real_submission_time(
+        self, tmp_path, capsys, submit_stub
+    ):
+        """A placeholder "unknown" would survive a loose assertion.
+
+        The timestamp is how an operator decides whether the stored batch is
+        this morning's job or last month's, so the refusal must repeat the
+        value actually recorded, not a default.
+        """
+        manifest = _one_session_manifest(tmp_path, "stamp-aaaa-1111")
+        prompt = _prompt_file(tmp_path)
+        out_dir = tmp_path / "out"
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
+        state = json.loads((out_dir / "haiku" / "batch-state.json").read_text())
+        submitted_at = state["submitted_at"]
+        # A real, parseable stamp -- not "unknown", not the empty string.
+        datetime.strptime(submitted_at, "%Y-%m-%dT%H:%M:%S%z")
+        capsys.readouterr()
+
+        assert bom.main(self._argv(manifest, prompt, out_dir)) == 2
+        message = capsys.readouterr().err
+        assert f"submitted: {submitted_at}" in message
+        assert "unknown" not in message
 
     def test_colliding_custom_ids_are_refused_before_the_billed_call(
         self, tmp_path, submit_stub, monkeypatch
@@ -1134,11 +1569,18 @@ class TestBatchSubmitIsNotRepeatable:
         requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
         out_dir = tmp_path / "haiku"
         out_dir.mkdir()
-        with pytest.raises(ValueError, match="custom_id collision"):
+        with pytest.raises(ValueError, match="custom_id collision") as excinfo:
             bom.haiku_submit(
                 requests, out_dir, "system prompt", manifest_path=manifest
             )
-        assert submit_stub == []
+        # The message must name BOTH sessions and the id they collapsed
+        # onto: "a collision happened" is not actionable, and the operator
+        # has to know which two transcripts to look at.
+        message = str(excinfo.value)
+        assert "clash-aaaa" in message
+        assert "clash-bbbb" in message
+        assert "sess-same" in message
+        assert submit_stub.created == []
         assert not (out_dir / "batch-state.json").exists()
 
 
@@ -1341,3 +1783,83 @@ class TestFailureCountsOnlyCountFilesWritten:
         printed = capsys.readouterr().out
         assert "wrote 0 successes and 1 failures" in printed
         assert "kept" not in printed
+
+
+class TestEmptyContentBranchCounts:
+    """A succeeded result with no text blocks is one failure, counted once."""
+
+    @pytest.fixture
+    def apply_stub(self, monkeypatch):
+        """Fake ``anthropic`` returning whatever results a test appends."""
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return results
+
+    @staticmethod
+    def _empty_content(custom_id: str):
+        """A result the API reports as succeeded but with no content blocks."""
+        message = type("Message", (), {"content": []})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def _out_dir(self, tmp_path: Path) -> Path:
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_invented",
+                "custom_id_to_session": {"sess-empty": "empty-session"},
+            }),
+            encoding="utf-8",
+        )
+        return out_dir
+
+    def test_it_counts_exactly_one_failure(self, tmp_path, capsys, apply_stub):
+        """The finding: this branch incremented n_fail twice."""
+        out_dir = self._out_dir(tmp_path)
+        apply_stub.append(self._empty_content("sess-empty"))
+        bom.haiku_apply("batch_invented", out_dir)
+        printed = capsys.readouterr().out
+        assert "wrote 0 successes and 1 failures" in printed
+        assert "kept" not in printed
+        # The diagnostic is the only thing that tells an operator WHY a
+        # session the API called "succeeded" produced an error record.
+        assert (
+            "[haiku] succeeded result for empty-session carried no content "
+            "blocks — recording empty-content error"
+        ) in printed
+        assert json.loads((out_dir / "empty-session.json").read_text()) == {
+            "error": "succeeded result had empty content list"
+        }
+
+    def test_a_kept_response_counts_as_kept_not_failed(
+        self, tmp_path, capsys, apply_stub
+    ):
+        """With an answer already on disk the branch must keep, not overwrite."""
+        out_dir = self._out_dir(tmp_path)
+        (out_dir / "empty-session.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        apply_stub.append(self._empty_content("sess-empty"))
+        # force=True so the earlier skip does not short-circuit the branch.
+        bom.haiku_apply("batch_invented", out_dir, force=True)
+        printed = capsys.readouterr().out
+        assert "wrote 0 successes and 0 failures" in printed
+        assert "kept 1 earlier complete response(s)" in printed
+        assert json.loads((out_dir / "empty-session.json").read_text()) == (
+            fx.RESPONSE_OBJECT
+        )

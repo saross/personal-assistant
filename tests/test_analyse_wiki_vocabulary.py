@@ -88,8 +88,13 @@ TYPICAL_RECORDS = [
 def _tree_snapshot(root: Path) -> dict[str, tuple[bool, int, int]]:
     """Map every path under ``root`` to ``(is_file, mtime_ns, size)``.
 
-    ``.git`` and ``__pycache__`` are skipped: the first is enormous and the
-    second is written by the interpreter, not by the code under test.
+    Only ``__pycache__`` is skipped, because the interpreter writes it and
+    the code under test does not. ``.git`` is NOT skipped: a script that
+    corrupts the object store or rewrites a ref is doing the most damage
+    it can do to this repository, and a guard that looks away from the one
+    directory holding the history is not a guard. It costs little —
+    roughly 5,000 entries and 0.04s in a full clone.
+
     Directories are recorded as well as files, so a test that creates an
     empty directory is caught too, and a path that cannot be stat'ed (a
     dangling symlink into an uninitialised submodule, say) is recorded by
@@ -98,7 +103,7 @@ def _tree_snapshot(root: Path) -> dict[str, tuple[bool, int, int]]:
     snapshot: dict[str, tuple[bool, int, int]] = {}
     for path in root.rglob("*"):
         parts = path.parts
-        if ".git" in parts or "__pycache__" in parts:
+        if "__pycache__" in parts:
             continue
         try:
             stat = path.stat()
@@ -107,6 +112,21 @@ def _tree_snapshot(root: Path) -> dict[str, tuple[bool, int, int]]:
             continue
         snapshot[str(path)] = (path.is_file(), stat.st_mtime_ns, stat.st_size)
     return snapshot
+
+
+#: The tree must be genuinely covered before an "unchanged" verdict means
+#: anything. Both the count and the named files are asserted, because a
+#: threshold alone can be relaxed to nothing without a test noticing.
+def _assert_snapshot_covers_the_repository(
+    snapshot: dict[str, tuple[bool, int, int]]
+) -> None:
+    """Fail unless ``snapshot`` plausibly covers the whole checkout."""
+    assert len(snapshot) > 100, (
+        f"the repository snapshot holds {len(snapshot)} entries — "
+        "implausibly few, so an 'unchanged' verdict would be vacuous"
+    )
+    assert str(PROJECT_ROOT / "scripts") in snapshot
+    assert str(PROJECT_ROOT / "tests") in snapshot
 
 
 class TestWritesNothing:
@@ -120,17 +140,21 @@ class TestWritesNothing:
         symlinks into the private data submodule and ``data`` is the
         submodule itself, so wherever the submodule is uninitialised those
         comparisons were {} == {} — a guard that passed because it was
-        looking at nothing. Snapshotting the root wholesale, and asserting
-        the snapshot is not trivially small, removes both failure modes.
+        looking at nothing. Snapshotting the root wholesale, and checking
+        the snapshot really covers the tree, removes both failure modes.
+
+        ``Path.home()`` here is the SUITE'S own temporary home, not the
+        operator's: ``tests/conftest.py`` repoints ``HOME`` at import time
+        so the suite's gate files and sidecars land somewhere disposable.
+        Watching it still catches a script that writes to ``~`` — the write
+        lands in the temp home rather than the real one, and shows up in
+        this diff either way.
         """
         corpus(TYPICAL_RECORDS)
         home = Path.home()
         repo_before = _tree_snapshot(PROJECT_ROOT)
         home_before = _tree_snapshot(home)
-        assert len(repo_before) > 100, (
-            "the repository snapshot is implausibly small — this guard "
-            "would be vacuous"
-        )
+        _assert_snapshot_covers_the_repository(repo_before)
 
         assert vocab.main([]) == 0
 
@@ -145,6 +169,68 @@ class TestWritesNothing:
             f"{sorted(set(home_after) ^ set(home_before))}"
         )
         capsys.readouterr()
+
+    def test_the_snapshot_covers_known_repository_files(self):
+        """Pin the coverage check itself.
+
+        A bare count threshold can be neutered by relaxing the number
+        (``> 100`` -> ``>= 0``) without any test noticing. Naming files
+        that must be in the snapshot cannot be relaxed the same way: if
+        they are absent the walk is not looking at the repository.
+        """
+        snapshot = _tree_snapshot(PROJECT_ROOT)
+        _assert_snapshot_covers_the_repository(snapshot)
+        for relative in (
+            "scripts/analyse-wiki-vocabulary.py",
+            "scripts/bake-off-metadata.py",
+            "tests/conftest.py",
+            "agents/corpus-style-analyser-v2.md",
+            "CLAUDE.md",
+        ):
+            assert str(PROJECT_ROOT / relative) in snapshot, relative
+
+    def test_a_write_inside_dot_git_is_caught(self, tmp_path):
+        """.git is watched, not skipped: it is the most damaging target.
+
+        Exercised on a synthetic tree because the real .git must never be
+        written to — and in a linked worktree or a git-archive copy it is a
+        file, or absent, so it could not exercise the directory case.
+        """
+        git_dir = tmp_path / ".git" / "refs" / "heads"
+        git_dir.mkdir(parents=True)
+        (git_dir / "main").write_text("0" * 40 + "\n", encoding="utf-8")
+        before = _tree_snapshot(tmp_path)
+        (git_dir / "main").write_text("1" * 40 + "\n", encoding="utf-8")
+        assert _tree_snapshot(tmp_path) != before
+        (tmp_path / ".git" / "objects").mkdir()
+        assert str(tmp_path / ".git" / "objects") in _tree_snapshot(tmp_path)
+
+    def test_only_pycache_is_skipped(self, tmp_path):
+        """The one exclusion is the interpreter's, not the code's.
+
+        The directory itself is skipped along with its contents: the
+        interpreter creates and rewrites it constantly, and treating that
+        as evidence of a rogue write would make the guard cry wolf.
+        """
+        (tmp_path / "__pycache__").mkdir()
+        (tmp_path / "__pycache__" / "module.pyc").write_bytes(b"\x00")
+        assert _tree_snapshot(tmp_path) == {}
+        (tmp_path / "kept.txt").write_text("x", encoding="utf-8")
+        assert list(_tree_snapshot(tmp_path)) == [str(tmp_path / "kept.txt")]
+
+    def test_the_coverage_threshold_rejects_a_thin_snapshot(self):
+        """Pin the threshold itself, not only the named files.
+
+        Relaxing `> 100` to `>= 0` leaves the named-file assertions holding
+        the line, so the number could rot unnoticed. This fixes it in place
+        with a snapshot that satisfies every other condition.
+        """
+        thin = {
+            str(PROJECT_ROOT / "scripts"): (False, 0, 0),
+            str(PROJECT_ROOT / "tests"): (False, 0, 0),
+        }
+        with pytest.raises(AssertionError, match="implausibly few"):
+            _assert_snapshot_covers_the_repository(thin)
 
     def test_the_snapshot_notices_a_new_file(self, tmp_path):
         """Guard the guard: the snapshot must be able to fail."""
