@@ -2300,11 +2300,48 @@ class TestMissingManifestSizeIsAnnounced:
             pipeline.archive()
 
         messages = " ".join(record.getMessage() for record in caplog.records)
-        assert "records no size" in messages, messages
+        assert "recorded no size" in messages, messages
         assert "re-run discover" in messages
         # It still archives: a missing size is a degraded guard, not a
         # refusal — the grace window and the during-copy check still apply.
         assert len(pipeline.entries()) == 1
+
+    def test_many_sizeless_entries_warn_once_with_a_count(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Round 4c-5 finding L4: a legacy manifest is sizeless throughout.
+
+        One line per session would bury the run's real output under hundreds
+        of identical warnings and still say exactly one thing. The repair --
+        re-run discover -- applies to the whole manifest at once.
+        """
+        for index in range(5):
+            pipeline.add_session(
+                f"{index}{SID_A[1:]}", records=substantive_records(SID_A)
+            )
+        manifest = pipeline.discover()
+        assert len(manifest) == 5
+        for entry in manifest:
+            del entry["size_bytes"]
+        pipeline.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        sizeless = [
+            record for record in caplog.records
+            if "recorded no size" in record.getMessage()
+        ]
+        assert len(sizeless) == 1, (
+            f"expected one summary line, got {len(sizeless)}"
+        )
+        message = sizeless[0].getMessage()
+        assert "5 manifest entries" in message, message
+        assert "and 2 more" in message, (
+            f"the summary should name the first three and count the rest: "
+            f"{message}"
+        )
+        assert len(pipeline.entries()) == 5
 
     def test_a_sized_manifest_entry_does_not_warn(
         self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture

@@ -264,6 +264,16 @@ classify_failure_and_exit() {
     # `-home-shawn-immutable-notes` — turned every transport failure into a
     # corruption abort (audit round 4c-5, finding L1).
     #
+    # Only $LOG_FILE is read, never rclone's stderr. rclone writes its
+    # refusals to the --log-file we give it, so in practice the two agree;
+    # but if a future rclone reported one ONLY on stderr, this classifier
+    # would call it exit 2, "safe to retry". That is the safe direction and
+    # is left as it is deliberately (round 4c-5, finding L5): the retry is
+    # harmless — --immutable refuses again rather than overwriting — so the
+    # cost is a wasted run and a second identical failure, whereas teeing
+    # stderr into the shared append-only log would put text we do not
+    # control into the file the next run classifies against.
+    #
     # The wording is rclone's, verified against the installed binary
     # (v1.74.2: `strings $(command -v rclone) | grep -i immutable`):
     #
