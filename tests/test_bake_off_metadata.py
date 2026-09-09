@@ -2034,15 +2034,63 @@ class TestStrandedResults:
             custom_id, {session_id, "an-unrelated-session"}
         ) == session_id
 
-    def test_known_session_ids_survives_a_missing_or_broken_manifest(self, tmp_path):
+    def test_known_session_ids_survives_a_missing_or_broken_manifest(
+        self, tmp_path, capsys
+    ):
         assert bom.known_session_ids({}) == set()
-        assert bom.known_session_ids({"manifest_path": str(tmp_path / "gone")}) == set()
+        assert capsys.readouterr().err == ""  # nothing recorded, nothing to say
+
+        missing = tmp_path / "gone"
+        assert bom.known_session_ids({"manifest_path": str(missing)}) == set()
+        assert str(missing) in capsys.readouterr().err
+
         broken = tmp_path / "broken.json"
         broken.write_text("{not json", encoding="utf-8")
         assert bom.known_session_ids({"manifest_path": str(broken)}) == set()
+        assert str(broken) in capsys.readouterr().err
+
         shapeless = tmp_path / "shapeless.json"
         shapeless.write_text('{"sessions": "not a list"}', encoding="utf-8")
         assert bom.known_session_ids({"manifest_path": str(shapeless)}) == set()
+        assert "no 'sessions' list" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("recorded", [123, ["a"], {"p": 1}, None, ""])
+    def test_a_non_string_manifest_path_is_ignored_everywhere(self, recorded):
+        """The state is an editable JSON file; every reader must survive it.
+
+        rebuild_map_command interpolated whatever it found, so a numeric
+        manifest_path raised TypeError at the END of a retrieval -- after
+        the responses had been written and while printing the advice about
+        what to do next.
+        """
+        state = {"batch_id": "batch_001", "manifest_path": recorded}
+        assert bom.state_manifest_path(state) is None
+        assert bom.known_session_ids(state) == set()
+        command = bom.rebuild_map_command(
+            "batch_001", Path("/tmp/out/haiku"), bom.state_manifest_path(state)
+        )
+        assert bom.MANIFEST_PLACEHOLDER in command
+
+    def test_a_numeric_manifest_path_does_not_crash_a_retrieval(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """End to end, at the point the TypeError used to land."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": 123,
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("orphan-session"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        printed = capsys.readouterr().out
+        assert bom.MANIFEST_PLACEHOLDER in printed
 
     def test_the_diagnostic_confirms_the_session_from_the_manifest(
         self, tmp_path, capsys, anthropic_stub

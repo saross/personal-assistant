@@ -720,6 +720,18 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
 _HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
+def state_manifest_path(state: dict[str, Any]) -> str | None:
+    """Return the manifest path a batch state records, if it is usable.
+
+    One guard for every reader. The state is a JSON file an operator can
+    edit, so ``manifest_path`` may be a number, a list, or absent; without
+    this, ``rebuild_map_command`` interpolated whatever it found and raised
+    TypeError at the END of a retrieval, after the responses were written.
+    """
+    path = state.get("manifest_path")
+    return path if isinstance(path, str) and path else None
+
+
 def known_session_ids(
     state: dict[str, Any], manifest_path: Path | None = None
 ) -> set[str]:
@@ -738,18 +750,29 @@ def known_session_ids(
     quiet empty set: this feeds a diagnostic, and a diagnostic that raises
     is worse than one that is vague.
     """
-    if manifest_path is not None:
-        path: Any = str(manifest_path)
-    else:
-        path = state.get("manifest_path")
-    if not isinstance(path, str) or not path:
+    path = str(manifest_path) if manifest_path is not None else state_manifest_path(state)
+    if path is None:
         return set()
     try:
         manifest = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        # Say so. Falling back in silence let the operator read "session id
+        # not recoverable" and conclude the id was a digest, when in fact
+        # the manifest that would have named it simply could not be read.
+        print(
+            f"[haiku] could not read the manifest at {path}: {exc}. Session "
+            "ids will be guessed from the custom_id shape; pass --manifest "
+            "with a readable copy to name them exactly.",
+            file=sys.stderr,
+        )
         return set()
     sessions = manifest.get("sessions") if isinstance(manifest, dict) else None
     if not isinstance(sessions, list):
+        print(
+            f"[haiku] {path} has no 'sessions' list, so it cannot name any "
+            "session; ids will be guessed from the custom_id shape.",
+            file=sys.stderr,
+        )
         return set()
     return {
         entry["session_id"]
@@ -1047,7 +1070,7 @@ def haiku_apply(
     # confirmed one, and it is a file read.
     manifest_session_ids = known_session_ids(state, manifest_path)
     effective_manifest = (
-        str(manifest_path) if manifest_path else state.get("manifest_path")
+        str(manifest_path) if manifest_path else state_manifest_path(state)
     )
 
     batch_job = client.messages.batches.retrieve(batch_id)
