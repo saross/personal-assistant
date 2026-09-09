@@ -307,10 +307,12 @@ def main(argv: list[str] | None = None) -> int:
                               "is being recorded, so nothing can be corrupted."))
     parser.add_argument("--min-repos", type=int, default=None,
                         help=("Minimum repositories discovery must find, "
-                              "overriding the floor taken from the last "
-                              "logged sweep. Pass the current count to reset "
-                              "the floor after a repository is legitimately "
-                              "archived or removed; pass 0 to disable it."))
+                              "overriding the floor — which comes from the "
+                              "last clean sweep in the log, or from the "
+                              "built-in minimum when the log offers none. "
+                              "Pass the current count to reset the floor "
+                              "after a repository is legitimately archived "
+                              "or removed; pass 0 to disable it."))
     parser.add_argument("--json", action="store_true",
                         help="Emit the trend record as JSON.")
     args = parser.parse_args(argv)
