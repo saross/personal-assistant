@@ -889,7 +889,31 @@ Open, each with its verdict so far:
   note calls a fatal item "tolerated". The re-auditor also proposed
   closing M1 (the well-formed-append hole) with `sys.addaudithook` on
   in-process opens of the canonical paths — under-detection only, never a
-  false failure — which round 4a-7 is to prototype and measure.
+  false failure — which round 4a-7 is to prototype and measure. Round
+  4a-7 delivered (bce57d2, dddae66): the label's call site pinned by two
+  classes through the terminal; the leak net moved into
+  `pytest_sessionfinish` (runs after every fixture of every scope; a queue
+  entry under the basetemp is dropped, reported, and fails the session;
+  the vacuous test deleted, three nested tests replace it); an
+  unterminated tail judged structurally (a JSON-object prefix is
+  in-progress, garbage a violation; STRICT fatal for both; the false
+  docstring corrected); the three false sentences corrected; a directory
+  labelled as one; two dead branches deleted; the STRICT note reworded.
+  The audit-hook proposal was prototyped, measured (no detectable
+  overhead: 179.5 s against 185.3 s), and **shipped**: `sys.addaudithook`
+  on `open` events for the resolved canonical paths in a write or append
+  mode, resolving via `os.fspath` (a `PosixPath` from `Path.open`) and
+  consulting flags as well as mode (`os.open` passes `mode=None`);
+  advisory names the test, STRICT fails the run; under-detection only (a
+  subprocess or C-level write evades) so it cannot fail a live checkout
+  falsely. Four runs: clean copy with a populated store under STRICT 4364
+  passed, no banner, store byte-identical; advisory with an
+  out-of-process well-formed append passed with the note and the hook
+  silent; STRICT with a truncated append exit 1; worktree with the real
+  HOME 4351 passed (a first attempt failed with 338 `test_zotero` errors
+  under concurrent suite load and passed on re-run — the round 4a-3
+  transient). Merged with main (72177ca); coordinator suite and PR
+  pending; **re-audit DEFERRED** (stop point).
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
@@ -1184,7 +1208,8 @@ Open, each with its verdict so far:
   write failures re-raised with the path. The agent's shell died on a
   full /tmp after its green clean-copy run (4486 passed); its work
   directory was removed by hand. Merged with main (dd046f8); coordinator
-  suite and PR pending; **re-audit DEFERRED** (stop point).
+  suite 4487 passed, 2 skipped, 19 deselected, exit 0; **PR #154, open,
+  re-audit DEFERRED** (stop point).
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
