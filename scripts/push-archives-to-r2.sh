@@ -238,13 +238,11 @@ RCLONE_FLAGS=(
 # bytes this run appended are examined.
 classify_failure_and_exit() {
     local rc="$1" bytes_before="$2" label="$3" this_run_output
-    # rclone's OWN output only. This script's log lines are in the same file
-    # and embed the canonical and destination paths, so a store whose path
-    # happens to contain "immutable" would make every transport failure
-    # report a corruption abort. Our lines all carry the `r2-push:` prefix
-    # the log helper writes, so they are dropped before the match.
+    # Only the bytes THIS run appended. $LOG_FILE is append-only and shared
+    # with every previous run, so a refusal recorded weeks ago would
+    # otherwise re-classify today's transport failure for ever.
     this_run_output="$(tail -c "+$((bytes_before + 1))" "$LOG_FILE" \
-        2>/dev/null | grep -v '^\[[0-9-]* [0-9:]*\] r2-push: ' || true)"
+        2>/dev/null || true)"
 
     # Two very different failures share rclone's non-zero exit, and they want
     # opposite responses (round 4c-2, finding 12). A network or auth failure
@@ -252,7 +250,34 @@ classify_failure_and_exit() {
     # archive. An --immutable refusal means a canonical object CHANGED,
     # which in an append-only archive is a corruption signal that a retry
     # cannot fix and that a human has to look at.
-    if printf '%s' "$this_run_output" | grep -qi "immutable"; then
+    #
+    # Matched on rclone's ERROR-level lines carrying its own refusal
+    # wording, NOT on the bare word "immutable" anywhere in the output.
+    # This one test is what keeps every other source of that word out of the
+    # decision: the paths in rclone's own INFO lines, and the paths this
+    # script logs (CANON derives from $HOME, so our lines carry it too — an
+    # earlier revision filtered our lines separately, which this narrowing
+    # subsumes; a second filter no test could fail is the dead guard round
+    # 4c-3 L-1 removed elsewhere).
+    # rclone logs one INFO line per transferred object naming its relative
+    # path, so a single project slug containing the word — say
+    # `-home-shawn-immutable-notes` — turned every transport failure into a
+    # corruption abort (audit round 4c-5, finding L1).
+    #
+    # The wording is rclone's, verified against the installed binary
+    # (v1.74.2: `strings $(command -v rclone) | grep -i immutable`):
+    #
+    #   ERROR : <path>: Source and destination exist but do not match:
+    #           immutable file modified
+    #   ERROR : <path>: Timestamp mismatch between immutable objects!
+    #
+    # Both are emitted by fs/operations when --immutable is in force. If a
+    # future rclone adds a third, this classifier fails SAFE: the run exits
+    # 2 ("safe to retry") rather than 3, so the mistake is a retry, not a
+    # missed corruption signal that was silently called an abort.
+    if printf '%s\n' "$this_run_output" \
+            | grep -E '^(ERROR|NOTICE)' \
+            | grep -qiE 'immutable file modified|immutable objects'; then
         log "r2-push: ABORTED — rclone refused to modify an object already" \
             "in R2 (--immutable). The archive is append-only, so a" \
             "canonical file whose size or modtime changed is a corruption" \

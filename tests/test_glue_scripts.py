@@ -1074,7 +1074,15 @@ class TestR2PushSafety:
         (pa_dir / "scripts").mkdir(parents=True)
         (pa_dir / "scripts" / "push-archives-to-r2.sh").symlink_to(R2_PUSH_SCRIPT)
 
-        home = tmp_path / "home"
+        # The HOME path element carries the word ON PURPOSE. CANON derives
+        # from $HOME (push-archives-to-r2.sh), so every log line this script
+        # writes about the transfer contains "immutable" — which is what the
+        # own-line filter and the ERROR-level narrowing have to survive.
+        # Relying on pytest's tmp basename to supply it does not work: the
+        # basename is truncated to 30 characters, so a test whose name
+        # carries the word may not produce a path that does (round 4c-5,
+        # finding M1).
+        home = tmp_path / "immutable-home"
         canonical = home / "mnt" / "rpi-shares" / "cc-archives-consolidated"
         canonical.mkdir(parents=True)
 
@@ -1370,8 +1378,8 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR: session.jsonl.gz: Source and destination exist but '
-            'do not match: immutable file modified" >> '
+            'echo "ERROR : session.jsonl.gz: Source and destination exist '
+            'but do not match: immutable file modified" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
@@ -1383,14 +1391,16 @@ class TestR2PushSafety:
         assert result.returncode == 3, result.stdout + result.stderr
         assert "ABORTED" in result.stdout + result.stderr
 
-    def _rclone_writing(self, sandbox, message: str) -> None:
+    def _rclone_writing(
+        self, sandbox, message: str, *, exit_code: int = 1
+    ) -> None:
         """Replace the stub with one that logs *message* and fails."""
         sandbox.rclone.write_text(
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
             f'echo {message!r} >> {sandbox.pa_dir}/logs/r2-push.log\n'
-            "exit 1\n",
+            f"exit {exit_code}\n",
             encoding="utf-8",
         )
         sandbox.rclone.chmod(0o755)
@@ -1408,13 +1418,13 @@ class TestR2PushSafety:
         # A real abort happens first, and writes its own ABORTED line.
         self._rclone_writing(
             sandbox,
-            "ERROR: session.jsonl.gz: Source and destination exist but do "
+            "ERROR : session.jsonl.gz: Source and destination exist but do "
             "not match: immutable file modified",
         )
         assert self._run(sandbox).returncode == 3
 
         # A later, unrelated network failure must be classified on its own.
-        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        self._rclone_writing(sandbox, "ERROR : dial tcp: lookup failed")
         result = self._run(sandbox)
 
         assert result.returncode == 2, (
@@ -1427,12 +1437,13 @@ class TestR2PushSafety:
         self, sandbox
     ) -> None:
         """Reading only this run's bytes must not blind the check."""
-        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        self._rclone_writing(sandbox, "ERROR : dial tcp: lookup failed")
         assert self._run(sandbox).returncode == 2
 
         self._rclone_writing(
             sandbox,
-            "ERROR: session.jsonl.gz: immutable file modified",
+            "ERROR : session.jsonl.gz: Source and destination exist but do "
+            "not match: immutable file modified",
         )
         result = self._run(sandbox)
 
@@ -1450,7 +1461,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR: dial tcp: lookup failed" >> '
+            'echo "ERROR : dial tcp: lookup failed" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 7\n",
             encoding="utf-8",
@@ -1477,7 +1488,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR: dial tcp: lookup failed" >> '
+            'echo "ERROR : dial tcp: lookup failed" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
@@ -1500,7 +1511,8 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR: session.jsonl.gz: immutable file modified" >> '
+            'echo "ERROR : session.jsonl.gz: Source and destination exist '
+            'but do not match: immutable file modified" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
@@ -1519,33 +1531,83 @@ class TestR2PushSafety:
         assert result.returncode == 0
         assert "dry-run complete" in result.stdout + result.stderr
 
-    def test_a_canonical_path_containing_the_word_does_not_misclassify(
-        self, sandbox, tmp_path: Path
+    def test_the_scripts_own_log_lines_do_not_decide_the_classification(
+        self, sandbox
     ) -> None:
-        """Only rclone's own output is matched, not this script's log lines.
+        """Pinned deliberately rather than by accident.
 
-        The log helper's lines embed the canonical and destination paths, so
-        a store whose path contains "immutable" made every transport failure
-        report a corruption abort. (Found because a test whose NAME contains
-        the word created exactly such a path.)
+        CANON derives from $HOME, and the fixture's HOME carries the word,
+        so every line this script logs about the transfer contains
+        "immutable". Relaxing the ERROR-level match back to the bare word
+        must fail this test.
+
+        The previous version was inert: it round-tripped a rename, so the
+        path never actually carried the word, and the protection was covered
+        only by the accident that two older tests' truncated tmp basenames
+        happened to contain it (round 4c-5, finding M1).
         """
-        canonical = (
-            sandbox.home / "mnt" / "rpi-shares" / "cc-archives-consolidated"
+        assert "immutable" in str(sandbox.home), (
+            "the fixture must put the word in the path under test"
         )
-        marked = canonical.parent / "immutable-archive-store"
-        canonical.rename(marked)
-        marked.rename(canonical)
-        # The pytest tmp path itself carries the word, which is what the log
-        # line will contain; assert the classification ignores it.
-        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        self._rclone_writing(sandbox, "ERROR : dial tcp: lookup failed")
 
         result = self._run(sandbox)
 
+        combined = result.stdout + result.stderr
+        assert "immutable" in combined, (
+            "the run did not log the path, so this test proves nothing"
+        )
         assert result.returncode == 2, (
             "the script's own log line, not rclone's output, decided the "
             "classification"
         )
+        assert "safe to retry" in combined
+
+    def test_a_store_path_containing_the_word_does_not_misclassify(
+        self, sandbox
+    ) -> None:
+        """L1: rclone's INFO lines name relative paths.
+
+        rclone logs one line per transferred object, so a single project
+        slug containing the word — `-home-shawn-immutable-notes` — turned
+        every transport failure into a corruption abort. Only ERROR-level
+        lines carrying rclone's own refusal wording may classify.
+        """
+        self._rclone_writing(
+            sandbox,
+            "INFO  : projects/-home-shawn-immutable-notes/session.jsonl.gz: "
+            "Copied (new)",
+            exit_code=7,
+        )
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2, (
+            "an ordinary INFO line naming a path that contains the word was "
+            "read as a corruption abort"
+        )
         assert "safe to retry" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("refusal", [
+        # rclone's own wording, verified against the installed binary
+        # (v1.74.2) with `strings $(command -v rclone) | grep -i immutable`.
+        "ERROR : session.jsonl.gz: Source and destination exist but do not "
+        "match: immutable file modified",
+        "ERROR : session.jsonl.gz: Timestamp mismatch between immutable "
+        "objects!",
+    ])
+    def test_a_genuine_refusal_is_still_classified(
+        self, sandbox, refusal: str
+    ) -> None:
+        """The narrowing must not blind the detection it exists to sharpen."""
+        self._rclone_writing(sandbox, refusal, exit_code=7)
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 3, (
+            f"rclone's own refusal wording was not recognised: {refusal!r}"
+        )
+        assert "ABORTED" in result.stdout + result.stderr
 
     def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
         """The positive control: an ordinary failure stays retryable."""
@@ -1553,7 +1615,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
-            'echo "ERROR: dial tcp: lookup failed" >> '
+            'echo "ERROR : dial tcp: lookup failed" >> '
             f'{sandbox.pa_dir}/logs/r2-push.log\n'
             "exit 1\n",
             encoding="utf-8",
