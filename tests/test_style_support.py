@@ -474,3 +474,21 @@ def test_a_stamp_without_a_version_is_refused(tmp_path):
 
     assert message is not None
     assert "version is absent" in message
+
+
+def test_an_untracked_file_does_not_make_the_tree_dirty(tmp_path):
+    """`dirty` is about the recorded code, not about what is lying around.
+
+    A scratch file, an editor backup, or a test's own output would otherwise
+    stamp every result "dirty" and the flag would stop meaning anything.
+    Dropping ``--untracked-files=no`` from the status call does exactly that,
+    and nothing noticed. The mutation this kills is that dropped flag.
+    """
+    repo, _run = _throwaway_repo(tmp_path)
+    (repo / "scratch-note.txt").write_text("not committed, not code\n",
+                                           encoding="utf-8")
+
+    state = style_support.git_state(repo / "script.py")
+
+    assert state["dirty"] is False
+    assert state["commit"] is not None
