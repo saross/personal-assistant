@@ -955,8 +955,27 @@ Open, each with its verdict so far:
   `git submodule status` exit 0 (a failed query gets its own "state is
   unknown" message); safe defaults declared near the top; the pointer
   regex's limits recorded. Merged with main (c4cc548), coordinator suite
-  4409 passed, 2 skipped, 19 deselected, exit 0; **PR #149**; re-audit
-  running.
+  4409 passed, 2 skipped, 19 deselected, exit 0; **PR #149**. Re-audit
+  verdict **do not merge** — M1: the destructive advice is printed in
+  TWO places and the L9 conjunct guards only one; `sync-symlinks.sh:
+  383-384` prints `$DATA_REMEDY` inline, gated on the `-` prefix alone,
+  so a `-` line from a failing git still yields "remove data entirely"
+  at step 1 and "state is unknown … Do NOT delete" at step 7 — and the
+  round's test passes on a prefix technicality (it asserts "Remedy:
+  remove" absent while :384 emits the sentence without the prefix). M2:
+  the dry-run branch calls `say_data_remedy` unconditionally (:423), so
+  a fresh-clone preview that has just narrated the init is told to
+  delete `data/`. Lows: empty output plus a failed query is still a
+  confident "no submodule declared" (:265 tests `-z` before the status);
+  `assert_composed` cannot see a duplicated layer; the `char()` regex
+  can silently narrow to a subset. Everything else verified (status
+  observable; preview and real remedy byte-identical; order checked;
+  pathspec pinned; ten mutations killed). **DEFERRED** (stop point):
+  round 4d-7 routes :383-384 through `say_data_remedy` (or adds the
+  conjunct), gates the dry-run remedy on the state a real run would
+  reach, tests the empty-output-and-failed-query cell and a duplicated
+  layer, and tightens the `char()` extraction; then re-audit; PR #149
+  stays open on `claude/audit-round4d-6` in the 4d worktree.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -1288,7 +1307,7 @@ with the exact next action:
 | PR | Branch / worktree | State | Next action |
 |---|---|---|---|
 | **#147** | `claude/audit-round4c-5` in `claude-audit-round4c` | Refused twice; round 4c-6 fixed the log-line anchor, then the second re-audit found `\| grep -q` under `pipefail` (SIGPIPE) dropping a real refusal to exit 2 past ~64 KB of output | Round 4c-7: the single here-string `grep -qE` (verified by the re-auditor), a test with 1,000+ marker-level lines after the refusal, the attested-level comment (M-1), `--log-format date,time` pinned (M-2), the three lows; then a third re-audit; then merge |
-| **#149** | `claude/audit-round4d-6` in `claude-audit-round4d` | Re-audit running at the stop | Merge on a merge verdict; defer any follow-ups |
+| **#149** | `claude/audit-round4d-6` in `claude-audit-round4d` | Refused: the destructive "remove `data/`" advice is still printed inline at `:383-384` without the status conjunct, and the dry-run remedy over-fires on a fresh-clone preview | Round 4d-7: route the inline remedy through `say_data_remedy`, gate the dry-run remedy on the state a real run reaches, the three lows; then re-audit; then merge |
 | **#151** | `claude/audit-round4g-5` in `claude-audit-round4g` | Refused: the scorer discards the checked loader's return and re-reads the files (one word disables the interlock); the phase-5 "both inputs" assertion lost; four root-derivation assertions compare values | Round 4g-6: feed the returned payloads into `load_corpus_space`, explicit list, AST non-emptiness assertion; restore the phase-5 argument-set assertion; derivation checks by AST or monkeypatch; the lows (dead constants, the agent document's example command, a doc-to-code marker-name test); then re-audit; then merge |
 | **#153** | `claude/audit-round3c-9` in `claude-audit-round3c` | Delivered, suite green, pushed; NOT re-audited | Fresh-context re-audit (tests only: the quote-state tokeniser, per-match pipe judgement, four pinned script guards); merge on a clean verdict |
 | **#154** | `claude/audit-round4e-8` in `claude-audit-round4e` | Delivered, suite green, pushed; NOT re-audited | Fresh-context re-audit (manifest fallback, single session-id rule at both entry points, directory `fsync`, path in write errors); merge on a clean verdict |
