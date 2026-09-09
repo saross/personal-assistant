@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-seven PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-eight PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -754,7 +754,8 @@ and glue); #138 (machine glue, two re-audits); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140, #145
-(memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
+(memory readers and anchors); #132, #135, #139, #148 (daily-sync lows);
+#136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
 #142, #146 (bake-off rounds 4e-5, 4e-6).
@@ -827,8 +828,8 @@ Open, each with its verdict so far:
   `passages_dir()`; a caller without `__file__` records a note; the
   explicit-path test builds its own repository; `extract_corpus` warns on
   leftover markers and the agent definition skips marked bundles.
-  Merged with main (7f146ad); coordinator suite, PR, and re-audit
-  pending.
+  Merged with main (7f146ad), coordinator suite 4431 passed, 2 skipped,
+  19 deselected, exit 0; **PR #151**; re-audit running.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -946,7 +947,18 @@ Open, each with its verdict so far:
   gate-render tests assert the exact list (`-qxF`→`-qF` is equivalent
   under the present key vocabulary and recorded as such). Merged with
   main (fcca012), coordinator suite 4384 passed, 2 skipped, 19
-  deselected, exit 0; **PR #148**; re-audit running.
+  deselected, exit 0; **PR #148, merged 33afc07** 2026-09-09 15:1x: the
+  re-audit killed all four span mutations, confirmed the fixture linear
+  and not passing for the wrong reason, and caught sixteen quiet-grep
+  spellings. Follow-ups are round 3c-9 (`claude/audit-round3c-9`): the
+  command-position guard covers only full-line comments (a `<<WORD` in a
+  quoted string or a trailing comment still blinds the scan — latent,
+  the script has one heredoc); the comment fixture sits at column 0;
+  `_quiet_grep_offenders` judges only the first match on a statement; an
+  indented `<<-` terminator unpinned; and four pre-existing script
+  weaknesses exposed by mutation (a `bulk-anything` trailer passes the
+  gate; a copy record desynchronises the status stream; the last rather
+  than the first unmeasurable merge named; `--reverse` unpinned).
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
@@ -1037,8 +1049,8 @@ Open, each with its verdict so far:
   regression, the second time in this pipeline a narrowing silently
   disabled what it sharpened; the dead conjunct, the id count, the
   required collector, the labels, and the dry-run `KeyError` fixed.
-  Merged with main (fe9c570); coordinator suite, push, and second
-  re-audit pending.
+  Merged with main (fe9c570), coordinator suite 4438 passed, 2 skipped,
+  19 deselected, exit 0; pushed; second re-audit of PR #147 running.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
