@@ -3351,3 +3351,134 @@ class TestRenderSyncGateSupersession:
         assert result.returncode == 0, result.stdout + result.stderr
         lines = gate.read_text(encoding="utf-8").splitlines()
         assert lines == ["1", self._BINARY], lines
+
+
+class TestSpanRuleNeedsBothEnds:
+    """The span rule asks two things of a trailered commit: that it
+    started no lower than origin, and that it ended no higher than HEAD.
+    Only the first was ever tested."""
+
+    def _repo(self, tmp_path: Path, name: str, records: int) -> Path:
+        """A repo whose published corpus holds ``records`` lines."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main",
+             _git("rev-parse", "HEAD", cwd=repo).stdout.strip(), cwd=repo)
+        return repo
+
+    def _archive(self, repo: Path, records: int) -> None:
+        """A trailered bulk rewrite down to ``records`` lines."""
+        (repo / "memories").mkdir(exist_ok=True)
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "kept{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+    def _delete_corpus(self, repo: Path) -> None:
+        """A trailered commit that removes the corpus altogether, so
+        everything after it has a parent that holds none."""
+        _git("rm", "--quiet", "--", "memories/memories.jsonl", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): retire the corpus\n\nRewrite-Class: bulk\n", cwd=repo)
+
+    def _merge_onto_head(self, repo: Path, records: int) -> str:
+        """A merge of HEAD with a parentless stranger, holding ``records``
+        corpus lines of its own.
+
+        Unmeasurable only because NEITHER parent holds a corpus -- which
+        is why the caller deletes it first. The merge stays on HEAD's
+        history, so the commits before it are in the range the guard
+        scans; a merge built off to one side would take them out of it,
+        and the mutant this fixture exists for would survive.
+        """
+        head = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        stranger = _git("commit-tree", empty, "-m", "a stranger",
+                        cwd=repo).stdout.strip()
+        (repo / "memories").mkdir(exist_ok=True)
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "m{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git("commit-tree", tree, "-p", head, "-p", stranger, "-m",
+                     "Merge a stranger", cwd=repo).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        return merge
+
+    def _guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+
+    def test_a_trailer_that_started_high_but_ended_high_excuses_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills the SECOND condition: mutating `lines_after` to
+        `lines_before` on the `-le` test.
+
+        origin holds 5. A trailered rewrite takes 5 to 4 -- it started
+        exactly where origin is, so the first condition passes -- and an
+        unmeasurable merge then holds 2. The trailer said nothing about
+        the drop from 4 to 2, and with only the first condition checked
+        the run published it.
+        """
+        repo = self._repo(tmp_path, "started-high", 5)
+        logs = tmp_path / "logs-started-high"
+        logs.mkdir()
+        self._archive(repo, 4)
+        # Retiring the corpus is what leaves the merge below with no
+        # parent holding one, while keeping the whole chain on HEAD.
+        self._delete_corpus(repo)
+        merge = self._merge_onto_head(repo, 2)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+        assert merge in written, written
+
+    def test_a_trailer_that_spans_both_ends_still_publishes(
+        self, tmp_path: Path
+    ) -> None:
+        """The rule must still let a real archive run out: this one starts
+        at origin's count and ends at HEAD's, so nothing is left over for
+        the merge to have taken."""
+        repo = self._repo(tmp_path, "spans-both", 5)
+        logs = tmp_path / "logs-spans-both"
+        logs.mkdir()
+        self._delete_corpus(repo)
+        self._merge_onto_head(repo, 5)
+        self._archive(repo, 1)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
