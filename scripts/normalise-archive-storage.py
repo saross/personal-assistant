@@ -41,6 +41,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import stat as stat_module
 import sys
 import time
 from pathlib import Path
@@ -119,7 +120,7 @@ STALE_TEMP_MIN_AGE_SECONDS = 3600
 
 
 def sweep_stale_temporaries(root: Path, started_at: float, *, apply: bool
-                            ) -> list[Path]:
+                            ) -> tuple[list[Path], int]:
     """Remove ``*.tmp`` files under *root* left by an earlier interrupted run.
 
     The staged writes this script and ``bulk-archive.py`` use (findings AR14,
@@ -131,44 +132,75 @@ def sweep_stale_temporaries(root: Path, started_at: float, *, apply: bool
     and never deletes, so the half-written file could not be replaced or
     removed once uploaded (audit round 4c-3, finding L-10).
 
-    Only files at least :data:`STALE_TEMP_MIN_AGE_SECONDS` old are swept, so
-    a temporary belonging to a concurrent normalise pass — or to this one —
-    is never removed, whichever run started first.
+    Only entries at least :data:`STALE_TEMP_MIN_AGE_SECONDS` old are swept,
+    so a temporary belonging to a concurrent normalise pass — or to this one
+    — is never removed, whichever run started first.
 
-    Returns the paths swept (or, in dry-run, those that would be).
+    Symlinks are treated as objects in their own right and never followed:
+    ``lstat`` gives the LINK's age, and ``unlink`` removes the link. Judging
+    one by its target's mtime would let a link to a fresh file protect a
+    long-abandoned link, and a dangling one used to raise inside ``stat``
+    and be skipped in silence, for ever (audit round 4c-5, finding L3).
+
+    Returns ``(paths swept, error count)``; in dry-run the first element is
+    what WOULD be removed. An entry that could not be removed is an error,
+    not a sweep, and the caller makes the run exit non-zero for it (finding
+    L2) — a summary of "errors=0" over a temporary that is still there is
+    exactly the reassurance this sweep exists to stop giving.
     """
     cutoff = started_at - STALE_TEMP_MIN_AGE_SECONDS
     swept: list[Path] = []
+    errors = 0
     for candidate in sorted(root.rglob("*.tmp")):
+        # ``lstat``, not ``stat``: see the docstring. It also answers "is
+        # this a symlink?" and "how old is it?" in one call, and never
+        # raises on a dangling link.
+        try:
+            info = candidate.lstat()
+        except OSError as exc:
+            print(f"[ERROR] cannot stat {candidate}: {exc}", file=sys.stderr)
+            errors += 1
+            continue
+
+        is_link = stat_module.S_ISLNK(info.st_mode)
         # ``rglob`` matches DIRECTORIES too, and a directory named
         # ``something.tmp`` is not an abandoned staged write — it is
         # somebody's working directory. Unlinking one raises
         # IsADirectoryError, which the handler below caught, but the path
         # had already been counted and printed as swept: the summary said
         # "stale-temp=1 errors=0" over a directory that is still there
-        # (audit round 4c-4, finding 2). Report it separately and move on.
-        if candidate.is_dir():
+        # (audit round 4c-4, finding 2). A SYMLINK to a directory is not a
+        # directory for this purpose — removing the link leaves the target
+        # alone — so only a real directory is skipped here.
+        if not is_link and stat_module.S_ISDIR(info.st_mode):
             print(f"[stale-temp — SKIPPED, is a directory] "
                   f"{candidate.relative_to(root)}", file=sys.stderr)
             continue
-        try:
-            if candidate.stat().st_mtime > cutoff:
-                continue          # too recent to be abandoned
-        except OSError:
-            continue
+
+        if info.st_mtime > cutoff:
+            continue              # too recent to be abandoned
+
+        label = "stale-temp"
+        if is_link:
+            # Reported distinctly: a link in the archive is odd enough that
+            # an operator should see it go, and a DANGLING one used to be
+            # invisible entirely.
+            target_state = "dangling" if not candidate.exists() else "symlink"
+            label = f"stale-temp — {target_state} link"
+
         if apply:
             try:
                 candidate.unlink()
             except OSError as exc:
-                # Counted only once it is really gone: a path that could
-                # not be removed is an error, not a sweep.
+                # Counted only once it is really gone.
                 print(f"[ERROR] cannot remove {candidate}: {exc}",
                       file=sys.stderr)
+                errors += 1
                 continue
         swept.append(candidate)
-        print(f"[stale-temp{'' if apply else ' — would remove'}] "
+        print(f"[{label}{'' if apply else ' — would remove'}] "
               f"{candidate.relative_to(root)}")
-    return swept
+    return swept, errors
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,10 +219,15 @@ def main(argv: list[str] | None = None) -> int:
     # Recorded before any work, so the sweep below can tell an abandoned
     # temporary from one this run is about to create.
     started_at = time.time()
-    n_stale_temp = len(sweep_stale_temporaries(root, started_at,
-                                               apply=args.apply))
+    swept_temps, n_temp_err = sweep_stale_temporaries(
+        root, started_at, apply=args.apply
+    )
+    n_stale_temp = len(swept_temps)
 
-    n_raw_only = n_dual_same = n_dual_prefix = n_divergent = n_ok = n_err = 0
+    n_raw_only = n_dual_same = n_dual_prefix = n_divergent = n_ok = 0
+    # Seeded with the sweep's failures, so a temporary that could not be
+    # removed reaches the summary AND the exit status (finding L2).
+    n_err = n_temp_err
     n_stale_meta = 0
     for meta_path in sorted(root.rglob("session.meta.json")):
         d = meta_path.parent

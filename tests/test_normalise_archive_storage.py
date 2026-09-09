@@ -57,9 +57,13 @@ EXTRA_BODY = (
 
 
 def _age(path: Path, *, seconds: float) -> None:
-    """Backdate *path*'s mtime, so the staleness threshold can be tested."""
+    """Backdate *path*'s own mtime, so the staleness threshold can be tested.
+
+    ``follow_symlinks=False``: for a link we want to age the LINK, which is
+    what the sweep judges, and following one that dangles raises.
+    """
     when = time.time() - seconds
-    os.utime(path, (when, when))
+    os.utime(path, (when, when), follow_symlinks=False)
 
 
 def _entry(
@@ -437,7 +441,7 @@ class TestStaleTemporariesAreSwept:
         directory.mkdir()
         _age(directory, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
 
-        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+        status = normalise.main(["--root", str(tmp_path), "--apply"])
 
         captured = capsys.readouterr()
         assert directory.is_dir(), "a directory was removed by the sweep"
@@ -445,6 +449,10 @@ class TestStaleTemporariesAreSwept:
             "a directory was counted as a swept temporary"
         )
         assert "is a directory" in captured.err
+        # A directory is not an ERROR — it is somebody's working directory,
+        # skipped and reported. The run is still a success.
+        assert "errors=0" in captured.out
+        assert status == 0
 
     def test_an_unremovable_temporary_is_not_counted_as_swept(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -460,11 +468,96 @@ class TestStaleTemporariesAreSwept:
             raise OSError("permission denied")
 
         monkeypatch.setattr(Path, "unlink", refuse)
-        normalise.main(["--root", str(tmp_path), "--apply"])
+        status = normalise.main(["--root", str(tmp_path), "--apply"])
 
         captured = capsys.readouterr()
         assert "stale-temp=0" in captured.out
         assert "cannot remove" in captured.err
+        # Counted and surfaced: "errors=0, exit 0" over a temporary that is
+        # still sitting there is the reassurance this sweep exists to stop
+        # giving (round 4c-5, finding L2).
+        assert "errors=1" in captured.out
+        assert status == 1, (
+            "a temporary that could not be removed left the run reporting "
+            "success"
+        )
+
+    def test_a_dangling_symlink_is_swept_and_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """It used to be invisible for ever.
+
+        ``stat`` raises on a dangling link, and the handler swallowed it, so
+        the link was never swept, never reported, and would have been pushed
+        to R2 as a permanent object (round 4c-5, finding L3).
+        """
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        link = entry / "session.jsonl.gz.tmp"
+        link.symlink_to(entry / "no-such-target")
+        _age(link, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        captured = capsys.readouterr()
+        assert not link.is_symlink(), "a dangling link was left behind"
+        assert "dangling link" in captured.out
+        assert "stale-temp=1" in captured.out
+
+    def test_a_symlink_is_judged_by_its_own_age_not_its_target(
+        self, tmp_path: Path
+    ) -> None:
+        """``lstat``, not ``stat``.
+
+        A long-abandoned link pointing at a file written a moment ago was
+        protected by its target's mtime, and the link itself never removed.
+        """
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        fresh_target = entry / "recently-written.bin"
+        fresh_target.write_bytes(b"written just now")
+        link = entry / "session.jsonl.gz.tmp"
+        link.symlink_to(fresh_target)
+        _age(link, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert not link.is_symlink(), (
+            "the link was judged by its target's age, so it survives"
+        )
+        assert fresh_target.exists(), "the sweep followed the link and "\
+            "removed the target"
+
+    def test_a_recent_symlink_is_left_alone(self, tmp_path: Path) -> None:
+        """The control: a link's own age is what protects it, too."""
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        target = entry / "staged.bin"
+        target.write_bytes(b"staged")
+        _age(target, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+        link = entry / "session.jsonl.gz.tmp"
+        link.symlink_to(target)
+        _age(link, seconds=60)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert link.is_symlink(), (
+            "a recent link was swept because its TARGET was old"
+        )
+
+    def test_a_symlink_to_a_directory_is_removed_not_skipped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Removing the link leaves the directory alone, so it is safe."""
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        target_dir = entry / "some-directory"
+        target_dir.mkdir()
+        link = entry / "session.jsonl.gz.tmp"
+        link.symlink_to(target_dir)
+        _age(link, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert not link.is_symlink()
+        assert target_dir.is_dir(), "the sweep removed the link's target"
+        assert "is a directory" not in capsys.readouterr().err
 
     def test_the_sweep_is_counted_in_the_summary(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
