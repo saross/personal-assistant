@@ -1413,3 +1413,79 @@ def test_an_interrupted_bundle_leaves_the_error_marker_in_place(tmp_path,
         "the failure marker was cleared before the bundle was complete, so "
         "this half-extracted paper now looks like one nobody attempted"
     )
+
+
+def test_an_interruption_with_no_prior_failure_still_leaves_evidence(
+        tmp_path, monkeypatch):
+    """Atomicity is per-file; a partial BUNDLE needs its own marker.
+
+    Only the two explicit failure returns wrote anything, so a paper that had
+    never failed and was interrupted between body.md and qa.json left a
+    directory that looked complete to anything grepping for a marker. The
+    mutation this kills: dropping the start-of-run
+    ``extraction-incomplete.txt`` write, under which this interrupted paper
+    is indistinguishable from a finished one.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    paper_dir = output_dir / "AAAA1111"
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    real_write = extract_corpus.atomic_write_json
+
+    def fail_on_qa(path, *args, **kwargs):
+        if Path(path).name == "qa.json":
+            raise OSError("simulated crash mid-bundle")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(extract_corpus, "atomic_write_json", fail_on_qa)
+
+    with pytest.raises(OSError):
+        extract_corpus.extract_one(entry, output_dir)
+
+    # No prior failure, so no extraction-error.txt — but the bundle is partial
+    # and must say so.
+    assert not (paper_dir / "extraction-error.txt").exists()
+    assert (paper_dir / "extraction-incomplete.txt").exists()
+    assert (paper_dir / "body.md").exists(), "the partial bundle is the point"
+    assert not (paper_dir / "qa.json").exists()
+
+
+def test_a_complete_run_removes_the_incomplete_marker(tmp_path, monkeypatch):
+    """The marker means "partial", so a finished bundle must not carry one.
+
+    The mutation this kills: dropping the ``unlink`` after the last output,
+    which would mark every successfully extracted paper as incomplete.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    result = extract_corpus.extract_one(entry, output_dir)
+
+    assert result["status"] == "ok"
+    assert not (output_dir / "AAAA1111" / "extraction-incomplete.txt").exists()
+
+
+def test_a_reported_failure_leaves_only_the_error_marker(tmp_path, monkeypatch):
+    """A deliberate failure says more than "incomplete"; one marker, not two."""
+    entry = _paper_with_a_pdf(tmp_path)
+    entry["pdf_path"] = str(tmp_path / "absent" / "nothing.pdf")
+    output_dir = tmp_path / "out"
+
+    result = extract_corpus.extract_one(entry, output_dir)
+
+    assert result["status"] == "error"
+    assert (output_dir / "AAAA1111" / "extraction-error.txt").exists()
+    assert not (output_dir / "AAAA1111" / "extraction-incomplete.txt").exists()
+
+
+def test_a_dry_run_writes_no_incomplete_marker(tmp_path, monkeypatch):
+    """``--dry-run`` still writes nothing at all, markers included."""
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    _install_fake_extractor(monkeypatch, _SYNTHETIC_PAPER_MD)
+
+    extract_corpus.extract_one(entry, output_dir, dry_run=True)
+
+    assert not output_dir.exists()

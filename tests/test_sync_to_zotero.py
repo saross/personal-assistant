@@ -29,7 +29,7 @@ SAMPLE_MEMORIES = [
         "content": "Key finding about X leading to Y.",
         "research_tags": ["topic-a", "method-b"],
         "created_at": "2026-04-12T10:00:00+00:00",
-        "zotero_key": "MPZHXY3P",
+        "zotero_key": "AAAA1111",
     },
     # Valid — another source_insight
     {
@@ -39,7 +39,7 @@ SAMPLE_MEMORIES = [
         "content": "Alternative hypothesis for Z.",
         "research_tags": ["topic-c"],
         "created_at": "2026-04-12T11:00:00+00:00",
-        "zotero_key": "N2C5KIGL",
+        "zotero_key": "BBBB2222",
     },
     # Legacy — zotero_key is a citation slug (not valid)
     {
@@ -55,7 +55,7 @@ SAMPLE_MEMORIES = [
         "category": "decision",
         "content": "A decision, not a source insight.",
         "created_at": "2026-04-12T13:00:00+00:00",
-        "zotero_key": "MPZHXY3P",
+        "zotero_key": "AAAA1111",
     },
     # source_insight without zotero_key — should be ignored
     {
@@ -83,9 +83,9 @@ class TestIsValidZoteroKey:
 
     def test_accepts_valid_key(self) -> None:
         """Real Zotero keys (8 uppercase alphanumeric) are accepted."""
-        assert sync_to_zotero.is_valid_zotero_key("MPZHXY3P")
-        assert sync_to_zotero.is_valid_zotero_key("N2C5KIGL")
-        assert sync_to_zotero.is_valid_zotero_key("9B2FJ6SL")
+        assert sync_to_zotero.is_valid_zotero_key("AAAA1111")
+        assert sync_to_zotero.is_valid_zotero_key("BBBB2222")
+        assert sync_to_zotero.is_valid_zotero_key("CCCC3333")
 
     def test_rejects_citation_slugs(self) -> None:
         """Author-year slugs are rejected."""
@@ -379,14 +379,14 @@ class TestRunSync:
             for call in mock_zot.create_items.call_args_list
             if call.args or "parentid" in call.kwargs
         }
-        assert parent_keys == {"MPZHXY3P", "N2C5KIGL"}
+        assert parent_keys == {"AAAA1111", "BBBB2222"}
 
     def test_idempotency_skips_existing(self, tmp_path: Path) -> None:
         """Re-syncing memories already present as notes skips them."""
         jsonl, cursor, logs = self._setup(tmp_path, SAMPLE_MEMORIES)
 
-        # Per-item children map: MPZHXY3P has an existing note with the
-        # marker for memory aaaaaaaaaa01; N2C5KIGL has no notes
+        # Per-item children map: AAAA1111 has an existing note with the
+        # marker for memory aaaaaaaaaa01; BBBB2222 has no notes
         existing_note_for_m1 = {
             "data": {
                 "note": (
@@ -398,7 +398,7 @@ class TestRunSync:
         }
 
         def children_side_effect(item_key: str, **kwargs):
-            if item_key == "MPZHXY3P":
+            if item_key == "AAAA1111":
                 return [existing_note_for_m1]
             return []
 
@@ -435,7 +435,7 @@ class TestRunSync:
             mock_zot.create_items.call_args.kwargs.get("parentid")
             or mock_zot.create_items.call_args.args[1]
         )
-        assert parent == "N2C5KIGL"
+        assert parent == "BBBB2222"
 
     def test_item_not_found_does_not_block(self, tmp_path: Path) -> None:
         """A 404 on one memory is quarantined and the cursor advances.

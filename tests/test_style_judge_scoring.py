@@ -503,6 +503,7 @@ def test_a_lower_case_choice_still_counts(tmp_path):
 # ---------------------------------------------------------------------------
 
 builder = load_style_module("efficacy_build_judge_tasks")
+style_support = load_style_module("style_support")
 
 
 def test_the_scorer_looks_where_the_builder_writes():
@@ -517,17 +518,23 @@ def test_the_scorer_looks_where_the_builder_writes():
     assert scorer.KEY_DIR_DEFAULT == builder.KEY_DIR
     assert scorer.JUDGE_DIR_DEFAULT == builder.JUDGE_DIR
     assert scorer.KEY_DIR_DEFAULT.parent.name == "private"
+    # And they agree because they read the same description of the layout,
+    # not because two hand-written paths happen to match today.
+    assert scorer.KEY_DIR_DEFAULT == style_support.judge_key_dir()
+    assert builder.KEY_DIR == style_support.judge_key_dir()
 
 
 def _experiment_at(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
-    """Point both modules' defaults at a throwaway experiment directory."""
-    judge_dir = tmp_path / "judge-tasks"
-    key_dir = tmp_path / "private" / "judge-key"
-    monkeypatch.setattr(builder, "JUDGE_DIR", judge_dir)
-    monkeypatch.setattr(builder, "KEY_DIR", key_dir)
-    monkeypatch.setattr(scorer, "JUDGE_DIR_DEFAULT", judge_dir)
-    monkeypatch.setattr(scorer, "KEY_DIR_DEFAULT", key_dir)
-    return judge_dir, key_dir
+    """Repoint the shared EXPERIMENT ROOT, and let both scripts derive.
+
+    Patching each module's own key constant — as this first did — makes the
+    round trip pass whatever formula either script uses, since the test hands
+    both the same answer. The point of the round trip is that the writer and
+    the reader agree WITHOUT being told, so the test moves the one base they
+    both derive from and touches neither script's paths.
+    """
+    monkeypatch.setattr(style_support, "EXPERIMENT_DEFAULT", tmp_path)
+    return style_support.judge_dir(), style_support.judge_key_dir()
 
 
 def _passages_for(tmp_path: Path, topics: list[str]) -> Path:

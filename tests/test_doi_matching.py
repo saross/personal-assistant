@@ -19,12 +19,16 @@ All identifiers, titles, and names below are invented.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from zotero_sqlite_fixture import build_zotero_sqlite, load_zotero_module
+
+#: The scripts directory, for source-level assertions about zotero.py.
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 _IMPORTER_PATH = (
     Path(__file__).resolve().parent.parent
@@ -74,16 +78,20 @@ _LIBRARY = [
     # Stored with surrounding whitespace — the shape a paste from a PDF
     # or a rendered web page leaves. Only TRIM on the stored side matches
     # it (round 4d-2). Round 4d-3 pads it with EVERY character the trim
-    # expression names — tab, carriage return, newline, space, and
-    # non-breaking space — so dropping any one of them from that
-    # expression fails a test rather than none.
+    # expression names — tab, carriage return, newline, space, and the
+    # three Unicode spaces (U+00A0, U+202F, U+2007) — so dropping any one
+    # of them from that expression fails a test rather than none.
     {
         "key": "PADDEDD1",
         "library_id": 1,
         "fields": {
             "title": "Kiln Waste at the Lower Terrace",
             "date": "2029",
-            "DOI": "\t\r\n \u00a010.6666/padded-doi\u00a0 \r\n\t",
+            "DOI": (
+                "\t\r\n \u00a0\u202f\u2007"
+                "10.6666/padded-doi"
+                "\u2007\u202f\u00a0 \r\n\t"
+            ),
         },
         "creators": [("Iva", "Marinova")],
     },
@@ -272,6 +280,60 @@ class TestStoredValueEdgeCases:
 
         assert zot.find_by_doi("10.7777/deleted-doi") == []
         assert writer == []
+
+
+class TestTheDivergenceCommentIsTrue:
+    """L-a — the comment counts characters, so it can go stale silently.
+
+    Round 4d-4 said 24 and claimed the whole U+2000-U+200A run diverges;
+    both were true of the set BEFORE U+2007 and U+202F were added in the
+    same commit. A comment that states a number should be checkable.
+    """
+
+    @staticmethod
+    def _shipped_set() -> set[int]:
+        """The code points the shipped SQL trim expression actually names."""
+        source = (SCRIPTS / "zotero.py").read_text(encoding="utf-8")
+        expression = source.split("_SQL_TRIMMED_DOI = (", 1)[1].split(")\n", 1)[0]
+        return {int(n) for n in re.findall(r"char\((\d+)\)", expression)}
+
+    @staticmethod
+    def _comment() -> str:
+        """The paragraph above the expression, as one string."""
+        source = (SCRIPTS / "zotero.py").read_text(encoding="utf-8")
+        return source.split("#: SQL expression trimming", 1)[1].split(
+            "_SQL_TRIMMED_DOI", 1
+        )[0]
+
+    def test_the_stated_count_matches_the_shipped_set(self) -> None:
+        """Recompute the divergence over the whole of Unicode."""
+        shipped = self._shipped_set()
+        diverging = [
+            c for c in range(0x110000)
+            if chr(c).isspace() and c not in shipped
+        ]
+
+        stated = re.search(r"(\d+) characters diverge", self._comment())
+        assert stated, self._comment()
+        assert int(stated.group(1)) == len(diverging), (
+            f"comment says {stated.group(1)}, actual {len(diverging)}"
+        )
+
+    def test_the_figure_space_is_documented_as_matching(self) -> None:
+        """U+2007 is in the expression, so the run has a gap in it."""
+        assert 0x2007 in self._shipped_set()
+        comment = self._comment()
+        assert "U+2000``-``U+2006" in comment, comment
+        assert "U+2008``-``U+200A" in comment, comment
+
+    def test_every_character_the_comment_names_really_diverges(self) -> None:
+        """Spot-check the named code points against the shipped set."""
+        shipped = self._shipped_set()
+        for point in (0x0B, 0x0C, 0x1C, 0x1F, 0x85, 0x1680, 0x2009, 0x3000):
+            assert chr(point).isspace()
+            assert point not in shipped, hex(point)
+        for point in (0x20, 0xA0, 0x2007, 0x202F):
+            assert point in shipped, hex(point)
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entry point
