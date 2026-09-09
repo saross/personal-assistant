@@ -2007,6 +2007,72 @@ class TestStrandedResults:
         assert bom.recover_session_id_from_custom_id("sess-" + "a" * 40) is None
         assert bom.recover_session_id_from_custom_id("nonsense") is None
 
+    def test_a_forty_hex_session_id_is_recovered_not_called_a_digest(self):
+        """The shape test alone gets this exactly backwards.
+
+        A session id can itself be 40 hex characters. build_custom_id emits
+        it verbatim -- the same shape a digest has -- so deciding on shape
+        told the operator the id was unrecoverable while it sat in plain
+        sight. The manifest settles it.
+        """
+        session_id = "0123456789abcdef" * 2 + "01234567"
+        assert len(session_id) == 40
+        custom_id = bom.build_custom_id(session_id)
+        assert custom_id == f"sess-{session_id}"
+        assert bom.recover_session_id_from_custom_id(custom_id) is None
+        assert bom.recover_session_id_from_custom_id(
+            custom_id, {session_id}
+        ) == session_id
+
+    def test_a_hashed_custom_id_is_reversed_through_the_manifest(self):
+        """build_custom_id is pure, so the digest form is reversible too."""
+        session_id = "subagent-explore-" + "x" * 80
+        custom_id = bom.build_custom_id(session_id)
+        assert custom_id != f"sess-{session_id}"
+        assert bom.recover_session_id_from_custom_id(custom_id) is None
+        assert bom.recover_session_id_from_custom_id(
+            custom_id, {session_id, "an-unrelated-session"}
+        ) == session_id
+
+    def test_known_session_ids_survives_a_missing_or_broken_manifest(self, tmp_path):
+        assert bom.known_session_ids({}) == set()
+        assert bom.known_session_ids({"manifest_path": str(tmp_path / "gone")}) == set()
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        assert bom.known_session_ids({"manifest_path": str(broken)}) == set()
+        shapeless = tmp_path / "shapeless.json"
+        shapeless.write_text('{"sessions": "not a list"}', encoding="utf-8")
+        assert bom.known_session_ids({"manifest_path": str(shapeless)}) == set()
+
+    def test_the_diagnostic_confirms_the_session_from_the_manifest(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """End to end: a 40-hex session id must be named, not written off."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        session_id = "abcdef0123456789" * 2 + "abcdef01"
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "hexid.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row(session_id, transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": str(manifest),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        printed = capsys.readouterr().out
+        assert f"probably session {session_id}" in printed
+        assert "not recoverable" not in printed
+
     def test_the_diagnostic_names_the_session_and_the_remedy(
         self, tmp_path, capsys, anthropic_stub
     ):

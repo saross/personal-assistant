@@ -716,14 +716,57 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
 _HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def recover_session_id_from_custom_id(custom_id: str) -> str | None:
+def known_session_ids(state: dict[str, Any]) -> set[str]:
+    """Best-effort set of session ids the state's manifest lists.
+
+    The manifest is not required to exist — the state may name a path that
+    has since moved, and older states name none at all. Every failure is a
+    quiet empty set: this feeds a diagnostic, and a diagnostic that raises
+    is worse than one that is vague.
+    """
+    path = state.get("manifest_path")
+    if not isinstance(path, str) or not path:
+        return set()
+    try:
+        manifest = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return set()
+    sessions = manifest.get("sessions") if isinstance(manifest, dict) else None
+    if not isinstance(sessions, list):
+        return set()
+    return {
+        entry["session_id"]
+        for entry in sessions
+        if isinstance(entry, dict) and isinstance(entry.get("session_id"), str)
+    }
+
+
+def recover_session_id_from_custom_id(
+    custom_id: str, known: set[str] | frozenset[str] = frozenset()
+) -> str | None:
     """Return the session id a custom_id was built from, if it is readable.
 
-    ``build_custom_id`` uses the session id verbatim when it fits the API's
-    restricted alphabet, and a digest otherwise. The verbatim form can be
-    reversed; the digest cannot. Used only for diagnostics — a recovered id
-    is a strong guess, not an authority.
+    Order matters. The manifest, where one is available, is checked FIRST
+    and answers both forms: ``build_custom_id`` is a pure function, so
+    hashing each known session id and comparing reverses even the digest
+    form. Only with no manifest does shape decide, and then a 40-character
+    hex suffix is read as a digest.
+
+    That ordering is not a nicety. A session id can ITSELF be 40 hex
+    characters, in which case ``build_custom_id`` emits it verbatim and the
+    shape test alone would tell the operator the id was "not recoverable"
+    while it sat in plain sight in the custom_id.
+
+    Args:
+        custom_id: the id to reverse.
+        known: session ids from the manifest, when one could be read.
+
+    Returns:
+        The session id, or None when it genuinely cannot be determined.
     """
+    for session_id in sorted(known):
+        if build_custom_id(session_id) == custom_id:
+            return session_id
     if not custom_id.startswith("sess-"):
         return None
     suffix = custom_id[len("sess-"):]
@@ -946,6 +989,10 @@ def haiku_apply(
     state = json.loads(state_path.read_text())
     custom_to_session = state["custom_id_to_session"]
 
+    # Read once, before the loop: it turns a guessed session id into a
+    # confirmed one, and it is a file read.
+    manifest_session_ids = known_session_ids(state)
+
     batch_job = client.messages.batches.retrieve(batch_id)
     if batch_job.processing_status != "ended":
         print(
@@ -966,10 +1013,13 @@ def haiku_apply(
             # Say which session it probably belongs to, say the money is
             # already spent, and print the remedy once at the end.
             n_unmapped += 1
-            recovered = recover_session_id_from_custom_id(result.custom_id)
+            recovered = recover_session_id_from_custom_id(
+                result.custom_id, manifest_session_ids
+            )
             which = (
                 f"probably session {recovered}" if recovered
-                else "session id not recoverable from a hashed custom_id"
+                else "session id not recoverable without a manifest — the "
+                     "custom_id looks like a digest"
             )
             print(
                 f"[haiku] no session mapped to custom_id {result.custom_id} "
