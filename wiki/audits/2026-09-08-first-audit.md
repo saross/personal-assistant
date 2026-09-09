@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-four PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-five PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -755,7 +755,8 @@ and glue); #138 (machine glue, two re-audits); #126, #131, #134
 tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140
 (memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
-(archive follow-ups); #128 (style-analyser scripts, three re-audits);
+(archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
+one);
 #142 (bake-off round 4e-5).
 
 Open, each with its verdict so far:
@@ -794,7 +795,28 @@ Open, each with its verdict so far:
   script; an `extraction-incomplete.txt` marker written before any bundle
   output and removed after the last. Merged with main (b071f4d),
   coordinator suite 4318 passed, 2 skipped, 19 deselected, exit 0;
-  **PR #144**; re-audit running.
+  **PR #144, merged 1375fee** 2026-09-09 13:4x: the re-audit confirmed
+  both named moves fail and every path byte-identical at the defaults,
+  and found two gaps in the guard rather than the code — the BUILDER's
+  argparse defaults are still unguarded (the round trips hand the writer
+  explicit directories, so reverting the builder's defaults reopens L2
+  through the CLI with all 26 tests green), and "line precedes" is a
+  proxy that a nested helper, an environment gate, or a `[:0]` on the
+  iterable defeats (nothing in either numpy-bound script executes in this
+  venv, so the AST tests ARE the interlock). The round 4g-4 report's
+  claim that reverting the scorer constant fails the round trips is
+  wrong (only the constant test fails; reverting the scorer's argparse
+  default fails the round trips and not the constant test) — corrected
+  in round 4g-5. Follow-ups are round 4g-5 (`claude/audit-round4g-5`):
+  exercise the builder at its defaults; a runtime stamp-check-then-load
+  helper both mains call first (or a stated structural-untestability
+  note); the exception failure return's marker removal and the marker's
+  content untested; the "one base" moves only the judge paths (passages
+  and five other scripts still hard-code the experiment root); a caller
+  without `__file__` falls back silently to `style_support`'s own state;
+  the explicit-path test is vacuous in an export; nothing consumes either
+  marker (the style-analyser agent definition still reads a partial
+  bundle silently).
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
