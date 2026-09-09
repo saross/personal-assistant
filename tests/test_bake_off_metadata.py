@@ -2868,3 +2868,130 @@ class TestRebuildRefusesUnusableManifests:
         assert bom.rebuild_custom_id_map(out_dir, manifest) == 0
         state = json.loads((out_dir / "batch-state.json").read_text())
         assert state["custom_id_to_session"][custom_id] == "session-as-submitted"
+
+
+class TestOperatorFacingText:
+    """Help and progress lines are the only view an operator has."""
+
+    def test_the_manifest_help_says_apply_uses_it(self, capsys):
+        """The finding: it still said "unused by --haiku-apply".
+
+        Read from the real parser via --help, so the text cannot drift out
+        of step with what an operator is shown.
+        """
+        with pytest.raises(SystemExit) as excinfo:
+            bom.main(["--help"])
+        assert excinfo.value.code == 0
+        # argparse re-wraps help text, so compare on collapsed whitespace,
+        # and scope to --manifest's own entry: --prompt genuinely IS unused
+        # by --haiku-apply, so a whole-text search would match that instead
+        # and pass or fail for the wrong reason.
+        help_text = " ".join(capsys.readouterr().out.split())
+        start = help_text.index("Path to the sample manifest")
+        manifest_help = help_text[start:help_text.index("--prompt PROMPT", start)]
+        assert "unused by --haiku-apply" not in manifest_help
+        assert "Optional but used by --haiku-apply" in manifest_help
+        assert "what --rebuild-map restores the map from" in manifest_help
+        # --prompt's wording stays: the retrieval path really does not read it.
+        assert "unused by --haiku-apply" in help_text[help_text.index("--prompt PROMPT"):]
+
+    def test_the_restored_line_names_the_manifest_used(self, tmp_path, capsys):
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "named.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "repair.json", [fx.manifest_row("named-session", transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_001", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        restored = bom.rebuild_custom_id_map(out_dir, manifest)
+        assert restored == 1
+        # Drive the entry point for the printed line.
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_001", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return []
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        sys.modules["anthropic"] = fake_module
+        try:
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", "batch_001",
+                "--out-dir", str(out_dir.parent),
+                "--manifest", str(manifest),
+                "--rebuild-map",
+            ]) == 0
+        finally:
+            del sys.modules["anthropic"]
+        printed = capsys.readouterr().out
+        assert f"restored 1 custom_id mapping(s)" in printed
+        assert f"from {manifest}" in printed
+
+    def test_the_restored_line_names_both_when_they_differ(self, tmp_path, capsys):
+        """The X/Y asymmetry was documented only in a code comment."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "asym.jsonl", n_records=6
+        )
+        repair_with = fx.write_manifest(
+            tmp_path / "repair.json", [fx.manifest_row("asym-session", transcript)]
+        )
+        recorded = tmp_path / "originally-submitted.json"
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "manifest_path": str(recorded),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return []
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        sys.modules["anthropic"] = fake_module
+        try:
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", "batch_001",
+                "--out-dir", str(out_dir.parent),
+                "--manifest", str(repair_with),
+                "--rebuild-map",
+            ]) == 0
+        finally:
+            del sys.modules["anthropic"]
+        printed = capsys.readouterr().out
+        assert f"from {repair_with}" in printed
+        assert f"still records {recorded}" in printed

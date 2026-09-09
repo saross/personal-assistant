@@ -2136,15 +2136,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Which provider adapter to exercise (omit for --build-rubric).",
     )
     # --manifest and --prompt are NOT required at the parser level: the
-    # retrieval path (--haiku-apply) reads neither, and demanding them there
-    # made the recovery line this script prints un-runnable as printed. The
-    # modes that do need them check for them explicitly, below.
+    # retrieval path (--haiku-apply) can run without either, and demanding
+    # them there made the recovery line this script prints un-runnable as
+    # printed. The modes that do need them check for them explicitly, below.
     parser.add_argument(
         "--manifest",
         type=Path,
         help=(
             "Path to the sample manifest JSON. Required for a dry run, a "
-            "live run, and --build-rubric; unused by --haiku-apply."
+            "live run, and --build-rubric. Optional but used by "
+            "--haiku-apply: it names the sessions behind unmatched "
+            "custom_ids and is what --rebuild-map restores the map from."
         ),
     )
     parser.add_argument(
@@ -2324,9 +2326,21 @@ def main(argv: list[str] | None = None) -> int:
             except (FileNotFoundError, ManifestFormatError) as exc:
                 print(f"--rebuild-map refused: {exc}", file=sys.stderr)
                 return 2
+            state_after = read_batch_state(target_dir) or {}
+            recorded = state_manifest_path(state_after)
+            provenance = f" from {args.manifest}"
+            if recorded and recorded != str(args.manifest):
+                # The asymmetry is deliberate (the recorded path is the
+                # submission's provenance and is never overwritten), but it
+                # is confusing unseen: the map was rebuilt from one file
+                # while the state still names another.
+                provenance += (
+                    f"; the state still records {recorded} as the manifest "
+                    "it was submitted against"
+                )
             print(
                 f"[haiku] --rebuild-map restored {restored} custom_id "
-                f"mapping(s) in {target_dir / 'batch-state.json'}"
+                f"mapping(s) in {target_dir / 'batch-state.json'}{provenance}"
             )
         load_env()
         # submit persists batch-state.json under the provider subdir
