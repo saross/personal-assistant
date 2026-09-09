@@ -169,10 +169,12 @@ def sweep_stale_temporaries(root: Path, started_at: float, *, apply: bool
         # IsADirectoryError, which the handler below caught, but the path
         # had already been counted and printed as swept: the summary said
         # "stale-temp=1 errors=0" over a directory that is still there
-        # (audit round 4c-4, finding 2). A SYMLINK to a directory is not a
-        # directory for this purpose — removing the link leaves the target
-        # alone — so only a real directory is skipped here.
-        if not is_link and stat_module.S_ISDIR(info.st_mode):
+        # (audit round 4c-4, finding 2). A SYMLINK to a directory does not
+        # reach this branch at all: ``info`` comes from ``lstat``, so
+        # S_ISDIR describes the LINK, which is never a directory. The
+        # ``not is_link`` conjunct this test used to carry was therefore
+        # dead (audit round 4c-6, finding L-a).
+        if stat_module.S_ISDIR(info.st_mode):
             print(f"[stale-temp — SKIPPED, is a directory] "
                   f"{candidate.relative_to(root)}", file=sys.stderr)
             continue
@@ -185,8 +187,10 @@ def sweep_stale_temporaries(root: Path, started_at: float, *, apply: bool
             # Reported distinctly: a link in the archive is odd enough that
             # an operator should see it go, and a DANGLING one used to be
             # invisible entirely.
-            target_state = "dangling" if not candidate.exists() else "symlink"
-            label = f"stale-temp — {target_state} link"
+            label = (
+                "stale-temp — dangling symlink" if not candidate.exists()
+                else "stale-temp — symlink"
+            )
 
         if apply:
             try:

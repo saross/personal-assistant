@@ -1027,6 +1027,11 @@ def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
 #: times. A poisoned session should keep asking (audit round 4c-3, L-9).
 FAILED_RETRY_AFTER_DAYS = 7
 
+#: How many session ids the sizeless-manifest summary names before falling
+#: back to a count. One constant for both halves of that message, so the
+#: list and the "and N more" remainder cannot drift apart.
+SIZELESS_IDS_SHOWN = 3
+
 #: Substrings of a recorded failure reason that mean "try again next run".
 #: These describe the state of the SOURCE at one moment, not a defect in the
 #: session, so the next run is entitled to a different answer.
@@ -1493,7 +1498,7 @@ def refuse_incomplete_source(
     session_path: Path,
     expected_size: int | None,
     logger: logging.Logger,
-    sizeless_sessions: list[str] | None = None,
+    sizeless_sessions: list[str],
 ) -> str | None:
     """Return a reason to refuse archiving *session_path*, or ``None``.
 
@@ -1510,6 +1515,12 @@ def refuse_incomplete_source(
     * it was last written inside the grace window, so a live session or an
       in-flight compaction may still be appending;
     * it is SHORTER than discovery recorded.
+
+    *sizeless_sessions* is required, not optional. It defaulted to ``None``
+    and was then replaced with a throwaway list, so a caller that omitted it
+    silenced the missing-size condition entirely — the guard degraded and
+    nothing anywhere said so (audit round 4c-6, finding L-c). Making it
+    mandatory means a new call site cannot lose the report by accident.
 
     The two directions of a size difference are not the same event, and
     round 4c-2 wrongly treated them alike (audit round 4c-3, finding M-2).
@@ -1541,8 +1552,6 @@ def refuse_incomplete_source(
     about NOW: the grace window above, and the before/after comparison
     around the copy itself.
     """
-    if sizeless_sessions is None:
-        sizeless_sessions = []
     try:
         stat = session_path.stat()
     except OSError as exc:
@@ -1687,12 +1696,23 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.dry_run:
         logger.info("[DRY RUN] Would archive %d sessions:", len(to_archive))
         for entry in to_archive[:10]:
+            # ``size_bytes`` is absent from a manifest that predates size
+            # recording. Reading it unguarded made `archive --dry-run` die
+            # with a KeyError over exactly the manifest the sizeless-entry
+            # summary exists to report — the preview crashed before the
+            # warning explaining why could ever be printed (audit round
+            # 4c-6, finding L-e).
+            size_bytes = entry.get("size_bytes")
+            size_note = (
+                f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes is not None
+                else "size not recorded"
+            )
             logger.info(
-                "  %s (%s, %d turns, %.1f MB)",
+                "  %s (%s, %s turns, %s)",
                 entry["session_id"][:8],
                 entry["project_name"],
-                entry["turns"],
-                entry["size_bytes"] / 1024 / 1024,
+                entry.get("turns", "?"),
+                size_note,
             )
         if len(to_archive) > 10:
             logger.info("  ... and %d more", len(to_archive) - 10)
@@ -1837,16 +1857,20 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         archived_count, subagent_count,
     )
     if sizeless_sessions:
-        shown = ", ".join(sizeless_sessions[:3])
+        # One constant, used for both the slice and the remainder, so the
+        # two can never disagree: `[:3]` widened to `[:4]` while the
+        # remainder still said "and 2 more" was invisible to the test
+        # (audit round 4c-6, finding L-b).
+        shown_ids = sizeless_sessions[:SIZELESS_IDS_SHOWN]
+        remainder = len(sizeless_sessions) - len(shown_ids)
         logger.warning(
             "%d manifest entr%s recorded no size, so the shrink and growth "
             "checks could not run for them (the manifest predates size "
             "recording): %s%s — re-run discover to restore those checks",
             len(sizeless_sessions),
             "y" if len(sizeless_sessions) == 1 else "ies",
-            shown,
-            "" if len(sizeless_sessions) <= 3 else
-            f" and {len(sizeless_sessions) - 3} more",
+            ", ".join(shown_ids),
+            "" if remainder <= 0 else f" and {remainder} more",
         )
     if skipped_incomplete:
         logger.warning(

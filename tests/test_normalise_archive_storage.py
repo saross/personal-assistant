@@ -500,7 +500,7 @@ class TestStaleTemporariesAreSwept:
 
         captured = capsys.readouterr()
         assert not link.is_symlink(), "a dangling link was left behind"
-        assert "dangling link" in captured.out
+        assert "dangling symlink" in captured.out
         assert "stale-temp=1" in captured.out
 
     def test_a_symlink_is_judged_by_its_own_age_not_its_target(
@@ -555,9 +555,14 @@ class TestStaleTemporariesAreSwept:
 
         assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
 
+        captured = capsys.readouterr()
         assert not link.is_symlink()
         assert target_dir.is_dir(), "the sweep removed the link's target"
-        assert "is a directory" not in capsys.readouterr().err
+        assert "is a directory" not in captured.err
+        assert "symlink link" not in captured.out, (
+            "the label reads as a stutter (round 4c-6, finding L-d)"
+        )
+        assert "stale-temp — symlink" in captured.out
 
     def test_the_sweep_is_counted_in_the_summary(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
