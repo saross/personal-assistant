@@ -746,13 +746,13 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (seventeen PRs): #114, #115, #116, #117, #118
+Merged from this audit (eighteen PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
-tolerant guard, midnight flake, hermeticity follow-ups); #129 (memory
-readers and anchors); #132, #135 (daily-sync lows); #136 (archive
+tolerant guard, midnight flake, hermeticity follow-ups); #129, #140
+(memory readers and anchors); #132, #135 (daily-sync lows); #136 (archive
 follow-ups).
 
 Open, each with its verdict so far:
@@ -830,7 +830,19 @@ Open, each with its verdict so far:
   repository answers "unknown" and blocks a committal verdict; only
   permanent `OSError`s exclude; the confidence write-back keeps the
   record's spelling. Merged with main, coordinator suite 3930 passed, exit
-  0; **PR #140**; re-audit running.
+  0; **PR #140, merged c7dcada** 2026-09-09 11:5x: the re-audit confirmed
+  all four fixes, re-verified every claimed kill, and found no path that
+  mints a false verdict. Its residuals are round 4f-5
+  (`claude/audit-round4f-5`): the history probe's transient-error branch
+  and the commit path's permanent-error branch untested (a `return
+  "false"` mutation survives — the AN3 class); `unusable` reaches no
+  standing surface (`[H]` never renders it, `/weekly-review` runs without
+  `--tier-c`, cron discards stdout); exclusion discovery is lazy, so
+  `unusable` under-reports unless some ref forces resolution to reach the
+  broken repository; one flaky mount makes every sweep a refusal with the
+  gap invisible; one repository counts as a set on a first run; the
+  refusal names no override; the real key `MPZHXY3P` remains in
+  `tests/test_sync_to_zotero.py`; both registry resets untested.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
