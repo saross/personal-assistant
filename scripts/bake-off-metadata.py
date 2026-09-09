@@ -81,6 +81,7 @@ import shlex
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -553,11 +554,38 @@ def parse_response_json(raw_text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry so a rename survives a crash. Best effort.
+
+    Without this the renamed name itself can be lost even though the file's
+    contents reached the disk. Filesystems that refuse a directory fsync
+    (some network mounts) are not an error: durability degrades to what the
+    filesystem offers, and the write has already succeeded.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, text: str) -> None:
     """Write ``text`` beside ``path`` and ``os.replace`` it into position.
 
     On POSIX the rename is atomic, so a reader sees either the whole old file
     or the whole new one — never a half-written response.
+
+    Raises:
+        OSError: the write, the flush, or the rename failed. The message
+            names the file: this is called in a loop over a batch's
+            responses, and an unadorned "No space left on device" leaves the
+            operator without the one fact they need — which response is
+            missing.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle_fd, tmp_name = tempfile.mkstemp(
@@ -573,9 +601,18 @@ def _atomic_write(path: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
+    except OSError as exc:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise OSError(f"could not write {path}: {exc}") from exc
     except BaseException:
+        # Anything else (a KeyboardInterrupt, a caller's TypeError from
+        # serialisation) is not a write failure: clean up the temp file and
+        # let it through unchanged rather than relabelling it.
         Path(tmp_name).unlink(missing_ok=True)
         raise
+    # After the rename, not before: it is the directory entry that needs
+    # flushing, and only once the entry exists.
+    _fsync_directory(path.parent)
 
 
 def write_json_atomic(path: Path, payload: Any) -> None:
@@ -876,7 +913,7 @@ def known_session_ids(
     return resolve_manifest(state, manifest_path)[0]
 
 
-def custom_id_lookup(session_ids: set[str] | frozenset[str]) -> dict[str, str]:
+def custom_id_lookup(session_ids: Iterable[str]) -> dict[str, str]:
     """Map ``custom_id -> session id`` for a set of known session ids.
 
     Built once per retrieval rather than re-hashing every known id for

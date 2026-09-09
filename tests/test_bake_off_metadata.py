@@ -2044,10 +2044,15 @@ class TestStrandedResults:
         """
         long_id = "subagent-explore-" + "z" * 80
         digest = hashlib.sha256(long_id.encode("utf-8")).hexdigest()[:40]
-        lookup = bom.custom_id_lookup({long_id, digest})
+        # Hex sorts before "s", so the digest is the sorted winner. Passed
+        # as a LIST in the opposite order: a set's iteration order varies
+        # with the hash seed, which let an unsorted implementation pass
+        # about a third of runs.
+        assert digest < long_id
+        lookup = bom.custom_id_lookup([long_id, digest])
         assert len(lookup) == 1
-        assert lookup[bom.build_custom_id(long_id)] == min(long_id, digest)
-        assert bom.custom_id_lookup(set()) == {}
+        assert lookup[bom.build_custom_id(long_id)] == digest
+        assert bom.custom_id_lookup([]) == {}
         assert bom.recover_session_id_from_custom_id("sess-x", {}) == "x"
 
     def test_known_session_ids_survives_a_missing_or_broken_manifest(
@@ -3112,3 +3117,79 @@ class TestSessionIdsAreValidatedOnce:
         with pytest.raises(bom.ManifestFormatError):
             bom.rebuild_custom_id_map(out_dir, manifest)
         assert (out_dir / "batch-state.json").read_bytes() == before
+
+
+class TestAtomicWriteDurability:
+    """The rename must be durable, and a failure must name the file."""
+
+    def test_the_parent_directory_is_flushed_after_the_rename(
+        self, tmp_path, monkeypatch
+    ):
+        """A rename can be lost even when the contents reached the disk."""
+        import os as os_module
+
+        fsynced: list = []
+        real_fsync = os_module.fsync
+        real_replace = os_module.replace
+        renamed: list = []
+
+        def recording_fsync(fd):
+            fsynced.append(fd)
+            return real_fsync(fd)
+
+        def recording_replace(src, dst):
+            renamed.append(len(fsynced))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os_module, "fsync", recording_fsync)
+        monkeypatch.setattr(os_module, "replace", recording_replace)
+        bom.write_json_atomic(tmp_path / "responses" / "session.json", {"ok": True})
+        # One fsync on the temp file before the rename, one on the directory
+        # after it.
+        assert renamed == [1]
+        assert len(fsynced) == 2
+
+    def test_a_refused_directory_fsync_is_not_an_error(self, tmp_path, monkeypatch):
+        """Some network mounts refuse it; the write has already succeeded."""
+        import os as os_module
+
+        real_open = os_module.open
+
+        def refuse_directory_open(path, flags, *args, **kwargs):
+            # Only the directory handle: mkstemp needs os.open to work.
+            if os_module.path.isdir(path):
+                raise OSError("directory fsync unsupported")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os_module, "open", refuse_directory_open)
+        target = tmp_path / "session.json"
+        bom.write_json_atomic(target, {"ok": True})
+        assert json.loads(target.read_text()) == {"ok": True}
+
+    def test_a_write_failure_names_the_file(self, tmp_path, monkeypatch):
+        """In a loop over a batch, "No space left" alone is not actionable."""
+        import os as os_module
+
+        def refuse_replace(_src, _dst):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(os_module, "replace", refuse_replace)
+        target = tmp_path / "responses" / "session-42.json"
+        with pytest.raises(OSError) as excinfo:
+            bom.write_json_atomic(target, {"ok": True})
+        assert str(target) in str(excinfo.value)
+        assert "No space left on device" in str(excinfo.value)
+        assert list(target.parent.iterdir()) == []
+
+    def test_a_non_oserror_is_not_relabelled(self, tmp_path, monkeypatch):
+        """A KeyboardInterrupt is not a write failure."""
+        import os as os_module
+
+        def interrupt(_src, _dst):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(os_module, "replace", interrupt)
+        target = tmp_path / "session.json"
+        with pytest.raises(KeyboardInterrupt):
+            bom.write_json_atomic(target, {"ok": True})
+        assert list(tmp_path.iterdir()) == []
