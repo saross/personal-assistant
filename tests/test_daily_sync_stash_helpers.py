@@ -2545,19 +2545,26 @@ class TestMergeWithNoCorpusInAnyParent:
         assert "none of its parents holds the corpus" in written, written
 
 
-#: The functions that are allowed to run a quiet grep, and the reason
-#: each is safe: none of them has a producer on the far side of a pipe.
-#: Asserted as a SET rather than a count (audit 3, sixth re-audit): a
-#: decorative fifth site would restore vacuity to a count, and a correct
-#: refactor that moves one would fail it for no reason.
+#: The functions allowed to run a quiet grep, HOW MANY each may run, and
+#: the reason each is safe: none has a producer on the far side of a
+#: pipe. A whole-file count is vacuous (audit 3, sixth re-audit) — a
+#: decorative extra site restores it — and a per-function SET is too
+#: coarse (audit L3, seventh): deleting one of the two greps inside
+#: previously_recorded_stashes left the set unchanged and the suite
+#: green, though the path matching it does is what keeps a stale row
+#: from being blamed for a fresh conflict.
 _QUIET_GREP_SITES = {
-    "render_sync_gate",              # gate supersession, here-string
-    "previously_recorded_stashes",   # sidecar path matching, here-string
-    "has_bulk_rewrite_trailer",      # the trailer, here-string
+    "render_sync_gate": 1,             # gate supersession, here-string
+    "previously_recorded_stashes": 2,  # sidecar path matching, here-strings
+    "has_bulk_rewrite_trailer": 1,     # the trailer, here-string
 }
 
-#: `grep -q`, `grep -Fqx`, `grep --quiet` — every spelling of "tell me
-#: yes or no and stop reading" (audit 2, sixth re-audit).
+#: Every spelling of "tell me yes or no and stop reading" this lint has
+#: been shown to need (audit 2, sixth re-audit; audit L1, seventh):
+#: `grep -q`, `grep -Fqx`, `grep --quiet`, `grep --silent`, the flag
+#: after other flags as in `grep -E -q`, and the grep family — `egrep`,
+#: `fgrep`, `zgrep`. Not a claim to completeness: it is the set the
+#: evasion tests below hold it to, and a new spelling belongs in both.
 #: `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"` — matched wherever it
 #: appears on the line, because a heredoc opener is routinely followed by
 #: redirections (`<<'PYEOF' >>"$LOG" 2>&1`). `<<<` is a here-STRING and
@@ -2568,7 +2575,9 @@ _HEREDOC_OPENER = re.compile(
     r"|([A-Za-z_][A-Za-z0-9_]*))"
 )
 
-_QUIET_GREP = re.compile(r"\bgrep\s+(?:-[A-Za-z]*q|--quiet)")
+_QUIET_GREP = re.compile(
+    r"\b(?:z|e|f)?grep(?:\s+--?[A-Za-z-]+)*\s+(?:-[A-Za-z]*q|--quiet|--silent)"
+)
 
 
 def _script_statements(
@@ -2675,6 +2684,42 @@ class TestGuardsDoNotPipeIntoGrepQ:
             "under `set -o pipefail`:\n" + "\n".join(offenders)
         )
 
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "printf '%s' \"$1\" | grep -q bulk",
+            "printf '%s' \"$1\" | grep -Fqx bulk",
+            "printf '%s' \"$1\" | grep --quiet bulk",
+            "printf '%s' \"$1\" | grep --silent bulk",
+            "printf '%s' \"$1\" | grep -E -q bulk",
+            "printf '%s' \"$1\" | egrep -q bulk",
+            "printf '%s' \"$1\" | fgrep -q bulk",
+            "printf '%s' \"$1\" | zgrep -q bulk",
+        ],
+    )
+    def test_every_spelling_of_a_quiet_grep_is_caught(
+        self, tmp_path: Path, spelling: str
+    ) -> None:
+        """Kills DS-L1: a pattern that matched only `grep -[A-Za-z]*q`
+        and `--quiet` directly after the command.
+
+        `grep -E -q` puts the flag after another flag; `--silent` is a
+        synonym; and egrep, fgrep and zgrep are the same program by other
+        names. Each of them re-opens the push gate the rule protects.
+        """
+        planted = tmp_path / f"planted-{abs(hash(spelling)) % 10**8}.sh"
+        planted.write_text(
+            DAILY_SYNC.read_text(encoding="utf-8").replace(
+                "has_bulk_rewrite_trailer() {",
+                "has_bulk_rewrite_trailer() {\n    " + spelling,
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert _quiet_grep_offenders(planted), (
+            f"`{spelling}` walked past the lint"
+        )
+
     def test_a_heredoc_body_is_not_linted_as_shell(self, tmp_path: Path) -> None:
         """Kills DS-M2: anchoring the heredoc opener at end of line.
 
@@ -2732,18 +2777,21 @@ class TestGuardsDoNotPipeIntoGrepQ:
     def test_the_quiet_greps_are_exactly_where_they_are_expected(self) -> None:
         """Audit 3: the SET, not a count.
 
-        A count is satisfied by a decorative fifth site and broken by a
-        correct refactor. Naming the functions says what is actually
-        being protected, and a new one has to be added here deliberately.
+        A whole-file count is satisfied by a decorative extra site. A
+        per-function set is satisfied by DELETING one of the two greps
+        inside previously_recorded_stashes, which is the path matching
+        that keeps a stale sidecar row from being blamed for a fresh
+        conflict. The count per function says both things at once, and a
+        new site has to be added here deliberately.
         """
-        found = {
-            function
-            for _number, function, statement in _script_statements()
-            if _QUIET_GREP.search(statement)
-        }
+        found: dict[str, int] = {}
+        for _number, function, statement in _script_statements():
+            if _QUIET_GREP.search(statement):
+                found[function] = found.get(function, 0) + 1
         assert found == _QUIET_GREP_SITES, (
-            f"the quiet greps have moved: found {sorted(found)}, "
-            f"expected {sorted(_QUIET_GREP_SITES)}"
+            f"the quiet greps have moved or changed in number: found "
+            f"{sorted(found.items())}, expected "
+            f"{sorted(_QUIET_GREP_SITES.items())}"
         )
 
 
