@@ -3237,3 +3237,117 @@ class TestRecordPathsSurviveNewlines:
             "a literal backslash-n and a real newline encode alike: "
             + repr(result.stdout)
         )
+
+
+class TestRenderSyncGateSupersession:
+    """The gate keys are exercised elsewhere in isolation; nothing drove
+    render_sync_gate itself, so swapping which side gets gate_claim_keys
+    and which gets gate_subject_keys reintroduced the tenth re-audit's M2
+    with the suite green."""
+
+    _FUNCTIONS = (
+        "render_sync_gate",
+        "gate_line_class",
+        "gate_sha_keys",
+        "gate_claim_keys",
+        "gate_subject_keys",
+    )
+
+    #: What `fail` leaves behind: a free-text line that NAMES a stash but
+    #: makes no classifiable claim about it.
+    _STALE_OTHER = (
+        "daily-sync FAILED and will keep failing until this is resolved: "
+        "parent repo: applying stash 0badc0de was refused"
+    )
+    _BINARY = (
+        "daily-sync STOPPED: parent-repo stash 0badc0de stash@{0} On main: "
+        "daily-sync parent holds BINARY content, so this run could NOT tell "
+        "whether its tracked changes reached the tree."
+    )
+    _BLOCKED = (
+        "daily-sync could not apply 1 of its own stash(es) because the index "
+        "was ALREADY unmerged: data submodule: 0badc0de stash@{0} On main: "
+        "daily-sync branch-switch."
+    )
+    _LISTING = (
+        "daily-sync STOPPED: /repo (data submodule) has unmerged paths from "
+        "an operation this run cannot identify — UU notes/a.md. Do NOT touch "
+        "any stash entry; the entries on the stack right now are: "
+        "0badc0de stash@{0} On main: daily-sync branch-switch"
+    )
+
+    def _render(self, tmp_path: Path, previous: str, ours: list[str]) -> list[str]:
+        """Run render_sync_gate over a seeded gate file and read it back."""
+        gate = tmp_path / f"gate-{abs(hash((previous, tuple(ours)))) % 10**8}"
+        gate.write_text(f"1\n{previous}\n", encoding="utf-8")
+        body = "\n".join(
+            [
+                f'SYNC_GATE="{gate}"',
+                "DRY_RUN=0",
+                "sync_run_completed=0",
+                "sync_gate_details=()",
+            ]
+            + [f'sync_gate_details+=("{line}")' for line in ours]
+            + ["render_sync_gate"]
+        )
+        result = _run_shell(body, self._FUNCTIONS)
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = gate.read_text(encoding="utf-8").splitlines()
+        assert int(lines[0]) == len(lines) - 1, lines
+        return lines[1:]
+
+    def test_a_binary_line_retires_a_stale_line_about_the_same_stash(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-item-4: swapping gate_claim_keys and gate_subject_keys.
+
+        This run has a classifiable claim about 0badc0de; the previous
+        run left an unclassifiable line that merely names it. The claim
+        wins. Swap the two calls and the previous line -- read as a claim,
+        which it is not -- keeps a key of its own and survives, so two
+        descriptions of one entry stand side by side again.
+        """
+        rendered = self._render(tmp_path, self._STALE_OTHER, [self._BINARY])
+        assert self._BINARY in rendered, rendered
+        assert self._STALE_OTHER not in rendered, (
+            "a stale free-text line about the same stash outlived this "
+            "run's word on it: " + str(rendered)
+        )
+
+    def test_a_listing_line_never_erases_a_specific_claim(
+        self, tmp_path: Path
+    ) -> None:
+        """The other direction, and the tenth re-audit's finding: a run
+        that can attribute nothing LISTS every entry on the stack, and
+        that listing must not retire what an earlier run knew about one
+        of them."""
+        rendered = self._render(tmp_path, self._BLOCKED, [self._LISTING])
+        assert self._BLOCKED in rendered, (
+            "a line that could attribute nothing erased a specific claim: "
+            + str(rendered)
+        )
+        assert self._LISTING in rendered, rendered
+
+    def test_a_completed_run_replaces_rather_than_appends(
+        self, tmp_path: Path
+    ) -> None:
+        """And the surrounding contract the supersession sits inside: a
+        run that finished everything speaks for the current state."""
+        gate = tmp_path / "gate-completed"
+        gate.write_text(f"1\n{self._BLOCKED}\n", encoding="utf-8")
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'SYNC_GATE="{gate}"',
+                    "DRY_RUN=0",
+                    "sync_run_completed=1",
+                    "sync_gate_details=()",
+                    f'sync_gate_details+=("{self._BINARY}")',
+                    "render_sync_gate",
+                ]
+            ),
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = gate.read_text(encoding="utf-8").splitlines()
+        assert lines == ["1", self._BINARY], lines
