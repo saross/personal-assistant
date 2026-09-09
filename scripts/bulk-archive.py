@@ -962,16 +962,53 @@ def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
             )
         return _empty_checkpoint()
     # Fill in anything a hand-edited or older file is missing, so the callers
-    # below can index without guarding every key.
+    # below can index without guarding every key. Each repair is REPORTED:
+    # discarding a wrongly-typed archived_ids silently is indistinguishable
+    # from having archived nothing, and an operator reading "0 already done"
+    # over a checkpoint that listed 600 sessions deserves to know which of
+    # those two happened (audit round 4c-3, finding L-5).
     checkpoint = _empty_checkpoint()
     checkpoint.update(loaded)
+    repairs: list[str] = []
     for key, empty in (
         ("archived_ids", []), ("skipped_trivial_ids", []), ("failed_ids", {}),
     ):
         if not isinstance(checkpoint.get(key), type(empty)):
+            repairs.append(
+                f"{key} was a {type(checkpoint.get(key)).__name__}, not a "
+                f"{type(empty).__name__} — discarded"
+            )
             checkpoint[key] = empty
+
+    # ``stats`` is filled key by key, not replaced wholesale. A checkpoint
+    # carrying `{"stats": {}}` — a hand edit, or an older writer — passed the
+    # isinstance test and then made `checkpoint["stats"]["total_archived"] +=
+    # 1` raise KeyError INSIDE the archive loop's try, so every session was
+    # recorded as failed although it had been archived correctly (audit round
+    # 4c-3, finding L-6).
+    default_stats = _empty_checkpoint()["stats"]
     if not isinstance(checkpoint.get("stats"), dict):
-        checkpoint["stats"] = _empty_checkpoint()["stats"]
+        repairs.append(
+            f"stats was a {type(checkpoint.get('stats')).__name__}, not an "
+            "object — replaced"
+        )
+        checkpoint["stats"] = dict(default_stats)
+    else:
+        missing = [
+            key for key, value in default_stats.items()
+            if not isinstance(checkpoint["stats"].get(key), type(value))
+        ]
+        if missing:
+            repairs.append(f"stats was missing {', '.join(sorted(missing))}")
+        for key, value in default_stats.items():
+            if not isinstance(checkpoint["stats"].get(key), type(value)):
+                checkpoint["stats"][key] = value
+
+    if repairs and logger is not None:
+        logger.warning(
+            "Checkpoint at %s needed repair before use: %s",
+            CHECKPOINT_FILE, "; ".join(repairs),
+        )
     return checkpoint
 
 
@@ -979,16 +1016,34 @@ def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
 #: overwhelmingly environmental (a full disk, an unmounted store, a session
 #: that was live at the time); keeping one forever turns a transient problem
 #: into a permanently unarchivable session (audit round 4c-2, finding 1).
+#:
+#: **There is deliberately no attempt cap.** A session that fails for its own
+#: reasons — a transcript the toolkit cannot parse, say — is retried once
+#: every FAILED_RETRY_AFTER_DAYS, for ever. That is a bounded cost (one
+#: attempt a week, logged each time) and the alternative is worse: a
+#: permanent-failure state would silence the drift gate's only remaining
+#: complaint about a session that is genuinely not archived, which is the
+#: never-clearable-gate shape this pipeline has now been bitten by three
+#: times. A poisoned session should keep asking (audit round 4c-3, L-9).
 FAILED_RETRY_AFTER_DAYS = 7
 
 #: Substrings of a recorded failure reason that mean "try again next run".
 #: These describe the state of the SOURCE at one moment, not a defect in the
 #: session, so the next run is entitled to a different answer.
+#:
+#: Only reasons that can actually reach ``failed_ids`` belong here. The
+#: completeness guard's refusals do NOT: they are collected in
+#: ``skipped_incomplete`` and never recorded as failures, so listing them
+#: here described a path that does not exist (audit round 4c-3, finding
+#: L-7). "size changed since discovery" was pruned for a second reason —
+#: round 4c-2 replaced that refusal with a warning, and round 4c-3 replaced
+#: the shrink half with a differently-worded refusal that is likewise a
+#: skip, not a failure.
 _TRANSIENT_FAILURE_MARKERS = (
-    "size changed since discovery",
+    # Written at the post-copy comparison: the source moved while it was
+    # being read, so the entry may hold a prefix. Next run, the session is
+    # usually quiescent and the copy succeeds.
     "source changed DURING the copy",
-    "grace window",
-    "source transcript unreadable",
 )
 
 
@@ -1046,7 +1101,18 @@ def _partition_failed_ids(
             retried[session_id] = "--retry-failed"
             continue
         if session_id in on_disk:
-            retried[session_id] = "already archived on this machine"
+            # An entry exists — but if the failure was the during-copy
+            # comparison, that entry is the SUSPECT one this run wrote, not
+            # evidence the session is safely archived. Saying "already
+            # archived on this machine" over it reads as reassurance for
+            # exactly the case that needs a second look (round 4c-3, L-8).
+            if "DURING the copy" in reason:
+                retried[session_id] = (
+                    "an entry is on disk, but it is the possibly-truncated "
+                    "one this failure describes — re-archiving over it"
+                )
+            else:
+                retried[session_id] = "already archived on this machine"
             continue
         if any(marker in reason for marker in _TRANSIENT_FAILURE_MARKERS):
             retried[session_id] = f"transient failure ({reason[:60]})"
@@ -1437,22 +1503,42 @@ def refuse_incomplete_source(
     archive it IS the session, with every integrity check reporting clean,
     because until now every check compared the archive against itself.
 
-    Two refusals:
+    Three refusals:
 
     * the transcript has gone (moved, or the machine's store was cleaned);
     * it was last written inside the grace window, so a live session or an
-      in-flight compaction may still be appending.
+      in-flight compaction may still be appending;
+    * it is SHORTER than discovery recorded.
 
-    A size that differs from the one discovery recorded is deliberately NOT a
-    refusal. Discovery already skipped anything inside the grace window, so a
-    manifested session was quiescent when it was listed; if it is quiescent
-    again now, the difference says the manifest is stale, not that the file
-    is moving. Refusing on it made the mismatch permanent — the manifest kept
-    the old size, so every later run refused for the same reason and the
-    session could never be archived without re-running discover (audit round
-    4c-2, finding 1). The caller refreshes the recorded size and says so.
-    What still protects the copy is the pair of checks about NOW: the grace
-    window above, and the before/after comparison around the copy itself.
+    The two directions of a size difference are not the same event, and
+    round 4c-2 wrongly treated them alike (audit round 4c-3, finding M-2).
+
+    **Larger** is a stale manifest. Discovery already skipped anything inside
+    the grace window, so a manifested session was quiescent when it was
+    listed; if it is quiescent again now and has grown, the session simply
+    resumed and finished between the two commands. Refusing on that made the
+    mismatch permanent, because the manifest kept the old size and every
+    later run refused for the same reason. So growth is a warning and the
+    current content is archived. The manifest itself is NOT rewritten — it
+    is only ever written by ``cmd_discover`` and by ``cmd_archive``'s
+    discovery fallback — so the same warning repeats on every run until
+    ``discover`` is next run. That is harmless and cheap, but an earlier
+    version of this docstring claimed the caller refreshed the recorded
+    size, which it does not (audit round 4c-3, finding L-4).
+
+    **Smaller** is never a stale manifest. Transcripts are append-only: a
+    source that has lost bytes was truncated by something — an interrupted
+    store sync, a partial rsync, a manual edit, a failing disk. Archiving it
+    writes the short version, and nothing downstream can tell: the toolkit
+    records the length it actually compressed, so ``verify``'s size check
+    compares the truncation against itself and reports clean. A shrink is
+    the one case where the manifest is better evidence than the file, so it
+    is refused and named, and the drift gate keeps reporting the session
+    until a human looks.
+
+    What still protects the copy in the growth case is the pair of checks
+    about NOW: the grace window above, and the before/after comparison
+    around the copy itself.
     """
     try:
         stat = session_path.stat()
@@ -1462,6 +1548,13 @@ def refuse_incomplete_source(
         return (
             f"written within the {GRACE_HOURS}h grace window "
             "(may still be growing)"
+        )
+    if expected_size is not None and stat.st_size < expected_size:
+        return (
+            f"source has SHRUNK since discovery ({expected_size} -> "
+            f"{stat.st_size} bytes). Transcripts are append-only, so this "
+            "is truncation, not staleness — archiving it would make the "
+            "short version canonical and every check would call it clean"
         )
     if expected_size is not None and stat.st_size != expected_size:
         logger.warning(
