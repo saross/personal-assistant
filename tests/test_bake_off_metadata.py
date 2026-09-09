@@ -2995,3 +2995,120 @@ class TestOperatorFacingText:
         printed = capsys.readouterr().out
         assert f"from {repair_with}" in printed
         assert f"still records {recorded}" in printed
+
+
+class TestSessionIdsAreValidatedOnce:
+    """Submit and repair must agree on what a usable session id is."""
+
+    @pytest.mark.parametrize(
+        "session_id",
+        [None, 17, ["a"], "", "   ", "\t", " abc ", "abc ", " abc", "abc\n"],
+    )
+    def test_unusable_ids_are_refused(self, session_id):
+        with pytest.raises(bom.SessionIdError):
+            bom.validate_session_id(session_id, where="test")
+
+    @pytest.mark.parametrize(
+        "session_id", ["abc", "a-b-c-1234", "subagent-explore-2026-01-05"]
+    )
+    def test_usable_ids_pass_through_unchanged(self, session_id):
+        assert bom.validate_session_id(session_id, where="test") == session_id
+
+    def test_whitespace_is_refused_not_stripped(self):
+        """Stripping would break the round-trip the id has to survive.
+
+        build_custom_id hashes the id and the response filename is built
+        from it, so an id submitted as " abc " is stored under " abc .json"
+        and hashed as " abc ". A repair that silently stripped would
+        reconstruct sess-<hash of "abc"> and the two would never meet.
+        """
+        padded = " abc "
+        assert bom.build_custom_id(padded) != bom.build_custom_id("abc")
+        with pytest.raises(bom.SessionIdError, match="whitespace"):
+            bom.validate_session_id(padded, where="test")
+
+    def test_submit_refuses_a_blank_id_before_paying(self, tmp_path, monkeypatch):
+        """The finding: a "   " manifest submitted fine and was unrepairable."""
+        created: list = []
+
+        class FakeBatches:
+            def create(self, requests):
+                created.append(requests)
+                return type("Batch", (), {"id": "batch_001"})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "blank.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row("   ", transcript)]
+        )
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(bom.SessionIdError):
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        assert created == []
+        assert not (out_dir / "batch-state.json").exists()
+
+    def test_submit_refuses_a_padded_id_before_paying(self, tmp_path, monkeypatch):
+        created: list = []
+
+        class FakeBatches:
+            def create(self, requests):
+                created.append(requests)
+                return type("Batch", (), {"id": "batch_001"})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "padded.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row(" padded ", transcript)]
+        )
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(bom.SessionIdError, match="whitespace"):
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        assert created == []
+
+    @pytest.mark.parametrize("session_id", ["   ", " padded ", "padded "])
+    def test_rebuild_refuses_the_same_ids(self, tmp_path, session_id):
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_001", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(
+            json.dumps({"sessions": [{"session_id": session_id}]}),
+            encoding="utf-8",
+        )
+        before = (out_dir / "batch-state.json").read_bytes()
+        with pytest.raises(bom.ManifestFormatError):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert (out_dir / "batch-state.json").read_bytes() == before

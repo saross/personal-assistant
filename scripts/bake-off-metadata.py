@@ -272,6 +272,49 @@ CUSTOM_ID_MAX_CHARS = 64
 CUSTOM_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+class SessionIdError(ValueError):
+    """A session id cannot be used to name a response or a batch entry."""
+
+
+def validate_session_id(session_id: Any, *, where: str) -> str:
+    """Return ``session_id`` unchanged, or explain why it cannot be used.
+
+    One rule, checked at both entry points that commit to an id: the
+    submission that pays for a batch, and the repair that rebuilds the map
+    afterwards. They must agree, because the id has to round-trip
+    byte-for-byte between them — ``build_custom_id`` hashes it and the
+    response filename is built from it.
+
+    Whitespace is REFUSED rather than stripped for that reason. Stripping
+    here would make the repair reconstruct ``sess-abc`` for an id that was
+    submitted as ``" abc "`` and stored under ``" abc .json"``, and the two
+    would never meet again.
+
+    Args:
+        session_id: the value to check.
+        where: what to name in the message (a manifest path, a position).
+
+    Raises:
+        SessionIdError: not a string, empty, blank, or carrying leading or
+            trailing whitespace.
+    """
+    if not isinstance(session_id, str):
+        raise SessionIdError(
+            f"{where}: session_id is {type(session_id).__name__}, not a string"
+        )
+    if not session_id.strip():
+        raise SessionIdError(
+            f"{where}: session_id is empty or blank, so it names no session"
+        )
+    if session_id != session_id.strip():
+        raise SessionIdError(
+            f"{where}: session_id {session_id!r} has leading or trailing "
+            "whitespace; it would not round-trip between the batch and the "
+            "response filename"
+        )
+    return session_id
+
+
 def build_custom_id(session_id: str) -> str:
     """Return a batch ``custom_id`` that maps one-to-one onto ``session_id``.
 
@@ -948,15 +991,13 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
             "rebuild from; the batch state was left unchanged"
         )
     for position, entry in enumerate(sessions, 1):
-        session_id = entry.get("session_id") if isinstance(entry, dict) else None
-        # ``strip()``: a whitespace-only id is as unusable as an empty one.
-        # It would name a response file "   .json" and hash to a custom_id
-        # nothing could ever be matched back to.
-        if not isinstance(session_id, str) or not session_id.strip():
-            raise ManifestFormatError(
-                f"{manifest_path}: session {position} has no usable string "
-                "'session_id'; no mapping was written"
+        raw = entry.get("session_id") if isinstance(entry, dict) else None
+        try:
+            session_id = validate_session_id(
+                raw, where=f"{manifest_path}: session {position}"
             )
+        except SessionIdError as exc:
+            raise ManifestFormatError(f"{exc}; no mapping was written") from exc
         custom_id = build_custom_id(session_id)
         clash = from_manifest.get(custom_id)
         if clash is not None and clash != session_id:
@@ -1081,10 +1122,14 @@ def haiku_submit(
             batch_state_conflict(out_dir, manifest_path) or "batch already submitted"
         )
 
-    # Injectivity is checked BEFORE the billed create call: the state file
-    # maps custom_id -> session_id, so a collision would drop a session from
-    # the map and write one session's output under another's name — after
-    # the batch had been paid for.
+    # Both checks happen BEFORE the billed create call. An unusable session
+    # id cannot name a response file, and an id that collides would drop a
+    # session from the state map and write one session's output under
+    # another's name — either way, after the batch had been paid for.
+    for position, request in enumerate(requests, 1):
+        validate_session_id(
+            request.session_id, where=f"manifest session {position}"
+        )
     custom_to_session = {r.custom_id: r.session_id for r in requests}
     if len(custom_to_session) != len(requests):
         seen: dict[str, str] = {}
