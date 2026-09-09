@@ -746,39 +746,84 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (fourteen PRs): #114, #115, #116, #117, #118 (round
-two); #119 (daily sync, four re-audit rounds); #120 (round 3b); #121, #123
-(memory-store writers and the hermeticity guards); #122, #130 (retrieval);
-#124 (session archive pipeline); #125, #133 (external services and glue);
-#126, #131 (bake-off tooling); #127 (concurrency-tolerant guard, midnight
-flake); #129 (memory readers and anchors); #132, #135 (daily-sync lows).
+Merged from this audit (seventeen PRs): #114, #115, #116, #117, #118
+(round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
+#121, #123 (memory-store writers and the hermeticity guards); #122, #130
+(retrieval); #124 (session archive pipeline); #125, #133 (external services
+and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
+tolerant guard, midnight flake, hermeticity follow-ups); #129 (memory
+readers and anchors); #132, #135 (daily-sync lows); #136 (archive
+follow-ups).
 
 Open, each with its verdict so far:
 
 - **#128** (style-analyser scripts, round 4g): refused twice, the second
   time on one two-line mismatch (`efficacy_score_judges.py` defaults
-  `--key-dir` to the old location). Round 4g-3 was in progress in
-  `~/worktrees/personal-assistant/claude-audit-round4g` with uncommitted
-  edits when the spend limit hit. Merging it makes every phase-1 consumer
-  refuse the live results until phase 1 is re-run — by design.
+  `--key-dir` to the old location). Round 4g-3 delivered 2026-09-09 10:27:
+  the key location fixed and exercised (build → answer → score at the
+  defaults), `validate_announce_colon.py` made the sixth interlock
+  consumer, phase 3's stamp checked by the phase-5 evaluator and the
+  efficacy scorer, `--migrate-key` isolation, the version-less stamp, the
+  untracked-files `dirty` case, and the error marker now cleared only after
+  the bundle's outputs exist (seven commits 916e223-33a5159; clean-copy
+  suite 4009 passed, exit 0). Awaiting the third re-audit. Merging it makes
+  every phase-1 consumer refuse the live results until phase 1 is re-run —
+  by design.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
   eight lows are recorded in the tranche 4 section for a later round.
-- **#137** (hermeticity follow-ups, round 4a-5): pushed; re-audit had
-  finished (a)-(h) and was starting the strict run against a populated
-  synthetic store.
-- **#138** (machine-glue follow-ups, round 4d-4): pushed; re-audit not
-  delivered.
-- Rounds **3c-7** (`claude/audit-round3c-7`, item 5 in progress) and
-  **4f-4** (`claude/audit-round4f-4`, M-c in progress) hold uncommitted
-  edits in their worktrees; neither has a PR yet.
+- **#137** (hermeticity follow-ups, round 4a-5): **merged 927cff1**
+  2026-09-09 10:4x. The re-audit's strict run against a populated synthetic
+  store (five records, four tags, two `.log` files) passed with the store
+  byte-identical and no banner; nothing blocking. Its follow-ups are round
+  4a-6 (`claude/audit-round4a-6`): the `_DEFERRED_REPORT` queue is
+  unguarded (a test that forgets `isolated_report` makes the summary cry
+  wolf, nothing fails); advisory mode accepts an unterminated garbage
+  fragment (`_line_problem` never runs on the partial); STRICT does not
+  catch a well-formed append (the documented allowance at
+  `commands/audit.md:176-180`, to be stated as a limit); new directories
+  and `.json`/`.jsonl` files under `logs/` are violations although the real
+  `data/logs/` holds both; the tolerated-entry wording; dead `_under_logs`;
+  `.xz`/`.Z` and the missing-directory banner clause unpinned.
+- **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
+  not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
+  prints for every non-worktree run that reaches the `local.md` check,
+  including an initialised submodule that merely lacks the file, so the
+  round's headline fix replaced impossible advice with advice that deletes
+  the private submodule; the composer's branch tests emptiness rather than
+  initialisation and has the same defect. Also M-a (`--dry-run` on a
+  worktree exits 1 where the real run exits 0), M-b (the `git` stub never
+  populates `data/`, so the fresh-clone happy path is inspected but cannot
+  pass), three lows, and three surviving mutations. Round 4d-5 sent to the
+  4d agent on the same branch.
+- Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
+  `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
+  trailered commit whose own transition spans the whole observed drop, and
+  every unmeasurable merge is logged; the quiet-grep lint tokenises
+  statements; the vacuity guard names the allowed set; `render_sync_gate`
+  driven directly; record paths escaped on both sides. Suite, PR, and
+  re-audit pending.
+- Round **4f-4** delivered (five commits a0d35f0-c139769 on
+  `claude/audit-round4f-4`): a lone checkout is not a repository set;
+  excluded repositories reported in the trend row and in `[F]`; an excluded
+  repository answers "unknown" and blocks a committal verdict; only
+  permanent `OSError`s exclude; the confidence write-back keeps the
+  record's spelling. Suite, PR, and re-audit pending.
+- Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
+  `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
+  found while testing — the R2 push's failure classifier grepped a log
+  slice that included the script's own lines, so any store path containing
+  "immutable" would have made every transport failure a corruption abort.
+  Suite, PR, and re-audit pending.
+- Round **4e-5** (five lows from #134) in progress on
+  `claude/audit-round4e-5`.
 
-Blocked on: the monthly spend limit (raise at claude.ai/settings/usage, or
-the weekly window resets 2026-09-10 12:00 Sydney). Everything needed to
-resume is in `2026-09-08-first-audit-artefacts/` (briefs, lens reports,
-round reports); a fresh session re-spawns each round's agent with the
-shared brief, the round brief, and the round report's last paragraph.
+Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
+recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
+(briefs, lens reports, round reports): a fresh session re-spawns each
+round's agent with the shared brief, the round brief, and the round
+report's last paragraph.
 
 Operator actions pending, in order of consequence:
 
