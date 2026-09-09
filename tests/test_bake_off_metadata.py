@@ -1931,7 +1931,7 @@ class TestStrandedResults:
         inner = type("Inner", (), {"type": "succeeded", "message": message})()
         return type("Result", (), {"custom_id": custom_id, "result": inner})()
 
-    def _old_format_state(self, tmp_path: Path):
+    def _old_format_state(self, tmp_path: Path, *, record_manifest: bool = True):
         """A state file whose map lost a superseded batch's entries.
 
         This is what a pre-accumulation top-up left behind: the map covers
@@ -1940,15 +1940,6 @@ class TestStrandedResults:
         """
         out_dir = tmp_path / "out" / "haiku"
         out_dir.mkdir(parents=True)
-        (out_dir / "batch-state.json").write_text(
-            json.dumps({
-                "batch_id": "batch_002",
-                "custom_id_to_session": {
-                    bom.build_custom_id("stranded-2"): "stranded-2",
-                },
-            }),
-            encoding="utf-8",
-        )
         rows = []
         for index in range(3):
             session_id = f"stranded-{index}"
@@ -1957,6 +1948,17 @@ class TestStrandedResults:
             )
             rows.append(fx.manifest_row(session_id, transcript))
         manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        state = {
+            "batch_id": "batch_002",
+            "custom_id_to_session": {
+                bom.build_custom_id("stranded-2"): "stranded-2",
+            },
+        }
+        if record_manifest:
+            state["manifest_path"] = str(manifest)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps(state), encoding="utf-8"
+        )
         return out_dir, manifest
 
     def test_recover_session_id_reads_a_verbatim_custom_id(self):
@@ -2029,6 +2031,74 @@ class TestStrandedResults:
         assert json.loads((out_dir / "stranded-0.json").read_text()) == (
             fx.RESPONSE_OBJECT
         )
+
+    def test_the_remedy_line_splits_and_runs(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """Paste the printed remedy back in and it must repair and retrieve.
+
+        The placeholder used to be ``<manifest>``, which a shell reads as a
+        redirection: pasting the line produced "bash: manifest: No such file
+        or directory" and did nothing. The state records the manifest it was
+        submitted against, so the line now names it.
+        """
+        out_dir, manifest = self._old_format_state(tmp_path)
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        printed = capsys.readouterr().out
+        line = next(
+            line.strip() for line in printed.splitlines()
+            if "--rebuild-map" in line
+        )
+        assert "<" not in line and ">" not in line  # nothing a shell redirects
+        command = shlex.split(line)
+        assert command[2:] == [
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]
+
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        assert bom.main(command[2:]) == 0
+        assert json.loads((out_dir / "stranded-0.json").read_text()) == (
+            fx.RESPONSE_OBJECT
+        )
+
+    def test_the_placeholder_is_paste_safe_without_a_recorded_manifest(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """An older state file records no manifest; the line must still paste."""
+        out_dir, _manifest = self._old_format_state(tmp_path, record_manifest=False)
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        line = next(
+            line.strip() for line in capsys.readouterr().out.splitlines()
+            if "--rebuild-map" in line
+        )
+        command = shlex.split(line)
+        assert command[-3:] == [
+            "--manifest", bom.MANIFEST_PLACEHOLDER, "--rebuild-map"
+        ]
+        assert "<" not in line and ">" not in line
+
+    def test_a_placeholder_manifest_is_refused_not_crashed(self, tmp_path, capsys):
+        """Running the line unedited must fail cleanly, not traceback."""
+        out_dir, _manifest = self._old_format_state(tmp_path, record_manifest=False)
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", bom.MANIFEST_PLACEHOLDER,
+            "--rebuild-map",
+        ]) == 2
 
     def test_rebuild_map_needs_a_manifest(self, tmp_path, capsys):
         out_dir, _manifest = self._old_format_state(tmp_path)

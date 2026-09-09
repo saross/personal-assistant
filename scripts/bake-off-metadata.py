@@ -770,6 +770,28 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
     return len(mapping) - before
 
 
+#: Stand-in for a manifest path the state does not record. Deliberately
+#: free of shell metacharacters: the previous placeholder was ``<manifest>``,
+#: which a shell reads as a redirection, so pasting the remedy line produced
+#: "bash: manifest: No such file or directory" rather than running.
+MANIFEST_PLACEHOLDER = "PATH-TO-MANIFEST"
+
+
+def rebuild_map_command(batch_id: str, out_dir: Path, manifest: str | None) -> str:
+    """Return the pastable command that repairs the map and retrieves again.
+
+    ``manifest`` is the path recorded in ``batch-state.json`` when there is
+    one; otherwise a placeholder the operator replaces.
+    """
+    manifest_arg = (
+        shlex.quote(manifest) if manifest else MANIFEST_PLACEHOLDER
+    )
+    return (
+        f"{haiku_retrieve_command(batch_id, out_dir)} "
+        f"--manifest {manifest_arg} --rebuild-map"
+    )
+
+
 def batch_state_conflict(out_dir: Path, manifest_path: Path) -> str | None:
     """Explain why submitting into ``out_dir`` again would lose money.
 
@@ -1017,8 +1039,7 @@ def haiku_apply(
             "accumulating custom_id map, so a later top-up replaced the "
             "entries for this batch. Restore them from the manifest and "
             "retrieve again:\n"
-            f"  {haiku_retrieve_command(batch_id, out_dir)} "
-            "--manifest <manifest> --rebuild-map"
+            f"  {rebuild_map_command(batch_id, out_dir, state.get('manifest_path'))}"
         )
     report_kept(n_kept, tag="haiku")
 
