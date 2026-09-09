@@ -218,19 +218,39 @@ class TestWritesNothing:
         (tmp_path / "kept.txt").write_text("x", encoding="utf-8")
         assert list(_tree_snapshot(tmp_path)) == [str(tmp_path / "kept.txt")]
 
-    def test_the_coverage_threshold_rejects_a_thin_snapshot(self):
-        """Pin the threshold itself, not only the named files.
-
-        Relaxing `> 100` to `>= 0` leaves the named-file assertions holding
-        the line, so the number could rot unnoticed. This fixes it in place
-        with a snapshot that satisfies every other condition.
-        """
-        thin = {
+    @staticmethod
+    def _snapshot_of_size(n_entries: int) -> dict[str, tuple[bool, int, int]]:
+        """Build a snapshot with exactly ``n_entries``, named dirs included."""
+        snapshot = {
             str(PROJECT_ROOT / "scripts"): (False, 0, 0),
             str(PROJECT_ROOT / "tests"): (False, 0, 0),
         }
+        index = 0
+        while len(snapshot) < n_entries:
+            snapshot[str(PROJECT_ROOT / f"invented-{index}")] = (True, 0, 0)
+            index += 1
+        assert len(snapshot) == n_entries
+        return snapshot
+
+    def test_a_snapshot_at_the_threshold_is_rejected(self):
+        """Fix the threshold in place from below.
+
+        A two-entry fixture only pinned "> 2", so the number could drift to
+        anything below the real tree's size without a test noticing. Exactly
+        100 entries must still be rejected: that is what "> 100" means, and
+        it is what "> 2" would wrongly accept.
+        """
         with pytest.raises(AssertionError, match="implausibly few"):
-            _assert_snapshot_covers_the_repository(thin)
+            _assert_snapshot_covers_the_repository(self._snapshot_of_size(100))
+
+    def test_a_snapshot_just_over_the_threshold_is_accepted(self):
+        """And from above: 101 entries must pass, which "> 100000" would not."""
+        _assert_snapshot_covers_the_repository(self._snapshot_of_size(101))
+
+    def test_a_thin_snapshot_is_rejected(self):
+        """The degenerate case the guard exists for."""
+        with pytest.raises(AssertionError, match="implausibly few"):
+            _assert_snapshot_covers_the_repository(self._snapshot_of_size(2))
 
     def test_the_snapshot_notices_a_new_file(self, tmp_path):
         """Guard the guard: the snapshot must be able to fail."""

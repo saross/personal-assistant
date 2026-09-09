@@ -391,6 +391,16 @@ class TestStaleTemporariesAreSwept:
         assert result == 0
         assert stale.exists()
 
+    def test_the_staleness_threshold_is_the_documented_one(self) -> None:
+        """Pinned as a literal, because every other test ages relative to it.
+
+        Shrinking the constant to 1 second passed the whole file: the
+        "fresh" fixture was written in the same second as the assertion, and
+        the stale fixtures were aged as a multiple of the constant itself,
+        so nothing measured the value (audit round 4c-4, finding 1).
+        """
+        assert normalise.STALE_TEMP_MIN_AGE_SECONDS == 3600
+
     def test_a_recent_temporary_is_left_alone(
         self, tmp_path: Path
     ) -> None:
@@ -398,17 +408,63 @@ class TestStaleTemporariesAreSwept:
 
         An age threshold rather than a comparison against this run's start
         time: a concurrent pass that began a second earlier would fail the
-        start-time test and have its in-flight file swept.
+        start-time test and have its in-flight file swept. Aged a minute --
+        old enough that a shrunken threshold would sweep it, recent enough
+        that the real one must not.
         """
         entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
         fresh = entry / "session.jsonl.gz.tmp"
         fresh.write_bytes(b"another run is mid-write")
+        _age(fresh, seconds=60)
 
         assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
 
         assert fresh.exists(), (
             "a temporary belonging to a concurrent run was swept"
         )
+
+    def test_a_directory_named_tmp_is_not_counted_as_swept(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """rglob matches directories; unlink cannot remove one.
+
+        The IsADirectoryError was caught, but the path had already been
+        counted and printed, so the summary reported "stale-temp=1 errors=0"
+        over a directory that is still sitting there.
+        """
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        directory = entry / "staging.tmp"
+        directory.mkdir()
+        _age(directory, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        captured = capsys.readouterr()
+        assert directory.is_dir(), "a directory was removed by the sweep"
+        assert "stale-temp=0" in captured.out, (
+            "a directory was counted as a swept temporary"
+        )
+        assert "is a directory" in captured.err
+
+    def test_an_unremovable_temporary_is_not_counted_as_swept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A file that could not be removed is an error, not a sweep."""
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        stale = entry / "session.jsonl.gz.tmp"
+        stale.write_bytes(b"partial")
+        _age(stale, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        def refuse(self, missing_ok=False):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        normalise.main(["--root", str(tmp_path), "--apply"])
+
+        captured = capsys.readouterr()
+        assert "stale-temp=0" in captured.out
+        assert "cannot remove" in captured.err
 
     def test_the_sweep_is_counted_in_the_summary(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

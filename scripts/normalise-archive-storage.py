@@ -139,21 +139,35 @@ def sweep_stale_temporaries(root: Path, started_at: float, *, apply: bool
     """
     cutoff = started_at - STALE_TEMP_MIN_AGE_SECONDS
     swept: list[Path] = []
-    for tmp_file in sorted(root.rglob("*.tmp")):
+    for candidate in sorted(root.rglob("*.tmp")):
+        # ``rglob`` matches DIRECTORIES too, and a directory named
+        # ``something.tmp`` is not an abandoned staged write — it is
+        # somebody's working directory. Unlinking one raises
+        # IsADirectoryError, which the handler below caught, but the path
+        # had already been counted and printed as swept: the summary said
+        # "stale-temp=1 errors=0" over a directory that is still there
+        # (audit round 4c-4, finding 2). Report it separately and move on.
+        if candidate.is_dir():
+            print(f"[stale-temp — SKIPPED, is a directory] "
+                  f"{candidate.relative_to(root)}", file=sys.stderr)
+            continue
         try:
-            if tmp_file.stat().st_mtime > cutoff:
+            if candidate.stat().st_mtime > cutoff:
                 continue          # too recent to be abandoned
         except OSError:
             continue
-        swept.append(tmp_file)
-        print(f"[stale-temp{'' if apply else ' — would remove'}] "
-              f"{tmp_file.relative_to(root)}")
         if apply:
             try:
-                tmp_file.unlink()
+                candidate.unlink()
             except OSError as exc:
-                print(f"[ERROR] cannot remove {tmp_file}: {exc}",
+                # Counted only once it is really gone: a path that could
+                # not be removed is an error, not a sweep.
+                print(f"[ERROR] cannot remove {candidate}: {exc}",
                       file=sys.stderr)
+                continue
+        swept.append(candidate)
+        print(f"[stale-temp{'' if apply else ' — would remove'}] "
+              f"{candidate.relative_to(root)}")
     return swept
 
 

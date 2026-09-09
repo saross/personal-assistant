@@ -940,7 +940,9 @@ class TestHaikuApplyBoundary:
         bom.haiku_apply("batch_invented", out_dir)
         written = sorted(p.name for p in out_dir.iterdir())
         assert written == ["batch-state.json"]
-        assert "unknown custom_id" in capsys.readouterr().out
+        printed = capsys.readouterr().out
+        assert "no session mapped to custom_id sess-stranger" in printed
+        assert "ALREADY PAID FOR" in printed
 
     def test_known_custom_id_writes_its_session(self, tmp_path, anthropic_stub):
         out_dir = tmp_path / "haiku"
@@ -1085,8 +1087,8 @@ class TestBatchSubmitIsNotRepeatable:
         """
         return (
             "venv/bin/python3 scripts/bake-off-metadata.py "
-            f"--provider haiku --haiku-apply {batch_id} "
-            f"--out-dir {root_out_dir}"
+            f"--provider haiku --haiku-apply {shlex.quote(batch_id)} "
+            f"--out-dir {shlex.quote(str(root_out_dir))}"
         )
 
     def test_retrieve_command_is_exact(self, tmp_path):
@@ -1124,7 +1126,9 @@ class TestBatchSubmitIsNotRepeatable:
         """
         manifest = _one_session_manifest(tmp_path, "roundtrip-aaaa-1111")
         prompt = _prompt_file(tmp_path)
-        out_dir = tmp_path / "out"
+        # A directory whose name contains a space: unquoted interpolation
+        # splits it into separate arguments and the pasted line exits 2.
+        out_dir = tmp_path / "bake off runs"
         assert bom.main(self._argv(manifest, prompt, out_dir)) == 0
         line = next(
             line for line in capsys.readouterr().out.splitlines()
@@ -1139,6 +1143,10 @@ class TestBatchSubmitIsNotRepeatable:
             self._succeeded(
                 bom.build_custom_id("roundtrip-aaaa-1111"), fx.RESPONSE_BARE
             )
+        ]
+        assert command[2:] == [
+            "--provider", "haiku", "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir),
         ]
         assert bom.main(command[2:]) == 0
         written = out_dir / "haiku" / "roundtrip-aaaa-1111.json"
@@ -1163,24 +1171,41 @@ class TestBatchSubmitIsNotRepeatable:
         ]) == 0
         assert (out_dir / "haiku" / "noargs-aaaa-1111.json").exists()
 
-    def test_a_live_run_still_demands_manifest_and_prompt(self, tmp_path, capsys):
-        """Relaxing the parser must not let a billed run start without them."""
-        code = bom.main([
-            "--provider", "gemini",
-            "--out-dir", str(tmp_path / "out"),
-            "--yes",
-        ])
-        assert code == 2
+    @pytest.mark.parametrize("supplied", ["neither", "manifest", "prompt"])
+    def test_a_live_run_still_demands_manifest_and_prompt(
+        self, tmp_path, capsys, supplied
+    ):
+        """Relaxing the parser must not let a billed run start without them.
+
+        All three shapes are exercised because the fence is an ``and``:
+        with only one of the two supplied, an ``or`` there passes the check
+        and the run crashes further in with an AttributeError on None
+        instead of exiting 2.
+        """
+        argv = ["--provider", "gemini", "--out-dir", str(tmp_path / "out"), "--yes"]
+        if supplied == "manifest":
+            argv += ["--manifest", str(_one_session_manifest(tmp_path))]
+        elif supplied == "prompt":
+            argv += ["--prompt", str(_prompt_file(tmp_path))]
+        assert bom.main(argv) == 2
         assert "requires --manifest and --prompt" in capsys.readouterr().err
 
-    def test_build_rubric_still_demands_manifest_and_prompt(self, tmp_path, capsys):
-        code = bom.main([
+    @pytest.mark.parametrize("supplied", ["neither", "manifest", "prompt"])
+    def test_build_rubric_still_demands_manifest_and_prompt(
+        self, tmp_path, capsys, supplied
+    ):
+        """Same ``and`` fence, same three shapes — see the live-run test."""
+        argv = [
             "--build-rubric",
             "--out-dir", str(tmp_path / "out"),
             "--rubric-in", str(tmp_path / "in.md"),
             "--rubric-out", str(tmp_path / "out.md"),
-        ])
-        assert code == 2
+        ]
+        if supplied == "manifest":
+            argv += ["--manifest", str(_one_session_manifest(tmp_path))]
+        elif supplied == "prompt":
+            argv += ["--prompt", str(_prompt_file(tmp_path))]
+        assert bom.main(argv) == 2
         assert "requires --manifest and --prompt" in capsys.readouterr().err
 
     def test_the_refusal_repeats_that_exact_line(
@@ -1290,6 +1315,13 @@ class TestBatchSubmitIsNotRepeatable:
         state = json.loads((provider_dir / "batch-state.json").read_text())
         assert state["batch_id"] == "batch_002"
         assert state["superseded_batches"] == ["batch_001"]
+        # n_requests describes THIS batch, not the cumulative map. Since the
+        # map now accumulates across submissions (so a superseded batch stays
+        # retrievable), len(custom_id_to_session) is 3 here while the batch
+        # actually submitted carried 1; reporting the map size would overstate
+        # what the top-up cost.
+        assert state["n_requests"] == 1
+        assert len(state["custom_id_to_session"]) == 3
 
     def test_the_superseded_batch_is_still_retrievable(
         self, tmp_path, capsys, submit_stub
@@ -1863,3 +1895,166 @@ class TestEmptyContentBranchCounts:
         assert json.loads((out_dir / "empty-session.json").read_text()) == (
             fx.RESPONSE_OBJECT
         )
+
+
+class TestStrandedResults:
+    """An unmatched result is money already spent; say so, and offer a fix."""
+
+    @pytest.fixture
+    def anthropic_stub(self, monkeypatch):
+        """Fake ``anthropic`` returning whatever results a test appends."""
+        results: list = []
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return list(results)
+
+        class FakeAnthropic:
+            def __init__(self, *args, **kwargs):
+                self.messages = type("Messages", (), {"batches": FakeBatches()})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = FakeAnthropic
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return results
+
+    @staticmethod
+    def _succeeded(custom_id: str, text: str):
+        block = type("Block", (), {"type": "text", "text": text})()
+        message = type("Message", (), {"content": [block]})()
+        inner = type("Inner", (), {"type": "succeeded", "message": message})()
+        return type("Result", (), {"custom_id": custom_id, "result": inner})()
+
+    def _old_format_state(self, tmp_path: Path):
+        """A state file whose map lost a superseded batch's entries.
+
+        This is what a pre-accumulation top-up left behind: the map covers
+        only the sessions of the LAST submission, so retrieving the earlier
+        batch finds results it cannot place.
+        """
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "custom_id_to_session": {
+                    bom.build_custom_id("stranded-2"): "stranded-2",
+                },
+            }),
+            encoding="utf-8",
+        )
+        rows = []
+        for index in range(3):
+            session_id = f"stranded-{index}"
+            transcript = fx.write_session_transcript(
+                tmp_path / "transcripts" / f"{session_id}.jsonl", n_records=6
+            )
+            rows.append(fx.manifest_row(session_id, transcript))
+        manifest = fx.write_manifest(tmp_path / "manifest.json", rows)
+        return out_dir, manifest
+
+    def test_recover_session_id_reads_a_verbatim_custom_id(self):
+        assert bom.recover_session_id_from_custom_id("sess-abc-123") == "abc-123"
+        assert bom.recover_session_id_from_custom_id("sess-" + "a" * 40) is None
+        assert bom.recover_session_id_from_custom_id("nonsense") is None
+
+    def test_the_diagnostic_names_the_session_and_the_remedy(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """The finding: a bare custom_id, no session, no remedy, no count."""
+        out_dir, _manifest = self._old_format_state(tmp_path)
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_001", out_dir)
+        printed = capsys.readouterr().out
+        assert "probably session stranded-0" in printed
+        assert "ALREADY PAID FOR" in printed
+        assert "--rebuild-map" in printed
+        # And it is counted, rather than vanishing from both tallies.
+        assert "skipped 0 already-complete and 1 unmapped result(s)" in printed
+        assert not (out_dir / "stranded-0.json").exists()
+
+    def test_already_complete_skips_are_counted_too(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        out_dir, _manifest = self._old_format_state(tmp_path)
+        (out_dir / "stranded-2.json").write_text(
+            fx.RESPONSE_BARE + "\n", encoding="utf-8"
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-2"), fx.RESPONSE_BARE)
+        )
+        bom.haiku_apply("batch_002", out_dir)
+        assert "skipped 1 already-complete and 0 unmapped result(s)" in (
+            capsys.readouterr().out
+        )
+
+    def test_rebuild_map_restores_the_entries(self, tmp_path, capsys):
+        out_dir, manifest = self._old_format_state(tmp_path)
+        added = bom.rebuild_custom_id_map(out_dir, manifest)
+        assert added == 2
+        state = json.loads((out_dir / "batch-state.json").read_text())
+        assert set(state["custom_id_to_session"].values()) == {
+            "stranded-0", "stranded-1", "stranded-2",
+        }
+        # The existing entry is untouched: it came from a real submission.
+        assert state["custom_id_to_session"][bom.build_custom_id("stranded-2")] == (
+            "stranded-2"
+        )
+
+    def test_the_remedy_actually_recovers_the_result(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """Run the suggested command and the stranded result lands."""
+        out_dir, manifest = self._old_format_state(tmp_path)
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("stranded-0"), fx.RESPONSE_BARE)
+        )
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert "restored 2 custom_id mapping(s)" in printed
+        assert json.loads((out_dir / "stranded-0.json").read_text()) == (
+            fx.RESPONSE_OBJECT
+        )
+
+    def test_rebuild_map_needs_a_manifest(self, tmp_path, capsys):
+        out_dir, _manifest = self._old_format_state(tmp_path)
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--rebuild-map",
+        ]) == 2
+        assert "--rebuild-map needs --manifest" in capsys.readouterr().err
+
+    def test_rebuild_map_needs_haiku_apply(self, tmp_path, capsys):
+        out_dir, manifest = self._old_format_state(tmp_path)
+        assert bom.main([
+            "--provider", "haiku",
+            "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(out_dir.parent),
+            "--rebuild-map", "--dry-run",
+        ]) == 2
+        assert "use it with --haiku-apply" in capsys.readouterr().err
+
+    def test_rebuild_map_refuses_without_a_state_file(self, tmp_path, capsys):
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [])
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(tmp_path / "empty"),
+            "--manifest", str(manifest),
+            "--rebuild-map",
+        ]) == 2
+        assert "nothing to rebuild" in capsys.readouterr().err

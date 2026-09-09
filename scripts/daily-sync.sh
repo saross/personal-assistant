@@ -1772,14 +1772,34 @@ status_records() {
         [[ ${#record} -gt 3 ]] || continue
         code="${record:0:2}"
         path="${record:3}"
-        printf '%s\t%s\n' "$code" "$path"
+        printf '%s\t%s\n' "$code" "$(encode_record_path "$path")"
         # A rename or copy carries its ORIGINAL path in the next field.
         if [[ "$code" == *[RC]* ]]; then
             IFS= read -r -d '' path || break
-            printf '%s\t%s\n' "$code" "$path"
+            printf '%s\t%s\n' "$code" "$(encode_record_path "$path")"
         fi
     done < <(git -C "$repo" status --porcelain=v1 -z 2>/dev/null || true)
     return 0
+}
+
+encode_record_path() {
+    # encode_record_path <path>
+    # A path with its newlines escaped, so one path is always one record.
+    #
+    # audit 5 (sixth re-audit): these records are newline-joined into a
+    # shell variable, and a shell variable cannot hold a NUL — so a path
+    # containing a newline used to become TWO records, and the fragment
+    # after the break could impersonate a real path. The reverse-apply
+    # conjunction still stood between that and a dropped stash, but a
+    # guard should not be relying on the next guard to catch its own
+    # mis-parse.
+    #
+    # Backslash goes first, or `notes/a\nb` (a literal backslash-n) and
+    # `notes/a<newline>b` would encode to the same thing. Both sides of
+    # every comparison run through here, so nothing is ever decoded.
+    local value="$1"
+    value="${value//\\/\\\\}"
+    printf '%s' "${value//$'\n'/\\n}"
 }
 
 status_lines_for() {
@@ -1791,13 +1811,17 @@ status_lines_for() {
     # matched reads as "not mentioned" — the conservative direction,
     # because an entry whose paths cannot be matched is never called
     # applied.
-    local text="$1" line entry path
+    local text="$1" line entry path wanted
     shift
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         entry="${line#*$'\t'}"
         for path in "$@"; do
-            if [[ "$entry" == "$path" ]]; then
+            # The record's path is encoded (audit 5), so the query is too
+            # — the comparison is between two encodings, never between an
+            # encoding and a raw path.
+            wanted="$(encode_record_path "$path")"
+            if [[ "$entry" == "$wanted" ]]; then
                 printf '%s\n' "$line"
                 break
             fi
@@ -2695,6 +2719,7 @@ abort_on_published_shrink() {
     local context="$1" lines_before lines_after shrink_report
     local commit parent before after offender="" offender_reason=""
     local parents parents_with_corpus shortening=0 unjudgeable_merge=""
+    local shrink_fully_owned=0
     local target="memories/memories.jsonl"
     [[ "$DETECT_JSONL_SHRINK" == "true" ]] || return 0
     # audit M4 (second re-audit): a MISSING REF IS NOT A PASS. Returning
@@ -2763,6 +2788,12 @@ abort_on_published_shrink() {
             # because the merge was met first and nothing after it was
             # ever looked at. An unjudgeable merge only decides the
             # verdict when nothing else can.
+            # audit 1 (sixth re-audit): SAY SO, every time. The
+            # trailered-allow below used to return before the promotion
+            # further down, so a merge nobody could measure passed
+            # unnamed and unlogged whenever a trailered commit happened
+            # to sit beside it. Recording is not fatal; being silent is.
+            log "corpus check: ${commit:0:8} is a merge and none of its parents holds $target — this guard cannot measure what it kept"
             [[ -n "$unjudgeable_merge" ]] || unjudgeable_merge="$commit"
             continue
         fi
@@ -2775,21 +2806,41 @@ abort_on_published_shrink() {
         shortening=$((shortening + 1))
         if has_bulk_rewrite_trailer \
                 "$(git log -1 --format=%B "$commit" 2>/dev/null || true)"; then
+            # audit 1 (sixth re-audit): does this one commit account for
+            # the WHOLE drop the outer comparison saw? Only then can an
+            # unmeasurable merge beside it be dismissed — otherwise the
+            # merge may have taken records this commit never touched, and
+            # its trailer would be covering for something it never said.
+            if [[ "$before" -ge "$lines_before" ]] \
+                    && [[ "$after" -le "$lines_after" ]]; then
+                shrink_fully_owned=1
+            fi
             continue
         fi
         offender="$commit"
         offender_reason="shortened it without a 'Rewrite-Class: bulk' trailer"
         break
     done < <(git rev-list --reverse origin/main..HEAD 2>/dev/null || true)
+    # audit 1 (sixth re-audit): the UNMEASURABLE MERGE IS CHECKED FIRST.
+    # The trailered-allow used to return before this, so a merge nobody
+    # could measure was dismissed by any trailered commit that happened
+    # to sit beside it — a trailer on one commit vouching for another
+    # that never said anything.
+    #
+    # The one thing that dismisses it is a trailered commit whose own
+    # transition SPANS the whole observed drop: its parent held at least
+    # what origin holds and it kept at most what HEAD keeps, so there is
+    # no room left for the merge to have taken anything. Anything short
+    # of that and the merge is named, because "some of this shrink is
+    # accounted for" is not the same as "all of it is".
+    if [[ -z "$offender" ]] && [[ -n "$unjudgeable_merge" ]] \
+            && [[ $shrink_fully_owned -eq 0 ]]; then
+        offender="$unjudgeable_merge"
+        offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
+    fi
     if [[ -z "$offender" ]] && [[ $shortening -gt 0 ]]; then
         log "corpus is shorter than origin/main, but every commit that shortened it carries a Rewrite-Class: bulk trailer — allowed"
         return 0
-    fi
-    if [[ -z "$offender" ]] && [[ -n "$unjudgeable_merge" ]]; then
-        # Nothing else in the range accounts for the shrink, and this one
-        # commit cannot be measured against anything.
-        offender="$unjudgeable_merge"
-        offender_reason="is a merge and none of its parents holds the corpus, so this guard cannot tell what it kept"
     fi
     if [[ -z "$offender" ]]; then
         # audit M1 (fourth re-audit): FAIL CLOSED. The outer comparison

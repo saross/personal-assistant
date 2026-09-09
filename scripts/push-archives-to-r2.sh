@@ -227,49 +227,75 @@ RCLONE_FLAGS=(
     --log-level INFO
 )
 
+# Classify a failed transfer and exit. Shared by the dry-run and real
+# branches, so a dry run cannot report a failure differently from the run it
+# is previewing (audit round 4c-4, finding 6).
+#
+# $LOG_FILE is append-only and shared with every previous run, so grepping
+# the WHOLE file latches: the ABORTED message this script writes itself
+# contains the word "--immutable", so one genuine abort made every later
+# transport failure exit 3 for ever (round 4c-3, finding M-1). Only the
+# bytes this run appended are examined.
+classify_failure_and_exit() {
+    local rc="$1" bytes_before="$2" label="$3" this_run_output
+    # rclone's OWN output only. This script's log lines are in the same file
+    # and embed the canonical and destination paths, so a store whose path
+    # happens to contain "immutable" would make every transport failure
+    # report a corruption abort. Our lines all carry the `r2-push:` prefix
+    # the log helper writes, so they are dropped before the match.
+    this_run_output="$(tail -c "+$((bytes_before + 1))" "$LOG_FILE" \
+        2>/dev/null | grep -v '^\[[0-9-]* [0-9:]*\] r2-push: ' || true)"
+
+    # Two very different failures share rclone's non-zero exit, and they want
+    # opposite responses (round 4c-2, finding 12). A network or auth failure
+    # is transient: the next run retries and nothing is wrong with the
+    # archive. An --immutable refusal means a canonical object CHANGED,
+    # which in an append-only archive is a corruption signal that a retry
+    # cannot fix and that a human has to look at.
+    if printf '%s' "$this_run_output" | grep -qi "immutable"; then
+        log "r2-push: ABORTED — rclone refused to modify an object already" \
+            "in R2 (--immutable). The archive is append-only, so a" \
+            "canonical file whose size or modtime changed is a corruption" \
+            "signal, not an update. Investigate before re-running; see" \
+            "$LOG_FILE"
+        exit 3
+    fi
+    log "r2-push: $label exited non-zero (rc=$rc; see $LOG_FILE) —" \
+        "transport or auth failure, safe to retry"
+    exit 2
+}
+
+# Where this run's output starts, recorded immediately before the transfer.
+log_bytes_before=0
+if [[ -f "$LOG_FILE" ]]; then
+    log_bytes_before="$(wc -c < "$LOG_FILE")"
+fi
+
 if [[ $DRY_RUN -eq 1 ]]; then
     log "r2-push: DRY-RUN copy $CANON/ → $DEST/"
-    "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" --dry-run "$CANON/" "$DEST/"
+    # `set -e` would have killed the script here on any rclone failure,
+    # exiting with rclone's raw status — and rclone's exit 1 would then read
+    # as this script's "precondition not met, skipped" (round 4c-4, L-6).
+    rc=0
+    "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" --dry-run "$CANON/" "$DEST/" \
+        || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        classify_failure_and_exit "$rc" "$log_bytes_before" "dry-run rclone"
+    fi
     log "r2-push: dry-run complete"
     exit 0
 fi
 
 log "r2-push: copy $CANON/ → $DEST/ (additive, no delete, no overwrite)"
 
-# Where this run's output starts. $LOG_FILE is append-only and shared with
-# every previous run, so classifying the failure below by grepping the WHOLE
-# file latches: the ABORTED message this script writes itself contains the
-# word "--immutable", so one genuine abort made every later transport
-# failure exit 3 for ever, and the operator could never get back to a clean
-# "safe to retry" (audit round 4c-3, finding M-1). Only the bytes this run
-# appends are examined.
-log_bytes_before=0
-if [[ -f "$LOG_FILE" ]]; then
-    log_bytes_before="$(wc -c < "$LOG_FILE")"
-fi
-
-if "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" "$CANON/" "$DEST/"; then
+# `rc=$?` AFTER the `fi` reads the status of the `if` statement, which is
+# zero whenever its else-branch ran — so the transport message reported
+# "exited non-zero (rc=0)" every time (round 4c-4, finding 5). Captured
+# inside the branch instead.
+rc=0
+"$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" "$CANON/" "$DEST/" || rc=$?
+if [[ $rc -eq 0 ]]; then
     log "r2-push: complete"
     exit 0
 fi
-rc=$?
-
-# Two very different failures share rclone's non-zero exit, and they want
-# opposite responses (audit round 4c-2, finding 12). A network or auth
-# failure is transient: the next run retries and nothing is wrong with the
-# archive. An --immutable refusal means a canonical object CHANGED, which in
-# an append-only archive is a corruption signal that a retry cannot fix and
-# that a human has to look at. Exit 3 for the second, so a cron wrapper can
-# tell them apart without parsing the log.
-this_run_output="$(tail -c "+$((log_bytes_before + 1))" "$LOG_FILE" \
-    2>/dev/null || true)"
-if printf '%s' "$this_run_output" | grep -qi "immutable"; then
-    log "r2-push: ABORTED — rclone refused to modify an object already in" \
-        "R2 (--immutable). The archive is append-only, so a canonical file" \
-        "whose size or modtime changed is a corruption signal, not an" \
-        "update. Investigate before re-running; see $LOG_FILE"
-    exit 3
-fi
-log "r2-push: rclone exited non-zero (rc=$rc; see $LOG_FILE) — transport or" \
-    "auth failure, safe to retry"
-exit 2
+classify_failure_and_exit "$rc" "$log_bytes_before" "rclone"

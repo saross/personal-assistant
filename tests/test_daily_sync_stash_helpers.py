@@ -17,6 +17,7 @@ extraction below would break loudly on.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -589,6 +590,7 @@ class TestPreviouslyRecordedStashes:
 _CLASSIFY_FUNCTIONS = (
     "unmerged_paths",
     "status_records",
+    "encode_record_path",
     "snapshot_before_apply",
     "classify_apply_failure",
     "stash_tracked_half_landed",
@@ -1305,7 +1307,7 @@ class TestStashTrackedHalfLanded:
     asked to land."""
 
     _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
-                  "status_records")
+                  "status_records", "encode_record_path")
 
     def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
         """Run the predicate over two recorded porcelain snapshots."""
@@ -1788,7 +1790,7 @@ class TestTrackedHalfEvidenceIsTheHunks:
     having changed."""
 
     _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
-                  "status_records")
+                  "status_records", "encode_record_path")
 
     def _ask(self, repo: Path, sha: str, before: str, after: str) -> str:
         """Run the predicate over two recorded porcelain snapshots."""
@@ -2375,7 +2377,7 @@ class TestRenameOnlyStash:
     the source's deletion."""
 
     _FUNCTIONS = ("stash_tracked_half_landed", "status_lines_for",
-                  "status_records")
+                  "status_records", "encode_record_path")
 
     def _renaming_entry(self, tmp_path: Path) -> tuple[Path, str]:
         """A repo whose stash is a pure rename."""
@@ -2543,55 +2545,119 @@ class TestMergeWithNoCorpusInAnyParent:
         assert "none of its parents holds the corpus" in written, written
 
 
+#: The functions that are allowed to run a quiet grep, and the reason
+#: each is safe: none of them has a producer on the far side of a pipe.
+#: Asserted as a SET rather than a count (audit 3, sixth re-audit): a
+#: decorative fifth site would restore vacuity to a count, and a correct
+#: refactor that moves one would fail it for no reason.
+_QUIET_GREP_SITES = {
+    "render_sync_gate",              # gate supersession, here-string
+    "previously_recorded_stashes",   # sidecar path matching, here-string
+    "has_bulk_rewrite_trailer",      # the trailer, here-string
+}
+
+#: `grep -q`, `grep -Fqx`, `grep --quiet` — every spelling of "tell me
+#: yes or no and stop reading" (audit 2, sixth re-audit).
+_QUIET_GREP = re.compile(r"\bgrep\s+(?:-[A-Za-z]*q|--quiet)")
+
+
+def _script_statements() -> list[tuple[int, str, str]]:
+    """
+    The script as `(line number, enclosing function, statement)` triples.
+
+    Continuation lines and lines ending in a pipe are joined, so a
+    pipeline written across several lines is one statement — the shape
+    that walked through the previous line-at-a-time scan. Heredoc bodies
+    are skipped entirely: the embedded Python in this script is not shell
+    and must not be linted as though it were. A trailing inline comment
+    is dropped, so prose about the rule cannot satisfy or violate it.
+    """
+    lines = DAILY_SYNC.read_text(encoding="utf-8").splitlines()
+    statements: list[tuple[int, str, str]] = []
+    function = ""
+    heredoc = ""
+    pending = ""
+    pending_at = 0
+    for number, raw in enumerate(lines, start=1):
+        if heredoc:
+            if raw.strip() == heredoc:
+                heredoc = ""
+            continue
+        opener = re.search(r"<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?\s*$", raw)
+        if opener:
+            heredoc = opener.group(1)
+        name = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", raw)
+        if name:
+            function = name.group(1)
+        elif raw == "}":
+            function = ""
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            continue
+        # A trailing comment on a code line: drop it, but only when the
+        # `#` is not inside a quoted string.
+        if " #" in stripped and stripped.count("'") % 2 == 0 \
+                and stripped.count('"') % 2 == 0:
+            head, _, tail = stripped.partition(" #")
+            if not re.search(r"[\"\']", tail):
+                stripped = head.strip()
+        if not stripped:
+            continue
+        if not pending:
+            pending_at = number
+        pending += (" " if pending else "") + stripped
+        if stripped.endswith("\\") or stripped.endswith("|"):
+            pending = pending.rstrip("\\").rstrip()
+            continue
+        statements.append((pending_at, function, pending))
+        pending = ""
+    if pending:
+        statements.append((pending_at, function, pending))
+    return statements
+
+
 class TestGuardsDoNotPipeIntoGrepQ:
-    """`grep -q` exits on its first match; the upstream then dies of
+    """A quiet grep exits on its first match; the upstream then dies of
     SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. Any
     match on the far side of a pipe can therefore read as its opposite --
     a real trailer as "no trailer", a binary path as "no binary paths" --
     on a race decided by how much the upstream had written."""
 
-    def test_no_grep_q_sits_on_the_far_side_of_a_pipe(self) -> None:
-        """Kills DS-L1: the previous form of this test read the bodies of
-        two FUNCTIONS while the defect lived in their CALLERS, so putting
-        the old pipe shape back at either call site passed everything.
+    def test_no_quiet_grep_sits_on_the_far_side_of_a_pipe(self) -> None:
+        """Kills DS-item-2: a line-at-a-time scan.
 
-        The whole file is held to the rule now. There is no allow-list:
-        every `grep -q` here takes a here-string or a `$( )`, and the
-        four bounded survivors -- the gate-supersession key match, the
-        two sidecar path matches, and the cc-archives mount probes --
-        were converted rather than excused, because "bounded today" is
-        not a property anyone re-checks.
+        The previous form asked whether ONE line held both a pipe and a
+        `grep -q`, so writing the pipe as a trailing operator --
+        `printf ... |` then `grep -qE ...` on the next line -- put the
+        push-gate defect back with the suite green. It also matched the
+        literal `grep -q`, so `grep -Fqx` and `grep --quiet` walked past
+        it.
         """
         offenders = []
-        for number, line in enumerate(
-            DAILY_SYNC.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue          # prose about the rule is not the rule
-            if "grep -q" in stripped and "|" in stripped.split("grep -q")[0]:
-                offenders.append(f"{number}: {stripped}")
+        for number, _function, statement in _script_statements():
+            match = _QUIET_GREP.search(statement)
+            if match and "|" in statement[: match.start()]:
+                offenders.append(f"{number}: {statement}")
         assert not offenders, (
-            "these pipe into `grep -q`, whose match reads as a failure "
+            "these pipe into a quiet grep, whose match reads as a failure "
             "under `set -o pipefail`:\n" + "\n".join(offenders)
         )
 
-    def test_the_rule_is_being_checked_against_real_greps(self) -> None:
-        """The scan above passes trivially if the greps ever go away, so
-        say out loud that they are still there and still matter.
+    def test_the_quiet_greps_are_exactly_where_they_are_expected(self) -> None:
+        """Audit 3: the SET, not a count.
 
-        Counted the same way the scan counts -- CODE lines only. Counting
-        the whole file would include the prose about the rule, which is
-        exactly what makes the check vacuous while looking healthy.
+        A count is satisfied by a decorative fifth site and broken by a
+        correct refactor. Naming the functions says what is actually
+        being protected, and a new one has to be added here deliberately.
         """
-        greps = [
-            line.strip()
-            for line in DAILY_SYNC.read_text(encoding="utf-8").splitlines()
-            if "grep -q" in line and not line.strip().startswith("#")
-        ]
-        assert len(greps) >= 4, (
-            "the guards this rule protects no longer grep; the scan above "
-            "is now checking nothing: " + str(greps)
+        found = {
+            function
+            for _number, function, statement in _script_statements()
+            if _QUIET_GREP.search(statement)
+        }
+        assert found == _QUIET_GREP_SITES, (
+            f"the quiet greps have moved: found {sorted(found)}, "
+            f"expected {sorted(_QUIET_GREP_SITES)}"
         )
 
 
@@ -2754,7 +2820,7 @@ class TestStatusRecordsAreRaw:
     compared equal and such a path was silently unmeasurable."""
 
     _FUNCTIONS = ("status_records", "status_lines_for",
-                  "stash_tracked_half_landed")
+                  "stash_tracked_half_landed", "encode_record_path")
 
     def test_a_path_with_a_space_is_reported_unquoted(
         self, tmp_path: Path
@@ -2967,3 +3033,321 @@ class TestBinaryGateLineIsClassified:
             "a binary line cannot retire an earlier REFUSED line about the "
             "same entry"
         )
+
+
+class TestUnjudgeableMergeBesideATrailer:
+    """A trailer on one commit must not vouch for another commit that
+    never said anything. The merge is dismissed only when a trailered
+    commit's own transition spans the WHOLE observed drop."""
+
+    def _repo(self, tmp_path: Path, name: str, records: int) -> Path:
+        """A repo whose published corpus holds ``records`` lines."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main",
+             _git("rev-parse", "HEAD", cwd=repo).stdout.strip(), cwd=repo)
+        return repo
+
+    def _merge_of_two_strangers(self, repo: Path, records: int) -> str:
+        """A merge of two parentless corpus-less commits, holding
+        ``records`` corpus lines of its own."""
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        one = _git("commit-tree", empty, "-m", "side one", cwd=repo).stdout.strip()
+        two = _git("commit-tree", empty, "-m", "side two", cwd=repo).stdout.strip()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git("commit-tree", tree, "-p", one, "-p", two, "-m",
+                     "Merge two strangers", cwd=repo).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        return merge
+
+    def _archive(self, repo: Path, records: int) -> None:
+        """A trailered bulk rewrite down to ``records`` lines."""
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "kept{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+    def _guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+
+    def test_a_trailer_that_owns_only_part_of_the_shrink_does_not_excuse_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills the ordering defect: returning `allowed` before the
+        unjudgeable merge is ever promoted.
+
+        origin holds 5. The merge introduces a corpus of 4 -- one record
+        gone, unmeasurably, because neither of its parents held one -- and
+        a trailered archive commit then takes 4 to 2. The trailer accounts
+        for that second drop and says nothing about the first.
+        """
+        repo = self._repo(tmp_path, "part-owner", 5)
+        logs = tmp_path / "logs-part"
+        logs.mkdir()
+        merge = self._merge_of_two_strangers(repo, 4)
+        self._archive(repo, 2)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+        assert merge in written, written
+
+    def test_a_trailer_that_owns_the_whole_shrink_still_publishes(
+        self, tmp_path: Path
+    ) -> None:
+        """The other side. The merge restores the corpus in full, so
+        origin's count and the archive commit's own parent count are the
+        same, and its result is what HEAD holds -- there is no room left
+        for the merge to have taken anything.
+        """
+        repo = self._repo(tmp_path, "whole-owner", 5)
+        logs = tmp_path / "logs-whole"
+        logs.mkdir()
+        self._merge_of_two_strangers(repo, 5)
+        self._archive(repo, 1)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+    def test_every_unmeasurable_merge_is_recorded_even_when_allowed(
+        self, tmp_path: Path
+    ) -> None:
+        """Recording is not fatal; being silent is. A run that publishes
+        must still leave a trace that something in its range could not be
+        measured."""
+        repo = self._repo(tmp_path, "recorded", 5)
+        logs = tmp_path / "logs-recorded"
+        logs.mkdir()
+        merge = self._merge_of_two_strangers(repo, 5)
+        self._archive(repo, 1)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert merge[:8] in result.stderr, (
+            "an unmeasurable merge passed without a word: " + result.stderr
+        )
+        assert "cannot measure what it kept" in result.stderr, result.stderr
+
+
+class TestRecordPathsSurviveNewlines:
+    """These records are newline-joined into a shell variable, and a shell
+    variable cannot hold a NUL -- so the separator has to be escaped
+    rather than chosen."""
+
+    _FUNCTIONS = ("status_records", "status_lines_for", "encode_record_path")
+
+    def test_a_path_with_a_newline_stays_one_record(self, tmp_path: Path) -> None:
+        """Kills DS-item-5: emitting the raw path.
+
+        A newline in a path used to split one record into two, and the
+        fragment after the break could be matched as though it were a
+        path of its own.
+        """
+        repo = tmp_path / "newline-path"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        awkward = "notes/two\nlines.md"
+        (repo / "notes").mkdir()
+        (repo / awkward).write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / awkward).write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert result.returncode == 0, result.stderr
+        rows = result.stdout.splitlines()
+        assert len(rows) == 1, ("a path with a newline split into several "
+                               f"records: {rows}")
+        assert rows[0] == " M\tnotes/two\\nlines.md", repr(rows[0])
+
+    def test_a_fragment_cannot_impersonate_a_path(self, tmp_path: Path) -> None:
+        """The consequence: the tail of a split path must not answer to a
+        query for a real one."""
+        repo = tmp_path / "impersonate"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        # The tail of this path is exactly the name of a real file.
+        (repo / "notes" / "decoy\nlines.md").write_text("seed\n", encoding="utf-8")
+        (repo / "lines.md").write_text("a real file, untouched\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / "notes" / "decoy\nlines.md").write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'records="$(status_records "{repo}")"\n'
+            'status_lines_for "$records" "lines.md"\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "", (
+            "the tail of a split path answered for a file nothing touched: "
+            + repr(result.stdout)
+        )
+
+    def test_a_literal_backslash_n_is_not_a_newline(self, tmp_path: Path) -> None:
+        """Backslash is escaped first, or `a\\nb` and a real newline would
+        encode to the same record and match each other."""
+        result = _run_shell(
+            'encode_record_path "$PA_TEST_LITERAL"\n'
+            'printf "|"\n'
+            'encode_record_path "$PA_TEST_NEWLINE"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_LITERAL": "notes/a\\nb.md", "PA_TEST_NEWLINE": "notes/a\nb.md"},
+        )
+        assert result.returncode == 0, result.stderr
+        literal, newline = result.stdout.split("|")
+        assert literal != newline, (
+            "a literal backslash-n and a real newline encode alike: "
+            + repr(result.stdout)
+        )
+
+
+class TestRenderSyncGateSupersession:
+    """The gate keys are exercised elsewhere in isolation; nothing drove
+    render_sync_gate itself, so swapping which side gets gate_claim_keys
+    and which gets gate_subject_keys reintroduced the tenth re-audit's M2
+    with the suite green."""
+
+    _FUNCTIONS = (
+        "render_sync_gate",
+        "gate_line_class",
+        "gate_sha_keys",
+        "gate_claim_keys",
+        "gate_subject_keys",
+    )
+
+    #: What `fail` leaves behind: a free-text line that NAMES a stash but
+    #: makes no classifiable claim about it.
+    _STALE_OTHER = (
+        "daily-sync FAILED and will keep failing until this is resolved: "
+        "parent repo: applying stash 0badc0de was refused"
+    )
+    _BINARY = (
+        "daily-sync STOPPED: parent-repo stash 0badc0de stash@{0} On main: "
+        "daily-sync parent holds BINARY content, so this run could NOT tell "
+        "whether its tracked changes reached the tree."
+    )
+    _BLOCKED = (
+        "daily-sync could not apply 1 of its own stash(es) because the index "
+        "was ALREADY unmerged: data submodule: 0badc0de stash@{0} On main: "
+        "daily-sync branch-switch."
+    )
+    _LISTING = (
+        "daily-sync STOPPED: /repo (data submodule) has unmerged paths from "
+        "an operation this run cannot identify — UU notes/a.md. Do NOT touch "
+        "any stash entry; the entries on the stack right now are: "
+        "0badc0de stash@{0} On main: daily-sync branch-switch"
+    )
+
+    def _render(self, tmp_path: Path, previous: str, ours: list[str]) -> list[str]:
+        """Run render_sync_gate over a seeded gate file and read it back."""
+        gate = tmp_path / f"gate-{abs(hash((previous, tuple(ours)))) % 10**8}"
+        gate.write_text(f"1\n{previous}\n", encoding="utf-8")
+        body = "\n".join(
+            [
+                f'SYNC_GATE="{gate}"',
+                "DRY_RUN=0",
+                "sync_run_completed=0",
+                "sync_gate_details=()",
+            ]
+            + [f'sync_gate_details+=("{line}")' for line in ours]
+            + ["render_sync_gate"]
+        )
+        result = _run_shell(body, self._FUNCTIONS)
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = gate.read_text(encoding="utf-8").splitlines()
+        assert int(lines[0]) == len(lines) - 1, lines
+        return lines[1:]
+
+    def test_a_binary_line_retires_a_stale_line_about_the_same_stash(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-item-4: swapping gate_claim_keys and gate_subject_keys.
+
+        This run has a classifiable claim about 0badc0de; the previous
+        run left an unclassifiable line that merely names it. The claim
+        wins. Swap the two calls and the previous line -- read as a claim,
+        which it is not -- keeps a key of its own and survives, so two
+        descriptions of one entry stand side by side again.
+        """
+        rendered = self._render(tmp_path, self._STALE_OTHER, [self._BINARY])
+        assert self._BINARY in rendered, rendered
+        assert self._STALE_OTHER not in rendered, (
+            "a stale free-text line about the same stash outlived this "
+            "run's word on it: " + str(rendered)
+        )
+
+    def test_a_listing_line_never_erases_a_specific_claim(
+        self, tmp_path: Path
+    ) -> None:
+        """The other direction, and the tenth re-audit's finding: a run
+        that can attribute nothing LISTS every entry on the stack, and
+        that listing must not retire what an earlier run knew about one
+        of them."""
+        rendered = self._render(tmp_path, self._BLOCKED, [self._LISTING])
+        assert self._BLOCKED in rendered, (
+            "a line that could attribute nothing erased a specific claim: "
+            + str(rendered)
+        )
+        assert self._LISTING in rendered, rendered
+
+    def test_a_completed_run_replaces_rather_than_appends(
+        self, tmp_path: Path
+    ) -> None:
+        """And the surrounding contract the supersession sits inside: a
+        run that finished everything speaks for the current state."""
+        gate = tmp_path / "gate-completed"
+        gate.write_text(f"1\n{self._BLOCKED}\n", encoding="utf-8")
+        result = _run_shell(
+            "\n".join(
+                [
+                    f'SYNC_GATE="{gate}"',
+                    "DRY_RUN=0",
+                    "sync_run_completed=1",
+                    "sync_gate_details=()",
+                    f'sync_gate_details+=("{self._BINARY}")',
+                    "render_sync_gate",
+                ]
+            ),
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = gate.read_text(encoding="utf-8").splitlines()
+        assert lines == ["1", self._BINARY], lines
