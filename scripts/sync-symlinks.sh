@@ -302,8 +302,17 @@ SKIP_COMPOSE=0
 #
 # In a linked worktree $PA_DIR/.git is a FILE holding a "gitdir:" pointer;
 # in an ordinary clone it is a directory.
+#
+# Round 4d-5 (L-b): "is .git a file" is not quite the question. A
+# SUBMODULE checkout of this repository also has a .git file, and it is
+# not a worktree — its data/ is its own to initialise. The pointer says
+# which is which: git writes ".git/worktrees/<name>" for a linked
+# worktree and ".git/modules/<name>" for a submodule. Matching on that is
+# exact, and needs no git binary, which matters because this step runs
+# before anything has verified git works.
 IS_WORKTREE=0
-if [ -f "$PA_DIR/.git" ]; then
+if [ -f "$PA_DIR/.git" ] &&
+   grep -qE '^gitdir:.*/\.git/worktrees/' "$PA_DIR/.git" 2>/dev/null; then
     IS_WORKTREE=1
 fi
 

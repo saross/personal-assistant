@@ -650,6 +650,57 @@ class TestSubmoduleUpdateIsGated:
             encoding="utf-8"
         )
 
+    def test_a_submodule_checkout_is_not_a_worktree(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L-b — a submodule checkout also has a .git FILE, and is not one.
+
+        git writes ".git/worktrees/<name>" into a linked worktree's
+        pointer and ".git/modules/<name>" into a submodule's. Only the
+        first is a worktree, and only a worktree's data/ belongs to
+        someone else.
+        """
+        git_path = sync_sandbox["pa_dir"] / ".git"
+        shutil.rmtree(git_path)
+        git_path.write_text(
+            "gitdir: ../.git/modules/personal-assistant\n", encoding="utf-8"
+        )
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "belongs to the main checkout" not in result.stdout, (
+            "a submodule checkout was mistaken for a worktree"
+        )
+        assert "git submodule update --init" in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_worktree_pointer_shape_is_what_is_matched(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """A .git file that is neither shape is not treated as a worktree."""
+        git_path = sync_sandbox["pa_dir"] / ".git"
+        shutil.rmtree(git_path)
+        git_path.write_text("something else entirely\n", encoding="utf-8")
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(
+            sync_sandbox, "--quiet", submodule_status="-1234abcd data"
+        )
+
+        assert "belongs to the main checkout" not in result.stdout
+        assert "git submodule update --init" in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+
     def test_allow_worktree_completes_all_eight_steps(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
