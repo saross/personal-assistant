@@ -1087,8 +1087,9 @@ Open, each with its verdict so far:
   explains itself on stderr; one helper guards the recorded path's type;
   an empty session list and a self-colliding manifest refused with exit
   2; the lookup built once; `fsync` before `os.replace` (its mutation
-  survives by nature, stated). Merged with main; coordinator suite, PR,
-  and re-audit pending.
+  survives by nature, stated). Merged with main (06aff0f), coordinator
+  suite 4422 passed, 2 skipped, 19 deselected, exit 0; **PR #150**;
+  re-audit running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
