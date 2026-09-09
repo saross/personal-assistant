@@ -974,7 +974,18 @@ Open, each with its verdict so far:
   indented `<<-` terminator unpinned; and four pre-existing script
   weaknesses exposed by mutation (a `bulk-anything` trailer passes the
   gate; a copy record desynchronises the status stream; the last rather
-  than the first unmeasurable merge named; `--reverse` unpinned).
+  than the first unmeasurable merge named; `--reverse` unpinned). Round
+  3c-9 delivered (4a9793c, ef8e29f; tests only, the script byte-identical
+  to PR #148): a quote-state tokeniser replaces the comment heuristic
+  (the opener must start outside quotes; its delimiter may be quoted);
+  fixtures indented; every quiet grep on a statement judged by whether IT
+  is downstream of a pipe; the `<<-` terminator and the here-string
+  lookbehind pinned; four script guards pinned (a `bulk-extra` trailer
+  refused, the copy record keeps the field stream aligned, the first
+  shortening commit and the first unmeasurable merge named). The agent
+  records two fixture traps its own earlier tests caught. Merged with
+  main (92fc79e); coordinator suite and PR pending; **re-audit DEFERRED**
+  (stop point).
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
