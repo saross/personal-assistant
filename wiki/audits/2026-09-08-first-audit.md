@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-eight PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-nine PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -758,7 +758,7 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 #136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
-#142, #146 (bake-off rounds 4e-5, 4e-6).
+#142, #146, #150 (bake-off rounds 4e-5 to 4e-7).
 
 Open, each with its verdict so far:
 
@@ -1014,8 +1014,8 @@ Open, each with its verdict so far:
   unless `--min-repos` is passed that run, with a WARN naming a low
   recorded count; `[H]`'s headline marked and its wording matched to
   behaviour; the alert comparison skipped for a degraded row with a
-  NOTE. Merged with main (f5a2a6b); coordinator suite, PR, and re-audit
-  pending.
+  NOTE. Merged with main (f5a2a6b), coordinator suite 4454 passed, 2
+  skipped, 19 deselected, exit 0; **PR #152**; re-audit running.
 - Round **4c-4** delivered (four commits 9eaa2f3-1d2209f on
   `claude/audit-round4c-4`): the eight lows from #136, plus one new defect
   found while testing — the R2 push's failure classifier grepped a log
@@ -1114,8 +1114,19 @@ Open, each with its verdict so far:
   an empty session list and a self-colliding manifest refused with exit
   2; the lookup built once; `fsync` before `os.replace` (its mutation
   survives by nature, stated). Merged with main (06aff0f), coordinator
-  suite 4422 passed, 2 skipped, 19 deselected, exit 0; **PR #150**;
-  re-audit running.
+  suite 4422 passed, 2 skipped, 19 deselected, exit 0; **PR #150, merged
+  1c6b598** 2026-09-09 15:3x: the re-audit confirmed the threading, the
+  collision handling, the empty-list refusal, the once-per-run messages,
+  and the write paths (15 of 17 mutations killed). Follow-ups are round
+  4e-8 (`claude/audit-round4e-8`): the `--manifest` help still says
+  "unused by --haiku-apply"; a supplied-but-unreadable `--manifest`
+  defeats a good recorded one (a regression against main, mitigated by
+  the new warning); the non-string recorded path is the one unreadable
+  case still silent; the strip guard is rebuild-only and the id is used
+  unstripped downstream (validate once, in one helper, at both entry
+  points); the rebuild's summary names neither manifest when they
+  differ; first-wins pinned only probabilistically; the parent directory
+  not `fsync`ed and a failing `fsync` aborts a retrieval mid-loop.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
